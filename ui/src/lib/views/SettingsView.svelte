@@ -7,6 +7,7 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
@@ -226,12 +227,8 @@
 		danger: g.fields.filter((f) => f.danger),
 	}));
 	/** @type {Record<string, boolean>} */
-	let limitDangerOpen = $state({});
+	let limitDangerOpen = $state(Object.fromEntries(LIMIT_VIEWS.map((g) => [g.id, true])));
 	const isLimitDangerOpen = (/** @type {string} */ id) => limitDangerOpen[id] ?? true;
-	/**
-	 * @param {string} id
-	 */
-	function toggleLimitDanger(id) { limitDangerOpen[id] = !isLimitDangerOpen(id); }
 	let allLimitDangerOpen = $derived(LIMIT_VIEWS.every((g) => !g.danger.length || isLimitDangerOpen(g.id)));
 	/**
 	 * @param {boolean} open
@@ -1370,22 +1367,17 @@
 			{/each}
 			{#if group.danger.length}
 			<div class="limit-danger-box">
-				<button
-					class="limit-danger-header"
-					onclick={() => toggleLimitDanger(group.id)}
-					aria-expanded={isLimitDangerOpen(group.id)}
-				>
-					<span class="limit-danger-caret" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg></span>
-				<span class="danger-badge">⚠ 危险项</span>
-				<span class="limit-danger-count">{group.danger.length} 项</span>
-				</button>
-				{#if isLimitDangerOpen(group.id)}
-				<div class="limit-danger-items">
-				{#each group.danger as f}
-				{@render limitRow(f, true)}
-				{/each}
-				</div>
-				{/if}
+				<MaterialCollapsible variant="error" bind:open={limitDangerOpen[group.id]}>
+					{#snippet header()}
+						<span class="danger-badge">⚠ 危险项</span>
+						<span class="limit-danger-count">{group.danger.length} 项</span>
+					{/snippet}
+					<div class="limit-danger-items">
+					{#each group.danger as f}
+					{@render limitRow(f, true)}
+					{/each}
+					</div>
+				</MaterialCollapsible>
 			</div>
 			{/if}
 		</div>
@@ -1467,22 +1459,6 @@
 		padding: 8px;
 	}
 	.limit-danger-items { display: grid; gap: 10px; }
-	.limit-danger-header {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		width: 100%;
-		padding: 0;
-		border: none;
-		background: transparent;
-		font: inherit;
-		color: inherit;
-		cursor: pointer;
-		text-align: left;
-	}
-	.limit-danger-header:hover { color: var(--md-sys-color-error, #ba1a1a); }
-	.limit-danger-header:focus-visible { outline: 2px solid var(--md-sys-color-error, #ba1a1a); outline-offset: 2px; border-radius: 4px; }
-	.limit-danger-header + .limit-danger-items { margin-top: 8px; }
 	.limit-danger-caret {
 		display: inline-flex;
 		align-items: center;
@@ -1491,7 +1467,6 @@
 		color: var(--md-sys-color-error, #ba1a1a);
 		transition: transform 0.15s ease;
 	}
-	.limit-danger-header[aria-expanded='false'] .limit-danger-caret { transform: rotate(-90deg); }
 	.limit-toggle-all { display: inline-flex; align-items: center; gap: 4px; }
 	.limit-toggle-all[aria-expanded='false'] .limit-danger-caret { transform: rotate(-90deg); }
 	.limit-danger-count { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-left: auto; }

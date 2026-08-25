@@ -637,15 +637,18 @@ impl ReActEngine {
         duration_ms: Option<u64>,
         emitter: &Arc<dyn AgentEventEmitter>,
     ) {
-        let usage = &response.usage;
+        let usage = response.usage.clone().normalize();
         if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
             // No usage reported by the provider —nothing useful to surface.
             return;
         }
 
         let router = self.router();
+        let billed_prompt = usage
+            .prompt_tokens
+            .saturating_add(usage.cache_creation_tokens);
         let step_cost = router
-            .compute_cost(role, usage.prompt_tokens, usage.completion_tokens)
+            .compute_cost(role, billed_prompt, usage.completion_tokens)
             .await;
         // `context_window_for_role` always yields Some; the cached resolver
         // avoids cloning the full LlmConfig on every step.
@@ -762,6 +765,8 @@ impl ReActEngine {
                 total_tokens: usage.total_tokens,
                 cached_tokens: usage.cached_tokens,
                 cache_creation_tokens: usage.cache_creation_tokens,
+                context_tokens: usage.context_tokens(),
+                cache_exclusive: usage.cache_exclusive_of_prompt(),
                 cost_usd: step_cost,
                 model,
                 cumulative_prompt_tokens: cum_prompt,

@@ -144,6 +144,34 @@ struct GeminiUsage {
     total_tokens: u32,
     #[serde(default, alias = "cachedContentTokenCount")]
     cached_tokens: u32,
+    #[serde(default, alias = "thoughtsTokenCount")]
+    thoughts_tokens: u32,
+    #[serde(default, alias = "toolUsePromptTokenCount")]
+    tool_use_prompt_tokens: u32,
+}
+
+impl GeminiUsage {
+    fn to_usage(&self, model_name: Option<String>) -> Usage {
+        let completion = self
+            .candidates_tokens
+            .saturating_add(self.thoughts_tokens);
+        let mut prompt = self.prompt_tokens;
+        let tool_use = self.tool_use_prompt_tokens;
+        if tool_use > 0 {
+            let folded = prompt.saturating_add(completion);
+            if self.total_tokens == folded.saturating_add(tool_use) {
+                prompt = prompt.saturating_add(tool_use);
+            }
+        }
+        Usage::from_counts(
+            prompt,
+            completion,
+            self.total_tokens,
+            self.cached_tokens,
+            0,
+            model_name,
+        )
+    }
 }
 
 /// Google Gemini API adapter (`generateContent` / `streamGenerateContent`).
@@ -523,15 +551,8 @@ impl GeminiAdapter {
         }
         let usage = json
             .usage_metadata
-            .map(|u| Usage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.candidates_tokens,
-                total_tokens: u.total_tokens,
-                cached_tokens: u.cached_tokens,
-                cache_creation_tokens: 0,
-                model_name: model.clone(),
-                cost: None,
-            })
+            .as_ref()
+            .map(|u| u.to_usage(model.clone()))
             .unwrap_or_default();
         Ok(LlmResponse {
             text,
@@ -754,15 +775,7 @@ impl GeminiAdapter {
                             state.last_model = Some(m.clone());
                         }
                         if let Some(u) = resp.usage_metadata {
-                            state.usage = Some(Usage {
-                                prompt_tokens: u.prompt_tokens,
-                                completion_tokens: u.candidates_tokens,
-                                total_tokens: u.total_tokens,
-                                cached_tokens: u.cached_tokens,
-                                cache_creation_tokens: 0,
-                                model_name: state.last_model.clone(),
-                                cost: None,
-                            });
+                            state.usage = Some(u.to_usage(state.last_model.clone()));
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
@@ -1574,5 +1587,24 @@ mod tests {
         assert_eq!(resp.finish_reason, Some(FinishReason::Stop));
         assert_eq!(resp.usage.total_tokens, 15);
         assert_eq!(resp.model.as_deref(), Some("gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn usage_folds_thoughts_and_tool_use_into_counts() {
+        let u = GeminiUsage {
+            prompt_tokens: 100,
+            candidates_tokens: 20,
+            thoughts_tokens: 80,
+            tool_use_prompt_tokens: 15,
+            total_tokens: 215,
+            cached_tokens: 40,
+        };
+        let usage = u.to_usage(None);
+        assert_eq!(usage.prompt_tokens, 115);
+        assert_eq!(usage.completion_tokens, 100);
+        assert_eq!(usage.total_tokens, 215);
+        assert_eq!(usage.cached_tokens, 40);
+        assert!(!usage.cache_exclusive_of_prompt());
+        assert_eq!(usage.context_tokens(), 115);
     }
 }

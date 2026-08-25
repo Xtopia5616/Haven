@@ -71,6 +71,15 @@
 <div class="jv-view" class:jv-root-view={depth === 0}>
 	{#if depth === 0 && copyable}
 		<div class="jv-toolbar">
+			<span class="jv-root-kind">
+				{#if isArray}
+					数组 · {count}
+				{:else if isContainer}
+					对象 · {count}
+				{:else}
+					JSON
+				{/if}
+			</span>
 			<button class="jv-copy" class:jv-copied={copied} type="button" onclick={copyJson} aria-label="复制 JSON">
 				{#if copied}
 					<span aria-hidden="true">✓</span>已复制
@@ -86,14 +95,27 @@
 			<button
 				class="jv-row jv-container"
 				class:jv-empty={count === 0}
+				class:jv-open={expanded}
 				type="button"
 				disabled={count === 0}
 				aria-expanded={count > 0 ? expanded : undefined}
 				onclick={toggle}
 			>
-				<span class="jv-caret" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+				<span class="jv-caret" aria-hidden="true">
+					<svg
+						width="12"
+						height="12"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2.5"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						><polyline points="6 9 12 15 18 9" /></svg
+					>
+				</span>
 				{#if key}
-					<span class="jv-key">{keyLabel(key)}</span><span class="jv-punct">:&nbsp;</span>
+					<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span class="jv-punct">:&nbsp;</span>
 				{/if}
 				{#if expanded}
 					<span class="jv-punct">{isArray ? '[' : '{'}</span>
@@ -116,12 +138,17 @@
 						{/each}
 					{/if}
 				</div>
+				<div class="jv-row jv-close" aria-hidden="true">
+					<span class="jv-caret-spacer"></span>
+					<span class="jv-punct">{isArray ? ']' : '}'}</span>
+				</div>
 			{/if}
 		{:else}
 			{@const info = valInfo(value)}
-			<div class="jv-row">
+			<div class="jv-row jv-leaf">
+				<span class="jv-caret-spacer"></span>
 				{#if key}
-					<span class="jv-key">{keyLabel(key)}</span><span class="jv-punct">:&nbsp;</span>
+					<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span class="jv-punct">:&nbsp;</span>
 				{/if}
 				{#if info.cls}
 					<span class="jv-value {info.cls}" title={info.full ?? ''}>{info.text}</span>
@@ -142,8 +169,20 @@
 	}
 	.jv-toolbar {
 		display: flex;
-		justify-content: flex-end;
-		padding: 4px var(--md-sys-space-xs) 0;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-xs);
+		padding: 2px var(--md-sys-space-xs);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.jv-root-kind {
+		font-size: 10px;
+		font-weight: 600;
+		font-family: var(--md-sys-typescale-mono);
+		color: var(--md-sys-color-on-surface-variant);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding: 0 4px;
 	}
 	.jv-copy {
 		display: inline-flex;
@@ -154,11 +193,14 @@
 		font-family: var(--md-sys-typescale-body);
 		color: var(--md-sys-color-on-surface-variant);
 		background: transparent;
-		border: 1px solid var(--md-sys-color-outline-variant);
+		border: 1px solid transparent;
 		border-radius: var(--md-sys-shape-full);
-		padding: 2px 8px;
+		padding: 1px 8px;
 		cursor: pointer;
-		transition: background-color 0.15s ease, color 0.15s ease;
+		transition:
+			background-color 0.15s ease,
+			color 0.15s ease,
+			border-color 0.15s ease;
 	}
 	.jv-copy:hover {
 		background: var(--md-sys-color-surface-container-highest);
@@ -170,21 +212,37 @@
 	.jv-body {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 11px;
-		line-height: 1.6;
+		line-height: 1.7;
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.jv-root-body {
 		max-height: 240px;
 		overflow: auto;
-		padding: var(--md-sys-space-2xs) var(--md-sys-space-sm) var(--md-sys-space-sm);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm) var(--md-sys-space-sm);
+		scrollbar-width: thin;
+		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
+	}
+	.jv-root-body::-webkit-scrollbar {
+		width: 4px;
+		height: 4px;
+	}
+	.jv-root-body::-webkit-scrollbar-thumb {
+		background: var(--md-sys-color-outline-variant);
+		border-radius: 2px;
 	}
 	.jv-row {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 0 2px;
 		white-space: pre-wrap;
 		word-break: break-word;
+		border-radius: 4px;
+		padding: 1px var(--md-sys-space-2xs);
+		margin: 0 calc(-1 * var(--md-sys-space-2xs));
 	}
 	.jv-container {
-		display: block;
-		width: 100%;
+		width: calc(100% + 2 * var(--md-sys-space-2xs));
 		text-align: left;
 		font-family: inherit;
 		font-size: inherit;
@@ -192,42 +250,65 @@
 		color: inherit;
 		background: none;
 		border: none;
-		padding: 0 var(--md-sys-space-2xs);
-		margin: 0 calc(-1 * var(--md-sys-space-2xs));
-		border-radius: 4px;
 		cursor: pointer;
 		user-select: none;
 	}
-	.jv-container:not(:disabled):hover {
+	.jv-container:not(:disabled):hover,
+	.jv-leaf:hover {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 5%, transparent);
 	}
 	.jv-container:disabled {
 		cursor: default;
 	}
-	.jv-caret {
-		display: inline-block;
+	.jv-caret,
+	.jv-caret-spacer {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		width: 12px;
-		font-size: 9px;
+		height: 12px;
+		flex: none;
+		align-self: center;
 		color: var(--md-sys-color-on-surface-variant);
+		transition: transform 0.15s ease;
+	}
+	.jv-container:not(.jv-open) .jv-caret {
+		transform: rotate(-90deg);
 	}
 	.jv-empty .jv-caret {
 		opacity: 0.35;
 	}
 	.jv-children {
-		margin-left: 12px;
-		padding-left: 6px;
-		border-left: 1px solid var(--md-sys-color-outline-variant);
+		margin: 0 0 0 6px;
+		padding: 0 0 0 10px;
+		border-left: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 80%, transparent);
+	}
+	.jv-close {
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	.jv-key {
 		color: var(--md-sys-color-tertiary);
 		font-weight: 600;
 	}
-	.jv-punct {
+	.jv-index {
 		color: var(--md-sys-color-on-surface-variant);
+		font-weight: 500;
+		font-variant-numeric: tabular-nums;
+		opacity: 0.72;
+		min-width: 1.25em;
+	}
+	.jv-punct {
+		color: color-mix(in srgb, var(--md-sys-color-on-surface-variant) 70%, transparent);
 	}
 	.jv-summary {
-		font-style: italic;
-		opacity: 0.85;
+		font-style: normal;
+		font-size: 10px;
+		font-weight: 600;
+		line-height: 1.4;
+		padding: 0 6px;
+		border-radius: var(--md-sys-shape-full);
+		background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	.jv-value {
 		font-family: var(--md-sys-typescale-mono);
@@ -240,8 +321,10 @@
 	}
 	.jv-bool {
 		color: var(--md-sys-color-primary);
+		font-weight: 600;
 	}
 	.jv-null {
 		font-style: italic;
+		opacity: 0.65;
 	}
 </style>

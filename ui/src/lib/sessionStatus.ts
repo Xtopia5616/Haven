@@ -2,7 +2,7 @@
 // emits these strings via SessionStatus::as_str(); see crates/agent/src/session.rs.
 //
 // statusColor() returns a hex color for inline badges (SessionCard dot).
-// statusVariant() returns a MaterialBadge variant for the history page.
+// statusVariant() returns a MaterialBadge variant for the memory/sessions page.
 // isPausedStatus() covers plain pause, ask-awaiting (F2), and confirm-awaiting (E3).
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 

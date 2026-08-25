@@ -1,6 +1,7 @@
 <script>
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
+	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
@@ -169,10 +170,14 @@
 							<div class="tool-item-name">{tool.name}</div>
 							<div class="tool-item-desc">{tool.description || 'No description'}</div>
 							{#if tool.input_schema && Object.keys(tool.input_schema).length > 0}
-								<details class="schema-details">
-									<summary>Input Schema</summary>
-									<pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
-								</details>
+								<div class="schema-details">
+									<MaterialCollapsible>
+										{#snippet header()}
+											<span class="schema-label">Input Schema</span>
+										{/snippet}
+										<pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
+									</MaterialCollapsible>
+								</div>
 							{/if}
 						</div>
 					{/each}
@@ -349,10 +354,8 @@
 		margin-top: var(--md-sys-space-sm);
 		font-size: 11px;
 	}
-	.schema-details summary {
+	.schema-label {
 		color: var(--md-sys-color-on-surface-variant);
-		cursor: pointer;
-		user-select: none;
 	}
 	.schema-details pre {
 		margin-top: var(--md-sys-space-xs);

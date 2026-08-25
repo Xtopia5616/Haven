@@ -26,6 +26,8 @@ interface ResumeMessage {
 	awaiting?: boolean;
 	stepNumber?: number | null;
 	toolName?: string;
+	/** JSON tool-call arguments from `session_steps.action_input`. */
+	toolArgs?: unknown;
 	/** Live-only mid-turn anchor marking a user message as steering; the DB
 	 * has no such flag (agent:supplement clears it on the live entry). */
 	steering?: boolean;
@@ -34,6 +36,8 @@ interface ResumeMessage {
 interface ResumeStep {
 	id: string;
 	action_tool?: string | null;
+	/** JSON-serialized tool input from `session_steps.action_input`. */
+	action_input?: string | null;
 	silent?: boolean;
 	observation?: string | null;
 	thought?: string | null;
@@ -307,6 +311,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			content: obs || '',
 			type: 'tool',
 			toolName: step.action_tool,
+			...(step.action_input != null && step.action_input !== ''
+				? { toolArgs: step.action_input }
+				: {}),
 			voice: false,
 			time: formatMessageTime(step.created_at),
 			_ts: cardTs,

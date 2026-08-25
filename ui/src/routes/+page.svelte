@@ -58,6 +58,7 @@
 		clearSessionLlmUsage,
 		formatTokenCount,
 		formatCostUsd,
+		coalesceTokenTotal,
 		seqLastSeen,
 		pruneSeq,
 		updateModelState,
@@ -145,9 +146,11 @@
 	 * @property {number} promptTokens
 	 * @property {number} completionTokens
 	 * @property {number} totalTokens
-	 * @property {number} [cachedTokens]
-	 * @property {number} [cacheCreationTokens]
-	 * @property {number} cumulativePromptTokens
+ 	 * @property {number} [cachedTokens]
+ 	 * @property {number} [cacheCreationTokens]
+ 	 * @property {number} [contextTokens]
+ 	 * @property {boolean} [cacheExclusive]
+ 	 * @property {number} cumulativePromptTokens
 	 * @property {number} cumulativeCompletionTokens
 	 * @property {number} cumulativeTotalTokens
 	 * @property {number} [cumulativeCachedTokens]
@@ -216,10 +219,24 @@
 		if (cached !== undefined) return cached;
 		const calls = llmUsage.filter((u) => u.step_number === stepNumber);
 		if (calls.length === 0) return null;
+		const prompt = calls.reduce((s, u) => s + (u.prompt_tokens || 0), 0);
+		const completion = calls.reduce((s, u) => s + (u.completion_tokens || 0), 0);
+		const total = calls.reduce(
+			(s, u) =>
+				s +
+				coalesceTokenTotal(
+					u.prompt_tokens || 0,
+					u.completion_tokens || 0,
+					u.total_tokens || 0,
+					u.cached_tokens || 0,
+					u.cache_creation_tokens || 0,
+				),
+			0,
+		);
 		const value = {
-			prompt: calls.reduce((s, u) => s + (u.prompt_tokens || 0), 0),
-			completion: calls.reduce((s, u) => s + (u.completion_tokens || 0), 0),
-			total: calls.reduce((s, u) => s + (u.total_tokens || 0), 0),
+			prompt,
+			completion,
+			total,
 			cost: calls.reduce((s, u) => s + (u.cost_usd || 0), 0),
 			hasCost: calls.some((u) => u.has_cost),
 			durationMs: calls.reduce((s, u) => s + (u.duration_ms || 0), 0),
@@ -239,15 +256,8 @@
 	const contextBudget = $derived.by(() => {
 		if (!tokenStats) return null;
 		const window = tokenStats.contextWindow || 0;
-		const prompt = tokenStats.promptTokens || 0;
-		const cached = tokenStats.cachedTokens || 0;
-		const creation = tokenStats.cacheCreationTokens || 0;
-		const completion = tokenStats.completionTokens || 0;
-		const total = tokenStats.totalTokens || 0;
-		const used = cacheExclusiveOfPrompt(prompt, completion, total, cached, creation)
-			? prompt + cached + creation
-			: prompt;
-		if (!window) return null;
+		const used = tokenStats.contextTokens || tokenStats.promptTokens || 0;
+		if (!window) return { used, window: 0, ratio: 0 };
 		const ratio = Math.min(1, used / window);
 		return { used, window, ratio };
 	});
@@ -275,6 +285,10 @@
 	// history-opened conversation with no persisted usage will never
 	// receive events — show a neutral hint instead of waiting forever.
 	const tokenStatsHint = $derived(isGenerating || sessionRunning ? '等待 LLM 统计' : '暂无统计');
+	const showCumulativeTokens = $derived.by(() => {
+		if (!tokenStats) return false;
+		return !!(tokenStats.restored || !(isGenerating || sessionRunning));
+	});
 	// Sessions executing in parallel (running or waiting). When 2+ exist, the
 	// new-session button turns into a switcher menu: switch to a parallel session
 	// or start a new one. Otherwise the button keeps its default behavior.
@@ -318,42 +332,19 @@
 	});
 
 	/**
-	 * True when cache tokens are billed/counted outside `prompt` (Anthropic).
-	 * Detected via totals: exclusive ⇒ total ≈ prompt+cached+creation+completion;
-	 * inclusive (OpenAI) ⇒ total ≈ prompt+completion with cached already in prompt.
-	 * @param {number} prompt
-	 * @param {number} completion
-	 * @param {number} total
-	 * @param {number} cached
-	 * @param {number} creation
-	 */
-	function cacheExclusiveOfPrompt(prompt, completion, total, cached, creation) {
-		const cachePart = (cached || 0) + (creation || 0);
-		if (cachePart <= 0) return false;
-		const inclusiveTotal = (prompt || 0) + (completion || 0);
-		const exclusiveTotal = inclusiveTotal + cachePart;
-		if (!total) return false;
-		return Math.abs(total - exclusiveTotal) <= Math.abs(total - inclusiveTotal);
-	}
-
-	/**
-	 * Prompt-cache hit rate. Inclusive providers: cached/prompt.
-	 * Exclusive providers: cached/(prompt+cached+creation).
+	 * Prompt-cache hit rate. Inclusive: cached/prompt.
+	 * Exclusive: cached/(prompt+cached+creation). `exclusive` comes from the
+	 * backend (`cache_exclusive`) for live stats; restored totals use an
+	 * exact identity on the coalesced total.
 	 * @param {number} prompt
 	 * @param {number} cached
 	 * @param {number} [creation]
-	 * @param {{completion?: number, total?: number}} [opts]
+	 * @param {{exclusive?: boolean}} [opts]
 	 * @returns {number|null} percent 0–100, or null when no cache data
 	 */
 	function cacheHitRatePercent(prompt, cached, creation = 0, opts = {}) {
 		if (!cached || cached <= 0) return null;
-		const exclusive = cacheExclusiveOfPrompt(
-			prompt,
-			opts.completion || 0,
-			opts.total || 0,
-			cached,
-			creation || 0,
-		);
+		const exclusive = !!opts.exclusive;
 		const denom = exclusive ? (prompt || 0) + cached + (creation || 0) : prompt || 0;
 		if (!denom) return null;
 		return Math.min(100, (cached / denom) * 100);
@@ -361,16 +352,31 @@
 
 	function buildTokenTooltip(/** @type {SessionTokenStats} */ s) {
 		const parts = [];
+		const cumPrompt = s.cumulativePromptTokens || 0;
+		const cumCompletion = s.cumulativeCompletionTokens || 0;
+		const cumCached = s.cumulativeCachedTokens || 0;
+		const cumCreation = s.cumulativeCacheCreationTokens || 0;
+		const cumTotal = coalesceTokenTotal(
+			cumPrompt,
+			cumCompletion,
+			s.cumulativeTotalTokens || 0,
+			cumCached,
+			cumCreation,
+		);
+		const cumExclusive =
+			!!s.cacheExclusive ||
+			(cumCached + cumCreation > 0 &&
+				cumTotal === cumPrompt + cumCompletion + cumCached + cumCreation);
 		if (s.restored) {
 			parts.push(
 				`累计上传 ${s.cumulativePromptTokens || 0} → 累计生成 ${s.cumulativeCompletionTokens || 0} tokens`,
 			);
-			parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
+			parts.push(`累计 ${cumTotal} tokens`);
 		} else {
 			parts.push(
 				`上传 ${s.promptTokens || 0} → 生成 ${s.completionTokens || 0} tokens`,
 			);
-			parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
+			parts.push(`累计 ${cumTotal} tokens`);
 			if (s.cumulativePromptTokens != null)
 				parts.push(
 					`累计上传 ${s.cumulativePromptTokens} → 累计生成 ${s.cumulativeCompletionTokens} tokens`,
@@ -378,12 +384,9 @@
 		}
 		const liveCached = s.cachedTokens || 0;
 		const liveCreation = s.cacheCreationTokens || 0;
-		const cumCached = s.cumulativeCachedTokens || 0;
-		const cumCreation = s.cumulativeCacheCreationTokens || 0;
 		if (!s.restored && (liveCached > 0 || liveCreation > 0)) {
 			const rate = cacheHitRatePercent(s.promptTokens || 0, liveCached, liveCreation, {
-				completion: s.completionTokens || 0,
-				total: s.totalTokens || 0,
+				exclusive: !!s.cacheExclusive,
 			});
 			let line = `缓存命中 ${formatTokenCount(liveCached)}`;
 			if (rate != null) line += `（${rate.toFixed(0)}%）`;
@@ -391,15 +394,9 @@
 			parts.push(line);
 		}
 		if (cumCached > 0 || cumCreation > 0) {
-			const rate = cacheHitRatePercent(
-				s.cumulativePromptTokens || 0,
-				cumCached,
-				cumCreation,
-				{
-					completion: s.cumulativeCompletionTokens || 0,
-					total: s.cumulativeTotalTokens || 0,
-				},
-			);
+			const rate = cacheHitRatePercent(cumPrompt, cumCached, cumCreation, {
+				exclusive: cumExclusive,
+			});
 			let line = `累计缓存命中 ${formatTokenCount(cumCached)}`;
 			if (rate != null) line += `（${rate.toFixed(0)}%）`;
 			if (cumCreation > 0) line += ` / 写入 ${formatTokenCount(cumCreation)}`;
@@ -410,18 +407,7 @@
 		}
 		if (s.model) parts.push(`模型 ${s.model}`);
 		if (s.contextWindow) {
-			const prompt = s.promptTokens || 0;
-			const cached = s.cachedTokens || 0;
-			const creation = s.cacheCreationTokens || 0;
-			const used = cacheExclusiveOfPrompt(
-				prompt,
-				s.completionTokens || 0,
-				s.totalTokens || 0,
-				cached,
-				creation,
-			)
-				? prompt + cached + creation
-				: prompt;
+			const used = s.contextTokens || s.promptTokens || 0;
 			const pct = used
 				? `${((used / s.contextWindow) * 100).toFixed(0)}%`
 				: '?';
@@ -1807,6 +1793,7 @@
 								toolName: data.tool_name,
 								time: new Date().toLocaleTimeString(),
 								streaming: true,
+								toolArgs: data.input ?? null,
 							}),
 						);
 					});
@@ -1902,17 +1889,40 @@
 				'agent:usage': (event) => {
 					const d = event.payload || {};
 					if (!d.session_id) return;
+					const prompt = d.prompt_tokens || 0;
+					const completion = d.completion_tokens || 0;
+					const cached = d.cached_tokens || 0;
+					const creation = d.cache_creation_tokens || 0;
+					const total = coalesceTokenTotal(
+						prompt,
+						completion,
+						d.total_tokens || 0,
+						cached,
+						creation,
+					);
+					const cumPrompt = d.cumulative_prompt_tokens || 0;
+					const cumCompletion = d.cumulative_completion_tokens || 0;
+					const cumCached = d.cumulative_cached_tokens || 0;
+					const cumCreation = d.cumulative_cache_creation_tokens || 0;
 					updateSessionTokenStats(d.session_id, {
-						promptTokens: d.prompt_tokens || 0,
-						completionTokens: d.completion_tokens || 0,
-						totalTokens: d.total_tokens || 0,
-						cachedTokens: d.cached_tokens || 0,
-						cacheCreationTokens: d.cache_creation_tokens || 0,
-						cumulativePromptTokens: d.cumulative_prompt_tokens || 0,
-						cumulativeCompletionTokens: d.cumulative_completion_tokens || 0,
-						cumulativeTotalTokens: d.cumulative_total_tokens || 0,
-						cumulativeCachedTokens: d.cumulative_cached_tokens || 0,
-						cumulativeCacheCreationTokens: d.cumulative_cache_creation_tokens || 0,
+						promptTokens: prompt,
+						completionTokens: completion,
+						totalTokens: total,
+						cachedTokens: cached,
+						cacheCreationTokens: creation,
+						contextTokens: d.context_tokens || 0,
+						cacheExclusive: !!d.cache_exclusive,
+						cumulativePromptTokens: cumPrompt,
+						cumulativeCompletionTokens: cumCompletion,
+						cumulativeTotalTokens: coalesceTokenTotal(
+							cumPrompt,
+							cumCompletion,
+							d.cumulative_total_tokens || 0,
+							cumCached,
+							cumCreation,
+						),
+						cumulativeCachedTokens: cumCached,
+						cumulativeCacheCreationTokens: cumCreation,
 						costUsd: d.cost_usd ?? null,
 						cumulativeCostUsd: d.cumulative_cost_usd ?? null,
 						contextWindow: d.context_window ?? null,
@@ -1931,11 +1941,11 @@
 							step_number: d.step_number,
 							role: d.role || undefined,
 							model: d.model ?? null,
-							prompt_tokens: d.prompt_tokens || 0,
-							completion_tokens: d.completion_tokens || 0,
-							total_tokens: d.total_tokens || 0,
-							cached_tokens: d.cached_tokens || 0,
-							cache_creation_tokens: d.cache_creation_tokens || 0,
+							prompt_tokens: prompt,
+							completion_tokens: completion,
+							total_tokens: total,
+							cached_tokens: cached,
+							cache_creation_tokens: creation,
 							cost_usd: d.cost_usd ?? null,
 							has_cost: !!d.has_cost,
 							duration_ms: d.duration_ms ?? null,
@@ -2457,6 +2467,7 @@
 							messageId={msg.id}
 							stepNumber={msg.stepNumber}
 							usage={msg.type === 'tool' ? stepUsage(msg.stepNumber) : null}
+							toolArgs={msg.toolArgs ?? null}
 							attachments={msg.attachments}
 							options={msg.options ?? []}
 							awaiting={msg.awaiting ?? false}
@@ -2686,14 +2697,22 @@
 						<div class="token-text">
 							<span class="token-context"
 								>{formatTokenCount(
-									tokenStats.restored
-										? tokenStats.cumulativeTotalTokens || 0
-										: tokenStats.promptTokens || 0,
+									showCumulativeTokens
+										? coalesceTokenTotal(
+												tokenStats.cumulativePromptTokens || 0,
+												tokenStats.cumulativeCompletionTokens || 0,
+												tokenStats.cumulativeTotalTokens || 0,
+												tokenStats.cumulativeCachedTokens || 0,
+												tokenStats.cumulativeCacheCreationTokens || 0,
+											)
+										: tokenStats.contextTokens ||
+											tokenStats.promptTokens ||
+											0,
 								)}</span
 							>
-							<span class="token-unit">{tokenStats.restored ? 'tok' : 'ctx'}</span>
+							<span class="token-unit">{showCumulativeTokens ? 'tok' : 'ctx'}</span>
 						</div>
-						{#if contextBudget && !tokenStats.restored}
+						{#if contextBudget && contextBudget.window && !showCumulativeTokens}
 							<div
 								class="token-budget"
 								class:warn={contextBudget.ratio >= 0.75}

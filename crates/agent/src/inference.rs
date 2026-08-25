@@ -4,14 +4,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use haven_common::prompts::{
-    COMPACTED_SUMMARY_PREFIX, FACT_EXTRACTION_SYSTEM_PROMPT, predicate_merge_system_prompt,
+    COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
+    predicate_merge_system_prompt,
 };
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
 use haven_memory::embeddings::entity_kind;
 use haven_memory::repositories::facts::{
-    CANONICAL_MERGE_TARGETS, FactSourceRef, is_canonical_merge_target, is_identity_predicate,
-    is_sensitive_object, is_sensitive_predicate, is_sensitive_text, is_single_valued_predicate,
+    CANONICAL_MERGE_TARGETS, ContradictionCandidate, ContradictionKind, Fact, FactSourceRef,
+    fact_within_demote_age, is_canonical_merge_target, is_identity_predicate, is_sensitive_object,
+    is_sensitive_predicate, is_sensitive_text, is_single_valued_predicate,
+    pick_contradiction_keeper,
 };
 use haven_memory::repositories::session_steps::SessionStep;
 use serde::Deserialize;
@@ -651,13 +654,15 @@ impl InferenceEngine {
     /// duplicate facts, purge sensitive facts, flush stale low-confidence
     /// facts, and prune embeddings whose source rows were deleted, then catch
     /// up on vector indexing (facts + episodes, incl. compaction summaries).
-    /// Optionally proposes LLM predicate merges (M6) when SmallModel is
-    /// configured. Intended for the app-level scheduler (and explicit admin
-    /// paths) — not the ReAct hot path, which only runs [`Self::infer_session`].
+    /// Runs the rule-based contradiction engine (X5), then optionally proposes
+    /// LLM predicate merges (M6) and residual contradiction arbitration when
+    /// SmallModel is configured. Intended for the app-level scheduler (and
+    /// explicit admin paths) — not the ReAct hot path, which only runs
+    /// [`Self::infer_session`].
     ///
     /// Returns the sum of rows touched by dedup / sensitive / flush / prune /
-    /// predicate rewrites (cursor cleanup and embed catch-up are best-effort
-    /// and not counted).
+    /// contradiction demotes / predicate rewrites (cursor cleanup and embed
+    /// catch-up are best-effort and not counted).
     pub async fn run_memory_maintenance(&self) -> u64 {
         let db = self.db.clone();
         let cleaned = db
@@ -672,6 +677,24 @@ impl InferenceEngine {
                     Err(e) => {
                         tracing::error!("memory maintenance: delete_sensitive_facts failed: {}", e)
                     }
+                }
+                // X5: demote recent polarity / single-valued losers that
+                // slipped past upsert (age-capped), before low-confidence
+                // flush can delete them in the same pass.
+                match db.resolve_contradictions() {
+                    Ok(n) => {
+                        if n > 0 {
+                            tracing::info!(
+                                "memory maintenance: resolved {} contradictory fact(s)",
+                                n
+                            );
+                        }
+                        total += n;
+                    }
+                    Err(e) => tracing::warn!(
+                        "memory maintenance: resolve_contradictions failed: {}",
+                        e
+                    ),
                 }
                 match db.flush_low_confidence(0.3) {
                     Ok(n) => total += n,
@@ -707,6 +730,24 @@ impl InferenceEngine {
             .await
             .unwrap_or(0);
         let merged = self.merge_predicates_with_llm().await;
+        // Alias merges can create new single-valued multi-object conflicts;
+        // re-run the rule keeper before LLM arbitration so merge-created
+        // pairs get the same user>inferred / confidence treatment.
+        let resolved_after_merge = if merged > 0 {
+            let db = self.db.clone();
+            db.run_blocking(move |db| db.resolve_contradictions())
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "memory maintenance: post-merge resolve_contradictions failed: {}",
+                        e
+                    );
+                    0
+                })
+        } else {
+            0
+        };
+        let arbitrated = self.arbitrate_contradictions_with_llm().await;
         // Catch up on vector indexing too, so memory that accumulated while
         // the embedding model was unconfigured gets indexed once it is set up.
         // Rebuild LSH only when the side table lags the embedding rows (M5).
@@ -738,7 +779,111 @@ impl InferenceEngine {
                 }
             }
         }
-        cleaned.saturating_add(merged)
+        cleaned
+            .saturating_add(merged)
+            .saturating_add(resolved_after_merge)
+            .saturating_add(arbitrated)
+    }
+
+    /// Maintenance LLM pass (X5): residual contradiction groups after the
+    /// rule engine, with `source_ref` snippets as evidence. LLM runs outside
+    /// the DB lock; demotes are gated then applied in a separate blocking
+    /// call. Returns rows demoted.
+    async fn arbitrate_contradictions_with_llm(&self) -> u64 {
+        if !self
+            .router
+            .is_role_configured(EndpointRole::SmallModel)
+            .await
+        {
+            return 0;
+        }
+        let db = self.db.clone();
+        let groups = match db
+            .run_blocking(move |db| db.list_ambiguous_contradictions())
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "memory maintenance: list_ambiguous_contradictions failed: {}",
+                    e
+                );
+                return 0;
+            }
+        };
+        if groups.is_empty() {
+            return 0;
+        }
+        let listing = format_contradiction_groups(&groups);
+        let user_content = format!(
+            "Conflict groups (JSON):\n{listing}\n\nPropose demotions for residual contradictions."
+        );
+
+        let _permit = match self.inference_semaphore.acquire().await {
+            Ok(p) => p,
+            Err(_) => return 0,
+        };
+        let response = match self
+            .router
+            .chat_with_prompt(
+                EndpointRole::SmallModel,
+                CONTRADICTION_ARBITRATE_SYSTEM_PROMPT,
+                &user_content,
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    "memory maintenance: contradiction arbitrate LLM failed: {}",
+                    e
+                );
+                return 0;
+            }
+        };
+        if response.text.trim().is_empty() {
+            return 0;
+        }
+        let json_str = extract_json_array(&response.text);
+        let proposals: Vec<ContradictionDemoteProposal> = match serde_json::from_str(&json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "memory maintenance: failed to parse contradiction demote JSON: {}",
+                    e
+                );
+                return 0;
+            }
+        };
+
+        let allowed: HashMap<String, &Fact> = groups
+            .iter()
+            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .collect();
+        let mut demote_ids: Vec<String> = Vec::new();
+        for p in proposals.into_iter().take(20) {
+            if let Some(id) = gate_contradiction_demote(&p, &allowed, &groups) {
+                if !demote_ids.iter().any(|x| x == &id) {
+                    demote_ids.push(id);
+                }
+            }
+        }
+        if demote_ids.is_empty() {
+            return 0;
+        }
+        let db = self.db.clone();
+        db.run_blocking(move |db| {
+            let n = db.demote_fact_ids(demote_ids)?;
+            if n > 0 {
+                tracing::info!(
+                    "memory maintenance: LLM demoted {} contradictory fact(s)",
+                    n
+                );
+            }
+            Ok::<u64, anyhow::Error>(n)
+        })
+        .await
+        .unwrap_or(0)
     }
 
     /// Maintenance LLM pass (M6): propose predicate alias merges and apply
@@ -1607,6 +1752,87 @@ struct PredicateMergeProposal {
     confidence: f64,
 }
 
+#[derive(Debug, Deserialize)]
+struct ContradictionDemoteProposal {
+    #[serde(deserialize_with = "coerce_to_string")]
+    demote_id: String,
+    #[serde(default)]
+    confidence: f64,
+}
+
+fn format_contradiction_groups(groups: &[ContradictionCandidate]) -> String {
+    let payload: Vec<serde_json::Value> = groups
+        .iter()
+        .take(20)
+        .map(|g| {
+            let kind = match g.kind {
+                ContradictionKind::Polarity => "polarity",
+                ContradictionKind::SingleValued => "single_valued",
+            };
+            let facts: Vec<serde_json::Value> = g
+                .facts
+                .iter()
+                .map(|f| {
+                    let mut row = serde_json::json!({
+                        "id": f.id,
+                        "subject": f.subject,
+                        "predicate": f.predicate,
+                        "object": f.object,
+                        "source": f.source,
+                        "confidence": f.confidence,
+                    });
+                    if let Some(refer) = f.source_ref.as_ref() {
+                        if !is_sensitive_text(&refer.snippet) {
+                            row["source_snippet"] = serde_json::json!(refer.snippet);
+                        }
+                    }
+                    row
+                })
+                .collect();
+            serde_json::json!({ "kind": kind, "facts": facts })
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "[]".into())
+}
+
+/// Gate an LLM contradiction demotion (X5). Accept when confidence ≥ 0.85,
+/// `demote_id` belongs to a listed group, the target is within the demote age
+/// cap, is not the rule-chosen keeper (always leave ≥1 survivor), and is not
+/// a user-stated fact challenged by an inferred peer (user always wins).
+fn gate_contradiction_demote(
+    p: &ContradictionDemoteProposal,
+    allowed: &HashMap<String, &Fact>,
+    groups: &[ContradictionCandidate],
+) -> Option<String> {
+    let id = p.demote_id.trim();
+    if id.is_empty() || p.confidence < 0.85 {
+        return None;
+    }
+    let fact = *allowed.get(id)?;
+    let group = groups
+        .iter()
+        .find(|g| g.facts.iter().any(|f| f.id == fact.id))?;
+    if !fact_within_demote_age(fact, chrono::Utc::now()) {
+        return None;
+    }
+    if let Some((keeper, _)) = pick_contradiction_keeper(group.kind, &group.facts) {
+        if keeper.id == fact.id {
+            // Never wipe a whole group — keeper always survives.
+            return None;
+        }
+    }
+    if fact.source == "user"
+        && group
+            .facts
+            .iter()
+            .any(|f| f.id != fact.id && f.source != "user")
+    {
+        // User-stated beats inferred for every predicate (not only identity).
+        return None;
+    }
+    Some(fact.id.clone())
+}
+
 /// Gate an LLM merge proposal (M6). Accept when the static alias map already
 /// maps `from`→`to` (incl. case-only folds), or when confidence ≥ 0.85 and
 /// `to` is canonical while `from` is still free-form. Never rewrite identity
@@ -2111,6 +2337,122 @@ mod tests {
         let src = resolve_source_message(&msgs, 0).unwrap();
         assert_eq!(src.id, confirm.id);
         assert_eq!(resolve_source_message(&msgs, 1).unwrap().id, confirm.id);
+    }
+
+    fn fresh_fact(
+        id: &str,
+        predicate: &str,
+        object: &str,
+        source: &str,
+        confidence: f64,
+    ) -> Fact {
+        let now = chrono::Utc::now().to_rfc3339();
+        Fact {
+            id: id.into(),
+            subject: "user".into(),
+            predicate: predicate.into(),
+            object: object.into(),
+            source: source.into(),
+            confidence,
+            tags: vec![],
+            created_at: now.clone(),
+            mention_count: 0,
+            last_seen_at: Some(now),
+            source_ref: None,
+            durability: 1.0,
+        }
+    }
+
+    #[test]
+    fn gate_contradiction_demote_accepts_high_confidence_member() {
+        let keep = fresh_fact("fact-aaaa", "works_at", "Acme", "inferred", 0.9);
+        let drop = fresh_fact("fact-bbbb", "works_at", "Beta", "inferred", 0.85);
+        let groups = vec![ContradictionCandidate {
+            kind: ContradictionKind::SingleValued,
+            facts: vec![keep.clone(), drop.clone()],
+        }];
+        let allowed: HashMap<String, &Fact> = groups
+            .iter()
+            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .collect();
+        let ok = ContradictionDemoteProposal {
+            demote_id: drop.id.clone(),
+            confidence: 0.9,
+        };
+        assert_eq!(
+            gate_contradiction_demote(&ok, &allowed, &groups),
+            Some(drop.id.clone())
+        );
+        // Keeper must never be demoted (always leave ≥1 survivor).
+        let kill_keeper = ContradictionDemoteProposal {
+            demote_id: keep.id.clone(),
+            confidence: 1.0,
+        };
+        assert_eq!(
+            gate_contradiction_demote(&kill_keeper, &allowed, &groups),
+            None
+        );
+        let weak = ContradictionDemoteProposal {
+            demote_id: drop.id.clone(),
+            confidence: 0.5,
+        };
+        assert_eq!(gate_contradiction_demote(&weak, &allowed, &groups), None);
+        let unknown = ContradictionDemoteProposal {
+            demote_id: "fact-zzzz".into(),
+            confidence: 1.0,
+        };
+        assert_eq!(gate_contradiction_demote(&unknown, &allowed, &groups), None);
+    }
+
+    #[test]
+    fn gate_contradiction_demote_protects_user_over_inferred() {
+        let user_job = fresh_fact("fact-user", "works_at", "Acme", "user", 1.0);
+        let inferred = fresh_fact("fact-inf", "works_at", "Beta", "inferred", 0.9);
+        let groups = vec![ContradictionCandidate {
+            kind: ContradictionKind::SingleValued,
+            facts: vec![user_job.clone(), inferred.clone()],
+        }];
+        let allowed: HashMap<String, &Fact> = groups
+            .iter()
+            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .collect();
+        let attack = ContradictionDemoteProposal {
+            demote_id: user_job.id.clone(),
+            confidence: 1.0,
+        };
+        assert_eq!(gate_contradiction_demote(&attack, &allowed, &groups), None);
+        let ok = ContradictionDemoteProposal {
+            demote_id: inferred.id.clone(),
+            confidence: 0.9,
+        };
+        assert_eq!(
+            gate_contradiction_demote(&ok, &allowed, &groups),
+            Some(inferred.id.clone())
+        );
+    }
+
+    #[test]
+    fn gate_contradiction_demote_rejects_stale() {
+        let mut keep = fresh_fact("fact-aaaa", "works_at", "Acme", "inferred", 0.9);
+        let mut drop = fresh_fact("fact-bbbb", "works_at", "Beta", "inferred", 0.85);
+        let stale = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        keep.created_at = stale.clone();
+        keep.last_seen_at = Some(stale.clone());
+        drop.created_at = stale.clone();
+        drop.last_seen_at = Some(stale);
+        let groups = vec![ContradictionCandidate {
+            kind: ContradictionKind::SingleValued,
+            facts: vec![keep, drop.clone()],
+        }];
+        let allowed: HashMap<String, &Fact> = groups
+            .iter()
+            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
+            .collect();
+        let ok = ContradictionDemoteProposal {
+            demote_id: drop.id.clone(),
+            confidence: 1.0,
+        };
+        assert_eq!(gate_contradiction_demote(&ok, &allowed, &groups), None);
     }
 
     #[test]

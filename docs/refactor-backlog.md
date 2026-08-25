@@ -214,14 +214,17 @@ User/STT → AgentLayer (ingress/resume)
 - 「保险」把已压出窗口的整段 DB 历史再注入模型。
 - **说明**：应用 facts/episodes + 压缩摘要；灌回会撑爆上下文。
 
-#### X5. `source_ref` 矛盾引擎 `[可选]` · 原 memory §3.5 / L2
+#### X5. `source_ref` 矛盾引擎 `[完成归档·有界]` · 原 memory §3.5 / L2 · 2026-08-25
 
-- 在 snippet 展示与 upsert demote 之上，做自动矛盾检测/仲裁。
-- **依赖**：先有稳定引用与展示（已有）。
+- **落地**：维护期规则扫描极性（likes↔dislikes）与单值谓词多 object 冲突；`resolve_contradictions` 按 user>inferred / effective confidence / mention / recency 选 keeper，失败者 `confidence *= 0.5`，保留 SPO 与 provenance/`source_ref` 证据。残差组经 SmallModel 可选仲裁（`CONTRADICTION_ARBITRATE_SYSTEM_PROMPT` + gate：≥0.85、id 必须在组内、禁止 inferred 推翻 user identity）。挂在 `run_memory_maintenance`（规则在 flush 前；LLM 与 M6 并列）。
+- **门闩**：仅 demote `COALESCE(last_seen_at, created_at)` 在 `CONTRADICTION_DEMOTE_MAX_AGE_DAYS`(=2) 内的 loser，避免首启/6h 维护无界改写历史边；更旧冲突仍可进 `list_ambiguous_contradictions`。
+- **位置**：`memory::repositories::facts::{resolve_contradictions,list_ambiguous_contradictions,demote_fact_ids}` / `inference.rs` / `common::prompts::CONTRADICTION_ARBITRATE_SYSTEM_PROMPT`
 
-#### X6. 记忆独立 UI Tab `[可选·产品]` · 原 memory §3.5 / 项目约束
+#### X6. 记忆独立 UI Tab `[完成归档]` · 原 memory §3.5 / 产品 · 2026-08-25
 
-- 召回现为 prompt / 工具结果形态；独立 Tab 需改产品约束 `ui.agent_tool_display` 相关约定。
+- **落地**：顶栏「历史」→「记忆」中心（`MemoryView`）；子 Tab = 会话 / 事实 / 检索；`/?tab=memory`，`/history` 与 `?tab=history` 兼容重定向。
+- **约束澄清**：`ui.agent_tool_display.no_separate_tab` 仅约束 Agent 间沟通须显示为对话内工具卡；本页是用户侧记忆管理，不冲突。
+- **位置**：`ui/src/lib/views/MemoryView.svelte` / `+layout.svelte` / `routes/memory` + legacy `routes/history`
 
 #### X7. 并行启用「Steps so far」与 canonical `[完成归档·已删除]` · 原 memory §3.2-3 / §3.5
 
@@ -276,8 +279,8 @@ User/STT → AgentLayer (ingress/resume)
 | X2 | 完成 | Memory | resume 全量重建 system；G7→freeze-per-run |
 | X3 | 不推荐 | Resume | 内容比对去重 |
 | X4 | 不推荐 | Context | 出窗历史灌回 canonical |
-| X5 | 可选 | Memory | source_ref 矛盾引擎 |
-| X6 | 可选·产品 | UI | 记忆独立 Tab |
+| X5 | 完成 | Memory | source_ref 矛盾引擎 |
+| X6 | 完成 | UI | 历史→记忆中心（会话/事实/检索） |
 | X7 | 完成 | Prompt | 已删 Steps so far 死路径 |
 | X8 | 不推荐 | 栈 | TS / pi-agent-core |
 | X9 | 不推荐 | 持久化 | 去掉 snapshot/rollback |
@@ -286,7 +289,7 @@ User/STT → AgentLayer (ingress/resume)
 | X12 | 完成 | 跨切 | events 权威 + messages/steps 投影 |
 | X13 | 可选 | ReAct | BP/events 冷存储 |
 
-**计数**：待办 **0** · 可选 **5**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **16**（M1–M6、R1–R6、X1、X2、X7、X12）· 史诗计入可选。
+**计数**：待办 **0** · 可选 **1**（X13）· 不推荐 **6** · 完成归档本轮 **18**（M1–M6、R1–R6、X1、X2、X5、X6、X7、X12）· 史诗计入可选。
 
 ---
 
@@ -321,8 +324,8 @@ P3.1 X2 + G7 重订                                   ✅ 2026-08-24
 P4  史诗（单独立项）
     X12 DB↔events 统一（✓ 2026-08-24：统一 writer + 投影契约；blob→表仍属 X13）
     X1  记忆图谱/大表 ✅ 2026-08-24（nodes/edges/items + memory_fts；v9）
-    X5  矛盾引擎
-    X6  记忆 UI Tab
+    X5  矛盾引擎 ✅ 2026-08-25（维护期规则 demote + 可选 LLM 仲裁；保留 source_ref）
+    X6  记忆中心 ✅ 2026-08-25（历史→记忆；会话/事实/检索）
     X13 events 冷存储
 
 明确保持禁止（除非推翻 AGENTS.md / 安全模型）
@@ -358,6 +361,8 @@ P4  史诗（单独立项）
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-25 | **X5 有界完成**：矛盾 demote + LLM 仲裁；`CONTRADICTION_DEMOTE_MAX_AGE_DAYS=2` 避免无界历史改写 |
+| 2026-08-25 | **X6 完成**：顶栏历史→记忆中心（`MemoryView`：会话/事实/检索）；`/?tab=memory`；`/history` 兼容重定向 |
 | 2026-08-24 | **X1 完成**：typed memory graph — `memory_nodes` / `memory_edges` / `memory_items` + 统一 `memory_fts`；schema v9；去掉 message-as-episode 双源；公开 Fact/episode API 薄封装 |
 | 2026-08-24 | X12 落地：events 权威 + messages/steps 投影；`apply_transcript` 统一 writer；`TranscriptRecord::Reasoning`；文档/AGENTS 同步 |
 | 2026-08-24 | ReAct 热路径减负：heartbeat 不 await（per-session 合流）；`last_msg_at` 缓存（ingress 同步 + truncate 后清）；sanitize 健康快路径；thought step `run_blocking`；ToolDefCache `Arc`；去掉步头 `canonical.clone` |

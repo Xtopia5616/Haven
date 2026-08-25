@@ -24,6 +24,79 @@ pub struct Usage {
     pub cost: Option<f64>,
 }
 
+impl Usage {
+    /// Build a canonical usage row and fill omitted `total_tokens`.
+    pub fn from_counts(
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        model_name: Option<String>,
+    ) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            model_name,
+            cost: None,
+        }
+        .normalize()
+    }
+
+    /// Fill `total_tokens` when the provider omitted it. Inclusive providers
+    /// (OpenAI / Gemini / DeepSeek) report `total ≈ prompt + completion` with
+    /// cache hits already inside `prompt`. Exclusive providers (Anthropic)
+    /// report cache read/write beside `input_tokens`, so the filled total
+    /// adds those too when the cache cannot be a subset of prompt.
+    pub fn normalize(mut self) -> Self {
+        if self.total_tokens == 0 {
+            let extra = if self.cache_exclusive_of_prompt() {
+                self.cached_tokens
+                    .saturating_add(self.cache_creation_tokens)
+            } else {
+                0
+            };
+            self.total_tokens = self
+                .prompt_tokens
+                .saturating_add(self.completion_tokens)
+                .saturating_add(extra);
+        }
+        self
+    }
+
+    /// True when cache read/write tokens are counted outside `prompt_tokens`.
+    pub fn cache_exclusive_of_prompt(&self) -> bool {
+        let cache = self
+            .cached_tokens
+            .saturating_add(self.cache_creation_tokens);
+        if cache == 0 {
+            return false;
+        }
+        if self.total_tokens == 0 {
+            return self.cached_tokens > self.prompt_tokens;
+        }
+        let inclusive = self
+            .prompt_tokens
+            .saturating_add(self.completion_tokens);
+        let exclusive = inclusive.saturating_add(cache);
+        exclusive.abs_diff(self.total_tokens) <= inclusive.abs_diff(self.total_tokens)
+    }
+
+    /// Tokens occupying the model context window for this call.
+    pub fn context_tokens(&self) -> u32 {
+        if self.cache_exclusive_of_prompt() {
+            self.prompt_tokens
+                .saturating_add(self.cached_tokens)
+                .saturating_add(self.cache_creation_tokens)
+        } else {
+            self.prompt_tokens
+        }
+    }
+}
+
 /// Result of a live connectivity probe to a model endpoint. The top-right
 /// status chip maps these to 就绪 / 已断开 / 未配置.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -503,6 +576,29 @@ mod tests {
         assert_eq!(u.cache_creation_tokens, 0);
         assert!(u.model_name.is_none());
         assert!(u.cost.is_none());
+    }
+
+    #[test]
+    fn usage_normalize_fills_omitted_total_inclusive() {
+        let u = Usage::from_counts(100, 20, 0, 80, 0, None);
+        assert_eq!(u.total_tokens, 120);
+        assert!(!u.cache_exclusive_of_prompt());
+        assert_eq!(u.context_tokens(), 100);
+    }
+
+    #[test]
+    fn usage_normalize_fills_omitted_total_exclusive_cache() {
+        let u = Usage::from_counts(100, 20, 0, 400, 50, None);
+        assert_eq!(u.total_tokens, 570);
+        assert!(u.cache_exclusive_of_prompt());
+        assert_eq!(u.context_tokens(), 550);
+    }
+
+    #[test]
+    fn usage_normalize_keeps_provider_total() {
+        let u = Usage::from_counts(100, 20, 125, 80, 0, None);
+        assert_eq!(u.total_tokens, 125);
+        assert_eq!(u.context_tokens(), 100);
     }
 
     #[test]

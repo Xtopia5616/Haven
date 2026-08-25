@@ -12,6 +12,8 @@ describe('JsonView', () => {
 		expect(container.querySelector('.jv-num')!.textContent).toBe('42');
 		expect(container.querySelector('.jv-bool')!.textContent).toBe('true');
 		expect(container.querySelector('.jv-null')!.textContent).toBe('null');
+		expect(screen.getByText('对象 · 4')).toBeTruthy();
+		expect(container.querySelector('.jv-caret svg')).toBeTruthy();
 	});
 
 	it('renders nested containers collapsed beyond defaultDepth', () => {

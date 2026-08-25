@@ -1,9 +1,9 @@
 <script>
 	/**
-	 * @typedef {{ id: string; title?: string; input_text?: string; transcript?: string; status: string; created_at: string; [key: string]: any }} HistorySession
+	 * @typedef {{ id: string; title?: string; input_text?: string; transcript?: string; status: string; created_at: string; [key: string]: any }} MemorySession
 	 */
 
-	/** @type {HistorySession[]} */
+	/** @type {MemorySession[]} */
 	let sessions = $state([]);
 	let searchQuery = $state('');
 	/** @type {ReturnType<typeof setTimeout> | null} */
@@ -16,7 +16,7 @@
 	let totalCount = $state(0);
 	let loading = $state(false);
 	let hasMore = $state(true);
-	let loadHistorySeq = 0;
+	let loadSessionsSeq = 0;
 	let loadFactsSeq = 0;
 	const PAGE_SIZE = 50;
 
@@ -26,27 +26,32 @@
 	let showDateFilter = $state(false);
 
 	/** @type {string | null} */
-	let editingTitle = $state(null); // { sessionId, value }
+	let editingTitle = $state(null);
 	let renameValue = $state('');
 
-	// Right-click context menu on a history item (open / rename / export / delete)
-	/** @type {{ open: boolean; x: number; y: number; session: HistorySession | null }} */
+	// Right-click context menu on a session item (open / rename / export / delete)
+	/** @type {{ open: boolean; x: number; y: number; session: MemorySession | null }} */
 	let ctxMenu = $state({ open: false, x: 0, y: 0, session: null });
 
-	// Tabs: session history vs. memory recall vs. facts management.
+	// Memory center sub-tabs: sessions + long-term facts + semantic recall.
 	let activeTab = $state('sessions');
-	const historyTabs = [
+	const memoryTabs = [
 		{ id: 'sessions', label: '会话' },
-		{ id: 'memory', label: '记忆' },
 		{ id: 'facts', label: '事实' },
+		{ id: 'recall', label: '检索' },
 	];
 
-	// Memory recall (moved from Settings): search stored edges / items.
-	let memoryRecall = $state({ query: '', kind: 'fact', results: /** @type {any[]} */ ([]), loading: false });
+	// Semantic / keyword recall over edges (fact) and items (episode).
+	let memoryRecall = $state({
+		query: '',
+		kind: 'fact',
+		results: /** @type {any[]} */ ([]),
+		loading: false,
+		searched: false,
+	});
 
-	// Facts management (moved from Settings): every stored fact plus the
-	// manual-add form. Backed by list_facts / add_fact / delete_fact.
-	// Preferences are facts tagged `preference` (single memory channel).
+	// Facts = memory_edges SPO rows (thin Fact API). Preferences are facts
+	// tagged `preference` (single exclusive memory channel).
 	/** @type {any[]} */
 	let facts = $state([]);
 	let factsLoaded = $state(false);
@@ -57,8 +62,8 @@
 
 	const factSourceOptions = [
 		{ value: '', label: '全部来源' },
-		{ value: 'user', label: 'user' },
-		{ value: 'inferred', label: 'inferred' },
+		{ value: 'user', label: '手动' },
+		{ value: 'inferred', label: '推断' },
 	];
 
 	const todayISO = $derived.by(() => {
@@ -84,10 +89,10 @@
 	import ContextMenu from '$lib/ContextMenu.svelte';
 
 	const statusOptions = [
-		{ value: '', label: 'All' },
-		{ value: 'completed', label: 'Completed' },
-		{ value: 'paused', label: 'Paused' },
-		{ value: 'error', label: 'Error' },
+		{ value: '', label: '全部状态' },
+		{ value: 'completed', label: '已完成' },
+		{ value: 'paused', label: '已暂停' },
+		{ value: 'error', label: '错误' },
 	];
 
 	/** @type {{ dispose: () => void } | null} */
@@ -98,25 +103,25 @@
 	let reloadTimer = null;
 
 	onMount(async () => {
-		await loadHistory();
+		await loadSessions();
 		unlistenTitleUpdate = await registerOne('session:title-updated', (event) => {
 			const { session_id, title } = event.payload;
 			sessions = sessions.map(t => t.id === session_id ? { ...t, title } : t);
-		}, { tag: 'history' });
-		// The history view is keep-alive mounted: it never remounts when the
-		// user switches back to this tab, so new conversations (and session
+		}, { tag: 'memory' });
+		// Memory view is keep-alive mounted: it never remounts when the user
+		// switches back to this tab, so new conversations (and session
 		// lifecycle changes) must refresh the list via events, not onMount.
 		// Debounced: a chat turn can fire several session:updated in a row
 		// (pending → running → paused) — one reload suffices.
 		const scheduleReload = () => {
 			if (reloadTimer) clearTimeout(reloadTimer);
-			reloadTimer = setTimeout(loadHistory, 300);
+			reloadTimer = setTimeout(loadSessions, 300);
 		};
 		unlistenLifecycle = await Promise.all([
-			registerOne('session:created', scheduleReload, { tag: 'history' }),
-			registerOne('session:updated', scheduleReload, { tag: 'history' }),
-			registerOne('session:completed', scheduleReload, { tag: 'history' }),
-			registerOne('session:error', scheduleReload, { tag: 'history' }),
+			registerOne('session:created', scheduleReload, { tag: 'memory' }),
+			registerOne('session:updated', scheduleReload, { tag: 'memory' }),
+			registerOne('session:completed', scheduleReload, { tag: 'memory' }),
+			registerOne('session:error', scheduleReload, { tag: 'memory' }),
 		]);
 	});
 
@@ -150,35 +155,35 @@
 		};
 	}
 
-	async function loadHistory() {
-		const seq = ++loadHistorySeq;
+	async function loadSessions() {
+		const seq = ++loadSessionsSeq;
 		loading = true;
 		try {
 			const results = await invoke('search_history_filtered', filterParams({ limit: PAGE_SIZE, offset: 0 }));
-			// Stale response guard: a newer loadHistory call superseded this one.
-			if (seq !== loadHistorySeq) return;
+			// Stale response guard: a newer loadSessions call superseded this one.
+			if (seq !== loadSessionsSeq) return;
 			sessions = results || [];
 			totalCount = sessions.length;
 			offset = PAGE_SIZE;
 			hasMore = sessions.length >= PAGE_SIZE;
 		} catch {
-			if (seq !== loadHistorySeq) return;
+			if (seq !== loadSessionsSeq) return;
 			sessions = [];
 			totalCount = 0;
 			hasMore = false;
-			addNotification('加载历史记录失败', 'error', 3000);
+			addNotification('加载会话列表失败', 'error', 3000);
 		}
-		if (seq === loadHistorySeq) loading = false;
+		if (seq === loadSessionsSeq) loading = false;
 	}
 
 	async function loadMore() {
 		if (loading || !hasMore) return;
-		const seq = loadHistorySeq;
+		const seq = loadSessionsSeq;
 		loading = true;
 		try {
 			const more = await invoke('search_history_filtered', filterParams({ limit: PAGE_SIZE, offset }));
 			// Stale guard: a filter/search change superseded this page fetch.
-			if (seq !== loadHistorySeq) return;
+			if (seq !== loadSessionsSeq) return;
 			if (more && more.length > 0) {
 				sessions = [...sessions, ...more];
 				offset += more.length;
@@ -188,20 +193,20 @@
 				hasMore = false;
 			}
 		} catch {
-			if (seq !== loadHistorySeq) return;
+			if (seq !== loadSessionsSeq) return;
 			hasMore = false;
-			addNotification('加载更多历史记录失败', 'error', 3000);
+			addNotification('加载更多会话失败', 'error', 3000);
 		}
-		if (seq === loadHistorySeq) loading = false;
+		if (seq === loadSessionsSeq) loading = false;
 	}
 
 	async function handleSearchInput() {
 		if (searchTimer) clearTimeout(searchTimer);
-		searchTimer = setTimeout(loadHistory, 300);
+		searchTimer = setTimeout(loadSessions, 300);
 	}
 
 	function handleFilterChange() {
-		loadHistory();
+		loadSessions();
 	}
 
 	/**
@@ -237,7 +242,7 @@
 	}
 
 	/**
-	 * @param {HistorySession} session
+	 * @param {MemorySession} session
 	 */
 	async function resumeSession(session) {
 		try {
@@ -280,7 +285,7 @@
 		deleteTarget = null;
 	}
 
-	async function clearHistory() {
+	async function clearSessions() {
 		try {
 			const count = await invoke('clear_history');
 			sessions = [];
@@ -289,11 +294,11 @@
 			activeSessionIdStore.set(null);
 			// Wipe only per-session message lists: the un-sent draft (typed or
 			// transcribed text that was never submitted) belongs to no session
-			// and must survive a history wipe.
+			// and must survive a session wipe.
 			clearAllSessionMessages();
-			addNotification(`已清空 ${count} 条历史记录`, 'success', 3000);
+			addNotification(`已清空 ${count} 条会话`, 'success', 3000);
 		} catch {
-			addNotification('清空历史记录失败', 'error', 4000);
+			addNotification('清空会话失败', 'error', 4000);
 		}
 		showClearDialog = false;
 	}
@@ -331,17 +336,17 @@
 
 
 	/**
-	 * @param {HistorySession} session
+	 * @param {MemorySession} session
 	 */
 	function displayTitle(session) {
 		if (session.title) return session.title;
 		const text = session.input_text || '';
 		const m = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
-		return (m ? m[0].trim() : text.trim()) || 'Untitled';
+		return (m ? m[0].trim() : text.trim()) || '未命名会话';
 	}
 
 	/**
-	 * @param {HistorySession} session
+	 * @param {MemorySession} session
 	 */
 	function startEdit(session) {
 		editingTitle = session.id;
@@ -385,7 +390,7 @@
 	}
 
 	/**
-	 * @param {HistorySession[]} sessionsToExport
+	 * @param {MemorySession[]} sessionsToExport
 	 */
 	function downloadSessions(sessionsToExport) {
 		const json = JSON.stringify(
@@ -401,14 +406,14 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = `haven-history-${new Date().toISOString().slice(0, 10)}.json`;
+		a.download = `haven-sessions-${new Date().toISOString().slice(0, 10)}.json`;
 		a.click();
 		URL.revokeObjectURL(url);
 	}
 
 	/**
 	 * @param {MouseEvent} e
-	 * @param {HistorySession} session
+	 * @param {MemorySession} session
 	 */
 	function openCtxMenu(e, session) {
 		e.preventDefault();
@@ -437,25 +442,6 @@
 		cancelSelectMode();
 	}
 
-	async function exportHistory() {
-		try {
-			const json = await invoke('export_history', {
-				startDate: startDate || null,
-				endDate: endDate || null,
-				status: statusFilter || null,
-			});
-			const blob = new Blob([json], { type: 'application/json' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `haven-history-${new Date().toISOString().slice(0, 10)}.json`;
-			a.click();
-			URL.revokeObjectURL(url);
-		} catch (e) {
-			addNotification(`导出失败: ${formatError(e)}`, 'error', 4000);
-		}
-	}
-
 	async function loadFacts() {
 		const seq = ++loadFactsSeq;
 		const source = factSourceFilter || null;
@@ -468,7 +454,7 @@
 			if (seq !== loadFactsSeq) return;
 			facts = [];
 			factsLoaded = true;
-			logger.warn('history', 'load facts error');
+			logger.warn('memory', 'load facts error');
 		}
 	}
 
@@ -530,8 +516,10 @@
 				kind: memoryRecall.kind,
 				limit: 10,
 			})) || [];
+			memoryRecall.searched = true;
 		} catch (e) {
 			memoryRecall.results = [];
+			memoryRecall.searched = true;
 			addNotification(`记忆检索失败: ${formatError(e)}`, 'error', 4000);
 		} finally {
 			memoryRecall.loading = false;
@@ -539,11 +527,11 @@
 	}
 </script>
 
-<div class="history-page">
+<div class="memory-page">
 	<div class="header-row">
-		<h1>History</h1>
+		<h1>记忆</h1>
 		{#if activeTab === 'sessions'}
-			<span class="count-badge">Total {totalCount} shown</span>
+			<span class="count-badge">已显示 {totalCount} 条</span>
 			<div class="header-actions">
 				{#if selectMode}
 					<button
@@ -551,14 +539,14 @@
 						onclick={exportSelected}
 						disabled={selectedIds.size === 0}
 					>
-						Export Selected ({selectedIds.size})
+						导出选中（{selectedIds.size}）
 					</button>
-					<button class="md-btn md-btn--text" onclick={cancelSelectMode}>Cancel</button>
+					<button class="md-btn md-btn--text" onclick={cancelSelectMode}>取消</button>
 				{:else}
-					<button class="md-btn md-btn--outlined" onclick={enterSelectMode}>Export</button>
+					<button class="md-btn md-btn--outlined" onclick={enterSelectMode}>导出</button>
 					{#if sessions.length > 0}
 						<button class="md-btn md-btn--danger" onclick={() => (showClearDialog = true)}>
-							Clear All
+							清空会话
 						</button>
 					{/if}
 				{/if}
@@ -566,8 +554,8 @@
 		{/if}
 	</div>
 
-	<div class="md-tabs history-tabs" role="tablist">
-		{#each historyTabs as tab}
+	<div class="md-tabs memory-tabs" role="tablist">
+		{#each memoryTabs as tab}
 			<button
 				class="md-tab"
 				class:active={activeTab === tab.id}
@@ -585,7 +573,7 @@
 		<input
 			class="md-input"
 			type="text"
-			placeholder="Search"
+			placeholder="搜索会话"
 			bind:value={searchQuery}
 			oninput={handleSearchInput}
 			autocomplete="off"
@@ -598,9 +586,9 @@
 			/>
 			<button class="md-btn md-btn--outlined" onclick={() => (showDateFilter = true)}>
 				{#if startDate || endDate}
-					Date: {startDate ? startDate.replace(/-/g, '/') : '…'} ~ {endDate ? endDate.replace(/-/g, '/') : '…'}
+					日期：{startDate ? startDate.replace(/-/g, '/') : '…'} ~ {endDate ? endDate.replace(/-/g, '/') : '…'}
 				{:else}
-					Date Filter
+					日期筛选
 				{/if}
 			</button>
 		</div>
@@ -610,43 +598,43 @@
 		<div class="select-bar">
 			<button class="select-all-row" onclick={toggleSelectAll}>
 				<div class="md-checkbox-static" class:checked={selectedIds.size === sessions.length}></div>
-				<span>Select all ({sessions.length})</span>
+				<span>全选（{sessions.length}）</span>
 			</button>
 		</div>
 	{/if}
 
 	{#if sessions.length === 0}
-		<div class="empty-state">{loading ? 'Loading...' : 'No session history yet'}</div>
+		<div class="empty-state">{loading ? '加载中…' : '暂无会话'}</div>
 	{:else}
-		<div class="history-list">
+		<div class="session-list">
 			{#each sessions as session (session.id)}
 			{#if selectMode}
 				<button
-					class="history-item history-item-btn"
+					class="session-item session-item-btn"
 					class:selected={selectedIds.has(session.id)}
 					onclick={() => toggleSelect(session.id)}
 				>
-	<div class="history-item-main">
-		<div class="history-top-row">
+	<div class="session-item-main">
+		<div class="session-top-row">
 			<div class="select-checkbox">
 				<div class="md-checkbox-static" class:checked={selectedIds.has(session.id)}></div>
 			</div>
-			<div class="history-title-row">
-				<span class="history-title">{displayTitle(session)}</span>
+			<div class="session-title-row">
+				<span class="session-title">{displayTitle(session)}</span>
 				<MaterialBadge variant={statusVariant(session.status)} text={session.status} />
 			</div>
 		</div>
 		{#if session.transcript}
-			<div class="history-message">"{session.transcript}"</div>
+			<div class="session-message">"{session.transcript}"</div>
 		{/if}
-		<div class="history-meta">
+		<div class="session-meta">
 			<span class="meta-date">{formatMessageTime(session.created_at)}</span>
 		</div>
 	</div>
 				</button>
 	{:else}
 			<div
-				class="history-item"
+				class="session-item"
 				class:selected={selectedIds.has(session.id)}
 				role="button"
 				tabindex="0"
@@ -654,8 +642,8 @@
 				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), resumeSession(session))}
 				oncontextmenu={(e) => openCtxMenu(e, session)}
 			>
-				<div class="history-item-main">
-					<div class="history-title-row">
+				<div class="session-item-main">
+					<div class="session-title-row">
 						{#if editingTitle === session.id}
 							<!-- svelte-ignore a11y_autofocus -->
 							<input
@@ -670,7 +658,7 @@
 							/>
 						{:else}
 							<span
-								class="history-title"
+								class="session-title"
 								onclick={(e) => (e.stopPropagation(), startEdit(session))}
 								onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), startEdit(session))}
 								role="button"
@@ -685,15 +673,15 @@
 						<MaterialBadge variant={statusVariant(session.status)} text={session.status} />
 					</div>
 					{#if session.transcript}
-						<div class="history-message">"{session.transcript}"</div>
+						<div class="session-message">"{session.transcript}"</div>
 					{/if}
-					<div class="history-meta">
+					<div class="session-meta">
 						<span class="meta-date">{formatMessageTime(session.created_at)}</span>
 						<button
 							class="md-btn md-btn--xs md-btn--text delete-btn-meta"
 							onclick={(e) => (e.stopPropagation(), deleteTarget = session)}
 						>
-							Delete
+							删除
 						</button>
 					</div>
 				</div>
@@ -705,53 +693,15 @@
 		{#if hasMore}
 			<div class="load-more-row">
 				<button class="md-btn md-btn--outlined" onclick={loadMore} disabled={loading}>
-					{loading ? 'Loading...' : 'Load More'}
+					{loading ? '加载中…' : '加载更多'}
 				</button>
 			</div>
 		{/if}
 	{/if}
-	{:else if activeTab === 'memory'}
-		<div class="section">
-			<h2>记忆检索</h2>
-			<p class="model-hint">检索已存储的记忆（事实 / 历史对话）。配置了 Embedding Model 时使用语义检索，否则回退到关键词匹配。</p>
-			<input
-				id="memory-recall-query"
-				type="text"
-				class="md-input"
-				bind:value={memoryRecall.query}
-				placeholder="检索记忆内容（事实 / 对话），如：深色主题"
-				onkeydown={(e) => { if (e.key === 'Enter') runRecall(); }}
-				autocomplete="off"
-			/>
-			<div class="recall-actions">
-				<MaterialSelect
-					id="memory-recall-kind"
-					value={memoryRecall.kind}
-					options={[
-						{ value: 'fact', label: 'Facts' },
-						{ value: 'episode', label: 'Conversations' },
-					]}
-					onChange={handleRecallKindChange}
-				/>
-				<button class="md-btn md-btn--filled" onclick={runRecall} disabled={memoryRecall.loading}>
-					{memoryRecall.loading ? 'Searching…' : 'Search'}
-				</button>
-			</div>
-			{#if memoryRecall.results.length > 0}
-				<ul class="recall-results">
-					{#each memoryRecall.results as r (r.entity_id + r.text)}
-						<li>
-							<span class="recall-score">{(r.score ?? 0).toFixed(2)}</span>
-							<span class="recall-text">{r.text}</span>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		</div>
-	{:else}
+	{:else if activeTab === 'facts'}
 		<div class="section">
 			<div class="toolbar">
-				<h2>事实</h2>
+				<h2>长期事实</h2>
 				<div class="toolbar-actions">
 					<MaterialSelect
 						value={factSourceFilter}
@@ -760,7 +710,7 @@
 					/>
 				</div>
 			</div>
-			<p class="model-hint">Haven 记忆中的全部事实（身份、偏好、工作区等）。你可以手动添加、删除；agent 也会在你明确要求时用 memory 工具的 remember / forget 操作更新这里；检索可用 recall（fact / episode）。</p>
+			<p class="model-hint">跨会话长期记忆（身份、偏好、工作区等）。可手动添加/删除；Agent 也可通过 memory 工具的 remember / forget 更新。</p>
 			<input
 				type="text"
 				class="md-input"
@@ -784,7 +734,7 @@
 			/>
 			<div class="add-fact-actions">
 				<button class="md-btn md-btn--filled" onclick={addFact} disabled={addingFact}>
-					{addingFact ? 'Adding…' : 'Add Fact'}
+					{addingFact ? '添加中…' : '添加事实'}
 				</button>
 			</div>
 			{#if factsLoaded && facts.length > 0}
@@ -796,20 +746,60 @@
 							</span>
 							<span class="fact-value">
 								{#if fact.source === 'inferred'}
-									<span class="fact-tag fact-tag--inf">inferred</span>
+									<span class="fact-tag fact-tag--inf">推断</span>
 								{:else}
-									<span class="fact-tag fact-tag--user">user</span>
+									<span class="fact-tag fact-tag--user">手动</span>
 								{/if}
 								{fact.object}
 							</span>
-							<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deleteFact(fact.id)} title="Delete fact">
+							<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deleteFact(fact.id)} title="删除事实">
 								&times;
 							</button>
 						</div>
 					{/each}
 				</div>
 			{:else if factsLoaded}
-				<p class="model-hint">No facts recorded yet. They will appear here as you use Haven.</p>
+				<p class="model-hint">暂无事实。使用 Haven 后会自动抽取并显示在这里。</p>
+			{/if}
+		</div>
+	{:else}
+		<div class="section">
+			<h2>记忆检索</h2>
+			<p class="model-hint">检索已存储的事实边与情景条目。配置了 Embedding Model 时使用语义检索，否则回退到关键词匹配。</p>
+			<input
+				id="memory-recall-query"
+				type="text"
+				class="md-input"
+				bind:value={memoryRecall.query}
+				placeholder="检索内容，如：深色主题"
+				onkeydown={(e) => { if (e.key === 'Enter') runRecall(); }}
+				autocomplete="off"
+			/>
+			<div class="recall-actions">
+				<MaterialSelect
+					id="memory-recall-kind"
+					value={memoryRecall.kind}
+					options={[
+						{ value: 'fact', label: '事实' },
+						{ value: 'episode', label: '情景' },
+					]}
+					onChange={handleRecallKindChange}
+				/>
+				<button class="md-btn md-btn--filled" onclick={runRecall} disabled={memoryRecall.loading}>
+					{memoryRecall.loading ? '检索中…' : '检索'}
+				</button>
+			</div>
+			{#if memoryRecall.results.length > 0}
+				<ul class="recall-results">
+					{#each memoryRecall.results as r (r.entity_id + r.text)}
+						<li>
+							<span class="recall-score">{(r.score ?? 0).toFixed(2)}</span>
+							<span class="recall-text">{r.text}</span>
+						</li>
+					{/each}
+				</ul>
+			{:else if memoryRecall.searched && !memoryRecall.loading}
+				<p class="model-hint">无匹配结果。</p>
 			{/if}
 		</div>
 	{/if}
@@ -818,23 +808,23 @@
 <MaterialDialog
 	open={showDateFilter}
 	onClose={() => (showDateFilter = false)}
-	title="Date Filter"
+	title="日期筛选"
 >
 	{#snippet children()}
 		<div class="date-filter-dialog">
 			<div class="date-range-header">
-				<span class="date-range-label">Selected range</span>
+				<span class="date-range-label">已选范围</span>
 				<span class="date-range-value">
 					{#if startDate || endDate}
 						{startDate ? startDate.replace(/-/g, '/') : '…'} — {endDate ? endDate.replace(/-/g, '/') : '…'}
 					{:else}
-						All dates
+						全部日期
 					{/if}
 				</span>
 			</div>
 			<div class="date-input-row">
 				<div class="date-field">
-					<label class="date-filter-label" for="start-date">Start date</label>
+					<label class="date-filter-label" for="start-date">开始日期</label>
 					<MaterialDatePicker
 						id="start-date"
 						value={startDate}
@@ -843,7 +833,7 @@
 					/>
 				</div>
 				<div class="date-field">
-					<label class="date-filter-label" for="end-date">End date</label>
+					<label class="date-filter-label" for="end-date">结束日期</label>
 					<MaterialDatePicker
 						id="end-date"
 						value={endDate}
@@ -857,10 +847,10 @@
 	{/snippet}
 	{#snippet footer()}
 		<button class="md-btn md-btn--text" onclick={() => { startDate = ''; endDate = ''; handleFilterChange(); }}>
-			Clear
+			清除
 		</button>
 		<button class="md-btn md-btn--filled" onclick={() => (showDateFilter = false)}>
-			Done
+			完成
 		</button>
 	{/snippet}
 </MaterialDialog>
@@ -868,17 +858,17 @@
 <MaterialDialog
 	open={deleteTarget !== null}
 	onClose={() => (deleteTarget = null)}
-	title="Delete Session"
+	title="删除会话"
 >
 	{#snippet children()}
 		<p class="dialog-text">
-			Delete "{deleteTarget?.input_text || 'Untitled'}"? This action cannot be undone.
+			确定删除「{deleteTarget?.title || deleteTarget?.input_text || '未命名会话'}」？此操作不可撤销。
 		</p>
 	{/snippet}
 	{#snippet footer()}
-		<button class="md-btn md-btn--text" onclick={() => (deleteTarget = null)}>Cancel</button>
+		<button class="md-btn md-btn--text" onclick={() => (deleteTarget = null)}>取消</button>
 		<button class="md-btn md-btn--danger" onclick={() => { if (deleteTarget) deleteSession(deleteTarget.id); }}>
-			Delete
+			删除
 		</button>
 	{/snippet}
 </MaterialDialog>
@@ -886,16 +876,16 @@
 <MaterialDialog
 	open={showClearDialog}
 	onClose={() => (showClearDialog = false)}
-	title="Clear All History"
+	title="清空会话"
 >
 	{#snippet children()}
 		<p class="dialog-text">
-			This will permanently delete all session history. This action cannot be undone.
+			将永久删除全部会话记录（长期事实不受影响）。此操作不可撤销。
 		</p>
 	{/snippet}
 	{#snippet footer()}
-		<button class="md-btn md-btn--text" onclick={() => (showClearDialog = false)}>Cancel</button>
-		<button class="md-btn md-btn--danger" onclick={clearHistory}>Clear All</button>
+		<button class="md-btn md-btn--text" onclick={() => (showClearDialog = false)}>取消</button>
+		<button class="md-btn md-btn--danger" onclick={clearSessions}>清空全部</button>
 	{/snippet}
 </MaterialDialog>
 
@@ -908,7 +898,7 @@
 />
 
 <style>
-	.history-page {
+	.memory-page {
 		max-width: var(--md-sys-content-max-width);
 	}
 	.header-row {
@@ -1017,12 +1007,12 @@
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;
 	}
-	.history-list {
+	.session-list {
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
 	}
-	.history-item {
+	.session-item {
 		background: var(--md-sys-color-surface-container-lowest);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
@@ -1032,38 +1022,38 @@
 			background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 		outline: none;
 	}
-	.history-item:hover {
+	.session-item:hover {
 		background: var(--md-sys-color-surface-container);
 		border-color: var(--md-sys-color-outline);
 	}
-	.history-item:focus-visible {
+	.session-item:focus-visible {
 		border-color: var(--md-sys-color-primary);
 		box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 	}
-	.history-item.selected {
+	.session-item.selected {
 		background: var(--md-sys-color-primary-container);
 		border-color: var(--md-sys-color-primary);
 	}
-	.history-item-main {
+	.session-item-main {
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
 		cursor: pointer;
 	}
-	.history-top-row {
+	.session-top-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-md);
 	}
-	.history-title-row {
+	.session-title-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		flex: 1;
 		min-width: 0;
 	}
-	.history-title {
+	.session-title {
 		font-size: 14px;
 		font-weight: 600;
 		color: var(--md-sys-color-on-surface);
@@ -1077,7 +1067,7 @@
 		white-space: nowrap;
 		flex: 1;
 	}
-	.history-title:hover .title-edit-icon {
+	.session-title:hover .title-edit-icon {
 		opacity: 1;
 	}
 	.title-edit-icon {
@@ -1092,7 +1082,7 @@
 		padding: 2px 6px;
 		width: 280px;
 	}
-	.history-message {
+	.session-message {
 		font-size: 13px;
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
@@ -1102,7 +1092,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.history-meta {
+	.session-meta {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-md);
@@ -1117,13 +1107,13 @@
 	.delete-btn-meta {
 		margin-left: auto;
 	}
-.history-item-btn {
+	.session-item-btn {
 		width: 100%;
 		text-align: left;
 		font-family: inherit;
 		cursor: pointer;
 	}
-	.history-item-btn:focus-visible {
+	.session-item-btn:focus-visible {
 		outline: 2px solid var(--md-sys-color-primary);
 		outline-offset: -2px;
 	}
@@ -1174,7 +1164,7 @@
 		justify-content: center;
 		padding: var(--md-sys-space-lg) 0;
 	}
-	.history-tabs {
+	.memory-tabs {
 		margin-bottom: var(--md-sys-space-xl);
 	}
 	.section {

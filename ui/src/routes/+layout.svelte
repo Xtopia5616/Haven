@@ -20,7 +20,7 @@
 	import StatusDot from '$lib/StatusDot.svelte';
 	import NotificationToast from '$lib/NotificationToast.svelte';
 	import ToolsView from '$lib/views/ToolsView.svelte';
-	import HistoryView from '$lib/views/HistoryView.svelte';
+	import MemoryView from '$lib/views/MemoryView.svelte';
 	import SettingsView from '$lib/views/SettingsView.svelte';
 
 	let { children } = $props();
@@ -30,15 +30,17 @@
 	// instant and rapid tab clicks never tear down a view that is being
 	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
 	// also makes direct deep links (/tools etc.) restore the right tab.
-	const TAB_IDS = ['chat', 'tools', 'history', 'settings'];
+	// Legacy `history` / `/history` map to `memory` (X6 memory center).
+	const TAB_IDS = ['chat', 'tools', 'memory', 'settings'];
 	function initialTabFromUrl() {
 		if (typeof window === 'undefined') return 'chat';
 		const url = get(page).url;
 		const tabParam = url.searchParams.get('tab');
+		if (tabParam === 'history') return 'memory';
 		if (tabParam && TAB_IDS.includes(tabParam)) return tabParam;
 		const path = url.pathname;
 		if (path === '/tools') return 'tools';
-		if (path === '/history') return 'history';
+		if (path === '/memory' || path === '/history') return 'memory';
 		if (path === '/settings') return 'settings';
 		return 'chat';
 	}
@@ -50,7 +52,7 @@
 	let visited = $state({
 		chat: true,
 		tools: initialTab === 'tools',
-		history: initialTab === 'history',
+		memory: initialTab === 'memory',
 		settings: initialTab === 'settings',
 	});
 	// While a leave-settings confirm is in flight, ignore URL-driven tab
@@ -206,16 +208,18 @@
 		const url = $page.url;
 		const path = url.pathname;
 		if (path !== '/') {
-			// Legacy direct deep link (/tools, /history, /settings): normalize
-			// to the keep-alive URL scheme so the root route (chat) stays mounted.
+			// Legacy direct deep link (/tools, /memory|/history, /settings):
+			// normalize to the keep-alive URL scheme so the root route (chat)
+			// stays mounted. `/history` and `?tab=history` map to memory (X6).
 		const t =
 			path === '/tools' ? 'tools' :
-			path === '/history' ? 'history' :
+			path === '/memory' || path === '/history' ? 'memory' :
 			path === '/settings' ? 'settings' : 'chat';
 		goto('/?tab=' + t, { replaceState: true });
 			return;
 		}
-		const tabParam = url.searchParams.get('tab');
+		const rawTab = url.searchParams.get('tab');
+		const tabParam = rawTab === 'history' ? 'memory' : rawTab;
 		const t = TAB_IDS.includes(tabParam || '') ? tabParam || 'chat' : 'chat';
 		if (t === activeTab) {
 			visited[t] = true;
@@ -874,7 +878,7 @@
 	const tabs = [
 		{ id: 'chat', label: '对话' },
 		{ id: 'tools', label: '工具' },
-		{ id: 'history', label: '历史' },
+		{ id: 'memory', label: '记忆' },
 		{ id: 'settings', label: '设置' },
 	];
 </script>
@@ -1153,9 +1157,9 @@
 						<div class="page-shell">
 							<ToolsView />
 						</div>
-					{:else if tab.id === 'history'}
+					{:else if tab.id === 'memory'}
 						<div class="page-shell">
-							<HistoryView />
+							<MemoryView />
 						</div>
 					{:else if tab.id === 'settings'}
 						<div class="page-shell">

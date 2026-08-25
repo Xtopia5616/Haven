@@ -1,3 +1,2 @@
-<!-- Redirect stub: the history view lives in $lib/views/HistoryView.svelte and
-     is kept alive in +layout.svelte (tab keep-alive). Direct loads of /history
-     are normalized to /?tab=history by +layout.svelte. -->
+<!-- Legacy redirect stub: /history → memory tab (X6). Keep-alive view is
+     MemoryView; +layout.svelte normalizes this path to /?tab=memory. -->

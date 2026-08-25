@@ -203,7 +203,7 @@ Parent session                    Child session(s)
   config_loader / gateway / stt_client）。
 - `lib.rs`：`AgentEvent` → 前端 channel 映射（`TauriEmitter`）、`ShellHandler` /
   `InputHandler` 钩子接线、托盘 / 全局快捷键 / 单实例 / 通知 / 自启 / 日志初始化。
-- `commands/*`：全部 Tauri IPC 命令（recording / session / action / history / model / mcp /
+- `commands/*`：全部 Tauri IPC 命令（recording / session / action / history·memory / model / mcp /
   skills / memory / settings / log）。
 - `desktop.rs` / `events.rs` / `autostart.rs`。
 

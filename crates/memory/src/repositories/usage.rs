@@ -18,6 +18,41 @@ pub struct SessionUsage {
     pub has_cost: bool,
 }
 
+impl SessionUsage {
+    /// Providers sometimes omit `total_tokens`. Reconstruct it with the same
+    /// rule as `haven_llm::types::Usage::normalize`: inclusive
+    /// `prompt + completion`, plus exclusive cache when `cached > prompt`.
+    pub fn coalesce_total(&mut self) {
+        self.total_tokens = coalesced_total(
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.total_tokens,
+            self.cached_tokens,
+            self.cache_creation_tokens,
+        );
+    }
+}
+
+fn coalesced_total(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+    cached_tokens: u32,
+    cache_creation_tokens: u32,
+) -> u32 {
+    if total_tokens != 0 {
+        return total_tokens;
+    }
+    let extra = if cached_tokens > prompt_tokens {
+        cached_tokens.saturating_add(cache_creation_tokens)
+    } else {
+        0
+    };
+    prompt_tokens
+        .saturating_add(completion_tokens)
+        .saturating_add(extra)
+}
+
 impl Database {
     /// Load the persisted cumulative counters for a session, if any.
     pub fn get_session_usage(&self, session_id: &str) -> anyhow::Result<Option<SessionUsage>> {
@@ -39,7 +74,11 @@ impl Database {
             })
         })?;
         match rows.next() {
-            Some(row) => Ok(Some(row?)),
+            Some(row) => {
+                let mut usage = row?;
+                usage.coalesce_total();
+                Ok(Some(usage))
+            }
             None => Ok(None),
         }
     }
@@ -70,6 +109,18 @@ pub struct LlmCallUsage {
     /// Wall-clock duration of the LLM call in milliseconds.
     pub duration_ms: Option<u64>,
     pub created_at: String,
+}
+
+impl LlmCallUsage {
+    pub fn coalesce_total(&mut self) {
+        self.total_tokens = coalesced_total(
+            self.prompt_tokens,
+            self.completion_tokens,
+            self.total_tokens,
+            self.cached_tokens,
+            self.cache_creation_tokens,
+        );
+    }
 }
 
 impl Database {
@@ -251,6 +302,13 @@ impl Database {
         duration_ms: Option<u64>,
         created_at: &str,
     ) -> anyhow::Result<()> {
+        let total_tokens = coalesced_total(
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+        );
         conn.execute(
             "INSERT INTO llm_usage
                  (id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
@@ -292,7 +350,7 @@ impl Database {
         ) = conn.query_row(
             "SELECT COALESCE(SUM(prompt_tokens), 0),
                     COALESCE(SUM(completion_tokens), 0),
-                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(CASE WHEN total_tokens > 0 THEN total_tokens ELSE prompt_tokens + completion_tokens + CASE WHEN cached_tokens > prompt_tokens THEN cached_tokens + cache_creation_tokens ELSE 0 END END), 0),
                     COALESCE(SUM(cached_tokens), 0),
                     COALESCE(SUM(cache_creation_tokens), 0),
                     COALESCE(SUM(CASE WHEN has_cost != 0 THEN cost_usd ELSE 0 END), 0),
@@ -372,7 +430,9 @@ impl Database {
         })?;
         let mut usage = Vec::new();
         for row in rows {
-            usage.push(row?);
+            let mut rec = row?;
+            rec.coalesce_total();
+            usage.push(rec);
         }
         Ok(usage)
     }
@@ -630,6 +690,58 @@ mod tests {
         assert_eq!(u.cache_creation_tokens, 0);
         assert_eq!(u.cost_usd, 0.0);
         assert!(!u.has_cost);
+    }
+
+    #[test]
+    fn persist_coalesces_omitted_total_into_session_usage() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            "default_model",
+            None,
+            10,
+            5,
+            0,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 5);
+        assert_eq!(u.total_tokens, 15);
+        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        assert_eq!(calls[0].total_tokens, 15);
+    }
+
+    #[test]
+    fn persist_coalesces_exclusive_cache_into_omitted_total() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            "default_model",
+            None,
+            100,
+            20,
+            0,
+            400,
+            50,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(u.total_tokens, 570);
+        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        assert_eq!(calls[0].total_tokens, 570);
     }
 
     #[test]

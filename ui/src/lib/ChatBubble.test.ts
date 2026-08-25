@@ -167,12 +167,14 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = container.querySelector(
-			'details.reasoning-block',
-		) as HTMLDetailsElement;
-		expect(details).toBeTruthy();
-		expect(details.open).toBe(true);
-		expect(details.textContent).toContain('chain of thought');
+		const header = container.querySelector(
+			'.reasoning-block .md-collapsible-header',
+		) as HTMLButtonElement;
+		expect(header).toBeTruthy();
+		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(container.querySelector('.reasoning-block')?.textContent).toContain(
+			'chain of thought',
+		);
 	});
 
 	it('auto-collapses the reasoning block when streaming ends', async () => {
@@ -185,12 +187,12 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = container.querySelector(
-			'details.reasoning-block',
-		) as HTMLDetailsElement;
-		expect(details.open).toBe(true);
+		const header = container.querySelector(
+			'.reasoning-block .md-collapsible-header',
+		) as HTMLButtonElement;
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ streaming: false });
-		expect(details.open).toBe(false);
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('does not clobber a manual re-open after streaming ends', async () => {
@@ -203,17 +205,16 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = container.querySelector(
-			'details.reasoning-block',
-		) as HTMLDetailsElement;
+		const header = container.querySelector(
+			'.reasoning-block .md-collapsible-header',
+		) as HTMLButtonElement;
 		await rerender({ streaming: false });
-		expect(details.open).toBe(false);
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 
-		// User manually re-opens the block.
-		details.open = true;
-		// A content update without a streaming transition must not reset it.
+		await fireEvent.click(header);
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ content: 'second' });
-		expect(details.open).toBe(true);
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
 	it('renders a shell tool call with a terminal output card', () => {
@@ -244,7 +245,7 @@ describe('ChatBubble', () => {
 			}),
 		);
 		expect(screen.queryByText('▶ Calling shell')).toBeNull();
-		expect(document.querySelector('details.tool-card')).toBeTruthy();
+		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
@@ -280,9 +281,9 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
-		const details = container.querySelector('.tool-card') as HTMLDetailsElement;
-		expect(details).toBeTruthy();
-		expect(details.open).toBe(false);
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header).toBeTruthy();
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('expands a tool result card while streaming and auto-collapses after', async () => {
@@ -296,10 +297,10 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = container.querySelector('.tool-card') as HTMLDetailsElement;
-		expect(details.open).toBe(true);
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ streaming: false });
-		expect(details.open).toBe(false);
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('keeps a manual tool card expand across content-only re-renders', async () => {
@@ -312,11 +313,12 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
-		const details = container.querySelector('.tool-card') as HTMLDetailsElement;
-		expect(details.open).toBe(false);
-		details.open = true;
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header.getAttribute('aria-expanded')).toBe('false');
+		await fireEvent.click(header);
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ content: 'second output' });
-		expect(details.open).toBe(true);
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
 	it('renders a raw card for non-JSON text observations', () => {

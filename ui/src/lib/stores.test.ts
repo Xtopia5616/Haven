@@ -24,6 +24,7 @@ import {
 	restoreSessionTokenStats,
 	formatTokenCount,
 	formatCostUsd,
+	coalesceTokenTotal,
 	actionStore,
 	upsertAction,
 	removeAction,
@@ -538,6 +539,38 @@ describe('sessionTokenStatsStore', () => {
 	it('restoreSessionTokenStats no-ops without usage', () => {
 		restoreSessionTokenStats('t1', null as any);
 		expect(statsMap().t1).toBeUndefined();
+	});
+
+	it('restoreSessionTokenStats coalesces omitted total from prompt+completion', () => {
+		restoreSessionTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 0, cost_usd: 0.0, has_cost: false });
+		expect(statsMap().t1.cumulativeTotalTokens).toBe(150);
+	});
+
+	it('restoreSessionTokenStats coalesces exclusive cache into omitted total', () => {
+		restoreSessionTokenStats('t1', {
+			prompt_tokens: 100,
+			completion_tokens: 20,
+			total_tokens: 0,
+			cached_tokens: 400,
+			cache_creation_tokens: 50,
+			cost_usd: 0.0,
+			has_cost: false,
+		});
+		expect(statsMap().t1.cumulativeTotalTokens).toBe(570);
+	});
+});
+
+describe('token usage helpers', () => {
+	it('coalesceTokenTotal fills omitted total', () => {
+		expect(coalesceTokenTotal(10, 5, 0)).toBe(15);
+		expect(coalesceTokenTotal(10, 5, 20)).toBe(20);
+		expect(coalesceTokenTotal(0, 0, 0)).toBe(0);
+	});
+
+	it('coalesceTokenTotal adds exclusive cache when total is omitted', () => {
+		expect(coalesceTokenTotal(100, 20, 0, 400, 50)).toBe(570);
+		expect(coalesceTokenTotal(100, 20, 0, 80, 0)).toBe(120);
+		expect(coalesceTokenTotal(100, 20, 125, 80, 0)).toBe(125);
 	});
 });
 

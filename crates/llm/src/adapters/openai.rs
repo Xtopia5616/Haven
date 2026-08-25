@@ -173,8 +173,13 @@ struct OpenAiPromptTokensDetails {
 struct OpenAiUsage {
     #[serde(default)]
     prompt_tokens: u32,
+    /// Some OpenAI-compatible proxies emit Responses-style names on chat.
+    #[serde(default)]
+    input_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
     /// OpenAI / compatible: nested cache hit count.
@@ -183,13 +188,35 @@ struct OpenAiUsage {
     /// DeepSeek Chat Completions flat alias for cache hits.
     #[serde(default)]
     prompt_cache_hit_tokens: u32,
+    /// Kimi / Moonshot top-level cache hit count.
+    #[serde(default)]
+    cached_tokens: u32,
 }
 
 impl OpenAiUsage {
-    fn cached_tokens(&self) -> u32 {
+    fn prompt(&self) -> u32 {
+        self.prompt_tokens.max(self.input_tokens)
+    }
+
+    fn completion(&self) -> u32 {
+        self.completion_tokens.max(self.output_tokens)
+    }
+
+    fn cached(&self) -> u32 {
         super::resolve_cached_tokens(
             self.prompt_tokens_details.as_ref().map(|d| d.cached_tokens),
-            self.prompt_cache_hit_tokens,
+            self.prompt_cache_hit_tokens.max(self.cached_tokens),
+        )
+    }
+
+    fn to_usage(&self, model_name: Option<String>) -> Usage {
+        Usage::from_counts(
+            self.prompt(),
+            self.completion(),
+            self.total_tokens,
+            self.cached(),
+            0,
+            model_name,
         )
     }
 }
@@ -577,15 +604,7 @@ impl OpenAiAdapter {
 
         let usage = json
             .usage
-            .map(|u| Usage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
-                cached_tokens: u.cached_tokens(),
-                cache_creation_tokens: 0,
-                model_name: model.clone(),
-                cost: None,
-            })
+            .map(|u| u.to_usage(model.clone()))
             .unwrap_or_default();
 
         let response = LlmResponse {
@@ -885,15 +904,7 @@ impl OpenAiAdapter {
                             state.last_model = Some(model.clone());
                         }
                         if let Some(u) = resp.usage {
-                            state.usage = Some(Usage {
-                                prompt_tokens: u.prompt_tokens,
-                                completion_tokens: u.completion_tokens,
-                                total_tokens: u.total_tokens,
-                                cached_tokens: u.cached_tokens(),
-                                cache_creation_tokens: 0,
-                                model_name: state.last_model.clone(),
-                                cost: None,
-                            });
+                            state.usage = Some(u.to_usage(state.last_model.clone()));
                         }
                         if !resp.citations.is_empty() {
                             crate::adapters::upsert_web_search_call(
@@ -2004,24 +2015,41 @@ mod tests {
         let json = r#"{"id":"c1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},"model":"gpt-5"}"#;
         let resp: OpenAiStreamResponse = serde_json::from_str(json).unwrap();
         let usage = resp.usage.expect("final chunk must carry usage");
-        assert_eq!(usage.prompt_tokens, 10);
-        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.prompt(), 10);
+        assert_eq!(usage.completion(), 5);
         assert_eq!(usage.total_tokens, 15);
-        assert_eq!(usage.cached_tokens(), 0);
+        assert_eq!(usage.cached(), 0);
     }
 
     #[test]
     fn usage_parses_prompt_tokens_details_cached_tokens() {
         let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":80}}"#;
         let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
-        assert_eq!(usage.cached_tokens(), 80);
+        assert_eq!(usage.cached(), 80);
     }
 
     #[test]
     fn usage_parses_deepseek_prompt_cache_hit_tokens() {
         let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":70}"#;
         let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
-        assert_eq!(usage.cached_tokens(), 70);
+        assert_eq!(usage.cached(), 70);
+    }
+
+    #[test]
+    fn usage_parses_kimi_top_level_cached_tokens() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"cached_tokens":60}"#;
+        let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.cached(), 60);
+    }
+
+    #[test]
+    fn usage_parses_input_output_token_aliases() {
+        let json = r#"{"input_tokens":40,"output_tokens":8}"#;
+        let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
+        let canon = usage.to_usage(None);
+        assert_eq!(canon.prompt_tokens, 40);
+        assert_eq!(canon.completion_tokens, 8);
+        assert_eq!(canon.total_tokens, 48);
     }
 
     #[test]

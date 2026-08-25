@@ -1,10 +1,13 @@
 <script>
+	import { tick } from 'svelte';
 	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification, recordingOverlay, imageDataUrl } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';
+	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { copyText } from '$lib/clipboard.ts';
 
 	let {
 		activeSessionId = null,
@@ -14,10 +17,10 @@
 		// When true, Enter may submit even with an empty draft (e.g. ask option
 		// chips are selected and the page will compose the answer).
 		allowEmptySubmit = false,
-		onsubmit,
-		onstop,
-		toolbarLeft,
-		toolbarRight,
+		onsubmit = undefined,
+		onstop = undefined,
+		toolbarLeft = undefined,
+		toolbarRight = undefined,
 		// Attachment & compression limits, driven by the settings "媒体"
 		// page via [context_limits]; defaults mirror the backend config.
 		maxImages = 4,
@@ -358,6 +361,117 @@
 		transcriptTextarea;
 		if (browser) autoGrowInput();
 	});
+
+	let ctxMenu = $state({ open: false, x: 0, y: 0, selStart: 0, selEnd: 0, selText: '' });
+
+	function closeCtxMenu() {
+		ctxMenu = { open: false, x: 0, y: 0, selStart: 0, selEnd: 0, selText: '' };
+	}
+
+	function selectedRange() {
+		const el = transcriptTextarea;
+		if (!el) return { start: 0, end: 0, text: '' };
+		const start = el.selectionStart ?? 0;
+		const end = el.selectionEnd ?? 0;
+		return { start, end, text: transcriptInput.slice(start, end) };
+	}
+
+	/** @param {string} next @param {number} caret */
+	function setDraftAndCaret(next, caret) {
+		transcriptInput = next;
+		tick().then(() => {
+			const el = transcriptTextarea;
+			if (!el) return;
+			el.focus();
+			el.setSelectionRange(caret, caret);
+		});
+	}
+
+	/** @param {MouseEvent} e */
+	function handleContextMenu(e) {
+		e.preventDefault();
+		e.stopPropagation();
+		const { start, end, text } = selectedRange();
+		ctxMenu = {
+			open: true,
+			x: e.clientX,
+			y: e.clientY,
+			selStart: start,
+			selEnd: end,
+			selText: text,
+		};
+	}
+
+	async function handleCtxCopy() {
+		const selected = ctxMenu.selText;
+		await copyText(selected || transcriptInput, selected ? '选中' : '输入');
+	}
+
+	async function handleCtxCut() {
+		const { selText, selStart, selEnd } = ctxMenu;
+		if (!selText) return;
+		const ok = await copyText(selText, '选中');
+		if (!ok) return;
+		setDraftAndCaret(transcriptInput.slice(0, selStart) + transcriptInput.slice(selEnd), selStart);
+	}
+
+	async function handleCtxPaste() {
+		const start = ctxMenu.selStart;
+		const end = ctxMenu.selEnd;
+		try {
+			const text = await navigator.clipboard.readText();
+			setDraftAndCaret(
+				transcriptInput.slice(0, start) + (text ?? '') + transcriptInput.slice(end),
+				start + (text ?? '').length,
+			);
+		} catch {
+			addNotification('粘贴失败', 'error', 2000);
+		}
+	}
+
+	function handleCtxSelectAll() {
+		const el = transcriptTextarea;
+		if (!el) return;
+		el.focus();
+		el.setSelectionRange(0, transcriptInput.length);
+	}
+
+	function handleCtxClear() {
+		transcriptInput = '';
+		tick().then(() => transcriptTextarea?.focus());
+	}
+
+	let ctxMenuItems = $derived.by(() => {
+		const hasSel = ctxMenu.selText.length > 0;
+		const hasText = transcriptInput.length > 0;
+		return [
+			{ id: 'cut', label: '剪切', icon: 'cut', disabled: !hasSel, action: handleCtxCut },
+			{
+				id: 'copy',
+				label: hasSel ? '复制选中' : '复制',
+				icon: 'copy',
+				disabled: !hasText,
+				action: handleCtxCopy,
+			},
+			{ id: 'paste', label: '粘贴', icon: 'paste', action: handleCtxPaste },
+			{ id: 'sep', separator: true },
+			{
+				id: 'selectAll',
+				label: '全选',
+				icon: 'selectAll',
+				disabled: !hasText,
+				action: handleCtxSelectAll,
+			},
+			{
+				id: 'clear',
+				label: '清空',
+				icon: 'delete',
+				danger: true,
+				disabled: !hasText,
+				action: handleCtxClear,
+			},
+		];
+	});
 </script>
 
 <div class="input-area">
@@ -420,6 +534,7 @@
 			bind:value={transcriptInput}
 			onkeydown={handleKeydown}
 			onpaste={handlePaste}
+			oncontextmenu={handleContextMenu}
 			class="md-input chat-input"
 			autocomplete="off"
 		></textarea>
@@ -549,6 +664,14 @@
 		</div>
 	</div>
 </div>
+
+<ContextMenu
+	open={ctxMenu.open}
+	x={ctxMenu.x}
+	y={ctxMenu.y}
+	items={ctxMenuItems}
+	onClose={closeCtxMenu}
+/>
 
 <style>
 	.input-area {

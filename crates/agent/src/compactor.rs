@@ -174,8 +174,44 @@ impl ContextCompactor {
         desired
     }
 
-    /// Compress the message list: take the oldest half (up to `max_summary_messages`)
-    /// and replace them with a DefaultModel-generated summary.
+    /// Keep the earliest non-system messages so provider message-prefix cache
+    /// can survive compaction. Summarize the **middle**, not the head.
+    const STICKY_PREFIX_MESSAGES: usize = 2;
+
+    /// Choose `[start, end)` of the middle region to summarize.
+    ///
+    /// Layout: `[system*][sticky…][middle…)[suffix…]`. Sticky is a small
+    /// head of the conversation (prompt-cache friendly); middle is ~half the
+    /// compactable turns; suffix is the recent tail.
+    fn compaction_range(messages: &[CanonicalMessage]) -> Option<(usize, usize, usize)> {
+        let system_count = messages
+            .iter()
+            .take_while(|m| matches!(m.role, haven_common::types::CanonicalRole::System))
+            .count();
+
+        let compactable = messages.len() - system_count;
+        if compactable < 3 {
+            return None;
+        }
+
+        // Cap sticky so short sessions still have a middle to compress.
+        let sticky_target = Self::STICKY_PREFIX_MESSAGES.min(compactable / 4);
+        let start_idx = Self::safe_end_idx(messages, system_count + sticky_target);
+
+        let summarize_count = (compactable / 2).max(2);
+        let desired_end = (start_idx + summarize_count).min(messages.len().saturating_sub(1));
+        let end_idx = Self::safe_end_idx(messages, desired_end);
+
+        // Need a non-empty middle and at least one suffix message.
+        if end_idx <= start_idx || end_idx >= messages.len() || end_idx - start_idx < 2 {
+            return None;
+        }
+
+        Some((system_count, start_idx, end_idx))
+    }
+
+    /// Compress the message list: keep a sticky early prefix, summarize the
+    /// middle half, and retain the recent suffix (prompt-cache aware).
     ///
     /// Returns `None` when compaction fails (e.g. LLM call fails) or there's nothing
     /// to compact (fewer than 4 messages).
@@ -189,25 +225,14 @@ impl ContextCompactor {
             return None;
         }
 
-        // Compact roughly the oldest half (but keep the system prompt if present)
-        let system_count = messages
-            .iter()
-            .take_while(|m| matches!(m.role, haven_common::types::CanonicalRole::System))
-            .count();
-
-        let compactable = messages.len() - system_count;
-        if compactable < 3 {
-            return None;
-        }
-
-        let summarize_count = (compactable / 2).max(2);
-        let end_idx = Self::safe_end_idx(messages, system_count + summarize_count);
-        let prefix = &messages[..end_idx];
+        let (system_count, start_idx, end_idx) = Self::compaction_range(messages)?;
+        let middle = &messages[start_idx..end_idx];
         let suffix = &messages[end_idx..];
+        let summarized_count = end_idx - start_idx;
 
         let tokens_before = estimate_message_tokens(messages);
 
-        let prompt = Self::build_summary_prompt(prefix);
+        let prompt = Self::build_summary_prompt(middle);
 
         match router
             .chat_with_prompt(EndpointRole::DefaultModel, "", &prompt)
@@ -221,8 +246,9 @@ impl ContextCompactor {
 
                 let episode_id = haven_common::types::new_id("msg");
                 let mut compacted: Vec<CanonicalMessage> =
-                    Vec::with_capacity(system_count + 1 + suffix.len());
+                    Vec::with_capacity(system_count + (start_idx - system_count) + 1 + suffix.len());
                 compacted.extend_from_slice(&messages[..system_count]);
+                compacted.extend_from_slice(&messages[system_count..start_idx]);
                 let mut summary_msg = CanonicalMessage::assistant(
                     vec![ContentPart::text(format!(
                         "{} {}",
@@ -244,7 +270,7 @@ impl ContextCompactor {
 
                 Some(CompactionResult {
                     compacted,
-                    summarized_count: summarize_count,
+                    summarized_count,
                     summary,
                     tokens_before,
                     tokens_after,
@@ -460,5 +486,36 @@ mod tests {
         assert_eq!(ContextCompactor::safe_end_idx(&with_calls, 2), 4);
         // Desired index 4 (User) -> safe as-is.
         assert_eq!(ContextCompactor::safe_end_idx(&with_calls, 4), 4);
+    }
+
+    #[test]
+    fn compaction_range_keeps_sticky_prefix_and_suffix() {
+        // system + 8 user turns: sticky keeps earliest turns, middle is summarized.
+        let mut msgs = vec![make_msg(CanonicalRole::System, "sys")];
+        for i in 0..8 {
+            msgs.push(make_msg(CanonicalRole::User, &format!("u{i}")));
+        }
+        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
+        assert_eq!(system_count, 1);
+        assert!(start > system_count, "sticky prefix must be kept");
+        assert!(end < msgs.len(), "recent suffix must remain");
+        assert!(end - start >= 2, "middle must be worth summarizing");
+        // Sticky target = min(2, 8/4)=2 → start at index 3 (after sys + u0 + u1).
+        assert_eq!(start, 3);
+    }
+
+    #[test]
+    fn compaction_range_no_sticky_on_short_sessions() {
+        let msgs = vec![
+            make_msg(CanonicalRole::System, "sys"),
+            make_msg(CanonicalRole::User, "a"),
+            make_msg(CanonicalRole::Assistant, "b"),
+            make_msg(CanonicalRole::User, "c"),
+        ];
+        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
+        assert_eq!(system_count, 1);
+        // compactable=3 → sticky=min(2,0)=0 → summarize from first non-system.
+        assert_eq!(start, 1);
+        assert!(end < msgs.len());
     }
 }

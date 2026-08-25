@@ -36,8 +36,9 @@ struct AnthropicRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
+    /// Plain string or array of `{type:text, text, cache_control?}` blocks.
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Value>,
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
@@ -514,6 +515,50 @@ impl AnthropicAdapter {
             .collect()
     }
 
+    /// Mark the last tool with an ephemeral cache breakpoint so the whole
+    /// tools prefix can be reused across steps (Anthropic prompt caching).
+    fn apply_tools_cache_breakpoint(tools: &mut [Value]) {
+        if let Some(last) = tools.last_mut()
+            && let Some(obj) = last.as_object_mut()
+        {
+            obj.insert("cache_control".into(), json!({"type": "ephemeral"}));
+        }
+    }
+
+    /// Split system text at the MEMORY fence: stable prefix gets
+    /// `cache_control`, volatile MEMORY suffix does not. When there is no
+    /// fence the entire system block is marked cacheable.
+    fn system_with_cache_control(system: Option<String>) -> Option<Value> {
+        let text = system.filter(|s| !s.is_empty())?;
+        let fence = haven_common::prompts::MEMORY_FENCE_START;
+        if let Some(idx) = text.find(fence) {
+            let stable = &text[..idx];
+            let volatile = &text[idx..];
+            if stable.is_empty() {
+                return Some(json!([{
+                    "type": "text",
+                    "text": volatile,
+                }]));
+            }
+            return Some(json!([
+                {
+                    "type": "text",
+                    "text": stable,
+                    "cache_control": {"type": "ephemeral"}
+                },
+                {
+                    "type": "text",
+                    "text": volatile
+                }
+            ]));
+        }
+        Some(json!([{
+            "type": "text",
+            "text": text,
+            "cache_control": {"type": "ephemeral"}
+        }]))
+    }
+
     fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
@@ -564,11 +609,14 @@ impl AnthropicAdapter {
                 }
             }
         };
+        if !tools_json.is_empty() {
+            Self::apply_tools_cache_breakpoint(&mut tools_json);
+        }
         AnthropicRequest {
             model: self.endpoint.model_name.clone(),
             max_tokens: self.endpoint.max_tokens,
             messages,
-            system,
+            system: Self::system_with_cache_control(system),
             temperature: Some(self.endpoint.temperature),
             top_p: self.endpoint.top_p,
             top_k: self.endpoint.top_k,
@@ -679,18 +727,18 @@ impl AnthropicAdapter {
         }
         let usage = json
             .usage
-            .map(|u| Usage {
-                prompt_tokens: u.input_tokens,
-                completion_tokens: u.output_tokens,
-                // Anthropic reports cache read/write separately from input_tokens.
-                total_tokens: u.input_tokens
-                    + u.cache_read_input_tokens
-                    + u.cache_creation_input_tokens
-                    + u.output_tokens,
-                cached_tokens: u.cache_read_input_tokens,
-                cache_creation_tokens: u.cache_creation_input_tokens,
-                model_name: model.clone(),
-                cost: None,
+            .map(|u| {
+                Usage::from_counts(
+                    u.input_tokens,
+                    u.output_tokens,
+                    u.input_tokens
+                        .saturating_add(u.cache_read_input_tokens)
+                        .saturating_add(u.cache_creation_input_tokens)
+                        .saturating_add(u.output_tokens),
+                    u.cache_read_input_tokens,
+                    u.cache_creation_input_tokens,
+                    model.clone(),
+                )
             })
             .unwrap_or_default();
         Ok(LlmResponse {
@@ -900,18 +948,17 @@ impl AnthropicAdapter {
                             state.last_model = Some(m.clone());
                         }
                         if let Some(u) = message.usage {
-                            state.usage = Some(Usage {
-                                prompt_tokens: u.input_tokens,
-                                completion_tokens: u.output_tokens,
-                                total_tokens: u.input_tokens
-                                    + u.cache_read_input_tokens
-                                    + u.cache_creation_input_tokens
-                                    + u.output_tokens,
-                                cached_tokens: u.cache_read_input_tokens,
-                                cache_creation_tokens: u.cache_creation_input_tokens,
-                                model_name: state.last_model.clone(),
-                                cost: None,
-                            });
+                            state.usage = Some(Usage::from_counts(
+                                u.input_tokens,
+                                u.output_tokens,
+                                u.input_tokens
+                                    .saturating_add(u.cache_read_input_tokens)
+                                    .saturating_add(u.cache_creation_input_tokens)
+                                    .saturating_add(u.output_tokens),
+                                u.cache_read_input_tokens,
+                                u.cache_creation_input_tokens,
+                                state.last_model.clone(),
+                            ));
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
@@ -1799,7 +1846,32 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "search");
         assert_eq!(tools[0]["input_schema"]["type"], "object");
+        assert_eq!(
+            tools[0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "last tool should carry a prompt-cache breakpoint"
+        );
         assert_eq!(body.tool_choice, Some(json!({"type": "auto"})));
+    }
+
+    #[test]
+    fn system_with_cache_control_splits_memory_fence() {
+        let fence = haven_common::prompts::MEMORY_FENCE_START;
+        let full = format!("stable guidelines{fence}volatile facts");
+        let blocks = AnthropicAdapter::system_with_cache_control(Some(full)).unwrap();
+        let arr = blocks.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["text"], "stable guidelines");
+        assert_eq!(arr[0]["cache_control"], json!({"type": "ephemeral"}));
+        assert_eq!(arr[1]["text"], format!("{fence}volatile facts"));
+        assert!(arr[1].get("cache_control").is_none());
+
+        let no_fence =
+            AnthropicAdapter::system_with_cache_control(Some("all stable".into())).unwrap();
+        let one = no_fence.as_array().unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0]["cache_control"], json!({"type": "ephemeral"}));
+        assert!(AnthropicAdapter::system_with_cache_control(None).is_none());
     }
 
     #[test]
@@ -1910,6 +1982,7 @@ mod tests {
         assert_eq!(resp.usage.cached_tokens, 400);
         assert_eq!(resp.usage.cache_creation_tokens, 50);
         assert_eq!(resp.usage.total_tokens, 555);
+        assert_eq!(resp.usage.context_tokens(), 550);
     }
 
     #[test]

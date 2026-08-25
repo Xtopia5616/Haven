@@ -4,31 +4,6 @@
 	// share the same cards with a unified look. JSON without a dedicated
 	// renderer falls through to the generic JsonView tree below.
 
-	/** @type {Record<string, string>} */
-	const LABELS = {
-		search: '文件搜索',
-		file_search: '文件搜索',
-		process: '进程列表',
-		window: '窗口列表',
-		actions: '后台任务',
-		schedule: '定时任务',
-		file: '文件操作',
-		files: '文件与搜索',
-		http: 'HTTP 请求',
-		clipboard: '剪贴板',
-		system: '系统',
-		shell: '终端输出',
-		notify: '通知',
-		audio: '音频',
-		input: '输入操作',
-		haven: 'Haven 自身',
-		memory: '记忆',
-		load_mcp: '加载 MCP',
-		load_skill: '加载技能',
-		web_search: '联网搜索',
-		agent: 'Agent 协作',
-	};
-
 	/** @param {unknown} v */
 	function isObj(v) {
 		return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -219,9 +194,16 @@
 	import { untrack } from 'svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
+	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import { actionStore, formatTokenCount, toolOutputPreviewStore } from '$lib/stores.ts';
+	import {
+		classifyToolSource,
+		parseToolArgs,
+		toolDisplayName,
+		toolSourceLabel,
+	} from '$lib/toolIdentity.ts';
 
 	let {
 		type = 'tool',
@@ -237,7 +219,13 @@
 		streaming = false,
 		actionId = null,
 		usage = null,
+		toolArgs = null,
 	} = $props();
+
+	let toolSource = $derived(classifyToolSource(toolName));
+	let sourceBadge = $derived(toolSourceLabel(toolSource));
+	let displayName = $derived(toolDisplayName(toolName));
+	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
 	// chat input submits (page composes selected options + any typed text).
@@ -449,27 +437,93 @@
 		}
 	}
 
-	// Right-click context menu: copy the raw observation text.
-	let ctxMenu = $state({ open: false, x: 0, y: 0 });
+	// Right-click: copy the visible observation (or the current selection),
+	// matching the chat-bubble menu. Live shell output uses displayContent
+	// rather than the still-empty message `content`.
+	let copyableOutput = $derived.by(() => {
+		if (type === 'ask') return typeof content === 'string' ? content : '';
+		if (kind === 'shell') return shellText || '';
+		if (kind === 'raw') return rawText || '';
+		if (kind === 'notify') {
+			return [notifyParts.title, notifyParts.body].filter(Boolean).join('\n') || content || '';
+		}
+		if (parsed?.data != null) {
+			try {
+				return JSON.stringify(parsed.data, null, 2);
+			} catch {
+				return displayContent || content || '';
+			}
+		}
+		return displayContent || content || '';
+	});
+	let ctxMenu = $state({ open: false, x: 0, y: 0, selected: '' });
 
-	/** @param {MouseEvent} e */
+	/** @param {any} e */
 	function handleContextMenu(e) {
 		e.preventDefault();
 		e.stopPropagation();
-		ctxMenu = { open: true, x: e.clientX, y: e.clientY };
+		let selected = '';
+		const selection = window.getSelection();
+		if (selection && !selection.isCollapsed && selection.toString().trim()) {
+			const el = e.currentTarget;
+			if (el && el.contains(selection.anchorNode) && el.contains(selection.focusNode)) {
+				selected = selection.toString().trim();
+			}
+		}
+		ctxMenu = { open: true, x: e.clientX, y: e.clientY, selected };
 	}
 
 	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0 };
+		ctxMenu = { open: false, x: 0, y: 0, selected: '' };
 	}
 
-	let ctxMenuItems = $derived([
-		{ id: 'copy', label: '复制内容', icon: 'copy', action: () => copyText(content, '内容') },
-	]);
+	let ctxMenuItems = $derived.by(() => {
+		const selected = ctxMenu.selected;
+		const copyAllLabel = type === 'ask' ? '复制问题' : '复制输出';
+		/** @type {any[]} */
+		const items = [];
+		if (selected) {
+			items.push({
+				id: 'copySel',
+				label: '复制选中',
+				icon: 'copy',
+				action: () => copyText(selected, '选中'),
+			});
+		}
+		items.push({
+			id: 'copy',
+			label: selected ? '复制全部' : copyAllLabel,
+			icon: 'copy',
+			action: () => copyText(copyableOutput, type === 'ask' ? '问题' : '输出'),
+		});
+		if (type !== 'ask' && hasToolArgs) {
+			items.push({
+				id: 'copyArgs',
+				label: '复制参数',
+				icon: 'copy',
+				action: () => {
+					const parsed = parseToolArgs(toolArgs);
+					if (parsed == null) return;
+					const text =
+						typeof toolArgs === 'string'
+							? toolArgs
+							: (() => {
+									try {
+										return JSON.stringify(parsed, null, 2);
+									} catch {
+										return String(parsed);
+									}
+								})();
+					copyText(text, '参数');
+				},
+			});
+		}
+		return items;
+	});
 </script>
 
 {#if type === 'ask'}
-	<div class="tool-card" role="status">
+	<div class="tool-card" role="status" oncontextmenu={handleContextMenu}>
 		<div class="tool-card-header">
 			<span class="tool-card-icon" aria-hidden="true">&#63;</span>
 			<span class="tool-card-label">Haven 需要你确认</span>
@@ -517,8 +571,9 @@
 		{/if}
 	</div>
 {:else}
-	<details class="tool-card" role="status" bind:open={cardOpen} oncontextmenu={handleContextMenu}>
-		<summary class="tool-card-header">
+	<div class="tool-card" role="status" oncontextmenu={handleContextMenu}>
+		<MaterialCollapsible bind:open={cardOpen}>
+			{#snippet header()}
 			<span class="tool-card-icon" aria-hidden="true">
 				{#if kind === 'shell'}
 					<svg
@@ -739,7 +794,8 @@
 					>
 				{/if}
 			</span>
-			<span class="tool-card-label">{LABELS[toolName] ?? toolName}</span>
+			<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
+			<span class="tool-card-label" title={toolName}>{displayName}</span>
 			{#if usage}
 				<span
 					class="usage-chip"
@@ -756,8 +812,17 @@
 					{formatTokenCount(usage.total)} tokens
 				</span>
 			{/if}
-			<span class="tool-card-chevron" aria-hidden="true">▾</span>
-		</summary>
+			{/snippet}
+
+		{#if cardOpen && hasToolArgs}
+			{@const argsValue = parseToolArgs(toolArgs)}
+			{#if argsValue != null}
+				<div class="tool-args">
+					<div class="tool-args-label">调用参数</div>
+					<JsonView value={argsValue} defaultDepth={0} />
+				</div>
+			{/if}
+		{/if}
 
 		{#if kind === 'shell'}
 			{#if data.truncated}
@@ -1258,7 +1323,8 @@
 		{:else if liveStreaming}
 			<p class="tool-card-empty">等待输出…</p>
 		{/if}
-	</details>
+		</MaterialCollapsible>
+	</div>
 {/if}
 
 <ContextMenu
@@ -1290,23 +1356,6 @@
 		gap: var(--md-sys-space-xs);
 		margin-bottom: var(--md-sys-space-xs);
 	}
-	summary.tool-card-header {
-		list-style: none;
-		cursor: pointer;
-		user-select: none;
-	}
-	summary.tool-card-header::-webkit-details-marker {
-		display: none;
-	}
-	.tool-card-chevron {
-		margin-left: auto;
-		font-size: 11px;
-		color: var(--md-sys-color-on-surface-variant);
-		transition: transform 0.15s ease;
-	}
-	.tool-card[open] .tool-card-chevron {
-		transform: rotate(180deg);
-	}
 	.tool-card-icon {
 		display: inline-flex;
 		align-items: center;
@@ -1324,6 +1373,40 @@
 		font-size: 12px;
 		font-weight: 700;
 		color: var(--md-sys-color-on-secondary-container);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.tool-source {
+		flex: none;
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		line-height: 1.2;
+		padding: 2px 6px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.tool-source[data-source='mcp'] {
+		background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 80%, transparent);
+		color: var(--md-sys-color-on-tertiary-container);
+	}
+	.tool-source[data-source='skill'] {
+		background: color-mix(in srgb, var(--md-sys-color-primary-container) 80%, transparent);
+		color: var(--md-sys-color-on-primary-container);
+	}
+	.tool-args {
+		margin-bottom: var(--md-sys-space-sm);
+		padding-bottom: var(--md-sys-space-sm);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.tool-args-label {
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--md-sys-color-on-surface-variant);
+		margin-bottom: 4px;
 	}
 	.ask-question {
 		margin: 0 0 var(--md-sys-space-sm);

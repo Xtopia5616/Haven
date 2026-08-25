@@ -51,6 +51,33 @@ describe('buildResumeMessages', () => {
 		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'file', content: '{"ok":true}' });
 	});
 
+	it('carries action_input onto tool cards as toolArgs', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'mcp__filesystem__read',
+					action_input: '{"path":"a.rs"}',
+					observation: '{"ok":true}',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'tool',
+			toolName: 'mcp__filesystem__read',
+			toolArgs: '{"path":"a.rs"}',
+			content: '{"ok":true}',
+		});
+	});
+
 	it('hides silent tool steps like the live chat does', () => {
 		// `"silent": true` on a tool input hides its card live; the resume
 		// rebuild must not resurrect it as a tool badge.

@@ -537,17 +537,29 @@ export function restoreSessionTokenStats(
 ) {
 	if (!sessionId || !usage) return;
 	const hasCost = !!usage.has_cost && usage.cost_usd != null;
+	const prompt = usage.prompt_tokens || 0;
+	const completion = usage.completion_tokens || 0;
+	const cached = usage.cached_tokens || 0;
+	const creation = usage.cache_creation_tokens || 0;
 	updateSessionTokenStats(sessionId, {
 		promptTokens: 0,
 		completionTokens: 0,
 		totalTokens: 0,
 		cachedTokens: 0,
 		cacheCreationTokens: 0,
-		cumulativePromptTokens: usage.prompt_tokens || 0,
-		cumulativeCompletionTokens: usage.completion_tokens || 0,
-		cumulativeTotalTokens: usage.total_tokens || 0,
-		cumulativeCachedTokens: usage.cached_tokens || 0,
-		cumulativeCacheCreationTokens: usage.cache_creation_tokens || 0,
+		contextTokens: 0,
+		cacheExclusive: false,
+		cumulativePromptTokens: prompt,
+		cumulativeCompletionTokens: completion,
+		cumulativeTotalTokens: coalesceTokenTotal(
+			prompt,
+			completion,
+			usage.total_tokens || 0,
+			cached,
+			creation,
+		),
+		cumulativeCachedTokens: cached,
+		cumulativeCacheCreationTokens: creation,
 		costUsd: null,
 		cumulativeCostUsd: hasCost ? usage.cost_usd : null,
 		contextWindow: null,
@@ -601,6 +613,28 @@ export function clearSessionLlmUsage(sessionId: string) {
 		delete next[sessionId];
 		return next;
 	});
+}
+
+/**
+ * Reconstruct `total` when a provider omitted it. Matches
+ * `Usage::normalize`: inclusive `prompt + completion`, plus exclusive
+ * cache when `cached > prompt` (Anthropic).
+ * @param {number} [prompt]
+ * @param {number} [completion]
+ * @param {number} [total]
+ * @param {number} [cached]
+ * @param {number} [creation]
+ */
+export function coalesceTokenTotal(
+	prompt = 0,
+	completion = 0,
+	total = 0,
+	cached = 0,
+	creation = 0,
+) {
+	if (total) return total;
+	const extra = cached > prompt ? cached + creation : 0;
+	return prompt + completion + extra || 0;
 }
 
 /**

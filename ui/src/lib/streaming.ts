@@ -144,6 +144,7 @@ export function newToolMessage({
 	streaming = false,
 	askOptions = null,
 	actionId = null,
+	toolArgs = undefined,
 }: {
 	id: string;
 	stepNumber: number;
@@ -153,6 +154,9 @@ export function newToolMessage({
 	streaming?: boolean;
 	askOptions?: string[] | null;
 	actionId?: string | null;
+	/** Live Action.input or resume action_input; omitted on observation fills
+	 * so the placeholder's args are preserved via object spread. */
+	toolArgs?: unknown;
 }) {
 	const isAsk = toolName === 'ask';
 	return {
@@ -166,6 +170,7 @@ export function newToolMessage({
 		...(time ? { time } : {}),
 		streaming,
 		...(actionId ? { actionId } : {}),
+		...(toolArgs !== undefined ? { toolArgs } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),
 	};
 }

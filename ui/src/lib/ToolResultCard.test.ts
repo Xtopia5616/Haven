@@ -295,15 +295,71 @@ describe('ToolResultCard usage', () => {
 	});
 });
 
+describe('ToolResultCard source + args', () => {
+	it('shows a builtin source badge next to the Chinese label', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: 'ok',
+		});
+		const badge = container.querySelector('.tool-source') as HTMLElement;
+		expect(badge).toBeTruthy();
+		expect(badge.getAttribute('data-source')).toBe('builtin');
+		expect(badge.textContent).toBe('内置');
+		expect(screen.getByText('终端输出')).toBeTruthy();
+	});
+
+	it('labels MCP tools with an MCP badge and stripped name', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'mcp__filesystem__read',
+			content: JSON.stringify({ ok: true }),
+			streaming: true,
+			toolArgs: { path: 'a.rs' },
+		});
+		const badge = container.querySelector('.tool-source') as HTMLElement;
+		expect(badge.getAttribute('data-source')).toBe('mcp');
+		expect(badge.textContent).toBe('MCP');
+		expect(screen.getByText('filesystem__read')).toBeTruthy();
+		expect(screen.getByText('调用参数')).toBeTruthy();
+		expect(screen.getByText('"path"')).toBeTruthy();
+		expect(screen.getByText('"a.rs"')).toBeTruthy();
+	});
+
+	it('labels Skill tools and accepts resume action_input JSON strings', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'skill__weather',
+			content: JSON.stringify({ temp: 20 }),
+			toolArgs: '{"city":"Shanghai"}',
+		});
+		const badge = container.querySelector('.tool-source') as HTMLElement;
+		expect(badge.getAttribute('data-source')).toBe('skill');
+		expect(screen.getByText('weather')).toBeTruthy();
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		await fireEvent.click(header);
+		expect(screen.getByText('调用参数')).toBeTruthy();
+		expect(screen.getByText('"city"')).toBeTruthy();
+		expect(screen.getByText('"Shanghai"')).toBeTruthy();
+	});
+
+	it('does not mount the args JsonView while the card is collapsed', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: 'ok',
+			toolArgs: { command: 'echo hi' },
+		});
+		expect(container.querySelector('.tool-args')).toBeNull();
+		expect(container.querySelector('.jv-view')).toBeNull();
+	});
+});
+
 describe('ToolResultCard empty in-progress', () => {
 	it('renders a collapsed card for an empty completed call', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: '',
 		});
-		const details = container.querySelector('details.tool-card') as HTMLDetailsElement;
-		expect(details).toBeTruthy();
-		expect(details.open).toBe(false);
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header).toBeTruthy();
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 		expect(screen.getByText('文件与搜索')).toBeTruthy();
 	});
 
@@ -313,8 +369,8 @@ describe('ToolResultCard empty in-progress', () => {
 			content: '',
 			streaming: true,
 		});
-		const details = container.querySelector('details.tool-card') as HTMLDetailsElement;
-		expect(details.open).toBe(true);
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		expect(screen.getByText('等待输出…')).toBeTruthy();
 	});
 });
@@ -325,11 +381,9 @@ describe('ToolResultCard collapsible', () => {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
-		const details = container.querySelector(
-			'details.tool-card',
-		) as HTMLDetailsElement;
-		expect(details).toBeTruthy();
-		expect(details.open).toBe(false);
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header).toBeTruthy();
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('expands while streaming and auto-collapses when streaming ends', async () => {
@@ -338,12 +392,10 @@ describe('ToolResultCard collapsible', () => {
 			content: searchJson([{ path: 'a.rs' }]),
 			streaming: true,
 		});
-		const details = container.querySelector(
-			'details.tool-card',
-		) as HTMLDetailsElement;
-		expect(details.open).toBe(true);
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ streaming: false });
-		expect(details.open).toBe(false);
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('toggles open when the header is clicked and keeps a manual expand', async () => {
@@ -351,14 +403,12 @@ describe('ToolResultCard collapsible', () => {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
-		const details = container.querySelector(
-			'details.tool-card',
-		) as HTMLDetailsElement;
-		expect(details.open).toBe(false);
-		await fireEvent.click(details.querySelector('summary')!);
-		expect(details.open).toBe(true);
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		expect(header.getAttribute('aria-expanded')).toBe('false');
+		await fireEvent.click(header);
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ content: searchJson([{ path: 'b.rs' }]) });
-		expect(details.open).toBe(true);
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 });
 
@@ -593,5 +643,35 @@ describe('ToolResultCard system env', () => {
 		});
 		await fireEvent.click(screen.getByTitle('复制值'));
 		expect(writeText).toHaveBeenCalledWith('secret-value');
+	});
+});
+
+describe('ToolResultCard context menu', () => {
+	it('copies displayed shell output from the right-click menu', async () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: JSON.stringify({ output: 'hello stdout' }),
+		});
+		await fireEvent.contextMenu(container.querySelector('.tool-card')!);
+		expect(screen.getByText('复制输出')).toBeTruthy();
+		await fireEvent.click(screen.getByText('复制输出'));
+		expect(writeText).toHaveBeenCalledWith('hello stdout');
+	});
+
+	it('copies the ask question from the right-click menu', async () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+		const { container } = render(ToolResultCard, {
+			type: 'ask',
+			content: '继续吗？',
+			options: ['是'],
+			awaiting: true,
+		});
+		await fireEvent.contextMenu(container.querySelector('.tool-card')!);
+		expect(screen.getByText('复制问题')).toBeTruthy();
+		await fireEvent.click(screen.getByText('复制问题'));
+		expect(writeText).toHaveBeenCalledWith('继续吗？');
 	});
 });

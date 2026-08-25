@@ -137,13 +137,39 @@ fn node_kind_for_label(label: &str) -> &'static str {
     }
 }
 
+/// Stable identity predicates: never decay and never get auto-corrected away
+/// by a contradicting inference. Shared with the SQL scanner list so the two
+/// cannot drift.
+const IDENTITY_PREDICATES: &[&str] = &[
+    "name",
+    "birthday",
+    "email",
+    "phone",
+    "city",
+    "country",
+    "timezone",
+];
+
+/// Non-identity single-valued predicates (canonical names only). Combined with
+/// [`IDENTITY_PREDICATES`] for upsert demotion and the X5 contradiction scan.
+const SINGLE_VALUED_NON_IDENTITY: &[&str] = &[
+    "project_path",
+    "works_at",
+    "action",
+    "role",
+    "shell",
+    "os",
+    "location",
+    "address",
+    "language",
+    "verbosity",
+];
+
 /// Predicates describing stable identity attributes: they never decay and
 /// never get auto-corrected away by a contradicting inference.
 pub fn is_identity_predicate(predicate: &str) -> bool {
-    matches!(
-        predicate.to_ascii_lowercase().as_str(),
-        "name" | "birthday" | "email" | "phone" | "city" | "country" | "timezone"
-    )
+    let p = predicate.to_ascii_lowercase();
+    IDENTITY_PREDICATES.iter().any(|x| *x == p)
 }
 
 /// Canonical merge targets for maintenance LLM predicate rewrites (M6).
@@ -223,20 +249,18 @@ pub fn is_volatile_predicate(predicate: &str) -> bool {
 /// supersedes the old one; a user can like both Rust and Go and use several
 /// tools at once though). Canonical names only (P2-11).
 pub fn is_single_valued_predicate(predicate: &str) -> bool {
-    is_identity_predicate(predicate)
-        || matches!(
-            predicate.to_ascii_lowercase().as_str(),
-            "project_path"
-                | "works_at"
-                | "action"
-                | "role"
-                | "shell"
-                | "os"
-                | "location"
-                | "address"
-                | "language"
-                | "verbosity"
-        )
+    let p = predicate.to_ascii_lowercase();
+    IDENTITY_PREDICATES.iter().any(|x| *x == p)
+        || SINGLE_VALUED_NON_IDENTITY.iter().any(|x| *x == p)
+}
+
+/// All single-valued predicates for SQL `IN (...)` filters — same set as
+/// [`is_single_valued_predicate`].
+fn all_single_valued_predicates() -> impl Iterator<Item = &'static str> {
+    IDENTITY_PREDICATES
+        .iter()
+        .chain(SINGLE_VALUED_NON_IDENTITY.iter())
+        .copied()
 }
 
 /// Parse a fact timestamp (always RFC3339 — the repository writes
@@ -676,15 +700,10 @@ impl Database {
         let predicate = normalize_predicate(predicate);
         let now = Utc::now().to_rfc3339();
         let mut corrected = false;
-        // §P2: polarity conflict — "likes X" and "dislikes X" contradict each
-        // other; the newest observation demotes the opposite-polarity fact so
-        // the prompt never shows both. User-stated facts always win: an
-        // inferred fact never demotes a user-stated opposite.
-        let opposite = match predicate.as_str() {
-            "likes" => Some("dislikes"),
-            "dislikes" => Some("likes"),
-            _ => None,
-        };
+        // §P2 / X5: polarity conflict — newest observation demotes the
+        // opposite-polarity fact. User-stated always wins: inferred never
+        // demotes a user-stated opposite. Opposite map shared with maintenance.
+        let opposite = polarity_opposite(&predicate);
         {
             let conn = self.conn();
             let existing: Option<Fact> = conn
@@ -756,9 +775,9 @@ impl Database {
                     return Ok(UpsertOutcome::Skipped);
                 }
                 let n = conn.execute(
-                    "UPDATE memory_edges SET confidence = confidence * 0.5
-                     WHERE subject = ?1 AND predicate = ?2 AND object <> ?3 AND source = 'inferred'",
-                    rusqlite::params![subject, predicate, object],
+                    "UPDATE memory_edges SET confidence = confidence * ?1
+                     WHERE subject = ?2 AND predicate = ?3 AND object <> ?4 AND source = 'inferred'",
+                    rusqlite::params![CONTRADICTION_DEMOTE_FACTOR, subject, predicate, object],
                 )?;
                 corrected = n > 0;
             }
@@ -766,10 +785,16 @@ impl Database {
             if let Some(opp) = opposite {
                 let incoming_is_user = (source == "user") as i32;
                 let _ = conn.execute(
-                    "UPDATE memory_edges SET confidence = confidence * 0.5
-                     WHERE subject = ?1 AND object = ?2 AND predicate = ?3
-                       AND (?4 = 1 OR source = 'inferred')",
-                    rusqlite::params![subject, object, opp, incoming_is_user],
+                    "UPDATE memory_edges SET confidence = confidence * ?1
+                     WHERE subject = ?2 AND object = ?3 AND predicate = ?4
+                       AND (?5 = 1 OR source = 'inferred')",
+                    rusqlite::params![
+                        CONTRADICTION_DEMOTE_FACTOR,
+                        subject,
+                        object,
+                        opp,
+                        incoming_is_user
+                    ],
                 )?;
             }
         }
@@ -1451,7 +1476,291 @@ impl Database {
         }
         Ok(n)
     }
+
+    /// Maintenance contradiction engine (X5): scan polarity and single-valued
+    /// conflicts that slipped past upsert (`insert_fact` / bulk paths), pick a
+    /// keeper with the same user>inferred / confidence / recency rules, and
+    /// demote losers once (`confidence *= 0.5`). SPO text and `source_ref`
+    /// provenance are preserved as evidence. Returns rows demoted.
+    ///
+    /// Losers older than [`CONTRADICTION_DEMOTE_MAX_AGE_DAYS`] (by
+    /// `last_seen_at`/`created_at`) are left alone so a maintenance pass
+    /// cannot mass-demote historical edges into the subsequent
+    /// `flush_low_confidence` delete window. Older residuals still surface via
+    /// [`Self::list_ambiguous_contradictions`] for optional LLM arbitration.
+    pub fn resolve_contradictions(&self) -> anyhow::Result<u64> {
+        let now = Utc::now();
+        let mut demote_ids: HashSet<String> = HashSet::new();
+        for group in self.collect_contradiction_groups()? {
+            let Some((_, losers)) = pick_contradiction_keeper(group.kind, &group.facts) else {
+                continue;
+            };
+            for loser in losers {
+                if fact_effective_confidence(loser) >= CONTRADICTION_LIVE_FLOOR
+                    && fact_within_demote_age(loser, now)
+                {
+                    demote_ids.insert(loser.id.clone());
+                }
+            }
+        }
+        self.demote_fact_ids(demote_ids.into_iter().collect())
+    }
+
+    /// Remaining live conflict groups for optional LLM arbitration (X5).
+    /// After the rule pass, any polarity / single-valued group that still has
+    /// ≥2 facts at/above the live floor is surfaced (near-synonym objects,
+    /// both-user changes, residual polarity). `source_ref` snippets travel
+    /// with each fact for evidence.
+    pub fn list_ambiguous_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
+        let mut out = Vec::new();
+        for mut group in self.collect_contradiction_groups()? {
+            group
+                .facts
+                .retain(|f| fact_effective_confidence(f) >= CONTRADICTION_LIVE_FLOOR);
+            if group.facts.len() >= 2 {
+                out.push(group);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Halve (or scale by `factor`) confidence for specific fact ids. Used by
+    /// the maintenance LLM arbitrator after gated proposals. Preserves SPO and
+    /// provenance. Returns how many rows were updated.
+    pub fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
+        self.demote_fact_ids_by_factor(ids, CONTRADICTION_DEMOTE_FACTOR)
+    }
+
+    fn demote_fact_ids_by_factor(&self, ids: Vec<String>, factor: f64) -> anyhow::Result<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let factor = factor.clamp(0.0, 1.0);
+        let conn = self.conn();
+        let placeholders = vec!["?"; ids.len()].join(",");
+        // params: factor first, then ids (all anonymous `?` binders).
+        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(ids.len() + 1);
+        params.push(factor.into());
+        for id in &ids {
+            params.push(id.clone().into());
+        }
+        let n = conn.execute(
+            &format!(
+                "UPDATE memory_edges SET confidence = confidence * ? WHERE id IN ({placeholders})"
+            ),
+            rusqlite::params_from_iter(params),
+        )? as u64;
+        if n > 0 {
+            self.cache_invalidate_all_facts();
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+        }
+        Ok(n)
+    }
+
+    fn collect_contradiction_groups(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
+        let mut groups = Vec::new();
+        groups.extend(self.scan_polarity_contradictions()?);
+        groups.extend(self.scan_single_valued_contradictions()?);
+        Ok(groups)
+    }
+
+    fn scan_polarity_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
+        let conn = self.conn();
+        // Case-insensitive object match so "Rust" / "rust" still conflict.
+        // `a.id < b.id` keeps each pair once; hydrate both ids in one IN query.
+        let mut stmt = conn.prepare(
+            "SELECT a.id, b.id FROM memory_edges a
+             INNER JOIN memory_edges b
+               ON a.subject = b.subject
+              AND lower(a.object) = lower(b.object)
+              AND a.id < b.id
+             WHERE ((a.predicate = 'likes' AND b.predicate = 'dislikes')
+                 OR (a.predicate = 'dislikes' AND b.predicate = 'likes'))
+               AND a.confidence >= ?1 AND b.confidence >= ?1",
+        )?;
+        let pairs: Vec<(String, String)> = stmt
+            .query_map(rusqlite::params![CONTRADICTION_LIVE_FLOOR], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
+
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut unique_ids: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for (a, b) in &pairs {
+            if seen.insert(a.clone()) {
+                unique_ids.push(a.clone());
+            }
+            if seen.insert(b.clone()) {
+                unique_ids.push(b.clone());
+            }
+        }
+        let by_id: HashMap<String, Fact> = self
+            .get_facts_by_ids(&unique_ids)?
+            .into_iter()
+            .map(|f| (f.id.clone(), f))
+            .collect();
+        let mut out = Vec::new();
+        for (id_a, id_b) in pairs {
+            let Some(a) = by_id.get(&id_a) else {
+                continue;
+            };
+            let Some(b) = by_id.get(&id_b) else {
+                continue;
+            };
+            out.push(ContradictionCandidate {
+                kind: ContradictionKind::Polarity,
+                facts: vec![a.clone(), b.clone()],
+            });
+        }
+        Ok(out)
+    }
+
+    fn scan_single_valued_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
+        let predicates: Vec<&str> = all_single_valued_predicates().collect();
+        let conn = self.conn();
+        let placeholders = vec!["?"; predicates.len()].join(",");
+        // One scan: all live single-valued rows, then group in Rust where
+        // distinct objects collide (avoids N+1 prepare per subject/predicate).
+        let sql = format!(
+            "SELECT {FACT_COLS} FROM memory_edges
+             WHERE lower(predicate) IN ({placeholders})
+               AND confidence >= ?"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<rusqlite::types::Value> = predicates
+            .iter()
+            .map(|p| (*p).to_string().into())
+            .collect();
+        params.push(CONTRADICTION_LIVE_FLOOR.into());
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), fact_from_row)?;
+        let mut by_key: HashMap<(String, String), Vec<Fact>> = HashMap::new();
+        for row in rows {
+            let fact = row?;
+            let key = (fact.subject.clone(), fact.predicate.to_ascii_lowercase());
+            by_key.entry(key).or_default().push(fact);
+        }
+        drop(stmt);
+        drop(conn);
+
+        let mut out = Vec::new();
+        for facts in by_key.into_values() {
+            let distinct_objects: HashSet<String> =
+                facts.iter().map(|f| f.object.to_ascii_lowercase()).collect();
+            if distinct_objects.len() >= 2 && facts.len() >= 2 {
+                out.push(ContradictionCandidate {
+                    kind: ContradictionKind::SingleValued,
+                    facts,
+                });
+            }
+        }
+        Ok(out)
+    }
 }
+
+/// Live-floor for maintenance contradiction scans (X5). Below this, upsert
+/// demotion / flush already treat the fact as inactive in the prompt.
+pub const CONTRADICTION_LIVE_FLOOR: f64 = 0.4;
+/// Rule-engine demotion age cap (X5). Older losers are not mutated so a
+/// maintenance pass cannot push historical edges under the flush floor /
+/// rewrite unbounded ancient conflicts on first upgrade.
+pub const CONTRADICTION_DEMOTE_MAX_AGE_DAYS: i64 = 2;
+
+/// True when the fact was last seen (or created) within the X5 demote age cap.
+pub fn fact_within_demote_age(fact: &Fact, now: DateTime<Utc>) -> bool {
+    let ts = fact.last_seen_at.as_deref().unwrap_or(&fact.created_at);
+    match DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => {
+            now.signed_duration_since(dt.with_timezone(&Utc))
+                <= chrono::Duration::days(CONTRADICTION_DEMOTE_MAX_AGE_DAYS)
+        }
+        // Unparseable timestamps: skip demotion rather than risk mutating
+        // opaque historical rows into the flush window.
+        Err(_) => false,
+    }
+}
+
+/// Opposite polarity predicate (`likes` ↔ `dislikes`), shared by upsert and
+/// the maintenance scanner so the pair cannot drift.
+pub fn polarity_opposite(predicate: &str) -> Option<&'static str> {
+    match predicate {
+        "likes" => Some("dislikes"),
+        "dislikes" => Some("likes"),
+        _ => None,
+    }
+}
+
+/// Shared demote strength for upsert corrections and the X5 engine.
+pub const CONTRADICTION_DEMOTE_FACTOR: f64 = 0.5;
+
+/// Kind of contradiction a maintenance candidate group represents (X5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContradictionKind {
+    /// `likes` ↔ `dislikes` on the same subject+object.
+    Polarity,
+    /// Single-valued predicate with multiple distinct objects.
+    SingleValued,
+}
+
+/// A conflict group surfaced to the optional LLM arbitrator (X5).
+#[derive(Debug, Clone)]
+pub struct ContradictionCandidate {
+    pub kind: ContradictionKind,
+    pub facts: Vec<Fact>,
+}
+
+/// Pick the keeper and the losers for a conflict group. Returns `None` when
+/// the group has fewer than two facts.
+///
+/// - **Polarity** (aligned with upsert): user > inferred, then newest
+///   observation (`last_seen_at`/`created_at`), then confidence / mentions.
+/// - **Single-valued**: user > inferred, then effective confidence, mentions,
+///   then recency.
+pub fn pick_contradiction_keeper(
+    kind: ContradictionKind,
+    facts: &[Fact],
+) -> Option<(&Fact, Vec<&Fact>)> {
+    if facts.len() < 2 {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..facts.len()).collect();
+    order.sort_by(|&i, &j| contradiction_cmp(kind, &facts[j], &facts[i]));
+    let keeper = &facts[order[0]];
+    let losers: Vec<&Fact> = order[1..].iter().map(|&i| &facts[i]).collect();
+    Some((keeper, losers))
+}
+
+fn fact_recency_key(fact: &Fact) -> &str {
+    fact.last_seen_at.as_deref().unwrap_or(&fact.created_at)
+}
+
+fn contradiction_cmp(kind: ContradictionKind, a: &Fact, b: &Fact) -> std::cmp::Ordering {
+    let user_ord = (a.source == "user").cmp(&(b.source == "user"));
+    if user_ord != std::cmp::Ordering::Equal {
+        return user_ord;
+    }
+    match kind {
+        ContradictionKind::Polarity => fact_recency_key(a)
+            .cmp(fact_recency_key(b))
+            .then_with(|| {
+                fact_effective_confidence(a)
+                    .partial_cmp(&fact_effective_confidence(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.mention_count.cmp(&b.mention_count)),
+        ContradictionKind::SingleValued => fact_effective_confidence(a)
+            .partial_cmp(&fact_effective_confidence(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.mention_count.cmp(&b.mention_count))
+            .then_with(|| fact_recency_key(a).cmp(fact_recency_key(b))),
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -1460,6 +1769,7 @@ mod tests {
         is_volatile_predicate,
     };
     use crate::Database;
+    use chrono::Utc;
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()
@@ -2843,5 +3153,189 @@ mod tests {
         let remaining = db.list_facts().unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].object, "Durable");
+    }
+
+    #[test]
+    fn test_resolve_contradictions_polarity_user_beats_inferred() {
+        let db = create_db();
+        // Bypass upsert demotion: insert_fact stores both sides raw (X5 catch-up).
+        let like_ref = FactSourceRef {
+            message_id: "msg-like".into(),
+            snippet: "I love Rust".into(),
+        };
+        let dislike_ref = FactSourceRef {
+            message_id: "msg-dislike".into(),
+            snippet: "Rust is awful".into(),
+        };
+        db.insert_fact_with_source_ref(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.9,
+            &["preference"],
+            Some(&like_ref),
+            1.0,
+        )
+        .unwrap();
+        db.insert_fact_with_source_ref(
+            "user",
+            "dislikes",
+            "Rust",
+            "user",
+            1.0,
+            &["preference"],
+            Some(&dislike_ref),
+            1.0,
+        )
+        .unwrap();
+        let demoted = db.resolve_contradictions().unwrap();
+        assert_eq!(demoted, 1);
+        let facts = db.get_facts("user").unwrap();
+        let likes = facts.iter().find(|f| f.predicate == "likes").unwrap();
+        let dislikes = facts.iter().find(|f| f.predicate == "dislikes").unwrap();
+        assert!(
+            (likes.confidence - 0.45).abs() < 1e-9,
+            "inferred likes must be demoted, got {}",
+            likes.confidence
+        );
+        assert!((dislikes.confidence - 1.0).abs() < 1e-9);
+        // Provenance survives demotion as evidence.
+        assert_eq!(
+            likes.source_ref.as_ref().unwrap().snippet,
+            "I love Rust"
+        );
+        assert_eq!(
+            dislikes.source_ref.as_ref().unwrap().snippet,
+            "Rust is awful"
+        );
+    }
+
+    #[test]
+    fn test_resolve_contradictions_single_valued_keeps_user() {
+        let db = create_db();
+        db.insert_fact(
+            "user",
+            "project_path",
+            "/old/path",
+            "inferred",
+            0.85,
+            &["workspace"],
+        )
+        .unwrap();
+        db.insert_fact(
+            "user",
+            "project_path",
+            "/new/path",
+            "user",
+            1.0,
+            &["workspace"],
+        )
+        .unwrap();
+        let demoted = db.resolve_contradictions().unwrap();
+        assert_eq!(demoted, 1);
+        let facts = db.get_facts("user").unwrap();
+        let old = facts.iter().find(|f| f.object == "/old/path").unwrap();
+        let new = facts.iter().find(|f| f.object == "/new/path").unwrap();
+        assert!((old.confidence - 0.425).abs() < 1e-9);
+        assert!((new.confidence - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_list_ambiguous_contradictions_after_rule_demote() {
+        let db = create_db();
+        // High enough that one *0.5 demote still leaves both above the floor.
+        db.insert_fact("user", "works_at", "Acme", "inferred", 0.95, &["work"])
+            .unwrap();
+        db.insert_fact(
+            "user",
+            "works_at",
+            "BetaCorp",
+            "inferred",
+            0.92,
+            &["work"],
+        )
+        .unwrap();
+        let demoted = db.resolve_contradictions().unwrap();
+        assert_eq!(demoted, 1);
+        let ambiguous = db.list_ambiguous_contradictions().unwrap();
+        assert!(
+            ambiguous.iter().any(|c| {
+                c.kind == super::ContradictionKind::SingleValued && c.facts.len() >= 2
+            }),
+            "residual single-valued pair should stay ambiguous after one demote"
+        );
+    }
+
+    #[test]
+    fn test_resolve_contradictions_noop_when_clean() {
+        let db = create_db();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "likes", "Go", "inferred", 0.8, &[])
+            .unwrap();
+        assert_eq!(db.resolve_contradictions().unwrap(), 0);
+        assert!(db.list_ambiguous_contradictions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_resolve_contradictions_skips_losers_older_than_age_cap() {
+        let db = create_db();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "dislikes", "Rust", "user", 1.0, &["preference"])
+            .unwrap();
+        let stale = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "UPDATE memory_edges SET created_at = ?1, last_seen_at = ?1",
+                rusqlite::params![stale],
+            )
+            .unwrap();
+        }
+        assert_eq!(db.resolve_contradictions().unwrap(), 0);
+        let likes = db
+            .get_facts("user")
+            .unwrap()
+            .into_iter()
+            .find(|f| f.predicate == "likes")
+            .unwrap();
+        assert!(
+            (likes.confidence - 0.9).abs() < 1e-9,
+            "stale inferred likes must not be demoted, got {}",
+            likes.confidence
+        );
+        let ambiguous = db.list_ambiguous_contradictions().unwrap();
+        assert!(
+            ambiguous
+                .iter()
+                .any(|c| c.kind == super::ContradictionKind::Polarity),
+            "stale conflicts still surface for LLM arbitration"
+        );
+    }
+
+    #[test]
+    fn test_single_valued_predicate_list_matches_helper() {
+        let listed: Vec<&str> = super::all_single_valued_predicates().collect();
+        for p in &listed {
+            assert!(
+                is_single_valued_predicate(p),
+                "scanner list entry `{p}` missing from is_single_valued_predicate"
+            );
+        }
+        // Bidirectional: every helper-true canonical name is in the SQL list.
+        for p in super::IDENTITY_PREDICATES
+            .iter()
+            .chain(super::SINGLE_VALUED_NON_IDENTITY.iter())
+        {
+            assert!(
+                listed.contains(p),
+                "helper predicate `{p}` missing from scanner list"
+            );
+        }
+        // Spot-check multi-valued stay out of the scanner list.
+        assert!(!listed.contains(&"likes"));
+        assert!(!listed.contains(&"uses"));
     }
 }

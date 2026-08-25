@@ -158,6 +158,14 @@ pub enum AgentEvent {
         /// Prompt-cache write / creation tokens for this call.
         #[serde(default)]
         cache_creation_tokens: u32,
+        /// Tokens occupying the model context window for this call
+        /// (prompt, plus exclusive cache tokens when the provider reports
+        /// cache outside `prompt_tokens`).
+        #[serde(default)]
+        context_tokens: u32,
+        /// True when cache read/write tokens are counted outside `prompt_tokens`.
+        #[serde(default)]
+        cache_exclusive: bool,
         cost_usd: Option<f64>,
         model: Option<String>,
         /// Cumulative totals across the entire session (incl. this step).
@@ -718,6 +726,8 @@ impl EventDispatcher {
                 total_tokens: usage.total_tokens,
                 cached_tokens: usage.cached_tokens,
                 cache_creation_tokens: usage.cache_creation_tokens,
+                context_tokens: usage.context_tokens,
+                cache_exclusive: usage.cache_exclusive,
                 cost_usd: usage.cost_usd,
                 model: usage.model,
                 cumulative_prompt_tokens: usage.cumulative_prompt_tokens,
@@ -747,6 +757,8 @@ pub struct UsagePayload {
     pub total_tokens: u32,
     pub cached_tokens: u32,
     pub cache_creation_tokens: u32,
+    pub context_tokens: u32,
+    pub cache_exclusive: bool,
     pub cost_usd: Option<f64>,
     pub model: Option<String>,
     pub cumulative_prompt_tokens: u32,

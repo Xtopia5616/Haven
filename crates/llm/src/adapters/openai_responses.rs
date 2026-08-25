@@ -121,7 +121,11 @@ struct ResponsesUsage {
     #[serde(default)]
     input_tokens: u32,
     #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
     output_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
     #[serde(default)]
@@ -129,13 +133,34 @@ struct ResponsesUsage {
     /// DeepSeek Responses flat alias for cache hits.
     #[serde(default)]
     prompt_cache_hit_tokens: u32,
+    #[serde(default)]
+    cached_tokens: u32,
 }
 
 impl ResponsesUsage {
-    fn cached_tokens(&self) -> u32 {
+    fn prompt(&self) -> u32 {
+        self.input_tokens.max(self.prompt_tokens)
+    }
+
+    fn completion(&self) -> u32 {
+        self.output_tokens.max(self.completion_tokens)
+    }
+
+    fn cached(&self) -> u32 {
         super::resolve_cached_tokens(
             self.input_tokens_details.as_ref().map(|d| d.cached_tokens),
-            self.prompt_cache_hit_tokens,
+            self.prompt_cache_hit_tokens.max(self.cached_tokens),
+        )
+    }
+
+    fn to_usage(&self, model_name: Option<String>) -> Usage {
+        Usage::from_counts(
+            self.prompt(),
+            self.completion(),
+            self.total_tokens,
+            self.cached(),
+            0,
+            model_name,
         )
     }
 }
@@ -615,15 +640,7 @@ impl OpenAiResponsesAdapter {
         }
         let usage = json
             .usage
-            .map(|u| Usage {
-                prompt_tokens: u.input_tokens,
-                completion_tokens: u.output_tokens,
-                total_tokens: u.total_tokens,
-                cached_tokens: u.cached_tokens(),
-                cache_creation_tokens: 0,
-                model_name: model.clone(),
-                cost: None,
-            })
+            .map(|u| u.to_usage(model.clone()))
             .unwrap_or_default();
         Ok(LlmResponse {
             text,
@@ -995,15 +1012,7 @@ impl OpenAiResponsesAdapter {
                                 state.last_model = Some(m.clone());
                             }
                             if let Some(u) = resp.usage {
-                                state.usage = Some(Usage {
-                                    prompt_tokens: u.input_tokens,
-                                    completion_tokens: u.output_tokens,
-                                    total_tokens: u.total_tokens,
-                                    cached_tokens: u.cached_tokens(),
-                                    cache_creation_tokens: 0,
-                                    model_name: state.last_model.clone(),
-                                    cost: None,
-                                });
+                                state.usage = Some(u.to_usage(state.last_model.clone()));
                             }
                             if let Some(status) = resp.status.as_deref() {
                                 state.finish_reason = Self::finish_reason_of(status);
@@ -2005,13 +2014,23 @@ mod tests {
     fn usage_parses_input_tokens_details_cached_tokens() {
         let json = r#"{"input_tokens":100,"output_tokens":5,"total_tokens":105,"input_tokens_details":{"cached_tokens":80}}"#;
         let usage: ResponsesUsage = serde_json::from_str(json).unwrap();
-        assert_eq!(usage.cached_tokens(), 80);
+        assert_eq!(usage.cached(), 80);
     }
 
     #[test]
     fn usage_parses_deepseek_prompt_cache_hit_tokens() {
         let json = r#"{"input_tokens":100,"output_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":70}"#;
         let usage: ResponsesUsage = serde_json::from_str(json).unwrap();
-        assert_eq!(usage.cached_tokens(), 70);
+        assert_eq!(usage.cached(), 70);
+    }
+
+    #[test]
+    fn usage_fills_omitted_total_from_input_output() {
+        let json = r#"{"input_tokens":40,"output_tokens":8}"#;
+        let usage: ResponsesUsage = serde_json::from_str(json).unwrap();
+        let canon = usage.to_usage(None);
+        assert_eq!(canon.prompt_tokens, 40);
+        assert_eq!(canon.completion_tokens, 8);
+        assert_eq!(canon.total_tokens, 48);
     }
 }

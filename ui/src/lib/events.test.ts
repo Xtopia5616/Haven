@@ -88,7 +88,7 @@ describe('registerOne', () => {
 		const unsub = vi.fn();
 		mocks.listen.mockResolvedValueOnce(unsub);
 
-		const reg = await registerOne('session:title-updated', vi.fn(), { tag: 'history' });
+		const reg = await registerOne('session:title-updated', vi.fn(), { tag: 'memory' });
 		expect(mocks.listen).toHaveBeenCalledTimes(1);
 		reg.dispose();
 		expect(unsub).toHaveBeenCalledTimes(1);

@@ -807,6 +807,24 @@ describe('newToolMessage', () => {
 		});
 		expect(msg.actionId).toBe('act-abc');
 	});
+
+	it('carries toolArgs from the Action placeholder and omits them when undefined', () => {
+		const withArgs = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'files',
+			streaming: true,
+			toolArgs: { operation: 'read', path: 'a.rs' },
+		});
+		expect(withArgs.toolArgs).toEqual({ operation: 'read', path: 'a.rs' });
+		const fill = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'files',
+			content: '{"ok":true}',
+		});
+		expect('toolArgs' in fill).toBe(false);
+	});
 });
 
 describe('actionIdFromObservation', () => {

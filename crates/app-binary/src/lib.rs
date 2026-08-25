@@ -1219,6 +1219,8 @@ mod tests {
                     total_tokens: 3,
                     cached_tokens: 0,
                     cache_creation_tokens: 0,
+                    context_tokens: 1,
+                    cache_exclusive: false,
                     cost_usd: None,
                     model: None,
                     cumulative_prompt_tokens: 1,

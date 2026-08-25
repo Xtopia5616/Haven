@@ -368,14 +368,15 @@ pub(crate) fn parse_openai_embed_response(
     let model = json.model.clone().or(Some(fallback_model.to_string()));
     let usage = json
         .usage
-        .map(|u| Usage {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-            cached_tokens: 0,
-            cache_creation_tokens: 0,
-            model_name: model.clone(),
-            cost: None,
+        .map(|u| {
+            Usage::from_counts(
+                u.prompt_tokens,
+                u.completion_tokens,
+                u.total_tokens,
+                0,
+                0,
+                model.clone(),
+            )
         })
         .unwrap_or_default();
     Ok(Embedding {

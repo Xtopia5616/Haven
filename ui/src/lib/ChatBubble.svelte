@@ -7,6 +7,7 @@
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { PEER_KICKOFF_PREFIX } from '$lib/peerKickoff.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
+	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 
 	let {
 		role,
@@ -19,6 +20,7 @@
 		messageId = '',
 		stepNumber = null,
 		usage = null,
+		toolArgs = null,
 		attachments = [],
 		options = [],
 		awaiting = false,
@@ -31,7 +33,7 @@
 		onAskSubmit = null,
 	} = $props();
 
-	// Local open state for the collapsible reasoning <details> block. The block
+	// Local open state for the collapsible reasoning block. The block
 	// expands while streaming so live output is visible, and auto-collapses
 	// once streaming ends (constraint
 	// tool_call_output_expand_during_collapse_after). Manual clicks after that
@@ -338,14 +340,18 @@
 				>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
 			>
 		{:else if msgType === 'reasoning'}
-			<details class="reasoning-block" bind:open={reasoningOpen}>
-				<summary class="reasoning-summary">Thinking...</summary>
-				<div class="reasoning-content">
-					<em
-						>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
-					>
-				</div>
-			</details>
+			<div class="reasoning-block">
+				<MaterialCollapsible bind:open={reasoningOpen} lazy>
+					{#snippet header()}
+						<span class="reasoning-summary">Thinking...</span>
+					{/snippet}
+					<div class="reasoning-content">
+						<em
+							>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
+						>
+					</div>
+				</MaterialCollapsible>
+			</div>
 		{:else if msgType === 'tool'}
 			<ToolResultCard
 				{toolName}
@@ -353,6 +359,7 @@
 				{streaming}
 				{actionId}
 				{usage}
+				{toolArgs}
 				messageId={messageId}
 			/>
 		{:else if msgType === 'ask'}
@@ -894,9 +901,7 @@
 	.reasoning-summary {
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
-		cursor: pointer;
 		font-size: 11px;
-		user-select: none;
 	}
 	.reasoning-content {
 		margin-top: var(--md-sys-space-xs);
