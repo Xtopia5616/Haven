@@ -8,6 +8,7 @@ import {
 	webSearchLabel,
 	webSearchCardContent,
 	finalizeStreamBlocks,
+	dropStreamedThought,
 	insertAgentMessage,
 	newToolMessage,
 	actionIdFromObservation,
@@ -760,6 +761,20 @@ describe('finalizeStreamBlocks', () => {
 		const m = [{ id: 'm1', streaming: true }];
 		const out = finalizeStreamBlocks(m, undefined, undefined);
 		expect(out).toEqual(m);
+	});
+});
+
+describe('dropStreamedThought', () => {
+	it('removes all leaked thought segments but preserves reasoning', () => {
+		const out = dropStreamedThought(
+			[
+				{ id: STEP_ID, content: '我先', type: 'thought', streaming: true },
+				{ id: REASONING_ID, content: '想一下', type: 'reasoning', streaming: true },
+				{ id: `${STEP_ID}-1`, content: '读取', type: 'thought' },
+			],
+			STEP_ID,
+		);
+		expect(out.map((message) => message.id)).toEqual([REASONING_ID]);
 	});
 });
 

@@ -27,6 +27,7 @@
 		webSearchId,
 		webSearchCardContent,
 		finalizeStreamBlocks,
+		dropStreamedThought,
 		insertAgentMessage,
 		newToolMessage,
 		actionIdFromObservation,
@@ -397,7 +398,7 @@
 			const rate = cacheHitRatePercent(cumPrompt, cumCached, cumCreation, {
 				exclusive: cumExclusive,
 			});
-			let line = `累计缓存命中 ${formatTokenCount(cumCached)}`;
+			let line = `缓存命中 ${formatTokenCount(cumCached)}`;
 			if (rate != null) line += `（${rate.toFixed(0)}%）`;
 			if (cumCreation > 0) line += ` / 写入 ${formatTokenCount(cumCreation)}`;
 			parts.push(line);
@@ -1773,7 +1774,11 @@
 						// Silent tool: no card is shown, but the preceding text
 						// must still be finalized so it is inserted immediately.
 						updateSessionMessages(tid, (m) =>
-							finalizeStreamBlocks(m, reasoningId, thoughtId),
+							finalizeStreamBlocks(
+								data.suppress_streamed_thought ? dropStreamedThought(m, thoughtId) : m,
+								reasoningId,
+								thoughtId,
+							),
 						);
 						return;
 					}
@@ -1782,7 +1787,11 @@
 						// a tool action means the text/reasoning phase is over.
 						// Finalized blocks drop straggler chunks that flush
 						// out of the batcher after this event.
-						const fixed = finalizeStreamBlocks(m, reasoningId, thoughtId);
+						const fixed = finalizeStreamBlocks(
+							data.suppress_streamed_thought ? dropStreamedThought(m, thoughtId) : m,
+							reasoningId,
+							thoughtId,
+						);
 						const existing = fixed.find((x) => x.id === toolMsgId);
 						if (existing) return fixed;
 						return insertAgentMessage(

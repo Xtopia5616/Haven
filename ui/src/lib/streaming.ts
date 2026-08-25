@@ -129,6 +129,18 @@ export function finalizeStreamBlocks(
 }
 
 /**
+ * Remove text that was streamed before a tool call but rejected by the backend
+ * as a non-meaningful fragment. The action event carries this decision, so the
+ * UI does not need to guess based on text length.
+ */
+export function dropStreamedThought(
+	messages: StreamMessage[],
+	thoughtId: string | null | undefined,
+) {
+	return messages.filter((x) => !isStreamSegment(x.id, thoughtId) || x.type === 'reasoning');
+}
+
+/**
  * Build a tool message. Shared by the `agent:action` placeholder (streaming
  * true, no content) and the `agent:observation` fill (content + optional ask
  * options). The `ask` tool surfaces as a dedicated question card, not a raw

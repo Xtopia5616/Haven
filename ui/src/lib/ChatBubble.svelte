@@ -239,6 +239,19 @@
 		};
 	}
 
+	let isPeerKickoff = $derived(
+		msgType === 'peer_kickoff' ||
+			(typeof content === 'string' && content.startsWith(PEER_KICKOFF_PREFIX)),
+	);
+	// Keep the Markdown effect aligned with the template branch below. Some
+	// persisted messages carry a non-text type that has no dedicated bubble;
+	// they still represent assistant content and must render code fences.
+	let rendersMarkdown = $derived(
+		role === 'assistant' &&
+			!isPeerKickoff &&
+			!['thought', 'reasoning', 'tool', 'ask', 'supplement'].includes(msgType),
+	);
+
 	// L11: guard the render effect against unmount mid-import. mdHtml stays ''
 	// until the shared renderer is loaded and this bubble is still mounted.
 	// Only assistant text bubbles render markdown; everything else (user,
@@ -247,7 +260,7 @@
 	// to one render per animation frame) so markdown appears live; the renderer
 	// defers code blocks to the final render.
 	$effect(() => {
-		if (!mounted || role !== 'assistant' || msgType) return;
+		if (!mounted || !rendersMarkdown) return;
 		if (!rendererReady) {
 			// Renderer still loading — show plain text with the caret, then
 			// render once the shared instance resolves.
@@ -296,10 +309,6 @@
 		lastMdRender = performance.now();
 	}
 
-	let isPeerKickoff = $derived(
-		msgType === 'peer_kickoff' ||
-			(typeof content === 'string' && content.startsWith(PEER_KICKOFF_PREFIX)),
-	);
 </script>
 
 	<div
@@ -377,7 +386,7 @@
 			/>
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
-		{:else if role === 'assistant'}
+		{:else if rendersMarkdown}
 			{#if mdHtml}
 				<div class="md-content" class:streaming use:mdContent>
 					{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}

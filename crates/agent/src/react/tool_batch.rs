@@ -270,7 +270,11 @@ impl ReActEngine {
             // Text matches Thought projection (trimmed) so review/resume
             // share one id/content; a retry-replaced response must not echo
             // the cut-off original text.
-            let push_text = thought.as_deref().unwrap_or(&response.text);
+            // `parse_default_model_response` intentionally drops leaked
+            // one-character tool-call fragments. Do not reintroduce the raw
+            // response text when projecting the assistant/tool-call record.
+            let push_text = thought.as_deref().unwrap_or("");
+            let suppress_streamed_thought = thought.is_none() && !response.text.trim().is_empty();
             // A response mixing real tool calls with a web search round
             // carries both: the `web_search_call` items round-trip in the
             // same assistant message so the next request restores the
@@ -285,6 +289,7 @@ impl ReActEngine {
                     tool_input: action.tool_input.clone(),
                     tool_call_id: action.tool_call_id.clone(),
                     step_id: action_step_ids[idx].clone(),
+                    suppress_streamed_thought,
                 })
                 .collect();
             let step_ctx = StepCtx {

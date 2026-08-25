@@ -34,6 +34,7 @@ pub(super) struct ActionCard {
     pub tool_input: Value,
     pub tool_call_id: Option<String>,
     pub step_id: String,
+    pub suppress_streamed_thought: bool,
 }
 
 /// Observation card emitted from [`TranscriptEvent::ToolResult`].
@@ -260,6 +261,7 @@ impl ReActEngine {
                             run_id: ctx.run_id,
                             tool_call_id: card.tool_call_id.clone(),
                             step_id: card.step_id.clone(),
+                            suppress_streamed_thought: card.suppress_streamed_thought,
                         })
                         .await;
                 }
@@ -771,6 +773,7 @@ mod tests {
                         tool_input: serde_json::json!({"x": 1}),
                         tool_call_id: Some("call-1".into()),
                         step_id: step_id.clone(),
+                        suppress_streamed_thought: false,
                     }],
                     persist_text_id: None,
                 },

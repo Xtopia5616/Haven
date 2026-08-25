@@ -535,6 +535,18 @@ describe('ChatBubble markdown code fences', () => {
 		expect(container.querySelector('.md-code-wrap code')!.textContent).toContain('plain lines');
 	});
 
+	it('renders code fences for assistant message types without a dedicated bubble', async () => {
+		const { container } = render(ChatBubble, {
+			role: 'assistant',
+			content: '```json\n{"ok": true}\n```',
+			type: 'action',
+			time: null,
+		});
+		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());
+		expect(container.querySelector('.md-code-lang')!.textContent).toBe('json');
+		expect(container.querySelector('.md-code-wrap code')!.textContent).toContain('"ok": true');
+	});
+
 	it('copies the code text when the copy button is clicked', async () => {
 		const { container } = renderMd('```python\nprint("hi")\n```');
 		await waitFor(() => expect(container.querySelector('.md-code-copy')).toBeTruthy());

@@ -258,24 +258,43 @@ impl ModelRegistry {
             .build()
             .map_err(|e| crate::LlmError::Unknown(e.to_string()))?;
 
-        let url = format!("{}/models", base_url.trim_end_matches('/'));
-        let mut req = client.get(&url);
-        if let Some((name, value)) = auth_header {
-            if let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                && let Ok(value) = reqwest::header::HeaderValue::from_str(value)
-            {
-                req = req.header(name, value);
+        let base = base_url.trim_end_matches('/');
+        let mut urls = vec![format!("{base}/models")];
+        // Some OpenAI-compatible gateways are configured with their host root,
+        // while exposing the OpenAI API below /v1 (for example ofox.ai and
+        // PackyAPI). Retry that conventional path only when the first route is
+        // unavailable, so providers that legitimately expose /models keep
+        // their existing behavior.
+        if !base.to_ascii_lowercase().ends_with("/v1") {
+            urls.push(format!("{base}/v1/models"));
+        }
+
+        let mut resp = None;
+        for (index, url) in urls.iter().enumerate() {
+            let mut req = client.get(url);
+            if let Some((name, value)) = auth_header {
+                if let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    && let Ok(value) = reqwest::header::HeaderValue::from_str(value)
+                {
+                    req = req.header(name, value);
+                }
+            } else if !api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", api_key));
             }
-        } else if !api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
+            // OpenRouter ranks apps by these optional attribution headers.
+            if base_url.to_ascii_lowercase().contains("openrouter") {
+                req = req
+                    .header("X-Title", "Haven")
+                    .header("HTTP-Referer", "https://haven.app");
+            }
+            let candidate = req.send().await.map_err(crate::LlmError::from)?;
+            let retry = index + 1 < urls.len() && matches!(candidate.status().as_u16(), 404 | 405);
+            resp = Some(candidate);
+            if !retry {
+                break;
+            }
         }
-        // OpenRouter ranks apps by these optional attribution headers.
-        if base_url.to_ascii_lowercase().contains("openrouter") {
-            req = req
-                .header("X-Title", "Haven")
-                .header("HTTP-Referer", "https://haven.app");
-        }
-        let resp = req.send().await.map_err(crate::LlmError::from)?;
+        let resp = resp.expect("model discovery always has at least one URL");
 
         if !resp.status().is_success() {
             let code = resp.status().as_u16();
@@ -314,11 +333,14 @@ impl ModelRegistry {
 /// freezes the settings page when every role picker remaps the list.
 pub const DISCOVER_MODELS_CAP: usize = 500;
 
-/// Accept either `{ "data": [ ... ] }` (OpenAI) or a bare `[ ... ]` array.
+/// Accept OpenAI's `{ "data": [ ... ] }`, gateway wrappers such as
+/// `{ "models": [ ... ] }`, or a bare `[ ... ]` array.
 fn parse_models_payload(json: &serde_json::Value) -> Vec<ModelInfo> {
     let arr = json
         .get("data")
         .and_then(|v| v.as_array())
+        .or_else(|| json.get("models").and_then(|v| v.as_array()))
+        .or_else(|| json.get("result").and_then(|v| v.as_array()))
         .or_else(|| json.as_array());
     arr.map(|arr| {
         arr.iter()
@@ -440,6 +462,15 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].context_window, 4096);
         assert_eq!(models[1].context_window, 0);
+    }
+
+    #[test]
+    fn parse_models_payload_accepts_gateway_wrappers() {
+        let models = parse_models_payload(&json!({
+            "models": [{ "id": "packy-model" }]
+        }));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "packy-model");
     }
 
     #[test]

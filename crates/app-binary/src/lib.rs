@@ -1092,6 +1092,7 @@ mod tests {
                     run_id: 1,
                     tool_call_id: None,
                     step_id: "step-1".into(),
+                    suppress_streamed_thought: false,
                 },
                 "agent:action",
             ),
@@ -1282,6 +1283,7 @@ mod tests {
             run_id: 1,
             tool_call_id: Some("call-1".into()),
             step_id: "step-1".into(),
+            suppress_streamed_thought: false,
         };
         let payload = TauriEmitter::payload(&event, None);
         assert_eq!(payload["silent"], json!(true));
@@ -1300,6 +1302,7 @@ mod tests {
             run_id: 1,
             tool_call_id: None,
             step_id: "step-1".into(),
+            suppress_streamed_thought: false,
         };
         let payload = TauriEmitter::payload(&event, None);
         assert_eq!(payload["silent"], json!(false));

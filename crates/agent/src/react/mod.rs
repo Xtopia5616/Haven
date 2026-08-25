@@ -561,7 +561,18 @@ impl ReActEngine {
     ) -> (Option<String>, Vec<Action>) {
         let text = response.text.trim().to_string();
 
-        let thought = if text.is_empty() {
+        // Some OpenAI-compatible gateways leak one natural-language token while
+        // switching a streamed response into a function call. It is not a useful
+        // tool preamble, but would otherwise become a visible standalone bubble.
+        // Gate at two characters because gateways commonly split the leaked
+        // prefix into two deltas before emitting the tool call.
+        let suppress_tool_call_fragment = !response.tool_calls.is_empty()
+            && response
+                .tool_calls
+                .iter()
+                .any(|call| call.name != "final_answer")
+            && text.chars().count() <= 2;
+        let thought = if text.is_empty() || suppress_tool_call_fragment {
             None
         } else {
             Some(text.clone())
@@ -1347,6 +1358,34 @@ mod tests {
         assert_eq!(actions[0].tool_name, "read_file");
         assert_eq!(actions[0].tool_input["path"], "x.txt");
         assert_eq!(actions[0].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn parse_short_fragment_before_tool_call_is_not_a_thought() {
+        let tc = CanonicalToolCall {
+            id: "call_1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "x.txt"}),
+        };
+        for text in ["我", "I", "我先", "Go"] {
+            let r = resp(text, vec![tc.clone()], Some(FinishReason::ToolCalls));
+            let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
+            assert_eq!(thought, None, "{text:?} must not become a thought bubble");
+            assert_eq!(actions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn parse_tool_call_keeps_meaningful_preamble() {
+        let tc = CanonicalToolCall {
+            id: "call_1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "x.txt"}),
+        };
+        let r = resp("正在读取文件。", vec![tc], Some(FinishReason::ToolCalls));
+        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
+        assert_eq!(thought.as_deref(), Some("正在读取文件。"));
+        assert_eq!(actions.len(), 1);
     }
 
     #[test]

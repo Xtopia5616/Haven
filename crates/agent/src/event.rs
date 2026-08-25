@@ -31,6 +31,9 @@ pub enum AgentEvent {
         /// (minted before the action starts). The frontend uses it as the
         /// live tool-card id, matching the resume badge built from the DB.
         step_id: String,
+        /// Remove provider text that was streamed before a tool call but was
+        /// rejected as a non-meaningful fragment by the ReAct parser.
+        suppress_streamed_thought: bool,
     },
     Observation {
         session_id: String,
