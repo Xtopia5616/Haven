@@ -846,18 +846,26 @@ impl ToolsManager {
             }
         }
         let settings = self.tool_settings.read().await;
-        let cfg = settings.get(tool_name);
-        let timeout_secs = cfg
-            .map(|c| c.timeout_secs)
-            .unwrap_or_else(|| tool.timeout_secs_for(&exec_input));
-        let max_retries = cfg.map(|c| c.max_retries).unwrap_or(0);
-        let backoff_secs = cfg.map(|c| c.retry_backoff_secs).unwrap_or(2);
+        let cfg = settings.get(tool_name).cloned().unwrap_or_default();
+        let timeout_secs = if settings.contains_key(tool_name) {
+            cfg.timeout_secs
+        } else {
+            tool.timeout_secs_for(&exec_input)
+        };
+        let max_retries = cfg.max_retries;
+        let backoff_secs = cfg.retry_backoff_secs;
+        // A timeout can mean an external write actually completed but its
+        // response was lost. Retry Safe operations by default; higher-risk
+        // tools require an explicit per-tool opt-in.
+        let retry_allowed = tool.risk_level(&exec_input) == RiskLevel::Safe || cfg.retry_unsafe;
         drop(settings);
 
         let max_attempts = 1 + max_retries;
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                let delay = Duration::from_secs(backoff_secs * 2u64.pow(attempt - 1));
+                let delay = Duration::from_secs(
+                    backoff_secs.saturating_mul(2u64.saturating_pow(attempt - 1)),
+                );
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
                     _ = cancel.cancelled() => anyhow::bail!("cancelled"),
@@ -881,7 +889,11 @@ impl ToolsManager {
                     result.signals = tool.signals(&result.output);
                     return Ok(result);
                 }
-                Err(e) if attempt + 1 < max_attempts && is_retryable_tool_error(&e) => {
+                Err(e)
+                    if retry_allowed
+                        && attempt + 1 < max_attempts
+                        && is_retryable_tool_error(&e) =>
+                {
                     tracing::debug!(
                         "tool '{}' attempt {} failed, retrying: {}",
                         tool_name,
@@ -939,11 +951,24 @@ impl ToolsManager {
 /// Returns `true` if a tool execution error is transient and worth retrying.
 fn is_retryable_tool_error(err: &anyhow::Error) -> bool {
     let msg = err.to_string().to_lowercase();
-    msg.contains("timed out")
-        || msg.contains("timeout")
-        || msg.contains("connection refused")
-        || msg.contains("connection reset")
-        || msg.contains("eof")
+    !msg.contains("cancelled")
+        && (msg.contains("timed out")
+            || msg.contains("timeout")
+            || msg.contains("connection refused")
+            || msg.contains("connection reset")
+            || msg.contains("connection aborted")
+            || msg.contains("connection closed")
+            || msg.contains("network is unreachable")
+            || msg.contains("temporary failure")
+            || msg.contains("temporarily unavailable")
+            || msg.contains("service unavailable")
+            || msg.contains("too many requests")
+            || msg.contains("rate limit")
+            || msg.contains("status 429")
+            || msg.contains("status 502")
+            || msg.contains("status 503")
+            || msg.contains("status 504")
+            || msg.contains("eof"))
 }
 
 /// Whether a tool call failed because its time budget ran out.
@@ -1193,6 +1218,78 @@ mod tests {
             r.unwrap_err().to_string().contains("circuit breaker"),
             "error should mention circuit breaker"
         );
+    }
+
+    #[tokio::test]
+    async fn execute_tool_retries_transient_failure_by_default() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct FlakyTool {
+            attempts: Arc<AtomicU32>,
+        }
+
+        #[async_trait::async_trait]
+        impl Tool for FlakyTool {
+            fn name(&self) -> String {
+                "flaky".into()
+            }
+            fn description(&self) -> String {
+                "fails once with a transient error".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(
+                &self,
+                _: Value,
+                _: tokio_util::sync::CancellationToken,
+            ) -> anyhow::Result<ToolResult> {
+                if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("service unavailable")
+                }
+                Ok(ToolResult::ok(json!({"recovered": true})))
+            }
+        }
+
+        let mgr = ToolsManager::new();
+        let attempts = Arc::new(AtomicU32::new(0));
+        mgr.set_tool_settings(HashMap::from([(
+            "flaky".into(),
+            ToolConfig {
+                retry_backoff_secs: 0,
+                ..Default::default()
+            },
+        )]))
+        .await;
+        mgr.registry
+            .register(Arc::new(FlakyTool {
+                attempts: attempts.clone(),
+            }))
+            .await;
+
+        let result = mgr
+            .execute_tool(None, "flaky", json!({}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn retryable_tool_errors_exclude_cancellation_and_logic_failures() {
+        assert!(is_retryable_tool_error(&anyhow::anyhow!("status 503")));
+        assert!(is_retryable_tool_error(&anyhow::anyhow!(
+            "connection reset"
+        )));
+        assert!(!is_retryable_tool_error(&anyhow::anyhow!(
+            "cancelled while waiting"
+        )));
+        assert!(!is_retryable_tool_error(&anyhow::anyhow!(
+            "input validation failed"
+        )));
     }
 
     // ── Progressive loading: per-session schemas & MCP index ──────────────

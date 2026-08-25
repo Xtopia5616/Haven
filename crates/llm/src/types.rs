@@ -466,7 +466,7 @@ impl From<reqwest::Error> for LlmError {
     fn from(e: reqwest::Error) -> Self {
         if e.is_timeout() {
             LlmError::Timeout(e.to_string())
-        } else if e.is_connect() {
+        } else if e.is_connect() || e.is_body() || e.is_request() {
             LlmError::ServerError(e.to_string())
         } else if let Some(status) = e.status() {
             if status.as_u16() == 401 || status.as_u16() == 403 {

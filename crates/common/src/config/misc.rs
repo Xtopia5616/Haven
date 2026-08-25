@@ -442,8 +442,16 @@ pub struct ToolConfig {
     /// `context_limits.max_observation_chars` (the observation budget).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_chars: Option<usize>,
+    /// Retries after the initial execution for transient tool failures. This
+    /// default applies even when a tool has no explicit settings entry.
     pub max_retries: u32,
     pub retry_backoff_secs: u64,
+    /// Permit automatic retries for operations above `RiskLevel::Safe`.
+    /// Disabled by default because a timeout after a side effect can be
+    /// ambiguous: blindly replaying a write, command, or external action may
+    /// duplicate it.
+    #[serde(default)]
+    pub retry_unsafe: bool,
     pub allowed_paths: Vec<String>,
     pub disabled_operations: Vec<String>,
     pub risk_override: Option<String>,
@@ -459,8 +467,9 @@ impl Default for ToolConfig {
             enabled: true,
             timeout_secs: 30,
             max_output_chars: None,
-            max_retries: 0,
+            max_retries: 1,
             retry_backoff_secs: 2,
+            retry_unsafe: false,
             allowed_paths: Vec::new(),
             disabled_operations: Vec::new(),
             risk_override: None,

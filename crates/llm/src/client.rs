@@ -217,25 +217,71 @@ where
                 if !retryable || attempt == max_retries {
                     return Err(e);
                 }
-                // §2.3: take max(fixed_backoff, Retry-After)
-                let backoff = (base_secs * (factor.pow(attempt) as u64)).min(max_secs);
-                let retry_after = e.retry_after().map(|d| d.as_secs()).unwrap_or(0);
-                let delay = backoff.max(retry_after);
-                // §5.1: jitter
-                let jitter_ms = (delay as f32 * jitter * 1000.0) as u64;
-                let actual_delay = Duration::from_secs(delay) + Duration::from_millis(jitter_ms);
+                let actual_delay = retry_delay(
+                    base_secs,
+                    factor,
+                    max_secs,
+                    jitter,
+                    attempt,
+                    e.retry_after(),
+                );
                 tracing::debug!(
                     "llm retry {} after {:?} (error: {})",
                     attempt,
                     actual_delay,
                     e
                 );
-                tokio::time::sleep(actual_delay).await;
+                if let Some(cancel) = cancel {
+                    tokio::select! {
+                        _ = tokio::time::sleep(actual_delay) => {},
+                        _ = cancel.cancelled() => return Err(LlmError::Cancelled),
+                    }
+                } else {
+                    tokio::time::sleep(actual_delay).await;
+                }
                 last_err = Some(e);
             }
         }
     }
     Err(last_err.unwrap_or_else(|| LlmError::Unknown("exhausted retries".into())))
+}
+
+/// Compute a bounded exponential retry delay. Provider supplied `Retry-After`
+/// is preserved at sub-second precision and always wins over the local delay.
+/// Jitter is symmetric so concurrent callers do not all retry later together.
+pub fn retry_delay(
+    base_secs: u64,
+    factor: u32,
+    max_secs: u64,
+    jitter: f32,
+    attempt: u32,
+    retry_after: Option<Duration>,
+) -> Duration {
+    let factor = u64::from(factor.max(1));
+    let cap = Duration::from_secs(max_secs);
+    let backoff = Duration::from_secs(
+        base_secs
+            .saturating_mul(factor.saturating_pow(attempt))
+            .min(max_secs),
+    );
+    let retry_after = retry_after.unwrap_or_default();
+    let jitter = jitter.clamp(0.0, 1.0);
+    if jitter == 0.0 || backoff.is_zero() {
+        return backoff.max(retry_after);
+    }
+
+    // System time is sufficient here: this is only a short-lived spread among
+    // concurrent retries, not a security boundary or an identifier source.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let sample = f64::from(nanos) / f64::from(u32::MAX);
+    let multiplier = 1.0 + ((sample * 2.0 - 1.0) * f64::from(jitter));
+    backoff
+        .mul_f64(multiplier.max(0.0))
+        .min(cap)
+        .max(retry_after)
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +476,50 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), LlmError::Timeout(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_cancellation_interrupts_backoff() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let attempts = Arc::new(AtomicU32::new(0));
+        let task = tokio::spawn({
+            let cancel = cancel.clone();
+            let attempts = attempts.clone();
+            async move {
+                with_retry(2, 60, 2, 60, 0.0, Some(&cancel), || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    async { Err::<(), LlmError>(LlmError::Timeout("transient".into())) }
+                })
+                .await
+            }
+        });
+
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        let result = task.await.unwrap();
+        assert!(matches!(result, Err(LlmError::Cancelled)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn retry_delay_preserves_retry_after_and_clamps_jitter() {
+        let retry_after = Duration::from_millis(750);
+        let without_jitter = retry_delay(0, 2, 5, 0.0, 0, Some(retry_after));
+        assert_eq!(without_jitter, retry_after);
+        assert_eq!(
+            retry_delay(0, 2, 0, 0.0, 0, Some(retry_after)),
+            retry_after,
+            "provider Retry-After must not be clamped by the local backoff cap"
+        );
+
+        for _ in 0..10 {
+            let delay = retry_delay(2, 2, 5, 1.0, 1, Some(retry_after));
+            assert!(delay >= retry_after);
+            assert!(delay <= Duration::from_secs(5));
+        }
     }
 
     #[test]

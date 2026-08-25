@@ -336,6 +336,15 @@ pub struct LlmConfig {
     /// `scale_stream_idle`.
     pub stream_idle_timeout_secs: u64,
     // §2.3/5.1: retry backoff parameters
+    /// Retry attempts for the selected endpoint after the initial request.
+    /// Only transient provider failures (timeouts, rate limits, and 5xxs) are
+    /// retried; invalid requests, authentication, billing, and cancellation
+    /// always fail immediately.
+    pub retry_max_retries: u32,
+    /// Retry attempts for the balanced-model fallback after its initial
+    /// request. This is intentionally lower than the primary budget so an
+    /// outage does not multiply a single user turn into many requests.
+    pub fallback_retry_max_retries: u32,
     pub retry_base_secs: u64,
     pub retry_factor: u32,
     pub retry_max_secs: u64,
@@ -364,6 +373,8 @@ impl Default for LlmConfig {
             roles: Vec::new(),
             max_total_duration_secs: 180,
             stream_idle_timeout_secs: 20,
+            retry_max_retries: 2,
+            fallback_retry_max_retries: 1,
             retry_base_secs: 2,
             retry_factor: 2,
             retry_max_secs: 30,
@@ -511,6 +522,8 @@ impl LlmConfig {
             embedding_model: self.materialize_endpoint(EndpointRole::EmbeddingModel),
             max_total_duration_secs: self.max_total_duration_secs,
             stream_idle_timeout_secs: self.stream_idle_timeout_secs,
+            retry_max_retries: self.retry_max_retries,
+            fallback_retry_max_retries: self.fallback_retry_max_retries,
             retry_base_secs: self.retry_base_secs,
             retry_factor: self.retry_factor,
             retry_max_secs: self.retry_max_secs,
@@ -703,6 +716,8 @@ pub struct RouterConfig {
     pub embedding_model: ModelEndpoint,
     pub max_total_duration_secs: u64,
     pub stream_idle_timeout_secs: u64,
+    pub retry_max_retries: u32,
+    pub fallback_retry_max_retries: u32,
     pub retry_base_secs: u64,
     pub retry_factor: u32,
     pub retry_max_secs: u64,
@@ -723,6 +738,8 @@ impl Default for RouterConfig {
             embedding_model: ModelEndpoint::default(),
             max_total_duration_secs: 180,
             stream_idle_timeout_secs: 20,
+            retry_max_retries: 2,
+            fallback_retry_max_retries: 1,
             retry_base_secs: 2,
             retry_factor: 2,
             retry_max_secs: 30,
@@ -881,5 +898,17 @@ mod tests {
         assert!(llm.is_configured(EndpointRole::DefaultModel));
         let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
         assert!(endpoint_credentials_ready(&ep));
+    }
+
+    #[test]
+    fn materialize_preserves_retry_budgets() {
+        let llm = LlmConfig {
+            retry_max_retries: 4,
+            fallback_retry_max_retries: 2,
+            ..Default::default()
+        };
+        let config = llm.materialize(None, None);
+        assert_eq!(config.retry_max_retries, 4);
+        assert_eq!(config.fallback_retry_max_retries, 2);
     }
 }
