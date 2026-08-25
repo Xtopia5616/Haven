@@ -84,7 +84,9 @@ pub struct AgentSpawnResult {
 /// Async callback the desktop shell installs so `agent` spawn can create and
 /// dispatch a real session without `haven-tools` depending on `haven-agent`.
 pub type AgentSpawner = Arc<
-    dyn Fn(AgentSpawnRequest) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentSpawnResult>> + Send>>
+    dyn Fn(
+            AgentSpawnRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentSpawnResult>> + Send>>
         + Send
         + Sync,
 >;
@@ -285,9 +287,7 @@ fn check_explicit_type(t: Option<String>) -> anyhow::Result<Option<MessageType>>
             serde_json::from_value(Value::String(s.to_string()))
                 .map(Some)
                 .map_err(|_| {
-                    anyhow::anyhow!(
-                        "invalid type '{s}': expected message|reply|broadcast|request"
-                    )
+                    anyhow::anyhow!("invalid type '{s}': expected message|reply|broadcast|request")
                 })
         }
         None => Ok(None),
@@ -608,13 +608,7 @@ impl AgentTool {
         let title_c = title.clone();
         let caps_c = capabilities.clone();
         blocking(bus, move |bus| {
-            bus.register_with_profile(
-                &sid_c,
-                &caps_c,
-                title_c.as_deref(),
-                role_c.as_deref(),
-                None,
-            )
+            bus.register_with_profile(&sid_c, &caps_c, title_c.as_deref(), role_c.as_deref(), None)
         })
         .await?;
         Ok(ToolResult::ok(json!({
@@ -926,7 +920,10 @@ mod tests {
             op("inbox", json!({})),
             op("reply", json!({"text": "hi"})),
             op("profile", json!({"role": "coder"})),
-            op("request", json!({"to": "ses-b", "text": "hi", "timeout_secs": 1})),
+            op(
+                "request",
+                json!({"to": "ses-b", "text": "hi", "timeout_secs": 1}),
+            ),
             op("spawn", json!({"task": "do X"})),
         ];
         for input in inputs {
@@ -946,9 +943,12 @@ mod tests {
 
         // B comes online first (its first tool call registers it and creates
         // its mailbox).
-        tool.execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
-            .await
-            .unwrap();
+        tool.execute(
+            with_sid(op("inbox", json!({})), "ses-b"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         // A → B
         let result = tool
@@ -971,7 +971,10 @@ mod tests {
 
         // B reads it: system_note marks low-trust origin.
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-b"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(result.output["count"], 1);
@@ -985,7 +988,10 @@ mod tests {
 
         // A's inbox holds the auto receipt for the message it sent.
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(result.output["count"], 1);
@@ -1005,7 +1011,10 @@ mod tests {
 
         // A reads the reply, which references the original message.
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(result.output["count"], 1);
@@ -1021,17 +1030,26 @@ mod tests {
     async fn reply_to_explicit_in_reply_to_resolves_target() {
         let (_dir, _bus, tool) = test_tools();
 
-        tool.execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
-            .await
-            .unwrap();
         tool.execute(
-            with_sid(op("send", json!({"to": "ses-b", "text": "第一封"})), "ses-a"),
+            with_sid(op("inbox", json!({})), "ses-b"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        tool.execute(
+            with_sid(
+                op("send", json!({"to": "ses-b", "text": "第一封"})),
+                "ses-a",
+            ),
             CancellationToken::new(),
         )
         .await
         .unwrap();
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-b"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let orig_id = result.output["messages"][0]["id"]
@@ -1053,7 +1071,10 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["to"], "ses-a");
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(result.output["messages"][0]["in_reply_to"], orig_id);
@@ -1091,7 +1112,10 @@ mod tests {
         let (_dir, _bus, tool) = test_tools();
         let result = tool
             .execute(
-                with_sid(op("send", json!({"to": "ses-ghost", "text": "hi"})), "ses-a"),
+                with_sid(
+                    op("send", json!({"to": "ses-ghost", "text": "hi"})),
+                    "ses-a",
+                ),
                 CancellationToken::new(),
             )
             .await;
@@ -1162,7 +1186,10 @@ mod tests {
 
         for name in ["ses-b", "ses-c"] {
             let result = tool
-                .execute(with_sid(op("inbox", json!({})), name), CancellationToken::new())
+                .execute(
+                    with_sid(op("inbox", json!({})), name),
+                    CancellationToken::new(),
+                )
                 .await
                 .unwrap();
             assert_eq!(result.output["count"], 1, "{name} must get the broadcast");
@@ -1171,7 +1198,10 @@ mod tests {
         // The sender's own mailbox only holds the two auto receipts (one per
         // reader) — never the broadcast itself.
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1204,7 +1234,10 @@ mod tests {
         let (_dir, bus, tool) = test_tools();
         bus.register("ses-b", &[]).unwrap();
         let result = tool
-            .execute(with_sid(op("list", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("list", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let agents: Vec<&str> = result.output["agents"]
@@ -1297,12 +1330,18 @@ mod tests {
         let (_dir, _bus, tool) = test_tools();
 
         // B comes online first, then A sends.
-        tool.execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
-            .await
-            .unwrap();
+        tool.execute(
+            with_sid(op("inbox", json!({})), "ses-b"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let sent = tool
             .execute(
-                with_sid(op("send", json!({"to": "ses-b", "text": "看完回我"})), "ses-a"),
+                with_sid(
+                    op("send", json!({"to": "ses-b", "text": "看完回我"})),
+                    "ses-a",
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1311,13 +1350,19 @@ mod tests {
 
         // B reads → a receipt lands in A's mailbox automatically.
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-b"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(result.output["count"], 1, "B sees the original message");
 
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(result.output["count"], 1, "A receives exactly one receipt");
@@ -1327,11 +1372,17 @@ mod tests {
         assert_eq!(ack["in_reply_to"], msg_id);
 
         // Reading the receipt produces no further acks (no loops).
-        tool.execute(with_sid(op("inbox", json!({})), "ses-a"), CancellationToken::new())
-            .await
-            .unwrap();
+        tool.execute(
+            with_sid(op("inbox", json!({})), "ses-a"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let again = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-b"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(again.output["count"], 0, "no receipt-of-receipt");
@@ -1375,7 +1426,10 @@ mod tests {
         .await
         .unwrap();
         let result = tool
-            .execute(with_sid(op("list", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("list", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let agent = result.output["agents"]
@@ -1395,9 +1449,12 @@ mod tests {
         let tool = Arc::new(tool);
 
         // B online.
-        tool.execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
-            .await
-            .unwrap();
+        tool.execute(
+            with_sid(op("inbox", json!({})), "ses-b"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         let bus_for_peer = bus.clone();
         let tool_for_peer = tool.clone();
@@ -1562,9 +1619,12 @@ mod tests {
     #[tokio::test]
     async fn reply_with_explicit_to_auto_fills_in_reply_to() {
         let (_dir, _bus, tool) = test_tools();
-        tool.execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
-            .await
-            .unwrap();
+        tool.execute(
+            with_sid(op("inbox", json!({})), "ses-b"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let sent = tool
             .execute(
                 with_sid(
@@ -1579,9 +1639,12 @@ mod tests {
             .await
             .unwrap();
         let req_id = sent.output["message_id"].as_str().unwrap().to_string();
-        tool.execute(with_sid(op("inbox", json!({})), "ses-b"), CancellationToken::new())
-            .await
-            .unwrap();
+        tool.execute(
+            with_sid(op("inbox", json!({})), "ses-b"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         tool.execute(
             with_sid(op("reply", json!({"to": "ses-a", "text": "done"})), "ses-b"),
             CancellationToken::new(),
@@ -1589,7 +1652,10 @@ mod tests {
         .await
         .unwrap();
         let result = tool
-            .execute(with_sid(op("inbox", json!({})), "ses-a"), CancellationToken::new())
+            .execute(
+                with_sid(op("inbox", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let reply_msg = result.output["messages"]

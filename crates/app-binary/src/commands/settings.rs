@@ -256,10 +256,7 @@ pub async fn list_permissions(
 }
 
 #[tauri::command]
-pub async fn revoke_permission(
-    state: State<'_, Arc<AppState>>,
-    key: String,
-) -> Result<(), String> {
+pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
     let key = key.trim().to_string();
     if key.is_empty() {
         return Err("permission key cannot be empty".into());
@@ -271,9 +268,7 @@ pub async fn revoke_permission(
         .map_err(|e| log_err("revoke_permission", e))?;
     let perms = &mut loader.config_mut().security.permissions;
     perms.retain(|p| p.key != key);
-    loader
-        .save()
-        .map_err(|e| log_err("revoke_permission", e))?;
+    loader.save().map_err(|e| log_err("revoke_permission", e))?;
     Ok(())
 }
 

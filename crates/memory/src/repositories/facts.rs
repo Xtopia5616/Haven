@@ -125,7 +125,10 @@ fn source_ref_from_provenance(
     if message_id.is_empty() && snippet.is_empty() {
         None
     } else {
-        Some(FactSourceRef { message_id, snippet })
+        Some(FactSourceRef {
+            message_id,
+            snippet,
+        })
     }
 }
 
@@ -141,13 +144,7 @@ fn node_kind_for_label(label: &str) -> &'static str {
 /// by a contradicting inference. Shared with the SQL scanner list so the two
 /// cannot drift.
 const IDENTITY_PREDICATES: &[&str] = &[
-    "name",
-    "birthday",
-    "email",
-    "phone",
-    "city",
-    "country",
-    "timezone",
+    "name", "birthday", "email", "phone", "city", "country", "timezone",
 ];
 
 /// Non-identity single-valued predicates (canonical names only). Combined with
@@ -514,7 +511,6 @@ impl Database {
         }
     }
 
-
     /// Store a fact the user explicitly stated (e.g. via the `remember_fact`
     /// tool or the settings UI). User-stated facts are authoritative:
     ///
@@ -818,7 +814,9 @@ impl Database {
     /// full facts for ranking and rendering.
     pub fn get_fact_by_id(&self, id: &str) -> anyhow::Result<Option<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges WHERE id = ?1"))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM memory_edges WHERE id = ?1"
+        ))?;
         let mut rows = stmt.query(rusqlite::params![id])?;
         match rows.next()? {
             Some(row) => Ok(Some(fact_from_row(row)?)),
@@ -856,8 +854,9 @@ impl Database {
         let key = format!("_facts_{}", subject);
         let cache_gen = self.cache_generation(&key);
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1"))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1"
+        ))?;
         let rows = stmt.query_map(rusqlite::params![subject], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -947,7 +946,9 @@ impl Database {
 
     pub fn list_facts_by_source(&self, source: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges WHERE source = ?1"))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM memory_edges WHERE source = ?1"
+        ))?;
         let rows = stmt.query_map(rusqlite::params![source], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -1250,7 +1251,10 @@ impl Database {
                 |r| r.get(0),
             )
             .ok();
-        conn.execute("DELETE FROM memory_edges WHERE id = ?1", rusqlite::params![id])?;
+        conn.execute(
+            "DELETE FROM memory_edges WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
         if let Some(s) = subject {
             self.cache_invalidate_facts(&s);
         }
@@ -1266,7 +1270,9 @@ impl Database {
              GROUP BY predicate
              ORDER BY n DESC, predicate ASC",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -1632,10 +1638,8 @@ impl Database {
                AND confidence >= ?"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let mut params: Vec<rusqlite::types::Value> = predicates
-            .iter()
-            .map(|p| (*p).to_string().into())
-            .collect();
+        let mut params: Vec<rusqlite::types::Value> =
+            predicates.iter().map(|p| (*p).to_string().into()).collect();
         params.push(CONTRADICTION_LIVE_FLOOR.into());
         let rows = stmt.query_map(rusqlite::params_from_iter(params), fact_from_row)?;
         let mut by_key: HashMap<(String, String), Vec<Fact>> = HashMap::new();
@@ -1649,8 +1653,10 @@ impl Database {
 
         let mut out = Vec::new();
         for facts in by_key.into_values() {
-            let distinct_objects: HashSet<String> =
-                facts.iter().map(|f| f.object.to_ascii_lowercase()).collect();
+            let distinct_objects: HashSet<String> = facts
+                .iter()
+                .map(|f| f.object.to_ascii_lowercase())
+                .collect();
             if distinct_objects.len() >= 2 && facts.len() >= 2 {
                 out.push(ContradictionCandidate {
                     kind: ContradictionKind::SingleValued,
@@ -1759,8 +1765,6 @@ fn contradiction_cmp(kind: ContradictionKind, a: &Fact, b: &Fact) -> std::cmp::O
             .then_with(|| fact_recency_key(a).cmp(fact_recency_key(b))),
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -2319,23 +2323,13 @@ mod tests {
         db.cache_invalidate_all_facts();
 
         let counts = db.list_predicate_counts().unwrap();
-        assert!(
-            counts
-                .iter()
-                .any(|(p, n)| p == "fav_lang" && *n == 2)
-        );
+        assert!(counts.iter().any(|(p, n)| p == "fav_lang" && *n == 2));
         let rewritten = db.rewrite_predicate("fav_lang", "language").unwrap();
         assert_eq!(rewritten, 2);
         let remaining = db.list_facts().unwrap();
         assert!(remaining.iter().all(|f| f.predicate == "language"));
         // Identical (subject, predicate, object=Rust) collapsed by dedup.
-        assert_eq!(
-            remaining
-                .iter()
-                .filter(|f| f.object == "Rust")
-                .count(),
-            1
-        );
+        assert_eq!(remaining.iter().filter(|f| f.object == "Rust").count(), 1);
         assert!(remaining.iter().any(|f| f.object == "Go"));
     }
 
@@ -3201,10 +3195,7 @@ mod tests {
         );
         assert!((dislikes.confidence - 1.0).abs() < 1e-9);
         // Provenance survives demotion as evidence.
-        assert_eq!(
-            likes.source_ref.as_ref().unwrap().snippet,
-            "I love Rust"
-        );
+        assert_eq!(likes.source_ref.as_ref().unwrap().snippet, "I love Rust");
         assert_eq!(
             dislikes.source_ref.as_ref().unwrap().snippet,
             "Rust is awful"
@@ -3247,15 +3238,8 @@ mod tests {
         // High enough that one *0.5 demote still leaves both above the floor.
         db.insert_fact("user", "works_at", "Acme", "inferred", 0.95, &["work"])
             .unwrap();
-        db.insert_fact(
-            "user",
-            "works_at",
-            "BetaCorp",
-            "inferred",
-            0.92,
-            &["work"],
-        )
-        .unwrap();
+        db.insert_fact("user", "works_at", "BetaCorp", "inferred", 0.92, &["work"])
+            .unwrap();
         let demoted = db.resolve_contradictions().unwrap();
         assert_eq!(demoted, 1);
         let ambiguous = db.list_ambiguous_contradictions().unwrap();

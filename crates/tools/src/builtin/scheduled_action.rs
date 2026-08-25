@@ -13,10 +13,7 @@ use crate::tool::RegistryProbe;
 use crate::{Tool, ToolResult};
 
 /// Rewrite stored scheduled tool calls after builtin renames/merges.
-fn migrate_legacy_scheduled_tool(
-    name: &str,
-    args: Option<Value>,
-) -> (String, Option<Value>) {
+fn migrate_legacy_scheduled_tool(name: &str, args: Option<Value>) -> (String, Option<Value>) {
     let args = args.unwrap_or_else(|| serde_json::json!({}));
     match name {
         "facts" => ("memory".into(), Some(args)),
@@ -345,8 +342,7 @@ impl ScheduledActionCenter {
             // Builtin renames: rewrite stored tool calls so pending timers
             // still fire after upgrade.
             if let Some(name) = tool_name.as_deref() {
-                let (new_name, new_args) =
-                    migrate_legacy_scheduled_tool(name, tool_args.clone());
+                let (new_name, new_args) = migrate_legacy_scheduled_tool(name, tool_args.clone());
                 tool_name = Some(new_name);
                 tool_args = new_args;
             }

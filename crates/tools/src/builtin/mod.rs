@@ -3,14 +3,14 @@ pub mod ask;
 pub mod audio;
 pub mod clipboard;
 pub mod env;
-pub mod memory;
 pub mod file_search;
 pub mod files;
+pub mod http;
 pub mod input;
 pub mod load_mcp;
 pub mod load_skill;
+pub mod memory;
 pub mod messaging;
-pub mod http;
 pub mod notify;
 pub mod power;
 pub mod process;
@@ -76,9 +76,7 @@ pub async fn register_builtin_tools(
     limits: &haven_common::config::ContextLimitsConfig,
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
-    session_registrations: Arc<
-        RwLock<HashMap<String, HashMap<String, ToolBox>>>,
-    >,
+    session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
     catalog_version: Arc<std::sync::atomic::AtomicU64>,
     agent_spawner: messaging::AgentSpawnerSlot,
     memory_recall: memory::MemoryRecallSlot,

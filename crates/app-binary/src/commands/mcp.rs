@@ -244,7 +244,9 @@ pub async fn mcp_tool_call(
                 .map_err(|e| log_err("mcp_tool_call", e))?);
         }
         ConfirmationResult::Blocked { reason } => {
-            return Err(format!("MCP tool call blocked by security policy ({reason})"));
+            return Err(format!(
+                "MCP tool call blocked by security policy ({reason})"
+            ));
         }
     }
 

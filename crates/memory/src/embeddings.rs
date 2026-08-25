@@ -310,10 +310,11 @@ impl Database {
                          ORDER BY COALESCE(last_seen_at, created_at) DESC
                          LIMIT ?3",
                     )?;
-                    for row in stmt.query_map(
-                        rusqlite::params![entity_type, model, limit as i64],
-                        |r| r.get::<_, String>(0),
-                    )? {
+                    for row in stmt
+                        .query_map(rusqlite::params![entity_type, model, limit as i64], |r| {
+                            r.get::<_, String>(0)
+                        })?
+                    {
                         out.push(row?);
                     }
                 } else {
@@ -347,10 +348,11 @@ impl Database {
                          ORDER BY created_at DESC
                          LIMIT ?3",
                     )?;
-                    for row in ep_stmt.query_map(
-                        rusqlite::params![entity_type, model, limit as i64],
-                        |r| r.get::<_, String>(0),
-                    )? {
+                    for row in ep_stmt
+                        .query_map(rusqlite::params![entity_type, model, limit as i64], |r| {
+                            r.get::<_, String>(0)
+                        })?
+                    {
                         out.push(row?);
                     }
                 } else {
@@ -530,11 +532,7 @@ impl Database {
         exclude_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<EmbeddedText>> {
         let buckets = lsh_probe_buckets(lsh_bucket(query_vec));
-        let placeholders = buckets
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = buckets.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
         let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         bind.push(Box::new(entity_type.to_string()));
@@ -775,10 +773,8 @@ impl Database {
             }
         }
 
-
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| b.2.cmp(&a.2)) // newer created_at first
+            b.0.cmp(&a.0).then_with(|| b.2.cmp(&a.2)) // newer created_at first
         });
         scored.truncate(limit);
         Ok(scored.into_iter().map(|(_, t, _)| t).collect())
@@ -899,8 +895,7 @@ impl Database {
                  WHERE session_id != ?1
                  ORDER BY created_at DESC LIMIT ?2",
             )?;
-            let rows =
-                stmt.query_map(rusqlite::params![sid, limit as i64], map_row)?;
+            let rows = stmt.query_map(rusqlite::params![sid, limit as i64], map_row)?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         } else {
             let mut stmt = conn.prepare(
@@ -911,7 +906,6 @@ impl Database {
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         }
     }
-
 
     /// Distinct embedding model names currently in the vector index.
     pub fn list_embedding_models(&self) -> anyhow::Result<Vec<String>> {
@@ -1116,14 +1110,7 @@ mod tests {
         db.save_embedding(entity_kind::FACT, &other.id, "m", &[1.0, 0.0], "alice go")
             .unwrap();
         let hits = db
-            .search_embeddings_filtered(
-                entity_kind::FACT,
-                &[1.0, 0.0],
-                10,
-                "m",
-                Some("user"),
-                None,
-            )
+            .search_embeddings_filtered(entity_kind::FACT, &[1.0, 0.0], 10, "m", Some("user"), None)
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.entity_id, user.id);
@@ -1187,7 +1174,9 @@ mod tests {
         let missing = db.missing_embedding_ids(entity_kind::FACT, "m").unwrap();
         assert_eq!(missing.len(), 1);
         // Covered under old model still missing for the new one (P2-13).
-        let missing_new = db.missing_embedding_ids(entity_kind::FACT, "other").unwrap();
+        let missing_new = db
+            .missing_embedding_ids(entity_kind::FACT, "other")
+            .unwrap();
         assert_eq!(missing_new.len(), 2);
     }
 
@@ -1218,7 +1207,9 @@ mod tests {
             .unwrap();
         assert_eq!(missing.len(), 2);
         assert!(
-            missing.iter().all(|id| id == &ep_a || id == &ep_b || id == &ep_c),
+            missing
+                .iter()
+                .all(|id| id == &ep_a || id == &ep_b || id == &ep_c),
             "only memory_items should be missing-index candidates, got {:?}",
             missing
         );
@@ -1235,10 +1226,7 @@ mod tests {
         let db = db();
         let session = db.create_session("t", "").unwrap();
         let ep = db.add_episode(&session.id, "remember this").unwrap();
-        assert_eq!(
-            db.episode_text(&ep).unwrap(),
-            Some("remember this".into())
-        );
+        assert_eq!(db.episode_text(&ep).unwrap(), Some("remember this".into()));
         assert_eq!(db.episode_text("nope").unwrap(), None);
     }
 
@@ -1294,11 +1282,8 @@ mod tests {
     fn search_episodes_by_keywords_ranks_matches() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        db.add_episode(
-            &session.id,
-            "I discussed the dark theme preference earlier",
-        )
-        .unwrap();
+        db.add_episode(&session.id, "I discussed the dark theme preference earlier")
+            .unwrap();
         db.add_episode(&session.id, "unrelated note about groceries")
             .unwrap();
         let hits = db
@@ -1321,11 +1306,8 @@ mod tests {
         let db = db();
         let current = db.create_session("current", "").unwrap();
         let past = db.create_session("past", "").unwrap();
-        db.add_episode(
-            &current.id,
-            "I discussed the dark theme in this session",
-        )
-        .unwrap();
+        db.add_episode(&current.id, "I discussed the dark theme in this session")
+            .unwrap();
         db.add_episode(&past.id, "I discussed the dark theme last week")
             .unwrap();
         let hits = db
@@ -1376,9 +1358,7 @@ mod tests {
             &["Dell"],
         )
         .unwrap();
-        let hits = db
-            .search_episodes_by_keywords(&["hardware"], 5)
-            .unwrap();
+        let hits = db.search_episodes_by_keywords(&["hardware"], 5).unwrap();
         assert!(
             hits.iter().any(|h| h.contains("monitors")),
             "topic tag must be FTS-visible; got {hits:?}"
@@ -1516,8 +1496,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bucket, lsh_bucket(&[1.0, 0.0, 0.5]));
-        assert_eq!(db.count_embeddings_for_model(entity_kind::FACT, "m").unwrap(), 1);
-        assert_eq!(db.count_embeddings_for_model(entity_kind::FACT, "").unwrap(), 0);
+        assert_eq!(
+            db.count_embeddings_for_model(entity_kind::FACT, "m")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.count_embeddings_for_model(entity_kind::FACT, "")
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -1547,9 +1535,7 @@ mod tests {
         let db = db();
         db.save_embedding(entity_kind::FACT, "f1", "m", &[0.25, 0.75], "x")
             .unwrap();
-        db.conn()
-            .execute("DELETE FROM embedding_lsh", [])
-            .unwrap();
+        db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
         let n = db.rebuild_embedding_lsh("m").unwrap();
         assert_eq!(n, 1);
         let bucket: i64 = db

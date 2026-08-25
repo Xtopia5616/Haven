@@ -515,19 +515,58 @@ impl AnthropicAdapter {
             .collect()
     }
 
-    /// Mark the last tool with an ephemeral cache breakpoint so the whole
-    /// tools prefix can be reused across steps (Anthropic prompt caching).
+    /// Mark the last tool in the stable tools index with an ephemeral cache
+    /// breakpoint. Server-side tools are appended after client tools and must
+    /// not move the client-tool cache boundary.
     fn apply_tools_cache_breakpoint(tools: &mut [Value]) {
-        if let Some(last) = tools.last_mut()
+        let stable_index = tools
+            .iter()
+            .rposition(|tool| tool.get("type").is_none())
+            .or_else(|| tools.len().checked_sub(1));
+        if let Some(last) = stable_index.and_then(|index| tools.get_mut(index))
             && let Some(obj) = last.as_object_mut()
         {
             obj.insert("cache_control".into(), json!({"type": "ephemeral"}));
         }
     }
 
+    /// Mark the end of the conversation prefix with an ephemeral cache
+    /// breakpoint. The current turn stays outside the breakpoint so a new
+    /// user message (or tool result) does not invalidate the reusable prefix.
+    fn apply_messages_cache_breakpoint(messages: &mut [AnthropicMessage]) {
+        if messages.len() < 2 {
+            return;
+        }
+
+        let Some(latest) = messages.last() else {
+            return;
+        };
+        let is_latest_user_turn = latest.role == "user";
+        if !is_latest_user_turn {
+            return;
+        }
+        // A tool result is the newest mutable input. The preceding assistant
+        // tool-use message remains part of the reusable conversation prefix.
+        let Some(prefix_last) = messages.get_mut(messages.len() - 2) else {
+            return;
+        };
+        let Some(blocks) = prefix_last.content.as_array_mut() else {
+            return;
+        };
+        let Some(last) = blocks.last_mut() else {
+            return;
+        };
+        if let Some(obj) = last.as_object_mut() {
+            obj.insert("cache_control".into(), json!({"type": "ephemeral"}));
+        }
+    }
+
     /// Split system text at the MEMORY fence: stable prefix gets
     /// `cache_control`, volatile MEMORY suffix does not. When there is no
-    /// fence the entire system block is marked cacheable.
+    /// fence the entire system block is marked cacheable. Anthropic applies a
+    /// provider-side minimum prompt size for cache creation; short prefixes
+    /// are still marked so the same request shape works when they grow past
+    /// that threshold.
     fn system_with_cache_control(system: Option<String>) -> Option<Value> {
         let text = system.filter(|s| !s.is_empty())?;
         let fence = haven_common::prompts::MEMORY_FENCE_START;
@@ -612,6 +651,8 @@ impl AnthropicAdapter {
         if !tools_json.is_empty() {
             Self::apply_tools_cache_breakpoint(&mut tools_json);
         }
+        let mut messages = messages;
+        Self::apply_messages_cache_breakpoint(&mut messages);
         AnthropicRequest {
             model: self.endpoint.model_name.clone(),
             max_tokens: self.endpoint.max_tokens,
@@ -1855,6 +1896,162 @@ mod tests {
     }
 
     #[test]
+    fn serialized_request_preserves_all_cache_breakpoints() {
+        let client = AnthropicAdapter::new(ModelEndpoint::default());
+        let body = client.build_request_body(
+            vec![
+                CanonicalMessage {
+                    role: CanonicalRole::System,
+                    content: vec![ContentPart::text("stable instructions")],
+                    tool_call_id: None,
+                    tool_calls: None,
+                    reasoning: None,
+                    web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
+                    source: None,
+                    id: None,
+                },
+                CanonicalMessage {
+                    role: CanonicalRole::User,
+                    content: vec![ContentPart::text("old question")],
+                    tool_call_id: None,
+                    tool_calls: None,
+                    reasoning: None,
+                    web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
+                    source: None,
+                    id: None,
+                },
+                CanonicalMessage::assistant(
+                    vec![ContentPart::text("old answer")],
+                    None,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                ),
+                CanonicalMessage {
+                    role: CanonicalRole::User,
+                    content: vec![ContentPart::text("latest question")],
+                    tool_call_id: None,
+                    tool_calls: None,
+                    reasoning: None,
+                    web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
+                    source: None,
+                    id: None,
+                },
+            ],
+            vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "lookup".into(),
+                    description: "look up a value".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            }],
+            false,
+        );
+        let wire = serde_json::to_value(body).unwrap();
+
+        assert_eq!(
+            wire["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            wire["tools"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            wire["messages"][1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert!(
+            wire["messages"][2]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+        assert!(
+            wire["messages"][3]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn messages_cache_breakpoint_marks_conversation_prefix() {
+        let mut messages = vec![
+            AnthropicMessage {
+                role: "user".into(),
+                content: json!([{"type": "text", "text": "first"}]),
+            },
+            AnthropicMessage {
+                role: "assistant".into(),
+                content: json!([{"type": "text", "text": "reply"}]),
+            },
+            AnthropicMessage {
+                role: "user".into(),
+                content: json!([{"type": "text", "text": "latest"}]),
+            },
+        ];
+
+        AnthropicAdapter::apply_messages_cache_breakpoint(&mut messages);
+
+        assert_eq!(
+            messages[1].content[0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert!(messages[2].content[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn messages_cache_breakpoint_keeps_tool_result_turn_uncached() {
+        let mut messages = vec![
+            AnthropicMessage {
+                role: "user".into(),
+                content: json!([{"type": "text", "text": "request"}]),
+            },
+            AnthropicMessage {
+                role: "assistant".into(),
+                content: json!([{"type": "tool_use", "id": "toolu_1"}]),
+            },
+            AnthropicMessage {
+                role: "user".into(),
+                content: json!([{"type": "tool_result", "tool_use_id": "toolu_1"}]),
+            },
+        ];
+
+        AnthropicAdapter::apply_messages_cache_breakpoint(&mut messages);
+
+        assert!(messages[0].content[0].get("cache_control").is_none());
+        assert_eq!(
+            messages[1].content[0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert!(messages[2].content[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn messages_cache_breakpoint_marks_short_prefix_without_assuming_a_hit() {
+        let mut messages = vec![
+            AnthropicMessage {
+                role: "assistant".into(),
+                content: json!([{"type": "text", "text": "short"}]),
+            },
+            AnthropicMessage {
+                role: "user".into(),
+                content: json!([{"type": "text", "text": "latest"}]),
+            },
+        ];
+
+        AnthropicAdapter::apply_messages_cache_breakpoint(&mut messages);
+
+        assert_eq!(
+            messages[0].content[0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
     fn system_with_cache_control_splits_memory_fence() {
         let fence = haven_common::prompts::MEMORY_FENCE_START;
         let full = format!("stable guidelines{fence}volatile facts");
@@ -1877,11 +2074,30 @@ mod tests {
     #[test]
     fn web_search_mode_injects_server_tool() {
         let client = AnthropicAdapter::new(ModelEndpoint::default());
-        let auto = client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Auto);
+        let client_tool = ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "search".into(),
+                description: "search".into(),
+                parameters: json!({"type": "object"}),
+            },
+        };
+        let auto = client.build_request_body_with_mode(
+            vec![],
+            vec![client_tool],
+            false,
+            WebSearchMode::Auto,
+        );
         let tools = auto.tools.expect("web_search tool present");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["type"], ANTHROPIC_WEB_SEARCH_TOOL_TYPE);
-        assert_eq!(tools[0]["name"], "web_search");
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[1]["type"], ANTHROPIC_WEB_SEARCH_TOOL_TYPE);
+        assert_eq!(tools[1]["name"], "web_search");
+        assert_eq!(
+            tools[0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "client tool index remains the stable tools-cache boundary"
+        );
+        assert!(tools[1].get("cache_control").is_none());
         assert_eq!(auto.tool_choice, Some(json!({"type": "auto"})));
 
         let always =
@@ -1909,6 +2125,47 @@ mod tests {
 
         let off = client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Off);
         assert!(off.tools.is_none());
+
+        let server_only = client
+            .build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Auto)
+            .tools
+            .unwrap();
+        assert_eq!(
+            server_only[0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn client_tool_cache_boundary_stays_before_server_tools() {
+        let mut tools = AnthropicAdapter::convert_tools(vec![
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "one".into(),
+                    description: "one".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "two".into(),
+                    description: "two".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            },
+        ]);
+        tools.push(json!({
+            "type": ANTHROPIC_WEB_SEARCH_TOOL_TYPE,
+            "name": "web_search"
+        }));
+
+        AnthropicAdapter::apply_tools_cache_breakpoint(&mut tools);
+
+        assert!(tools[0].get("cache_control").is_none());
+        assert_eq!(tools[1]["cache_control"], json!({"type": "ephemeral"}));
+        assert!(tools[2].get("cache_control").is_none());
     }
 
     #[test]
@@ -1983,6 +2240,38 @@ mod tests {
         assert_eq!(resp.usage.cache_creation_tokens, 50);
         assert_eq!(resp.usage.total_tokens, 555);
         assert_eq!(resp.usage.context_tokens(), 550);
+    }
+
+    #[test]
+    fn parse_real_messages_usage_fixture() {
+        // Captured from the Anthropic Messages API response shape. Keep this
+        // as JSON so serde coverage includes the wire field names and nesting.
+        let fixture = r#"
+        {
+          "id": "msg_01fixture",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-sonnet-4-20250514",
+          "content": [{"type": "text", "text": "cached response"}],
+          "stop_reason": "end_turn",
+          "usage": {
+            "input_tokens": 128,
+            "output_tokens": 12,
+            "cache_creation_input_tokens": 64,
+            "cache_read_input_tokens": 512
+          }
+        }
+        "#;
+        let response: AnthropicResponse = serde_json::from_str(fixture).unwrap();
+        let client = AnthropicAdapter::new(ModelEndpoint::default());
+        let parsed = client
+            .parse_response(response, Some("claude-sonnet-4-20250514".into()))
+            .unwrap();
+
+        assert_eq!(parsed.usage.prompt_tokens, 128);
+        assert_eq!(parsed.usage.cached_tokens, 512);
+        assert_eq!(parsed.usage.cache_creation_tokens, 64);
+        assert_eq!(parsed.usage.total_tokens, 716);
     }
 
     #[test]

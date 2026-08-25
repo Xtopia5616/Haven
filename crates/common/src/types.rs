@@ -581,9 +581,7 @@ impl CanonicalToolCall {
         }
         match Self::parse_wire_args(args) {
             WireArgsParse::Valid(_) => false,
-            WireArgsParse::Empty
-            | WireArgsParse::Repaired(_)
-            | WireArgsParse::Incomplete => true,
+            WireArgsParse::Empty | WireArgsParse::Repaired(_) | WireArgsParse::Incomplete => true,
         }
     }
 }
@@ -908,11 +906,11 @@ mod tests {
     #[test]
     fn from_wire_args_empty_becomes_object() {
         assert_eq!(CanonicalToolCall::from_wire_args(""), serde_json::json!({}));
-        assert_eq!(CanonicalToolCall::from_wire_args("  "), serde_json::json!({}));
         assert_eq!(
-            CanonicalToolCall::parse_wire_args(""),
-            WireArgsParse::Empty
+            CanonicalToolCall::from_wire_args("  "),
+            serde_json::json!({})
         );
+        assert_eq!(CanonicalToolCall::parse_wire_args(""), WireArgsParse::Empty);
     }
 
     #[test]

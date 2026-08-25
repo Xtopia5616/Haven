@@ -245,8 +245,9 @@ impl ContextCompactor {
                 }
 
                 let episode_id = haven_common::types::new_id("msg");
-                let mut compacted: Vec<CanonicalMessage> =
-                    Vec::with_capacity(system_count + (start_idx - system_count) + 1 + suffix.len());
+                let mut compacted: Vec<CanonicalMessage> = Vec::with_capacity(
+                    system_count + (start_idx - system_count) + 1 + suffix.len(),
+                );
                 compacted.extend_from_slice(&messages[..system_count]);
                 compacted.extend_from_slice(&messages[system_count..start_idx]);
                 let mut summary_msg = CanonicalMessage::assistant(

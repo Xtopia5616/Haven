@@ -329,9 +329,7 @@ fn cpu_info(detailed: bool, sample_usage: bool) -> Value {
         system.refresh_cpu_all();
     }
     let mut out = cpu_info_from(&system, detailed);
-    if !sample_usage
-        && let Some(obj) = out.as_object_mut()
-    {
+    if !sample_usage && let Some(obj) = out.as_object_mut() {
         obj.remove("usage_pct");
     }
     out
@@ -448,11 +446,7 @@ fn network_info_budgeted(max_chars: usize) -> Value {
         .list()
         .iter()
         .map(|(name, data)| {
-            let ips: Vec<String> = data
-                .ip_networks()
-                .iter()
-                .map(|ip| ip.to_string())
-                .collect();
+            let ips: Vec<String> = data.ip_networks().iter().map(|ip| ip.to_string()).collect();
             serde_json::json!({
                 "name": name,
                 "mac": data.mac_address().to_string(),
@@ -747,10 +741,7 @@ mod tests {
             RiskLevel::High
         );
         // Omitted operation defaults to list for both risk and execution.
-        assert_eq!(
-            tool.risk_level(&json!({"scope": "env"})),
-            RiskLevel::High
-        );
+        assert_eq!(tool.risk_level(&json!({"scope": "env"})), RiskLevel::High);
     }
 
     #[test]

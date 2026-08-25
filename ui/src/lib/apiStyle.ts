@@ -746,6 +746,33 @@ export function apiStylePreset(uiStyle: string): ProviderPreset {
 	);
 }
 
+function normalizePresetUrl(url: string): string {
+	return String(url || '')
+		.trim()
+		.replace(/\/+$/, '')
+		.toLowerCase();
+}
+
+/**
+ * Apply a vendor preset to the Provider dialog form.
+ * Updates `api_style`. Replaces `base_url` only when it is empty or still
+ * the previous preset's default, so a custom gateway URL is kept.
+ * Never touches `api_key`.
+ */
+export function applyProviderPreset(
+	form: { api_style: string; base_url: string; api_key?: string },
+	nextStyle: string,
+): void {
+	const prev = apiStylePreset(form.api_style);
+	const next = apiStylePreset(nextStyle);
+	const current = normalizePresetUrl(form.base_url);
+	const prevDefault = normalizePresetUrl(prev.base_url);
+	form.api_style = nextStyle;
+	if (!current || current === prevDefault) {
+		form.base_url = next.base_url;
+	}
+}
+
 /**
  * Options for the Provider preset select (grouped).
  * @type {{ value: string, label: string, group: string }[]}

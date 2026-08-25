@@ -15,6 +15,7 @@
 	import {
 		API_STYLE_OPTIONS,
 		apiStylePreset,
+		applyProviderPreset,
 		displayApiStyle,
 		isKeylessProvider,
 		isSttOnlyStyle,
@@ -612,9 +613,7 @@
 	 */
 	function applyApiStylePreset(style) {
 		if (!providerDialog?.form) return;
-		const preset = apiStylePreset(style);
-		providerDialog.form.api_style = style;
-		providerDialog.form.base_url = preset.base_url;
+		applyProviderPreset(providerDialog.form, style);
 	}
 
 	// ---------------------------------------------------------------------

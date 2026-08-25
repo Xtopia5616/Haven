@@ -606,9 +606,8 @@ impl InputPipeline {
                 .await
                 .map_err(|e| anyhow::anyhow!(e))
         } else {
-            result.transcript_error = Some(
-                "未配置 STT 服务（设置 → 输入 → Voice → STT Provider）".into(),
-            );
+            result.transcript_error =
+                Some("未配置 STT 服务（设置 → 输入 → Voice → STT Provider）".into());
             return;
         };
 

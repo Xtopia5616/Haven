@@ -78,9 +78,7 @@ impl Usage {
         if self.total_tokens == 0 {
             return self.cached_tokens > self.prompt_tokens;
         }
-        let inclusive = self
-            .prompt_tokens
-            .saturating_add(self.completion_tokens);
+        let inclusive = self.prompt_tokens.saturating_add(self.completion_tokens);
         let exclusive = inclusive.saturating_add(cache);
         exclusive.abs_diff(self.total_tokens) <= inclusive.abs_diff(self.total_tokens)
     }

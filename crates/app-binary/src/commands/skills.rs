@@ -165,7 +165,9 @@ pub async fn execute_skill(
                 .map_err(|e| log_err("execute_skill", e))?);
         }
         ConfirmationResult::Blocked { reason } => {
-            return Err(format!("skill execution blocked by security policy ({reason})"));
+            return Err(format!(
+                "skill execution blocked by security policy ({reason})"
+            ));
         }
     }
 

@@ -20,6 +20,13 @@ use haven_memory::repositories::session_steps::SessionStep;
 use serde::Deserialize;
 use tokio::sync::{Notify, Semaphore};
 
+/// Maximum inputs accepted by the configured embedding endpoint.
+const MAX_EMBEDDING_BATCH_SIZE: usize = 10;
+
+fn embedding_batch_size(configured_size: usize) -> usize {
+    configured_size.clamp(1, MAX_EMBEDDING_BATCH_SIZE)
+}
+
 /// Maximum known facts listed in the extraction prompt as context, so the
 /// model can re-confirm or update existing facts instead of re-extracting
 /// everything from scratch. Embedding requests are chunked to stay under
@@ -177,7 +184,7 @@ impl InferenceEngine {
             db,
             router,
             max_transcript_chars,
-            embed_chunk_size,
+            embed_chunk_size: embedding_batch_size(embed_chunk_size),
             max_known_facts,
             sanitize_max_chars,
             fact_extraction_min_interval_secs,
@@ -600,7 +607,7 @@ impl InferenceEngine {
             return;
         }
         tracing::info!("embedding {} memory items", pending.len());
-        for chunk in pending.chunks(self.embed_chunk_size) {
+        for chunk in pending.chunks(embedding_batch_size(self.embed_chunk_size)) {
             let texts: Vec<String> = chunk.iter().map(|(_, _, t)| t.clone()).collect();
             match self.router.embed(texts).await {
                 Ok(emb) => {
@@ -691,10 +698,9 @@ impl InferenceEngine {
                         }
                         total += n;
                     }
-                    Err(e) => tracing::warn!(
-                        "memory maintenance: resolve_contradictions failed: {}",
-                        e
-                    ),
+                    Err(e) => {
+                        tracing::warn!("memory maintenance: resolve_contradictions failed: {}", e)
+                    }
                 }
                 match db.flush_low_confidence(0.3) {
                     Ok(n) => total += n,
@@ -2184,6 +2190,13 @@ mod tests {
         assert_eq!(result, "Alice likes Rust");
     }
 
+    #[test]
+    fn embedding_batch_size_caps_provider_limit_and_rejects_zero() {
+        assert_eq!(embedding_batch_size(64), MAX_EMBEDDING_BATCH_SIZE);
+        assert_eq!(embedding_batch_size(5), 5);
+        assert_eq!(embedding_batch_size(0), 1);
+    }
+
     fn make_engine(db: Arc<Database>) -> InferenceEngine {
         InferenceEngine {
             db,
@@ -2339,13 +2352,7 @@ mod tests {
         assert_eq!(resolve_source_message(&msgs, 1).unwrap().id, confirm.id);
     }
 
-    fn fresh_fact(
-        id: &str,
-        predicate: &str,
-        object: &str,
-        source: &str,
-        confidence: f64,
-    ) -> Fact {
+    fn fresh_fact(id: &str, predicate: &str, object: &str, source: &str, confidence: f64) -> Fact {
         let now = chrono::Utc::now().to_rfc3339();
         Fact {
             id: id.into(),

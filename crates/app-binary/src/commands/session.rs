@@ -109,7 +109,8 @@ pub async fn resolve_confirmation(
 
     // Deny grants use the tool parent so「拒绝此工具」covers sibling ops;
     // Allow stays on the precise key for least privilege.
-    let precise = haven_common::types::permission_key(&resolution.tool_name, &resolution.tool_input);
+    let precise =
+        haven_common::types::permission_key(&resolution.tool_name, &resolution.tool_input);
     let key = match perm_effect {
         haven_common::types::PermissionEffect::Deny => {
             haven_common::types::permission_tool_root(&precise).to_string()
@@ -164,9 +165,7 @@ fn parse_permission_decision(
     // (and allow this call cannot plant a Deny grant).
     let effect_is_allow = matches!(perm_effect, PermissionEffect::Allow);
     if confirmed != effect_is_allow {
-        return Err(
-            "permission effect must match confirmed (allow↔true, deny↔false)".into(),
-        );
+        return Err("permission effect must match confirmed (allow↔true, deny↔false)".into());
     }
 
     let perm_scope = match scope.map(|s| s.trim().to_ascii_lowercase()).as_deref() {

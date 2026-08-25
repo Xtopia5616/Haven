@@ -241,40 +241,38 @@ impl WindowTool {
         ];
 
         let timeout = self.vision_timeout_secs;
-        let response = match tokio::time::timeout(
-            Duration::from_secs(timeout),
-            client.chat(role, messages),
-        )
-        .await
-        {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(e)) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: serde_json::json!({
-                        "ocr": true,
-                        "path": shot_path,
-                        "ocr_error": true,
-                    }),
-                    error: Some(format!("OCR vision call failed: {e}")),
-                    truncated: false,
-                    signals: crate::tool::ToolSignals::default(),
-                });
-            }
-            Err(_) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: serde_json::json!({
-                        "ocr": true,
-                        "path": shot_path,
-                        "ocr_error": true,
-                    }),
-                    error: Some(format!("OCR vision call timed out after {timeout}s")),
-                    truncated: false,
-                    signals: crate::tool::ToolSignals::default(),
-                });
-            }
-        };
+        let response =
+            match tokio::time::timeout(Duration::from_secs(timeout), client.chat(role, messages))
+                .await
+            {
+                Ok(Ok(resp)) => resp,
+                Ok(Err(e)) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: serde_json::json!({
+                            "ocr": true,
+                            "path": shot_path,
+                            "ocr_error": true,
+                        }),
+                        error: Some(format!("OCR vision call failed: {e}")),
+                        truncated: false,
+                        signals: crate::tool::ToolSignals::default(),
+                    });
+                }
+                Err(_) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: serde_json::json!({
+                            "ocr": true,
+                            "path": shot_path,
+                            "ocr_error": true,
+                        }),
+                        error: Some(format!("OCR vision call timed out after {timeout}s")),
+                        truncated: false,
+                        signals: crate::tool::ToolSignals::default(),
+                    });
+                }
+            };
 
         Ok(ToolResult::ok(serde_json::json!({
             "ocr": true,
@@ -1042,10 +1040,7 @@ mod tests {
     #[test]
     fn test_window_tool_risk_level() {
         let t = tool();
-        assert_eq!(
-            t.risk_level(&json!({"operation": "list"})),
-            RiskLevel::Low
-        );
+        assert_eq!(t.risk_level(&json!({"operation": "list"})), RiskLevel::Low);
         assert_eq!(
             t.risk_level(&json!({"operation": "focus"})),
             RiskLevel::Medium

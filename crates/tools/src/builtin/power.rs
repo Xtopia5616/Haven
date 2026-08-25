@@ -203,10 +203,7 @@ mod tests {
     #[tokio::test]
     async fn test_power_run_default_status() {
         let result = PowerTool
-            .run(
-                PowerParams { operation: None },
-                CancellationToken::new(),
-            )
+            .run(PowerParams { operation: None }, CancellationToken::new())
             .await
             .unwrap();
         assert!(result.success);

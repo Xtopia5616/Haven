@@ -34,11 +34,11 @@ pub use builtin::{
     SelfTool, SelfToolContext,
 };
 pub use circuit::ToolCircuitRegistry;
-pub use live_output::LiveOutputHub;
 pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
 pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
+pub use live_output::LiveOutputHub;
 pub use skill_runner::SkillRunner;
 pub use tool::{
     ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolDef, ToolRegistration, ToolRegistry,
@@ -258,9 +258,7 @@ impl ToolsManager {
         self.safety_gateway
             .apply_security(confirmation_mode, min_risk_level, security_permissions)
             .await;
-        self.safety_gateway
-            .set_tool_settings(tool_settings)
-            .await;
+        self.safety_gateway.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
         *self.audio_pipeline.write().await = audio_pipeline;
         self.scheduled_actions.set_db(self_ctx.db.clone()).await;
@@ -836,11 +834,9 @@ impl ToolsManager {
         }
         tool.validate_input(&exec_input)?;
         if let Some(obj) = exec_input.as_object_mut() {
-            let want_session = tool.requires_session_id()
-                || (tool.supports_live_output() && step_id.is_some());
-            if want_session
-                && let Some(tid) = session_id
-            {
+            let want_session =
+                tool.requires_session_id() || (tool.supports_live_output() && step_id.is_some());
+            if want_session && let Some(tid) = session_id {
                 obj.insert("_session_id".into(), serde_json::json!(tid));
             }
             if tool.supports_live_output()
@@ -1326,11 +1322,7 @@ mod tests {
             fn input_schema(&self) -> Value {
                 json!({"type": "object"})
             }
-            async fn execute(
-                &self,
-                _: Value,
-                _: CancellationToken,
-            ) -> anyhow::Result<ToolResult> {
+            async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
                 Ok(ToolResult::ok(json!({})))
             }
         }
@@ -1361,11 +1353,12 @@ mod tests {
         mgr.rebuild_catalog().await;
         let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let hits2 = hits.clone();
-        mgr.live_outputs.set_event_sink(Arc::new(move |_event, payload| {
-            if let Some(sid) = payload["step_id"].as_str() {
-                hits2.lock().unwrap().push(sid.to_string());
-            }
-        }));
+        mgr.live_outputs
+            .set_event_sink(Arc::new(move |_event, payload| {
+                if let Some(sid) = payload["step_id"].as_str() {
+                    hits2.lock().unwrap().push(sid.to_string());
+                }
+            }));
 
         // Forged private fields, no trusted step → no live emit.
         let _ = mgr

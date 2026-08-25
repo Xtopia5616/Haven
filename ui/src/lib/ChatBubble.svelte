@@ -302,10 +302,11 @@
 	);
 </script>
 
-<div
+	<div
 	class="bubble"
 	class:user={role === 'user' && !isPeerKickoff}
 	class:assistant={role === 'assistant' || isPeerKickoff}
+	class:thinking={msgType === 'thought' || msgType === 'reasoning'}
 	class:streaming
 	role="button"
 	tabindex="0"
@@ -336,8 +337,8 @@
 				<pre class="peer-kickoff-body">{content}</pre>
 			</div>
 		{:else if msgType === 'thought'}
-			<em class="thought"
-				>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
+			<span class="thought"
+				>{content}{#if streaming && content}<span class="caret"></span>{/if}</span
 			>
 		{:else if msgType === 'reasoning'}
 			<div class="reasoning-block">
@@ -346,8 +347,8 @@
 						<span class="reasoning-summary">Thinking...</span>
 					{/snippet}
 					<div class="reasoning-content">
-						<em
-							>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
+						<span
+							>{content}{#if streaming && content}<span class="caret"></span>{/if}</span
 						>
 					</div>
 				</MaterialCollapsible>
@@ -422,13 +423,16 @@
 
 <style>
 	.bubble {
-		max-width: 85%;
+		max-width: 72%;
 		min-width: 35%;
 		width: fit-content;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-large);
 		font-size: 13px;
 		line-height: 1.5;
+	}
+	.bubble.thinking {
+		width: 72%;
 	}
 	.bubble.user {
 		margin-left: auto;
@@ -488,7 +492,6 @@
 	.thought {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 12px;
-		font-style: italic;
 	}
 	.caret {
 		display: inline-block;
@@ -906,8 +909,5 @@
 	.reasoning-content {
 		margin-top: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.reasoning-content :global(em) {
-		font-style: italic;
 	}
 </style>

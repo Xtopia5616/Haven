@@ -694,14 +694,17 @@ pub fn run() {
                                   params: serde_json::Value| {
                                 let permission_key =
                                     haven_common::types::permission_key(&tool_name, &params);
-                                let _ = app_h.emit("confirm:requested", serde_json::json!({
-                                    "step_id": step_id,
-                                    "tool_name": tool_name,
-                                    "risk_level": risk_level,
-                                    "session_id": session_id,
-                                    "params": params,
-                                    "permission_key": permission_key,
-                                }));
+                                let _ = app_h.emit(
+                                    "confirm:requested",
+                                    serde_json::json!({
+                                        "step_id": step_id,
+                                        "tool_name": tool_name,
+                                        "risk_level": risk_level,
+                                        "session_id": session_id,
+                                        "params": params,
+                                        "permission_key": permission_key,
+                                    }),
+                                );
                             },
                         ));
                     });

@@ -152,9 +152,7 @@ struct GeminiUsage {
 
 impl GeminiUsage {
     fn to_usage(&self, model_name: Option<String>) -> Usage {
-        let completion = self
-            .candidates_tokens
-            .saturating_add(self.thoughts_tokens);
+        let completion = self.candidates_tokens.saturating_add(self.thoughts_tokens);
         let mut prompt = self.prompt_tokens;
         let tool_use = self.tool_use_prompt_tokens;
         if tool_use > 0 {

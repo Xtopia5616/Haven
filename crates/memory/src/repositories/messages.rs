@@ -513,7 +513,9 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         let _first = db.add_message(&tid, "user", "开场", None, None).unwrap();
-        let lost = db.add_message(&tid, "user", "丢失输入", None, None).unwrap();
+        let lost = db
+            .add_message(&tid, "user", "丢失输入", None, None)
+            .unwrap();
         // A cutoff newer than the lost row excludes it.
         let after = (Utc::now() + chrono::Duration::seconds(1))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -523,8 +525,8 @@ mod tests {
                 .is_empty()
         );
         // A cutoff older than the lost row still returns it.
-        let before = (Utc::now() - chrono::Duration::days(1))
-            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let before =
+            (Utc::now() - chrono::Duration::days(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
         let undelivered = db
             .get_undelivered_user_messages_since(&tid, Some(before.as_str()))
             .unwrap();

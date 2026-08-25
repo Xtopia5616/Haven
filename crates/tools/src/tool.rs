@@ -1,7 +1,7 @@
 use haven_common::config::{StoredPermission, ToolConfig};
 use haven_common::types::{
-    permission_key, permission_key_candidates, ConfirmationMode, PermissionEffect, PermissionScope,
-    RiskLevel,
+    ConfirmationMode, PermissionEffect, PermissionScope, RiskLevel, permission_key,
+    permission_key_candidates,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -531,11 +531,7 @@ impl SafetyGateway {
     }
 
     /// Effective risk after optional `tool_settings.risk_override`.
-    pub async fn effective_risk(
-        &self,
-        tool_name: &str,
-        reported: RiskLevel,
-    ) -> RiskLevel {
+    pub async fn effective_risk(&self, tool_name: &str, reported: RiskLevel) -> RiskLevel {
         let cfg = self.config.read().await;
         effective_risk_from(&cfg, tool_name, reported)
     }
@@ -664,11 +660,7 @@ impl SafetyGateway {
 
     /// Drop one session's grants (conversation ended / deleted).
     pub async fn clear_session_trust(&self, session_id: &str) {
-        self.config
-            .write()
-            .await
-            .session_grants
-            .remove(session_id);
+        self.config.write().await.session_grants.remove(session_id);
     }
 
     /// Drop every session grant (history cleared / app reset).
@@ -731,7 +723,9 @@ fn disabled_operation_block(
             continue;
         }
         if d == op || d == scope || (!scope.is_empty() && d == format!("{scope}:{op}")) {
-            return Some(format!("operation '{disabled}' is disabled for tool '{tool_name}'"));
+            return Some(format!(
+                "operation '{disabled}' is disabled for tool '{tool_name}'"
+            ));
         }
     }
     None
@@ -746,11 +740,7 @@ fn path_sandbox_block(
     if cfg.allowed_paths.is_empty() {
         return None;
     }
-    let allowed: Vec<PathBuf> = cfg
-        .allowed_paths
-        .iter()
-        .map(|p| PathBuf::from(p))
-        .collect();
+    let allowed: Vec<PathBuf> = cfg.allowed_paths.iter().map(|p| PathBuf::from(p)).collect();
     let paths = collect_path_params(params);
     if paths.is_empty() {
         return None;
@@ -1224,13 +1214,15 @@ mod tests {
     #[tokio::test]
     async fn test_safety_gateway_permanent_deny_blocks() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.grant(None, "shell", PermissionEffect::Deny, PermissionScope::Always)
-            .await;
+        gw.grant(
+            None,
+            "shell",
+            PermissionEffect::Deny,
+            PermissionScope::Always,
+        )
+        .await;
         let result = gw.check(None, "shell", &json!({}), RiskLevel::Safe).await;
-        assert!(matches!(
-            result,
-            ConfirmationResult::Blocked { .. }
-        ));
+        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -1320,7 +1312,12 @@ mod tests {
         );
         gw.set_tool_settings(settings).await;
         let result = gw
-            .check(None, "files", &json!({"operation": "delete"}), RiskLevel::Low)
+            .check(
+                None,
+                "files",
+                &json!({"operation": "delete"}),
+                RiskLevel::Low,
+            )
             .await;
         assert!(matches!(result, ConfirmationResult::Blocked { .. }));
     }
@@ -1335,8 +1332,13 @@ mod tests {
             ConfirmationResult::AutoApproved
         ));
         assert!(matches!(
-            gw.check(None, "system", &json!({"scope":"power","operation":"hibernate"}), RiskLevel::Critical)
-                .await,
+            gw.check(
+                None,
+                "system",
+                &json!({"scope":"power","operation":"hibernate"}),
+                RiskLevel::Critical
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -1344,8 +1346,13 @@ mod tests {
     #[tokio::test]
     async fn test_safety_gateway_session_deny_overrides_permanent_allow() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.grant(None, "files", PermissionEffect::Allow, PermissionScope::Always)
-            .await;
+        gw.grant(
+            None,
+            "files",
+            PermissionEffect::Allow,
+            PermissionScope::Always,
+        )
+        .await;
         gw.grant(
             Some("ses-a"),
             "files",

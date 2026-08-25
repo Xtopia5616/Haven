@@ -95,14 +95,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let session = db.create_session("t1", "").unwrap();
         let id = haven_common::types::new_id("msg");
-        db.add_episode_structured(
-            &session.id,
-            "summary",
-            &id,
-            &["theme", "ui"],
-            &["Alice"],
-        )
-        .unwrap();
+        db.add_episode_structured(&session.id, "summary", &id, &["theme", "ui"], &["Alice"])
+            .unwrap();
         let (topics, entities): (String, String) = db
             .conn()
             .query_row(

@@ -299,7 +299,7 @@ impl Default for ContextLimitsConfig {
             background_max_actions: 64,
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
-            embedding_chunk_size: 64,
+            embedding_chunk_size: 10,
             max_tools_per_request: 128,
         }
     }

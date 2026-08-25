@@ -3,8 +3,8 @@ use haven_common::config::McpServerConfig;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -58,10 +58,12 @@ impl LoadMcpTool {
             anyhow::bail!("server_name is required");
         }
         let session_id = params.session_id.filter(|s| !s.is_empty()).ok_or_else(|| {
-            anyhow::anyhow!("session context required to load MCP server '{}'", server_name)
+            anyhow::anyhow!(
+                "session context required to load MCP server '{}'",
+                server_name
+            )
         })?;
-        let tool_names =
-            normalize_tool_names(params.tool_names).map_err(|e| anyhow::anyhow!(e))?;
+        let tool_names = normalize_tool_names(params.tool_names).map_err(|e| anyhow::anyhow!(e))?;
 
         // Read config and the available-server list under one lock.
         let (config, available) = {
@@ -451,13 +453,9 @@ mod tests {
 
     #[test]
     fn test_normalize_tool_names_dedupes() {
-        let names = normalize_tool_names(Some(vec![
-            "a".into(),
-            " a ".into(),
-            "b".into(),
-            "a".into(),
-        ]))
-        .unwrap();
+        let names =
+            normalize_tool_names(Some(vec!["a".into(), " a ".into(), "b".into(), "a".into()]))
+                .unwrap();
         assert_eq!(names, Some(vec!["a".into(), "b".into()]));
     }
 
@@ -471,10 +469,7 @@ mod tests {
         let (selected, missing) =
             select_tools(&all, Some(&["beta".into(), "nope".into(), "alpha".into()]));
         assert_eq!(
-            selected
-                .iter()
-                .map(|t| t.name.as_str())
-                .collect::<Vec<_>>(),
+            selected.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
             vec!["alpha", "beta"]
         );
         // Selection follows server order; missing keeps request order.

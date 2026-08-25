@@ -386,9 +386,7 @@ impl InboxBus {
                         last_seen: now.clone(),
                         started_at: now,
                         title: title.map(String::from),
-                        role: role
-                            .filter(|r| !r.is_empty())
-                            .map(String::from),
+                        role: role.filter(|r| !r.is_empty()).map(String::from),
                         parent: parent.map(String::from),
                         capabilities: capabilities.to_vec(),
                     },
@@ -735,10 +733,7 @@ impl InboxBus {
         }
         std::fs::write(&mailbox, rewritten)?;
 
-        let to_archive: Vec<&Envelope> = matching
-            .iter()
-            .chain(archived_only.iter())
-            .collect();
+        let to_archive: Vec<&Envelope> = matching.iter().chain(archived_only.iter()).collect();
         if !to_archive.is_empty() {
             let archive_ids = self.read_archive_tail_ids(name)?;
             let mut af = OpenOptions::new()
@@ -1479,8 +1474,14 @@ mod tests {
         let (_dir, bus) = test_bus();
         bus.register_with_profile("ses-parent", &[], Some("p"), None, None)
             .unwrap();
-        bus.register_with_profile("ses-c1", &[], Some("c1"), Some("worker"), Some("ses-parent"))
-            .unwrap();
+        bus.register_with_profile(
+            "ses-c1",
+            &[],
+            Some("c1"),
+            Some("worker"),
+            Some("ses-parent"),
+        )
+        .unwrap();
         bus.register_with_profile("ses-c2", &[], Some("c2"), None, Some("ses-parent"))
             .unwrap();
         bus.register_with_profile("ses-other", &[], None, None, Some("ses-else"))
@@ -1519,7 +1520,8 @@ mod tests {
         )
         .unwrap();
         // Heartbeat with empty capabilities must not wipe the profile.
-        bus.register_with_title("ses-a", &[], Some("worker")).unwrap();
+        bus.register_with_title("ses-a", &[], Some("worker"))
+            .unwrap();
         let info = bus.list_agents().unwrap().into_iter().next().unwrap();
         assert_eq!(info.capabilities, vec!["code", "review"]);
         assert_eq!(info.role.as_deref(), Some("coder"));

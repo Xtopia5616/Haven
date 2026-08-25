@@ -676,7 +676,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            db.get_session_usage(&session.id).unwrap().unwrap().total_tokens,
+            db.get_session_usage(&session.id)
+                .unwrap()
+                .unwrap()
+                .total_tokens,
             15
         );
         let cutoff = "1970-01-01T00:00:00.000Z";

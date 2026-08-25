@@ -4,6 +4,7 @@ import {
 	PROVIDER_PRESETS,
 	apiStyleFromProvider,
 	apiStylePreset,
+	applyProviderPreset,
 	displayApiStyle,
 	isKeylessProvider,
 	isKnownApiStyle,
@@ -153,6 +154,34 @@ describe('apiStyle', () => {
 		expect(isKeylessProvider({ api_style: 'openai-chat', provider: 'openai' })).toBe(
 			false,
 		);
+	});
+
+	it('fills empty or previous-default URL when switching preset, keeps custom URL and key', () => {
+		const empty = { api_style: 'openai-chat', base_url: '', api_key: 'sk-keep' };
+		applyProviderPreset(empty, 'deepseek-chat');
+		expect(empty.api_style).toBe('deepseek-chat');
+		expect(empty.base_url).toBe('https://api.deepseek.com');
+		expect(empty.api_key).toBe('sk-keep');
+
+		const fromDefault = {
+			api_style: 'openai-chat',
+			base_url: 'https://api.openai.com/v1/',
+			api_key: 'sk-keep',
+		};
+		applyProviderPreset(fromDefault, 'moonshot');
+		expect(fromDefault.api_style).toBe('moonshot');
+		expect(fromDefault.base_url).toBe('https://api.moonshot.cn/v1');
+		expect(fromDefault.api_key).toBe('sk-keep');
+
+		const custom = {
+			api_style: 'openai-chat',
+			base_url: 'https://gateway.example/v1',
+			api_key: 'sk-keep',
+		};
+		applyProviderPreset(custom, 'deepseek-responses');
+		expect(custom.api_style).toBe('deepseek-responses');
+		expect(custom.base_url).toBe('https://gateway.example/v1');
+		expect(custom.api_key).toBe('sk-keep');
 	});
 
 	it('rejects unknown styles', () => {

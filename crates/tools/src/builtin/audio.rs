@@ -269,7 +269,9 @@ impl AudioTool {
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .ok_or_else(|| {
-                anyhow::anyhow!("audio tool: file_path (.wav) is required for play when text is unset")
+                anyhow::anyhow!(
+                    "audio tool: file_path (.wav) is required for play when text is unset"
+                )
             })?;
 
         let lower = path.to_ascii_lowercase();
@@ -297,8 +299,8 @@ mod imp {
     use windows::Win32::Foundation::BOOL;
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{
-        PlaySoundW, SND_ASYNC, SND_FILENAME, IMMDevice, IMMDeviceEnumerator,
-        MMDeviceEnumerator, eConsole, eRender,
+        IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_ASYNC, SND_FILENAME,
+        eConsole, eRender,
     };
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -313,11 +315,9 @@ mod imp {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)? };
 
-        let device: IMMDevice =
-            unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole)? };
+        let device: IMMDevice = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole)? };
 
-        let ep: IAudioEndpointVolume =
-            unsafe { device.Activate(CLSCTX_INPROC_SERVER, None)? };
+        let ep: IAudioEndpointVolume = unsafe { device.Activate(CLSCTX_INPROC_SERVER, None)? };
 
         Ok(ep)
     }
@@ -353,13 +353,7 @@ mod imp {
 
     pub fn play_wav(path: &str) -> anyhow::Result<()> {
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let ok = unsafe {
-            PlaySoundW(
-                PCWSTR(wide.as_ptr()),
-                None,
-                SND_FILENAME | SND_ASYNC,
-            )
-        };
+        let ok = unsafe { PlaySoundW(PCWSTR(wide.as_ptr()), None, SND_FILENAME | SND_ASYNC) };
         if !ok.as_bool() {
             anyhow::bail!("PlaySoundW failed for '{}'", path);
         }

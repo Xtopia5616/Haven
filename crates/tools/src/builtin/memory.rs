@@ -16,9 +16,7 @@ use crate::{Tool, ToolResult};
 /// Desktop-wired recall callback (History `recall_memory` / InferenceEngine).
 /// Args: `(query, kind, limit)` → hit rows `{entity_id,text,score,model}`.
 pub type MemoryRecallFn = Arc<
-    dyn Fn(String, String, usize) -> Pin<Box<dyn Future<Output = Vec<Value>> + Send>>
-        + Send
-        + Sync,
+    dyn Fn(String, String, usize) -> Pin<Box<dyn Future<Output = Vec<Value>> + Send>> + Send + Sync,
 >;
 
 /// Shared slot so catalog rebuilds keep the same callback.
@@ -267,10 +265,7 @@ impl MemoryTool {
         } else {
             anyhow::bail!("kind must be fact or episode");
         };
-        let limit = params
-            .limit
-            .map(|l| l.clamp(1, 20) as usize)
-            .unwrap_or(5);
+        let limit = params.limit.map(|l| l.clamp(1, 20) as usize).unwrap_or(5);
 
         if let Some(recall) = self.recall.read().await.clone() {
             let hits = recall(query.to_string(), entity.to_string(), limit).await;
@@ -428,7 +423,11 @@ mod tests {
     fn test_tool() -> (MemoryTool, Arc<Database>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
-        (MemoryTool::new(Some(db.clone()), new_memory_recall_slot()), db, dir)
+        (
+            MemoryTool::new(Some(db.clone()), new_memory_recall_slot()),
+            db,
+            dir,
+        )
     }
 
     fn temp_db() -> (Arc<Database>, tempfile::TempDir) {
@@ -466,7 +465,10 @@ mod tests {
 
     #[test]
     fn test_memory_tool_name() {
-        assert_eq!(MemoryTool::new(None, new_memory_recall_slot()).name(), "memory");
+        assert_eq!(
+            MemoryTool::new(None, new_memory_recall_slot()).name(),
+            "memory"
+        );
     }
 
     #[test]
@@ -615,7 +617,10 @@ mod tests {
             .unwrap();
         // Cross-subject list (no subject).
         let all = tool
-            .execute(json!({"operation": "list", "limit": 10}), CancellationToken::new())
+            .execute(
+                json!({"operation": "list", "limit": 10}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let subjects: Vec<&str> = all.output["facts"]

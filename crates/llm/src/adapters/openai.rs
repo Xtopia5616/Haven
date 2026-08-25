@@ -2037,7 +2037,8 @@ mod tests {
 
     #[test]
     fn usage_parses_kimi_top_level_cached_tokens() {
-        let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"cached_tokens":60}"#;
+        let json =
+            r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"cached_tokens":60}"#;
         let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
         assert_eq!(usage.cached(), 60);
     }

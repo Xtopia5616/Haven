@@ -137,11 +137,15 @@ describe('ChatBubble', () => {
 		expect(screen.getByText('10:30')).toBeTruthy();
 	});
 
-	it('renders thought messages as italic text', () => {
-		render(ChatBubble, base({ role: 'assistant', content: 'thinking hard', type: 'thought' }));
-		const em = document.querySelector('em.thought')!;
-		expect(em).toBeTruthy();
-		expect(em.textContent).toBe('thinking hard');
+	it('renders thought messages as plain text at max width', () => {
+		const { container } = render(
+			ChatBubble,
+			base({ role: 'assistant', content: 'thinking hard', type: 'thought' }),
+		);
+		const thought = document.querySelector('span.thought')!;
+		expect(thought).toBeTruthy();
+		expect(thought.textContent).toBe('thinking hard');
+		expect(container.querySelector('.bubble.thinking')).toBeTruthy();
 	});
 
 	it('renders a caret while a thought is streaming', () => {
@@ -154,7 +158,7 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		expect(document.querySelector('em.thought .caret')).toBeTruthy();
+		expect(document.querySelector('span.thought .caret')).toBeTruthy();
 	});
 
 	it('renders the reasoning block expanded while streaming', async () => {
