@@ -11,9 +11,9 @@ pub mod tts;
 pub mod types;
 
 pub use adapters::{
-    AnthropicAdapter, OpenAiAdapter, WebSearchMode, is_known_api_style, is_openai_family_wire_style,
-    is_stt_only_style, is_tts_only_style, normalize_api_style, parse_web_search_mode,
-    supports_builtin_web_search,
+    AnthropicAdapter, OpenAiAdapter, WebSearchMode, is_known_api_style,
+    is_openai_family_wire_style, is_stt_only_style, is_tts_only_style, normalize_api_style,
+    parse_web_search_mode, supports_builtin_web_search, web_search_result_of,
 };
 pub use client::{LlmClient, with_retry};
 pub use image_gen::{

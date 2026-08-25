@@ -830,6 +830,7 @@ impl AnthropicAdapter {
             stop_reason: Option<FinishReason>,
             usage: Option<Usage>,
             saw_message_stop: bool,
+            web_search_calls: Vec<Value>,
         }
 
         let empty_chunk = empty_chunk;
@@ -845,6 +846,7 @@ impl AnthropicAdapter {
                 stop_reason: None,
                 usage: None,
                 saw_message_stop: false,
+                web_search_calls: Vec::new(),
             },
             move |mut state| async move {
                 if state.done {
@@ -877,7 +879,7 @@ impl AnthropicAdapter {
                                 model: state.last_model.clone(),
                                 reasoning: None,
                                 web_search: None,
-                                web_search_calls: Vec::new(),
+                                web_search_calls: std::mem::take(&mut state.web_search_calls),
                                 thinking_blocks: Vec::new(),
                             };
                             if !state.layout.is_empty() {
@@ -938,13 +940,13 @@ impl AnthropicAdapter {
                             match content_block.block_type.as_deref() {
                                 Some("tool_use") => {
                                     block.kind = BlockKind::ToolUse;
-                                    block.tool_id = content_block.id.unwrap_or_default();
-                                    block.tool_name = content_block.name.unwrap_or_default();
+                                    block.tool_id = content_block.id.clone().unwrap_or_default();
+                                    block.tool_name = content_block.name.clone().unwrap_or_default();
                                     block.tool_input = String::new();
                                     // Some gateways send the full input in the
                                     // start event instead of `{}` + deltas.
-                                    if let Some(input) = content_block.input {
-                                        let s = serde_json::to_string(&input).unwrap_or_default();
+                                    if let Some(ref input) = content_block.input {
+                                        let s = serde_json::to_string(input).unwrap_or_default();
                                         if s != "{}" {
                                             block.tool_input = s;
                                         }
@@ -967,6 +969,50 @@ impl AnthropicAdapter {
                                 }
                                 _ => block.kind = BlockKind::Text,
                             }
+                        }
+                        match content_block.block_type.as_deref() {
+                            Some("server_tool_use")
+                                if content_block.name.as_deref() == Some("web_search") =>
+                            {
+                                let id = content_block
+                                    .id
+                                    .clone()
+                                    .unwrap_or_else(|| format!("ws_{index}"));
+                                let queries = content_block
+                                    .input
+                                    .as_ref()
+                                    .and_then(|v| v.get("query"))
+                                    .cloned()
+                                    .map(|q| json!([q]))
+                                    .unwrap_or_else(|| json!([]));
+                                state.web_search_calls.push(normalize_web_search_call_item(
+                                    json!({
+                                        "type": "web_search_call",
+                                        "id": id,
+                                        "status": "completed",
+                                        "action": {"type": "search", "queries": queries},
+                                    }),
+                                ));
+                            }
+                            Some("web_search_tool_result") => {
+                                let id = content_block
+                                    .id
+                                    .clone()
+                                    .unwrap_or_else(|| format!("ws_result_{index}"));
+                                state.web_search_calls.push(normalize_web_search_call_item(
+                                    json!({
+                                        "type": "web_search_call",
+                                        "id": id,
+                                        "status": "completed",
+                                        "action": {
+                                            "type": "search",
+                                            "queries": [],
+                                            "result": content_block.input.clone().unwrap_or(Value::Null),
+                                        },
+                                    }),
+                                ));
+                            }
+                            _ => {}
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();

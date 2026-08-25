@@ -90,11 +90,7 @@ impl SessionExecutor {
             })
             .await
         {
-            tracing::warn!(
-                "finish_interrupted_step failed for step {}: {}",
-                step_id,
-                e
-            );
+            tracing::warn!("finish_interrupted_step failed for step {}: {}", step_id, e);
         }
     }
 
@@ -181,12 +177,7 @@ impl SessionExecutor {
             };
             if let Some(err) = refuse {
                 self.finish_interrupted_step(
-                    session_id,
-                    tool_name,
-                    &input,
-                    step_num,
-                    step_id,
-                    &err,
+                    session_id, tool_name, &input, step_num, step_id, &err,
                 )
                 .await;
                 return Err(anyhow::anyhow!(err));
@@ -550,8 +541,7 @@ impl SessionExecutor {
             .load(std::sync::atomic::Ordering::Relaxed);
         let body = match outcome {
             Ok(g) => {
-                let summary =
-                    crate::truncate_notification(&g.result.summary_text(), summary_chars);
+                let summary = crate::truncate_notification(&g.result.summary_text(), summary_chars);
                 format!("schedule tool '{tool_name}':\n{summary}")
             }
             Err(e) => format!("schedule tool '{tool_name}' failed: {e}"),

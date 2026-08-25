@@ -5,26 +5,23 @@
  * unsupported styles should grey out / ignore the control.
  */
 
-/**
- * @typedef {{
- *   value: string,
- *   label: string,
- *   group: string,
- *   api_style: string,
- *   provider: string,
- *   base_url: string,
- *   auth_header_name: string,
- *   auth_header_prefix: string,
- *   docs_url?: string,
- *   console_url?: string,
- *   hint?: string,
- *   match_hosts?: string[],
- *   keyless?: boolean,
- * }} ProviderPreset
- */
+export interface ProviderPreset {
+	value: string;
+	label: string;
+	group: string;
+	api_style: string;
+	provider: string;
+	base_url: string;
+	auth_header_name: string;
+	auth_header_prefix: string;
+	docs_url?: string;
+	console_url?: string;
+	hint?: string;
+	match_hosts?: string[];
+	keyless?: boolean;
+}
 
-/** @param {string | null | undefined} style */
-export function isKnownApiStyle(style) {
+export function isKnownApiStyle(style: string | null | undefined): boolean {
 	const s = String(style || '')
 		.trim()
 		.toLowerCase();
@@ -50,8 +47,7 @@ export function isKnownApiStyle(style) {
 	);
 }
 
-/** @param {string | null | undefined} style */
-export function normalizeApiStyle(style) {
+export function normalizeApiStyle(style: string | null | undefined): string {
 	const s = String(style || '')
 		.trim()
 		.toLowerCase();
@@ -90,9 +86,8 @@ export function normalizeApiStyle(style) {
 
 /**
  * Mirror `haven_common::config::api_style_from_provider` for empty `api_style`.
- * @param {string | null | undefined} provider
  */
-export function apiStyleFromProvider(provider) {
+export function apiStyleFromProvider(provider: string | null | undefined): string {
 	const p = String(provider || '')
 		.trim()
 		.toLowerCase();
@@ -124,32 +119,38 @@ export function apiStyleFromProvider(provider) {
 /**
  * Effective wire style for a saved provider: non-empty `api_style` wins,
  * otherwise derived from the vendor hint (matches Rust `provider_config_wire_style`).
- * @param {{ api_style?: string | null, provider?: string | null } | null | undefined} p
  */
-export function providerWireStyle(p) {
+export function providerWireStyle(
+	p: { api_style?: string | null; provider?: string | null } | null | undefined,
+): string {
 	const raw = String(p?.api_style || '').trim();
 	if (raw) return normalizeApiStyle(raw);
 	return apiStyleFromProvider(p?.provider);
 }
 
-/** Mirror Rust `is_openai_family_wire_style`. @param {string | null | undefined} style */
-export function isOpenaiFamilyWireStyle(style) {
+/** Mirror Rust `is_openai_family_wire_style`. */
+export function isOpenaiFamilyWireStyle(style: string | null | undefined): boolean {
 	const n = normalizeApiStyle(style);
 	return n === 'openai-chat' || n === 'openai-responses' || n === 'llama.cpp' || n === 'xai';
 }
 
-/** Mirror Rust `is_tts_only_style`. @param {string | null | undefined} style */
-export function isTtsOnlyStyle(style) {
+/** Mirror Rust `is_tts_only_style`. */
+export function isTtsOnlyStyle(style: string | null | undefined): boolean {
 	return normalizeApiStyle(style) === 'elevenlabs';
 }
 
 /**
  * Mirror backend `tts_backend_for` / `image_gen_backend_for`.
- * @param {{ api_style?: string | null, provider?: string | null, base_url?: string | null, name?: string } | null | undefined} p
- * @param {'tts' | 'image_gen'} capability
- * @returns {'openai' | 'gemini' | 'elevenlabs' | ''}
  */
-export function mediaCapabilityBackend(p, capability) {
+export function mediaCapabilityBackend(
+	p: {
+		api_style?: string | null;
+		provider?: string | null;
+		base_url?: string | null;
+		name?: string;
+	} | null | undefined,
+	capability: 'tts' | 'image_gen',
+): 'openai' | 'gemini' | 'elevenlabs' | '' {
 	if (!p) return '';
 	const provider = String(p.provider || '').toLowerCase();
 	const style = providerWireStyle(p);
@@ -165,10 +166,14 @@ export function mediaCapabilityBackend(p, capability) {
 
 /**
  * Mirror backend `stt_backend_for`.
- * @param {{ api_style?: string | null, provider?: string | null, base_url?: string | null } | null | undefined} p
- * @returns {'openai' | 'groq' | 'gemini' | 'deepgram' | 'assemblyai' | ''}
  */
-export function sttCapabilityBackend(p) {
+export function sttCapabilityBackend(
+	p: {
+		api_style?: string | null;
+		provider?: string | null;
+		base_url?: string | null;
+	} | null | undefined,
+): 'openai' | 'groq' | 'gemini' | 'deepgram' | 'assemblyai' | '' {
 	if (!p) return '';
 	const provider = String(p.provider || '').toLowerCase();
 	const style = providerWireStyle(p);
@@ -184,16 +189,14 @@ export function sttCapabilityBackend(p) {
 	return '';
 }
 
-/** @param {string | null | undefined} style */
-export function supportsBuiltinWebSearch(style) {
+export function supportsBuiltinWebSearch(style: string | null | undefined): boolean {
 	const n = normalizeApiStyle(style);
 	return (
 		n === 'openai-responses' || n === 'xai' || n === 'anthropic' || n === 'gemini'
 	);
 }
 
-/** @param {string | null | undefined} style */
-export function isSttOnlyStyle(style) {
+export function isSttOnlyStyle(style: string | null | undefined): boolean {
 	const n = normalizeApiStyle(style);
 	return n === 'deepgram' || n === 'assemblyai';
 }
@@ -201,11 +204,19 @@ export function isSttOnlyStyle(style) {
 /**
  * Sampling / structured fields mirrored from
  * `haven_common::config::supports_sampling_field`.
- * @typedef {'temperature'|'top_p'|'top_k'|'frequency_penalty'|'presence_penalty'|'stop'|'seed'|'response_format'|'reasoning_effort'} SamplingField
  */
+export type SamplingField =
+	| 'temperature'
+	| 'top_p'
+	| 'top_k'
+	| 'frequency_penalty'
+	| 'presence_penalty'
+	| 'stop'
+	| 'seed'
+	| 'response_format'
+	| 'reasoning_effort';
 
-/** @type {SamplingField[]} */
-export const SAMPLING_FIELDS = [
+export const SAMPLING_FIELDS: SamplingField[] = [
 	'temperature',
 	'top_p',
 	'top_k',
@@ -217,11 +228,10 @@ export const SAMPLING_FIELDS = [
 	'reasoning_effort',
 ];
 
-/**
- * @param {string | null | undefined} style
- * @param {SamplingField | string} field
- */
-export function supportsSamplingField(style, field) {
+export function supportsSamplingField(
+	style: string | null | undefined,
+	field: SamplingField | string,
+): boolean {
 	const n = normalizeApiStyle(style);
 	if (n === 'deepgram' || n === 'assemblyai') return false;
 	const f = String(field || '');
@@ -266,9 +276,8 @@ export function supportsSamplingField(style, field) {
 
 /**
  * Human-readable list of sampling fields the style forwards (for settings hints).
- * @param {string | null | undefined} style
  */
-export function samplingFieldsHint(style) {
+export function samplingFieldsHint(style: string | null | undefined): string {
 	const supported = SAMPLING_FIELDS.filter((f) => supportsSamplingField(style, f));
 	if (!supported.length) return '当前线协议不转发采样/结构化字段';
 	return `当前线协议可转发：${supported.join('、')}`;
@@ -730,12 +739,11 @@ export const PROVIDER_PRESETS = [
 /** @type {Map<string, ProviderPreset>} */
 const PRESET_BY_VALUE = new Map(PROVIDER_PRESETS.map((p) => [p.value, p]));
 
-/**
- * @param {string} uiStyle
- * @returns {ProviderPreset}
- */
-export function apiStylePreset(uiStyle) {
-	return PRESET_BY_VALUE.get(uiStyle) || PRESET_BY_VALUE.get('openai-chat');
+export function apiStylePreset(uiStyle: string): ProviderPreset {
+	return (
+		PRESET_BY_VALUE.get(uiStyle) ??
+		/** @type {ProviderPreset} */ (PRESET_BY_VALUE.get('openai-chat') ?? PROVIDER_PRESETS[0])
+	);
 }
 
 /**
@@ -750,10 +758,8 @@ export const API_STYLE_OPTIONS = PROVIDER_PRESETS.map((p) => ({
 
 /**
  * Exact or DNS-suffix host match (no substring `includes`).
- * @param {string | null | undefined} host
- * @param {string[]} needles
  */
-function hostMatches(host, needles) {
+function hostMatches(host: string | null | undefined, needles: string[]): boolean {
 	if (!host) return false;
 	const h = host.toLowerCase();
 	return needles.some((n) => {
@@ -769,9 +775,14 @@ function hostMatches(host, needles) {
  * Resolve which UI preset a saved provider should show.
  * Prefers stored `provider` + wire style; host is only a fallback for
  * generic `provider=openai` rows pointing at a known vendor URL.
- * @param {{ api_style?: string | null, provider?: string | null, base_url?: string | null } | null | undefined} p
  */
-export function displayApiStyle(p) {
+export function displayApiStyle(
+	p: {
+		api_style?: string | null;
+		provider?: string | null;
+		base_url?: string | null;
+	} | null | undefined,
+): string {
 	if (!p) return 'openai-chat';
 	const styleRaw = String(p.api_style || '').trim();
 	const style = providerWireStyle(p);
@@ -822,9 +833,10 @@ export function displayApiStyle(p) {
 
 /**
  * True when the provider can be used without an API key (local servers).
- * @param {{ api_style?: string | null, provider?: string | null } | null | undefined} p
  */
-export function isKeylessProvider(p) {
+export function isKeylessProvider(
+	p: { api_style?: string | null; provider?: string | null } | null | undefined,
+): boolean {
 	if (!p) return false;
 	const preset = apiStylePreset(displayApiStyle(p));
 	if (preset.keyless) return true;

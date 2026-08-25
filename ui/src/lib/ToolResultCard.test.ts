@@ -71,6 +71,48 @@ describe('parseToolResult', () => {
 		});
 		expect(parseToolResult('actions', '42')).toEqual({ kind: 'raw', data: 42 });
 	});
+	it('classifies a web_search tool return with results as custom', () => {
+		const payload = JSON.stringify({
+			label: '已联网搜索',
+			queries: ['capital of France'],
+			results: [
+				{
+					title: 'Paris — Wikipedia',
+					url: 'https://en.wikipedia.org/wiki/Paris',
+					snippet: 'Paris is the capital of France.',
+				},
+			],
+		});
+		expect(parseToolResult('web_search', payload)).toEqual({
+			kind: 'custom',
+			data: {
+				label: '已联网搜索',
+				queries: ['capital of France'],
+				results: [
+					{
+						title: 'Paris — Wikipedia',
+						url: 'https://en.wikipedia.org/wiki/Paris',
+						snippet: 'Paris is the capital of France.',
+					},
+				],
+			},
+		});
+		expect(canRenderToolResult('web_search', payload)).toBe(true);
+	});
+	it('treats a bare web_search status label as raw text', () => {
+		expect(parseToolResult('web_search', '已联网搜索')).toEqual({
+			kind: 'raw',
+			data: null,
+		});
+	});
+	it('classifies a query-only web_search return (no results) as custom', () => {
+		const payload = JSON.stringify({ label: '已联网搜索', queries: ['foo'], results: [] });
+		expect(parseToolResult('web_search', payload)?.kind).toBe('custom');
+	});
+	it('rejects a web_search payload without a label', () => {
+		const payload = JSON.stringify({ queries: ['foo'], results: [] });
+		expect(parseToolResult('web_search', payload)?.kind).toBe('generic');
+	});
 });
 
 describe('ToolResultCard ask', () => {
@@ -230,6 +272,50 @@ describe('ToolResultCard raw', () => {
 		});
 		expect(container.querySelector('.content-preview')!.textContent).toContain('"a"');
 		expect(container.querySelector('.content-preview')!.textContent).toContain('"b"');
+	});
+});
+
+describe('ToolResultCard usage', () => {
+	it('shows a usage chip in the dropdown header', () => {
+		render(ToolResultCard, {
+			toolName: 'shell',
+			content: 'ok',
+			usage: {
+				total: 1234,
+				prompt: 1000,
+				completion: 234,
+				cost: 0,
+				hasCost: false,
+				durationMs: 1500,
+				model: 'x',
+				calls: 1,
+			},
+		});
+		expect(screen.getByText('1.23K tokens')).toBeTruthy();
+	});
+});
+
+describe('ToolResultCard empty in-progress', () => {
+	it('renders a collapsed card for an empty completed call', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'files',
+			content: '',
+		});
+		const details = container.querySelector('details.tool-card') as HTMLDetailsElement;
+		expect(details).toBeTruthy();
+		expect(details.open).toBe(false);
+		expect(screen.getByText('文件与搜索')).toBeTruthy();
+	});
+
+	it('expands and shows a waiting placeholder while streaming with no content', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'files',
+			content: '',
+			streaming: true,
+		});
+		const details = container.querySelector('details.tool-card') as HTMLDetailsElement;
+		expect(details.open).toBe(true);
+		expect(screen.getByText('等待输出…')).toBeTruthy();
 	});
 });
 

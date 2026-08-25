@@ -26,6 +26,9 @@ interface ResumeMessage {
 	awaiting?: boolean;
 	stepNumber?: number | null;
 	toolName?: string;
+	/** Live-only mid-turn anchor marking a user message as steering; the DB
+	 * has no such flag (agent:supplement clears it on the live entry). */
+	steering?: boolean;
 }
 
 interface ResumeStep {

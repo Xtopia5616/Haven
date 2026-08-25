@@ -82,7 +82,9 @@ pub enum AgentEvent {
     /// the stream events (`in_progress` → `searching` → `completed`) so the
     /// UI can render one card per call. DeepSeek may emit several
     /// `web_search_call` items (`search` / `open_page` / `find_in_page`) in
-    /// a single turn; `call_id` / `action` distinguish them.
+    /// a single turn; `call_id` / `action` distinguish them. `result` carries
+    /// the compact tool return (`{queries, results:[{title,url,snippet}]}`)
+    /// on the completed phase so the card shows what the search returned.
     WebSearch {
         session_id: String,
         phase: String,
@@ -92,6 +94,8 @@ pub enum AgentEvent {
         call_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
     },
     /// The provider stream went silent (no chunk for several seconds) while
     /// the step is still in flight. Emitted by a per-call watchdog so the UI

@@ -6,6 +6,7 @@ import {
 	applyThoughtSnap,
 	webSearchId,
 	webSearchLabel,
+	webSearchCardContent,
 	finalizeStreamBlocks,
 	insertAgentMessage,
 	newToolMessage,
@@ -415,6 +416,31 @@ describe('webSearchLabel', () => {
 	});
 });
 
+describe('webSearchCardContent', () => {
+	it('serializes citations on completed', () => {
+		const body = webSearchCardContent({
+			phase: 'completed',
+			action: 'search',
+			result: { queries: ['paris'], results: [{ title: 'Paris', url: 'https://ex', snippet: '' }] },
+		});
+		expect(JSON.parse(body)).toMatchObject({
+			label: '已联网搜索',
+			queries: ['paris'],
+		});
+	});
+	it('keeps existing JSON when a later completed has no result', () => {
+		const prev = JSON.stringify({ label: '已联网搜索', queries: ['paris'], results: [] });
+		expect(
+			webSearchCardContent({ phase: 'completed', action: 'search' }, prev),
+		).toBe(prev);
+	});
+	it('uses the status label when there is no result and no JSON yet', () => {
+		expect(webSearchCardContent({ phase: 'in_progress', action: 'search' })).toBe(
+			'正在联网搜索…',
+		);
+	});
+});
+
 describe('insertAgentMessage / steering anchors', () => {
 	it('inserts continuing agent output before trailing steering users', () => {
 		const list: StreamMessage[] = [
@@ -498,6 +524,88 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		expect(m[2]).toMatchObject({ content: '根据搜索结果，今天20度', streaming: true });
 	});
 
+	it('opens a new Thinking bubble after search instead of appending to the previous one', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '先想想要不要搜' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '正在联网搜索…',
+				streaming: true,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '根据搜索结果继续想' });
+		m = accumulateStreamChunk(m, { ...r, delta: '，再下结论' });
+		expect(m.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({
+			type: 'reasoning',
+			content: '先想想要不要搜',
+			streaming: false,
+		});
+		expect(m[2]).toMatchObject({
+			type: 'reasoning',
+			content: '根据搜索结果继续想，再下结论',
+			streaming: true,
+		});
+	});
+
+	it('puts a full-text reasoning reconcile on the post-search segment', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '搜前' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '搜后' });
+		m = accumulateStreamChunk(m, { ...r, delta: '搜前搜后完整' });
+		expect(m.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({ content: '搜前', streaming: false });
+		expect(m[2]).toMatchObject({ content: '搜后完整', streaming: true });
+	});
+
+	it('strips the pre-search prefix from a full-text first post-search delta', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '搜前' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '搜前搜后完整' });
+		expect(m.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({ content: '搜前', streaming: false });
+		expect(m[2]).toMatchObject({ content: '搜后完整', streaming: true });
+	});
+
 	it('opens another segment after a second search call', () => {
 		let m = chunk([], '先搜');
 		m = finalizeStreamBlocks(m, null, STEP_ID);
@@ -561,6 +669,34 @@ describe('applyThoughtSnap with websearch segments', () => {
 		expect(out[2]).toMatchObject({ content: '今天20度', streaming: false });
 	});
 
+	it('keeps split Thinking bubbles and finalizes them in place', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '搜前思考' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '搜后思考' });
+		m = chunk(m, '最终回答');
+		const out = snap(m, '最终回答');
+		expect(out.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+			STEP_ID,
+		]);
+		expect(out[0]).toMatchObject({ content: '搜前思考', streaming: false });
+		expect(out[2]).toMatchObject({ content: '搜后思考', streaming: false });
+		expect(out[3]).toMatchObject({ content: '最终回答', streaming: false });
+	});
+
 	it('drops straggler deltas after a websearch-split snap', () => {
 		let m = chunk([], '我先查一下');
 		m = finalizeStreamBlocks(m, null, STEP_ID);
@@ -600,6 +736,18 @@ describe('finalizeStreamBlocks', () => {
 		expect(out.find((x) => x.id === 'msg-thought-1')).toMatchObject({ streaming: false });
 		expect(out.find((x) => x.id === 'msg-thought-2')).toMatchObject({ streaming: true });
 		expect(out.find((x) => x.id === 'm1')).toMatchObject({ streaming: true });
+	});
+
+	it('finalizes post-search reasoning segments as well as the original', () => {
+		const m = [
+			{ id: 'msg-reasoning-1', streaming: true },
+			{ id: 'msg-reasoning-1-1', streaming: true },
+			{ id: 'msg-thought-1-1', streaming: true },
+		];
+		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
+		expect(out.find((x) => x.id === 'msg-reasoning-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-reasoning-1-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-thought-1-1')).toMatchObject({ streaming: false });
 	});
 
 	it('is a no-op when reasoning is missing but the thought exists', () => {

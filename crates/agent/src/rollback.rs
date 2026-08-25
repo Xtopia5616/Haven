@@ -108,7 +108,9 @@ impl AgentLayer {
                             )
                         })?;
                     let _ = self.db.delete_messages_from(session_id, &target.created_at);
-                    let _ = self.db.delete_llm_usage_from(session_id, &target.created_at);
+                    let _ = self
+                        .db
+                        .delete_llm_usage_from(session_id, &target.created_at);
                     let _ = self.db.rebuild_session_usage_from_calls(session_id);
                 } else if let Some(ts) = self.db.last_user_message_ts(session_id) {
                     let _ = self.db.truncate_session_after(session_id, &ts, false);
@@ -328,9 +330,9 @@ impl AgentLayer {
                         &mut snapshot.events[idx]
                         && let Some(pos) = compacted.iter().rposition(|m| {
                             m.role == CanonicalRole::User
-                                && m.content.iter().any(|p| {
-                                    matches!(p, ContentPart::Text(t) if matches_target(t))
-                                })
+                                && m.content
+                                    .iter()
+                                    .any(|p| matches!(p, ContentPart::Text(t) if matches_target(t)))
                         })
                     {
                         compacted.truncate(pos);

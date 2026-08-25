@@ -194,24 +194,6 @@ impl OpenAiUsage {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct OpenAiEmbedRequest {
-    model: String,
-    input: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiEmbedItem {
-    embedding: Vec<f32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiEmbedResponse {
-    data: Vec<OpenAiEmbedItem>,
-    usage: Option<OpenAiUsage>,
-    model: Option<String>,
-}
-
 #[derive(Debug, Deserialize)]
 struct OpenAiResponse {
     #[serde(alias = "candidates")]
@@ -864,9 +846,10 @@ impl OpenAiAdapter {
                         // Interrupted mid-tool-call (no finish_reason): empty
                         // args after a name, structural-only repair, or
                         // mid-string JSON must not flush as executable calls.
-                        let unfinished_tools = state.tool_calls_acc.iter().any(|(_, name, args)| {
-                            CanonicalToolCall::stream_tool_args_unfinished(name, args)
-                        });
+                        let unfinished_tools =
+                            state.tool_calls_acc.iter().any(|(_, name, args)| {
+                                CanonicalToolCall::stream_tool_args_unfinished(name, args)
+                            });
                         let chunk = if !state.has_finish_reason
                             && (!state.accumulated_text.is_empty() || unfinished_tools)
                         {
@@ -1093,77 +1076,15 @@ impl LlmClient for OpenAiAdapter {
     }
 
     async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
-        if input.is_empty() {
-            return Ok(Embedding {
-                vectors: Vec::new(),
-                model: Some(self.endpoint.model_name.clone()),
-                usage: Usage::default(),
-            });
-        }
-        let url = format!(
-            "{}/embeddings",
-            self.endpoint.base_url.trim_end_matches('/')
-        );
-        let body = OpenAiEmbedRequest {
-            model: self.endpoint.model_name.clone(),
+        super::openai_compatible_embed(
+            &self.client,
+            self.build_headers(),
+            &super::openai_embeddings_url(&self.endpoint.base_url, false),
+            &self.endpoint.model_name,
+            self.endpoint.timeout_secs,
             input,
-        };
-        tracing::debug!("POST {} (model: {})", url, body.model);
-        tracing::debug!(
-            "POST {} request body: {} chars",
-            url,
-            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
-        );
-        let mut req = self
-            .client
-            .post(&url)
-            .headers(self.build_headers())
-            .json(&body);
-        // §2.9: per-request timeout for non-streaming
-        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req, None).await?;
-
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
-        tracing::trace!("POST {} response body: {} chars", url, txt.len());
-        let json: OpenAiEmbedResponse =
-            serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
-        let requested = body.input.len();
-        let vectors: Vec<Vec<f32>> = json.data.into_iter().map(|item| item.embedding).collect();
-        if vectors.is_empty() {
-            return Err(LlmError::InvalidResponse(
-                "embeddings response missing data".into(),
-            ));
-        }
-        if vectors.len() != requested {
-            return Err(LlmError::InvalidResponse(format!(
-                "embeddings count mismatch: requested {requested}, got {}",
-                vectors.len()
-            )));
-        }
-        let model = json
-            .model
-            .clone()
-            .or(Some(self.endpoint.model_name.clone()));
-        let usage = json
-            .usage
-            .map(|u| Usage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
-                cached_tokens: u.cached_tokens(),
-                cache_creation_tokens: 0,
-                model_name: model.clone(),
-                cost: None,
-            })
-            .unwrap_or_default();
-        Ok(Embedding {
-            vectors,
-            model,
-            usage,
-        })
+        )
+        .await
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

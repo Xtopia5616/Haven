@@ -264,13 +264,10 @@ impl SessionExecutor {
             // Gate is live for the whole claim→spawn→exit lifetime so
             // rollback can await exit even during the claim→spawn window.
             let (tx, rx) = oneshot::channel();
-            self.run_exit.lock().await.insert(
-                session_id.clone(),
-                RunExitGate {
-                    tx,
-                    rx: Some(rx),
-                },
-            );
+            self.run_exit
+                .lock()
+                .await
+                .insert(session_id.clone(), RunExitGate { tx, rx: Some(rx) });
             tracing::debug!("try_claim_pending: claimed session {}", session_id);
             return Some(session_id);
         }
@@ -356,13 +353,10 @@ impl SessionExecutor {
         running.insert(session_id.to_string());
         drop(running);
         let (tx, rx) = oneshot::channel();
-        self.run_exit.lock().await.insert(
-            session_id.to_string(),
-            RunExitGate {
-                tx,
-                rx: Some(rx),
-            },
-        );
+        self.run_exit
+            .lock()
+            .await
+            .insert(session_id.to_string(), RunExitGate { tx, rx: Some(rx) });
         // Ensure a cancel token exists for rollback/end_session.
         let mut cancels = self.session_cancellations.lock().await;
         cancels

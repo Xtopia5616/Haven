@@ -1181,6 +1181,7 @@ mod tests {
                     run_id: 1,
                     call_id: Some("ws_1".into()),
                     action: Some("search".into()),
+                    result: None,
                 },
                 "agent:web_search",
             ),

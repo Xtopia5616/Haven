@@ -8,8 +8,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -207,14 +207,7 @@ pub struct StepInfo {
 }
 
 type ConfirmRequestCallback = OnceHandler<
-    dyn Fn(
-            haven_common::types::ConfirmId,
-            String,
-            String,
-            RiskLevel,
-            Value,
-        ) + Send
-        + Sync,
+    dyn Fn(haven_common::types::ConfirmId, String, String, RiskLevel, Value) + Send + Sync,
 >;
 
 /// Terminal-failure callback: invoked when the dispatcher marks a session as

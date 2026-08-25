@@ -86,11 +86,35 @@ export function webSearchLabel(phase: string | null | undefined, action: string 
 	return '正在联网搜索…';
 }
 
+/** Card body for a built-in web_search event. A completed payload with
+ *  citations becomes `{label, queries, results}`; a later status-only
+ *  `completed` must not replace that JSON with the label. */
+export function webSearchCardContent(
+	data: { phase?: string | null; action?: string | null; result?: unknown },
+	existingContent?: string | null,
+): string {
+	const label = webSearchLabel(data.phase, data.action);
+	if (data.result && typeof data.result === 'object') {
+		return JSON.stringify({ label, ...(data.result as Record<string, unknown>) });
+	}
+	if (typeof existingContent === 'string' && existingContent.trimStart().startsWith('{')) {
+		return existingContent;
+	}
+	return label;
+}
+
+/** True when `id` is `blockId` or a post-boundary segment (`blockId-N`). */
+export function isStreamSegment(id: string, blockId: string | null | undefined): boolean {
+	if (!blockId) return false;
+	return id === blockId || id.startsWith(blockId + '-');
+}
+
 /**
  * Finalize every streaming block belonging to a step: the reasoning block
- * and the thought block. Shared by the silent and visible `agent:action`
- * branches. Finalized blocks drop straggler chunks that flush out of the
- * batcher after the event.
+ * and the thought block, including post-tool / post-websearch segments
+ * (`id-N`). Shared by the silent and visible `agent:action` branches.
+ * Finalized blocks drop straggler chunks that flush out of the batcher
+ * after the event.
  */
 export function finalizeStreamBlocks(
 	messages: StreamMessage[],
@@ -98,7 +122,7 @@ export function finalizeStreamBlocks(
 	thoughtId: string | null | undefined,
 ) {
 	return messages.map((x) =>
-		(x.id === reasoningId || x.id === thoughtId || (thoughtId != null && x.id.startsWith(thoughtId + '-')))
+		isStreamSegment(x.id, reasoningId) || isStreamSegment(x.id, thoughtId)
 			? { ...x, streaming: false }
 			: x
 	);
@@ -266,15 +290,33 @@ function appendAfterFinalized(
 			return next;
 		}
 	}
+	const earlier = contentBeforeIndex(messages, messageId, messages.length);
+	let content = delta;
+	if (earlier && delta.startsWith(earlier) && delta.length >= earlier.length) {
+		const remainder = delta.slice(earlier.length);
+		if (!remainder) return messages;
+		content = remainder;
+	}
 	const newMsg = newStreamMessage({
 		id: nextSegmentId(messages, messageId),
-		content: delta,
+		content,
 		msgType,
 		stepNumber,
 		runId,
 		time,
 	});
 	return insertAgentMessage(messages, newMsg);
+}
+
+/** Concatenate original + completed segments sitting before `liveIdx`. */
+function contentBeforeIndex(messages: StreamMessage[], messageId: string, liveIdx: number): string {
+	const prefix = messageId + '-';
+	let out = '';
+	for (let i = 0; i < liveIdx; i++) {
+		const id = messages[i].id;
+		if (id === messageId || id.startsWith(prefix)) out += messages[i].content || '';
+	}
+	return out;
 }
 
 export function accumulateStreamChunk(messages: StreamMessage[], opts: { messageId: string; delta: string; msgType: string | undefined; stepNumber: number; runId: number; time: string }): StreamMessage[] {
@@ -288,6 +330,16 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
 	for (let i = messages.length - 1; i >= 0; i--) {
 		if (messages[i].id.startsWith(segPrefix) && messages[i].streaming === true) {
 			const curr = messages[i].content || '';
+			// Authoritative full-text reconcile spans pre-boundary bubbles.
+			// Put the remainder on this live segment instead of concatenating
+			// the whole turn onto post-search text.
+			const earlier = contentBeforeIndex(messages, messageId, i);
+			if (earlier && delta.startsWith(earlier) && delta.length >= earlier.length) {
+				const remainder = delta.slice(earlier.length);
+				const next = [...messages];
+				next[i] = { ...next[i], content: remainder || curr, streaming: true };
+				return next;
+			}
 			const content = delta.startsWith(curr) ? delta : curr + delta;
 			const next = [...messages];
 			next[i] = { ...next[i], content, streaming: true };
@@ -385,6 +437,32 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
  * @param {{ messageId: string, reasoningId?: string, thought: string, stepNumber: number, runId: number, time: string }} opts
  * @returns {Array<object>}
  */
+/** Relocate a trailing reasoning bubble in front of thought only when they
+ *  are adjacent (no tool / websearch card between them). Mid-stream search
+ *  splits must stay in place — pulling the first Thinking block past the
+ *  search card would undo the split. */
+function shouldRelocateReasoning(
+	messages: StreamMessage[],
+	reasoningId: string | undefined,
+	thoughtIdx: number,
+): boolean {
+	if (!reasoningId || thoughtIdx < 0) return false;
+	if (messages.some((x) => x.id.startsWith(reasoningId + '-'))) return false;
+	const rIdx = messages.findIndex((x) => x.id === reasoningId);
+	if (rIdx < 0 || rIdx < thoughtIdx) return false;
+	for (let i = thoughtIdx + 1; i < rIdx; i++) {
+		if (messages[i].type === 'tool' || messages[i].type === 'ask') return false;
+	}
+	return true;
+}
+
+function finalizeReasoningInPlace(messages: StreamMessage[], reasoningId: string | undefined): StreamMessage[] {
+	if (!reasoningId) return messages;
+	return messages.map((x) =>
+		isStreamSegment(x.id, reasoningId) ? { ...x, streaming: false } : x,
+	);
+}
+
 export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: string; reasoningId?: string; thought: string; stepNumber: number; runId: number; time: string }): StreamMessage[] {
 	const { messageId, reasoningId, thought, stepNumber, runId, time } = opts;
 	const segPrefix = messageId + '-';
@@ -417,28 +495,14 @@ export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: s
 		}
 		return messages.map((x, i) => {
 			if (i === lastIdx) return { ...x, content: lastContent, streaming: false };
-			if (x.id === messageId || x.id.startsWith(segPrefix) || x.id === reasoningId) {
+			if (isStreamSegment(x.id, messageId) || isStreamSegment(x.id, reasoningId)) {
 				return { ...x, streaming: false };
 			}
 			return x;
 		});
 	}
 	const firstSegIdx = messages.findIndex((x) => x.id === messageId);
-	// Reasoning may stream AFTER the thought text started (providers that
-	// emit text and reasoning interleaved). The reasoning block belongs
-	// above the answer, so pull it out of the list and re-insert it in
-	// front of the merged thought message — otherwise the final order is
-	// [answer, Thinking...] and can never self-heal.
-	const reasoningRaw = reasoningId
-		? (messages.find((x) => x.id === reasoningId) ?? null)
-		: null;
-	const reasoning = reasoningRaw ? { ...reasoningRaw, streaming: false } : null;
-	const rest = messages.filter((x) => x.id !== messageId && x.id !== reasoningId);
 	const existing = firstSegIdx >= 0 ? messages[firstSegIdx] : null;
-	// Reconcile in place when the bubble already exists (live streamed block
-	// OR a DB copy with the same id): keep its own time/step metadata, only
-	// content and the streaming flag change. A fresh bubble gets the snap's
-	// metadata.
 	const merged = existing
 		? { ...existing, content: thought, streaming: false }
 		: newStreamMessage({
@@ -450,27 +514,21 @@ export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: s
 				time,
 		  });
 	if (firstSegIdx < 0) {
-		let out = [...rest];
-		if (reasoning) out = insertAgentMessage(out, reasoning);
-		return insertAgentMessage(out, merged);
+		return insertAgentMessage(finalizeReasoningInPlace(messages, reasoningId), merged);
 	}
-	// The merged thought replaces the first segment's slot. `rest` is the
-	// original list with the block + reasoning removed, so `firstSegIdx`
-	// (an index into `messages`) no longer maps directly: subtract every
-	// removed item that sat before the first segment to get the equivalent
-	// position in `rest`. This keeps any preceding user question and any
-	// interleaved tool cards in their correct relative order — clamping
-	// against `rest.length` alone mis-placed the thought/reasoning relative
-	// to those messages.
-	let insertAt = firstSegIdx;
-	for (let i = 0; i < firstSegIdx; i++) {
-		if (messages[i].id === messageId || messages[i].id === reasoningId) insertAt--;
+	if (!shouldRelocateReasoning(messages, reasoningId, firstSegIdx)) {
+		return finalizeReasoningInPlace(messages, reasoningId).map((x, i) =>
+			i === firstSegIdx ? merged : x,
+		);
 	}
-	insertAt = Math.max(0, Math.min(insertAt, rest.length));
+	// Reasoning streamed AFTER the thought (interleaved providers). Pull it
+	// in front of the answer so the final order is not [answer, Thinking...].
+	const reasoningRaw = messages.find((x) => x.id === reasoningId) ?? null;
+	const reasoning = reasoningRaw ? { ...reasoningRaw, streaming: false } : null;
+	const rest = messages.filter((x) => x.id !== messageId && x.id !== reasoningId);
+	const insertAt = Math.max(0, Math.min(firstSegIdx, rest.length));
 	rest.splice(insertAt, 0, merged);
 	if (reasoning) {
-		// Reasoning goes immediately before the merged thought, i.e. at the
-		// same insertion slot as the thought.
 		rest.splice(insertAt, 0, reasoning);
 	}
 	return rest;

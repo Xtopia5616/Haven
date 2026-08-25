@@ -14,6 +14,46 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 impl ReActEngine {
+    /// Emit the tool return of every provider built-in web search that
+    /// completed in this response. Streaming adapters (DeepSeek / OpenAI
+    /// Responses) already emit `completed` status events mid-stream; this
+    /// second pass attaches the compact results payload (`{queries, results}`)
+    /// so the UI card shows what the search actually returned, and it creates
+    /// the card for non-streaming providers (Anthropic server tools, Gemini
+    /// grounding, xAI Live Search) that never emit live status events.
+    async fn emit_web_search_returns(
+        emitter: &Arc<dyn AgentEventEmitter>,
+        session_id: &str,
+        step_num: u32,
+        run_id: u64,
+        web_search_calls: &[serde_json::Value],
+    ) {
+        for item in web_search_calls {
+            let Some(result) = haven_llm::web_search_result_of(item) else {
+                continue;
+            };
+            emitter
+                .emit(crate::event::AgentEvent::WebSearch {
+                    session_id: session_id.to_string(),
+                    phase: "completed".into(),
+                    step_number: step_num,
+                    run_id,
+                    call_id: item
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    action: item
+                        .pointer("/action/type")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    result: Some(result),
+                })
+                .await;
+        }
+    }
+}
+
+impl ReActEngine {
     /// Shared ReAct loop body. Runs from `start_step` through `max_steps`.
     /// Called by both `run_session` (fresh) and `run_session_resumed` (resumed from
     /// snapshot).
@@ -412,8 +452,7 @@ impl ReActEngine {
                 match action {
                     AfterLlmAction::Accept => break,
                     AfterLlmAction::RetryEmpty { delay_ms } => {
-                        empty_retries_remaining =
-                            empty_retries_remaining.saturating_sub(1);
+                        empty_retries_remaining = empty_retries_remaining.saturating_sub(1);
                         if cancel_res.is_cancelled() {
                             return Ok(self
                                 .exit_cancelled(session_id, events, step_num, branch_points)
@@ -568,6 +607,17 @@ impl ReActEngine {
                     .join(", ")
             );
 
+            // Search cards before the thought snap so non-streaming providers
+            // (xAI / Anthropic / Gemini) insert above the answer, not below it.
+            Self::emit_web_search_returns(
+                &emitter,
+                session_id,
+                step_num,
+                run_id,
+                &response.web_search_calls,
+            )
+            .await;
+
             if let Some(ref t) = thought {
                 let message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
                 let step_ctx = StepCtx {
@@ -666,8 +716,7 @@ impl ReActEngine {
                 // like the assistant ignored the user — surface an explicit
                 // error instead so the user can retry the session, and the real
                 // cause (upstream silent failure) is visible.
-                if thought.is_none()
-                    && empty_retries_remaining < limits.empty_response_max_retries
+                if thought.is_none() && empty_retries_remaining < limits.empty_response_max_retries
                 {
                     let err_msg = "模型连续多次返回空响应（服务端异常）。请稍后点击「继续任务」重试，或检查模型服务状态。"
                         .to_string();
@@ -749,14 +798,8 @@ impl ReActEngine {
             }
         }
 
-        self.pause_turn_budget(
-            session_id,
-            events,
-            last_step + 1,
-            branch_points,
-            &emitter,
-        )
-        .await?;
+        self.pause_turn_budget(session_id, events, last_step + 1, branch_points, &emitter)
+            .await?;
         Ok(LoopExit::Paused {
             reason: PauseReason::Budget,
         })

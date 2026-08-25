@@ -67,9 +67,7 @@ impl ResponsePolicy {
         canonical: &[CanonicalMessage],
         state: ResponsePolicyState,
     ) -> AfterLlmAction {
-        let empty = thought.is_none()
-            && actions.is_empty()
-            && response.web_search_calls.is_empty();
+        let empty = thought.is_none() && actions.is_empty() && response.web_search_calls.is_empty();
         if empty {
             if state.empty_retries_remaining > 0 {
                 return AfterLlmAction::RetryEmpty {
@@ -182,9 +180,7 @@ impl ResponsePolicy {
             return false;
         }
         match thought {
-            Some(t) => {
-                response.finish_reason != Some(FinishReason::Stop) || Self::looks_cut_off(t)
-            }
+            Some(t) => response.finish_reason != Some(FinishReason::Stop) || Self::looks_cut_off(t),
             None => false,
         }
     }
@@ -246,12 +242,10 @@ impl ResponsePolicy {
     pub(crate) fn observation_is_background_wait(text: &str) -> bool {
         use haven_common::tools::{BACKGROUND_WAIT_NEXT_STEP, BACKGROUND_WAIT_NEXT_STEP_KEY};
         let head = Self::observation_head(text, 256);
-        let compact = format!(
-            "\"{BACKGROUND_WAIT_NEXT_STEP_KEY}\":\"{BACKGROUND_WAIT_NEXT_STEP}\""
-        );
-        let spaced = format!(
-            "\"{BACKGROUND_WAIT_NEXT_STEP_KEY}\": \"{BACKGROUND_WAIT_NEXT_STEP}\""
-        );
+        let compact =
+            format!("\"{BACKGROUND_WAIT_NEXT_STEP_KEY}\":\"{BACKGROUND_WAIT_NEXT_STEP}\"");
+        let spaced =
+            format!("\"{BACKGROUND_WAIT_NEXT_STEP_KEY}\": \"{BACKGROUND_WAIT_NEXT_STEP}\"");
         let head_has_next_step = head.contains(&compact) || head.contains(&spaced);
         let head_looks_wait = head_has_next_step
             || head.contains("\"background\":true")
@@ -375,7 +369,12 @@ mod tests {
         }
     }
 
-    fn state(empty_left: u32, cut_used: u32, cut_max: u32, pending_ask: bool) -> ResponsePolicyState {
+    fn state(
+        empty_left: u32,
+        cut_used: u32,
+        cut_max: u32,
+        pending_ask: bool,
+    ) -> ResponsePolicyState {
         ResponsePolicyState {
             empty_retries_remaining: empty_left,
             empty_retry_delay_ms: 10,
@@ -469,7 +468,9 @@ mod tests {
             &[],
             &r,
         ));
-        assert!(ResponsePolicy::canonical_has_pending_tool_context(&canonical));
+        assert!(ResponsePolicy::canonical_has_pending_tool_context(
+            &canonical
+        ));
     }
 
     #[test]
@@ -495,7 +496,9 @@ mod tests {
         assert!(!ResponsePolicy::observation_is_background_wait(
             r#"{"background":true,"action_id":"act-1","status":"completed"}"#
         ));
-        assert!(!ResponsePolicy::observation_is_background_wait(r#"{"ok":true}"#));
+        assert!(!ResponsePolicy::observation_is_background_wait(
+            r#"{"ok":true}"#
+        ));
         assert!(!ResponsePolicy::observation_is_background_wait(
             r#"{"background": true, "status": "running", "hint": "trun"#
         ));
@@ -538,10 +541,7 @@ mod tests {
             "head next_step must still accept across a mid-UTF-8 cut"
         );
         // Large non-wait JSON must not require a full parse (head gate).
-        let large = format!(
-            r#"{{"output":"{}","shell":"cmd"}}"#,
-            "y".repeat(12_000)
-        );
+        let large = format!(r#"{{"output":"{}","shell":"cmd"}}"#, "y".repeat(12_000));
         assert!(!ResponsePolicy::observation_is_background_wait(&large));
     }
 
@@ -556,7 +556,9 @@ mod tests {
                 Some("c1".into()),
             ),
         ];
-        assert!(ResponsePolicy::canonical_only_awaiting_background(&canonical));
+        assert!(ResponsePolicy::canonical_only_awaiting_background(
+            &canonical
+        ));
         let r = resp(
             "依赖已在后台安装，完成后会自动继续。",
             Some(FinishReason::Stop),

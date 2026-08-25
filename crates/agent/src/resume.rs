@@ -32,9 +32,7 @@ use crate::types::{
     BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript,
     seed_events_from_canonical,
 };
-use haven_common::types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart,
-};
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use std::collections::HashMap;
 
 /// A recent conversation message (role, content) used by the FRESH-run /
@@ -48,7 +46,6 @@ pub(crate) struct ConversationMessage {
     role: String,
     content: String,
 }
-
 
 impl AgentLayer {
     /// Load the most recent conversation messages for a session as (role,
@@ -90,7 +87,9 @@ impl AgentLayer {
                 .await;
         }
         if self.executor.get_session_state(session_id).await == Some(SessionStatus::Running) {
-            self.events.emit_session_updated(session_id, "running").await;
+            self.events
+                .emit_session_updated(session_id, "running")
+                .await;
         }
 
         // R6: direct callers (tests / continue without claim) register the same
@@ -206,7 +205,12 @@ impl AgentLayer {
                     // Phase 5 / E3: restore confirm gate. Prefer in-memory
                     // (same-process decisions already recorded) over the
                     // snapshot so resolve_confirmation is not wiped.
-                    if self.executor.get_awaiting_confirm(session_id).await.is_none() {
+                    if self
+                        .executor
+                        .get_awaiting_confirm(session_id)
+                        .await
+                        .is_none()
+                    {
                         if let Some(pending) = snapshot.awaiting_confirm.clone() {
                             // Decisions already recorded but wake to Pending
                             // never landed (crash between persist and status):

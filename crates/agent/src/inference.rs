@@ -753,10 +753,7 @@ impl InferenceEngine {
             return 0;
         }
         let db = self.db.clone();
-        let counts = match db
-            .run_blocking(move |db| db.list_predicate_counts())
-            .await
-        {
+        let counts = match db.run_blocking(move |db| db.list_predicate_counts()).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("memory maintenance: list_predicate_counts failed: {}", e);
@@ -891,9 +888,7 @@ impl InferenceEngine {
             let db = self.db.clone();
             let entity_owned = entity.to_string();
             if let Ok(hits) = db
-                .run_blocking(move |db| {
-                    db.search_embeddings(&entity_owned, &vec, limit, &model)
-                })
+                .run_blocking(move |db| db.search_embeddings(&entity_owned, &vec, limit, &model))
                 .await
             {
                 return hits
@@ -994,108 +989,114 @@ impl InferenceEngine {
         // re-confirmed facts keep decaying.
         const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
         db.run_blocking(move |db| {
-                let mut wrote = false;
-                // Phase 1: sanitize/validate every draft, collecting the
-                // survivors' subjects so the existence check below runs as ONE
-                // query for the whole batch instead of two per fact (each
-                // query would re-checkout a pooled connection).
-                let mut candidates: Vec<FactDraft> = Vec::new();
-                for (subject_raw, predicate_raw, object_raw, confidence_raw, tags_raw, src_ref, durability_raw) in
-                    facts
+            let mut wrote = false;
+            // Phase 1: sanitize/validate every draft, collecting the
+            // survivors' subjects so the existence check below runs as ONE
+            // query for the whole batch instead of two per fact (each
+            // query would re-checkout a pooled connection).
+            let mut candidates: Vec<FactDraft> = Vec::new();
+            for (
+                subject_raw,
+                predicate_raw,
+                object_raw,
+                confidence_raw,
+                tags_raw,
+                src_ref,
+                durability_raw,
+            ) in facts
+            {
+                let subject = sanitize_fact_field(&subject_raw, sanitize_max);
+                let predicate = normalize_predicate(&predicate_raw);
+                let object = sanitize_fact_field(&object_raw, sanitize_max);
+                if predicate.is_empty() || subject.is_empty() || object.is_empty() {
+                    tracing::debug!(
+                        "fact inference: dropping degenerate fact (empty subject/predicate/object)"
+                    );
+                    continue;
+                }
+                if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
+                    tracing::debug!("fact inference: dropping sensitive fact '{}'", predicate);
+                    continue;
+                }
+                // Clamp to the documented range so an over-eager model
+                // (e.g. 1.2) does not skew decay/ordering.
+                candidates.push((
+                    subject,
+                    predicate,
+                    object,
+                    confidence_raw.clamp(0.5, 1.0),
+                    tags_raw,
+                    src_ref,
+                    durability_raw.clamp(0.1, 1.0),
+                ));
+            }
+            let subjects: Vec<&str> = candidates
+                .iter()
+                .map(|(s, _, _, _, _, _, _)| s.as_str())
+                .collect();
+            let (existing_triples, existing_pairs) = db
+                .facts_exist_batch(&subjects)
+                // Fail in the same direction as the per-fact queries they
+                // replace: on error, nothing exists -> the confidence
+                // floor applies.
+                .unwrap_or_default();
+            for (subject, predicate, object, confidence, tags_raw, src_ref, durability) in
+                candidates
+            {
+                let is_new_fact = !existing_triples.contains(&(
+                    subject.clone(),
+                    predicate.clone(),
+                    object.clone(),
+                ));
+                // A single-valued predicate that already has a stored value
+                // (for a DIFFERENT object) is a user correction/update, not
+                // a brand-new fact: the floor must not drop it, or the
+                // latest value the user stated would never replace the
+                // stale one.
+                let is_single_valued_update = is_single_valued_predicate(&predicate)
+                    && existing_pairs.contains(&(subject.clone(), predicate.clone()));
+                if is_new_fact && !is_single_valued_update && confidence < PERSIST_CONFIDENCE_FLOOR
                 {
-                    let subject = sanitize_fact_field(&subject_raw, sanitize_max);
-                    let predicate = normalize_predicate(&predicate_raw);
-                    let object = sanitize_fact_field(&object_raw, sanitize_max);
-                    if predicate.is_empty() || subject.is_empty() || object.is_empty() {
-                        tracing::debug!(
-                            "fact inference: dropping degenerate fact (empty subject/predicate/object)"
-                        );
-                        continue;
-                    }
-                    if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
-                        tracing::debug!(
-                            "fact inference: dropping sensitive fact '{}'",
-                            predicate
-                        );
-                        continue;
-                    }
-                    // Clamp to the documented range so an over-eager model
-                    // (e.g. 1.2) does not skew decay/ordering.
-                    candidates.push((
-                        subject,
+                    tracing::debug!(
+                        "fact inference: dropping low-confidence fact '{}' (confidence {})",
                         predicate,
-                        object,
-                        confidence_raw.clamp(0.5, 1.0),
-                        tags_raw,
-                        src_ref,
-                        durability_raw.clamp(0.1, 1.0),
-                    ));
+                        confidence
+                    );
+                    continue;
                 }
-                let subjects: Vec<&str> = candidates
-                    .iter()
-                    .map(|(s, _, _, _, _, _, _)| s.as_str())
-                    .collect();
-                let (existing_triples, existing_pairs) = db
-                    .facts_exist_batch(&subjects)
-                    // Fail in the same direction as the per-fact queries they
-                    // replace: on error, nothing exists -> the confidence
-                    // floor applies.
-                    .unwrap_or_default();
-                for (subject, predicate, object, confidence, tags_raw, src_ref, durability) in candidates
-                {
-                    let is_new_fact =
-                        !existing_triples.contains(&(subject.clone(), predicate.clone(), object.clone()));
-                    // A single-valued predicate that already has a stored value
-                    // (for a DIFFERENT object) is a user correction/update, not
-                    // a brand-new fact: the floor must not drop it, or the
-                    // latest value the user stated would never replace the
-                    // stale one.
-                    let is_single_valued_update = is_single_valued_predicate(&predicate)
-                        && existing_pairs.contains(&(subject.clone(), predicate.clone()));
-                    if is_new_fact
-                        && !is_single_valued_update
-                        && confidence < PERSIST_CONFIDENCE_FLOOR
-                    {
-                        tracing::debug!(
-                            "fact inference: dropping low-confidence fact '{}' (confidence {})",
+                let tags = sanitize_tags(&tags_raw);
+                let tags: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+                match db.upsert_fact_with_durability(
+                    &subject,
+                    &predicate,
+                    &object,
+                    "inferred",
+                    confidence,
+                    &tags,
+                    src_ref.as_ref(),
+                    durability,
+                ) {
+                    Ok(outcome) => {
+                        use haven_memory::repositories::facts::UpsertOutcome::*;
+                        if matches!(outcome, Inserted | Reinforced | Corrected) {
+                            wrote = true;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "fact inference: failed to persist fact '{} {} {}': {}",
+                            subject,
                             predicate,
-                            confidence
+                            object,
+                            e
                         );
-                        continue;
-                    }
-                    let tags = sanitize_tags(&tags_raw);
-                    let tags: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
-                    match db.upsert_fact_with_durability(
-                        &subject,
-                        &predicate,
-                        &object,
-                        "inferred",
-                        confidence,
-                        &tags,
-                        src_ref.as_ref(),
-                        durability,
-                    ) {
-                        Ok(outcome) => {
-                            use haven_memory::repositories::facts::UpsertOutcome::*;
-                            if matches!(outcome, Inserted | Reinforced | Corrected) {
-                                wrote = true;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "fact inference: failed to persist fact '{} {} {}': {}",
-                                subject,
-                                predicate,
-                                object,
-                                e
-                            );
-                        }
                     }
                 }
-                Ok::<bool, anyhow::Error>(wrote)
-            })
-            .await
-            .unwrap_or(false)
+            }
+            Ok::<bool, anyhow::Error>(wrote)
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Send the conversation transcript to the BalancedModel and ask it to
@@ -1297,8 +1298,7 @@ impl InferenceEngine {
             if let Some(ts) = last_run
                 && let Ok(prev) = chrono::DateTime::parse_from_rfc3339(&ts)
             {
-                let elapsed =
-                    (chrono::Utc::now() - prev.with_timezone(&chrono::Utc)).num_seconds();
+                let elapsed = (chrono::Utc::now() - prev.with_timezone(&chrono::Utc)).num_seconds();
                 let min = self.fact_extraction_min_interval_secs as i64;
                 if elapsed < min {
                     return SummaryExtractOutcome::Throttled {
@@ -1331,7 +1331,10 @@ impl InferenceEngine {
             voice: false,
         };
 
-        match self.infer_facts_with_llm(std::slice::from_ref(&synthetic)).await {
+        match self
+            .infer_facts_with_llm(std::slice::from_ref(&synthetic))
+            .await
+        {
             Ok(facts) if !facts.is_empty() => {
                 let wrote = self
                     .persist_facts(&facts, std::slice::from_ref(&synthetic))
@@ -1532,7 +1535,8 @@ fn push_turn_context(
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .unwrap_or("tool");
-            let body = haven_common::text::sanitize_prompt_field(obs, EXTRACTION_TOOL_CONTENT_CHARS);
+            let body =
+                haven_common::text::sanitize_prompt_field(obs, EXTRACTION_TOOL_CONTENT_CHARS);
             if body.trim().is_empty() {
                 continue;
             }
@@ -1619,8 +1623,8 @@ fn gate_predicate_merge(p: &PredicateMergeProposal) -> Option<(String, String)> 
     if from_raw == to {
         return None;
     }
-    let polarity_clash = (from_norm == "likes" && to == "dislikes")
-        || (from_norm == "dislikes" && to == "likes");
+    let polarity_clash =
+        (from_norm == "likes" && to == "dislikes") || (from_norm == "dislikes" && to == "likes");
     if polarity_clash {
         return None;
     }
@@ -2034,7 +2038,8 @@ mod tests {
         let a2 = make_role_message("assistant", "second ask");
         let a3 = make_role_message("assistant", "third ask");
         let user = make_role_message("user", "dark");
-        let window = build_extraction_window(&[a1, a2.clone(), a3.clone(), user.clone()], None, &[]);
+        let window =
+            build_extraction_window(&[a1, a2.clone(), a3.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 3);
         assert_eq!(window.messages[0].id, a2.id);
         assert_eq!(window.messages[1].id, a3.id);
@@ -2060,8 +2065,7 @@ mod tests {
         tool.role = "tool".into();
         tool.message_type = Some("observation".into());
         let user = make_role_message("user", "use that path");
-        let window =
-            build_extraction_window(&[ask.clone(), tool.clone(), user.clone()], None, &[]);
+        let window = build_extraction_window(&[ask.clone(), tool.clone(), user.clone()], None, &[]);
         assert_eq!(window.messages.len(), 3);
         assert_eq!(window.messages[0].id, ask.id);
         assert_eq!(window.messages[1].role, "tool");

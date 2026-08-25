@@ -253,6 +253,7 @@ impl StreamForwarder {
                     run_id,
                     call_id: ws.call_id.clone(),
                     action: ws.action.clone(),
+                    result: ws.result.clone(),
                 });
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
@@ -648,9 +649,7 @@ pub(crate) enum SearchContextOutcome {
     /// Proceed to tool batch or turn-end. `assistant_already_pushed` is true
     /// when a synthesized final arrived in the same response as the search
     /// (canonical already carries the search context).
-    Proceed {
-        assistant_already_pushed: bool,
-    },
+    Proceed { assistant_already_pushed: bool },
 }
 
 impl ReActEngine {
@@ -714,14 +713,8 @@ impl ReActEngine {
         if actions.is_empty() {
             // Search round: no answer yet — keep the turn open and re-request
             // with the search context in the next input.
-            self.save_branch_point(
-                &ctx.session_id,
-                events,
-                ctx.step_num,
-                branch_points,
-                false,
-            )
-            .await;
+            self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, false)
+                .await;
             tracing::debug!(
                 "ReAct step {} session {} server-side search round ({} item(s)); continuing",
                 ctx.step_num,

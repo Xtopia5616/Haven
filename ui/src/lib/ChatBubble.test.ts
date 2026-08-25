@@ -226,14 +226,14 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
-		expect(screen.getByText('▶ Calling shell')).toBeTruthy();
+		expect(screen.queryByText('▶ Calling shell')).toBeNull();
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(screen.getByText('stdout output')).toBeTruthy();
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
-	it('omits the observation block when a tool call has no content', () => {
+	it('renders the tool card dropdown even when a tool call has no content', () => {
 		render(
 			ChatBubble,
 			base({
@@ -243,7 +243,9 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
-		expect(screen.getByText('▶ Calling shell')).toBeTruthy();
+		expect(screen.queryByText('▶ Calling shell')).toBeNull();
+		expect(document.querySelector('details.tool-card')).toBeTruthy();
+		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
@@ -261,7 +263,7 @@ describe('ChatBubble', () => {
 				toolName: 'files',
 			}),
 		);
-		expect(screen.getByText('▶ Calling files')).toBeTruthy();
+		expect(screen.queryByText('▶ Calling files')).toBeNull();
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('文件与搜索')).toBeTruthy();
 		expect(screen.getByText('C:\\a.rs')).toBeTruthy();
@@ -278,7 +280,6 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
-		expect(screen.getByText('▶ Calling shell')).toBeTruthy();
 		const details = container.querySelector('.tool-card') as HTMLDetailsElement;
 		expect(details).toBeTruthy();
 		expect(details.open).toBe(false);

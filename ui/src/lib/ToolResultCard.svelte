@@ -187,8 +187,15 @@
 					: null;
 			case 'http':
 				return typeof data.status === 'number' ? data : null;
-			case 'clipboard':
-				return 'content' in data || data.written === true ? data : null;
+		case 'clipboard':
+			return 'content' in data || data.written === true ? data : null;
+		case 'web_search':
+			// Provider built-in web search tool return: `{label, queries,
+			// results:[{title,url,snippet}]}` composed by the page handler.
+			return (Array.isArray(data.results) || Array.isArray(data.queries)) &&
+				typeof data.label === 'string'
+				? data
+				: null;
 			case 'agent':
 				return data.operation ||
 					data.ok === true ||
@@ -214,7 +221,7 @@
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import ExternalRef from '$lib/ExternalRef.svelte';
-	import { actionStore, toolOutputPreviewStore } from '$lib/stores.ts';
+	import { actionStore, formatTokenCount, toolOutputPreviewStore } from '$lib/stores.ts';
 
 	let {
 		type = 'tool',
@@ -225,9 +232,11 @@
 		messageId = '',
 		onAskSelectionChange = null,
 		onIgnore = null,
+		onAskSubmit = null,
 		resolved = null,
 		streaming = false,
 		actionId = null,
+		usage = null,
 	} = $props();
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
@@ -242,6 +251,17 @@
 			? selectedOptions.filter((x) => x !== opt)
 			: [...selectedOptions, opt];
 		onAskSelectionChange?.(messageId, selectedOptions);
+	}
+
+	// Enter on a focused option chip submits the composed answers (native
+	// button Enter would re-trigger the click and toggle the selection off,
+	// which swallowed the submit). Space still toggles the chip.
+	/** @param {KeyboardEvent} e */
+	function handleAskKeydown(e) {
+		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+			e.preventDefault();
+			onAskSubmit?.(messageId);
+		}
 	}
 
 	// Drop stale selections when the card leaves the awaiting state (answered,
@@ -465,6 +485,7 @@
 						class:selected={selectedOptions.includes(opt)}
 						aria-pressed={selectedOptions.includes(opt)}
 						onclick={() => toggleAskOption(opt)}
+						onkeydown={handleAskKeydown}
 						type="button">{opt}</button
 					>
 				{/each}
@@ -684,6 +705,20 @@
 							d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
 						/><rect x="8" y="2" width="8" height="4" rx="1" /></svg
 					>
+				{:else if toolName === 'web_search'}
+					<svg
+						width="12"
+						height="12"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2.5"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						><circle cx="12" cy="12" r="10" /><path
+							d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+						/></svg
+					>
 				{:else if toolName === 'agent'}
 					<svg
 						width="12"
@@ -705,6 +740,22 @@
 				{/if}
 			</span>
 			<span class="tool-card-label">{LABELS[toolName] ?? toolName}</span>
+			{#if usage}
+				<span
+					class="usage-chip"
+					title={[
+						usage.model ? `模型 ${usage.model}` : null,
+						`上传 ${usage.prompt} → 生成 ${usage.completion} tokens`,
+						usage.durationMs > 0 ? `耗时 ${(usage.durationMs / 1000).toFixed(1)}s` : null,
+						usage.hasCost ? `费用 ${usage.cost.toFixed(6)} USD` : null,
+						usage.calls > 1 ? `${usage.calls} 次调用合并` : null,
+					]
+						.filter(Boolean)
+						.join('\n')}
+				>
+					{formatTokenCount(usage.total)} tokens
+				</span>
+			{/if}
 			<span class="tool-card-chevron" aria-hidden="true">▾</span>
 		</summary>
 
@@ -1133,6 +1184,30 @@
 				{:else}
 					<p class="tool-card-empty">剪贴板为空</p>
 				{/if}
+			{:else if toolName === 'web_search'}
+				<div class="tool-card-count">{data.label}</div>
+				{#if Array.isArray(data.queries) && data.queries.length > 0}
+					<div class="tool-card-meta">查询：{data.queries.join('；')}</div>
+				{/if}
+				{#if Array.isArray(data.results)}
+					{#if data.results.length > 0}
+						<div class="tool-card-list">
+							{#each data.results as r (r.url + r.title)}
+								<div class="search-row">
+									<ExternalRef class="search-path" target={r.url} />
+									{#if r.title && r.title !== r.url}
+										<span class="search-snippet">{r.title}</span>
+									{/if}
+								</div>
+								{#if r.snippet}
+									<div class="tool-card-meta">{r.snippet}</div>
+								{/if}
+							{/each}
+						</div>
+					{:else}
+						<p class="tool-card-empty">（未返回结果）</p>
+					{/if}
+				{/if}
 			{:else if toolName === 'agent'}
 				{#if data.auto && typeof data.text === 'string'}
 					<div class="tool-card-count">自动收到同伴消息（低信任）</div>
@@ -1180,6 +1255,8 @@
 			{#if data.hint}
 				<div class="tool-card-hint">{data.hint}</div>
 			{/if}
+		{:else if liveStreaming}
+			<p class="tool-card-empty">等待输出…</p>
 		{/if}
 	</details>
 {/if}
@@ -1716,7 +1793,21 @@
 	}
 	.content-preview.streaming {
 		max-height: 280px;
-		border-left: 2px solid var(--md-sys-color-primary);
+	}
+	.usage-chip {
+		display: inline-block;
+		flex: none;
+		padding: 1px 8px;
+		border-radius: var(--md-sys-shape-full);
+		background: color-mix(in srgb, var(--md-sys-color-tertiary) 14%, transparent);
+		color: var(--md-sys-color-on-surface-variant);
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-tertiary) 30%, transparent);
+		font-size: 10px;
+		font-weight: 600;
+		font-family: var(--md-sys-typescale-mono);
+		line-height: 1.6;
+		white-space: nowrap;
+		cursor: default;
 	}
 	.tool-card-hint {
 		margin-top: var(--md-sys-space-xs);

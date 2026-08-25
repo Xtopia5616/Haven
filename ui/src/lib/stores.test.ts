@@ -27,7 +27,6 @@ import {
 	actionStore,
 	upsertAction,
 	removeAction,
-	sessionMessagesStore,
 	finalizeBackgroundActionMessages,
 } from './stores.ts';
 

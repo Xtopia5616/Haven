@@ -296,10 +296,7 @@ impl SessionExecutor {
         }
     }
 
-    pub async fn get_awaiting_answer(
-        &self,
-        session_id: &str,
-    ) -> Option<crate::types::AskPending> {
+    pub async fn get_awaiting_answer(&self, session_id: &str) -> Option<crate::types::AskPending> {
         self.awaiting_answer.lock().await.get(session_id).cloned()
     }
 
@@ -317,11 +314,7 @@ impl SessionExecutor {
     }
 
     /// Dual-track ask gate: status flavor **or** in-memory/snapshot flag.
-    pub async fn is_ask_gated_with(
-        &self,
-        session_id: &str,
-        state: Option<&SessionStatus>,
-    ) -> bool {
+    pub async fn is_ask_gated_with(&self, session_id: &str, state: Option<&SessionStatus>) -> bool {
         matches!(state, Some(s) if s.is_awaiting_answer())
             || self.get_awaiting_answer(session_id).await.is_some()
     }

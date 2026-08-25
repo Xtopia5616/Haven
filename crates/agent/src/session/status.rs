@@ -338,7 +338,8 @@ impl SessionExecutor {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<()> {
-        self.update_session_status_inner(session_id, status, true).await
+        self.update_session_status_inner(session_id, status, true)
+            .await
     }
 
     /// Transition a session's status in MEMORY ONLY, without persisting it to
@@ -353,7 +354,8 @@ impl SessionExecutor {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<()> {
-        self.update_session_status_inner(session_id, status, false).await
+        self.update_session_status_inner(session_id, status, false)
+            .await
     }
 
     async fn update_session_status_inner(
@@ -389,8 +391,7 @@ impl SessionExecutor {
             );
             return Ok(());
         }
-        if persist
-            && let Err(e) = Self::persist_status(&self.db, session_id, status.as_str()).await
+        if persist && let Err(e) = Self::persist_status(&self.db, session_id, status.as_str()).await
         {
             tracing::error!(
                 "update_session_status: DB persist failed for session {}; transition {:?} -> {:?} aborted: {}",

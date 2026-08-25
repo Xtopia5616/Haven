@@ -19,11 +19,13 @@ use futures_util::StreamExt;
 use haven_common::config::ModelEndpoint;
 use haven_common::types::{ContentPart, InjectSource};
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::client::{LlmClient, http_status_to_error};
-use crate::types::{LlmError, StreamChunk};
+use crate::types::{Embedding, LlmError, StreamChunk, Usage};
 
 /// Phase 8 / B3: apply wire-only inject prefix to user content parts.
 ///
@@ -78,12 +80,17 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
 /// - `openai-chat` / `llama.cpp`: OpenAI-compatible `/chat/completions`
 ///   (OpenAI, Ollama, vLLM, DeepSeek chat, llama.cpp server, and most
 ///   third-party gateways). Whisper-family models also implement `transcribe`
-///   via `/audio/transcriptions`.
+///   via `/audio/transcriptions`. Embeddings use `/embeddings`.
 /// - `xai`: same OpenAI chat adapter with xAI Live Search `search_parameters`
+///   (embeddings still `/embeddings`)
 /// - `openai-responses` (+ alias `deepseek-responses`): OpenAI Responses API
-///   (`/v1/responses`), including DeepSeek thinking + built-in `web_search`
-/// - `anthropic`: Anthropic Messages API (+ optional server `web_search`)
-/// - `gemini`: Google Gemini API (+ optional `google_search` grounding)
+///   (`/v1/responses`), including DeepSeek thinking + built-in `web_search`.
+///   Embeddings still use the OpenAI-compatible `/v1/embeddings` path — chat
+///   wire style does not apply to that endpoint.
+/// - `anthropic`: Anthropic Messages API (+ optional server `web_search`);
+///   no embeddings API
+/// - `gemini`: Google Gemini API (+ optional `google_search` grounding);
+///   embeddings via `batchEmbedContents`
 /// - `deepgram` / `assemblyai`: speech-to-text only
 pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
     match normalize_api_style(api_style_for(endpoint)) {
@@ -293,6 +300,127 @@ pub(crate) async fn health_check_request(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct OpenAiEmbedRequest {
+    model: String,
+    input: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbedItem {
+    embedding: Vec<f32>,
+    #[serde(default)]
+    index: usize,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenAiEmbedUsage {
+    #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
+    #[serde(default)]
+    total_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbedResponse {
+    data: Vec<OpenAiEmbedItem>,
+    usage: Option<OpenAiEmbedUsage>,
+    model: Option<String>,
+}
+
+/// OpenAI-compatible embeddings URL.
+///
+/// Chat Completions adapters concatenate `/embeddings` onto `base_url` as-is
+/// (typically already ends in `/v1`). Responses adapters pass `ensure_v1`
+/// so a host-only base (`https://api.deepseek.com`) still hits `/v1/embeddings`.
+pub(crate) fn openai_embeddings_url(base_url: &str, ensure_v1: bool) -> String {
+    let base = base_url.trim_end_matches('/');
+    if ensure_v1 && !(base.ends_with("/v1") || base.ends_with("/v1beta")) {
+        format!("{base}/v1/embeddings")
+    } else {
+        format!("{base}/embeddings")
+    }
+}
+
+pub(crate) fn parse_openai_embed_response(
+    body: &str,
+    requested: usize,
+    fallback_model: &str,
+) -> Result<Embedding, LlmError> {
+    let json: OpenAiEmbedResponse =
+        serde_json::from_str(body).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+    let mut items = json.data;
+    if items.is_empty() {
+        return Err(LlmError::InvalidResponse(
+            "embeddings response missing data".into(),
+        ));
+    }
+    if items.len() != requested {
+        return Err(LlmError::InvalidResponse(format!(
+            "embeddings count mismatch: requested {requested}, got {}",
+            items.len()
+        )));
+    }
+    items.sort_by_key(|item| item.index);
+    let vectors: Vec<Vec<f32>> = items.into_iter().map(|item| item.embedding).collect();
+    let model = json.model.clone().or(Some(fallback_model.to_string()));
+    let usage = json
+        .usage
+        .map(|u| Usage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+            cached_tokens: 0,
+            cache_creation_tokens: 0,
+            model_name: model.clone(),
+            cost: None,
+        })
+        .unwrap_or_default();
+    Ok(Embedding {
+        vectors,
+        model,
+        usage,
+    })
+}
+
+pub(crate) async fn openai_compatible_embed(
+    client: &reqwest::Client,
+    headers: HeaderMap,
+    url: &str,
+    model: &str,
+    timeout_secs: u64,
+    input: Vec<String>,
+) -> Result<Embedding, LlmError> {
+    if input.is_empty() {
+        return Ok(Embedding {
+            vectors: Vec::new(),
+            model: Some(model.to_string()),
+            usage: Usage::default(),
+        });
+    }
+    let requested = input.len();
+    let body = OpenAiEmbedRequest {
+        model: model.to_string(),
+        input,
+    };
+    tracing::debug!("POST {url} (model: {model})");
+    tracing::debug!(
+        "POST {url} request body: {} chars",
+        serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
+    );
+    let mut req = client.post(url).headers(headers).json(&body);
+    req = req.timeout(Duration::from_secs(timeout_secs));
+    let resp = send_request(req, None).await?;
+    let txt = resp
+        .text()
+        .await
+        .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+    tracing::trace!("POST {url} response body: {} chars", txt.len());
+    parse_openai_embed_response(&txt, requested, model)
+}
+
 /// DeepSeek's web-search round-trip: a `web_search_call` item captured from
 /// the stream is echoed back verbatim into the next request's `input`.
 /// DeepSeek's Responses-compat layer deserializes the echoed item against a
@@ -324,6 +452,94 @@ pub(crate) fn normalize_web_search_call_item(item: serde_json::Value) -> serde_j
         item["action"] = serde_json::json!({"type": "search", "queries": []});
     }
     item
+}
+
+/// Normalize one raw citation entry into `{title, url, snippet}`. Accepts
+/// objects with `title`/`url`/`snippet` (OpenAI / DeepSeek `citations`,
+/// Anthropic result rows) and plain URL strings (xAI Live Search citations).
+fn web_search_citation_of(raw: &serde_json::Value) -> Option<serde_json::Value> {
+    match raw {
+        serde_json::Value::String(url) if !url.is_empty() => {
+            Some(serde_json::json!({"title": url, "url": url, "snippet": ""}))
+        }
+        serde_json::Value::Object(o) => {
+            let title = o.get("title").and_then(Value::as_str).unwrap_or_default();
+            let url = o.get("url").and_then(Value::as_str).unwrap_or_default();
+            let snippet = o
+                .get("snippet")
+                .and_then(Value::as_str)
+                .or_else(|| o.get("content").and_then(Value::as_str))
+                .unwrap_or_default()
+                .chars()
+                .take(240)
+                .collect::<String>();
+            if title.is_empty() && url.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({"title": title, "url": url, "snippet": snippet}))
+        }
+        _ => None,
+    }
+}
+
+fn web_search_collect(src: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+    match src {
+        serde_json::Value::Array(items) => {
+            for it in items {
+                if let Some(c) = web_search_citation_of(it) {
+                    out.push(c);
+                }
+            }
+        }
+        serde_json::Value::Object(o) => {
+            for key in ["results", "citations", "web_search_results"] {
+                if let Some(arr) = o.get(key).and_then(Value::as_array) {
+                    for it in arr {
+                        if let Some(c) = web_search_citation_of(it) {
+                            out.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract the tool return of a provider built-in web search from a
+/// `web_search_call` item: a compact `{queries, results}` payload where each
+/// result is `{title, url, snippet}`. Reads `action.search.citations` /
+/// `action.search.results` (OpenAI / DeepSeek / xAI), `action.result`
+/// (Anthropic `web_search_tool_result` blocks) and flat `citations` arrays
+/// (xAI Live Search). Returns `None` when the item carries no usable content
+/// (e.g. a bare Gemini grounding skeleton or an in-progress call), so the
+/// UI card falls back to the status label.
+pub fn web_search_result_of(item: &serde_json::Value) -> Option<serde_json::Value> {
+    let action = item.as_object()?.get("action")?.as_object()?;
+    let mut queries: Vec<String> = Vec::new();
+    if let Some(qs) = action.get("queries").and_then(Value::as_array) {
+        queries.extend(qs.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for key in ["citations", "results", "result"] {
+        if let Some(src) = action.get(key) {
+            web_search_collect(src, &mut results);
+        }
+    }
+    // Anthropic web_search_tool_result puts the payload in `result.query`.
+    if queries.is_empty()
+        && let Some(q) = action
+            .get("result")
+            .and_then(Value::as_object)
+            .and_then(|r| r.get("query"))
+            .and_then(Value::as_str)
+    {
+        queries.push(q.to_string());
+    }
+    if queries.is_empty() && results.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({"queries": queries, "results": results}))
 }
 
 /// Lowercased `provider` + `base_url` + `model_name` haystack used to detect
@@ -527,6 +743,17 @@ pub(crate) fn reasoning_tail(text: String, cap: usize) -> String {
 /// first; a later `web_search_call.completed` payload — when the provider
 /// sends one — is the authoritative version. Both must never be echoed into
 /// the next request's input as duplicates.
+fn web_search_item_rank(item: &serde_json::Value) -> u8 {
+    let mut rank = 0u8;
+    if item.get("action").is_some_and(|a| a.is_object()) {
+        rank += 1;
+    }
+    if web_search_result_of(item).is_some() {
+        rank += 2;
+    }
+    rank
+}
+
 pub(crate) fn upsert_web_search_call(calls: &mut Vec<serde_json::Value>, item: serde_json::Value) {
     let id = item.get("id").and_then(serde_json::Value::as_str);
     if let Some(id) = id
@@ -534,7 +761,9 @@ pub(crate) fn upsert_web_search_call(calls: &mut Vec<serde_json::Value>, item: s
             .iter()
             .position(|c| c.get("id").and_then(serde_json::Value::as_str) == Some(id))
     {
-        calls[pos] = item;
+        if web_search_item_rank(&item) >= web_search_item_rank(&calls[pos]) {
+            calls[pos] = item;
+        }
     } else {
         calls.push(item);
     }
@@ -669,6 +898,52 @@ pub(crate) fn spawn_line_reader<S>(
 }
 
 #[cfg(test)]
+pub(crate) async fn serve_once(status_line: &str, content_type: &str, body: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = body.to_string();
+    let status = status_line.to_string();
+    let content_type = content_type.to_string();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            let n = sock.read(&mut tmp).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..header_end]);
+                let content_length = head
+                    .lines()
+                    .find_map(|l| {
+                        let lower = l.to_lowercase();
+                        lower
+                            .strip_prefix("content-length:")
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if buf.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+        }
+        let resp = format!(
+            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            status,
+            content_type,
+            body.len(),
+            body
+        );
+        let _ = sock.write_all(resp.as_bytes()).await;
+    });
+    format!("http://{addr}")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -776,9 +1051,11 @@ mod tests {
             ..Default::default()
         };
         assert!(!is_openrouter(&plain));
-        assert!(build_headers(&plain, "Authorization", true)
-            .get("X-Title")
-            .is_none());
+        assert!(
+            build_headers(&plain, "Authorization", true)
+                .get("X-Title")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1124,6 +1401,85 @@ mod tests {
     }
 
     #[test]
+    fn web_search_result_of_reads_deepseek_citations() {
+        use serde_json::json;
+        let item = json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "queries": ["capital of France"],
+                "citations": [
+                    {"id": "c1", "title": "Paris — Wikipedia", "url": "https://en.wikipedia.org/wiki/Paris", "snippet": "Paris is the capital of France.", "source": "wikipedia"},
+                    {"id": "c2", "title": "France", "url": "https://example.com/france"}
+                ]
+            }
+        });
+        let result = web_search_result_of(&item).expect("result payload");
+        assert_eq!(result["queries"], json!(["capital of France"]));
+        assert_eq!(result["results"][0]["title"], "Paris — Wikipedia");
+        assert_eq!(
+            result["results"][0]["url"],
+            "https://en.wikipedia.org/wiki/Paris"
+        );
+        assert_eq!(result["results"][1]["snippet"], "");
+    }
+
+    #[test]
+    fn web_search_result_of_accepts_flat_string_citations() {
+        use serde_json::json;
+        // xAI Live Search folds top-level URL citations into the item.
+        let item = json!({
+            "type": "web_search_call",
+            "id": "xai_citations",
+            "status": "completed",
+            "action": {"type": "search", "queries": [], "citations": ["https://a.com", "https://b.com"]}
+        });
+        let result = web_search_result_of(&item).expect("result payload");
+        assert_eq!(result["results"][0]["url"], "https://a.com");
+        assert_eq!(result["results"][0]["title"], "https://a.com");
+    }
+
+    #[test]
+    fn web_search_result_of_reads_anthropic_result_payload() {
+        use serde_json::json;
+        let item = json!({
+            "type": "web_search_call",
+            "id": "ws_result_3",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "queries": [],
+                "result": {
+                    "query": "best laptop 2026",
+                    "results": [
+                        {"title": "Top Laptops", "url": "https://reviews.example/laptops", "content": "long content…"}
+                    ]
+                }
+            }
+        });
+        let result = web_search_result_of(&item).expect("result payload");
+        assert_eq!(result["queries"], json!(["best laptop 2026"]));
+        assert_eq!(result["results"][0]["title"], "Top Laptops");
+        assert_eq!(result["results"][0]["snippet"], "long content…");
+    }
+
+    #[test]
+    fn web_search_result_of_empty_item_returns_none() {
+        use serde_json::json;
+        // Bare skeleton / Gemini grounding query-only item: no return value.
+        assert!(
+            web_search_result_of(
+                &json!({"type": "web_search_call", "id": "ws_1", "status": "in_progress"})
+            )
+            .is_none()
+        );
+        assert!(web_search_result_of(&json!({"type": "web_search_call", "id": "gemini_grounding", "status": "completed", "action": {"type": "search", "queries": ["foo"]}})).is_some());
+        assert!(web_search_result_of(&json!("nope")).is_none());
+    }
+
+    #[test]
     fn upsert_web_search_call_replaces_same_id_and_appends_new() {
         use serde_json::json;
         let mut calls =
@@ -1148,6 +1504,27 @@ mod tests {
         assert_eq!(calls[1]["id"], "ws_2");
     }
 
+    #[test]
+    fn upsert_web_search_call_keeps_rich_item_over_skeleton() {
+        use serde_json::json;
+        let mut calls = vec![json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "queries": ["capital of France"],
+                "citations": [{"title": "Paris", "url": "https://ex"}]
+            }
+        })];
+        upsert_web_search_call(
+            &mut calls,
+            json!({"type": "web_search_call", "id": "ws_1", "status": "completed"}),
+        );
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["action"]["citations"][0]["url"], "https://ex");
+    }
+
     #[tokio::test]
     async fn line_reader_sse_data_only_skips_event_lines() {
         use futures_util::stream;
@@ -1162,5 +1539,117 @@ mod tests {
             got.push(p);
         }
         assert_eq!(got, vec![r#"{"a":1}"#, r#"{"b":2}"#]);
+    }
+
+    #[test]
+    fn openai_embeddings_url_chat_keeps_base() {
+        assert_eq!(
+            openai_embeddings_url("https://api.openai.com/v1", false),
+            "https://api.openai.com/v1/embeddings"
+        );
+        assert_eq!(
+            openai_embeddings_url("http://127.0.0.1:11434/v1/", false),
+            "http://127.0.0.1:11434/v1/embeddings"
+        );
+    }
+
+    #[test]
+    fn openai_embeddings_url_responses_adds_v1() {
+        assert_eq!(
+            openai_embeddings_url("https://api.deepseek.com", true),
+            "https://api.deepseek.com/v1/embeddings"
+        );
+        assert_eq!(
+            openai_embeddings_url("https://api.openai.com/v1", true),
+            "https://api.openai.com/v1/embeddings"
+        );
+    }
+
+    #[test]
+    fn parse_openai_embed_response_sorts_by_index() {
+        let body = r#"{
+            "data": [
+                {"embedding": [3.0], "index": 1},
+                {"embedding": [1.0, 2.0], "index": 0}
+            ],
+            "model": "text-embedding-3-small",
+            "usage": {"prompt_tokens": 4, "total_tokens": 4}
+        }"#;
+        let emb = parse_openai_embed_response(body, 2, "fallback").unwrap();
+        assert_eq!(emb.vectors, vec![vec![1.0, 2.0], vec![3.0]]);
+        assert_eq!(emb.model.as_deref(), Some("text-embedding-3-small"));
+        assert_eq!(emb.usage.prompt_tokens, 4);
+    }
+
+    #[test]
+    fn parse_openai_embed_response_rejects_count_mismatch() {
+        let body = r#"{"data":[{"embedding":[0.1],"index":0}]}"#;
+        let err = parse_openai_embed_response(body, 2, "m").unwrap_err();
+        assert!(matches!(err, LlmError::InvalidResponse(msg) if msg.contains("count mismatch")));
+    }
+
+    #[tokio::test]
+    async fn openai_responses_adapter_embeds_via_embeddings_endpoint() {
+        let url = super::serve_once(
+            "200 OK",
+            "application/json",
+            r#"{"data":[{"embedding":[0.1,0.2],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":2,"total_tokens":2}}"#,
+        )
+        .await;
+        let ep = ModelEndpoint {
+            api_style: Some("openai-responses".into()),
+            base_url: url,
+            model_name: "text-embedding-3-small".into(),
+            timeout_secs: 5,
+            api_key: "sk".into(),
+            ..Default::default()
+        };
+        let emb = adapter_for(&ep).embed(vec!["hello".into()]).await.unwrap();
+        assert_eq!(emb.vectors, vec![vec![0.1, 0.2]]);
+        assert_eq!(emb.model.as_deref(), Some("text-embedding-3-small"));
+    }
+
+    #[tokio::test]
+    async fn openai_responses_embed_empty_input_skips_http() {
+        let ep = ModelEndpoint {
+            api_style: Some("openai-responses".into()),
+            model_name: "emb".into(),
+            ..Default::default()
+        };
+        let emb = adapter_for(&ep).embed(Vec::new()).await.unwrap();
+        assert!(emb.vectors.is_empty());
+        assert_eq!(emb.model.as_deref(), Some("emb"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_embed_stays_unsupported() {
+        let ep = ModelEndpoint {
+            provider: "anthropic".into(),
+            model_name: "claude".into(),
+            ..Default::default()
+        };
+        let err = adapter_for(&ep).embed(vec!["x".into()]).await.unwrap_err();
+        assert!(err.is_unsupported());
+    }
+
+    #[tokio::test]
+    async fn gemini_adapter_embeds_via_batch_embed_contents() {
+        let url = super::serve_once(
+            "200 OK",
+            "application/json",
+            r#"{"embeddings":[{"values":[0.5,0.6]}]}"#,
+        )
+        .await;
+        let ep = ModelEndpoint {
+            provider: "gemini".into(),
+            base_url: url,
+            model_name: "text-embedding-004".into(),
+            timeout_secs: 5,
+            api_key: "AIza".into(),
+            ..Default::default()
+        };
+        let emb = adapter_for(&ep).embed(vec!["hello".into()]).await.unwrap();
+        assert_eq!(emb.vectors, vec![vec![0.5, 0.6]]);
+        assert_eq!(emb.model.as_deref(), Some("text-embedding-004"));
     }
 }

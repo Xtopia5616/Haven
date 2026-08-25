@@ -309,7 +309,10 @@ impl LlmRouter {
     /// Like [`Self::new`], but clamp `max_tokens` against
     /// `context_limits.default_context_window` when a role has no explicit
     /// `context_window` (instead of the hardcoded 128K fallback).
-    pub fn with_default_context_window(mut config: RouterConfig, default_context_window: u32) -> Self {
+    pub fn with_default_context_window(
+        mut config: RouterConfig,
+        default_context_window: u32,
+    ) -> Self {
         // The per-response cap floor (`with_response_cap`) can push
         // `max_tokens` far above a provider's per-model output limit; sending
         // the raw value (e.g. the 1M default floor) makes Anthropic/OpenAI/

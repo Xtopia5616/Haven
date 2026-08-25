@@ -517,6 +517,37 @@
 	}
 
 	/**
+	 * Discovery filled empty Context/cost on some roles. Patch only those
+	 * keys into the dirty snapshot so a user Context/cost edit stays dirty
+	 * and still gets the leave prompt.
+	 * @param {{ role: string, context_window?: unknown, cost_per_1k_input_tokens?: unknown, cost_per_1k_output_tokens?: unknown }[]} [fills]
+	 */
+	function reBaselineAfterDiscovery(fills) {
+		if (!mounted || !settingsLoaded || !savedSnapshot) return;
+		if (!Array.isArray(fills) || fills.length === 0) return;
+		try {
+			const snap = JSON.parse(savedSnapshot);
+			const roles = Array.isArray(snap?.llm?.roles) ? snap.llm.roles : [];
+			for (const fill of fills) {
+				const idx = roles.findIndex((/** @type {any} */ r) => r.role === fill.role);
+				if (idx < 0) continue;
+				if ('context_window' in fill) roles[idx].context_window = fill.context_window;
+				if ('cost_per_1k_input_tokens' in fill) {
+					roles[idx].cost_per_1k_input_tokens = fill.cost_per_1k_input_tokens;
+				}
+				if ('cost_per_1k_output_tokens' in fill) {
+					roles[idx].cost_per_1k_output_tokens = fill.cost_per_1k_output_tokens;
+				}
+			}
+			if (!snap.llm) snap.llm = {};
+			snap.llm.roles = roles;
+			savedSnapshot = JSON.stringify(snap);
+		} catch (e) {
+			logger.warn('SettingsView', 're-baseline after discovery failed', e);
+		}
+	}
+
+	/**
 	 * Align the dirty baseline's default_model role with a toolbar-driven
 	 * remote sync so it does not look like a local unsaved edit.
 	 * @param {any} remote
@@ -1289,6 +1320,7 @@
 		{keyConfiguredProviders}
 		{mcpServerNames}
 		loaded={true}
+		onDiscoverySettled={reBaselineAfterDiscovery}
 	/>
 	{:else}
 	<p class="model-hint">正在加载模型与 API Key 状态…</p>

@@ -173,9 +173,7 @@ impl UsageTracker {
         let mut map = self.map.lock().unwrap();
         let entry = map.entry(session_id.to_string()).or_insert_with(seed);
         entry.prompt_tokens = entry.prompt_tokens.saturating_add(prompt_tokens);
-        entry.completion_tokens = entry
-            .completion_tokens
-            .saturating_add(completion_tokens);
+        entry.completion_tokens = entry.completion_tokens.saturating_add(completion_tokens);
         entry.total_tokens = entry.total_tokens.saturating_add(total_tokens);
         entry.cached_tokens = entry.cached_tokens.saturating_add(cached_tokens);
         entry.cache_creation_tokens = entry
@@ -209,7 +207,11 @@ impl UsageTracker {
     pub(crate) fn invalidate_after_truncate(&self, session_id: &str) {
         self.map.lock().unwrap().remove(session_id);
         let mut epochs = self.epochs.lock().unwrap();
-        let next = epochs.get(session_id).copied().unwrap_or(0).saturating_add(1);
+        let next = epochs
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
         epochs.insert(session_id.to_string(), next);
     }
 }
@@ -246,12 +248,7 @@ impl ToolDefCache {
             .map(|(_, defs)| Arc::clone(defs))
     }
 
-    pub(super) fn insert(
-        &self,
-        session_id: &str,
-        version: u64,
-        defs: Arc<Vec<ToolDefinition>>,
-    ) {
+    pub(super) fn insert(&self, session_id: &str, version: u64, defs: Arc<Vec<ToolDefinition>>) {
         self.cache
             .lock()
             .unwrap()
@@ -466,10 +463,7 @@ impl BalancedModelNotifier {
     /// Mark `session_id` as notified. Returns `true` when this is the first
     /// mark (caller should emit).
     pub(super) fn try_mark(&self, session_id: &str) -> bool {
-        self.notified
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string())
+        self.notified.lock().unwrap().insert(session_id.to_string())
     }
 
     pub(super) fn clear(&self, session_id: &str) {
@@ -502,8 +496,7 @@ mod tests {
         let poller = MessagingPoller::new();
         {
             let mut st = poller.lock();
-            st.title_cache
-                .insert("ses-a".into(), Some("hello".into()));
+            st.title_cache.insert("ses-a".into(), Some("hello".into()));
         }
         poller.clear_session("ses-a");
         assert!(!poller.lock().title_cache.contains_key("ses-a"));

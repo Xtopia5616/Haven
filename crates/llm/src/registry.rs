@@ -152,10 +152,7 @@ fn extract_supports_vision(m: &serde_json::Value) -> bool {
     if m.get("supports_vision").and_then(|v| v.as_bool()) == Some(true) {
         return true;
     }
-    if m.pointer("/capabilities/vision")
-        .and_then(|v| v.as_bool())
-        == Some(true)
-    {
+    if m.pointer("/capabilities/vision").and_then(|v| v.as_bool()) == Some(true) {
         return true;
     }
     if let Some(mods) = m
@@ -187,10 +184,7 @@ fn extract_supports_tools(m: &serde_json::Value) -> bool {
     if let Some(b) = m.get("supports_tools").and_then(|v| v.as_bool()) {
         return b;
     }
-    if m.pointer("/capabilities/tools")
-        .and_then(|v| v.as_bool())
-        == Some(true)
-    {
+    if m.pointer("/capabilities/tools").and_then(|v| v.as_bool()) == Some(true) {
         return true;
     }
     if let Some(params) = m.get("supported_parameters").and_then(|v| v.as_array()) {

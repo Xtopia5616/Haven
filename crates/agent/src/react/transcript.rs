@@ -646,9 +646,7 @@ mod tests {
         let msgs = db.get_session_messages(&session.id).unwrap();
         assert!(
             msgs.iter().any(|m| {
-                m.id == mid
-                    && m.content == "why"
-                    && m.message_type.as_deref() == Some("reasoning")
+                m.id == mid && m.content == "why" && m.message_type.as_deref() == Some("reasoning")
             }),
             "expected projected reasoning message, got {msgs:?}"
         );

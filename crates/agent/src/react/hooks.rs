@@ -304,10 +304,7 @@ mod tests {
         struct SilentLlm;
         #[async_trait]
         impl LlmClient for SilentLlm {
-            async fn chat(
-                &self,
-                _: Vec<CanonicalMessage>,
-            ) -> Result<LlmResponse, LlmError> {
+            async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
                 Err(LlmError::Unknown("silent".into()))
             }
             async fn chat_with_tools(
@@ -361,9 +358,14 @@ mod tests {
             client,
         ));
         let limits = haven_common::config::ContextLimitsConfig::default();
-        let engine =
-            ReActEngine::new(router.clone(), executor.clone(), db.clone(), 10, limits.clone())
-                .with_hooks(Arc::new(NoopHooks));
+        let engine = ReActEngine::new(
+            router.clone(),
+            executor.clone(),
+            db.clone(),
+            10,
+            limits.clone(),
+        )
+        .with_hooks(Arc::new(NoopHooks));
 
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_infer = calls.clone();
@@ -445,10 +447,7 @@ mod tests {
             struct SilentLlm;
             #[async_trait]
             impl LlmClient for SilentLlm {
-                async fn chat(
-                    &self,
-                    _: Vec<CanonicalMessage>,
-                ) -> Result<LlmResponse, LlmError> {
+                async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
                     Err(LlmError::Unknown("silent".into()))
                 }
                 async fn chat_with_tools(

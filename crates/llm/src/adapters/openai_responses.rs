@@ -11,14 +11,14 @@ use crate::adapters::{
     LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
     normalize_web_search_call_item, reasoning_tail, reasoning_text_from_thinking_blocks,
     requires_reasoning_echo, resolve_web_search_mode, responses_reasoning_config, send_request,
-    spawn_line_reader, stream_header_timeout, upsert_web_search_call,
+    spawn_line_reader, stream_header_timeout, upsert_web_search_call, web_search_result_of,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage, WebSearchPhase,
-    WebSearchUpdate,
+    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
+    WebSearchPhase, WebSearchUpdate,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -765,10 +765,9 @@ impl OpenAiResponsesAdapter {
                 let data = match state.rx.recv().await {
                     Some(d) => d,
                     None => {
-                        let unfinished_tools =
-                            state.tool_calls.iter().any(|(_, _, name, args)| {
-                                CanonicalToolCall::stream_tool_args_unfinished(name, args)
-                            });
+                        let unfinished_tools = state.tool_calls.iter().any(|(_, _, name, args)| {
+                            CanonicalToolCall::stream_tool_args_unfinished(name, args)
+                        });
                         let chunk = if !state.saw_completed
                             && (!state.accumulated_text.is_empty() || unfinished_tools)
                         {
@@ -892,12 +891,11 @@ impl OpenAiResponsesAdapter {
                             if item_type == "web_search_call" {
                                 let call_id = item.id.clone();
                                 let action = web_search_action_of(&item);
-                                upsert_web_search_call(
-                                    &mut state.web_search_calls,
-                                    normalize_web_search_call_item(
-                                        serde_json::to_value(&item).unwrap_or_default(),
-                                    ),
+                                let normalized = normalize_web_search_call_item(
+                                    serde_json::to_value(&item).unwrap_or_default(),
                                 );
+                                let result = web_search_result_of(&normalized);
+                                upsert_web_search_call(&mut state.web_search_calls, normalized);
                                 // Keep `active_web_search_id` until the next
                                 // `output_item.added` overwrites it: a late
                                 // status event that omits `item_id` must still
@@ -911,10 +909,12 @@ impl OpenAiResponsesAdapter {
                                 chunk.model = state.last_model.clone();
                                 // Re-emit completed with the action so the UI
                                 // can switch "正在联网搜索…" → "已打开网页"
-                                // once the discriminator arrives.
+                                // once the discriminator arrives; the compact
+                                // result payload rides along as the tool return.
                                 chunk.web_search = Some(
                                     WebSearchUpdate::new(WebSearchPhase::Completed)
-                                        .with_meta(call_id, action),
+                                        .with_meta(call_id, action)
+                                        .with_result(result),
                                 );
                                 return Some((Ok(chunk), state));
                             }
@@ -954,6 +954,7 @@ impl OpenAiResponsesAdapter {
                     Ok(ResponsesStreamEvent::WebSearchCompleted { item_id, item }) => {
                         let mut action = None;
                         let mut call_id = item_id;
+                        let mut result = None;
                         if let Some(item) = item
                             && item.item_type.as_deref() == Some("web_search_call")
                         {
@@ -961,12 +962,11 @@ impl OpenAiResponsesAdapter {
                                 call_id = item.id.clone();
                             }
                             action = web_search_action_of(&item);
-                            upsert_web_search_call(
-                                &mut state.web_search_calls,
-                                normalize_web_search_call_item(
-                                    serde_json::to_value(&item).unwrap_or_default(),
-                                ),
+                            let normalized = normalize_web_search_call_item(
+                                serde_json::to_value(&item).unwrap_or_default(),
                             );
+                            result = web_search_result_of(&normalized);
+                            upsert_web_search_call(&mut state.web_search_calls, normalized);
                         }
                         let call_id = call_id.or_else(|| state.active_web_search_id.clone());
                         if action.is_none()
@@ -982,7 +982,8 @@ impl OpenAiResponsesAdapter {
                             }
                             chunk.web_search = Some(
                                 WebSearchUpdate::new(WebSearchPhase::Completed)
-                                    .with_meta(call_id, action),
+                                    .with_meta(call_id, action)
+                                    .with_result(result),
                             );
                         }
                         Some((Ok(chunk), state))
@@ -1096,6 +1097,20 @@ impl LlmClient for OpenAiResponsesAdapter {
         self.chat_stream_inner(messages, tools).await
     }
 
+    async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+        // Chat uses `/v1/responses`; embeddings stay on the OpenAI-compatible
+        // `/v1/embeddings` path (OpenAI, DeepSeek, and most gateways).
+        super::openai_compatible_embed(
+            &self.client,
+            self.build_headers(),
+            &super::openai_embeddings_url(&self.endpoint.base_url, true),
+            &self.endpoint.model_name,
+            self.endpoint.timeout_secs,
+            input,
+        )
+        .await
+    }
+
     async fn health_check(&self) -> Result<(), LlmError> {
         let base = self.endpoint.base_url.trim_end_matches('/');
         let url = if base.ends_with("/v1") {
@@ -1158,6 +1173,18 @@ mod tests {
         assert_eq!(
             client.responses_url(),
             "https://api.openai.com/v1/responses"
+        );
+    }
+
+    #[test]
+    fn embeddings_url_adds_v1_like_responses() {
+        assert_eq!(
+            super::super::openai_embeddings_url("https://api.deepseek.com", true),
+            "https://api.deepseek.com/v1/embeddings"
+        );
+        assert_eq!(
+            super::super::openai_embeddings_url("https://api.openai.com/v1", true),
+            "https://api.openai.com/v1/embeddings"
         );
     }
 

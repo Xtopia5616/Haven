@@ -115,7 +115,7 @@ impl WebSearchPhase {
 /// `web_search_call` items in a single turn (`search` → `open_page` →
 /// `find_in_page`); `call_id` / `action` let the UI render each as its own
 /// card instead of collapsing them into one indicator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WebSearchUpdate {
     pub phase: WebSearchPhase,
     /// Provider item id (`ws_…` / `web_search_call` id). Optional when the
@@ -127,6 +127,12 @@ pub struct WebSearchUpdate {
     /// Often absent until `output_item.done` carries the full payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// Compact tool return `{queries, results:[{title,url,snippet}]}` captured
+    /// from the completed `web_search_call` item (see
+    /// [`crate::adapters::web_search_result_of`]). Present only when the
+    /// provider returned citations / result content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
 }
 
 impl WebSearchUpdate {
@@ -135,12 +141,18 @@ impl WebSearchUpdate {
             phase,
             call_id: None,
             action: None,
+            result: None,
         }
     }
 
     pub fn with_meta(mut self, call_id: Option<String>, action: Option<String>) -> Self {
         self.call_id = call_id;
         self.action = action;
+        self
+    }
+
+    pub fn with_result(mut self, result: Option<serde_json::Value>) -> Self {
+        self.result = result;
         self
     }
 }

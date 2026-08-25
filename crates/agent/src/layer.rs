@@ -334,23 +334,25 @@ impl AgentLayer {
         // working set (end / terminal cleanup).
         {
             let inference = self.inference.clone();
-            self.executor.on_session_cleanup.set(Arc::new(move |sid: String| {
-                inference.clear_session(&sid);
-            }));
+            self.executor
+                .on_session_cleanup
+                .set(Arc::new(move |sid: String| {
+                    inference.clear_session(&sid);
+                }));
         }
         // Cascade force-ends peer children without going through the Tauri
         // end_session command — emit session:completed so busy chips / lists
         // clear (secondary session:updated comes from the app event bridge).
         {
             let events = self.events.clone();
-            self.executor.on_cascade_completed.set(Arc::new(
-                move |sid: String, title: String| {
+            self.executor
+                .on_cascade_completed
+                .set(Arc::new(move |sid: String, title: String| {
                     let events = events.clone();
                     tokio::spawn(async move {
                         events.emit_session_completed(&sid, &title).await;
                     });
-                },
-            ));
+                }));
         }
 
         // Spawn a consumer for background-action completions. When a action
@@ -412,10 +414,7 @@ impl AgentLayer {
                         "[Background action result]\naction_id: {}\nstatus: {}\n\n{}",
                         comp.action_id,
                         comp.status,
-                        truncate_notification(
-                            &reason,
-                            agent.limits().action_result_context_chars
-                        )
+                        truncate_notification(&reason, agent.limits().action_result_context_chars)
                     );
                     // Failed actions write the full output to a log file; point
                     // the model at it so a condensed reason never hides the
@@ -439,9 +438,7 @@ impl AgentLayer {
                         .blocks_auto_wake_with(&tid, state.as_ref())
                         .await;
                     if state == Some(SessionStatus::Paused) && !awaiting {
-                        if let Err(e) = agent
-                            .set_session_status(&tid, SessionStatus::Pending)
-                            .await
+                        if let Err(e) = agent.set_session_status(&tid, SessionStatus::Pending).await
                         {
                             tracing::warn!("action-completion wake session {} failed: {}", tid, e);
                             continue;
@@ -487,10 +484,8 @@ impl AgentLayer {
                     } else {
                         ("后台任务失败".to_string(), "失败".to_string())
                     };
-                    let summary = truncate_notification(
-                        &reason,
-                        agent.limits().notification_summary_chars,
-                    );
+                    let summary =
+                        truncate_notification(&reason, agent.limits().notification_summary_chars);
                     let body = if summary.trim().is_empty() {
                         format!("{} {}", comp.action_id, status_label)
                     } else {
@@ -546,12 +541,7 @@ impl AgentLayer {
                                 .executor
                                 .get_tools()
                                 .safety_gateway
-                                .check(
-                                    fired.session_id.as_deref(),
-                                    &tool_name,
-                                    &args,
-                                    risk_level,
-                                )
+                                .check(fired.session_id.as_deref(), &tool_name, &args, risk_level)
                                 .await;
                             match gate {
                                 haven_tools::ConfirmationResult::Blocked { reason } => {
@@ -765,13 +755,10 @@ impl AgentLayer {
                     }
                     "load_mcp" => {
                         if let Some(name) = tool.action.tool_input["server_name"].as_str() {
-                            let tool_names = load_mcp_tool_names_from_input(&tool.action.tool_input);
+                            let tool_names =
+                                load_mcp_tool_names_from_input(&tool.action.tool_input);
                             tools
-                                .register_mcp_for_session(
-                                    session_id,
-                                    name,
-                                    tool_names.as_deref(),
-                                )
+                                .register_mcp_for_session(session_id, name, tool_names.as_deref())
                                 .await;
                         }
                     }
@@ -983,9 +970,7 @@ impl AgentLayer {
                     "spawn_peer_session: failed to set title: {e}"
                 );
             } else {
-                self.executor
-                    .update_session_title(&session.id, title)
-                    .await;
+                self.executor.update_session_title(&session.id, title).await;
                 session.title = Some(title.to_string());
                 self.events.emit_title_updated(&session.id, title).await;
             }
@@ -1043,7 +1028,9 @@ impl AgentLayer {
             }
         }
         // Parent link is registered — safe to wake the dispatcher.
-        self.executor.mark_has_children(&req.parent_session_id).await;
+        self.executor
+            .mark_has_children(&req.parent_session_id)
+            .await;
         self.executor
             .update_session_status(&session.id, SessionStatus::Pending)
             .await?;

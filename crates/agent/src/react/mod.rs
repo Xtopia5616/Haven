@@ -27,14 +27,12 @@ pub(crate) mod stream_step;
 mod tool_batch;
 mod transcript;
 
+pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
-pub(crate) use hooks::{
-    InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch,
-};
 use identity::IdentityMap;
 use sidecars::{
-    BalancedModelNotifier, ContextWindowCache, CumulativeUsage, MessagingPoller, SnapshotBufs,
-    LastMsgAtCache, TokenEstimateCache, ToolDefCache, UsageTracker,
+    BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, MessagingPoller,
+    SnapshotBufs, TokenEstimateCache, ToolDefCache, UsageTracker,
 };
 use transcript::{ActionCard, ObservationCard, TranscriptEvent};
 
@@ -423,7 +421,8 @@ impl ReActEngine {
                 .map(Into::into)
                 .collect(),
         );
-        self.tool_defs.insert(session_id, version, Arc::clone(&defs));
+        self.tool_defs
+            .insert(session_id, version, Arc::clone(&defs));
         defs
     }
 
@@ -788,7 +787,10 @@ impl ReActEngine {
     pub fn reset_cumulative_usage(&self, session_id: &str) {
         self.usage.reset(session_id);
         self.reset_token_estimate(session_id);
-        self.snapshot_store.lock().unwrap().clear_session(session_id);
+        self.snapshot_store
+            .lock()
+            .unwrap()
+            .clear_session(session_id);
         self.tool_defs.remove(session_id);
         self.last_msg_at.remove(session_id);
         self.snapshot_bufs.remove(session_id);
@@ -912,7 +914,8 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        if self.estimate_canonical_tokens(&ctx.session_id, canonical) <= compactor.threshold_tokens()
+        if self.estimate_canonical_tokens(&ctx.session_id, canonical)
+            <= compactor.threshold_tokens()
         {
             return false;
         }
@@ -997,10 +1000,7 @@ mod tests {
             }
         );
         assert_ne!(LoopExit::Cancelled, LoopExit::Completed);
-        assert!(matches!(
-            LoopExit::Error("x".into()),
-            LoopExit::Error(_)
-        ));
+        assert!(matches!(LoopExit::Error("x".into()), LoopExit::Error(_)));
     }
     use haven_llm::client::LlmClient;
     use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
@@ -1496,5 +1496,4 @@ mod tests {
             "I have a pending question for you."
         );
     }
-
 }

@@ -109,7 +109,6 @@ fn truncate_notification(text: &str, max_chars: usize) -> String {
 mod layer;
 pub use layer::AgentLayer;
 
-
 #[cfg(test)]
 #[path = "integration_tests.rs"]
 mod tests;

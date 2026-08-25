@@ -10,7 +10,6 @@ use haven_tools::is_silent_action;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-
 /// Failure classification used to shape the post-failure retry nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FailureKind {
@@ -43,11 +42,7 @@ pub(crate) fn empty_inbox_output(result: &str) -> bool {
 
 /// True when this is an `agent` inbox poll (check tool_input.operation).
 pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Value) -> bool {
-    tool_name == "agent"
-        && tool_input
-            .get("operation")
-            .and_then(|v| v.as_str())
-            == Some("inbox")
+    tool_name == "agent" && tool_input.get("operation").and_then(|v| v.as_str()) == Some("inbox")
 }
 
 impl ReActEngine {
@@ -319,14 +314,8 @@ impl ReActEngine {
             .await;
         }
 
-        self.save_branch_point(
-            session_id,
-            events,
-            step_num,
-            branch_points,
-            false,
-        )
-        .await;
+        self.save_branch_point(session_id, events, step_num, branch_points, false)
+            .await;
 
         use futures_util::StreamExt;
 
@@ -737,11 +726,7 @@ impl ReActEngine {
             && step_num < max_steps - 1
         {
             let nudge = Self::build_failure_nudge(&failure_signals);
-            Self::attach_failure_nudge(
-                canonical,
-                &nudge,
-                last_failed_tool_call_id.as_deref(),
-            );
+            Self::attach_failure_nudge(canonical, &nudge, last_failed_tool_call_id.as_deref());
         }
 
         // Phase 5 / E3: confirm before ask when both appear in one batch.
@@ -773,15 +758,8 @@ impl ReActEngine {
             // UI-only waiting notice in `messages` (not an LLM event — must
             // not enter `react_state.events` or resume would re-feed it).
             let notice = "Waiting for confirmation…";
-            self.project_chat_message(
-                session_id,
-                "assistant",
-                notice,
-                Some("text"),
-                None,
-                None,
-            )
-            .await;
+            self.project_chat_message(session_id, "assistant", notice, Some("text"), None, None)
+                .await;
             self.pause_turn(
                 session_id,
                 events,
@@ -1184,10 +1162,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
             ),
-            CanonicalMessage::tool(
-                vec![ContentPart::text("ok")],
-                Some("call-ok".into()),
-            ),
+            CanonicalMessage::tool(vec![ContentPart::text("ok")], Some("call-ok".into())),
             CanonicalMessage::tool(
                 vec![ContentPart::text("curl: connection refused")],
                 Some("call-fail".into()),
@@ -1227,7 +1202,10 @@ mod tests {
         let ContentPart::Text(ok_text) = &ok.content[0] else {
             panic!("expected text content");
         };
-        assert_eq!(ok_text, "ok", "successful tool observation must stay untouched");
+        assert_eq!(
+            ok_text, "ok",
+            "successful tool observation must stay untouched"
+        );
     }
 
     #[test]

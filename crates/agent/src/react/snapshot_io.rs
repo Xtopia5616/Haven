@@ -350,9 +350,7 @@ impl ReActEngine {
                 run_id: 0,
                 emitter: emitter.clone(),
             };
-            self.hooks
-                .on_pause(self, &ctx, PauseReason::Budget)
-                .await;
+            self.hooks.on_pause(self, &ctx, PauseReason::Budget).await;
             Ok(())
         }
         .instrument(tracing::info_span!(
@@ -436,9 +434,7 @@ impl ReActEngine {
             run_id,
             emitter: emitter.clone(),
         };
-        self.hooks
-            .on_pause(self, &ctx, PauseReason::External)
-            .await;
+        self.hooks.on_pause(self, &ctx, PauseReason::External).await;
         LoopExit::Paused {
             reason: PauseReason::External,
         }

@@ -212,9 +212,8 @@ impl ReActSnapshot {
             #[serde(default)]
             awaiting_confirm: Option<ConfirmPending>,
         }
-        let legacy: LegacySnap = serde_json::from_str(json).map_err(|e| {
-            anyhow::anyhow!("corrupt or incompatible react_state: {e}")
-        })?;
+        let legacy: LegacySnap = serde_json::from_str(json)
+            .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;
         tracing::warn!("react_state used legacy Phase-7 snapshot shape; upgrading on next save");
         let events = seed_events_from_canonical(legacy.canonical);
         let event_len = events.len();

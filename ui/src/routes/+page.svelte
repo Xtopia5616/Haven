@@ -25,7 +25,7 @@
 		accumulateStreamChunk,
 		applyThoughtSnap,
 		webSearchId,
-		webSearchLabel,
+		webSearchCardContent,
 		finalizeStreamBlocks,
 		insertAgentMessage,
 		newToolMessage,
@@ -1119,7 +1119,11 @@
 		if (!perSession) stepBlockIds.set(tid, (perSession = new Map()));
 		const key = blockKey(stepNumber, runId);
 		const entry = perSession.get(key) || {};
-		entry[kind] = messageId;
+		// Readers destructure `{ thoughtId, reasoningId }`. Storing the
+		// kind string (`thought` / `reasoning`) as the key left every
+		// lookup undefined, so Thinking blocks never finalized.
+		if (kind === 'thought') entry.thoughtId = messageId;
+		else if (kind === 'reasoning') entry.reasoningId = messageId;
 		perSession.set(key, entry);
 	}
 	/** @param {string} tid @param {number} stepNumber @param {number | string} runId */
@@ -1173,13 +1177,8 @@
 					if (c.finalizeReasoning) {
 						const { reasoningId } = blockIdsOf(c.tid, c.stepNumber, c.runId);
 						if (reasoningId) {
-							const rIdx = next.findIndex((x) => x.id === reasoningId && x.streaming);
-							if (rIdx >= 0) {
-								next = next.map((x) =>
-									x.id === reasoningId ? { ...x, streaming: false } : x,
-								);
-								pruneSeq(reasoningId);
-							}
+							next = finalizeStreamBlocks(next, reasoningId, null);
+							pruneSeq(reasoningId);
 						}
 					}
 					if (c.delta) {
@@ -1504,7 +1503,14 @@
 						evictTerminalSessionMemory(data.session_id);
 						// The ACTIVE session is skipped by the eviction guard, but
 						// its streaming bookkeeping is dead too: no further chunk
-						// events will reference these (step, run) keys.
+						// events will reference these (step, run) keys. Also drop
+						// leftover carets on Thinking / thought bubbles that never
+						// got an `agent:thought` snap (DeepSeek reasoning-only turns).
+						if (data.session_id && activeSessionId === data.session_id) {
+							updateSessionMessages(data.session_id, (m) =>
+								m.map((x) => (x.streaming ? { ...x, streaming: false } : x)),
+							);
+						}
 						clearStepBlockIds(data.session_id);
 					}
 					loadSessions();
@@ -1513,6 +1519,9 @@
 					const data = event.payload || {};
 					if (data.session_id && activeSessionId && data.session_id === activeSessionId) {
 						clearAskAwaiting(data.session_id);
+						updateSessionMessages(data.session_id, (m) =>
+							m.map((x) => (x.streaming ? { ...x, streaming: false } : x)),
+						);
 					}
 					evictTerminalSessionMemory(data.session_id);
 					clearStepBlockIds(data.session_id);
@@ -1610,7 +1619,6 @@
 						data.step_number,
 						data.run_id,
 					);
-					const content = webSearchLabel(data.phase, data.action);
 					updateSessionMessages(tid, (m) => {
 						let next = m;
 						let existing = next.find((x) => x.id === wsId);
@@ -1628,6 +1636,7 @@
 								existing = next[phIdx];
 							}
 						}
+						const content = webSearchCardContent(data, existing?.content);
 						// Finalize only when opening a NEW card — later phase
 						// updates for the same call_id must not re-finalize a
 						// post-search bubble that already started streaming.
@@ -2223,6 +2232,16 @@
 		submitMessage(text, images, files);
 	}
 
+	// Enter pressed on a focused ask option chip (after clicking it, the
+	// button keeps focus) must submit the composed answers instead of the
+	// native button Enter behavior, which re-triggers the chip click and
+	// toggles the selection off. Empty payload: the page composes the chips.
+	function handleAskSubmit() {
+		if (!activeSessionId) return;
+		autoFollow = true;
+		trySubmitAskSelections(activeSessionId, '', [], []);
+	}
+
 	/**
 	 * @param {string} sessionId
 	 * @param {string} extraText
@@ -2447,6 +2466,7 @@
 							onContextMenu={handleContextMenu}
 							onAskSelectionChange={handleAskSelectionChange}
 							onIgnore={handleIgnoreAsk}
+							onAskSubmit={handleAskSubmit}
 						/>
 					{/each}
 				</div>

@@ -16,6 +16,7 @@
 		API_STYLE_OPTIONS,
 		apiStylePreset,
 		displayApiStyle,
+		isKeylessProvider,
 		isSttOnlyStyle,
 		isTtsOnlyStyle,
 		mediaCapabilityBackend,
@@ -44,6 +45,9 @@
 	 * @prop {object} keyConfiguredProviders — per-provider key status
 	 * @prop {string[]} mcpServerNames — configured MCP server names
 	 * @prop {boolean} loaded — true once the parent finished loading settings
+	 * @prop {(fills: object[]) => void} [onDiscoverySettled] — fields
+	 *   discovery actually wrote (role + context/cost). Parent patches only
+	 *   those keys into the dirty snapshot so user Context/cost edits stay dirty.
 	 */
 	let {
 		section = 'models',
@@ -58,6 +62,7 @@
 		keyConfiguredProviders = {},
 		mcpServerNames = [],
 		loaded = false,
+		onDiscoverySettled = () => {},
 	} = $props();
 
 	// ---------------------------------------------------------------------
@@ -118,7 +123,7 @@
 	 * @param {any} slot
 	 * @param {string} providerName
 	 * @param {string} modelId
-	 * @param {{ overwrite?: boolean }} [opts] — overwrite=true replaces existing
+	 * @param {{ overwrite?: boolean }} [opts] (overwrite=true replaces existing
 	 *   Context/cost; false only fills empty slots (used when refreshing lists
 	 *   for roles that still have null Context after the builtin catalog was
 	 *   removed).
@@ -135,25 +140,48 @@
 			}
 			return;
 		}
+		/** @type {Record<string, unknown>} */
+		const wrote = {};
 		if (overwrite || slot.context_window == null || slot.context_window === 0) {
-			slot.context_window = m.context_window > 0 ? m.context_window : null;
+			const next = m.context_window > 0 ? m.context_window : null;
+			if (slot.context_window !== next) {
+				slot.context_window = next;
+				wrote.context_window = next;
+			}
 		}
 		if (overwrite || slot.cost_per_1k_input_tokens == null) {
-			slot.cost_per_1k_input_tokens =
+			const next =
 				typeof m.cost_per_1k_input_tokens === 'number' ? m.cost_per_1k_input_tokens : null;
+			if (slot.cost_per_1k_input_tokens !== next) {
+				slot.cost_per_1k_input_tokens = next;
+				wrote.cost_per_1k_input_tokens = next;
+			}
 		}
 		if (overwrite || slot.cost_per_1k_output_tokens == null) {
-			slot.cost_per_1k_output_tokens =
+			const next =
 				typeof m.cost_per_1k_output_tokens === 'number' ? m.cost_per_1k_output_tokens : null;
+			if (slot.cost_per_1k_output_tokens !== next) {
+				slot.cost_per_1k_output_tokens = next;
+				wrote.cost_per_1k_output_tokens = next;
+			}
 		}
+		return wrote;
 	}
 
 	/** Fill empty Context/cost on existing roles from the latest `/models` map. */
 	function backfillRoleMetaFromDiscovery() {
+		/** @type {object[]} */
+		const fills = [];
 		for (const slot of llmConfig.roles || []) {
 			if (!slot?.provider || !slot?.model) continue;
-			applyDiscoveredModelMeta(slot, slot.provider, slot.model, { overwrite: false });
+			const wrote = applyDiscoveredModelMeta(slot, slot.provider, slot.model, {
+				overwrite: false,
+			});
+			if (wrote && Object.keys(wrote).length) {
+				fills.push({ role: slot.role, ...wrote });
+			}
 		}
+		onDiscoverySettled?.(fills);
 	}
 
 	/**

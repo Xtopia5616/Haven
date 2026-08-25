@@ -92,9 +92,10 @@ pub trait LlmClient: Send + Sync {
     }
 
     /// Embed a batch of texts into vectors via the provider's embeddings API.
-    /// Only adapters that speak an embeddings wire protocol implement this;
-    /// the default reports an unsupported error so chat-only endpoints
-    /// (anthropic, gemini) degrade gracefully when routed to this slot.
+    /// OpenAI-family adapters (`openai-chat` / `openai-responses` / `xai` /
+    /// llama.cpp) POST `/embeddings`; Gemini uses `batchEmbedContents`. The
+    /// default reports unsupported so chat-only endpoints (anthropic, STT)
+    /// degrade gracefully when routed to this slot.
     async fn embed(&self, _input: Vec<String>) -> Result<Embedding, LlmError> {
         Err(LlmError::UnsupportedCapability(
             "embeddings not supported by this adapter".into(),

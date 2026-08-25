@@ -16,7 +16,7 @@ use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    FinishReason, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition, Usage,
+    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition, Usage,
 };
 use base64::Engine;
 use haven_common::config::ModelEndpoint;
@@ -104,6 +104,8 @@ struct GeminiCandidate {
     #[serde(alias = "finishReason")]
     #[serde(alias = "finish_reason")]
     finish_reason: Option<String>,
+    #[serde(default, alias = "groundingMetadata")]
+    grounding_metadata: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,6 +199,18 @@ impl GeminiAdapter {
 
     fn models_url(&self) -> String {
         format!("{}/models", self.api_base())
+    }
+
+    fn embed_model_id(&self) -> &str {
+        self.endpoint.model_name.trim_start_matches("models/")
+    }
+
+    fn embed_url(&self) -> String {
+        format!(
+            "{}/models/{}:batchEmbedContents",
+            self.api_base(),
+            self.embed_model_id()
+        )
     }
 
     /// Convert provider-neutral messages into Gemini contents. System prompts
@@ -537,13 +551,7 @@ impl GeminiAdapter {
 
     /// Fold Gemini `groundingMetadata` into a compact `web_search_call` (queries
     /// only — never the full grounding blob, which balloons transcript size).
-    fn web_search_calls_from_grounding(raw: &Value) -> Vec<Value> {
-        let Some(meta) = raw
-            .pointer("/candidates/0/groundingMetadata")
-            .or_else(|| raw.pointer("/candidates/0/grounding_metadata"))
-        else {
-            return Vec::new();
-        };
+    fn web_search_calls_from_metadata(meta: &Value) -> Vec<Value> {
         let queries = meta
             .get("webSearchQueries")
             .or_else(|| meta.get("web_search_queries"))
@@ -555,6 +563,16 @@ impl GeminiAdapter {
             "status": "completed",
             "action": {"type": "search", "queries": queries},
         }))]
+    }
+
+    fn web_search_calls_from_grounding(raw: &Value) -> Vec<Value> {
+        let Some(meta) = raw
+            .pointer("/candidates/0/groundingMetadata")
+            .or_else(|| raw.pointer("/candidates/0/grounding_metadata"))
+        else {
+            return Vec::new();
+        };
+        Self::web_search_calls_from_metadata(meta)
     }
 
     async fn chat_inner(
@@ -662,6 +680,7 @@ impl GeminiAdapter {
             finish_reason: Option<FinishReason>,
             usage: Option<Usage>,
             saw_finish: bool,
+            web_search_calls: Vec<Value>,
         }
 
         let empty_chunk = empty_chunk;
@@ -678,6 +697,7 @@ impl GeminiAdapter {
                 finish_reason: None,
                 usage: None,
                 saw_finish: false,
+                web_search_calls: Vec::new(),
             },
             move |mut state| async move {
                 if state.done {
@@ -690,9 +710,10 @@ impl GeminiAdapter {
                         // with Null args and no finish means the stream died
                         // before arguments arrived. On a clean finish, omitted
                         // args mean `{}` (empty-parameter tools) — not Null.
-                        let unfinished_tools = state.tool_calls_acc.iter().any(|tc| {
-                            !tc.name.is_empty() && tc.arguments.is_null()
-                        });
+                        let unfinished_tools = state
+                            .tool_calls_acc
+                            .iter()
+                            .any(|tc| !tc.name.is_empty() && tc.arguments.is_null());
                         let chunk = if !state.saw_finish
                             && (!state.accumulated_text.is_empty() || unfinished_tools)
                         {
@@ -718,7 +739,7 @@ impl GeminiAdapter {
                                 model: state.last_model.clone(),
                                 reasoning: None,
                                 web_search: None,
-                                web_search_calls: Vec::new(),
+                                web_search_calls: std::mem::take(&mut state.web_search_calls),
                                 thinking_blocks: Vec::new(),
                             })
                         };
@@ -750,6 +771,12 @@ impl GeminiAdapter {
                             if let Some(sr) = candidate.finish_reason.as_deref() {
                                 state.saw_finish = true;
                                 state.finish_reason = Self::finish_reason_of(sr);
+                            }
+                            if let Some(meta) = candidate.grounding_metadata.as_ref() {
+                                let calls = Self::web_search_calls_from_metadata(meta);
+                                if !calls.is_empty() {
+                                    state.web_search_calls = calls;
+                                }
                             }
                             if let Some(content) = candidate.content {
                                 for (idx, part) in content.parts.into_iter().enumerate() {
@@ -870,6 +897,41 @@ impl LlmClient for GeminiAdapter {
         self.chat_stream_inner(messages, tools).await
     }
 
+    async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+        if input.is_empty() {
+            return Ok(Embedding {
+                vectors: Vec::new(),
+                model: Some(self.endpoint.model_name.clone()),
+                usage: Usage::default(),
+            });
+        }
+        let model_resource = format!("models/{}", self.embed_model_id());
+        let requests: Vec<Value> = input
+            .iter()
+            .map(|text| {
+                json!({
+                    "model": model_resource,
+                    "content": { "parts": [{ "text": text }] }
+                })
+            })
+            .collect();
+        let body = json!({ "requests": requests });
+        let url = self.embed_url();
+        tracing::debug!("POST {} (embed model: {})", url, self.endpoint.model_name);
+        let mut req = self
+            .client
+            .post(&url)
+            .headers(self.build_headers())
+            .json(&body);
+        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
+        let resp = send_request(req, None).await?;
+        let txt = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        parse_gemini_embed_response(&txt, input.len(), &self.endpoint.model_name)
+    }
+
     async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult, LlmError> {
         let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
         let body = json!({
@@ -922,6 +984,54 @@ impl LlmClient for GeminiAdapter {
         )
         .await
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiEmbedValues {
+    values: Vec<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiEmbedResponse {
+    #[serde(default)]
+    embeddings: Vec<GeminiEmbedValues>,
+    #[serde(default)]
+    embedding: Option<GeminiEmbedValues>,
+}
+
+fn parse_gemini_embed_response(
+    body: &str,
+    requested: usize,
+    fallback_model: &str,
+) -> Result<Embedding, LlmError> {
+    let json: GeminiEmbedResponse =
+        serde_json::from_str(body).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+    let mut vectors: Vec<Vec<f32>> = json
+        .embeddings
+        .into_iter()
+        .map(|item| item.values)
+        .collect();
+    if vectors.is_empty()
+        && let Some(single) = json.embedding
+    {
+        vectors.push(single.values);
+    }
+    if vectors.is_empty() {
+        return Err(LlmError::InvalidResponse(
+            "embeddings response missing data".into(),
+        ));
+    }
+    if vectors.len() != requested {
+        return Err(LlmError::InvalidResponse(format!(
+            "embeddings count mismatch: requested {requested}, got {}",
+            vectors.len()
+        )));
+    }
+    Ok(Embedding {
+        vectors,
+        model: Some(fallback_model.to_string()),
+        usage: Usage::default(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +1107,31 @@ mod tests {
             client.generate_url(),
             "https://host/v1beta/models/gemini-2.5-flash:generateContent"
         );
+    }
+
+    #[test]
+    fn embed_url_strips_models_prefix() {
+        let ep = ModelEndpoint {
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            model_name: "models/text-embedding-004".into(),
+            ..Default::default()
+        };
+        let client = GeminiAdapter::new(ep);
+        assert_eq!(
+            client.embed_url(),
+            "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents"
+        );
+    }
+
+    #[test]
+    fn parse_gemini_embed_response_batch_and_single() {
+        let batch = r#"{"embeddings":[{"values":[0.1,0.2]},{"values":[0.3]}]}"#;
+        let emb = parse_gemini_embed_response(batch, 2, "text-embedding-004").unwrap();
+        assert_eq!(emb.vectors, vec![vec![0.1, 0.2], vec![0.3]]);
+
+        let single = r#"{"embedding":{"values":[1.0,2.0]}}"#;
+        let emb = parse_gemini_embed_response(single, 1, "m").unwrap();
+        assert_eq!(emb.vectors, vec![vec![1.0, 2.0]]);
     }
 
     #[test]
@@ -1297,6 +1432,7 @@ mod tests {
                     ],
                 }),
                 finish_reason: Some("STOP".into()),
+                grounding_metadata: None,
             }]),
             usage_metadata: None,
             model_version: None,
@@ -1416,6 +1552,7 @@ mod tests {
                     ],
                 }),
                 finish_reason: Some("STOP".into()),
+                grounding_metadata: None,
             }]),
             usage_metadata: Some(GeminiUsage {
                 prompt_tokens: 10,

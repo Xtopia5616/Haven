@@ -46,7 +46,7 @@ export const modelCards = [
 	{ key: 'small_model', label: 'Small Model', hint: 'Title generation & lightweight reasoning', prefix: 'sm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },
 	{ key: 'image_model', label: 'Image Model', hint: 'Vision + OCR fallback（理解与文字提取）', prefix: 'im', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
 	{ key: 'audio_model', label: 'Audio Model', hint: 'STT 首选端点（Whisper / Gemini / Deepgram / AssemblyAI，或 multimodal chat）', prefix: 'au', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
-	{ key: 'embedding_model', label: 'Embedding Model', hint: 'Semantic memory: vectors for facts & past conversations. Local (Ollama / LM Studio) or cloud', prefix: 'em', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
+	{ key: 'embedding_model', label: 'Embedding Model', hint: 'Semantic memory. OpenAI-compatible /v1/embeddings, Gemini embedding models, or local (Ollama / LM Studio). Not Chat Completions.', prefix: 'em', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
 ];
 
 export const coreModelCards = modelCards.filter((c) => c.group === 'core');

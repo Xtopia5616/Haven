@@ -73,11 +73,11 @@
 
 - `adapters/`：按 **`api_style`（线协议）** 分发的 provider 适配与统一 `LlmClient` +
   `with_retry`。能力矩阵见 `adapters/capabilities.rs`：
-  - `openai-chat` / `llama.cpp` → OpenAI Chat Completions
-  - `openai-responses`（含 DeepSeek Responses 别名 / thinking echo + `web_search`）
-  - `xai` → OpenAI chat + xAI Live Search `search_parameters`
-  - `anthropic` → Messages API（可选 server `web_search_*`）
-  - `gemini` → `generateContent`（可选 `google_search` grounding）
+  - `openai-chat` / `llama.cpp` → OpenAI Chat Completions；embedding 走 `/embeddings`
+  - `openai-responses`（含 DeepSeek Responses 别名 / thinking echo + `web_search`）；embedding 仍走 `/v1/embeddings`
+  - `xai` → OpenAI chat + xAI Live Search `search_parameters`；embedding 走 `/embeddings`
+  - `anthropic` → Messages API（可选 server `web_search_*`）；无 embedding
+  - `gemini` → `generateContent`（可选 `google_search` grounding）；embedding 走 `batchEmbedContents`
   - `deepgram` / `assemblyai` → STT only
 - 聊天页「联网搜索」为角色级 `off|auto|always`；仅
   `supports_builtin_web_search(api_style)` 为真时由对应适配器注入内置搜索工具，

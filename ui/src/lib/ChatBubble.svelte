@@ -2,7 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { imageDataUrl, formatTokenCount } from '$lib/stores.ts';
+	import { imageDataUrl } from '$lib/stores.ts';
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { PEER_KICKOFF_PREFIX } from '$lib/peerKickoff.ts';
@@ -28,6 +28,7 @@
 		onContextMenu = null,
 		onAskSelectionChange = null,
 		onIgnore = null,
+		onAskSubmit = null,
 	} = $props();
 
 	// Local open state for the collapsible reasoning <details> block. The block
@@ -346,32 +347,14 @@
 				</div>
 			</details>
 		{:else if msgType === 'tool'}
-			<div class="tool-call-row">
-				<span class="tool-call">&#9654; Calling {toolName}</span>
-				{#if usage}
-					<span
-						class="usage-chip"
-						title={[
-							usage.model ? `模型 ${usage.model}` : null,
-							`上传 ${usage.prompt} → 生成 ${usage.completion} tokens`,
-							usage.durationMs > 0 ? `耗时 ${(usage.durationMs / 1000).toFixed(1)}s` : null,
-							usage.hasCost ? `费用 ${usage.cost.toFixed(6)} USD` : null,
-							usage.calls > 1 ? `${usage.calls} 次调用合并` : null,
-						].filter(Boolean).join('\n')}
-					>
-						{formatTokenCount(usage.total)} tokens
-					</span>
-				{/if}
-			</div>
-			{#if content || streaming || actionId}
-				<ToolResultCard
-					{toolName}
-					{content}
-					{streaming}
-					{actionId}
-					messageId={messageId}
-				/>
-			{/if}
+			<ToolResultCard
+				{toolName}
+				{content}
+				{streaming}
+				{actionId}
+				{usage}
+				messageId={messageId}
+			/>
 		{:else if msgType === 'ask'}
 			<ToolResultCard
 				type="ask"
@@ -382,6 +365,7 @@
 				{resolved}
 				{onAskSelectionChange}
 				{onIgnore}
+				{onAskSubmit}
 			/>
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
@@ -512,37 +496,6 @@
 		50% {
 			background: transparent;
 		}
-	}
-	.tool-call {
-		background: var(--md-sys-color-tertiary-container);
-		color: var(--md-sys-color-on-tertiary-container);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border-radius: var(--md-sys-shape-small);
-		font-size: 12px;
-		font-weight: 600;
-		display: inline-block;
-		margin-bottom: var(--md-sys-space-xs);
-	}
-	.tool-call-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		flex-wrap: wrap;
-		margin-bottom: var(--md-sys-space-xs);
-	}
-	.usage-chip {
-		display: inline-block;
-		padding: 1px 8px;
-		border-radius: var(--md-sys-shape-full);
-		background: color-mix(in srgb, var(--md-sys-color-tertiary) 14%, transparent);
-		color: var(--md-sys-color-on-surface-variant);
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-tertiary) 30%, transparent);
-		font-size: 10px;
-		font-weight: 600;
-		font-family: var(--md-sys-typescale-mono);
-		line-height: 1.6;
-		white-space: nowrap;
-		cursor: default;
 	}
 	.supplement-badge {
 		background: var(--md-sys-color-warning-container);
