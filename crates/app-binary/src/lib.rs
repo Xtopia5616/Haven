@@ -1518,4 +1518,35 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn tauri_csp_is_explicit_and_keeps_only_required_capabilities() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        let security = &config["app"]["security"];
+        let csp = security["csp"]
+            .as_str()
+            .expect("production CSP must be an explicit string");
+        let dev_csp = security["devCsp"]
+            .as_str()
+            .expect("development CSP must be an explicit string");
+
+        for policy in [csp, dev_csp] {
+            assert!(policy.contains("default-src 'self'"));
+            assert!(policy.contains("connect-src ipc: http://ipc.localhost"));
+            assert!(policy.contains("object-src 'none'"));
+            assert!(policy.contains("frame-src 'none'"));
+            assert!(policy.contains("base-uri 'self'"));
+            assert!(!policy.contains("'unsafe-eval'"));
+            assert!(!policy.contains(" *"));
+        }
+
+        assert!(
+            !csp.contains("script-src 'self' 'unsafe-inline'"),
+            "release scripts stay hash/nonce-bound"
+        );
+        assert!(!csp.contains("localhost:4721"));
+        assert!(dev_csp.contains("ws://localhost:4721"));
+        assert!(dev_csp.contains("script-src 'self' 'unsafe-inline' http://localhost:4721"));
+    }
 }

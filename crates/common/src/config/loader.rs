@@ -473,7 +473,7 @@ mod tests {
         // struct default (Medium) — there is no legacy-Low behavior.
         let parsed: SecurityConfig = toml::from_str(
             r#"
-                confirmation_mode = "always"
+                confirmation_mode = "ask"
                 encrypt_sensitive = true
             "#,
         )
