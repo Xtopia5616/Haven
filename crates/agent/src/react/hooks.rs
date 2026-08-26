@@ -50,6 +50,16 @@ pub(crate) enum BeforeToolAction {
     NeedConfirm { risk_level: RiskLevel },
 }
 
+/// Inputs needed to classify a completed LLM response. Grouping these
+/// immutable step values keeps the hook boundary explicit as it evolves.
+pub(crate) struct AfterLlmInput<'a> {
+    pub thought: &'a Option<String>,
+    pub actions: &'a [Action],
+    pub response: &'a LlmResponse,
+    pub canonical: &'a [CanonicalMessage],
+    pub state: ResponsePolicyState,
+}
+
 /// Extension seam for ReAct domain side effects. Production uses
 /// [`DefaultHooks`]; unit tests can install [`NoopHooks`].
 #[async_trait]
@@ -69,13 +79,9 @@ pub(crate) trait LoopHooks: Send + Sync {
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
-        thought: &Option<String>,
-        actions: &[Action],
-        response: &LlmResponse,
-        canonical: &[CanonicalMessage],
-        state: ResponsePolicyState,
+        input: AfterLlmInput<'_>,
     ) -> AfterLlmAction {
-        let _ = (thought, actions, response, canonical, state);
+        let _ = input;
         AfterLlmAction::Accept
     }
 
@@ -163,7 +169,7 @@ impl LoopHooks for DefaultHooks {
                 .await;
         }
         let interval = engine.limits().fact_infer_interval_steps;
-        if ctx.step_num > 0 && interval > 0 && ctx.step_num % interval == 0 {
+        if ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval) {
             self.call_infer(&ctx.session_id, false);
         }
     }
@@ -172,13 +178,15 @@ impl LoopHooks for DefaultHooks {
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
-        thought: &Option<String>,
-        actions: &[Action],
-        response: &LlmResponse,
-        canonical: &[CanonicalMessage],
-        state: ResponsePolicyState,
+        input: AfterLlmInput<'_>,
     ) -> AfterLlmAction {
-        ResponsePolicy::classify(thought, actions, response, canonical, state)
+        ResponsePolicy::classify(
+            input.thought,
+            input.actions,
+            input.response,
+            input.canonical,
+            input.state,
+        )
     }
 
     async fn before_tool(
@@ -512,11 +520,13 @@ mod tests {
                 .after_llm(
                     &engine,
                     &ctx,
-                    &Some("让我先查一下，".into()),
-                    &[],
-                    &response,
-                    &[],
-                    state,
+                    AfterLlmInput {
+                        thought: &Some("让我先查一下，".into()),
+                        actions: &[],
+                        response: &response,
+                        canonical: &[],
+                        state,
+                    },
                 )
                 .await
         };

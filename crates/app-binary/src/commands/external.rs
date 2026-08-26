@@ -126,10 +126,9 @@ fn open_with_shell_execute(target: &str) -> std::io::Result<()> {
         )
     };
     if result as usize <= 32 {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("ShellExecuteW failed ({result:?})"),
-        ))
+        Err(std::io::Error::other(format!(
+            "ShellExecuteW failed ({result:?})"
+        )))
     } else {
         Ok(())
     }

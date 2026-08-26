@@ -370,7 +370,16 @@ impl Tool for ShellTool {
 mod tests {
     use super::*;
     use crate::Tool;
+    #[cfg(windows)]
+    use base64::Engine;
     use serde_json::json;
+    use tempfile::tempdir;
+
+    #[cfg(windows)]
+    fn encoded_powershell_command(script: &str) -> String {
+        let utf16le: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        base64::engine::general_purpose::STANDARD.encode(utf16le)
+    }
 
     #[test]
     fn test_shell_tool_name() {
@@ -669,24 +678,18 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_shell_cmd_captures_gbk_native_output() {
-        // A native tool that ignores the code page and writes raw GBK bytes
-        // (CP936: 你好 = C4 E3 BA C3) must be decoded via the GBK fallback,
-        // not mangled. This exercises decode_lossy's GBK path on cmd output.
-        let script = "import sys\nsys.stdout.buffer.write(b\"\\xc4\\xe3\\xba\\xc3\\n\")";
-        let py = std::env::var("PYTHON")
-            .or_else(|_| std::env::var("python"))
-            .unwrap_or_else(|_| "python".into());
-        let py = if py.is_empty() {
-            "python".to_string()
-        } else {
-            py
-        };
-        let script_path = haven_common::default_work_dir().join("gbk_emit_test.py");
-        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
-        std::fs::write(&script_path, script).unwrap();
+        // Emit raw GBK bytes (CP936: 你好 = C4 E3 BA C3) without depending
+        // on a PATH-provided interpreter. The cmd capture must use the GBK
+        // fallback instead of mangling the byte stream.
+        let emit_gbk = format!(
+            "powershell -NoProfile -EncodedCommand {}",
+            encoded_powershell_command(
+                "[Console]::OpenStandardOutput().Write([byte[]](0xC4,0xE3,0xBA,0xC3,0x0A),0,5)"
+            )
+        );
         let result = ShellTool::default()
             .execute(
-                json!({"command": format!("{} {}", py, script_path.display()), "shell": "cmd"}),
+                json!({"command": emit_gbk, "shell": "cmd"}),
                 CancellationToken::new(),
             )
             .await
@@ -697,30 +700,18 @@ mod tests {
             out.contains("你好"),
             "GBK native output must be decoded: {out:?}"
         );
-        let _ = std::fs::remove_file(&script_path);
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_shell_powershell_captures_gbk_native_output() {
-        // A native tool emitting raw GBK bytes under PowerShell: the forced
-        // [Console]::OutputEncoding=UTF8 must NOT corrupt the passthrough; the
-        // GBK bytes reach decode_lossy unchanged and are decoded via fallback.
-        let script = "import sys\nsys.stdout.buffer.write(b\"\\xc4\\xe3\\xba\\xc3\\n\")";
-        let py = std::env::var("PYTHON")
-            .or_else(|_| std::env::var("python"))
-            .unwrap_or_else(|_| "python".into());
-        let py = if py.is_empty() {
-            "python".to_string()
-        } else {
-            py
-        };
-        let script_path = haven_common::default_work_dir().join("gbk_emit_ps_test.py");
-        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
-        std::fs::write(&script_path, script).unwrap();
+        // Direct raw output bypasses PowerShell's text encoder so this checks
+        // that the capture path preserves GBK bytes for decode_lossy.
+        let emit_gbk =
+            "[Console]::OpenStandardOutput().Write([byte[]](0xC4,0xE3,0xBA,0xC3,0x0A),0,5)";
         let result = ShellTool::default()
             .execute(
-                json!({"command": format!("{} {}", py, script_path.display()), "shell": "powershell"}),
+                json!({"command": emit_gbk, "shell": "powershell"}),
                 CancellationToken::new(),
             )
             .await
@@ -731,7 +722,6 @@ mod tests {
             out.contains("你好"),
             "GBK native output must be decoded: {out:?}"
         );
-        let _ = std::fs::remove_file(&script_path);
     }
 
     #[cfg(windows)]
@@ -799,8 +789,8 @@ mod tests {
         // A UTF-16LE file (what PS 5.1 `>` redirection used to write) read
         // back through the shell pipe must decode cleanly instead of arriving
         // as NUL-byte mojibake.
-        let path = haven_common::default_work_dir().join("utf16_redir_test.txt");
-        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("utf16_redir_test.txt");
         let script = format!(
             "[IO.File]::WriteAllText('{}', '你好', [Text.Encoding]::Unicode)",
             path.display()
@@ -823,7 +813,6 @@ mod tests {
         assert!(read.success, "read failed: {:?}", read.error);
         let out = read.output["output"].as_str().unwrap();
         assert!(out.contains("你好"), "UTF-16 file must decode: {out:?}");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(windows)]
@@ -832,8 +821,8 @@ mod tests {
         // `>` redirection on PS 5.1 must not produce a UTF-16 file: writing
         // with `>` then reading the bytes back through the shell pipe must
         // round-trip Chinese cleanly (no NUL bytes, no replacement chars).
-        let path = haven_common::default_work_dir().join("redir_utf8_test.txt");
-        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("redir_utf8_test.txt");
         let write = ShellTool::default()
             .execute(
                 json!({"command": format!("\"中文内容 hello\" > '{}'", path.display()), "shell": "powershell"}),
@@ -856,7 +845,6 @@ mod tests {
             "redirection round-trip must be UTF-8: {out:?}"
         );
         assert!(!out.contains('\u{FFFD}'), "no replacement chars: {out:?}");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(windows)]

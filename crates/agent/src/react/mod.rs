@@ -214,7 +214,7 @@ pub(super) struct StepCtx {
 /// dispatches on this instead of inlining ~130 lines of error handling.
 pub(super) enum StepCallOutcome {
     /// A usable response (possibly from the post-compaction retry).
-    Response(LlmResponse),
+    Response(Box<LlmResponse>),
     /// Cancelled mid-call (end_session / rollback): exit silently.
     Cancelled,
     /// Persisted/emitted error already; the loop must propagate it.

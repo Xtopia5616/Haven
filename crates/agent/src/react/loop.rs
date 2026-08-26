@@ -338,7 +338,7 @@ impl ReActEngine {
                 .instrument(tracing::info_span!("llm", session_id, step_num))
                 .await
             {
-                StepCallOutcome::Response(resp) => resp,
+                StepCallOutcome::Response(resp) => *resp,
                 StepCallOutcome::Cancelled => {
                     // A final snapshot keeps the DB row current for the
                     // rollback/continue that cancelled the LLM call (the
@@ -442,11 +442,13 @@ impl ReActEngine {
                     .after_llm(
                         self,
                         &ctx,
-                        &thought,
-                        &actions,
-                        &response,
-                        canonical,
-                        policy_state,
+                        super::hooks::AfterLlmInput {
+                            thought: &thought,
+                            actions: &actions,
+                            response: &response,
+                            canonical,
+                            state: policy_state,
+                        },
                     )
                     .await;
                 match action {

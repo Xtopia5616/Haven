@@ -230,8 +230,11 @@ impl Default for UsageTracker {
 
 /// Per-session tool-definition cache keyed by ToolsManager catalog version.
 /// Values are `Arc` so cache hits share one schema vec across steps.
+type ToolDefCacheEntry = (u64, Arc<Vec<ToolDefinition>>);
+type ToolDefCacheMap = HashMap<String, ToolDefCacheEntry>;
+
 pub(crate) struct ToolDefCache {
-    cache: Mutex<HashMap<String, (u64, Arc<Vec<ToolDefinition>>)>>,
+    cache: Mutex<ToolDefCacheMap>,
 }
 
 impl ToolDefCache {

@@ -166,6 +166,17 @@ impl WindowTool {
         path: Option<String>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        // Capturing the desktop is a high-risk operation in its own right.
+        // When OCR cannot run because no vision router is configured, do not
+        // capture a screenshot only to discard it. This also keeps the
+        // unavailable-capability path independent of an interactive desktop.
+        let Some(client) = &self.router else {
+            return Ok(ToolResult::ok(serde_json::json!({
+                "ocr": true,
+                "ocr_unavailable": true,
+                "reason": "No LLM router installed, so OCR cannot run."
+            })));
+        };
         let path_buf = path
             .filter(|p| !p.trim().is_empty())
             .map(|p| std::path::PathBuf::from(p.trim()));
@@ -174,16 +185,6 @@ impl WindowTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("screenshot path missing"))?
             .to_string();
-
-        let Some(client) = &self.router else {
-            return Ok(ToolResult::ok(serde_json::json!({
-                "ocr": true,
-                "path": shot_path,
-                "screenshot": shot,
-                "ocr_unavailable": true,
-                "reason": "No LLM router installed, so OCR cannot run."
-            })));
-        };
 
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -1206,14 +1207,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_window_ui_tree() {
+    async fn test_window_ui_tree_rejects_missing_target() {
         let result = tool()
-            .execute(json!({"operation": "ui_tree"}), CancellationToken::new())
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert!(result.output["elements"].is_array());
-        assert!(result.output["count"].is_number());
+            .execute(
+                json!({"operation": "ui_tree", "title": "haven-test-no-such-window-xyz"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

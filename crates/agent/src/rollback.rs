@@ -437,23 +437,22 @@ impl AgentLayer {
         // this attempt's branch point safe to truncate.
         if let Ok(Some(state_json)) = self.db.get_react_state(session_id)
             && let Ok(snapshot) = ReActSnapshot::from_json(&state_json)
+            && let Some(error_partial_message_ids) = snapshot.error_partial_message_ids
         {
-            if let Some(error_partial_message_ids) = snapshot.error_partial_message_ids {
-                if let Some(cutoff) = snapshot
-                    .branch_points
-                    .get(&snapshot.step_number)
-                    .and_then(|bp| bp.last_msg_at.as_deref())
-                {
-                    // The marker is saved immediately after save_branch_point
-                    // in persist_partial_on_error, so this range belongs to
-                    // the known failed attempt, including its step projection.
-                    self.db.truncate_session_after(session_id, cutoff, false)?;
-                } else {
-                    // A partially persisted legacy/error snapshot may lack a
-                    // branch point. Its explicit recovery IDs are still safe.
-                    self.db
-                        .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
-                }
+            if let Some(cutoff) = snapshot
+                .branch_points
+                .get(&snapshot.step_number)
+                .and_then(|bp| bp.last_msg_at.as_deref())
+            {
+                // The marker is saved immediately after save_branch_point
+                // in persist_partial_on_error, so this range belongs to
+                // the known failed attempt, including its step projection.
+                self.db.truncate_session_after(session_id, cutoff, false)?;
+            } else {
+                // A partially persisted legacy/error snapshot may lack a
+                // branch point. Its explicit recovery IDs are still safe.
+                self.db
+                    .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a

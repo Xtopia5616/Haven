@@ -437,12 +437,12 @@ impl AgentLayer {
                         .executor
                         .blocks_auto_wake_with(&tid, state.as_ref())
                         .await;
-                    if state == Some(SessionStatus::Paused) && !awaiting {
-                        if let Err(e) = agent.set_session_status(&tid, SessionStatus::Pending).await
-                        {
-                            tracing::warn!("action-completion wake session {} failed: {}", tid, e);
-                            continue;
-                        }
+                    if state == Some(SessionStatus::Paused)
+                        && !awaiting
+                        && let Err(e) = agent.set_session_status(&tid, SessionStatus::Pending).await
+                    {
+                        tracing::warn!("action-completion wake session {} failed: {}", tid, e);
+                        continue;
                     }
                     // X12 exception: terminal/missing session has no live loop
                     // to apply UserInject — history-only persist so reopen still

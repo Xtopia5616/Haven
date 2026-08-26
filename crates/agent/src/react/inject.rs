@@ -21,6 +21,15 @@ const MESSAGING_POLL_EVERY_STEPS: u32 = 3;
 /// must not flood the observation budget).
 const MESSAGING_INJECT_CHARS: usize = 400;
 
+/// One pending context item ready to become a transcript user-inject event.
+/// Queues own their data; this view only borrows it while applying the event.
+struct UserContext<'a> {
+    source: InjectSource,
+    text: &'a str,
+    attachments: &'a [MessageAttachment],
+    message_id: Option<&'a str>,
+}
+
 impl ReActEngine {
     /// Drain user-facing context into the canonical message list: follow-ups
     /// (paused-session replies / ask answers), steering (mid-run user
@@ -58,10 +67,12 @@ impl ReActEngine {
                 ctx,
                 events,
                 canonical,
-                source,
-                &follow_up.text,
-                &follow_up.attachments,
-                follow_up.message_id.as_deref(),
+                UserContext {
+                    source,
+                    text: &follow_up.text,
+                    attachments: &follow_up.attachments,
+                    message_id: follow_up.message_id.as_deref(),
+                },
             )
             .await;
             injected = true;
@@ -80,10 +91,12 @@ impl ReActEngine {
                 ctx,
                 events,
                 canonical,
-                source,
-                &s.text,
-                &s.attachments,
-                s.message_id.as_deref(),
+                UserContext {
+                    source,
+                    text: &s.text,
+                    attachments: &s.attachments,
+                    message_id: s.message_id.as_deref(),
+                },
             )
             .await;
             injected = true;
@@ -105,10 +118,12 @@ impl ReActEngine {
                 ctx,
                 events,
                 canonical,
-                InjectSource::ActionResult,
-                s,
-                &[],
-                None,
+                UserContext {
+                    source: InjectSource::ActionResult,
+                    text: s,
+                    attachments: &[],
+                    message_id: None,
+                },
             )
             .await;
             injected = true;
@@ -230,10 +245,12 @@ impl ReActEngine {
             ctx,
             events,
             canonical,
-            InjectSource::CrossSession,
-            text.trim_end(),
-            &[],
-            None,
+            UserContext {
+                source: InjectSource::CrossSession,
+                text: text.trim_end(),
+                attachments: &[],
+                message_id: None,
+            },
         )
         .await;
     }
@@ -241,23 +258,20 @@ impl ReActEngine {
     /// Emit + persist + project a user inject via [`TranscriptEvent::UserInject`]
     /// (Phase 6 / H1). Shared by follow-up / steering / cross-session so the
     /// paths cannot drift. No content-based dedup — see AGENTS.md resume rules.
-    pub(super) async fn push_user_context(
+    async fn push_user_context(
         &self,
         ctx: &StepCtx,
         events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
-        source: InjectSource,
-        text: &str,
-        attachments: &[MessageAttachment],
-        message_id: Option<&str>,
+        context: UserContext<'_>,
     ) {
         self.apply_transcript(
             ctx,
             TranscriptEvent::UserInject {
-                source,
-                text: text.to_string(),
-                attachments: attachments.to_vec(),
-                message_id: message_id.map(str::to_string),
+                source: context.source,
+                text: context.text.to_string(),
+                attachments: context.attachments.to_vec(),
+                message_id: context.message_id.map(str::to_string),
             },
             events,
             canonical,

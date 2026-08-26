@@ -120,10 +120,8 @@ impl DesktopNotifications {
                     map.insert(session_id.clone(), "error".into());
                 }
             }
-            AgentEvent::TitleUpdated { session_id, title } => {
-                if !title.is_empty() {
-                    self.cache_title(session_id, title.clone());
-                }
+            AgentEvent::TitleUpdated { session_id, title } if !title.is_empty() => {
+                self.cache_title(session_id, title.clone());
             }
             _ => {}
         }

@@ -491,7 +491,7 @@ impl ReActEngine {
                     &ctx.emitter,
                 )
                 .await;
-                StepCallOutcome::Response(resp)
+                StepCallOutcome::Response(Box::new(resp))
             }
             Err(haven_llm::LlmError::ContextLengthExceeded) => {
                 tracing::warn!(
@@ -561,7 +561,7 @@ impl ReActEngine {
                                 &ctx.emitter,
                             )
                             .await;
-                            StepCallOutcome::Response(retry_resp)
+                            StepCallOutcome::Response(Box::new(retry_resp))
                         }
                         Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
                         Err(e2) => {

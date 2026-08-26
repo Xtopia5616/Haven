@@ -41,21 +41,21 @@ pub(crate) fn init_tracing(
             .file_path
             .clone()
             .unwrap_or_else(LogConfig::default_log_path);
-        if let Some(parent) = log_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                // `tracing_appender::rolling::daily` panics when its directory
-                // cannot be created. Logging must never prevent the desktop
-                // app from starting, so keep the console layer and degrade.
-                eprintln!(
-                    "file logging disabled: cannot create {}: {}",
-                    parent.display(),
-                    e
-                );
-                let _ = tracing::subscriber::set_global_default(subscriber);
-                let mut effective_cfg = log_cfg.clone();
-                effective_cfg.file_enabled = false;
-                return (handles, Arc::new(std::sync::Mutex::new(effective_cfg)));
-            }
+        if let Some(parent) = log_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            // `tracing_appender::rolling::daily` panics when its directory
+            // cannot be created. Logging must never prevent the desktop
+            // app from starting, so keep the console layer and degrade.
+            eprintln!(
+                "file logging disabled: cannot create {}: {}",
+                parent.display(),
+                e
+            );
+            let _ = tracing::subscriber::set_global_default(subscriber);
+            let mut effective_cfg = log_cfg.clone();
+            effective_cfg.file_enabled = false;
+            return (handles, Arc::new(std::sync::Mutex::new(effective_cfg)));
         }
         let file_appender = tracing_appender::rolling::daily(
             log_path.parent().unwrap_or(std::path::Path::new(".")),

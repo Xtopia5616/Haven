@@ -182,21 +182,16 @@ impl AgentLayer {
                         if matches!(
                             self.executor.get_session_state(session_id).await,
                             Some(SessionStatus::Paused)
-                        ) {
-                            if let Err(e) = self
-                                .executor
-                                .update_session_status(
-                                    session_id,
-                                    SessionStatus::PausedAwaitingAnswer,
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "failed to upgrade session {} to paused_awaiting_answer on resume: {}",
-                                    session_id,
-                                    e
-                                );
-                            }
+                        ) && let Err(e) = self
+                            .executor
+                            .update_session_status(session_id, SessionStatus::PausedAwaitingAnswer)
+                            .await
+                        {
+                            tracing::warn!(
+                                "failed to upgrade session {} to paused_awaiting_answer on resume: {}",
+                                session_id,
+                                e
+                            );
                         }
                         self.executor
                             .set_awaiting_answer(session_id, Some(pending))
@@ -210,50 +205,47 @@ impl AgentLayer {
                         .get_awaiting_confirm(session_id)
                         .await
                         .is_none()
+                        && let Some(pending) = snapshot.awaiting_confirm.clone()
                     {
-                        if let Some(pending) = snapshot.awaiting_confirm.clone() {
-                            // Decisions already recorded but wake to Pending
-                            // never landed (crash between persist and status):
-                            // finish the confirm gate instead of restoring a
-                            // permanently stuck PausedAwaitingConfirm.
-                            if pending.all_decided() {
-                                self.executor
-                                    .set_awaiting_confirm(session_id, Some(pending))
-                                    .await;
-                                if let Err(e) = self
-                                    .set_session_status(session_id, SessionStatus::Pending)
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "failed to wake session {} after all-decided confirm on resume: {}",
-                                        session_id,
-                                        e
-                                    );
-                                }
-                            } else {
-                                if matches!(
-                                    self.executor.get_session_state(session_id).await,
-                                    Some(SessionStatus::Paused)
-                                ) {
-                                    if let Err(e) = self
-                                        .executor
-                                        .update_session_status(
-                                            session_id,
-                                            SessionStatus::PausedAwaitingConfirm,
-                                        )
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            "failed to upgrade session {} to paused_awaiting_confirm on resume: {}",
-                                            session_id,
-                                            e
-                                        );
-                                    }
-                                }
-                                self.executor
-                                    .set_awaiting_confirm(session_id, Some(pending))
-                                    .await;
+                        // Decisions already recorded but wake to Pending
+                        // never landed (crash between persist and status):
+                        // finish the confirm gate instead of restoring a
+                        // permanently stuck PausedAwaitingConfirm.
+                        if pending.all_decided() {
+                            self.executor
+                                .set_awaiting_confirm(session_id, Some(pending))
+                                .await;
+                            if let Err(e) = self
+                                .set_session_status(session_id, SessionStatus::Pending)
+                                .await
+                            {
+                                tracing::warn!(
+                                    "failed to wake session {} after all-decided confirm on resume: {}",
+                                    session_id,
+                                    e
+                                );
                             }
+                        } else {
+                            if matches!(
+                                self.executor.get_session_state(session_id).await,
+                                Some(SessionStatus::Paused)
+                            ) && let Err(e) = self
+                                .executor
+                                .update_session_status(
+                                    session_id,
+                                    SessionStatus::PausedAwaitingConfirm,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "failed to upgrade session {} to paused_awaiting_confirm on resume: {}",
+                                    session_id,
+                                    e
+                                );
+                            }
+                            self.executor
+                                .set_awaiting_confirm(session_id, Some(pending))
+                                .await;
                         }
                     }
                     // Skip trim when a confirm batch still needs results —

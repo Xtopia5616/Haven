@@ -868,10 +868,10 @@ impl InferenceEngine {
             .collect();
         let mut demote_ids: Vec<String> = Vec::new();
         for p in proposals.into_iter().take(20) {
-            if let Some(id) = gate_contradiction_demote(&p, &allowed, &groups) {
-                if !demote_ids.iter().any(|x| x == &id) {
-                    demote_ids.push(id);
-                }
+            if let Some(id) = gate_contradiction_demote(&p, &allowed, &groups)
+                && !demote_ids.iter().any(|x| x == &id)
+            {
+                demote_ids.push(id);
             }
         }
         if demote_ids.is_empty() {
@@ -1609,10 +1609,10 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
     if m.content.starts_with(COMPACTED_SUMMARY_PREFIX) {
         return false;
     }
-    match m.message_type.as_deref() {
-        Some("reasoning") | Some("thought") | Some("action") | Some("observation") => false,
-        _ => true,
-    }
+    !matches!(
+        m.message_type.as_deref(),
+        Some("reasoning") | Some("thought") | Some("action") | Some("observation")
+    )
 }
 
 /// Low-trust user rows that must never seed durable facts: peer spawn kickoff
@@ -1731,10 +1731,10 @@ fn timestamp_in_turn(ts: &str, after_ts: Option<&str>, user_ts: &str) -> bool {
             if step_dt > user_dt {
                 return false;
             }
-            if let Some(bound) = after_ts {
-                if let Ok(bound_dt) = chrono::DateTime::parse_from_rfc3339(bound) {
-                    return step_dt > bound_dt;
-                }
+            if let Some(bound) = after_ts
+                && let Ok(bound_dt) = chrono::DateTime::parse_from_rfc3339(bound)
+            {
+                return step_dt > bound_dt;
             }
             true
         }
@@ -1787,10 +1787,10 @@ fn format_contradiction_groups(groups: &[ContradictionCandidate]) -> String {
                         "source": f.source,
                         "confidence": f.confidence,
                     });
-                    if let Some(refer) = f.source_ref.as_ref() {
-                        if !is_sensitive_text(&refer.snippet) {
-                            row["source_snippet"] = serde_json::json!(refer.snippet);
-                        }
+                    if let Some(refer) = f.source_ref.as_ref()
+                        && !is_sensitive_text(&refer.snippet)
+                    {
+                        row["source_snippet"] = serde_json::json!(refer.snippet);
                     }
                     row
                 })
@@ -1821,11 +1821,11 @@ fn gate_contradiction_demote(
     if !fact_within_demote_age(fact, chrono::Utc::now()) {
         return None;
     }
-    if let Some((keeper, _)) = pick_contradiction_keeper(group.kind, &group.facts) {
-        if keeper.id == fact.id {
-            // Never wipe a whole group — keeper always survives.
-            return None;
-        }
+    if let Some((keeper, _)) = pick_contradiction_keeper(group.kind, &group.facts)
+        && keeper.id == fact.id
+    {
+        // Never wipe a whole group — keeper always survives.
+        return None;
     }
     if fact.source == "user"
         && group

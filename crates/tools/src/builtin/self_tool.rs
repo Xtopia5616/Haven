@@ -1415,6 +1415,8 @@ mod tests {
     use haven_common::config::McpServerConfig;
     use serde_json::json;
     use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     fn make_tool() -> (SelfTool, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -1883,31 +1885,122 @@ mod tests {
         assert!(err.to_string().contains("command is required"));
     }
 
-    /// Path to the fixture echo MCP server, whichever directory the test
-    /// binary happens to run from (workspace root or crate root).
-    fn fixture_path() -> String {
-        let p = std::env::current_dir().unwrap_or_default();
-        let candidates = [
-            p.join("crates/tools/tests/fixtures/echo_mcp_server.py"),
-            p.join("tests/fixtures/echo_mcp_server.py"),
-        ];
-        for c in &candidates {
-            if c.exists() {
-                return c.to_string_lossy().to_string();
-            }
-        }
-        candidates[0].to_string_lossy().to_string()
+    /// Minimal in-process HTTP MCP endpoint for configuration lifecycle tests.
+    /// It avoids requiring Python, a PATH entry, or an external process while
+    /// still exercising `SelfTool` through the real `McpManager` handshake.
+    struct TestMcpServer {
+        url: String,
+        task: tokio::task::JoinHandle<()>,
     }
 
-    /// Add the fixture echo server with `enabled: true` via the `mcp_add`
-    /// operation. Returns the tool result so tests can assert connection.
-    async fn add_echo_server(tool: &SelfTool) -> ToolResult {
+    impl TestMcpServer {
+        async fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(serve_test_mcp_connection(stream));
+                }
+            });
+            Self { url, task }
+        }
+    }
+
+    impl Drop for TestMcpServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn serve_test_mcp_connection(mut stream: TcpStream) {
+        const HEADER_END: &[u8] = b"\r\n\r\n";
+        let mut bytes = Vec::new();
+        let header_end = loop {
+            if let Some(end) = bytes
+                .windows(HEADER_END.len())
+                .position(|window| window == HEADER_END)
+            {
+                break end + HEADER_END.len();
+            }
+            let mut chunk = [0_u8; 1024];
+            let Ok(read) = stream.read(&mut chunk).await else {
+                return;
+            };
+            if read == 0 {
+                return;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+        };
+
+        let header = String::from_utf8_lossy(&bytes[..header_end]);
+        let is_post = header.starts_with("POST ");
+        let content_length = header
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then_some(value.trim())
+            })
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_default();
+        while bytes.len() < header_end + content_length {
+            let mut chunk = [0_u8; 1024];
+            let Ok(read) = stream.read(&mut chunk).await else {
+                return;
+            };
+            if read == 0 {
+                return;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+        }
+
+        if !is_post {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            return;
+        }
+
+        let request =
+            serde_json::from_slice::<serde_json::Value>(&bytes[header_end..]).unwrap_or_default();
+        if request.get("id").is_none() {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            return;
+        }
+
+        let id = request["id"].clone();
+        let result = match request["method"].as_str() {
+            Some("initialize") => json!({
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "test-mcp", "version": "1.0.0"},
+            }),
+            Some("tools/list") => json!({"tools": []}),
+            _ => json!({}),
+        };
+        let body =
+            serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": id, "result": result})).unwrap();
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nMcp-Session-Id: test-session\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(headers.as_bytes()).await;
+        let _ = stream.write_all(&body).await;
+    }
+
+    /// Add the in-process MCP server with `enabled: true` via `mcp_add`.
+    async fn add_echo_server(tool: &SelfTool, server: &TestMcpServer) -> ToolResult {
         tool.execute(
             json!({
                 "operation": "mcp_add",
                 "name": "echo-srv",
-                "command": "python",
-                "args": [fixture_path()],
+                "transport": "http",
+                "url": server.url,
                 "enabled": true,
             }),
             CancellationToken::new(),
@@ -1919,6 +2012,7 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_toggle_enable_connects_persists_and_disables() {
         let (tool, _dir) = make_tool();
+        let server = TestMcpServer::start().await;
 
         // Register a disabled server (acceptance criteria starting point).
         let result = tool
@@ -1926,8 +2020,8 @@ mod tests {
                 json!({
                     "operation": "mcp_add",
                     "name": "echo-srv",
-                    "command": "python",
-                    "args": [fixture_path()],
+                    "transport": "http",
+                    "url": server.url,
                     "enabled": false,
                 }),
                 CancellationToken::new(),
@@ -1963,7 +2057,7 @@ mod tests {
         let srv = &list.output["servers"][0];
         assert_eq!(srv["enabled"], json!(true));
         assert_eq!(srv["connected"], json!(true));
-        assert!(srv["tools"].as_i64().unwrap() > 0);
+        assert_eq!(srv["tools"], json!(0));
 
         // Toggle back off: disconnects and persists enabled=false.
         let result = tool
@@ -1996,12 +2090,13 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_update_updates_fields_and_enables() {
         let (tool, _dir) = make_tool();
+        let server = TestMcpServer::start().await;
         tool.execute(
             json!({
                 "operation": "mcp_add",
                 "name": "srv",
-                "command": "python",
-                "args": [fixture_path()],
+                "transport": "http",
+                "url": server.url,
                 "enabled": false,
             }),
             CancellationToken::new(),
@@ -2015,8 +2110,6 @@ mod tests {
                 json!({
                     "operation": "mcp_update",
                     "name": "srv",
-                    "command": "python",
-                    "args": [fixture_path()],
                     "env": ["API_KEY=abc"],
                 }),
                 CancellationToken::new(),
@@ -2093,8 +2186,7 @@ mod tests {
             json!({
                 "operation": "mcp_add",
                 "name": "srv",
-                "command": "python",
-                "args": [fixture_path()],
+                "command": "original-command",
                 "enabled": false,
             }),
             CancellationToken::new(),
@@ -2119,8 +2211,7 @@ mod tests {
             json!({
                 "operation": "mcp_add",
                 "name": "srv",
-                "command": "python",
-                "args": [fixture_path()],
+                "command": "original-command",
                 "enabled": false,
             }),
             CancellationToken::new(),
@@ -2152,14 +2243,15 @@ mod tests {
             .find(|s| s.name == "srv")
             .unwrap();
         assert!(!server.enabled, "failed enable must stay disabled");
-        assert_eq!(server.command, "python");
+        assert_eq!(server.command, "original-command");
         assert!(tool.mcp_manager.get_client("srv").await.is_none());
     }
 
     #[tokio::test]
     async fn test_mcp_remove_disconnects_and_persists() {
         let (tool, _dir) = make_tool();
-        let result = add_echo_server(&tool).await;
+        let server = TestMcpServer::start().await;
+        let result = add_echo_server(&tool, &server).await;
         assert_eq!(result.output["connected"], json!(true));
 
         let result = tool
@@ -2199,7 +2291,8 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_reload_reconnects_enabled() {
         let (tool, _dir) = make_tool();
-        let result = add_echo_server(&tool).await;
+        let server = TestMcpServer::start().await;
+        let result = add_echo_server(&tool, &server).await;
         assert_eq!(result.output["connected"], json!(true));
 
         // Kill the live client but keep enabled=true in config.
@@ -2227,7 +2320,8 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_reload_reconnects_even_when_client_already_exists() {
         let (tool, _dir) = make_tool();
-        add_echo_server(&tool).await;
+        let server = TestMcpServer::start().await;
+        add_echo_server(&tool, &server).await;
         assert!(tool.mcp_manager.get_client("echo-srv").await.is_some());
 
         // Reload restarts every enabled server, so the existing client is
@@ -2253,8 +2347,7 @@ mod tests {
             json!({
                 "operation": "mcp_add",
                 "name": "off",
-                "command": "python",
-                "args": [fixture_path()],
+                "command": "unused-command",
                 "enabled": false,
             }),
             CancellationToken::new(),
@@ -2273,14 +2366,15 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_add_upsert_auto_connect_false_drops_stale_client() {
         let (tool, _dir) = make_tool();
+        let server = TestMcpServer::start().await;
         // Register a connected server.
         let result = tool
             .execute(
                 json!({
                     "operation": "mcp_add",
                     "name": "echo-srv",
-                    "command": "python",
-                    "args": [fixture_path()],
+                    "transport": "http",
+                    "url": server.url,
                     "enabled": true,
                 }),
                 CancellationToken::new(),
@@ -2297,8 +2391,8 @@ mod tests {
                 json!({
                     "operation": "mcp_add",
                     "name": "echo-srv",
-                    "command": "python",
-                    "args": ["-u", fixture_path()],
+                    "transport": "http",
+                    "url": format!("{}?updated=true", server.url),
                     "auto_connect": false,
                 }),
                 CancellationToken::new(),
