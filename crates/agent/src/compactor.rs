@@ -174,6 +174,30 @@ impl ContextCompactor {
         desired
     }
 
+    /// Pick a summary start without cutting an assistant tool declaration away
+    /// from its results. Unlike [`Self::safe_end_idx`], an assistant message
+    /// with calls is safe to include in the summarized region. When the
+    /// desired position lands inside tool results, rewind to that declaration
+    /// so the whole round is summarized together.
+    fn safe_start_idx(messages: &[CanonicalMessage], desired: usize) -> usize {
+        if desired >= messages.len()
+            || messages[desired].role != haven_common::types::CanonicalRole::Tool
+        {
+            return desired;
+        }
+        let mut index = desired;
+        while index > 0 && messages[index].role == haven_common::types::CanonicalRole::Tool {
+            index -= 1;
+        }
+        if messages[index].role == haven_common::types::CanonicalRole::Assistant
+            && messages[index].tool_calls.is_some()
+        {
+            index
+        } else {
+            desired
+        }
+    }
+
     /// Keep the earliest non-system messages so provider message-prefix cache
     /// can survive compaction. Summarize the **middle**, not the head.
     const STICKY_PREFIX_MESSAGES: usize = 2;
@@ -190,24 +214,28 @@ impl ContextCompactor {
             .count();
 
         let compactable = messages.len() - system_count;
-        // Preserve at least one immutable non-system turn as the cache-routing
-        // anchor, leave a middle worth summarizing, and retain a recent suffix.
-        // With only three non-system messages, compaction would otherwise
-        // replace the first user turn with a generated summary.
-        if compactable < 4 {
+        // Preserve the first user turn as the cache-routing anchor. Three
+        // non-system messages are enough for a complete tool round
+        // (user -> assistant tool call -> tool result): summarize the round
+        // itself when a provider rejects the context, rather than failing and
+        // leaving the session unrecoverable.
+        if compactable < 3 {
             return None;
         }
 
-        // Cap sticky so short sessions still have a middle to compress.
-        let sticky_target = Self::STICKY_PREFIX_MESSAGES.min(compactable / 4);
-        let start_idx = Self::safe_end_idx(messages, system_count + sticky_target);
+        // Keep at least one anchor while leaving a two-message region for a
+        // complete assistant-tool round. Longer transcripts retain the normal
+        // cache-friendly sticky prefix.
+        let sticky_target = Self::STICKY_PREFIX_MESSAGES.min(compactable.saturating_sub(2));
+        let start_idx = Self::safe_start_idx(messages, system_count + sticky_target);
 
         let summarize_count = (compactable / 2).max(2);
-        let desired_end = (start_idx + summarize_count).min(messages.len().saturating_sub(1));
+        let desired_end = (start_idx + summarize_count).min(messages.len());
         let end_idx = Self::safe_end_idx(messages, desired_end);
 
-        // Need a non-empty middle and at least one suffix message.
-        if end_idx <= start_idx || end_idx >= messages.len() || end_idx - start_idx < 2 {
+        // A summary may legitimately replace the whole trailing tool round:
+        // it is then the new clean tail. Otherwise a suffix must remain.
+        if end_idx <= start_idx || end_idx - start_idx < 2 {
             return None;
         }
 
@@ -217,15 +245,16 @@ impl ContextCompactor {
     /// Compress the message list: keep a sticky early prefix, summarize the
     /// middle half, and retain the recent suffix (prompt-cache aware).
     ///
-    /// Returns `None` when compaction fails (e.g. LLM call fails) or there's nothing
-    /// to compact (fewer than 4 messages).
+    /// Returns `None` when compaction fails (e.g. LLM call fails) or there is
+    /// no complete turn/tool round to compact (fewer than 3 messages).
     pub async fn compact(
         &self,
         messages: &[CanonicalMessage],
         router: &Arc<LlmRouter>,
     ) -> Option<CompactionResult> {
-        // Need at least 4 messages to make compaction worthwhile
-        if messages.len() < 4 {
+        // A user -> assistant tool-call -> tool-result round is the minimum
+        // recoverable shape after a context-length failure.
+        if messages.len() < 3 {
             return None;
         }
 
@@ -510,13 +539,41 @@ mod tests {
     }
 
     #[test]
-    fn compaction_range_keeps_session_anchor_on_short_sessions() {
+    fn compaction_range_keeps_session_anchor_on_minimal_recoverable_session() {
         let msgs = vec![
             make_msg(CanonicalRole::System, "sys"),
             make_msg(CanonicalRole::User, "a"),
             make_msg(CanonicalRole::Assistant, "b"),
             make_msg(CanonicalRole::User, "c"),
         ];
-        assert!(ContextCompactor::compaction_range(&msgs).is_none());
+        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
+        assert_eq!(system_count, 1);
+        assert_eq!((start, end), (2, 4));
+        assert!(matches!(
+            &msgs[system_count].content[0],
+            ContentPart::Text(text) if text == "a"
+        ));
+    }
+
+    #[test]
+    fn compaction_range_summarizes_complete_trailing_tool_round() {
+        let mut assistant = make_msg(CanonicalRole::Assistant, "calling tool");
+        assistant.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
+        }]);
+        let mut tool = make_msg(CanonicalRole::Tool, "tool result");
+        tool.tool_call_id = Some("call-1".into());
+        let msgs = vec![
+            make_msg(CanonicalRole::System, "sys"),
+            make_msg(CanonicalRole::User, "anchor"),
+            assistant,
+            tool,
+        ];
+
+        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
+        assert_eq!(system_count, 1);
+        assert_eq!((start, end), (2, 4));
     }
 }

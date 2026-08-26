@@ -512,7 +512,8 @@ mod tests {
     fn usage_tracker_invalidate_bumps_epoch_and_clears_map() {
         let tracker = UsageTracker::new();
         assert_eq!(tracker.epoch("ses-a"), 0);
-        let _ = tracker.record_with_seed("ses-a", 10, 5, 15, 0, 0, 10, None, CumulativeUsage::default);
+        let _ =
+            tracker.record_with_seed("ses-a", 10, 5, 15, 0, 0, 10, None, CumulativeUsage::default);
         tracker.invalidate_after_truncate("ses-a");
         assert_eq!(tracker.epoch("ses-a"), 1);
         // Next record must re-seed (map was cleared), not keep the old 15.

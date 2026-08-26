@@ -1603,11 +1603,7 @@ impl LlmRouter {
 
     /// Compute USD cost with provider-normalized cache accounting. Unset
     /// cache-lane prices fall back to the ordinary input rate.
-    pub async fn compute_cost(
-        &self,
-        role: EndpointRole,
-        usage: &Usage,
-    ) -> Option<f64> {
+    pub async fn compute_cost(&self, role: EndpointRole, usage: &Usage) -> Option<f64> {
         let cfg = self.config.read().await;
         compute_cost_usd(
             cfg.endpoint(role),

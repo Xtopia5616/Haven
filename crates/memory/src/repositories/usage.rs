@@ -339,7 +339,8 @@ impl Database {
                 cache_creation_tokens,
                 cache_miss_tokens,
                 cache_accounting: cache_accounting.into(),
-                cache_diagnostics: cache_diagnostics.and_then(|value| serde_json::from_str(value).ok()),
+                cache_diagnostics: cache_diagnostics
+                    .and_then(|value| serde_json::from_str(value).ok()),
                 cost_usd,
                 has_cost,
                 duration_ms,

@@ -13,10 +13,12 @@ use crate::adapters::{
     stream_header_timeout,
 };
 use crate::client::LlmClient;
+use haven_common::prompts::split_system_prompt_cache_boundary;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    CacheAccounting, FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
+    CacheAccounting, CacheDiagnostics, FinishReason, LlmError, LlmResponse, StreamChunk,
+    ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -55,6 +57,8 @@ struct AnthropicRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<Value>,
     stream: bool,
+    #[serde(skip)]
+    cache_diagnostics: CacheDiagnostics,
 }
 
 #[derive(Debug, Deserialize)]
@@ -571,10 +575,7 @@ impl AnthropicAdapter {
     /// that threshold.
     fn system_with_cache_control(system: Option<String>) -> Option<Value> {
         let text = system.filter(|s| !s.is_empty())?;
-        let fence = haven_common::prompts::MEMORY_FENCE_START;
-        if let Some(idx) = text.find(fence) {
-            let stable = &text[..idx];
-            let volatile = &text[idx..];
+        if let Some((stable, volatile)) = split_system_prompt_cache_boundary(&text) {
             if stable.is_empty() {
                 return Some(json!([{
                     "type": "text",
@@ -600,6 +601,16 @@ impl AnthropicAdapter {
         }]))
     }
 
+    fn cache_diagnostics(messages: &[CanonicalMessage]) -> CacheDiagnostics {
+        let system_split = messages.iter().any(|message| {
+            message.role == CanonicalRole::System
+                && message.content.iter().any(|part| {
+                    matches!(part, ContentPart::Text(text) if split_system_prompt_cache_boundary(text).is_some())
+                })
+        });
+        CacheDiagnostics::for_provider_cache(system_split)
+    }
+
     fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
@@ -616,6 +627,7 @@ impl AnthropicAdapter {
         stream: bool,
         web_search_mode: WebSearchMode,
     ) -> AnthropicRequest {
+        let cache_diagnostics = Self::cache_diagnostics(&messages);
         let (messages, system) = Self::convert_messages(messages);
         let mut tools_json = Self::convert_tools(tools);
         let had_client_tools = !tools_json.is_empty();
@@ -671,13 +683,24 @@ impl AnthropicAdapter {
             },
             tool_choice,
             stream,
+            cache_diagnostics,
         }
     }
 
+    #[cfg(test)]
     fn parse_response(
         &self,
         json: AnthropicResponse,
         model: Option<String>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.parse_response_with_cache(json, model, CacheDiagnostics::default())
+    }
+
+    fn parse_response_with_cache(
+        &self,
+        json: AnthropicResponse,
+        model: Option<String>,
+        cache_diagnostics: CacheDiagnostics,
     ) -> Result<LlmResponse, LlmError> {
         let mut text = String::new();
         let mut reasoning = String::new();
@@ -771,7 +794,7 @@ impl AnthropicAdapter {
         let usage = json
             .usage
             .map(|u| {
-                Usage::from_counts_with_accounting(
+                let mut usage = Usage::from_counts_with_accounting(
                     u.input_tokens,
                     u.output_tokens,
                     u.input_tokens
@@ -782,9 +805,19 @@ impl AnthropicAdapter {
                     u.cache_creation_input_tokens,
                     CacheAccounting::Exclusive,
                     model.clone(),
-                )
+                );
+                usage.cache_diagnostics = Some(
+                    cache_diagnostics
+                        .clone()
+                        .with_provider_usage(usage.cached_tokens),
+                );
+                usage
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                let mut usage = Usage::default();
+                usage.cache_diagnostics = Some(cache_diagnostics);
+                usage
+            });
         Ok(LlmResponse {
             text,
             tool_calls,
@@ -835,7 +868,7 @@ impl AnthropicAdapter {
         let json: AnthropicResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
-        self.parse_response(json, model)
+        self.parse_response_with_cache(json, model, body.cache_diagnostics)
     }
 
     async fn chat_stream_inner(
@@ -844,6 +877,7 @@ impl AnthropicAdapter {
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let body = self.build_request_body(messages, tools, true);
+        let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.messages_url();
         tracing::debug!(
             "chat_stream_inner: url={} model={} api_key={}",
@@ -923,6 +957,7 @@ impl AnthropicAdapter {
             usage: Option<Usage>,
             saw_message_stop: bool,
             web_search_calls: Vec<Value>,
+            cache_diagnostics: CacheDiagnostics,
         }
 
         let empty_chunk = empty_chunk;
@@ -939,6 +974,7 @@ impl AnthropicAdapter {
                 usage: None,
                 saw_message_stop: false,
                 web_search_calls: Vec::new(),
+                cache_diagnostics,
             },
             move |mut state| async move {
                 if state.done {
@@ -992,7 +1028,7 @@ impl AnthropicAdapter {
                             state.last_model = Some(m.clone());
                         }
                         if let Some(u) = message.usage {
-                            state.usage = Some(Usage::from_counts_with_accounting(
+                            let mut usage = Usage::from_counts_with_accounting(
                                 u.input_tokens,
                                 u.output_tokens,
                                 u.input_tokens
@@ -1003,7 +1039,14 @@ impl AnthropicAdapter {
                                 u.cache_creation_input_tokens,
                                 CacheAccounting::Exclusive,
                                 state.last_model.clone(),
-                            ));
+                            );
+                            usage.cache_diagnostics = Some(
+                                state
+                                    .cache_diagnostics
+                                    .clone()
+                                    .with_provider_usage(usage.cached_tokens),
+                            );
+                            state.usage = Some(usage);
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();

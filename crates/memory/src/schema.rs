@@ -367,13 +367,18 @@ fn migrate_v11_usage_cache_diagnostics(conn: &rusqlite::Connection) -> anyhow::R
     for table in ["session_usage", "llm_usage"] {
         if table_exists(conn, table)? && !column_exists(conn, table, "cache_miss_tokens")? {
             conn.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0"),
+                &format!(
+                    "ALTER TABLE {table} ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0"
+                ),
                 [],
             )?;
         }
     }
     if table_exists(conn, "llm_usage")? && !column_exists(conn, "llm_usage", "cache_diagnostics")? {
-        conn.execute("ALTER TABLE llm_usage ADD COLUMN cache_diagnostics TEXT", [])?;
+        conn.execute(
+            "ALTER TABLE llm_usage ADD COLUMN cache_diagnostics TEXT",
+            [],
+        )?;
     }
     Ok(())
 }
@@ -1589,6 +1594,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(accounting, "unknown");
+    }
+
+    #[test]
+    fn v11_migration_adds_cache_miss_and_diagnostics() {
+        let conn = create_test_conn();
+        conn.execute_batch(
+            "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY);
+             CREATE TABLE llm_usage (id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+             INSERT INTO llm_usage (id, session_id) VALUES ('usage-old', 'ses-old');",
+        )
+        .unwrap();
+
+        migrate_v11_usage_cache_diagnostics(&conn).unwrap();
+        migrate_v11_usage_cache_diagnostics(&conn).unwrap();
+        assert!(column_exists(&conn, "session_usage", "cache_miss_tokens").unwrap());
+        assert!(column_exists(&conn, "llm_usage", "cache_miss_tokens").unwrap());
+        assert!(column_exists(&conn, "llm_usage", "cache_diagnostics").unwrap());
+        let miss: u32 = conn
+            .query_row(
+                "SELECT cache_miss_tokens FROM llm_usage WHERE id = 'usage-old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(miss, 0);
     }
 
     #[test]

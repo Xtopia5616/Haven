@@ -16,12 +16,14 @@ use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    CacheAccounting, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, SttResult,
-    ToolDefinition, Usage,
+    CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
+    SttResult, ToolDefinition, Usage,
 };
 use base64::Engine;
 use haven_common::config::ModelEndpoint;
-use haven_common::prompts::STT_SYSTEM_PROMPT;
+#[cfg(test)]
+use haven_common::prompts::SESSION_CONTEXT_FENCE_START;
+use haven_common::prompts::{STT_SYSTEM_PROMPT, split_system_prompt_cache_boundary};
 
 // ---------------------------------------------------------------------------
 // Gemini generateContent request / response types
@@ -86,6 +88,8 @@ struct GeminiRequest {
     tools: Option<Vec<GeminiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
+    #[serde(skip)]
+    cache_diagnostics: CacheDiagnostics,
 }
 
 // Response types: `text` and `function_call` parts, plus usage metadata.
@@ -343,7 +347,13 @@ impl GeminiAdapter {
         let system = if system_parts.is_empty() {
             None
         } else {
-            Some(json!({"parts": [{"text": system_parts.join("\n\n")}]}))
+            let text = system_parts.join("\n\n");
+            let parts = if let Some((stable, dynamic)) = split_system_prompt_cache_boundary(&text) {
+                vec![json!({"text": stable}), json!({"text": dynamic})]
+            } else {
+                vec![json!({"text": text})]
+            };
+            Some(json!({"parts": parts}))
         };
         (out, system)
     }
@@ -471,6 +481,12 @@ impl GeminiAdapter {
         tools: Vec<ToolDefinition>,
         web_search_mode: WebSearchMode,
     ) -> GeminiRequest {
+        let system_split = messages.iter().any(|message| {
+            message.role == CanonicalRole::System
+                && message.content.iter().any(|part| {
+                    matches!(part, ContentPart::Text(text) if split_system_prompt_cache_boundary(text).is_some())
+                })
+        });
         let (contents, system_instruction) = Self::convert_contents(messages);
         let mut tools_json = Self::convert_tools(tools);
         // Gemini grounding: append `{"google_search": {}}`. Auto and Always
@@ -496,6 +512,7 @@ impl GeminiAdapter {
                 top_k: self.endpoint.top_k,
                 stop_sequences: self.endpoint.stop.clone(),
             }),
+            cache_diagnostics: CacheDiagnostics::for_provider_cache(system_split),
         }
     }
 
@@ -511,10 +528,20 @@ impl GeminiAdapter {
         }
     }
 
+    #[cfg(test)]
     fn parse_response(
         &self,
         json: GeminiResponse,
         model: Option<String>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.parse_response_with_cache(json, model, CacheDiagnostics::default())
+    }
+
+    fn parse_response_with_cache(
+        &self,
+        json: GeminiResponse,
+        model: Option<String>,
+        cache_diagnostics: CacheDiagnostics,
     ) -> Result<LlmResponse, LlmError> {
         let mut text = String::new();
         let mut reasoning = String::new();
@@ -552,8 +579,20 @@ impl GeminiAdapter {
         let usage = json
             .usage_metadata
             .as_ref()
-            .map(|u| u.to_usage(model.clone()))
-            .unwrap_or_default();
+            .map(|u| {
+                let mut usage = u.to_usage(model.clone());
+                usage.cache_diagnostics = Some(
+                    cache_diagnostics
+                        .clone()
+                        .with_provider_usage(usage.cached_tokens),
+                );
+                usage
+            })
+            .unwrap_or_else(|| {
+                let mut usage = Usage::default();
+                usage.cache_diagnostics = Some(cache_diagnostics);
+                usage
+            });
         Ok(LlmResponse {
             text,
             tool_calls,
@@ -602,6 +641,7 @@ impl GeminiAdapter {
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         let body = self.build_request_body(messages, tools, false);
+        let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.generate_url();
         tracing::debug!("POST {} (model: {})", url, body.contents.len());
         tracing::debug!(
@@ -629,7 +669,7 @@ impl GeminiAdapter {
         let json: GeminiResponse =
             serde_json::from_value(raw).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model_version.clone();
-        let mut parsed = self.parse_response(json, model)?;
+        let mut parsed = self.parse_response_with_cache(json, model, cache_diagnostics)?;
         parsed.web_search_calls = web_search_calls;
         Ok(parsed)
     }
@@ -640,6 +680,7 @@ impl GeminiAdapter {
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let body = self.build_request_body(messages, tools, true);
+        let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.stream_generate_url();
         tracing::debug!(
             "chat_stream_inner: url={} model={} api_key={}",
@@ -702,6 +743,7 @@ impl GeminiAdapter {
             usage: Option<Usage>,
             saw_finish: bool,
             web_search_calls: Vec<Value>,
+            cache_diagnostics: CacheDiagnostics,
         }
 
         let empty_chunk = empty_chunk;
@@ -719,6 +761,7 @@ impl GeminiAdapter {
                 usage: None,
                 saw_finish: false,
                 web_search_calls: Vec::new(),
+                cache_diagnostics,
             },
             move |mut state| async move {
                 if state.done {
@@ -775,7 +818,14 @@ impl GeminiAdapter {
                             state.last_model = Some(m.clone());
                         }
                         if let Some(u) = resp.usage_metadata {
-                            state.usage = Some(u.to_usage(state.last_model.clone()));
+                            let mut usage = u.to_usage(state.last_model.clone());
+                            usage.cache_diagnostics = Some(
+                                state
+                                    .cache_diagnostics
+                                    .clone()
+                                    .with_provider_usage(usage.cached_tokens),
+                            );
+                            state.usage = Some(usage);
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
@@ -1179,6 +1229,24 @@ mod tests {
         assert_eq!(contents[0].parts[0].text.as_deref(), Some("hi"));
         let sys = system.unwrap();
         assert_eq!(sys["parts"][0]["text"], "be concise");
+    }
+
+    #[test]
+    fn convert_contents_separates_dynamic_system_context() {
+        let system = format!(
+            "stable instructions{SESSION_CONTEXT_FENCE_START}Current session: inspect cache"
+        );
+        let (_, system) = GeminiAdapter::convert_contents(vec![CanonicalMessage::system(vec![
+            ContentPart::text(system),
+        ])]);
+
+        let system = system.unwrap();
+        assert_eq!(system["parts"].as_array().unwrap().len(), 2);
+        assert_eq!(system["parts"][0]["text"], "stable instructions");
+        assert_eq!(
+            system["parts"][1]["text"],
+            format!("{SESSION_CONTEXT_FENCE_START}Current session: inspect cache")
+        );
     }
 
     #[test]

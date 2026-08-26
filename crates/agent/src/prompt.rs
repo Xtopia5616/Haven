@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use haven_common::prompts::{MAIN_SYSTEM_PROMPT, TOOL_USAGE_NOTES, render};
+use haven_common::prompts::{
+    MAIN_SYSTEM_PROMPT, SESSION_CONTEXT_FENCE_START, TOOL_USAGE_NOTES, render,
+};
 use haven_common::tools::ToolDef;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, LlmRouter};
@@ -170,15 +172,17 @@ impl SystemPromptBuilder {
             context_section.push('\n');
         }
 
+        let dynamic_context = format!(
+            "{SESSION_CONTEXT_FENCE_START}Current session: {session_description}\n\n{context_section}{facts_section}"
+        );
+
         render(
             MAIN_SYSTEM_PROMPT,
             &[
                 ("tools", &sections.built_in_section),
                 ("skills", &skills_section),
                 ("mcps", &mcp_section),
-                ("facts", &facts_section),
-                ("session", session_description),
-                ("context", &context_section),
+                ("dynamic_context", &dynamic_context),
                 (
                     "failure_diagnosis",
                     haven_common::prompts::TOOL_FAILURE_DIAGNOSIS,
@@ -586,6 +590,13 @@ impl SystemPromptBuilder {
 
             if new_memory_block.is_empty() {
                 return cleaned;
+            }
+            // A current-layout prompt always keeps session-specific context at
+            // the tail. The first non-empty memory refresh must append there,
+            // not before the SESSION boundary, or it would contaminate the
+            // cacheable prefix.
+            if cleaned.rfind(SESSION_CONTEXT_FENCE_START).is_some() {
+                return format!("{cleaned}{new_memory_block}");
             }
             if let Some(next_at) = cleaned.find(NEXT_STEP) {
                 let after = next_at + NEXT_STEP.len();
@@ -1047,6 +1058,14 @@ mod tests {
             .await;
         assert!(prompt.contains("Additional context:"));
         assert!(prompt.contains("[assistant] prior reply"));
+        let closer = prompt.find("What is your next step?").unwrap();
+        let dynamic = prompt
+            .find(SESSION_CONTEXT_FENCE_START.trim_start())
+            .unwrap();
+        assert!(
+            closer < dynamic,
+            "session context must follow static closer"
+        );
     }
 
     #[test]
@@ -1075,6 +1094,20 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn patch_system_memory_appends_first_memory_after_session_context() {
+        let original = format!(
+            "stable instructions\nWhat is your next step?\n{SESSION_CONTEXT_FENCE_START}Current session: task\n"
+        );
+        let memory = format!("{MEMORY_START}facts\n{MEMORY_END}");
+
+        let patched = SystemPromptBuilder::patch_system_memory(&original, &memory);
+        let session_context = patched.rfind(SESSION_CONTEXT_FENCE_START).unwrap();
+        let memory_at = patched.rfind(MEMORY_START).unwrap();
+        assert!(session_context < memory_at);
+        assert!(patched.ends_with(&memory));
     }
 
     #[test]

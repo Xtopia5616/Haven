@@ -25,6 +25,7 @@
 		// Role→(provider, model) assignments:
 		// { role, provider, model, temperature?, context_window?,
 		//   cost_per_1k_input_tokens?, cost_per_1k_output_tokens?,
+		//   cost_per_1k_cache_read_tokens?, cost_per_1k_cache_write_tokens?,
 		//   max_tokens?, reasoning_effort?, web_search? }
 		roles: [],
 		stt_use_audio_model: true,

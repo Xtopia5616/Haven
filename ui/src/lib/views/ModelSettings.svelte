@@ -116,6 +116,8 @@
 		slot.context_window = null;
 		slot.cost_per_1k_input_tokens = null;
 		slot.cost_per_1k_output_tokens = null;
+		slot.cost_per_1k_cache_read_tokens = null;
+		slot.cost_per_1k_cache_write_tokens = null;
 		if (providerName) refreshProviderModels(providerName);
 	}
 
@@ -138,6 +140,8 @@
 				slot.context_window = null;
 				slot.cost_per_1k_input_tokens = null;
 				slot.cost_per_1k_output_tokens = null;
+				slot.cost_per_1k_cache_read_tokens = null;
+				slot.cost_per_1k_cache_write_tokens = null;
 			}
 			return;
 		}
@@ -1105,6 +1109,26 @@
 					step={0.01}
 					min={0}
 					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_output_tokens = v; }}
+				/>
+			</div>
+			<div class="model-field">
+				<span class="field-label">Cache read $/1K（可选）</span>
+				<MaterialNumberField
+					id="{card.prefix}-cost-cache-read"
+					value={slot.cost_per_1k_cache_read_tokens ?? 0}
+					step={0.01}
+					min={0}
+					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_cache_read_tokens = v; }}
+				/>
+			</div>
+			<div class="model-field">
+				<span class="field-label">Cache write $/1K（可选）</span>
+				<MaterialNumberField
+					id="{card.prefix}-cost-cache-write"
+					value={slot.cost_per_1k_cache_write_tokens ?? 0}
+					step={0.01}
+					min={0}
+					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_cache_write_tokens = v; }}
 				/>
 			</div>
 		</div>

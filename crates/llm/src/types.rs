@@ -32,7 +32,7 @@ impl CacheAccounting {
 /// persisted per call for diagnostics, never with the cache key or prompt.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct CacheDiagnostics {
-    /// `off`, `key`, or `split` describes the effective wire strategy.
+    /// `off`, `key`, `split`, or `implicit` describes the effective wire strategy.
     #[serde(default)]
     pub mode: String,
     #[serde(default)]
@@ -69,8 +69,24 @@ impl CacheDiagnostics {
         }
     }
 
+    /// Use for providers with cache controls or automatic prefix caching but
+    /// without an explicit routing key (Anthropic and Gemini).
+    pub fn for_provider_cache(system_split: bool) -> Self {
+        Self {
+            mode: if system_split {
+                "split".into()
+            } else {
+                "implicit".into()
+            },
+            key_requested: false,
+            system_split,
+            downgraded: false,
+            outcome: "unknown".into(),
+        }
+    }
+
     pub fn with_provider_usage(mut self, cached_tokens: u32) -> Self {
-        if self.key_requested || self.system_split {
+        if self.outcome != "disabled" {
             self.outcome = if cached_tokens > 0 {
                 "hit".into()
             } else {
@@ -709,6 +725,21 @@ mod tests {
         assert_eq!(u.total_tokens, 570);
         assert!(u.cache_exclusive_of_prompt());
         assert_eq!(u.context_tokens(), 550);
+    }
+
+    #[test]
+    fn usage_cache_miss_uses_explicit_provider_value() {
+        let mut usage = Usage::from_counts_with_accounting(
+            100,
+            10,
+            110,
+            70,
+            10,
+            CacheAccounting::Inclusive,
+            None,
+        );
+        usage.cache_miss_tokens = 24;
+        assert_eq!(usage.cache_miss_tokens(), 24);
     }
 
     #[test]

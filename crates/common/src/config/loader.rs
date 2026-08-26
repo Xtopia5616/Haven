@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn compute_cost_usd_zero_rates_return_none() {
         let ep = ModelEndpoint::default();
-        assert_eq!(compute_cost_usd(&ep, 1000, 500), None);
+        assert_eq!(compute_cost_usd(&ep, 1000, 0, 0, 500), None);
     }
 
     #[test]
@@ -776,8 +776,8 @@ mod tests {
             cost_per_1k_output_tokens: 15.0,
             ..Default::default()
         };
-        // 2k in + 1k out = 6.0 + 15.0
-        let cost = compute_cost_usd(&ep, 2000, 1000).unwrap();
+        // 2k uncached input + 1k output = 6.0 + 15.0
+        let cost = compute_cost_usd(&ep, 2000, 0, 0, 1000).unwrap();
         assert!((cost - 21.0).abs() < 1e-9);
     }
 
@@ -788,7 +788,7 @@ mod tests {
             ..Default::default()
         };
         // input rate zero -> only output counted
-        let cost = compute_cost_usd(&ep, 5000, 200).unwrap();
+        let cost = compute_cost_usd(&ep, 5000, 0, 0, 200).unwrap();
         assert!((cost - 2.0).abs() < 1e-9);
     }
 
@@ -799,8 +799,32 @@ mod tests {
             ..Default::default()
         };
         // 500 tokens -> 0.5
-        let cost = compute_cost_usd(&ep, 500, 0).unwrap();
+        let cost = compute_cost_usd(&ep, 500, 0, 0, 0).unwrap();
         assert!((cost - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_cost_usd_uses_cache_lane_prices_when_configured() {
+        let ep = ModelEndpoint {
+            cost_per_1k_input_tokens: 3.0,
+            cost_per_1k_output_tokens: 15.0,
+            cost_per_1k_cache_read_tokens: Some(0.3),
+            cost_per_1k_cache_write_tokens: Some(3.75),
+            ..Default::default()
+        };
+        // 1k normal + 2k read + 1k write + 1k output = 3 + .6 + 3.75 + 15
+        let cost = compute_cost_usd(&ep, 1000, 2000, 1000, 1000).unwrap();
+        assert!((cost - 22.35).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_cost_usd_allows_cache_only_pricing() {
+        let ep = ModelEndpoint {
+            cost_per_1k_cache_read_tokens: Some(0.25),
+            ..Default::default()
+        };
+        let cost = compute_cost_usd(&ep, 0, 1000, 0, 0).unwrap();
+        assert!((cost - 0.25).abs() < 1e-9);
     }
 
     #[test]

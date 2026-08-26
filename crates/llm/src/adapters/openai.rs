@@ -18,7 +18,9 @@ use crate::adapters::{
     xai_search_mode,
 };
 use crate::client::LlmClient;
-use haven_common::prompts::MEMORY_FENCE_START;
+use haven_common::prompts::split_system_prompt_cache_boundary;
+#[cfg(test)]
+use haven_common::prompts::{MEMORY_FENCE_START, SESSION_CONTEXT_FENCE_START};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
@@ -252,9 +254,7 @@ impl OpenAiUsage {
             CacheAccounting::Inclusive,
             model_name,
         );
-        usage.cache_miss_tokens = self
-            .prompt_cache_miss_tokens
-            .max(usage.cache_miss_tokens());
+        usage.cache_miss_tokens = self.prompt_cache_miss_tokens.max(usage.cache_miss_tokens());
         usage
     }
 }
@@ -345,9 +345,9 @@ impl OpenAiAdapter {
     }
 
     /// Derive a compact, deterministic cache routing key from the stable part
-    /// of a ReAct conversation. The volatile MEMORY suffix is intentionally
-    /// excluded, while the first non-system message anchors the key to one
-    /// session. That first message survives compaction as the sticky prefix.
+    /// of a ReAct conversation. The dynamic session-context suffix is
+    /// intentionally excluded so identical agent instructions and tool schemas
+    /// share a provider cache shard across sessions.
     fn prompt_cache_key(
         &self,
         messages: &[CanonicalMessage],
@@ -368,7 +368,9 @@ impl OpenAiAdapter {
         let mut has_stable_system = false;
         for part in &system.content {
             if let ContentPart::Text(text) = part {
-                let stable = text.split(MEMORY_FENCE_START).next().unwrap_or_default();
+                let stable = split_system_prompt_cache_boundary(text)
+                    .map(|(stable, _)| stable)
+                    .unwrap_or(text);
                 if !stable.trim().is_empty() {
                     hasher.update(stable.as_bytes());
                     hasher.update([0]);
@@ -379,19 +381,6 @@ impl OpenAiAdapter {
         if !has_stable_system {
             return None;
         }
-
-        // Do not route unrelated conversations with identical system prompts
-        // to one shard. The first user turn is immutable for a session and is
-        // deliberately retained by ContextCompactor's sticky prefix.
-        let session_anchor = messages
-            .iter()
-            .find(|message| message.role == CanonicalRole::User)?;
-        let anchor_content = crate::adapters::apply_wire_inject_prefix(
-            session_anchor.source,
-            session_anchor.content.clone(),
-        );
-        hasher.update(serde_json::to_vec(&anchor_content).ok()?);
-        hasher.update([0]);
 
         // Tool schemas are part of the provider cache key. Changing a loaded
         // MCP/Skill therefore gets a new routing key rather than contaminating
@@ -590,7 +579,7 @@ impl OpenAiAdapter {
         let Some(ContentPart::Text(text)) = messages[index].content.first() else {
             return (messages, false);
         };
-        let Some((stable, volatile)) = text.split_once(MEMORY_FENCE_START) else {
+        let Some((stable, volatile)) = split_system_prompt_cache_boundary(text) else {
             return (messages, false);
         };
         if stable.trim().is_empty() || volatile.is_empty() {
@@ -601,9 +590,7 @@ impl OpenAiAdapter {
         messages[index].content = vec![ContentPart::text(stable)];
         messages.insert(
             index + 1,
-            CanonicalMessage::system(vec![ContentPart::text(format!(
-                "{MEMORY_FENCE_START}{volatile}"
-            ))]),
+            CanonicalMessage::system(vec![ContentPart::text(format!("{volatile}"))]),
         );
         (messages, true)
     }
@@ -771,12 +758,23 @@ impl OpenAiAdapter {
             })));
         }
 
-        let mut usage = json
+        let usage = json
             .usage
-            .map(|u| u.to_usage(model.clone()))
-            .unwrap_or_default();
-        usage.cache_miss_tokens = usage.cache_miss_tokens();
-        usage.cache_diagnostics = Some(cache_diagnostics.with_provider_usage(usage.cached_tokens));
+            .map(|u| {
+                let mut usage = u.to_usage(model.clone());
+                usage.cache_miss_tokens = usage.cache_miss_tokens();
+                usage.cache_diagnostics = Some(
+                    cache_diagnostics
+                        .clone()
+                        .with_provider_usage(usage.cached_tokens),
+                );
+                usage
+            })
+            .unwrap_or_else(|| {
+                let mut usage = Usage::default();
+                usage.cache_diagnostics = Some(cache_diagnostics);
+                usage
+            });
 
         let response = LlmResponse {
             text,
@@ -1762,12 +1760,46 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_key_isolated_by_session_anchor() {
+    fn build_request_splits_memory_after_stable_system_prefix() {
         let client = OpenAiAdapter::new(ModelEndpoint::default());
-        let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+        let body = client.build_request_body(
+            vec![
+                CanonicalMessage::system(vec![ContentPart::text(format!(
+                    "stable instructions\n{MEMORY_FENCE_START}volatile fact"
+                ))]),
+                CanonicalMessage::user_text("session anchor"),
+            ],
+            Vec::new(),
+            false,
+        );
+
+        assert!(body.cache_diagnostics.system_split);
+        assert_eq!(body.messages.len(), 3);
+        assert_eq!(body.messages[0].role, "system");
+        assert_eq!(
+            body.messages[0].content,
+            Some(Value::String("stable instructions\n".into()))
+        );
+        assert_eq!(body.messages[1].role, "system");
+        assert_eq!(
+            body.messages[1].content,
+            Some(Value::String(format!("{MEMORY_FENCE_START}volatile fact")))
+        );
+        assert_eq!(body.messages[2].role, "user");
+    }
+
+    #[test]
+    fn prompt_cache_key_is_shared_across_dynamic_sessions() {
+        let client = OpenAiAdapter::new(ModelEndpoint::default());
+        let stable = "stable system";
         let first = client
             .build_request_body(
-                vec![system.clone(), CanonicalMessage::user_text("first session")],
+                vec![
+                    CanonicalMessage::system(vec![ContentPart::text(format!(
+                        "{stable}{SESSION_CONTEXT_FENCE_START}Current session: first"
+                    ))]),
+                    CanonicalMessage::user_text("first session"),
+                ],
                 Vec::new(),
                 false,
             )
@@ -1775,14 +1807,19 @@ mod tests {
             .unwrap();
         let second = client
             .build_request_body(
-                vec![system, CanonicalMessage::user_text("second session")],
+                vec![
+                    CanonicalMessage::system(vec![ContentPart::text(format!(
+                        "{stable}{SESSION_CONTEXT_FENCE_START}Current session: second"
+                    ))]),
+                    CanonicalMessage::user_text("second session"),
+                ],
                 Vec::new(),
                 false,
             )
             .prompt_cache_key
             .unwrap();
 
-        assert_ne!(first, second);
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -2459,6 +2496,44 @@ mod tests {
         let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":80}}"#;
         let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
         assert_eq!(usage.cached(), 80);
+    }
+
+    #[test]
+    fn usage_parses_cache_write_and_miss_tokens() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":70,"cache_write_tokens":10},"prompt_cache_miss_tokens":20}"#;
+        let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
+        let normalized = usage.to_usage(None);
+        assert_eq!(normalized.cached_tokens, 70);
+        assert_eq!(normalized.cache_creation_tokens, 10);
+        assert_eq!(normalized.cache_miss_tokens(), 20);
+    }
+
+    #[test]
+    fn response_without_usage_keeps_cache_outcome_unknown() {
+        let adapter = OpenAiAdapter::new(ModelEndpoint::default());
+        let response = adapter
+            .parse_openai_response(
+                OpenAiResponse {
+                    choices: vec![OpenAiChoice {
+                        message: Some(OpenAiMessageOut {
+                            role: Some("assistant".into()),
+                            content: Some("ok".into()),
+                            tool_calls: None,
+                            reasoning_content: None,
+                            web_search_call: Vec::new(),
+                        }),
+                        delta: None,
+                        finish_reason: Some("stop".into()),
+                    }],
+                    usage: None,
+                    model: None,
+                    citations: Vec::new(),
+                },
+                None,
+                CacheDiagnostics::for_request(true, true),
+            )
+            .unwrap();
+        assert_eq!(response.usage.cache_diagnostics.unwrap().outcome, "unknown");
     }
 
     #[test]

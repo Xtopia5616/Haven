@@ -23,6 +23,8 @@ export function emptyRoleSlot(key: string) {
 		context_window: null as number | null,
 		cost_per_1k_input_tokens: null as number | null,
 		cost_per_1k_output_tokens: null as number | null,
+		cost_per_1k_cache_read_tokens: null as number | null,
+		cost_per_1k_cache_write_tokens: null as number | null,
 	};
 }
 

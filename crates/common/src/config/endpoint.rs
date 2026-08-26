@@ -102,7 +102,11 @@ pub fn compute_cost_usd(
     cache_creation_tokens: u32,
     completion_tokens: u32,
 ) -> Option<f64> {
-    if endpoint.cost_per_1k_input_tokens <= 0.0 && endpoint.cost_per_1k_output_tokens <= 0.0 {
+    if endpoint.cost_per_1k_input_tokens <= 0.0
+        && endpoint.cost_per_1k_output_tokens <= 0.0
+        && endpoint.cost_per_1k_cache_read_tokens.unwrap_or(0.0) <= 0.0
+        && endpoint.cost_per_1k_cache_write_tokens.unwrap_or(0.0) <= 0.0
+    {
         return None;
     }
     let input = (cache_miss_tokens as f64 / 1000.0) * endpoint.cost_per_1k_input_tokens;
