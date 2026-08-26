@@ -122,7 +122,7 @@ provider（STT 客户端来自 `haven-llm`）。
 resume 会按 `per_run_cap = max(max_steps, start_step - 1 + max_steps)` 再给满额。可选
 `session.session_max_steps: Option<u32>`（默认 `None` = 不限）在绝对 `step_number` 上截断：
 `effective_max = min(per_run_cap, session_max_steps)`。详见
-`docs/refactor-backlog.md` §1.2 / R4。
+`docs/stability-refactor-plan.md`。
 
 **判定标准**：会话的业务编排中心，不知道也不关心 provider 细节 / 录音硬件细节。
 
@@ -252,7 +252,9 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 - `docs/conventions.md` —— 日志 / 错误 / 通知 / 命令返回规范
 - `docs/naming.md` —— 各层命名与跨层 camelCase 边界
-- `docs/refactor-backlog.md` —— Memory + ReAct 剩余重构清单（含原「明确不做」；可大改、不向下兼容）
+- `docs/development-standards.md` —— 架构、契约、安全、测试与变更治理规范
+- `docs/stability-refactor-plan.md` —— 稳定性与可维护性重构计划（测试版可破坏性变更）
+- `docs/refactor-execution-guide.md` —— 重构实施顺序、阶段验收与执行模板
 
 ---
 
@@ -262,5 +264,6 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 |---|---|
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |
 | 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
-| 2026-08-20 | 曾增加 memory / react 改进文档（已并于 2026-08-21 合并为 `refactor-backlog.md`） |
-| 2026-08-21 | 相关文档改为 `refactor-backlog.md`；删除 `memory-architecture.md` / `react-architecture-improvements.md` |
+| 2026-08-20 | 曾增加 memory / react 改进文档（后续合并为已归档的 backlog） |
+| 2026-08-21 | 删除 `memory-architecture.md` / `react-architecture-improvements.md` |
+| 2026-08-26 | 用 `stability-refactor-plan.md` 取代历史 backlog，重构目标改为稳定性与可维护性 |

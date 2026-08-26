@@ -1173,7 +1173,7 @@ impl Database {
 
     /// Multi-term prompt recall: one FTS `OR` query with SQL `LIMIT`, so a fact
     /// matching any session keyword surfaces without N separate searches or an
-    /// unbounded result set (refactor-backlog §2.1 / former P1-5).
+    /// unbounded result set.
     ///
     /// When any term is shorter than a trigram, LIKE those short terms and
     /// **union** with FTS hits (deduped) so a longer sibling hit cannot hide

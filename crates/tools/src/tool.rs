@@ -740,7 +740,7 @@ fn path_sandbox_block(
     if cfg.allowed_paths.is_empty() {
         return None;
     }
-    let allowed: Vec<PathBuf> = cfg.allowed_paths.iter().map(|p| PathBuf::from(p)).collect();
+    let allowed: Vec<PathBuf> = cfg.allowed_paths.iter().map(PathBuf::from).collect();
     let paths = collect_path_params(params);
     if paths.is_empty() {
         return None;

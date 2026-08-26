@@ -24,3 +24,4 @@ haven-common = { path = "../common" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "macros", "test-util"] }
+tempfile.workspace = true

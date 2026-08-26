@@ -874,9 +874,7 @@ mod imp {
 
         let automation: IUIAutomation =
             unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)? };
-        let element = unsafe {
-            automation.ElementFromHandle(WinHwnd(target_hwnd as *mut core::ffi::c_void))?
-        };
+        let element = unsafe { automation.ElementFromHandle(WinHwnd(target_hwnd))? };
         let condition = unsafe { automation.CreateTrueCondition()? };
         let array = unsafe { element.FindAll(TreeScope_Descendants, &condition)? };
         let len = unsafe { array.Length()? }.max(0) as usize;
@@ -951,9 +949,7 @@ mod imp {
 
         let automation: IUIAutomation =
             unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)? };
-        let element = unsafe {
-            automation.ElementFromHandle(WinHwnd(target_hwnd as *mut core::ffi::c_void))?
-        };
+        let element = unsafe { automation.ElementFromHandle(WinHwnd(target_hwnd))? };
         let condition = unsafe { automation.CreateTrueCondition()? };
         let array = unsafe { element.FindAll(TreeScope_Descendants, &condition)? };
         let len = unsafe { array.Length()? }.max(0) as i32;

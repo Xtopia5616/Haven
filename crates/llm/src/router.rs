@@ -39,6 +39,25 @@ const IDLE_EXTRA_SECS_PER_1K_TOKENS: u64 = 2;
 /// Hard cap on the scaled data-gap idle window (base + context extra).
 const IDLE_SCALE_CAP_SECS: u64 = 90;
 
+/// Retry parameters used by one streaming endpoint attempt. Keeping the
+/// policy together prevents the streaming path from growing another
+/// positional-argument bundle whenever retry behavior changes.
+#[derive(Clone, Copy)]
+struct StreamRetryPolicy {
+    max_retries: u32,
+    base_secs: u64,
+    factor: u32,
+    max_secs: u64,
+    jitter: f32,
+}
+
+/// Conversation data shared by the primary and fallback streaming attempts.
+#[derive(Clone, Copy)]
+struct StreamContext<'a> {
+    messages: &'a [CanonicalMessage],
+    tools: &'a [ToolDefinition],
+}
+
 /// Rough prompt-size estimate in tokens (text chars / 4, ~1k per image or
 /// audio part, tool-call arguments and echoed reasoning included). Only
 /// used to scale stream idle timeouts — exact counting is the provider's
@@ -1150,31 +1169,32 @@ impl LlmRouter {
 
         let cfg = self.config.read().await;
         let max_dur = cfg.max_total_duration_secs;
-        let retry_max_retries = cfg.retry_max_retries;
-        let fallback_retry_max_retries = cfg.fallback_retry_max_retries;
-        let retry_base_secs = cfg.retry_base_secs;
-        let retry_factor = cfg.retry_factor;
-        let retry_max_secs = cfg.retry_max_secs;
-        let retry_jitter = cfg.retry_jitter;
+        let primary_retry = StreamRetryPolicy {
+            max_retries: cfg.retry_max_retries,
+            base_secs: cfg.retry_base_secs,
+            factor: cfg.retry_factor,
+            max_secs: cfg.retry_max_secs,
+            jitter: cfg.retry_jitter,
+        };
+        let fallback_retry = StreamRetryPolicy {
+            max_retries: cfg.fallback_retry_max_retries,
+            ..primary_retry
+        };
         // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
         // time out instantly, disabling all model replies.
         let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
         drop(cfg);
+        let stream_context = StreamContext { messages, tools };
 
         match tokio::time::timeout(Duration::from_secs(max_dur), async {
             let primary_result = self
                 .aggregate_stream_with_retry_before_output(
                     primary.clone(),
-                    messages,
-                    tools,
+                    stream_context,
                     on_chunk.clone(),
                     cancel.clone(),
                     idle_dur,
-                    retry_max_retries,
-                    retry_base_secs,
-                    retry_factor,
-                    retry_max_secs,
-                    retry_jitter,
+                    primary_retry,
                 )
                 .await;
 
@@ -1217,16 +1237,11 @@ impl LlmRouter {
                     let fb_result = self
                         .aggregate_stream_with_retry_before_output(
                             self.balanced_model.clone(),
-                            messages,
-                            tools,
+                            stream_context,
                             on_chunk,
                             cancel,
                             idle_dur,
-                            fallback_retry_max_retries,
-                            retry_base_secs,
-                            retry_factor,
-                            retry_max_secs,
-                            retry_jitter,
+                            fallback_retry,
                         )
                         .await;
 
@@ -1260,18 +1275,13 @@ impl LlmRouter {
     async fn aggregate_stream_with_retry_before_output(
         &self,
         client: Arc<dyn LlmClient>,
-        messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        context: StreamContext<'_>,
         on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
         cancel: CancellationToken,
         idle_timeout: Duration,
-        max_retries: u32,
-        base_secs: u64,
-        factor: u32,
-        max_secs: u64,
-        jitter: f32,
+        retry: StreamRetryPolicy,
     ) -> Result<LlmResponse, LlmError> {
-        for attempt in 0..=max_retries {
+        for attempt in 0..=retry.max_retries {
             if cancel.is_cancelled() {
                 return Err(LlmError::Cancelled);
             }
@@ -1287,8 +1297,8 @@ impl LlmRouter {
             };
             let result = Self::aggregate_stream_cancellable(
                 client.clone(),
-                messages.to_vec(),
-                tools.to_vec(),
+                context.messages.to_vec(),
+                context.tools.to_vec(),
                 callback,
                 cancel.clone(),
                 &self.stream_rules,
@@ -1298,21 +1308,22 @@ impl LlmRouter {
             let Err(err) = result else {
                 return result;
             };
-            if !err.is_retryable() || emitted.load(Ordering::SeqCst) || attempt == max_retries {
+            if !err.is_retryable() || emitted.load(Ordering::SeqCst) || attempt == retry.max_retries
+            {
                 return Err(err);
             }
             let delay = retry_delay(
-                base_secs,
-                factor,
-                max_secs,
-                jitter,
+                retry.base_secs,
+                retry.factor,
+                retry.max_secs,
+                retry.jitter,
                 attempt,
                 err.retry_after(),
             );
             tracing::debug!(
                 "stream attempt {}/{} failed before output, retrying after {:?}: {}",
                 attempt + 1,
-                max_retries + 1,
+                retry.max_retries + 1,
                 delay,
                 err
             );

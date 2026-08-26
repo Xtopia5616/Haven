@@ -588,10 +588,9 @@ impl GeminiAdapter {
                 );
                 usage
             })
-            .unwrap_or_else(|| {
-                let mut usage = Usage::default();
-                usage.cache_diagnostics = Some(cache_diagnostics);
-                usage
+            .unwrap_or_else(|| Usage {
+                cache_diagnostics: Some(cache_diagnostics),
+                ..Default::default()
             });
         Ok(LlmResponse {
             text,

@@ -98,20 +98,24 @@ fn json_u32(v: &serde_json::Value) -> Option<u32> {
     if let Some(n) = v.as_i64() {
         return u32::try_from(n).ok().filter(|n| *n > 0);
     }
-    if let Some(n) = v.as_f64() {
-        if n.is_finite() && n > 0.0 && n <= u32::MAX as f64 {
-            return Some(n as u32);
-        }
+    if let Some(n) = v.as_f64()
+        && n.is_finite()
+        && n > 0.0
+        && n <= u32::MAX as f64
+    {
+        return Some(n as u32);
     }
     if let Some(s) = v.as_str() {
         let s = s.trim().replace('_', "");
         if let Ok(n) = s.parse::<u32>() {
             return (n > 0).then_some(n);
         }
-        if let Ok(n) = s.parse::<f64>() {
-            if n.is_finite() && n > 0.0 && n <= u32::MAX as f64 {
-                return Some(n as u32);
-            }
+        if let Ok(n) = s.parse::<f64>()
+            && n.is_finite()
+            && n > 0.0
+            && n <= u32::MAX as f64
+        {
+            return Some(n as u32);
         }
     }
     None
@@ -158,24 +162,22 @@ fn extract_supports_vision(m: &serde_json::Value) -> bool {
     if let Some(mods) = m
         .pointer("/architecture/input_modalities")
         .and_then(|v| v.as_array())
-    {
-        if mods.iter().any(|x| {
+        && mods.iter().any(|x| {
             matches!(
                 x.as_str().map(|s| s.to_ascii_lowercase()).as_deref(),
                 Some("image") | Some("vision")
             )
-        }) {
-            return true;
-        }
+        })
+    {
+        return true;
     }
     if let Some(modality) = m
         .pointer("/architecture/modality")
         .and_then(|v| v.as_str())
         .map(|s| s.to_ascii_lowercase())
+        && (modality.contains("image") || modality.contains("vision"))
     {
-        if modality.contains("image") || modality.contains("vision") {
-            return true;
-        }
+        return true;
     }
     false
 }
@@ -187,15 +189,15 @@ fn extract_supports_tools(m: &serde_json::Value) -> bool {
     if m.pointer("/capabilities/tools").and_then(|v| v.as_bool()) == Some(true) {
         return true;
     }
-    if let Some(params) = m.get("supported_parameters").and_then(|v| v.as_array()) {
-        if params.iter().any(|x| {
+    if let Some(params) = m.get("supported_parameters").and_then(|v| v.as_array())
+        && params.iter().any(|x| {
             matches!(
                 x.as_str().map(|s| s.to_ascii_lowercase()).as_deref(),
                 Some("tools") | Some("tool_choice") | Some("functions")
             )
-        }) {
-            return true;
-        }
+        })
+    {
+        return true;
     }
     // Most chat gateways support tools; leave true unless explicitly denied.
     true

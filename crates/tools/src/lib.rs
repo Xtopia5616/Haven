@@ -45,6 +45,21 @@ pub use tool::{
     ToolResult, ToolSignals, extract_ask_signal, extract_notify_signal, is_silent_action,
 };
 
+/// All dependencies needed to install the desktop tool catalog in one pass.
+/// This keeps startup wiring extensible without adding another positional
+/// argument to the app-to-tools boundary.
+pub struct StartupWiring {
+    pub tool_settings: HashMap<String, ToolConfig>,
+    pub default_shell: ShellChoice,
+    pub context_limits: ContextLimitsConfig,
+    pub confirmation_mode: haven_common::types::ConfirmationMode,
+    pub min_risk_level: RiskLevel,
+    pub security_permissions: Vec<haven_common::config::StoredPermission>,
+    pub router: Arc<LlmRouter>,
+    pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub self_ctx: builtin::SelfToolContext,
+}
+
 /// Convert a qualified tool name (`mcp::server::tool`, `skill::name`) into a
 /// form accepted by tool-calling LLM APIs. OpenAI-compatible providers
 /// restrict tool names to `^[a-zA-Z0-9_-]+$` (DeepSeek rejects the `::`
@@ -235,18 +250,18 @@ impl ToolsManager {
     /// Avoids the N sequential rebuilds that used to block window creation
     /// (`set_tool_settings` + `set_default_shell` + `set_context_limits` +
     /// `set_router` + audio_pipeline + `set_self_context`).
-    pub async fn wire_startup(
-        &self,
-        tool_settings: HashMap<String, ToolConfig>,
-        default_shell: ShellChoice,
-        context_limits: ContextLimitsConfig,
-        confirmation_mode: haven_common::types::ConfirmationMode,
-        min_risk_level: RiskLevel,
-        security_permissions: &[haven_common::config::StoredPermission],
-        router: Arc<LlmRouter>,
-        audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
-        self_ctx: builtin::SelfToolContext,
-    ) {
+    pub async fn wire_startup(&self, wiring: StartupWiring) {
+        let StartupWiring {
+            tool_settings,
+            default_shell,
+            context_limits,
+            confirmation_mode,
+            min_risk_level,
+            security_permissions,
+            router,
+            audio_pipeline,
+            self_ctx,
+        } = wiring;
         *self.tool_settings.write().await = tool_settings.clone();
         *self.default_shell.write().await = default_shell;
         self.mcp_manager.set_limits(&context_limits).await;
@@ -256,7 +271,7 @@ impl ToolsManager {
         self.scheduled_actions.set_limits(&context_limits).await;
         *self.context_limits.write().await = context_limits;
         self.safety_gateway
-            .apply_security(confirmation_mode, min_risk_level, security_permissions)
+            .apply_security(confirmation_mode, min_risk_level, &security_permissions)
             .await;
         self.safety_gateway.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);

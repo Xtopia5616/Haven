@@ -41,10 +41,21 @@ pub(crate) fn init_tracing(
             .file_path
             .clone()
             .unwrap_or_else(LogConfig::default_log_path);
-        if let Some(parent) = log_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            eprintln!("failed to create log directory {}: {}", parent.display(), e);
+        if let Some(parent) = log_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                // `tracing_appender::rolling::daily` panics when its directory
+                // cannot be created. Logging must never prevent the desktop
+                // app from starting, so keep the console layer and degrade.
+                eprintln!(
+                    "file logging disabled: cannot create {}: {}",
+                    parent.display(),
+                    e
+                );
+                let _ = tracing::subscriber::set_global_default(subscriber);
+                let mut effective_cfg = log_cfg.clone();
+                effective_cfg.file_enabled = false;
+                return (handles, Arc::new(std::sync::Mutex::new(effective_cfg)));
+            }
         }
         let file_appender = tracing_appender::rolling::daily(
             log_path.parent().unwrap_or(std::path::Path::new(".")),
@@ -87,7 +98,10 @@ mod tests {
 
     #[test]
     fn test_init_tracing_creates_handle() {
-        let cfg = LogConfig::default();
+        let cfg = LogConfig {
+            file_enabled: false,
+            ..Default::default()
+        };
         let (_handles, _log_cfg) = init_tracing(&cfg);
         let cfg_ref = _log_cfg.lock().unwrap();
         assert_eq!(cfg_ref.level.as_str(), "info");
@@ -95,12 +109,28 @@ mod tests {
 
     #[test]
     fn test_init_tracing_with_file_enabled() {
+        let dir = tempfile::tempdir().unwrap();
         let cfg = LogConfig {
             file_enabled: true,
-            file_path: Some(std::env::temp_dir().join("haven_test_log")),
+            file_path: Some(dir.path().join("haven.log")),
             ..Default::default()
         };
         let (_handles, _log_cfg) = init_tracing(&cfg);
+    }
+
+    #[test]
+    fn test_init_tracing_disables_file_output_when_parent_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked_parent = dir.path().join("blocked");
+        std::fs::write(&blocked_parent, "not a directory").unwrap();
+        let cfg = LogConfig {
+            file_enabled: true,
+            file_path: Some(blocked_parent.join("haven.log")),
+            ..Default::default()
+        };
+
+        let (_handles, effective_cfg) = init_tracing(&cfg);
+        assert!(!effective_cfg.lock().unwrap().file_enabled);
     }
 
     #[test]

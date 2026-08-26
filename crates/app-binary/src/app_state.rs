@@ -312,17 +312,17 @@ impl AppState {
         // limits / router / audio pipeline / self tool). Previously each
         // setter rebuilt the catalog and delayed window creation.
         tools
-            .wire_startup(
-                cfg.tool_settings.clone(),
-                cfg.default_shell,
-                context_limits_clone,
-                cfg.security.confirmation_mode,
-                cfg.security.min_risk_level,
-                &cfg.security.permissions,
-                router.clone(),
-                Some(pipeline.clone()),
+            .wire_startup(haven_tools::StartupWiring {
+                tool_settings: cfg.tool_settings.clone(),
+                default_shell: cfg.default_shell,
+                context_limits: context_limits_clone,
+                confirmation_mode: cfg.security.confirmation_mode,
+                min_risk_level: cfg.security.min_risk_level,
+                security_permissions: cfg.security.permissions.clone(),
+                router: router.clone(),
+                audio_pipeline: Some(pipeline.clone()),
                 self_ctx,
-            )
+            })
             .await;
 
         tracing::debug!(

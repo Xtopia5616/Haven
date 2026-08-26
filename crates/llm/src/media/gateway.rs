@@ -68,6 +68,7 @@ pub struct MediaGateway {
     tts: Option<Arc<dyn TtsClient>>,
     image_gen: Option<Arc<dyn ImageGenClient>>,
     config: MediaConfig,
+    output_dir: Option<PathBuf>,
 }
 
 impl MediaGateway {
@@ -86,7 +87,14 @@ impl MediaGateway {
             tts,
             image_gen,
             config,
+            output_dir: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_output_dir(mut self, output_dir: PathBuf) -> Self {
+        self.output_dir = Some(output_dir);
+        self
     }
 
     pub fn router(&self) -> &Arc<LlmRouter> {
@@ -264,7 +272,7 @@ impl MediaGateway {
                     .synthesize(user_text)
                     .await
                     .map_err(|e| anyhow::anyhow!("TTS 合成失败: {e}"))?;
-                let path = save_media_file(&audio, "audio/mpeg")?;
+                let path = self.save_media_file(&audio, "audio/mpeg")?;
                 Ok(GenerateOutcome::Generated {
                     kind,
                     file_path: path,
@@ -281,7 +289,7 @@ impl MediaGateway {
                     .generate(user_text)
                     .await
                     .map_err(|e| anyhow::anyhow!("文生图失败: {e}"))?;
-                let path = save_media_file(&img.data, &img.media_type)?;
+                let path = self.save_media_file(&img.data, &img.media_type)?;
                 Ok(GenerateOutcome::Generated {
                     kind,
                     file_path: path,
@@ -294,13 +302,18 @@ impl MediaGateway {
 
 /// Save generated media under `<data_dir>/media` with a canonical
 /// `file-{uuid32}.{ext}` name.
-fn save_media_file(bytes: &[u8], media_type: &str) -> anyhow::Result<PathBuf> {
-    let dir = haven_common::config::ConfigLoader::data_dir().join("media");
-    std::fs::create_dir_all(&dir)?;
-    let ext = extension_for_media_type(media_type);
-    let path = dir.join(format!("{}.{}", new_id("file"), ext));
-    std::fs::write(&path, bytes)?;
-    Ok(path)
+impl MediaGateway {
+    fn save_media_file(&self, bytes: &[u8], media_type: &str) -> anyhow::Result<PathBuf> {
+        let dir = self
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| haven_common::config::ConfigLoader::data_dir().join("media"));
+        std::fs::create_dir_all(&dir)?;
+        let ext = extension_for_media_type(media_type);
+        let path = dir.join(format!("{}.{}", new_id("file"), ext));
+        std::fs::write(&path, bytes)?;
+        Ok(path)
+    }
 }
 
 /// Confidence gate: a reported confidence below `threshold` triggers the
@@ -690,6 +703,7 @@ mod tests {
     #[tokio::test]
     async fn generate_speech_saves_mp3() {
         let tts: Arc<dyn TtsClient> = Arc::new(MockTts);
+        let output_dir = tempfile::tempdir().unwrap();
         let gw = MediaGateway::new(
             mock_router("unused"),
             None,
@@ -697,7 +711,8 @@ mod tests {
             Some(tts),
             None,
             test_config(),
-        );
+        )
+        .with_output_dir(output_dir.path().to_path_buf());
         let outcome = gw.process_generate("朗读这段话", None).await.unwrap();
         let GenerateOutcome::Generated {
             kind, file_path, ..
@@ -708,12 +723,12 @@ mod tests {
         assert_eq!(kind, GenerateKind::Speech);
         assert!(file_path.to_string_lossy().ends_with(".mp3"));
         assert!(file_path.exists());
-        let _ = std::fs::remove_file(&file_path);
     }
 
     #[tokio::test]
     async fn generate_image_saves_png() {
         let ig: Arc<dyn ImageGenClient> = Arc::new(MockImageGen);
+        let output_dir = tempfile::tempdir().unwrap();
         let gw = MediaGateway::new(
             mock_router("unused"),
             None,
@@ -721,7 +736,8 @@ mod tests {
             None,
             Some(ig),
             test_config(),
-        );
+        )
+        .with_output_dir(output_dir.path().to_path_buf());
         let outcome = gw.process_generate("画一只猫", None).await.unwrap();
         let GenerateOutcome::Generated {
             kind, file_path, ..
@@ -732,7 +748,6 @@ mod tests {
         assert_eq!(kind, GenerateKind::Image);
         assert!(file_path.to_string_lossy().ends_with(".png"));
         assert!(file_path.exists());
-        let _ = std::fs::remove_file(&file_path);
     }
 
     #[tokio::test]

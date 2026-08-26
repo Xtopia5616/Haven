@@ -1,5 +1,7 @@
 # Haven Project Guide
 
+所有变更还必须遵守 `docs/development-standards.md` 的架构、契约、安全、测试与变更管理要求；本文件保留面向 agent 的具体执行规则。
+
 ## Project
 Haven is a voice assistant for Windows PC built on the Pi Coding Agent (ReAct loop) architecture.
 Tech stack: Rust (Tauri 2) backend, Svelte 5 frontend.
@@ -99,7 +101,7 @@ npm run check
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。
 - kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`），内嵌的实体 ID 必须是规范格式。
 - 步骤计数统一叫 `step_number`（事件/UI/DB 列名一致）。
-- 数据库 schema 由 `haven_memory::schema::init_schema` 管理：`SCHEMA_SQL` 幂等建表 + `PRAGMA user_version` / `MIGRATIONS` 版本化迁移（当前见 `SCHEMA_VERSION`）。缺 `REQUIRED_COLUMNS` 的远古库启动时报错，删除 haven.db 重建；`user_version` 高于本二进制支持版本时拒绝打开。演进必须新增 migration 并 bump 版本；记忆/ReAct 剩余重构见 `docs/refactor-backlog.md`。
+- 数据库 schema 由 `haven_memory::schema::init_schema` 管理：`SCHEMA_SQL` 幂等建表 + `PRAGMA user_version` / `MIGRATIONS` 版本化迁移（当前见 `SCHEMA_VERSION`）。缺 `REQUIRED_COLUMNS` 的远古库启动时报错，删除 haven.db 重建；`user_version` 高于本二进制支持版本时拒绝打开。演进原则与剩余重构工作见 `docs/stability-refactor-plan.md`。
 
 ## 通知 / 日志 / 错误处理规范
 

@@ -424,7 +424,7 @@ fn network_summary() -> Value {
     let networks = sysinfo::Networks::new_with_refreshed_list();
     let mut up = 0usize;
     let mut down = 0usize;
-    for (_name, data) in networks.list() {
+    for data in networks.list().values() {
         match data.operational_state() {
             sysinfo::InterfaceOperationalState::Up
             | sysinfo::InterfaceOperationalState::Dormant
