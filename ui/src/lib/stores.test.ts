@@ -37,27 +37,32 @@ describe('upsertAction', () => {
 		actionStore.set({});
 	});
 
-	it('defaults background action:created payload to status running', () => {
-		upsertAction({ action_id: 'act-1', started_at: '2026-01-01T00:00:00Z' });
-		const row = get(actionStore)['act-1'] as Record<string, unknown>;
+	it('keeps the explicit background create payload', () => {
+		upsertAction({
+			id: 'act-1',
+			kind: 'background',
+			status: 'running',
+			startedAt: '2026-01-01T00:00:00Z',
+		});
+		const row = get(actionStore)['act-1'];
 		expect(row.status).toBe('running');
 		expect(row.kind).toBe('background');
 		expect(row.id).toBe('act-1');
 	});
 
-	it('does not invent running on a status-less update after the row was removed', () => {
-		upsertAction({ action_id: 'act-ghost', status: 'completed' });
+	it('keeps a session binding update after an evicted row', () => {
+		upsertAction({ id: 'act-ghost', kind: 'background', status: 'completed' });
 		removeAction('act-ghost');
-		upsertAction({ action_id: 'act-ghost', session_id: 'ses-1' });
-		const row = get(actionStore)['act-ghost'] as Record<string, unknown>;
+		upsertAction({ id: 'act-ghost', kind: 'background', sessionId: 'ses-1' });
+		const row = get(actionStore)['act-ghost'];
 		expect(row.status).toBeUndefined();
-		expect(row.session_id).toBe('ses-1');
+		expect(row.sessionId).toBe('ses-1');
 	});
 
 	it('keeps an explicit terminal status from action:finished', () => {
-		upsertAction({ action_id: 'act-2', status: 'running' });
-		upsertAction({ action_id: 'act-2', status: 'completed', output: 'done' });
-		const row = get(actionStore)['act-2'] as Record<string, unknown>;
+		upsertAction({ id: 'act-2', kind: 'background', status: 'running' });
+		upsertAction({ id: 'act-2', kind: 'background', status: 'completed', output: 'done' });
+		const row = get(actionStore)['act-2'];
 		expect(row.status).toBe('completed');
 		expect(row.output).toBe('done');
 	});
@@ -65,19 +70,19 @@ describe('upsertAction', () => {
 	it('evicts terminal rows before live running rows when over capacity', () => {
 		for (let i = 0; i < 70; i++) {
 			upsertAction({
-				action_id: `act-done-${i}`,
+				id: `act-done-${i}`,
 				kind: 'background',
 				status: 'completed',
 			});
 		}
-		upsertAction({ action_id: 'act-live', kind: 'background', status: 'running' });
-		const store = get(actionStore) as Record<string, Record<string, unknown>>;
+		upsertAction({ id: 'act-live', kind: 'background', status: 'running' });
+		const store = get(actionStore);
 		expect(store['act-live']?.status).toBe('running');
 		expect(Object.keys(store).length).toBeLessThanOrEqual(64);
 	});
 
 	it('removeAction drops the row', () => {
-		upsertAction({ action_id: 'act-3', status: 'running' });
+		upsertAction({ id: 'act-3', kind: 'background', status: 'running' });
 		removeAction('act-3');
 		expect(get(actionStore)['act-3']).toBeUndefined();
 	});
@@ -94,7 +99,8 @@ describe('upsertAction', () => {
 			],
 		});
 		finalizeBackgroundActionMessages({
-			action_id: 'act-fin',
+			id: 'act-fin',
+			kind: 'background',
 			status: 'cancelled',
 			output: 'stopped',
 		});

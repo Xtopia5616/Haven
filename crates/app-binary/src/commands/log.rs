@@ -83,9 +83,16 @@ pub struct LogTail {
     pub content: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct LogInfo {
+    pub enabled: bool,
+    pub level: String,
+    pub path: Option<String>,
+}
+
 /// Settings page: current log file location + whether file logging is on.
 #[tauri::command]
-pub fn get_log_info(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+pub fn get_log_info(state: State<'_, Arc<AppState>>) -> Result<LogInfo, String> {
     let cfg = state
         .config_loader
         .lock()
@@ -96,11 +103,11 @@ pub fn get_log_info(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value
         .clone()
         .unwrap_or_else(LogConfig::default_log_path);
     let path = resolve_current_log_file(&log_path).map(|p| p.to_string_lossy().into_owned());
-    Ok(serde_json::json!({
-        "enabled": log_cfg.file_enabled,
-        "level": log_cfg.level.as_str(),
-        "path": path,
-    }))
+    Ok(LogInfo {
+        enabled: log_cfg.file_enabled,
+        level: log_cfg.level.as_str().to_string(),
+        path,
+    })
 }
 
 /// Settings page: read the tail of the current log file (default 200 lines,
@@ -227,5 +234,22 @@ mod tests {
         std::fs::write(dir.join("haven.txt"), "x").unwrap();
         assert!(resolve_current_log_file(&dir.join("haven.log")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_info_has_a_named_stable_wire_shape() {
+        let info = LogInfo {
+            enabled: false,
+            level: "info".into(),
+            path: None,
+        };
+        assert_eq!(
+            serde_json::to_value(info).unwrap(),
+            serde_json::json!({
+                "enabled": false,
+                "level": "info",
+                "path": null,
+            })
+        );
     }
 }

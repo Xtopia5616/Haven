@@ -8,7 +8,8 @@ mod notification;
 
 use crate::desktop::TrayStatus;
 use crate::events::{
-    SESSION_COMPLETED_EVENT, SESSION_CREATED_EVENT, SESSION_ERROR_EVENT,
+    ACTION_CREATED_EVENT, ACTION_FINISHED_EVENT, ACTION_OUTPUT_EVENT, ACTION_UPDATED_EVENT,
+    ActionEvent, ActionKind, SESSION_COMPLETED_EVENT, SESSION_CREATED_EVENT, SESSION_ERROR_EVENT,
     SESSION_TITLE_UPDATED_EVENT, SESSION_UPDATED_EVENT, SessionErrorEvent, SessionLifecycleEvent,
 };
 use crate::logging::init_tracing;
@@ -30,6 +31,73 @@ struct TauriEmitter {
     handle: tauri::AppHandle,
     chunk_seq: AtomicU64,
     notifications: DesktopNotifications,
+}
+
+/// Adapt one task lifecycle message from `haven-tools` to the public Tauri
+/// contract. Tool payloads are deliberately not emitted directly: they are
+/// internal status JSON and can grow fields without becoming UI API.
+fn emit_action_event(
+    handle: &tauri::AppHandle,
+    kind: ActionKind,
+    event: &str,
+    payload: &serde_json::Value,
+) {
+    let Some((channel, action)) = project_action_event(kind, event, payload) else {
+        return;
+    };
+
+    match action {
+        Ok(action) => {
+            if let Err(error) = handle.emit(channel, action) {
+                tracing::warn!(action_kind = ?kind, event, "failed to emit action lifecycle event: {error}");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(action_kind = ?kind, event, "dropping malformed action lifecycle payload: {error}");
+        }
+    }
+}
+
+fn project_action_event(
+    kind: ActionKind,
+    event: &str,
+    payload: &serde_json::Value,
+) -> Option<(&'static str, Result<ActionEvent, String>)> {
+    let projected = match (kind, event) {
+        (ActionKind::Background, "action:created") => (
+            ACTION_CREATED_EVENT,
+            ActionEvent::background_from_value(payload),
+        ),
+        (ActionKind::Background, "action:updated") => (
+            ACTION_UPDATED_EVENT,
+            ActionEvent::background_from_value(payload),
+        ),
+        (ActionKind::Background, "action:output") => (
+            ACTION_OUTPUT_EVENT,
+            ActionEvent::background_from_value(payload),
+        ),
+        (ActionKind::Background, "action:finished") => (
+            ACTION_FINISHED_EVENT,
+            ActionEvent::background_from_value(payload),
+        ),
+        (ActionKind::Scheduled, "action:created") => (
+            ACTION_CREATED_EVENT,
+            ActionEvent::scheduled_from_value(payload, false),
+        ),
+        (ActionKind::Scheduled, "action:updated") => (
+            ACTION_UPDATED_EVENT,
+            ActionEvent::scheduled_from_value(payload, true),
+        ),
+        (ActionKind::Scheduled, "action:finished") => (
+            ACTION_FINISHED_EVENT,
+            ActionEvent::scheduled_from_value(payload, false),
+        ),
+        (_, unexpected) => {
+            tracing::warn!(action_kind = ?kind, event = unexpected, "dropping unknown action lifecycle event");
+            return None;
+        }
+    };
+    Some(projected)
 }
 
 #[async_trait::async_trait]
@@ -560,16 +628,19 @@ pub fn run() {
                 rt.block_on(bus.subscribe("tauri", buffered));
             });
 
-            // Forward action lifecycle to the frontend (`action:created`
-            // / `action:updated` / `action:output` / `action:finished`)
-            // so the action panel stays live while sessions run in the
-            // background. Emits are fire-and-forget like every other Tauri
-            // event. Actions (`action_id` payloads) and scheduled_actions (`id` payloads)
-            // share this sink.
+            // Project tool-internal lifecycle JSON into the explicit action IPC
+            // DTO before it reaches the frontend.  Background and scheduled
+            // actions use one stable `id` field and never expose dynamic tool
+            // args, continuation prompts, or output-log paths.
             let action_sink_handle = handle.clone();
             state.tools.background_actions.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
-                    let _ = action_sink_handle.emit(&event, payload);
+                    emit_action_event(
+                        &action_sink_handle,
+                        ActionKind::Background,
+                        &event,
+                        &payload,
+                    );
                 },
             ));
 
@@ -578,7 +649,12 @@ pub fn run() {
             let reminder_sink_handle = handle.clone();
             state.tools.scheduled_actions.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
-                    let _ = reminder_sink_handle.emit(&event, payload);
+                    emit_action_event(
+                        &reminder_sink_handle,
+                        ActionKind::Scheduled,
+                        &event,
+                        &payload,
+                    );
                 },
             ));
 
@@ -1411,6 +1487,41 @@ mod tests {
             TauriEmitter::payload(&errored, None),
             json!({"session_id": "t", "error": "sanitized failure"})
         );
+    }
+
+    #[test]
+    fn action_projection_maps_scheduled_cancellation_to_the_public_contract() {
+        let (channel, action) = project_action_event(
+            ActionKind::Scheduled,
+            "action:updated",
+            &json!({
+                "id": "act-1",
+                "tool_name": "notify",
+                "tool_args": {"secret": "hidden"},
+            }),
+        )
+        .expect("known action event");
+
+        assert_eq!(channel, ACTION_UPDATED_EVENT);
+        assert_eq!(
+            serde_json::to_value(action.expect("valid action payload")).unwrap(),
+            json!({"id": "act-1", "kind": "scheduled", "status": "cancelled"})
+        );
+    }
+
+    #[test]
+    fn action_projection_drops_unknown_events_and_malformed_payloads() {
+        assert!(
+            project_action_event(ActionKind::Background, "action:unknown", &json!({})).is_none()
+        );
+
+        let (_, result) = project_action_event(
+            ActionKind::Background,
+            "action:finished",
+            &json!({"status": "completed"}),
+        )
+        .expect("known action event");
+        assert!(result.is_err());
     }
 
     #[test]

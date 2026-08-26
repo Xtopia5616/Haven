@@ -1,6 +1,7 @@
 import { get, writable } from 'svelte/store';
 import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
+import { mapActionPayload, type ActionKind, type ActionPayload } from './contracts/action.ts';
 
 export const sessionStore = writable<any[]>([]);
 
@@ -33,23 +34,18 @@ export function clearToolOutputPreview(stepId: string) {
  * Action registry (background actions + pending scheduled actions):
  * `{ [id]: Action }` where each entry mirrors a row from the backend's
  * `list_actions`:
- *   { id, kind: 'background'|'scheduled', session_id?, status?, started_at?,
- *     finished_at?, due_at?, preview?, output?, error?, title?, body?, ... }
- * Background-action rows keep `action_id` and status fields; scheduled-action rows
- * keep `id` and due_at. `id` is normalized to the entry key for both.
+ *   { id, kind: 'background'|'scheduled', sessionId?, status?, startedAt?,
+ *     finishedAt?, dueAt?, preview?, output?, error?, title?, body?, ... }
+ * The action contract supplies a uniform id for both task kinds.
  * Kept in sync by the `action:created` / `action:updated` / `action:output` /
  * `action:finished` events (registered in +layout.svelte, hydrated via
  * `refreshActions`).
  */
-type ActionEntry = Record<string, unknown>;
+type ActionEntry = ActionPayload;
 export const actionStore = writable<Record<string, ActionEntry>>({});
 
 /** Cap terminal entries so a long session cannot grow the store unbounded. */
 const ACTION_STORE_MAX = 64;
-
-function actionKey(payload: { id?: string; action_id?: string }) {
-	return payload?.id || payload?.action_id || null;
-}
 
 /** Live board rows that must never be evicted to make room for history. */
 function isLiveActionRow(entry: ActionEntry) {
@@ -73,32 +69,14 @@ function trimActionStore(entries: Record<string, ActionEntry>) {
 	return entries;
 }
 
-export function upsertAction(payload: Record<string, unknown>) {
-	const key = actionKey(payload as { id?: string; action_id?: string });
+export function upsertAction(payload: ActionPayload) {
+	const key = payload.id;
 	if (!key) return;
 	actionStore.update((m) => {
-		const hadPrev = Object.prototype.hasOwnProperty.call(m, key);
-		const prev = m[key] || {};
-		const kind =
-			payload.kind || prev.kind || (payload.action_id ? 'background' : 'scheduled');
-		// Default `running` only on a create-like first insert (has started_at).
-		// Status-less updates (`action:updated` = session bind) must not invent
-		// running after an eviction wiped `prev`.
-		let status = (payload.status ?? prev.status) as string | undefined;
-		if (
-			status === undefined &&
-			!hadPrev &&
-			(kind === 'background' || !!payload.action_id) &&
-			payload.started_at != null
-		) {
-			status = 'running';
-		}
+		const prev = m[key];
 		const next: ActionEntry = {
 			...prev,
 			...payload,
-			id: key,
-			kind,
-			...(status !== undefined ? { status } : {}),
 		};
 		// Terminal entries keep their full payload (output/error) so the
 		// panel can show the result; only the store size is bounded below.
@@ -127,12 +105,13 @@ export async function refreshActions() {
 		// not linger as stale rows.
 		actionStore.update((m) => {
 			const next: Record<string, ActionEntry> = {};
-			for (const row of rows) {
-				const key = actionKey(row as { id?: string; action_id?: string });
+			for (const wireRow of rows) {
+				const row = mapActionPayload(wireRow as never);
+				const key = row.id;
 				if (!key) continue;
 				const merged: ActionEntry = {
 					...(m[key] || {}),
-					...(row as Record<string, unknown>),
+					...row,
 					id: key,
 				};
 				// Terminal background history is loaded on demand via
@@ -150,7 +129,7 @@ export async function refreshActions() {
 	}
 }
 
-export async function cancelAction(id: string, kind = 'background') {
+export async function cancelAction(id: string, kind: ActionKind = 'background') {
 	return invoke('cancel_action', { actionId: id, kind });
 }
 
@@ -163,10 +142,10 @@ export async function cancelAction(id: string, kind = 'background') {
  * @param {number} [limit]
  * @returns {Promise<Array>}
  */
-export async function refreshActionHistory(kind: string | null = 'scheduled', limit = 50) {
+export async function refreshActionHistory(kind: ActionKind | null = 'scheduled', limit = 50) {
 	try {
 		const rows = await invoke('list_action_history', { kind, limit });
-		return Array.isArray(rows) ? rows : [];
+		return Array.isArray(rows) ? rows.map((row) => mapActionPayload(row as never)) : [];
 	} catch (e) {
 		logger.warn('stores', 'refreshActionHistory failed', e);
 		return [];
@@ -183,19 +162,12 @@ export function deleteAction(id: string) {
  * bound via `actionId`, then clear that bind so the card cannot fall back to
  * the original "running" observation ack.
  */
-export function finalizeBackgroundActionMessages(payload: Record<string, unknown>) {
-	const actionId =
-		(typeof payload.action_id === 'string' && payload.action_id) ||
-		(typeof payload.id === 'string' && payload.id) ||
-		'';
+export function finalizeBackgroundActionMessages(payload: ActionPayload) {
+	if (payload.kind !== 'background') return;
+	const actionId = payload.id;
 	if (!actionId) return;
-	const status = typeof payload.status === 'string' ? payload.status : 'completed';
-	const rawOut =
-		typeof payload.output === 'string'
-			? payload.output
-			: typeof payload.error === 'string'
-				? payload.error
-				: '';
+	const status = payload.status ?? 'completed';
+	const rawOut = payload.output ?? payload.error ?? '';
 	const finalContent =
 		typeof rawOut === 'string' && rawOut.trim().startsWith('{')
 			? rawOut
@@ -204,7 +176,7 @@ export function finalizeBackgroundActionMessages(payload: Record<string, unknown
 					background: true,
 					action_id: actionId,
 					status,
-					...(payload.exit_code != null ? { exit_code: payload.exit_code } : {}),
+					...(payload.exitCode != null ? { exit_code: payload.exitCode } : {}),
 					...(payload.error && !payload.output ? { error: payload.error } : {}),
 				});
 	const all = get(sessionMessagesStore) || {};

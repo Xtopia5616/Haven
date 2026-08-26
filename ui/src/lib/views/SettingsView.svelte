@@ -13,6 +13,12 @@
 	import { formatError } from '$lib/formatError.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { ensureRoleSlots } from '$lib/modelRoles.ts';
+	import {
+		parseApiKeyStatus,
+		parseLogInfo,
+		parseLogTail,
+		parseShellAvailability,
+	} from '$lib/contracts/settings.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import logger from '$lib/logger.ts';
 
@@ -337,7 +343,7 @@
 	async function checkShells() {
 		for (const s of ['cmd', 'powershell', 'pwsh']) {
 			try {
-				const res = await invoke('check_shell_available', { shell: s });
+				const res = parseShellAvailability(await invoke('check_shell_available', { shell: s }));
 				shellAvailable[/** @type {'cmd' | 'powershell' | 'pwsh'} */ (s)] = !!res?.available;
 			} catch {
 				shellAvailable[/** @type {'cmd' | 'powershell' | 'pwsh'} */ (s)] = true; // assume available on probe failure
@@ -353,7 +359,7 @@
 	async function openLogViewer() {
 		logView.loading = true;
 		try {
-			const info = await invoke('get_log_info');
+			const info = parseLogInfo(await invoke('get_log_info'));
 			if (!info?.enabled) {
 				addNotification('文件日志未启用，请先打开 File Logging', 'warning', 4000);
 				return;
@@ -369,7 +375,7 @@
 
 	async function refreshLogs() {
 		try {
-			const data = await invoke('read_log_tail', { maxLines: 300 });
+			const data = parseLogTail(await invoke('read_log_tail', { maxLines: 300 }));
 			logView.path = data.path;
 			logView.content = data.content;
 		} catch (e) {
@@ -902,22 +908,11 @@
 	}
 
 	async function refreshApiKeyStatus() {
-		const ks = await invoke('get_api_key_status');
-		const providers = ks?.providers;
+		const { providers, ...flags } = parseApiKeyStatus(await invoke('get_api_key_status'));
 		// Keep role/media flags as a flat boolean map; never assign the raw
 		// payload (it nests `providers`) into keyConfigured.
-		/** @type {Record<string, boolean>} */
-		const nextKeys = {};
-		if (ks && typeof ks === 'object') {
-			for (const [k, v] of Object.entries(ks)) {
-				if (k === 'providers') continue;
-				if (typeof v === 'boolean') nextKeys[k] = v;
-			}
-		}
-		keyConfigured = { ...keyConfigured, ...nextKeys };
-		keyConfiguredProviders = (providers && typeof providers === 'object' && !Array.isArray(providers))
-			? { ...providers }
-			: {};
+		keyConfigured = { ...keyConfigured, ...flags };
+		keyConfiguredProviders = { ...providers };
 	}
 
 	/** @returns {Promise<boolean>} true when the settings payload was saved */

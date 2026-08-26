@@ -13,7 +13,7 @@ vi.mock('./logger.ts', () => ({
 	default: { error: mocks.error, warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-import { registerListeners, registerOne } from './events.ts';
+import { actionEventListeners, registerListeners, registerOne } from './events.ts';
 
 const event = (payload: any) => ({ payload });
 
@@ -109,5 +109,34 @@ describe('registerOne', () => {
 		const captured = mocks.listen.mock.calls[0][1];
 		captured(event({ status: 'paused' }));
 		expect(handler).toHaveBeenCalledWith(expect.objectContaining({ payload: { status: 'paused' } }));
+	});
+});
+
+describe('actionEventListeners', () => {
+	it('maps the Rust wire payload before invoking the handler', () => {
+		const handler = vi.fn();
+		const listeners = actionEventListeners({ 'action:finished': handler });
+
+		listeners['action:finished']({
+			event: 'action:finished',
+			id: 3,
+			payload: {
+				id: 'act-1',
+				kind: 'background',
+				session_id: 'ses-1',
+				exit_code: 0,
+			},
+		} as never);
+
+		expect(handler).toHaveBeenCalledWith({
+			event: 'action:finished',
+			id: 3,
+			payload: {
+				id: 'act-1',
+				kind: 'background',
+				sessionId: 'ses-1',
+				exitCode: 0,
+			},
+		});
 	});
 });

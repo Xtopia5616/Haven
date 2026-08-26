@@ -39,7 +39,7 @@
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
-	import { registerListeners, sessionEventListeners } from '$lib/events.ts';
+	import { actionEventListeners, registerListeners, sessionEventListeners } from '$lib/events.ts';
 	import {
 		sessionMessagesStore,
 		sessionStore,
@@ -322,7 +322,7 @@
 				a &&
 				a.kind !== 'scheduled' &&
 				a.status === 'running' &&
-				a.session_id === activeSessionId,
+				a.sessionId === activeSessionId,
 		);
 	});
 	const awaitingBackgroundCount = $derived.by(() => {
@@ -332,7 +332,7 @@
 				a &&
 				a.kind !== 'scheduled' &&
 				a.status === 'running' &&
-				a.session_id === activeSessionId,
+				a.sessionId === activeSessionId,
 		).length;
 	});
 
@@ -1828,12 +1828,14 @@
 						return insertAgentMessage(m, msg);
 					});
 				},
-				'action:finished': (event) => {
-					// Persist terminal background output onto the tool card and
-					// clear actionId so a later refreshActions() cannot revert
-					// the card to the original "running" observation ack.
-					finalizeBackgroundActionMessages(event.payload || {});
-				},
+				...actionEventListeners({
+					'action:finished': (event) => {
+						// Persist terminal background output onto the tool card and
+						// clear actionId so a later refreshActions() cannot revert
+						// the card to the original "running" observation ack.
+						finalizeBackgroundActionMessages(event.payload);
+					},
+				}),
 				'confirm:requested': (event) => {
 					const data = event.payload;
 					// Security confirmations are modal and resolve by step id, so
@@ -2608,7 +2610,7 @@
 															a &&
 															a.kind !== 'scheduled' &&
 															a.status === 'running' &&
-															a.session_id === t.id,
+									a.sessionId === t.id,
 												  )
 												? '等待后台'
 												: isPausedStatus(t.status)

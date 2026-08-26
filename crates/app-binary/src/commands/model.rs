@@ -5,6 +5,7 @@ use haven_common::config::{AppConfig, LlmConfig, ProviderConfig, RoleConfig};
 use haven_llm::EndpointRole;
 use haven_llm::ModelInfo;
 use haven_llm::ModelRegistry;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tauri::Manager;
 use tauri::State;
@@ -177,41 +178,41 @@ fn stt_key_configured(stt: &haven_common::config::SttConfig, providers: &[Provid
 /// (same snapshot as model discovery), not a fresh disk reload.
 /// TTS / image-gen reuse `providers` credentials, so they have no separate
 /// key flags here.
-fn api_key_status(cfg: &AppConfig) -> serde_json::Value {
-    let mut status = serde_json::Map::new();
-    // Per-role status: "usable" = references a configured provider + model.
-    for role in EndpointRole::ALL {
-        status.insert(
-            role.as_str().to_string(),
-            serde_json::json!(cfg.llm.is_configured(*role)),
-        );
-    }
-    // Per-provider key status (the settings UI shows a StatusDot per provider).
-    let mut providers_status = serde_json::Map::new();
+#[derive(Debug, serde::Serialize)]
+pub struct ApiKeyStatus {
+    pub small_model: bool,
+    pub default_model: bool,
+    pub balanced_model: bool,
+    pub image_model: bool,
+    pub audio_model: bool,
+    pub embedding_model: bool,
+    pub providers: BTreeMap<String, bool>,
+    pub stt: bool,
+    pub ocr: bool,
+    pub ocr_secret: bool,
+}
+
+fn api_key_status(cfg: &AppConfig) -> ApiKeyStatus {
+    let mut providers = BTreeMap::new();
     for p in &cfg.llm.providers {
-        providers_status.insert(p.name.clone(), serde_json::json!(provider_is_configured(p)));
+        providers.insert(p.name.clone(), provider_is_configured(p));
     }
-    status.insert(
-        "providers".to_string(),
-        serde_json::Value::Object(providers_status),
-    );
-    status.insert(
-        "stt".to_string(),
-        serde_json::json!(stt_key_configured(&cfg.media.stt, &cfg.llm.providers)),
-    );
-    status.insert(
-        "ocr".to_string(),
-        serde_json::json!(!cfg.media.ocr.api_key.is_empty()),
-    );
-    status.insert(
-        "ocr_secret".to_string(),
-        serde_json::json!(!cfg.media.ocr.api_secret.is_empty()),
-    );
-    serde_json::Value::Object(status)
+    ApiKeyStatus {
+        small_model: cfg.llm.is_configured(EndpointRole::SmallModel),
+        default_model: cfg.llm.is_configured(EndpointRole::DefaultModel),
+        balanced_model: cfg.llm.is_configured(EndpointRole::BalancedModel),
+        image_model: cfg.llm.is_configured(EndpointRole::ImageModel),
+        audio_model: cfg.llm.is_configured(EndpointRole::AudioModel),
+        embedding_model: cfg.llm.is_configured(EndpointRole::EmbeddingModel),
+        providers,
+        stt: stt_key_configured(&cfg.media.stt, &cfg.llm.providers),
+        ocr: !cfg.media.ocr.api_key.is_empty(),
+        ocr_secret: !cfg.media.ocr.api_secret.is_empty(),
+    }
 }
 
 #[tauri::command]
-pub async fn get_api_key_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub async fn get_api_key_status(app: tauri::AppHandle) -> Result<ApiKeyStatus, String> {
     let state = app.state::<Arc<AppState>>();
     let cfg = {
         let guard = state
@@ -615,10 +616,20 @@ mod tests {
             provider("local", "", Some("llama.cpp")),
         ]);
         let status = api_key_status(&cfg);
-        assert_eq!(status["providers"]["cloud"], serde_json::json!(true));
-        assert_eq!(status["providers"]["empty"], serde_json::json!(false));
-        assert_eq!(status["providers"]["local"], serde_json::json!(true));
-        assert_eq!(status["default_model"], serde_json::json!(false));
+        assert!(status.providers["cloud"]);
+        assert!(!status.providers["empty"]);
+        assert!(status.providers["local"]);
+        assert!(!status.default_model);
+    }
+
+    #[test]
+    fn api_key_status_has_a_named_wire_shape_without_credentials() {
+        let mut cfg = AppConfig::default();
+        cfg.media.ocr.api_key = "secret".into();
+        let wire = serde_json::to_value(api_key_status(&cfg)).unwrap();
+        assert_eq!(wire["ocr"], true);
+        assert!(wire.get("api_key").is_none());
+        assert!(wire["providers"].is_object());
     }
 
     #[test]

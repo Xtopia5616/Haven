@@ -183,7 +183,7 @@ addNotification(e?.message || '操作失败', 'error', 4000);
 ### 2.4 后端事件与桌面通知
 
 - **事件命名**：`domain:action`（`session:created`、`agent:thought`、`recording:error`、`notification:show` …）。`AgentEvent` → channel 的唯一事实来源是 `TauriEmitter::channel`；新增变体必须登记并补单测。
-- **任务（action）事件**：后台任务与定时任务共用 `action:created` / `action:updated` / `action:output` / `action:finished`，由 `haven_tools` 直接 emit，不走 `TauriEmitter::channel`。payload：后台带 `action_id`，定时带 `id`；前端 `actionStore` 归一化（`id = payload.id || payload.action_id`，`kind: 'background'|'scheduled'`）。
+- **任务（action）事件**：后台任务与定时任务共用 `action:created` / `action:updated` / `action:output` / `action:finished`。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ActionEvent { id, kind, ... }` 后再 emit；前端 `actionStore` 只消费 contracts 层的 camelCase DTO。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。
 - **wire 载荷**：统一 snake_case JSON；前端边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
 - **桌面通知**：统一走 `DesktopNotifications::maybe_show_toast`（`notification.rs`，由 `TauriEmitter` 委托）。文案与应用内 toast 对齐（中文）：
 

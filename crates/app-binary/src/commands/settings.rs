@@ -273,7 +273,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
 }
 
 #[tauri::command]
-pub async fn check_shell_available(shell: String) -> Result<serde_json::Value, String> {
+pub async fn check_shell_available(shell: String) -> Result<ShellAvailability, String> {
     #[cfg(windows)]
     let available = match shell.as_str() {
         "cmd" | "powershell" => true,
@@ -285,7 +285,12 @@ pub async fn check_shell_available(shell: String) -> Result<serde_json::Value, S
         "pwsh" => shell_on_path("pwsh"),
         _ => true,
     };
-    Ok(serde_json::json!({ "available": available }))
+    Ok(ShellAvailability { available })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ShellAvailability {
+    pub available: bool,
 }
 
 /// True when `name` resolves to an executable on PATH.
@@ -317,4 +322,17 @@ pub async fn disable_autostart() -> Result<(), String> {
 #[tauri::command]
 pub async fn is_autostart_enabled() -> Result<bool, String> {
     crate::autostart::is_enabled()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellAvailability;
+
+    #[test]
+    fn shell_availability_has_a_named_stable_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(ShellAvailability { available: true }).unwrap(),
+            serde_json::json!({"available": true})
+        );
+    }
 }

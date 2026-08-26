@@ -6,9 +6,18 @@ import {
 	type SessionEventPayloadMap,
 	type TauriEvent,
 } from './contracts/session.ts';
+import {
+	mapActionEvent,
+	type ActionEventName,
+	type ActionPayload,
+} from './contracts/action.ts';
 
 type SessionListenerMap = Partial<{
 	[K in SessionEventName]: (event: TauriEvent<SessionEventPayloadMap[K]>) => void;
+}>;
+
+type ActionListenerMap = Partial<{
+	[K in ActionEventName]: (event: TauriEvent<ActionPayload>) => void;
 }>;
 
 /**
@@ -80,6 +89,23 @@ export function sessionEventListeners(
 			(event: TauriEvent<unknown>) => {
 				const name = eventName as SessionEventName;
 				handler?.(mapSessionEvent({ ...event, event: name } as never) as never);
+			},
+		]),
+	);
+}
+
+/**
+ * Adapt action event payloads at the Tauri boundary. Routes and stores consume
+ * the named camelCase action DTO, never the tool crate's internal JSON shape.
+ */
+export function actionEventListeners(
+	map: ActionListenerMap,
+): Record<string, (event: TauriEvent<unknown>) => void> {
+	return Object.fromEntries(
+		Object.entries(map).map(([eventName, handler]) => [
+			eventName,
+			(event: TauriEvent<unknown>) => {
+				handler?.(mapActionEvent({ ...event, event: eventName } as never) as never);
 			},
 		]),
 	);

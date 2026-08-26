@@ -6,7 +6,7 @@
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { registerListeners, sessionEventListeners } from '$lib/events.ts';
+	import { actionEventListeners, registerListeners, sessionEventListeners } from '$lib/events.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
@@ -305,13 +305,13 @@
 		actionEntries
 			.filter((a) => a.kind === 'background')
 			.sort((a, b) =>
-				String(b.started_at || '').localeCompare(String(a.started_at || '')),
+				String(b.startedAt || '').localeCompare(String(a.startedAt || '')),
 			),
 	);
 	const pendingScheduledActions = $derived(
 		actionEntries
 			.filter((a) => a.kind === 'scheduled')
-			.sort((a, b) => String(a.due_at || '').localeCompare(String(b.due_at || ''))),
+			.sort((a, b) => String(a.dueAt || '').localeCompare(String(b.dueAt || ''))),
 	);
 	const runningBackgroundActions = $derived(
 		backgroundActionEntries.filter((j) => j.status === 'running'),
@@ -325,7 +325,7 @@
 		if (!activeSessionId) return false;
 		const st = sessions.find((t) => t.id === activeSessionId)?.status;
 		if (st !== 'paused') return false;
-		return runningBackgroundActions.some((a) => a.session_id === activeSessionId);
+		return runningBackgroundActions.some((a) => a.sessionId === activeSessionId);
 	});
 
 	// Completed-task history (terminal background rows + fired scheduled rows),
@@ -340,8 +340,8 @@
 	// global history was flooding the panel with unrelated old completions.
 	const completedActions = $derived(
 		actionHistory.filter((h) => {
-			if (!activeSessionId || h.session_id !== activeSessionId) return false;
-			if (h.kind === 'scheduled') return !!h.fired;
+			if (!activeSessionId || h.sessionId !== activeSessionId) return false;
+			if (h.kind === 'scheduled') return true;
 			return !!h.status && h.status !== 'running';
 		}),
 	);
@@ -419,19 +419,19 @@
 
 	/** @param {any} action */
 	function sessionTitleFor(action) {
-		if (!action.session_id) return '';
-		const t = sessions.find((x) => x.id === action.session_id);
-		return t?.title || t?.input || action.session_id;
+		if (!action.sessionId) return '';
+		const t = sessions.find((x) => x.id === action.sessionId);
+		return t?.title || t?.input || action.sessionId;
 	}
 
 	/** @param {any} action */
 	function actionDuration(action) {
-		const start = new Date(action.started_at).getTime();
+		const start = new Date(action.startedAt).getTime();
 		if (isNaN(start)) return '';
 		const end =
 			action.status === 'running'
 				? Date.now()
-				: new Date(action.finished_at || action.started_at).getTime();
+				: new Date(action.finishedAt || action.startedAt).getTime();
 		if (isNaN(end)) return '';
 		const secs = Math.floor((end - start) / 1000);
 		if (secs < 60) return `${secs}s`;
@@ -439,7 +439,7 @@
 		return `${mins}m ${secs % 60}s`;
 	}
 
-	/** @param {string} actionId @param {string} [kind] */
+	/** @param {string} actionId @param {'background'|'scheduled'} [kind] */
 	async function handleCancelAction(actionId, kind = 'background') {
 		try {
 			const ok = await cancelAction(actionId, kind);
@@ -485,7 +485,7 @@
 
 	/** @param {any} h */
 	function formatHistoryTime(h) {
-		const ts = h.finished_at || h.started_at || h.due_at;
+		const ts = h.finishedAt || h.startedAt || h.dueAt;
 		if (!ts) return '';
 		const d = new Date(ts);
 		if (isNaN(d.getTime())) return '';
@@ -783,53 +783,50 @@
 				// redundant — the toast itself already lives in the app.
 				addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
 			},
-			// Action lifecycle (background actions + scheduled actions). Registered
-			// globally (not on the chat page) so actions stay tracked while
-			// the user visits other tabs. Background-action payloads carry
-			// `action_id`; scheduled-action payloads carry `id` — the store
-			// normalizes both.
-			'action:created': (event) => {
-				upsertAction(event.payload || {});
-			},
-			// Background action attached to a session (payload has action_id) or
-			// a scheduled action was cancelled (payload only has id).
-			'action:updated': (event) => {
-				const p = event.payload || {};
-				if (p.action_id) {
-					upsertAction(p);
-				} else {
-					removeAction(p.id);
-				}
-			},
-			// Live output preview while a background action runs (bounded tail).
-			'action:output': (event) => {
-				upsertAction(event.payload || {});
-			},
-			'action:finished': (event) => {
-				const p = event.payload || {};
-				if (p.action_id) {
-					upsertAction(p);
-					// A background action finishing is only worth a toast when the
-					// user is not already watching its owning session (the result
-					// also lands in the session's conversation).
-					if (p.status === 'completed' || p.status === 'failed') {
-						const activeId = get(activeSessionIdStore);
-						if (!p.session_id || p.session_id !== activeId) {
-							const label = p.status === 'completed' ? '完成' : '失败';
-							addNotification(
-								`后台任务${label}: ${p.action_id || ''}`,
-								p.status === 'completed' ? 'success' : 'error',
-								4000,
-							);
-						}
+			...actionEventListeners({
+				// Action lifecycle is registered globally so tasks stay tracked while
+				// the user visits other tabs. Both action kinds now share the named
+				// task DTO and use camelCase after this boundary.
+				'action:created': (event) => {
+					upsertAction(event.payload);
+				},
+				'action:updated': (event) => {
+					const p = event.payload;
+					if (p.kind === 'background') {
+						upsertAction(p);
+					} else {
+						removeAction(p.id);
 					}
-				} else {
-					// Scheduled action fired: drop from the pending list. The
-					// toast is surfaced by the agent's `notification:show` (the
-					// fired consumer always notifies).
-					removeAction(p.id);
-				}
-			},
+				},
+				'action:output': (event) => {
+					upsertAction(event.payload);
+				},
+				'action:finished': (event) => {
+					const p = event.payload;
+					if (p.kind === 'background') {
+						upsertAction(p);
+						// A background action finishing is only worth a toast when the
+						// user is not already watching its owning session (the result
+						// also lands in the session's conversation).
+						if (p.status === 'completed' || p.status === 'failed') {
+							const activeId = get(activeSessionIdStore);
+							if (!p.sessionId || p.sessionId !== activeId) {
+								const label = p.status === 'completed' ? '完成' : '失败';
+								addNotification(
+									`后台任务${label}: ${p.id}`,
+									p.status === 'completed' ? 'success' : 'error',
+									4000,
+								);
+							}
+						}
+					} else {
+						// Scheduled action fired: drop from the pending list. The
+						// toast is surfaced by the agent's `notification:show` (the
+						// fired consumer always notifies).
+						removeAction(p.id);
+					}
+				},
+			}),
 		}, { tag: '+layout' });
 		eventRegistrations = registrations;
 		// Attach listeners BEFORE probing bootstrap status so a ready event
@@ -978,7 +975,7 @@
 														? '运行中'
 														: t.status === 'paused' &&
 															  runningBackgroundActions.some(
-																	(a) => a.session_id === t.id,
+											(a) => a.sessionId === t.id,
 															  )
 															? '等待后台'
 															: isPausedStatus(t.status)
@@ -1045,7 +1042,7 @@
 										</div>
 										<div class="action-item-sub">
 											<span class="scheduled-body">{r.body}</span>
-											<span class="action-duration">{scheduledActionCountdown(r.due_at)}</span>
+											<span class="action-duration">{scheduledActionCountdown(r.dueAt)}</span>
 										</div>
 									</div>
 									<button
@@ -1085,7 +1082,7 @@
 										</div>
 										<div class="action-item-sub">
 											<span class="scheduled-body"
-												>{h.kind === 'scheduled' ? h.body : h.output || h.error_reason || h.id}</span
+								>{h.kind === 'scheduled' ? h.body : h.output || h.errorReason || h.id}</span
 											>
 											<span class="action-duration">{formatHistoryTime(h)}</span>
 										</div>
