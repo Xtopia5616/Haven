@@ -5,11 +5,11 @@
 
 ## 背景
 
-MCP 配置生命周期单元测试曾依赖 PATH 中的 Python 与外部测试进程；窗口 OCR 与 UI 自动化测试则隐式要求当前进程可访问交互式 Windows 桌面。这些前提在 CI、远程会话和受限开发环境中不成立，使质量门禁无法重复。另一个问题是，当未配置视觉路由时，OCR 仍会先截取桌面，随后才报告能力不可用；这会产生无效且不必要的高风险数据采集。
+MCP 配置生命周期和客户端集成测试曾依赖 PATH 中的 Python 与外部测试进程；窗口 OCR 与 UI 自动化测试则隐式要求当前进程可访问交互式 Windows 桌面。这些前提在 CI、远程会话和受限开发环境中不成立，使质量门禁无法重复。另一个问题是，当未配置视觉路由时，OCR 仍会先截取桌面，随后才报告能力不可用；这会产生无效且不必要的高风险数据采集。
 
 ## 决定
 
-- MCP 配置生命周期测试在进程内启动最小 HTTP MCP 端点，仍通过真实 `McpManager` 初始化与 `tools/list` 握手验证连接、更新、重载和断开语义。
+- MCP 配置生命周期和客户端集成测试在进程内启动最小 HTTP MCP 端点；前者通过真实 `McpManager`，后者通过生产 `McpClient`，验证初始化、工具发现、调用、内容映射、重载、断开和 liveness 语义。
 - 窗口 UI 树单元测试只验证不存在目标时的明确失败，不依赖系统桌面上是否存在可枚举窗口。
 - `window` 工具的 OCR 操作在没有视觉路由时立即返回 `ocr_unavailable`，不创建截图文件，也不访问桌面；配置了视觉路由后才执行截图与 OCR。
 
@@ -19,11 +19,11 @@ MCP 配置生命周期单元测试曾依赖 PATH 中的 Python 与外部测试�
 
 ## 影响
 
-测试不再要求 Python、外部 MCP 服务或交互式桌面。未配置视觉路由的 OCR 调用仍返回成功的能力不可用结果，但不再包含 `path` 或 `screenshot` 字段；调用方应以 `ocr_unavailable` 判断降级。
+测试不再要求 Python、外部 MCP 服务或交互式桌面；旧 Python fixture 已删除。未配置视觉路由的 OCR 调用仍返回成功的能力不可用结果，但不再包含 `path` 或 `screenshot` 字段；调用方应以 `ocr_unavailable` 判断降级。
 
 ## 验证
 
-`cargo test -p haven-tools --lib -- --test-threads=1`，以及完整的 `cargo test --workspace -- --test-threads=1`。Windows 环境还应覆盖无可交互桌面的测试运行。
+`cargo test -p haven-tools --lib -- --test-threads=1`、`cargo test -p haven-tools --test mcp_integration -- --test-threads=1`，以及完整的 `cargo test --workspace -- --test-threads=1`。Windows 环境还应覆盖无可交互桌面的测试运行。
 
 ## 回滚与重置
 

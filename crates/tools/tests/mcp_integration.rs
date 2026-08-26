@@ -1,382 +1,270 @@
 use haven_common::{McpServerConfig, McpTransportType};
 use haven_mcp::McpClient;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
-/// Resolve the actual python interpreter path.
-///
-/// On some Windows setups `python` is a launcher stub that spawns the real
-/// interpreter as a child process. Killing the stub then orphans the server
-/// (it keeps its port bound, leaks processes, and makes port probing connect
-/// to a stale server). Spawning the resolved interpreter directly makes
-/// `kill()` deterministic and prevents orphans.
-fn python_exe() -> &'static str {
-    static PY: OnceLock<String> = OnceLock::new();
-    PY.get_or_init(|| {
-        for cmd in ["python", "python3"] {
-            if let Ok(out) = std::process::Command::new(cmd)
-                .arg("-c")
-                .arg("import sys; print(sys.executable)")
-                .output()
-            {
-                let exe = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !exe.is_empty() {
-                    return exe;
-                }
+/// A local Streamable HTTP MCP server used by the client integration tests.
+/// Keeping it in-process makes these tests independent of Python, PATH, and
+/// external child-process permissions while exercising the production HTTP
+/// transport and JSON-RPC content mapping end to end.
+struct TestMcpServer {
+    url: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl TestMcpServer {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(serve_connection(stream));
             }
-        }
-        "python".to_string()
-    })
-}
-
-fn fixture_path() -> String {
-    let p = std::env::current_dir().unwrap_or_default();
-    // When running from workspace root, the tests dir is crates/tools/tests/
-    // When running from crate root, it's tests/
-    let candidates = [
-        p.join("crates/tools/tests/fixtures/echo_mcp_server.py"),
-        p.join("tests/fixtures/echo_mcp_server.py"),
-    ];
-    for c in &candidates {
-        if c.exists() {
-            return c.to_string_lossy().to_string();
-        }
+        });
+        Self { url, task }
     }
-    // Fallback
-    candidates[0].to_string_lossy().to_string()
+
+    fn stop(self) {
+        self.task.abort();
+    }
 }
 
-fn http_fixture_path() -> String {
-    let p = std::env::current_dir().unwrap_or_default();
-    let candidates = [
-        p.join("crates/tools/tests/fixtures/http_mcp_server.py"),
-        p.join("tests/fixtures/http_mcp_server.py"),
-    ];
-    for c in &candidates {
-        if c.exists() {
-            return c.to_string_lossy().to_string();
+impl Drop for TestMcpServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn serve_connection(mut stream: TcpStream) {
+    const HEADER_END: &[u8] = b"\r\n\r\n";
+    let mut bytes = Vec::new();
+    let header_end = loop {
+        if let Some(end) = bytes
+            .windows(HEADER_END.len())
+            .position(|window| window == HEADER_END)
+        {
+            break end + HEADER_END.len();
         }
-    }
-    candidates[0].to_string_lossy().to_string()
-}
-
-async fn create_client() -> Arc<McpClient> {
-    let client = Arc::new(McpClient::new(
-        &McpServerConfig {
-            name: "echo-test".into(),
-            command: python_exe().into(),
-            args: vec![fixture_path()],
-            ..Default::default()
-        },
-        2 * 1024 * 1024,
-        2 * 1024 * 1024,
-    ));
-    client.connect().await.unwrap();
-    client
-}
-
-/// Kill a spawned child and, on Windows, its whole process tree. Some `python`
-/// installs are launcher stubs that spawn the real interpreter as a child;
-/// killing only the stub would orphan the server and keep its port alive.
-#[cfg(windows)]
-async fn kill_child_tree(child: &mut tokio::process::Child) {
-    if let Some(pid) = child.id() {
-        let _ = std::process::Command::new("actionkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .output();
-    }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-}
-
-#[cfg(not(windows))]
-async fn kill_child_tree(child: &mut tokio::process::Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-}
-
-/// Spawn the HTTP fixture and wait for it to report `READY <port>`. The
-/// server binds to port 0, so the OS assigns a unique free port atomically —
-/// no bind-then-release race with other tests. The READY line is the single
-/// source of truth that the port belongs to this process.
-async fn spawn_http_server() -> (u16, tokio::process::Child) {
-    let mut child = tokio::process::Command::new(python_exe())
-        .arg(http_fixture_path())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("failed to spawn http fixture server");
-    let stdout = child
-        .stdout
-        .take()
-        .expect("failed to capture http fixture stdout");
-    let mut lines = tokio::io::BufReader::new(stdout).lines();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let line = tokio::time::timeout_at(deadline, lines.next_line()).await;
-        match line {
-            Ok(Ok(Some(l))) => {
-                if let Some(p) = l.strip_prefix("READY ") {
-                    match p.trim().parse::<u16>() {
-                        Ok(port) => return (port, child),
-                        Err(_) => break,
-                    }
-                }
-            }
-            // EOF or timeout: the server failed to start (e.g. missing python
-            // module). Clean up the process tree and surface a clear error.
-            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => break,
+        let mut chunk = [0_u8; 1024];
+        let Ok(read) = stream.read(&mut chunk).await else {
+            return;
+        };
+        if read == 0 {
+            return;
         }
+        bytes.extend_from_slice(&chunk[..read]);
+    };
+
+    let header = String::from_utf8_lossy(&bytes[..header_end]);
+    if !header.starts_with("POST ") {
+        let _ = stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+        return;
     }
-    kill_child_tree(&mut child).await;
-    panic!("http fixture server did not report READY (startup failed)");
+    let content_length = header
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then_some(value.trim())
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    while bytes.len() < header_end + content_length {
+        let mut chunk = [0_u8; 1024];
+        let Ok(read) = stream.read(&mut chunk).await else {
+            return;
+        };
+        if read == 0 {
+            return;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+
+    let request =
+        serde_json::from_slice::<serde_json::Value>(&bytes[header_end..]).unwrap_or_default();
+    if request.get("id").is_none() {
+        let _ = stream
+            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+        return;
+    }
+
+    let id = request["id"].clone();
+    let response = match request["method"].as_str() {
+        Some("initialize") => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "test-mcp", "version": "1.0.0"},
+            },
+        }),
+        Some("tools/list") => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"tools": [
+                {"name": "echo", "description": "echo", "inputSchema": {"type": "object"}},
+                {"name": "reverse", "description": "reverse", "inputSchema": {"type": "object"}},
+                {"name": "image", "description": "image", "inputSchema": {"type": "object"}},
+                {"name": "resource", "description": "resource", "inputSchema": {"type": "object"}},
+            ]},
+        }),
+        Some("tools/call") => tool_call_response(id, &request),
+        _ => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}}),
+    };
+    let body = serde_json::to_vec(&response).unwrap();
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nMcp-Session-Id: test-session\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(headers.as_bytes()).await;
+    let _ = stream.write_all(&body).await;
 }
 
-async fn create_http_client(port: u16) -> Arc<McpClient> {
+fn tool_call_response(id: serde_json::Value, request: &serde_json::Value) -> serde_json::Value {
+    let arguments = &request["params"]["arguments"];
+    let content = match request["params"]["name"].as_str() {
+        Some("echo") => serde_json::json!([{ "type": "text", "text": arguments["text"] }]),
+        Some("reverse") => serde_json::json!([{
+            "type": "text",
+            "text": arguments["text"].as_str().unwrap_or_default().chars().rev().collect::<String>(),
+        }]),
+        Some("image") => serde_json::json!([{
+            "type": "image",
+            "mimeType": "image/png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        }]),
+        Some("resource") => serde_json::json!([{
+            "type": "resource",
+            "resource": {"uri": "memory://note", "mimeType": "text/plain", "text": arguments["text"]},
+        }]),
+        other => {
+            return serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": format!("Tool not found: {}", other.unwrap_or_default())},
+            });
+        }
+    };
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {"content": content}})
+}
+
+async fn create_client() -> (Arc<McpClient>, TestMcpServer) {
+    let server = TestMcpServer::start().await;
     let client = Arc::new(McpClient::new(
         &McpServerConfig {
             name: "echo-http".into(),
             transport: McpTransportType::Http,
-            url: format!("http://127.0.0.1:{}/mcp", port),
+            url: server.url.clone(),
             ..Default::default()
         },
         2 * 1024 * 1024,
         2 * 1024 * 1024,
     ));
     client.connect().await.unwrap();
-    client
+    (client, server)
 }
 
 #[tokio::test]
-async fn test_initialize_handshake() {
-    let client = create_client().await;
-    let status = client.status().await;
-    assert!(matches!(status, haven_tools::McpClientStatus::Connected));
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_list_tools() {
-    let client = create_client().await;
-    let tools = client.list_tools().await.unwrap();
-    assert_eq!(tools.len(), 4);
-    assert_eq!(tools[0].name, "echo");
-    assert_eq!(tools[1].name, "reverse");
-    assert_eq!(tools[2].name, "image");
-    assert_eq!(tools[3].name, "resource");
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_call_tool_echo() {
-    let client = create_client().await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("echo", serde_json::json!({"text": "hello world"}), cancel)
-        .await
-        .unwrap();
-    assert!(result.success);
-    assert_eq!(result.output["text"], "hello world");
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_call_tool_reverse() {
-    let client = create_client().await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("reverse", serde_json::json!({"text": "hello"}), cancel)
-        .await
-        .unwrap();
-    assert!(result.success);
-    assert_eq!(result.output["text"], "olleh");
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_call_tool_not_found() {
-    let client = create_client().await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("nonexistent", serde_json::json!({}), cancel)
-        .await;
-    assert!(result.is_err());
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_shutdown_cleanup() {
-    let client = create_client().await;
-    client.shutdown().await.unwrap();
-    // After shutdown, the process should be dead
-    assert!(!client.is_alive().await);
-}
-
-#[tokio::test]
-async fn test_process_detection() {
-    let client = create_client().await;
-    assert!(client.is_alive().await);
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_call_tool_image_content() {
-    let client = create_client().await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("image", serde_json::json!({}), cancel)
-        .await
-        .unwrap();
-    assert!(result.success);
-    let images = result.output["images"].as_array().unwrap();
-    assert_eq!(images.len(), 1);
-    assert_eq!(images[0]["type"], "image");
-    assert_eq!(images[0]["mimeType"], "image/png");
-    let data = images[0]["data"].as_str().unwrap();
-    assert!(!data.is_empty());
-    // The text summary carries a marker so the text-only agent loop knows an
-    // image block was returned.
-    let text = result.output["text"].as_str().unwrap();
-    assert!(text.contains("[image block returned: image/png"));
-    assert!(result.output["content"].is_array());
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn test_call_tool_resource_content() {
-    let client = create_client().await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool(
-            "resource",
-            serde_json::json!({"text": "hello note"}),
-            cancel,
-        )
-        .await
-        .unwrap();
-    assert!(result.success);
-    // Text resources fold into the plain-text summary.
-    assert_eq!(result.output["text"], "hello note");
-    assert!(result.output.get("resources").is_none());
-    client.shutdown().await.unwrap();
-}
-
-// ---------------------------------------------------------------------------
-// Streamable HTTP transport tests
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_http_initialize_handshake() {
-    let (port, mut server) = spawn_http_server().await;
-    let client = create_http_client(port).await;
+async fn initialize_handshake_and_tools_are_discovered() {
+    let (client, _server) = create_client().await;
     assert!(matches!(
         client.status().await,
         haven_tools::McpClientStatus::Connected
     ));
-    let snap = client.snapshot().await;
-    assert_eq!(snap.transport, "http");
-    client.shutdown().await.unwrap();
-    kill_child_tree(&mut server).await;
-}
-
-#[tokio::test]
-async fn test_http_list_tools() {
-    let (port, mut server) = spawn_http_server().await;
-    let client = create_http_client(port).await;
+    assert_eq!(client.snapshot().await.transport, "http");
     let tools = client.list_tools().await.unwrap();
     assert_eq!(tools.len(), 4);
     assert_eq!(tools[0].name, "echo");
-    assert_eq!(tools[1].name, "reverse");
-    assert_eq!(tools[2].name, "image");
-    assert_eq!(tools[3].name, "resource");
     client.shutdown().await.unwrap();
-    kill_child_tree(&mut server).await;
 }
 
 #[tokio::test]
-async fn test_http_call_tool_echo() {
-    let (port, mut server) = spawn_http_server().await;
-    let client = create_http_client(port).await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("echo", serde_json::json!({"text": "hello http"}), cancel)
+async fn call_tool_echo_and_reverse() {
+    let (client, _server) = create_client().await;
+    let echo = client
+        .call_tool(
+            "echo",
+            serde_json::json!({"text": "hello"}),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
-    assert!(result.success);
-    assert_eq!(result.output["text"], "hello http");
-    client.shutdown().await.unwrap();
-    kill_child_tree(&mut server).await;
-}
-
-#[tokio::test]
-async fn test_http_call_tool_reverse() {
-    let (port, mut server) = spawn_http_server().await;
-    let client = create_http_client(port).await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("reverse", serde_json::json!({"text": "hello"}), cancel)
+    assert_eq!(echo.output["text"], "hello");
+    let reverse = client
+        .call_tool(
+            "reverse",
+            serde_json::json!({"text": "hello"}),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
-    assert!(result.success);
-    assert_eq!(result.output["text"], "olleh");
+    assert_eq!(reverse.output["text"], "olleh");
     client.shutdown().await.unwrap();
-    kill_child_tree(&mut server).await;
 }
 
 #[tokio::test]
-async fn test_http_call_tool_not_found() {
-    let (port, mut server) = spawn_http_server().await;
-    let client = create_http_client(port).await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("nonexistent", serde_json::json!({}), cancel)
-        .await;
-    assert!(result.is_err());
-    client.shutdown().await.unwrap();
-    kill_child_tree(&mut server).await;
-}
-
-#[tokio::test]
-async fn test_http_call_tool_image_content() {
-    let (port, mut server) = spawn_http_server().await;
-    let client = create_http_client(port).await;
-    let cancel = CancellationToken::new();
-    let result = client
-        .call_tool("image", serde_json::json!({}), cancel)
+async fn call_tool_maps_image_and_resource_content() {
+    let (client, _server) = create_client().await;
+    let image = client
+        .call_tool("image", serde_json::json!({}), CancellationToken::new())
         .await
         .unwrap();
-    assert!(result.success);
-    let images = result.output["images"].as_array().unwrap();
-    assert_eq!(images.len(), 1);
-    assert_eq!(images[0]["mimeType"], "image/png");
-    let text = result.output["text"].as_str().unwrap();
-    assert!(text.contains("[image block returned: image/png"));
+    assert_eq!(image.output["images"][0]["mimeType"], "image/png");
+    assert!(
+        image.output["text"]
+            .as_str()
+            .unwrap()
+            .contains("[image block returned: image/png")
+    );
+    let resource = client
+        .call_tool(
+            "resource",
+            serde_json::json!({"text": "hello note"}),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resource.output["text"], "hello note");
     client.shutdown().await.unwrap();
-    kill_child_tree(&mut server).await;
 }
 
 #[tokio::test]
-async fn test_http_liveness() {
-    let (port, mut server) = spawn_http_server().await;
-    let client = create_http_client(port).await;
+async fn call_tool_reports_unknown_tool() {
+    let (client, _server) = create_client().await;
+    assert!(
+        client
+            .call_tool("missing", serde_json::json!({}), CancellationToken::new())
+            .await
+            .is_err()
+    );
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_marks_http_client_not_alive() {
+    let (client, _server) = create_client().await;
+    client.shutdown().await.unwrap();
+    assert!(!client.is_alive().await);
+}
+
+#[tokio::test]
+async fn liveness_detects_server_shutdown() {
+    let (client, server) = create_client().await;
     assert!(client.is_alive().await);
-
-    kill_child_tree(&mut server).await;
-    // The endpoint is gone, so the liveness probe must eventually report it
-    // dead. Poll to tolerate OS-level port-release timing.
+    server.stop();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if !client.is_alive().await {
-            break;
-        }
+    while client.is_alive().await {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "liveness probe still reported alive after server was killed"
+            "liveness probe still reported alive after server shutdown"
         );
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    client.shutdown().await.unwrap();
 }

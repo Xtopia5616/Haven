@@ -35,7 +35,7 @@
 
 - 2026-08-26：固定 Rust 1.96.0 与 Node 22 的质量门禁，Linux/Windows 均执行 Rust workspace 测试；补齐 README、发布重置说明与 ADR 目录（ADR 0001）。
 - 2026-08-26：Agent 的严格 Clippy 清理完成；Shell 测试改为临时目录与 PowerShell 内置字节输出，避免写入默认工作目录或依赖 PATH 中的 Python。
-- 2026-08-26：MCP 配置生命周期测试改为进程内 HTTP MCP 端点；窗口单元测试不再要求可交互桌面。OCR 未配置视觉路由时不采集屏幕（ADR 0002）。
+- 2026-08-26：MCP 配置生命周期与客户端集成测试改为进程内 HTTP MCP 端点，并删除 Python fixture；窗口单元测试不再要求可交互桌面。OCR 未配置视觉路由时不采集屏幕（ADR 0002）。
 
 ### P1：删除过时设计，固化边界
 

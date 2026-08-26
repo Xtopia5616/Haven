@@ -1203,7 +1203,7 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["ocr_unavailable"], true);
-        assert!(result.output["path"].as_str().is_some());
+        assert!(result.output.get("path").is_none());
     }
 
     #[tokio::test]
