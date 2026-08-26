@@ -861,6 +861,38 @@ vad_threshold = 0.25
     }
 
     #[test]
+    fn load_backs_up_removed_confirmation_mode_alias() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[security]
+confirmation_mode = "always"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(
+            loader.config().security.confirmation_mode,
+            ConfirmationMode::Ask
+        );
+        let backups: Vec<_> = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "removed aliases must require reset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_backs_up_unparsable_config_instead_of_destroying_it() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -599,7 +599,7 @@
 			if (snap.security) {
 				const mode = snap.security.confirmation_mode || security.confirmation_mode;
 				security = {
-					confirmation_mode: mode === 'always' ? 'ask' : mode,
+					confirmation_mode: mode,
 					min_risk_level: snap.security.min_risk_level || security.min_risk_level,
 					permissions: Array.isArray(snap.security.permissions)
 						? snap.security.permissions
@@ -819,7 +819,7 @@
 				{
 					const mode = settings.security?.confirmation_mode || 'ask';
 					security = {
-						confirmation_mode: mode === 'always' ? 'ask' : mode,
+						confirmation_mode: mode,
 						min_risk_level: settings.security?.min_risk_level || 'medium',
 						permissions: Array.isArray(settings.security?.permissions)
 							? settings.security.permissions

@@ -158,14 +158,11 @@ pub enum RiskLevel {
 }
 
 /// How the safety gateway decides when to prompt the user.
-///
-/// Legacy config value `"always"` deserializes as [`ConfirmationMode::Ask`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmationMode {
     /// Ask when `risk >= min_risk_level` (default).
     #[default]
-    #[serde(alias = "always")]
     Ask,
     /// Ask for every non-`Safe` operation.
     Paranoid,
@@ -1275,9 +1272,8 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_mode_legacy_always_deserializes_as_ask() {
-        let mode: ConfirmationMode = serde_json::from_str("\"always\"").unwrap();
-        assert_eq!(mode, ConfirmationMode::Ask);
+    fn confirmation_mode_rejects_removed_always_alias() {
+        assert!(serde_json::from_str::<ConfirmationMode>("\"always\"").is_err());
         let mode: ConfirmationMode = serde_json::from_str("\"ask\"").unwrap();
         assert_eq!(mode, ConfirmationMode::Ask);
     }

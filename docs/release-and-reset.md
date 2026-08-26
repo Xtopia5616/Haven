@@ -4,6 +4,10 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
+本版本删除了安全确认模式 `confirmation_mode = "always"` 的兼容别名；有效值仅为
+`ask`、`paranoid`、`autopilot`。旧配置会被备份为 `config.toml.*.bak` 并以安全默认值启动；请在
+备份中将该字段改为 `ask` 后再手工合并，或按下文完整重置。
+
 ## 用户数据位置
 
 Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
