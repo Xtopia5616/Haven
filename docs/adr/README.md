@@ -8,3 +8,4 @@
 
 - [0001：固定可重复的质量基线](0001-reproducible-quality-baseline.md)
 - [0002：隔离本机工具测试与未配置 OCR](0002-isolated-local-tool-tests.md)
+- [0003：会话 IPC 契约边界](0003-session-ipc-contract-boundary.md)

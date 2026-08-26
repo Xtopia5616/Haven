@@ -1,5 +1,49 @@
 use serde::Serialize;
 
+/// Stable session event channels exposed by the Tauri boundary.
+///
+/// Keep the string literals here so command handlers and the Agent event
+/// adapter cannot silently drift apart. The frontend's matching contract and
+/// its snake_case-to-camelCase boundary conversion live in
+/// `ui/src/lib/contracts/session.ts`.
+pub(crate) const SESSION_CREATED_EVENT: &str = "session:created";
+pub(crate) const SESSION_UPDATED_EVENT: &str = "session:updated";
+pub(crate) const SESSION_COMPLETED_EVENT: &str = "session:completed";
+pub(crate) const SESSION_ERROR_EVENT: &str = "session:error";
+pub(crate) const SESSION_TITLE_UPDATED_EVENT: &str = "session:title-updated";
+pub(crate) const SESSION_DELETED_EVENT: &str = "session:deleted";
+
+/// Shared wire payload for session lifecycle transitions.
+///
+/// `status` intentionally remains a string: the Agent owns the state-machine
+/// vocabulary and can add a persisted state without coupling that enum to the
+/// Tauri adapter. This DTO fixes the public field set instead.
+#[derive(Clone, Serialize)]
+pub(crate) struct SessionLifecycleEvent {
+    pub session_id: String,
+    pub status: String,
+    /// A newly-created session may not have a generated title yet.
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct SessionErrorEvent {
+    pub session_id: String,
+    pub error: String,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct SessionTitleUpdatedEvent {
+    pub session_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct SessionDeletedEvent {
+    /// `None` means every session was removed by `clear_history`.
+    pub session_id: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 pub struct RecordingEvent {
     pub is_recording: bool,
@@ -54,6 +98,32 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"is_recording\":true"));
         assert!(json.contains("\"session_id\":\"s1\""));
+    }
+
+    #[test]
+    fn session_lifecycle_event_has_the_stable_wire_shape() {
+        let event = SessionLifecycleEvent {
+            session_id: "ses-1".into(),
+            status: "paused".into(),
+            title: Some("Plan migration".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "session_id": "ses-1",
+                "status": "paused",
+                "title": "Plan migration",
+            })
+        );
+    }
+
+    #[test]
+    fn session_deleted_event_can_signal_global_clear() {
+        let event = SessionDeletedEvent { session_id: None };
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({ "session_id": null })
+        );
     }
 
     #[test]

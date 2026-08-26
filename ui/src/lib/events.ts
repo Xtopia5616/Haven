@@ -1,5 +1,15 @@
 import { listen } from './tauri.ts';
 import logger from './logger.ts';
+import {
+	mapSessionEvent,
+	type SessionEventName,
+	type SessionEventPayloadMap,
+	type TauriEvent,
+} from './contracts/session.ts';
+
+type SessionListenerMap = Partial<{
+	[K in SessionEventName]: (event: TauriEvent<SessionEventPayloadMap[K]>) => void;
+}>;
 
 /**
  * Register many Tauri event listeners from a single map and return a handle
@@ -57,6 +67,25 @@ export function registerListeners(
 }
 
 /**
+ * Adapt session event payloads at the Tauri boundary. Routes and views must
+ * consume the camelCase payloads from `contracts/session.ts`, never raw
+ * snake_case wire fields.
+ */
+export function sessionEventListeners(
+	map: SessionListenerMap,
+): Record<string, (event: TauriEvent<unknown>) => void> {
+	return Object.fromEntries(
+		Object.entries(map).map(([eventName, handler]) => [
+			eventName,
+			(event: TauriEvent<unknown>) => {
+				const name = eventName as SessionEventName;
+				handler?.(mapSessionEvent({ ...event, event: name } as never) as never);
+			},
+		]),
+	);
+}
+
+/**
  * Register a single Tauri event listener with the same fail-safe semantics as
  * registerListeners. Returns a handle whose `dispose()` unregisters it.
  *
@@ -85,4 +114,17 @@ export async function registerOne(
 		logger.error(tag, `Failed to register listener for '${event}'`, e);
 		return { dispose() {} };
 	}
+}
+
+/** Register one typed session listener with the same safe cleanup semantics. */
+export async function registerSessionListener<K extends SessionEventName>(
+	event: K,
+	handler: (event: TauriEvent<SessionEventPayloadMap[K]>) => void,
+	{ tag = 'unknown' }: { tag?: string } = {},
+): Promise<{ dispose: () => void }> {
+	return registerOne(
+		event,
+		(rawEvent) => handler(mapSessionEvent({ ...rawEvent, event } as never)),
+		{ tag },
+	);
 }

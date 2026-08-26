@@ -1,6 +1,10 @@
 use crate::app_state::AppState;
 use crate::commands::SessionListResponse;
 use crate::commands::log_err;
+use crate::events::{
+    SESSION_DELETED_EVENT, SESSION_TITLE_UPDATED_EVENT, SessionDeletedEvent,
+    SessionTitleUpdatedEvent,
+};
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use haven_memory::repositories::sessions::Session;
@@ -233,11 +237,8 @@ pub async fn update_session_title(
         .update_session_title(&session_id, &title)
         .await;
     let _ = app.emit(
-        "session:title-updated",
-        serde_json::json!({
-            "session_id": session_id,
-            "title": title,
-        }),
+        SESSION_TITLE_UPDATED_EVENT,
+        SessionTitleUpdatedEvent { session_id, title },
     );
     Ok(())
 }
@@ -257,8 +258,10 @@ pub async fn delete_session(
     // fire for it; a dedicated `session:deleted` lets listeners (busy-session
     // tracking, per-session state) release the id immediately.
     let _ = app.emit(
-        "session:deleted",
-        serde_json::json!({ "session_id": session_id }),
+        SESSION_DELETED_EVENT,
+        SessionDeletedEvent {
+            session_id: Some(session_id),
+        },
     );
     Ok(())
 }
@@ -277,7 +280,10 @@ pub async fn clear_history(
     // `session_id: null` signals "every session was removed" so listeners clear
     // per-session state (e.g. the busy set) in one shot instead of one event
     // per deleted session.
-    let _ = app.emit("session:deleted", serde_json::json!({ "session_id": null }));
+    let _ = app.emit(
+        SESSION_DELETED_EVENT,
+        SessionDeletedEvent { session_id: None },
+    );
     Ok(count)
 }
 

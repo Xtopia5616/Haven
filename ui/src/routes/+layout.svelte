@@ -6,7 +6,7 @@
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { registerListeners } from '$lib/events.ts';
+	import { registerListeners, sessionEventListeners } from '$lib/events.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
@@ -642,21 +642,20 @@
 					hotkeyBinding = data.new_binding;
 				}
 			},
+			...sessionEventListeners({
 			'session:created': (event) => {
 				const data = event.payload;
-				const title = data.title || data.session_id;
+				const title = data.title || data.sessionId;
 				if (notifyCfg?.session_created?.in_app !== false) {
 					addNotification(`新会话: ${title}`, 'info', 4000);
 				}
-				if (data.session_id) {
-					lastSessionStatus.set(data.session_id, data.status || 'pending');
-				}
-				busySessions = new Set(busySessions).add(data.session_id);
+				lastSessionStatus.set(data.sessionId, data.status);
+				busySessions = new Set(busySessions).add(data.sessionId);
 				updateModelState('waiting', { idleTimeoutMs: 5000 });
 			},
 			'session:completed': (event) => {
 				const data = event.payload;
-				const title = data.title || data.session_id;
+				const title = data.title || data.sessionId;
 				if (notifyCfg?.session_completed?.in_app !== false) {
 					addNotification(`会话已完成: ${title}`, 'success');
 				}
@@ -666,11 +665,11 @@
 				// delete_session / clear_history remove sessions without any terminal
 				// `session:updated` (the session no longer exists), so release their
 				// ids from the busy set here — otherwise the chip would stay on
-				// "等待响应" for a session that is gone. `session_id: null` means all
+				// "等待响应" for a session that is gone. `sessionId: null` means all
 				// sessions were removed (clear_history).
-				const data = event.payload || {};
-				if (data.session_id) {
-					busySessions = new Set([...busySessions].filter((t) => t !== data.session_id));
+				const data = event.payload;
+				if (data.sessionId) {
+					busySessions = new Set([...busySessions].filter((t) => t !== data.sessionId));
 				} else {
 					busySessions = new Set();
 				}
@@ -681,7 +680,7 @@
 			},
 			'session:error': (event) => {
 				const data = event.payload;
-				const errMsg = data.error || data.session_id;
+				const errMsg = data.error || data.sessionId;
 				if (notifyCfg?.session_error?.in_app !== false) {
 					addNotification(`会话出错: ${errMsg}`, 'error', 5000);
 				}
@@ -690,8 +689,8 @@
 			},
 			'session:updated': (event) => {
 				const data = event.payload;
-				const title = data.title || data.session_id;
-				const tid = data.session_id;
+				const title = data.title || data.sessionId;
+				const tid = data.sessionId;
 				const prev = tid ? lastSessionStatus.get(tid) : undefined;
 				if (isBusyStatus(data.status)) {
 					// pending = queued; running = claimed (handler now emits
@@ -731,6 +730,7 @@
 					lastSessionStatus.set(tid, data.status);
 				}
 			},
+			}),
 			'mcp:status_change': (event) => {
 				const data = event.payload;
 				const name = data.name || '';

@@ -81,7 +81,7 @@
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.ts';
 	import { updateSessionMessages, clearSessionMessages, clearAllSessionMessages, resumeTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.ts';
-	import { registerOne } from '$lib/events.ts';
+	import { registerSessionListener } from '$lib/events.ts';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -104,9 +104,9 @@
 
 	onMount(async () => {
 		await loadSessions();
-		unlistenTitleUpdate = await registerOne('session:title-updated', (event) => {
-			const { session_id, title } = event.payload;
-			sessions = sessions.map(t => t.id === session_id ? { ...t, title } : t);
+		unlistenTitleUpdate = await registerSessionListener('session:title-updated', (event) => {
+			const { sessionId, title } = event.payload;
+			sessions = sessions.map(t => t.id === sessionId ? { ...t, title } : t);
 		}, { tag: 'memory' });
 		// Memory view is keep-alive mounted: it never remounts when the user
 		// switches back to this tab, so new conversations (and session
@@ -118,10 +118,10 @@
 			reloadTimer = setTimeout(loadSessions, 300);
 		};
 		unlistenLifecycle = await Promise.all([
-			registerOne('session:created', scheduleReload, { tag: 'memory' }),
-			registerOne('session:updated', scheduleReload, { tag: 'memory' }),
-			registerOne('session:completed', scheduleReload, { tag: 'memory' }),
-			registerOne('session:error', scheduleReload, { tag: 'memory' }),
+			registerSessionListener('session:created', scheduleReload, { tag: 'memory' }),
+			registerSessionListener('session:updated', scheduleReload, { tag: 'memory' }),
+			registerSessionListener('session:completed', scheduleReload, { tag: 'memory' }),
+			registerSessionListener('session:error', scheduleReload, { tag: 'memory' }),
 		]);
 	});
 

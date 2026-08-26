@@ -253,6 +253,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 - `docs/conventions.md` —— 日志 / 错误 / 通知 / 命令返回规范
 - `docs/naming.md` —— 各层命名与跨层 camelCase 边界
 - `docs/development-standards.md` —— 架构、契约、安全、测试与变更治理规范
+- `docs/ipc-contracts.md` —— Tauri 命令与事件的跨端 DTO 契约目录
 - `docs/stability-refactor-plan.md` —— 稳定性与可维护性重构计划（测试版可破坏性变更）
 - `docs/refactor-execution-guide.md` —— 重构实施顺序、阶段验收与执行模板
 

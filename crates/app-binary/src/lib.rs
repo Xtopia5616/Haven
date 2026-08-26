@@ -7,6 +7,10 @@ mod logging;
 mod notification;
 
 use crate::desktop::TrayStatus;
+use crate::events::{
+    SESSION_COMPLETED_EVENT, SESSION_CREATED_EVENT, SESSION_ERROR_EVENT,
+    SESSION_TITLE_UPDATED_EVENT, SESSION_UPDATED_EVENT, SessionErrorEvent, SessionLifecycleEvent,
+};
 use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
 use app_state::AppState;
@@ -62,12 +66,12 @@ impl TauriEmitter {
             AgentEvent::Thought { .. } => "agent:thought",
             AgentEvent::Action { .. } => "agent:action",
             AgentEvent::Observation { .. } => "agent:observation",
-            AgentEvent::SessionCreated(_) => "session:created",
-            AgentEvent::SessionCompleted { .. } => "session:completed",
-            AgentEvent::SessionUpdated { .. } => "session:updated",
-            AgentEvent::SessionError { .. } => "session:error",
+            AgentEvent::SessionCreated(_) => SESSION_CREATED_EVENT,
+            AgentEvent::SessionCompleted { .. } => SESSION_COMPLETED_EVENT,
+            AgentEvent::SessionUpdated { .. } => SESSION_UPDATED_EVENT,
+            AgentEvent::SessionError { .. } => SESSION_ERROR_EVENT,
             AgentEvent::Notification { .. } => "notification:show",
-            AgentEvent::TitleUpdated { .. } => "session:title-updated",
+            AgentEvent::TitleUpdated { .. } => SESSION_TITLE_UPDATED_EVENT,
             AgentEvent::BalancedModelActivated { .. } => "agent:balanced_model",
             AgentEvent::ThoughtChunk { .. } => "agent:thought_chunk",
             AgentEvent::ReasoningChunk { .. } => "agent:reasoning_chunk",
@@ -102,25 +106,35 @@ impl TauriEmitter {
     fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
         let mut payload = match event {
             AgentEvent::SessionCreated(session) => {
-                return serde_json::json!({
-                    "session_id": session.id,
-                    "status": session.status.as_str(),
-                    "title": session.title,
-                });
+                return serde_json::to_value(SessionLifecycleEvent {
+                    session_id: session.id.clone(),
+                    status: session.status.as_str().to_string(),
+                    title: session.title.clone(),
+                })
+                .expect("session lifecycle event is serializable");
             }
             AgentEvent::SessionCompleted { session_id, title } => {
-                return serde_json::json!({
-                    "session_id": session_id,
-                    "status": "completed",
-                    "title": title,
-                });
+                return serde_json::to_value(SessionLifecycleEvent {
+                    session_id: session_id.clone(),
+                    status: "completed".into(),
+                    title: Some(title.clone()),
+                })
+                .expect("session lifecycle event is serializable");
             }
             AgentEvent::SessionUpdated { session_id, status } => {
-                return serde_json::json!({
-                    "session_id": session_id,
-                    "status": status,
-                    "title": "",
-                });
+                return serde_json::to_value(SessionLifecycleEvent {
+                    session_id: session_id.clone(),
+                    status: status.clone(),
+                    title: Some(String::new()),
+                })
+                .expect("session lifecycle event is serializable");
+            }
+            AgentEvent::SessionError { session_id, error } => {
+                return serde_json::to_value(SessionErrorEvent {
+                    session_id: session_id.clone(),
+                    error: error.clone(),
+                })
+                .expect("session error event is serializable");
             }
             _ => Self::variant_payload(event),
         };
@@ -249,19 +263,25 @@ impl TauriEmitter {
     /// `{session_id, status, title}` —— `error` 字段只保留在 `session:error` 主通道。
     fn emit_secondary(&self, event: &AgentEvent) {
         let payload = match event {
-            AgentEvent::SessionCompleted { session_id, title } => serde_json::json!({
-                "session_id": session_id,
-                "status": "completed",
-                "title": title,
-            }),
-            AgentEvent::SessionError { session_id, .. } => serde_json::json!({
-                "session_id": session_id,
-                "status": "error",
-                "title": self.notifications.session_display_title(session_id),
-            }),
+            AgentEvent::SessionCompleted { session_id, title } => {
+                serde_json::to_value(SessionLifecycleEvent {
+                    session_id: session_id.clone(),
+                    status: "completed".into(),
+                    title: Some(title.clone()),
+                })
+                .expect("session lifecycle event is serializable")
+            }
+            AgentEvent::SessionError { session_id, .. } => {
+                serde_json::to_value(SessionLifecycleEvent {
+                    session_id: session_id.clone(),
+                    status: "error".into(),
+                    title: Some(self.notifications.session_display_title(session_id)),
+                })
+                .expect("session lifecycle event is serializable")
+            }
             _ => return,
         };
-        let _ = self.handle.emit("session:updated", payload);
+        let _ = self.handle.emit(SESSION_UPDATED_EVENT, payload);
     }
 }
 
@@ -1362,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_preserves_session_completed_and_updated_wire_shape() {
+    fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
         let completed = AgentEvent::SessionCompleted {
             session_id: "t".into(),
             title: "X".into(),
@@ -1381,6 +1401,15 @@ mod tests {
         assert_eq!(
             payload,
             json!({"session_id": "t", "status": "paused", "title": ""})
+        );
+
+        let errored = AgentEvent::SessionError {
+            session_id: "t".into(),
+            error: "sanitized failure".into(),
+        };
+        assert_eq!(
+            TauriEmitter::payload(&errored, None),
+            json!({"session_id": "t", "error": "sanitized failure"})
         );
     }
 

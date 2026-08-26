@@ -39,7 +39,7 @@
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
-	import { registerListeners } from '$lib/events.ts';
+	import { registerListeners, sessionEventListeners } from '$lib/events.ts';
 	import {
 		sessionMessagesStore,
 		sessionStore,
@@ -932,7 +932,7 @@
 	});
 
 	let activeSessionError = $state(false);
-	let sessionErrorId = $state(null);
+	let sessionErrorId = /** @type {string | null} */ ($state(null));
 
 	// Clear error state when the active session changes.
 	$effect(() => {
@@ -1405,8 +1405,9 @@
 		// events arriving while the page initializes are never missed.
 		const registrations = registerListeners(
 			{
+				...sessionEventListeners({
 				'session:created': (event) => {
-					const tid = event.payload?.session_id;
+					const tid = event.payload.sessionId;
 					if (tid) {
 						// Voice input appends the transcript to `_draft` before the
 						// backend session exists; once it is created, migrate those
@@ -1430,14 +1431,14 @@
 					loadSessions();
 				},
 				'session:updated': (event) => {
-					const data = event.payload || {};
-					const isActive = data.session_id && activeSessionId && data.session_id === activeSessionId;
+					const data = event.payload;
+					const isActive = activeSessionId && data.sessionId === activeSessionId;
 					// A resume (pending) means the user's answer was received:
 					// stop showing the awaiting indicator on ask cards. Note the
 					// ask pause itself arrives as 'paused' right after the card is
 					// created, so that status must NOT clear the indicator.
 					if (isActive && data.status === 'pending') {
-						clearAskAwaiting(data.session_id);
+						clearAskAwaiting(data.sessionId);
 					}
 					// A resumed session (pending/running) is no longer in the
 					// errored state the continue banner describes: dismiss a
@@ -1445,8 +1446,7 @@
 					// (e.g. when the retry started before the continue-session
 					// invoke resolved, or a message resumed the session).
 					if (
-						data.session_id &&
-						sessionErrorId === data.session_id &&
+						sessionErrorId === data.sessionId &&
 						isBusyStatus(data.status)
 					) {
 						sessionErrorId = null;
@@ -1457,56 +1457,57 @@
 					// from the DB on demand) so completed conversations don't
 					// accumulate in memory for the whole session.
 					if (data.status === 'completed' || data.status === 'error') {
-						evictTerminalSessionMemory(data.session_id);
+						evictTerminalSessionMemory(data.sessionId);
 						// The ACTIVE session is skipped by the eviction guard, but
 						// its streaming bookkeeping is dead too: no further chunk
 						// events will reference these (step, run) keys. Also drop
 						// leftover carets on Thinking / thought bubbles that never
 						// got an `agent:thought` snap (DeepSeek reasoning-only turns).
-						if (data.session_id && activeSessionId === data.session_id) {
-							updateSessionMessages(data.session_id, (m) =>
+						if (activeSessionId === data.sessionId) {
+							updateSessionMessages(data.sessionId, (m) =>
 								m.map((x) => (x.streaming ? { ...x, streaming: false } : x)),
 							);
 						}
-						clearStepBlockIds(data.session_id);
+						clearStepBlockIds(data.sessionId);
 					}
 					loadSessions();
 				},
 				'session:completed': (event) => {
-					const data = event.payload || {};
-					if (data.session_id && activeSessionId && data.session_id === activeSessionId) {
-						clearAskAwaiting(data.session_id);
-						updateSessionMessages(data.session_id, (m) =>
+					const data = event.payload;
+					if (activeSessionId && data.sessionId === activeSessionId) {
+						clearAskAwaiting(data.sessionId);
+						updateSessionMessages(data.sessionId, (m) =>
 							m.map((x) => (x.streaming ? { ...x, streaming: false } : x)),
 						);
 					}
-					evictTerminalSessionMemory(data.session_id);
-					clearStepBlockIds(data.session_id);
+					evictTerminalSessionMemory(data.sessionId);
+					clearStepBlockIds(data.sessionId);
 					loadSessions();
 				},
 				'session:error': (event) => {
-					const { session_id } = event.payload;
-					if (session_id && session_id === activeSessionId) {
-						sessionErrorId = session_id;
+					const { sessionId } = event.payload;
+					if (sessionId === activeSessionId) {
+						sessionErrorId = sessionId;
 						activeSessionError = true;
-						clearAskAwaiting(session_id);
+						clearAskAwaiting(sessionId);
 						// The session died mid-tool-call: every streaming block
 						// (tool placeholder, reasoning, thought) would stay
 						// in its "expanded/streaming" state forever otherwise.
 						// Finalize them all so the UI reflects the stop.
-						updateSessionMessages(session_id, (m) =>
+						updateSessionMessages(sessionId, (m) =>
 							m.map((x) => (x.streaming ? { ...x, streaming: false } : x))
 						);
 					}
-					evictTerminalSessionMemory(session_id);
-					clearStepBlockIds(session_id);
+					evictTerminalSessionMemory(sessionId);
+					clearStepBlockIds(sessionId);
 					loadSessions();
 				},
 				'session:title-updated': (event) => {
-					const { session_id, title } = event.payload;
-					const idx = sessions.findIndex((t) => t.id === session_id);
+					const { sessionId, title } = event.payload;
+					const idx = sessions.findIndex((t) => t.id === sessionId);
 					if (idx >= 0) sessions[idx] = { ...sessions[idx], title };
 				},
+				}),
 				'hotkey:rebind': (event) => {
 					const data = event.payload || {};
 					if (data.new_binding) {
