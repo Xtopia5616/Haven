@@ -12,6 +12,7 @@
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { emptyRoleSlot, ensureRoleSlots, modelCards } from '$lib/modelRoles.ts';
 	import { inputFormats } from '$lib/inputFormats.ts';
+	import { inputElementValue, withBooleanValue, withEventValue, withNumberValue, withStringValue } from '$lib/typedCallbacks.js';
 	import {
 		API_STYLE_OPTIONS,
 		apiStylePreset,
@@ -76,7 +77,7 @@
 	 * @param {string} key
 	 */
 	function roleFor(key) {
-		return (llmConfig.roles || []).find((/** @type {any} */ r) => r.role === key) || null;
+		return (/** @type {any[]} */ (llmConfig.roles || [])).find((r) => r.role === key) || null;
 	}
 
 	/** Insert a default slot for a role (returns it), keeping the shared state
@@ -96,11 +97,11 @@
 	 * @param {string} name
 	 */
 	function providerByName(name) {
-		return (llmConfig.providers || []).find((/** @type {any} */ p) => p.name === name);
+		return (/** @type {any[]} */ (llmConfig.providers || [])).find((p) => p.name === name);
 	}
 
 	function providerOptions() {
-		return [{ value: '', label: '未配置' }, ...(llmConfig.providers || []).map((/** @type {any} */ p) => ({ value: p.name, label: p.name }))];
+		return [{ value: '', label: '未配置' }, ...(/** @type {any[]} */ (llmConfig.providers || [])).map((p) => ({ value: p.name, label: p.name }))];
 	}
 
 	/**
@@ -134,7 +135,7 @@
 	function applyDiscoveredModelMeta(slot, providerName, modelId, opts = {}) {
 		const overwrite = !!opts.overwrite;
 		const list = modelsByProvider[providerName] || [];
-		const m = list.find((/** @type {any} */ x) => x.id === modelId);
+		const m = list.find((x) => x.id === modelId);
 		if (!m) {
 			if (overwrite) {
 				slot.context_window = null;
@@ -204,7 +205,7 @@
 	 */
 	function roleModelOptions(providerName) {
 		if (!providerName) return [];
-		return (modelsByProvider[providerName] || []).map((/** @type {any} */ m) => ({ value: m.id, label: m.name || m.id }));
+		return (modelsByProvider[providerName] || []).map((m) => ({ value: m.id, label: m.name || m.id }));
 	}
 
 	/**
@@ -258,15 +259,15 @@
 	}
 
 	async function refreshAllModels(silent = false) {
-		const providers = (llmConfig.providers || []).filter((/** @type {any} */ p) => p.base_url.trim());
+		const providers = (/** @type {any[]} */ (llmConfig.providers || [])).filter((p) => p.base_url.trim());
 		if (providers.length === 0) return;
 		refreshingAll = true;
 		try {
-			if (providers.some((/** @type {any} */ p) => p.api_key)) {
+			if (providers.some((p) => p.api_key)) {
 				// Some provider has an unsaved key (typed in the dialog): fetch
 				// each provider directly so a fresh key works before it is
 				// persisted by the settings save.
-				await Promise.allSettled(providers.map((/** @type {any} */ p) => refreshProviderModels(p.name)));
+				await Promise.allSettled(providers.map((p) => refreshProviderModels(p.name)));
 			} else {
 				const map = await invoke('discover_all_models');
 				modelsByProvider = map || {};
@@ -526,8 +527,8 @@
 			addNotification('请填写 Provider 名称', 'error', 3000);
 			return;
 		}
-		const others = llmConfig.providers.filter((/** @type {any} */ _, /** @type {number} */ i) => i !== idx);
-		if (others.some((/** @type {any} */ p) => p.name === name)) {
+		const others = (/** @type {any[]} */ (llmConfig.providers || [])).filter((_, i) => i !== idx);
+		if (others.some((p) => p.name === name)) {
 			addNotification('Provider 名称已存在', 'error', 3000);
 			return;
 		}
@@ -679,27 +680,27 @@
 						<h4>输入 · 采集</h4>
 						<div class="form-row switch-row">
 							<span class="switch-label">录音转写使用专用音频模型</span>
-							<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(/** @type {boolean} */ v) => { llmConfig.stt_use_audio_model = v; }} />
+							<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={withBooleanValue(function handleChange (v) { llmConfig.stt_use_audio_model = v; })} />
 						</div>
 						<div class="form-row">
 							<label for="audio-sample-rate">Sample Rate</label>
-							<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={(/** @type {number} */ v) => { audio.sample_rate = v; }} />
+							<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={withNumberValue(function handleChange (v) { audio.sample_rate = v; })} />
 						</div>
 						<div class="form-row">
 							<label for="audio-channels">Channels</label>
-							<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={(/** @type {number} */ v) => { audio.channels = v; }} />
+							<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={withNumberValue(function handleChange (v) { audio.channels = v; })} />
 						</div>
 						<div class="form-row">
 							<label for="audio-max-duration">Max Duration (sec)</label>
-							<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={(/** @type {number} */ v) => { audio.max_duration_secs = v; }} />
+							<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={withNumberValue(function handleChange (v) { audio.max_duration_secs = v; })} />
 						</div>
 						<div class="form-row">
 							<label for="audio-silence-timeout">Silence Timeout (ms)</label>
-							<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={(/** @type {number} */ v) => { audio.silence_timeout_ms = v; }} />
+							<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={withNumberValue(function handleChange (v) { audio.silence_timeout_ms = v; })} />
 						</div>
 						<div class="form-row">
 							<label for="audio-vad-threshold">VAD Threshold</label>
-							<input id="audio-vad-threshold" type="range" class="md-slider" value={audio.vad_threshold} min="0" max="1" step="0.05" style="--vad-fill: {audio.vad_threshold * 100}%" oninput={(/** @type {Event} */ e) => { audio.vad_threshold = Number(/** @type {HTMLInputElement} */ (e.currentTarget).value); }} />
+							<input id="audio-vad-threshold" type="range" class="md-slider" value={audio.vad_threshold} min="0" max="1" step="0.05" style="--vad-fill: {audio.vad_threshold * 100}%" oninput={withEventValue(function handleInput (e) { audio.vad_threshold = Number(inputElementValue(e)); })} />
 							<span class="range-value">{audio.vad_threshold}</span>
 						</div>
 					</div>
@@ -725,7 +726,7 @@
 										options={mcpServerNames.map((n) => ({ value: n, label: n }))}
 										placeholder="Pick a configured MCP server"
 										loading={false}
-										onChange={(/** @type {string} */ v) => { stt.mcp_server = v; }}
+										onChange={withStringValue(function handleChange (v) { stt.mcp_server = v; })}
 									/>
 								</div>
 							{:else if isNamedSttProvider(stt.provider)}
@@ -738,7 +739,7 @@
 											options={sttModelOptions(sttBackendKind(stt.provider))}
 											placeholder={sttModelPlaceholder(sttBackendKind(stt.provider))}
 											loading={sttFetching}
-											onChange={(/** @type {string} */ v) => { stt.model = v; }}
+											onChange={withStringValue(function handleChange (v) { stt.model = v; })}
 											onFocus={() => scheduleSttFetch()}
 										/>
 									</div>
@@ -749,11 +750,11 @@
 							{#if stt.provider !== 'none'}
 								<div class="model-field">
 									<span class="field-label">Timeout (sec)</span>
-									<MaterialNumberField id="voice-stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(/** @type {number} */ v) => { stt.timeout_secs = v; }} />
+									<MaterialNumberField id="voice-stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={withNumberValue(function handleChange (v) { stt.timeout_secs = v; })} />
 								</div>
 								<div class="model-field">
 									<span class="field-label">Min Confidence</span>
-									<input id="voice-stt-min-confidence" type="range" class="md-slider" value={stt.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {stt.min_confidence * 100}%" oninput={(/** @type {Event} */ e) => { stt.min_confidence = Number(/** @type {HTMLInputElement} */ (e.currentTarget).value); }} />
+									<input id="voice-stt-min-confidence" type="range" class="md-slider" value={stt.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {stt.min_confidence * 100}%" oninput={withEventValue(function handleInput (e) { stt.min_confidence = Number(inputElementValue(e)); })} />
 									<span class="range-value">{stt.min_confidence}</span>
 								</div>
 							{/if}
@@ -766,7 +767,7 @@
 						<div class="stt-grid">
 							<div class="model-field">
 								<span class="field-label">Provider</span>
-								<MaterialSelect id="tts-provider" value={tts.provider} options={mediaProviderOptions(tts.provider)} onChange={(/** @type {string} */ v) => { tts.provider = v; }} />
+							<MaterialSelect id="tts-provider" value={tts.provider} options={mediaProviderOptions(tts.provider)} onChange={withStringValue(function handleChange (v) { tts.provider = v; })} />
 							</div>
 							{#if tts.provider !== 'none'}
 								{#if mediaProviderKind(tts.provider, 'tts') === 'elevenlabs'}
@@ -788,7 +789,7 @@
 								{/if}
 								<div class="model-field">
 									<span class="field-label">Timeout (sec)</span>
-									<MaterialNumberField id="tts-timeout" value={tts.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { tts.timeout_secs = v; }} />
+									<MaterialNumberField id="tts-timeout" value={tts.timeout_secs} min={5} max={300} onChange={withNumberValue(function handleChange (v) { tts.timeout_secs = v; })} />
 								</div>
 							{/if}
 						</div>
@@ -802,7 +803,7 @@
 						</p>
 						<div class="form-row switch-row">
 							<span class="switch-label">图片理解使用专用视觉模型</span>
-							<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(/** @type {boolean} */ v) => { llmConfig.vision_use_image_model = v; }} />
+							<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={withBooleanValue(function handleChange (v) { llmConfig.vision_use_image_model = v; })} />
 						</div>
 						<div class="form-row">
 							<label for="max-attachment-images">单条消息最多图片数</label>
@@ -812,7 +813,7 @@
 								min={1}
 								max={20}
 								step={1}
-								onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_images = v; }}
+								onChange={withNumberValue(function handleChange (v) { contextLimits.max_attachment_images = v; })}
 							/>
 						</div>
 						<div class="form-row">
@@ -823,7 +824,7 @@
 								min={1}
 								max={50}
 								step={1}
-								onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
+								onChange={withNumberValue(function handleChange (v) { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); })}
 							/>
 						</div>
 						<div class="form-row">
@@ -834,7 +835,7 @@
 								min={512}
 								max={4096}
 								step={64}
-								onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_dim_px = v; }}
+								onChange={withNumberValue(function handleChange (v) { contextLimits.max_attachment_image_dim_px = v; })}
 							/>
 						</div>
 						<div class="form-row">
@@ -845,7 +846,7 @@
 								min={0.1}
 								max={1}
 								step={0.05}
-								onChange={(/** @type {number} */ v) => { contextLimits.attachment_image_jpeg_quality = v; }}
+								onChange={withNumberValue(function handleChange (v) { contextLimits.attachment_image_jpeg_quality = v; })}
 							/>
 						</div>
 					</div>
@@ -859,7 +860,7 @@
 									id="img-ocr-provider"
 									value={ocr.provider}
 									options={OCR_PROVIDER_OPTIONS}
-									onChange={(/** @type {string} */ v) => { ocr.provider = v; }}
+									onChange={withStringValue(function handleChange (v) { ocr.provider = v; })}
 								/>
 							</div>
 							{#if ocr.provider === 'baidu' || ocr.provider === 'tencent' || ocr.provider === 'azure'}
@@ -891,11 +892,11 @@
 							{#if ocr.provider !== 'none'}
 								<div class="model-field">
 									<span class="field-label">Timeout (sec)</span>
-									<MaterialNumberField id="img-ocr-timeout" value={ocr.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { ocr.timeout_secs = v; }} />
+									<MaterialNumberField id="img-ocr-timeout" value={ocr.timeout_secs} min={5} max={300} onChange={withNumberValue(function handleChange (v) { ocr.timeout_secs = v; })} />
 								</div>
 								<div class="model-field">
 									<span class="field-label">Min Confidence</span>
-									<input id="img-ocr-min-confidence" type="range" class="md-slider" value={ocr.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {ocr.min_confidence * 100}%" oninput={(/** @type {Event} */ e) => { ocr.min_confidence = Number(/** @type {HTMLInputElement} */ (e.currentTarget).value); }} />
+									<input id="img-ocr-min-confidence" type="range" class="md-slider" value={ocr.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {ocr.min_confidence * 100}%" oninput={withEventValue(function handleInput (e) { ocr.min_confidence = Number(inputElementValue(e)); })} />
 									<span class="range-value">{ocr.min_confidence}</span>
 								</div>
 							{/if}
@@ -907,7 +908,7 @@
 						<div class="stt-grid">
 							<div class="model-field">
 								<span class="field-label">Provider</span>
-								<MaterialSelect id="ig-provider" value={imageGen.provider} options={mediaProviderOptions(imageGen.provider)} onChange={(/** @type {string} */ v) => { imageGen.provider = v; }} />
+								<MaterialSelect id="ig-provider" value={imageGen.provider} options={mediaProviderOptions(imageGen.provider)} onChange={withStringValue(function handleChange (v) { imageGen.provider = v; })} />
 							</div>
 							{#if imageGen.provider !== 'none'}
 								{#if mediaProviderKind(imageGen.provider, 'image_gen')}
@@ -917,7 +918,7 @@
 									</div>
 									<div class="model-field">
 										<span class="field-label">Timeout (sec)</span>
-										<MaterialNumberField id="ig-timeout" value={imageGen.timeout_secs} min={10} max={600} onChange={(/** @type {number} */ v) => { imageGen.timeout_secs = v; }} />
+										<MaterialNumberField id="ig-timeout" value={imageGen.timeout_secs} min={10} max={600} onChange={withNumberValue(function handleChange (v) { imageGen.timeout_secs = v; })} />
 									</div>
 								{:else}
 									<p class="model-hint">该 Provider 不支持文生图（需 OpenAI 兼容或 Gemini）。</p>
@@ -934,7 +935,7 @@
 							min={1}
 							max={20}
 							step={1}
-							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_files = v; }}
+							onChange={withNumberValue(function handleChange (v) { contextLimits.max_attachment_files = v; })}
 						/>
 					</div>
 					<div class="form-row">
@@ -945,7 +946,7 @@
 							min={1}
 							max={100}
 							step={1}
-							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); }}
+							onChange={withNumberValue(function handleChange (v) { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); })}
 						/>
 					</div>
 				{/if}
@@ -1015,7 +1016,7 @@
 </div>
 {/if}
 
-{#snippet rolePicker(/** @type {any} */ card)}
+{#snippet rolePicker(card = /** @type {any} */ (null))}
 	{@const slot = roleFor(card.key)}
 	{#if slot}
 	<div class="settings-card">
@@ -1030,7 +1031,7 @@
 					id="{card.prefix}-provider"
 					value={slot.provider}
 					options={providerOptions()}
-					onChange={(/** @type {string} */ v) => setRoleProvider(card.key, v)}
+					onChange={withStringValue(function handleChange (v) { setRoleProvider(card.key, v); })}
 				/>
 			</div>
 			<div class="model-field">
@@ -1042,7 +1043,7 @@
 						options={roleModelOptions(slot.provider)}
 						placeholder={slot.model ? slot.model : '从获取的模型列表中选择或输入'}
 						loading={roleModelLoading(slot.provider)}
-						onChange={(/** @type {string} */ v) => setRoleModel(card.key, v)}
+						onChange={withStringValue(function handleChange (v) { setRoleModel(card.key, v); })}
 						onFocus={() => {
 							if (!modelsByProvider[slot.provider]?.length) {
 								refreshProviderModels(slot.provider);
@@ -1063,7 +1064,7 @@
 					step={0.1}
 					min={0}
 					max={2}
-					onChange={(/** @type {number} */ v) => { slot.temperature = v; }}
+					onChange={withNumberValue(function handleChange (v) { slot.temperature = v; })}
 				/>
 			</div>
 			<div class="model-field">
@@ -1075,9 +1076,9 @@
 						: 0}
 					step={1}
 					min={0}
-					onChange={(/** @type {number} */ v) => {
+					onChange={withNumberValue(function handleChange (v) {
 						slot.context_window = v > 0 ? Math.round(v * 1000) : null;
-					}}
+					})}
 				/>
 			</div>
 			<div class="model-field">
@@ -1087,7 +1088,7 @@
 					value={slot.cost_per_1k_input_tokens ?? 0}
 					step={0.01}
 					min={0}
-					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_input_tokens = v; }}
+					onChange={withNumberValue(function handleChange (v) { slot.cost_per_1k_input_tokens = v; })}
 				/>
 			</div>
 			<div class="model-field">
@@ -1097,7 +1098,7 @@
 					value={slot.cost_per_1k_output_tokens ?? 0}
 					step={0.01}
 					min={0}
-					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_output_tokens = v; }}
+					onChange={withNumberValue(function handleChange (v) { slot.cost_per_1k_output_tokens = v; })}
 				/>
 			</div>
 			<div class="model-field">
@@ -1107,7 +1108,7 @@
 					value={slot.cost_per_1k_cache_read_tokens ?? 0}
 					step={0.01}
 					min={0}
-					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_cache_read_tokens = v; }}
+					onChange={withNumberValue(function handleChange (v) { slot.cost_per_1k_cache_read_tokens = v; })}
 				/>
 			</div>
 			<div class="model-field">
@@ -1117,7 +1118,7 @@
 					value={slot.cost_per_1k_cache_write_tokens ?? 0}
 					step={0.01}
 					min={0}
-					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_cache_write_tokens = v; }}
+					onChange={withNumberValue(function handleChange (v) { slot.cost_per_1k_cache_write_tokens = v; })}
 				/>
 			</div>
 		</div>
@@ -1140,7 +1141,7 @@
 					id="prov-api-style"
 					value={pdForm.api_style}
 					options={API_STYLE_OPTIONS}
-					onChange={(/** @type {string} */ v) => applyApiStylePreset(v)}
+					onChange={withStringValue(function handleChange (v) { applyApiStylePreset(v); })}
 				/>
 			</div>
 			{#if apiStylePreset(pdForm.api_style)}

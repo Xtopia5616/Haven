@@ -112,7 +112,7 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.4 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `inject` / `snapshot_io` / `retries` / `hooks` / `transcript`），流式响应、快照/分支、压缩。
+- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `transcript`），流式响应、快照/分支、压缩；`context` 只收集上下文来源，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界。
 - **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
 - `layer.rs` + `ingress.rs` / `resume.rs`：对外入口与 resume 投影。
@@ -148,7 +148,7 @@ Parent session                    Child session(s)
 | 总线 | `haven-tools` `inbox.rs` | `%APPDATA%/haven/inbox`：`agents.json` + 每 agent JSONL 邮箱 / archive；进程内 `InboxNotifier` |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
 | 接线 | `haven-app-binary` `app_state` | 安装 `AgentSpawner` 回调（tools 不依赖 agent） |
-| 运行时 | `react/inject.rs` | 每步 heartbeat；通知或每 3 步 poll inbox；注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
+| 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步 poll inbox 与低信任格式化；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
 | 生命周期 | `session/status.rs` | 终端态/`end_session` → BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
 | 信任 / 记忆 | `inference.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
 | UI | 对话页 tool card | `agent` 结构化卡片；自动同伴邮件以 `agent`/`inbox`/`auto` 卡片展示；kickoff 左侧「低信任委托」 |

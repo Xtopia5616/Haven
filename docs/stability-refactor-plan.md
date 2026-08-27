@@ -57,6 +57,8 @@
 - 2026-08-26：移除 Phase-7 ReAct 快照重建和未命名媒体 provider 的本地凭据回退；旧快照与媒体配置要求完整重置后重新配置（ADR 0008）。
 - 2026-08-27：补齐应用壳层与 Agent 事件 DTO：39 个事件统一由 Rust 名称常量、命名 wire DTO 和前端 contract 登记；新增 `scripts/check-ipc-events.ps1` 保护 channel 集合与 snake_case → camelCase 边界（ADR 0009）。
 - 2026-08-27：媒体能力的持久化配置仅保留命名 provider 与能力参数；STT/TTS/文生图凭据改为解析后的运行时 DTO，旧媒体 provider 名或本地凭据会备份配置并以默认值启动，避免再次读入旧兼容字段（ADR 0008）。
+- 2026-08-27：P2 Agent 首个切片完成：将 ReAct 回合结束流程从 `react/inject.rs` 移至独立 `react/turn_end.rs`，以 `TurnEndInput` 固定最终事件、并发注入、分支点与暂停的调用边界；行为与持久化契约不变（ADR 0010）。
+- 2026-08-27：P2 Agent 上下文来源切片完成：以 `react/context.rs` 的 `ContextSource` 聚合队列与 inbox，`react/inject.rs` 仅把拥有所有权的批次经 `apply_transcript` 投影，保留既有顺序、ask gate 清除和低信任净化（ADR 0011）。
 
 ### P2：按稳定接口拆解热点
 

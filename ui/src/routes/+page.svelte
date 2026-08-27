@@ -16,6 +16,7 @@
 
 <script>
 	import logger from '$lib/logger.ts';
+	import { withAnyValue } from '$lib/typedCallbacks.js';
 	import { formatError } from '$lib/formatError.ts';
 	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
 	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
@@ -1174,7 +1175,7 @@
 	// delta for the per-frame flush (see flushPendingChunks).
 	/** @param {boolean} isThought @param {string | undefined} msgType */
 	function chunkHandler(isThought, msgType) {
-		return (/** @type {any} */ event) => {
+		return withAnyValue((event) => {
 			const data = event.payload;
 			const tid = data.sessionId;
 			const sid = data.messageId;
@@ -1216,7 +1217,7 @@
 			if (!chunkFlushRaf) {
 				chunkFlushRaf = requestAnimationFrame(flushPendingChunks);
 			}
-		};
+		});
 	}
 
 	// Populate the toolbar model switcher from a per-session cache so page
@@ -1288,9 +1289,9 @@
 	 * @param {any} s
 	 */
 	function applyDefaultModelFromSettings(s) {
-		const dmRole = (s?.llm?.roles || []).find((/** @type {any} */ r) => r.role === 'default_model');
+		const dmRole = (/** @type {any[]} */ (s?.llm?.roles || [])).find((r) => r.role === 'default_model');
 		const dmProvider = dmRole?.provider
-			? (s?.llm?.providers || []).find((/** @type {any} */ p) => p.name === dmRole.provider)
+			? (/** @type {any[]} */ (s?.llm?.providers || [])).find((p) => p.name === dmRole.provider)
 			: null;
 		const dmModel = dmRole?.model || '';
 		currentModelId = dmModel;

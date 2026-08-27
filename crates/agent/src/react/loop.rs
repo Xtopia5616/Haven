@@ -1,11 +1,12 @@
 //! Thin ReAct loop driver (`run_react_loop`).
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
+//! Turn-end persistence is delegated to [`super::turn_end`].
 
-use super::inject::TurnEndOutcome;
 use super::retries::{AfterLlmAction, ResponsePolicyState};
 use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
+use super::turn_end::{TurnEndInput, TurnEndOutcome};
 use super::*;
 use crate::types::{BranchPoint, RunBudget, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
@@ -731,16 +732,16 @@ impl ReActEngine {
                 let msg = thought.unwrap_or_else(|| "No action decided.".into());
                 // Phase 7 / C6: shared turn-end (empty actions → TurnEnd).
                 match self
-                    .finish_turn_end(
-                        &ctx,
+                    .finish_turn_end(TurnEndInput {
+                        ctx: &ctx,
                         events,
                         canonical,
                         branch_points,
-                        &msg,
-                        response.reasoning.clone(),
-                        response.thinking_blocks.clone(),
-                        search_pushed,
-                    )
+                        final_text: &msg,
+                        reasoning: response.reasoning.clone(),
+                        thinking_blocks: response.thinking_blocks.clone(),
+                        already_pushed: search_pushed,
+                    })
                     .await?
                 {
                     TurnEndOutcome::Continue => continue,
@@ -758,16 +759,16 @@ impl ReActEngine {
                 // Search context may already be in the canonical
                 // (`prepare_search_context`) — do not duplicate the assistant.
                 match self
-                    .finish_turn_end(
-                        &ctx,
+                    .finish_turn_end(TurnEndInput {
+                        ctx: &ctx,
                         events,
                         canonical,
                         branch_points,
-                        &final_text,
-                        response.reasoning.clone(),
-                        response.thinking_blocks.clone(),
-                        search_pushed,
-                    )
+                        final_text: &final_text,
+                        reasoning: response.reasoning.clone(),
+                        thinking_blocks: response.thinking_blocks.clone(),
+                        already_pushed: search_pushed,
+                    })
                     .await?
                 {
                     TurnEndOutcome::Continue => continue,

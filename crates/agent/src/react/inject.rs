@@ -4,31 +4,12 @@
 //! Split from `react.rs` (Phase 1 mechanical extract). Phase 6 / B3: inject
 //! origin is structured [`InjectSource`]; prefixes render via
 //! `InjectSource::render_prefix`. Phase 6 / H1: user injects go through
-//! [`ReActEngine::apply_transcript`].
+//! [`ReActEngine::apply_transcript`]. Turn-end orchestration lives in
+//! [`super::turn_end`] so this module remains the context projection adapter.
 
+use super::context::{PendingContext, PendingContextBatch};
 use super::*;
-use haven_common::types::InjectSource;
 use haven_tools::inbox::{Envelope, MessageType};
-
-/// Fallback interval (in ReAct steps) for the automatic cross-session inbox
-/// check. Delivery notifications drive the check in-process (immediate), and
-/// this cadence only catches missed notifications (e.g. another process
-/// wrote to the mailbox).
-const MESSAGING_POLL_EVERY_STEPS: u32 = 3;
-
-/// Per-message text cap when injecting cross-session messages into the
-/// model context (defensive: a full message is at most 16 KiB, but a burst
-/// must not flood the observation budget).
-const MESSAGING_INJECT_CHARS: usize = 400;
-
-/// One pending context item ready to become a transcript user-inject event.
-/// Queues own their data; this view only borrows it while applying the event.
-struct UserContext<'a> {
-    source: InjectSource,
-    text: &'a str,
-    attachments: &'a [MessageAttachment],
-    message_id: Option<&'a str>,
-}
 
 impl ReActEngine {
     /// Drain user-facing context into the canonical message list: follow-ups
@@ -46,90 +27,43 @@ impl ReActEngine {
         events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
     ) -> bool {
-        let mut injected = false;
-        let mut cleared_ask = false;
-
-        // One combined drain pass instead of three separate queue reads:
-        // the ses-map lock is taken once per step instead of three times.
-        let (follow_ups, steering, action_results) =
-            self.executor.drain_pending_context(&ctx.session_id).await;
-        for follow_up in &follow_ups {
-            // A reply to a pending `ask` is injected as a paired answer so
-            // the model sees the old question as resolved instead of treating
-            // it as a second open question to answer again.
-            let source = if follow_up.is_answer {
-                cleared_ask = true;
-                InjectSource::Answer
-            } else {
-                InjectSource::FollowUp
-            };
-            self.push_user_context(
-                ctx,
-                events,
-                canonical,
-                UserContext {
-                    source,
-                    text: &follow_up.text,
-                    attachments: &follow_up.attachments,
-                    message_id: follow_up.message_id.as_deref(),
-                },
-            )
+        let PendingContextBatch { items, clears_ask } = self
+            .context_source
+            .drain_pending_context(&ctx.session_id)
             .await;
-            injected = true;
-        }
-
-        for s in &steering {
-            // Mid-run steering marked as answer at the ask-pause boundary
-            // (C3) uses the Answer prefix too — no queue transfer required.
-            let source = if s.is_answer {
-                cleared_ask = true;
-                InjectSource::Answer
-            } else {
-                InjectSource::Steering
-            };
-            self.push_user_context(
-                ctx,
-                events,
-                canonical,
-                UserContext {
-                    source,
-                    text: &s.text,
-                    attachments: &s.attachments,
-                    message_id: s.message_id.as_deref(),
-                },
-            )
-            .await;
-            injected = true;
-        }
-
-        if cleared_ask {
+        if clears_ask {
             self.executor
                 .clear_awaiting_answer_persisted(&ctx.session_id)
                 .await;
         }
-
-        // Deliver completed background-action results as context. Kept
-        // separate from user queues so action output is never mistaken for a
-        // user reply. Payload is self-labelled (`[Background action result]…`);
-        // InjectSource is ActionResult — UI gets Supplement (in-chat wake
-        // card) but no thought-step DB row (see UserInject ActionResult arm).
-        for s in &action_results {
-            self.push_user_context(
-                ctx,
-                events,
-                canonical,
-                UserContext {
-                    source: InjectSource::ActionResult,
-                    text: s,
-                    attachments: &[],
-                    message_id: None,
-                },
-            )
-            .await;
-            injected = true;
+        let injected = !items.is_empty();
+        for item in items {
+            self.apply_pending_context(ctx, events, canonical, item)
+                .await;
         }
 
         injected
+    }
+
+    async fn apply_pending_context(
+        &self,
+        ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
+        canonical: &mut Vec<CanonicalMessage>,
+        context: PendingContext,
+    ) {
+        self.apply_transcript(
+            ctx,
+            TranscriptEvent::UserInject {
+                source: context.source,
+                text: context.text,
+                attachments: context.attachments,
+                message_id: context.message_id,
+            },
+            events,
+            canonical,
+        )
+        .await;
     }
 
     /// Cross-session messaging integration, run at the top of every ReAct
@@ -140,8 +74,8 @@ impl ReActEngine {
     ///    and `agent` operation=list / the UI can show what a session is about.
     /// 2. **Automatic inbox check** — drain the mailbox when an in-process
     ///    delivery notification arrived (push, immediate) or every
-    ///    [`MESSAGING_POLL_EVERY_STEPS`] steps (fallback for cross-process
-    ///    writers). Each message is injected as low-trust user context for
+    ///    the fallback cadence (three steps, for cross-process writers).
+    ///    Each message is injected as low-trust user context for
     ///    the next LLM call — no reliance on the agent remembering to poll.
     /// 3. **Receipts** — freshly read messages are auto-acked so senders
     ///    learn their message was consumed.
@@ -152,235 +86,11 @@ impl ReActEngine {
         events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
     ) {
-        // Session title for the registry (read once from the DB, then cached
-        // per session; never hold the engine mutex across an await).
-        let cached_title = {
-            let st = self.messaging.lock();
-            st.title_cache.get(session_id).cloned()
-        };
-        let title = match cached_title {
-            Some(t) => t,
-            None => {
-                let t = self
-                    .db
-                    .run_blocking({
-                        let sid = session_id.to_string();
-                        move |db| {
-                            let title = db.get_session(&sid).ok().flatten().and_then(|s| s.title);
-                            Ok::<Option<String>, anyhow::Error>(title)
-                        }
-                    })
-                    .await
-                    .unwrap_or(None);
-                self.messaging
-                    .lock()
-                    .title_cache
-                    .insert(session_id.to_string(), t.clone());
-                t
-            }
-        };
-
-        let (bus, due) = {
-            let mut st = self.messaging.lock();
-            let bus = st.bus.clone();
-            st.steps_since_poll += 1;
-            let notified = st.rx.has_changed().unwrap_or(false);
-            if notified {
-                let _ = st.rx.borrow_and_update();
-            }
-            let due = notified || st.steps_since_poll >= MESSAGING_POLL_EVERY_STEPS;
-            if due {
-                st.steps_since_poll = 0;
-            }
-            (bus, due)
-        };
-
-        // Heartbeat on the blocking pool every step, but do not await it on
-        // the LLM critical path — last_seen freshness is best-effort. Skip
-        // when a prior heartbeat for this session is still queued/running so
-        // steps cannot unboundedly fill the blocking pool.
-        let sid = session_id.to_string();
-        if let Some(inflight) = self.messaging.try_begin_heartbeat(session_id) {
-            let hb_sid = sid.clone();
-            let hb_title = title.clone();
-            let hb_bus = bus.clone();
-            tokio::task::spawn_blocking(move || {
-                let _ = hb_bus.register_with_title(&hb_sid, &[], hb_title.as_deref());
-                inflight.lock().unwrap().remove(&hb_sid);
-            });
-        }
-
-        if !due {
-            return;
-        }
-
-        let poll_sid = sid.clone();
-        let messages = match tokio::task::spawn_blocking(move || {
-            let read = bus.read_and_archive(&poll_sid)?;
-            let _receipts = bus.send_receipts(&poll_sid, &read);
-            Ok::<_, anyhow::Error>(read)
-        })
-        .await
-        {
-            Ok(Ok(msgs)) => msgs,
-            Ok(Err(e)) => {
-                tracing::debug!("messaging inbox poll failed for {session_id}: {e}");
-                return;
-            }
-            Err(e) => {
-                tracing::debug!("messaging inbox poll join failed: {e}");
-                return;
-            }
-        };
-        if messages.is_empty() {
-            return;
-        }
-
-        let mut text = String::new();
-        for env in &messages {
-            text.push_str(&format_cross_session_inject(env));
-            text.push('\n');
-        }
-        self.push_user_context(
-            ctx,
-            events,
-            canonical,
-            UserContext {
-                source: InjectSource::CrossSession,
-                text: text.trim_end(),
-                attachments: &[],
-                message_id: None,
-            },
-        )
-        .await;
-    }
-
-    /// Emit + persist + project a user inject via [`TranscriptEvent::UserInject`]
-    /// (Phase 6 / H1). Shared by follow-up / steering / cross-session so the
-    /// paths cannot drift. No content-based dedup — see AGENTS.md resume rules.
-    async fn push_user_context(
-        &self,
-        ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
-        context: UserContext<'_>,
-    ) {
-        self.apply_transcript(
-            ctx,
-            TranscriptEvent::UserInject {
-                source: context.source,
-                text: context.text.to_string(),
-                attachments: context.attachments.to_vec(),
-                message_id: context.message_id.map(str::to_string),
-            },
-            events,
-            canonical,
-        )
-        .await;
-    }
-
-    /// Phase 7 / C6 + X12: shared turn-end for empty-actions and explicit
-    /// `final_answer`. Final text is applied via `apply_transcript(ToolCall)`
-    /// (events authority + optional messages projection), then pending
-    /// context is injected so order is final → injects. `pause_turn` never
-    /// re-projects content.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn finish_turn_end(
-        &self,
-        ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
-        branch_points: &mut HashMap<u32, BranchPoint>,
-        final_text: &str,
-        reasoning: Option<String>,
-        thinking_blocks: Vec<serde_json::Value>,
-        already_pushed: bool,
-    ) -> anyhow::Result<TurnEndOutcome> {
-        let thought_projected = events.iter().any(|e| {
-            matches!(
-                e,
-                TranscriptRecord::Thought { step_number, .. }
-                    if *step_number == ctx.step_num
-            )
-        });
-        // Prefer thinking_blocks over a plain reasoning string when both exist.
-        let reasoning = if thinking_blocks.is_empty() {
-            reasoning
-        } else {
-            None
-        };
-        // Thought apply already projected under the thought id — only project
-        // again when there was no Thought for this step (synthetic finals).
-        let persist_text_id = if thought_projected {
-            None
-        } else {
-            Some(self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought"))
-        };
-
-        if !already_pushed {
-            self.apply_transcript(
-                ctx,
-                TranscriptEvent::ToolCall {
-                    text: final_text.to_string(),
-                    tool_calls: Vec::new(),
-                    reasoning,
-                    web_search_calls: Vec::new(),
-                    thinking_blocks,
-                    action_cards: Vec::new(),
-                    persist_text_id,
-                },
-                events,
-                canonical,
-            )
-            .await;
-        } else if let Some(ref mid) = persist_text_id {
-            // Search context already pushed the ToolCall event; still need the
-            // messages projection when Thought did not land one.
-            self.project_chat_message(
-                &ctx.session_id,
-                "assistant",
-                final_text,
-                Some("text"),
-                None,
-                Some(mid),
-            )
-            .await;
-        }
-
-        // Inject AFTER the final so canonical/events order is final → injects
-        // (replaces the old insert-before-injects dance).
-        if self.inject_pending_context(ctx, events, canonical).await {
-            self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, false)
+        if let Some(context) = self.context_source.poll_inbox(session_id).await {
+            self.apply_pending_context(ctx, events, canonical, context)
                 .await;
-            return Ok(TurnEndOutcome::Continue);
         }
-
-        self.pause_turn(
-            &ctx.session_id,
-            events,
-            ctx.step_num + 1,
-            branch_points,
-            &ctx.emitter,
-            SessionStatus::Paused,
-            final_text,
-            Some(ctx.step_num),
-            None,
-            true,
-        )
-        .await?;
-        Ok(TurnEndOutcome::Done(LoopExit::Paused {
-            reason: PauseReason::TurnEnd,
-        }))
     }
-}
-
-/// Phase 7 / C6: outcome of the shared turn-end helper.
-#[derive(Debug)]
-pub(crate) enum TurnEndOutcome {
-    /// Pending context injected mid-final; loop should continue.
-    Continue,
-    /// Turn paused (`PauseReason::TurnEnd`).
-    Done(LoopExit),
 }
 
 /// Strip controls and framing breakers so peer-controlled meta cannot close
@@ -406,7 +116,7 @@ fn sanitize_inject_token(s: &str, max_chars: usize) -> String {
 pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
     // Body is peer-controlled for every type — sanitize like meta so newlines /
     // brackets cannot spoof a second `[Runtime system notice …]` / enclosure.
-    let body = sanitize_inject_token(&env.text, MESSAGING_INJECT_CHARS);
+    let body = sanitize_inject_token(&env.text, super::context::MESSAGING_INJECT_CHARS);
     match env.r#type {
         MessageType::Receipt => {
             let of = env

@@ -16,6 +16,7 @@ use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload}
 use crate::types::{Action, BranchPoint, TranscriptRecord};
 use chrono::Utc;
 
+mod context;
 mod hooks;
 mod identity;
 mod inject;
@@ -26,13 +27,15 @@ mod snapshot_io;
 pub(crate) mod stream_step;
 mod tool_batch;
 mod transcript;
+mod turn_end;
 
+use context::ContextSource;
 pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
 use sidecars::{
-    BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, MessagingPoller,
-    SnapshotBufs, TokenEstimateCache, ToolDefCache, UsageTracker,
+    BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs,
+    TokenEstimateCache, ToolDefCache, UsageTracker,
 };
 use transcript::{ActionCard, ObservationCard, TranscriptEvent};
 
@@ -168,8 +171,8 @@ pub struct ReActEngine {
     /// Hot-reloaded via [`Self::set_context_limits`] on settings save.
     context_limits: std::sync::Mutex<ContextLimitsConfig>,
     run_counter: AtomicU64,
-    /// Cross-session messaging: heartbeat + automatic inbox polling.
-    messaging: MessagingPoller,
+    /// Queue/inbox source adapter; projection remains in `inject`.
+    context_source: ContextSource,
     /// Per-session cumulative token usage.
     usage: UsageTracker,
     /// Per-session tool-definition cache (catalog version keyed).
@@ -258,6 +261,7 @@ impl ReActEngine {
         max_steps: u32,
         context_limits: ContextLimitsConfig,
     ) -> Self {
+        let context_source = ContextSource::new(executor.clone(), db.clone());
         Self {
             router: Arc::new(RwLock::new(router)),
             executor,
@@ -266,7 +270,7 @@ impl ReActEngine {
             session_max_steps: Mutex::new(None),
             context_limits: std::sync::Mutex::new(context_limits),
             run_counter: AtomicU64::new(0),
-            messaging: MessagingPoller::new(),
+            context_source,
             usage: UsageTracker::new(),
             tool_defs: ToolDefCache::new(),
             last_msg_at: LastMsgAtCache::new(),
@@ -829,7 +833,7 @@ impl ReActEngine {
         self.tool_defs.remove(session_id);
         self.last_msg_at.remove(session_id);
         self.snapshot_bufs.remove(session_id);
-        self.messaging.clear_session(session_id);
+        self.context_source.clear_session(session_id);
     }
 
     /// After rollback/truncate rebuilt `session_usage` from remaining

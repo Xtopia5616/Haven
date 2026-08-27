@@ -1,6 +1,7 @@
 <script>
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import { withStringValue } from '$lib/typedCallbacks.js';
 
 	let { server = null, onClose, onSave, existingNames = [] } = $props();
 
@@ -140,7 +141,7 @@
 		</label>
 		<div class="field">
 			<span>Transport</span>
-			<MaterialSelect value={transport} options={transportOptions} onChange={(/** @type {string} */ v) => (transport = v)} />
+			<MaterialSelect value={transport} options={transportOptions} onChange={withStringValue(function handleTransportChange(v) { transport = v; })} />
 		</div>
 
 		{#if isHttp()}

@@ -21,6 +21,7 @@
 	} from '$lib/contracts/settings.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import logger from '$lib/logger.ts';
+	import { inputElementValue, withBooleanValue, withNumberValue, withStringValue } from '$lib/typedCallbacks.js';
 
 	let llmConfig = $state({
 		// Named LLM providers (connection-level endpoints). Roles reference
@@ -235,7 +236,10 @@
 	}));
 	/** @type {Record<string, boolean>} */
 	let limitDangerOpen = $state(Object.fromEntries(LIMIT_VIEWS.map((g) => [g.id, true])));
-	const isLimitDangerOpen = (/** @type {string} */ id) => limitDangerOpen[id] ?? true;
+	/** @param {string} id */
+	function isLimitDangerOpen(id) {
+		return limitDangerOpen[id] ?? true;
+	}
 	let allLimitDangerOpen = $derived(LIMIT_VIEWS.every((g) => !g.danger.length || isLimitDangerOpen(g.id)));
 	/**
 	 * @param {boolean} open
@@ -523,9 +527,9 @@
 		if (!Array.isArray(fills) || fills.length === 0) return;
 		try {
 			const snap = JSON.parse(savedSnapshot);
-			const roles = Array.isArray(snap?.llm?.roles) ? snap.llm.roles : [];
+			const roles = /** @type {any[]} */ (Array.isArray(snap?.llm?.roles) ? snap.llm.roles : []);
 			for (const fill of fills) {
-				const idx = roles.findIndex((/** @type {any} */ r) => r.role === fill.role);
+				const idx = roles.findIndex((r) => r.role === fill.role);
 				if (idx < 0) continue;
 				if ('context_window' in fill) roles[idx].context_window = fill.context_window;
 				if ('cost_per_1k_input_tokens' in fill) {
@@ -552,8 +556,8 @@
 		if (!savedSnapshot || !remote) return;
 		try {
 			const snap = JSON.parse(savedSnapshot);
-			const roles = Array.isArray(snap?.llm?.roles) ? snap.llm.roles : [];
-			const idx = roles.findIndex((/** @type {any} */ r) => r.role === 'default_model');
+			const roles = /** @type {any[]} */ (Array.isArray(snap?.llm?.roles) ? snap.llm.roles : []);
+			const idx = roles.findIndex((r) => r.role === 'default_model');
 			const patched = {
 				...(idx >= 0 ? roles[idx] : { role: 'default_model' }),
 				provider: remote.provider,
@@ -585,7 +589,7 @@
 					roles: Array.isArray(snap.llm.roles) ? snap.llm.roles : [],
 				};
 				rememberSyncedDefaultModel(
-					llmConfig.roles.find((/** @type {any} */ r) => r.role === 'default_model'),
+					(/** @type {any[]} */ (llmConfig.roles)).find((r) => r.role === 'default_model'),
 				);
 			}
 			if (snap.hotkey) {
@@ -706,8 +710,8 @@
 	function applyRemoteDefaultModelFields(remote) {
 		if (!remote) return;
 		/** @type {any} */
-		const local = (Array.isArray(llmConfig.roles) ? llmConfig.roles : []).find(
-			(/** @type {any} */ r) => r.role === 'default_model',
+		const local = (/** @type {any[]} */ (Array.isArray(llmConfig.roles) ? llmConfig.roles : [])).find(
+			(r) => r.role === 'default_model',
 		);
 		if (local) {
 			// Mutate in place (Svelte 5 $state proxy) so other unsaved
@@ -735,8 +739,8 @@
 		try {
 			const settings = await invoke('get_settings');
 			if (!mounted || gen !== defaultModelSyncGen || !settings?.llm) return;
-			const remoteRoles = Array.isArray(settings.llm.roles) ? settings.llm.roles : [];
-			const remote = remoteRoles.find((/** @type {any} */ r) => r.role === 'default_model');
+			const remoteRoles = /** @type {any[]} */ (Array.isArray(settings.llm.roles) ? settings.llm.roles : []);
+			const remote = remoteRoles.find((r) => r.role === 'default_model');
 			if (!remote) return;
 			applyRemoteDefaultModelFields(remote);
 		} catch (e) {
@@ -753,12 +757,11 @@
 		try {
 			const settings = await invoke('get_settings');
 			if (!mounted || !settings?.llm) return;
-			const remote = (Array.isArray(settings.llm.roles) ? settings.llm.roles : []).find(
-				(/** @type {any} */ r) => r.role === 'default_model',
+			const remote = (/** @type {any[]} */ (Array.isArray(settings.llm.roles) ? settings.llm.roles : [])).find(
+				(r) => r.role === 'default_model',
 			);
-			/** @type {any} */
-			const local = (Array.isArray(llmConfig.roles) ? llmConfig.roles : []).find(
-				(/** @type {any} */ r) => r.role === 'default_model',
+			const local = (/** @type {any[]} */ (Array.isArray(llmConfig.roles) ? llmConfig.roles : [])).find(
+				(r) => r.role === 'default_model',
 			);
 			if (!remote || !local) return;
 			if ((local.model || '') === lastSyncedDefaultModel.model) {
@@ -815,7 +818,7 @@
 				// ModelSettings' mount $effect appending empty slots looks like an edit.
 				ensureRoleSlots(llmConfig.roles);
 				rememberSyncedDefaultModel(
-					llmConfig.roles.find((/** @type {any} */ r) => r.role === 'default_model'),
+					(/** @type {any[]} */ (llmConfig.roles)).find((r) => r.role === 'default_model'),
 				);
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
@@ -861,7 +864,7 @@
 					timeout_secs: media.image_gen?.timeout_secs || 120,
 				};
 				// MCP server names for the Audio Model card's MCP STT mode.
-				mcpServerNames = (settings.mcp_servers || []).map((/** @type {any} */ s) => s.name || '').filter(Boolean);
+				mcpServerNames = (/** @type {any[]} */ (settings.mcp_servers || [])).map((s) => s.name || '').filter(Boolean);
 				notification = settings.notification || notification;
 				log = settings.log || log;
 				defaultShell = settings.default_shell || 'powershell';
@@ -1060,11 +1063,11 @@
 		<h2>Hotkeys</h2>
 		<div class="form-row">
 			<label for="hotkey-binding">Key Binding</label>
-			<HotkeyInput id="hotkey-binding" value={hotkeyBinding} onChange={(/** @type {string} */ v) => { hotkeyBinding = v; }} />
+			<HotkeyInput id="hotkey-binding" value={hotkeyBinding} onChange={withStringValue(function handleHotkeyBindingChange(v) { hotkeyBinding = v; })} />
 		</div>
 		<div class="form-row">
 			<label for="hotkey-mode">Mode</label>
-			<MaterialSelect id="hotkey-mode" value={hotkeyMode} options={[{ value: 'toggle', label: 'Toggle (press to start/stop)' }, { value: 'hold', label: 'Hold (push-to-talk)' }]} onChange={(/** @type {string} */ v) => { hotkeyMode = v; }} />
+			<MaterialSelect id="hotkey-mode" value={hotkeyMode} options={[{ value: 'toggle', label: 'Toggle (press to start/stop)' }, { value: 'hold', label: 'Hold (push-to-talk)' }]} onChange={withStringValue(function handleChange (v) { hotkeyMode = v; })} />
 		</div>
 	</div>
 
@@ -1073,15 +1076,15 @@
 		<p class="model-hint">Max Concurrent 控制同时运行的会话数；LLM Per-Endpoint Concurrency 限制每个模型端点（角色）同时在途的请求数。后者低于前者时，超出上限的模型请求会排队等待，避免多个会话同时请求同一服务商触发限流（429）。</p>
 		<div class="form-row">
 			<label for="session-max-concurrent">Max Concurrent</label>
-			<MaterialNumberField id="session-max-concurrent" value={session.max_concurrent} min={1} max={10} onChange={(/** @type {number} */ v) => { session.max_concurrent = v; }} />
+			<MaterialNumberField id="session-max-concurrent" value={session.max_concurrent} min={1} max={10} onChange={withNumberValue(function handleChange (v) { session.max_concurrent = v; })} />
 		</div>
 		<div class="form-row">
 			<label for="llm-max-concurrent-requests">LLM Per-Endpoint Concurrency</label>
-			<MaterialNumberField id="llm-max-concurrent-requests" value={llmConfig.max_concurrent_requests} min={1} max={16} onChange={(/** @type {number} */ v) => { llmConfig.max_concurrent_requests = v; }} />
+			<MaterialNumberField id="llm-max-concurrent-requests" value={llmConfig.max_concurrent_requests} min={1} max={16} onChange={withNumberValue(function handleChange (v) { llmConfig.max_concurrent_requests = v; })} />
 		</div>
 		<div class="form-row">
 			<label for="session-max-steps">Max Steps</label>
-			<MaterialNumberField id="session-max-steps" value={session.max_steps} min={1} max={100} onChange={(/** @type {number} */ v) => { session.max_steps = v; }} />
+			<MaterialNumberField id="session-max-steps" value={session.max_steps} min={1} max={100} onChange={withNumberValue(function handleChange (v) { session.max_steps = v; })} />
 		</div>
 	</div>
 
@@ -1090,7 +1093,7 @@
 		<p class="model-hint">Agent 的 shell 工具默认使用的命令行解释器。模型仍可在调用时通过 shell 参数临时指定其他 shell（cmd / powershell / pwsh）。</p>
 		<div class="form-row">
 			<label for="default-shell">Default Shell</label>
-			<MaterialSelect id="default-shell" value={defaultShell} options={shellOptions()} onChange={(/** @type {string} */ v) => { defaultShell = v; }} />
+			<MaterialSelect id="default-shell" value={defaultShell} options={shellOptions()} onChange={withStringValue(function handleChange (v) { defaultShell = v; })} />
 		</div>
 		{#if defaultShell === 'pwsh' && shellAvailable.pwsh === false}
 			<div class="shell-warning">
@@ -1104,11 +1107,11 @@
 		<h2>Memory</h2>
 		<div class="form-row">
 			<label for="memory-window-size">Window Size</label>
-			<MaterialNumberField id="memory-window-size" value={memory.session_window_size} min={10} max={500} onChange={(/** @type {number} */ v) => { memory.session_window_size = v; }} />
+			<MaterialNumberField id="memory-window-size" value={memory.session_window_size} min={10} max={500} onChange={withNumberValue(function handleChange (v) { memory.session_window_size = v; })} />
 		</div>
 		<div class="form-row">
 			<label for="memory-retention">Retention (days)</label>
-			<MaterialNumberField id="memory-retention" value={memory.history_retention_days} min={1} max={365} onChange={(/** @type {number} */ v) => { memory.history_retention_days = v; }} />
+			<MaterialNumberField id="memory-retention" value={memory.history_retention_days} min={1} max={365} onChange={withNumberValue(function handleChange (v) { memory.history_retention_days = v; })} />
 		</div>
 		<h3 class="model-group-heading">Maintenance</h3>
 		<p class="model-hint">维护会清理重复、敏感、过期的事实与残留向量。</p>
@@ -1175,7 +1178,7 @@
 						value={customAccentHex}
 						autocomplete="off"
 						oninput={(e) => {
-							const val = /** @type {HTMLInputElement} */(e.target).value;
+							const val = inputElementValue(e);
 							customAccentHex = val;
 							if (/^#[0-9a-f]{6}$/i.test(val)) {
 								accent = val;
@@ -1196,7 +1199,7 @@
 				{ value: 'ask', label: 'Ask (by risk threshold)' },
 				{ value: 'paranoid', label: 'Paranoid (all non-safe)' },
 				{ value: 'autopilot', label: 'Autopilot (never ask)' },
-			]} onChange={(/** @type {string} */ v) => { security.confirmation_mode = v; }} />
+			]} onChange={withStringValue(function handleChange (v) { security.confirmation_mode = v; })} />
 		</div>
 		<div class="form-row">
 			<label for="security-min-level">Minimum Confirmation Level</label>
@@ -1206,7 +1209,7 @@
 				{ value: 'medium', label: 'Medium & above' },
 				{ value: 'high', label: 'High & above' },
 				{ value: 'critical', label: 'Critical only' },
-			]} onChange={(/** @type {string} */ v) => { security.min_risk_level = v; }} />
+			]} onChange={withStringValue(function handleChange (v) { security.min_risk_level = v; })} />
 		</div>
 		<p class="model-hint">仅 Ask 模式使用风险阈值。永久允许/拒绝优先于阈值；禁用操作与路径沙箱始终拦截。Autopilot 仍会执行永久拒绝。</p>
 		{#if security.permissions.length > 0}
@@ -1252,8 +1255,8 @@
 		] as ev (ev.key)}
 			<div class="notify-grid-row">
 				<span class="switch-label">{ev.label}</span>
-				<MaterialSwitch checked={notification[ev.key].in_app} onChange={(/** @type {boolean} */ v) => { notification[ev.key].in_app = v; }} />
-				<MaterialSwitch checked={notification[ev.key].windows} onChange={(/** @type {boolean} */ v) => { notification[ev.key].windows = v; }} />
+				<MaterialSwitch checked={notification[ev.key].in_app} onChange={withBooleanValue(function handleChange (v) { notification[ev.key].in_app = v; })} />
+				<MaterialSwitch checked={notification[ev.key].windows} onChange={withBooleanValue(function handleChange (v) { notification[ev.key].windows = v; })} />
 			</div>
 		{/each}
 		<p class="model-hint">Agent 通过 notify 工具发出的通知始终开启（应用内 + Windows），不受上表开关控制。</p>
@@ -1266,7 +1269,7 @@
 		</div>
 		<div class="form-row switch-row">
 			<span class="switch-label">File Logging</span>
-			<MaterialSwitch checked={log.file_enabled} onChange={(/** @type {boolean} */ v) => { log.file_enabled = v; }} />
+			<MaterialSwitch checked={log.file_enabled} onChange={withBooleanValue(function handleChange (v) { log.file_enabled = v; })} />
 		</div>
 		<div class="form-row">
 			<label for="log-level">Log Level</label>
@@ -1276,7 +1279,7 @@
 				{ value: 'info', label: 'Info' },
 				{ value: 'warn', label: 'Warn' },
 				{ value: 'error', label: 'Error' },
-			]} onChange={(/** @type {string} */ v) => { log.level = v; }} />
+			]} onChange={withStringValue(function handleChange (v) { log.level = v; })} />
 		</div>
 		<p class="model-hint">日志级别与文件输出仅作用于后端（tracing）；前端开发日志仍按 DEV/PROD 门控。</p>
 	</div>
@@ -1312,7 +1315,7 @@
 	{/if}
 	{/if}
 
-	{#snippet limitRow(/** @type {any} */ f, boxed = false)}
+	{#snippet limitRow(f = /** @type {any} */ (null), boxed = false)}
 	<div class="form-row limit-row" class:danger-row={f.danger && !boxed}>
 		<div class="limit-label">
 			<label for="limit-{f.key}">{f.label}</label>
@@ -1330,7 +1333,7 @@
 				step={f.step ?? 1}
 				min={f.min ?? 0}
 				max={f.max ?? 100000000}
-				onChange={(/** @type {number} */ v) => { contextLimits[f.key] = limitCommit(f.key, v); }}
+				onChange={withNumberValue(function handleChange (v) { contextLimits[f.key] = limitCommit(f.key, v); })}
 			/>
 			<span class="limit-unit">{f.unit}</span>
 		</div>
