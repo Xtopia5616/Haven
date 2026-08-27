@@ -9,8 +9,21 @@ mod notification;
 use crate::desktop::TrayStatus;
 use crate::events::{
     ACTION_CREATED_EVENT, ACTION_FINISHED_EVENT, ACTION_OUTPUT_EVENT, ACTION_UPDATED_EVENT,
-    ActionEvent, ActionKind, SESSION_COMPLETED_EVENT, SESSION_CREATED_EVENT, SESSION_ERROR_EVENT,
-    SESSION_TITLE_UPDATED_EVENT, SESSION_UPDATED_EVENT, SessionErrorEvent, SessionLifecycleEvent,
+    AGENT_ACTION_EVENT, AGENT_BALANCED_MODEL_EVENT, AGENT_COMPACTION_EVENT,
+    AGENT_OBSERVATION_EVENT, AGENT_REASONING_CHUNK_EVENT, AGENT_STREAM_STALLED_EVENT,
+    AGENT_SUPPLEMENT_EVENT, AGENT_THOUGHT_CHUNK_EVENT, AGENT_THOUGHT_EVENT,
+    AGENT_TOOL_OUTPUT_EVENT, AGENT_USAGE_EVENT, AGENT_WEB_SEARCH_EVENT, APP_BOOTSTRAP_EVENT,
+    ActionEvent, ActionKind, AgentActionEvent, AgentBalancedModelEvent, AgentCompactionEvent,
+    AgentNotificationEvent, AgentObservationEvent, AgentReasoningChunkEvent,
+    AgentStreamStalledEvent, AgentSupplementEvent, AgentThoughtChunkEvent, AgentThoughtEvent,
+    AgentToolOutputEvent, AgentUsageEvent, AgentWebSearchEvent, AppBootstrapEvent,
+    CONFIRM_REQUESTED_EVENT, ConfirmationRequestedEvent, HOTKEY_CONFLICT_EVENT,
+    HotkeyConflictEvent, MCP_STATUS_CHANGED_EVENT, MUTE_CHANGED_EVENT, McpStatusChangedEvent,
+    MuteChangedEvent, NOTIFICATION_SHOW_EVENT, RECORDING_VAD_STATUS_EVENT, SESSION_COMPLETED_EVENT,
+    SESSION_CREATED_EVENT, SESSION_ERROR_EVENT, SESSION_TITLE_UPDATED_EVENT, SESSION_UPDATED_EVENT,
+    SKILLS_STATUS_CHANGED_EVENT, SessionErrorEvent, SessionLifecycleEvent,
+    SessionTitleUpdatedEvent, SkillsStatusChangedEvent, TRAY_STATUS_CHANGED_EVENT,
+    TrayStatusChangedEvent,
 };
 use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
@@ -131,94 +144,257 @@ impl TauriEmitter {
     /// 单一事实来源：AgentEvent 变体 → 前端订阅的 channel 名。
     fn channel(event: &AgentEvent) -> &'static str {
         match event {
-            AgentEvent::Thought { .. } => "agent:thought",
-            AgentEvent::Action { .. } => "agent:action",
-            AgentEvent::Observation { .. } => "agent:observation",
+            AgentEvent::Thought { .. } => AGENT_THOUGHT_EVENT,
+            AgentEvent::Action { .. } => AGENT_ACTION_EVENT,
+            AgentEvent::Observation { .. } => AGENT_OBSERVATION_EVENT,
             AgentEvent::SessionCreated(_) => SESSION_CREATED_EVENT,
             AgentEvent::SessionCompleted { .. } => SESSION_COMPLETED_EVENT,
             AgentEvent::SessionUpdated { .. } => SESSION_UPDATED_EVENT,
             AgentEvent::SessionError { .. } => SESSION_ERROR_EVENT,
-            AgentEvent::Notification { .. } => "notification:show",
+            AgentEvent::Notification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::TitleUpdated { .. } => SESSION_TITLE_UPDATED_EVENT,
-            AgentEvent::BalancedModelActivated { .. } => "agent:balanced_model",
-            AgentEvent::ThoughtChunk { .. } => "agent:thought_chunk",
-            AgentEvent::ReasoningChunk { .. } => "agent:reasoning_chunk",
-            AgentEvent::WebSearch { .. } => "agent:web_search",
-            AgentEvent::StreamStalled { .. } => "agent:stream_stalled",
-            AgentEvent::Supplement { .. } => "agent:supplement",
-            AgentEvent::Compaction { .. } => "agent:compaction",
-            AgentEvent::Usage { .. } => "agent:usage",
+            AgentEvent::BalancedModelActivated { .. } => AGENT_BALANCED_MODEL_EVENT,
+            AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
+            AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
+            AgentEvent::WebSearch { .. } => AGENT_WEB_SEARCH_EVENT,
+            AgentEvent::StreamStalled { .. } => AGENT_STREAM_STALLED_EVENT,
+            AgentEvent::Supplement { .. } => AGENT_SUPPLEMENT_EVENT,
+            AgentEvent::Compaction { .. } => AGENT_COMPACTION_EVENT,
+            AgentEvent::Usage { .. } => AGENT_USAGE_EVENT,
         }
     }
 
-    /// 剥掉 serde 枚举 tag（`{"Thought": {...}}` → `{...}`），适用于除特例外的
-    /// 所有变体。
-    fn variant_payload(event: &AgentEvent) -> serde_json::Value {
-        let v = serde_json::to_value(event).expect("AgentEvent is serializable");
-        v.as_object()
-            .expect("serialized AgentEvent is a map")
-            .values()
-            .next()
-            .expect("serialized AgentEvent has exactly one variant")
-            .clone()
-    }
-
-    /// 构造 wire 载荷。`variant_payload` 之外的五个特例在构造时覆盖：
-    /// - `SessionCreated` 投影为 `{session_id, status, title}`，不泄漏 SessionInfo 内部的
-    ///   `id` / `input` / `summary` 等字段
-    /// - `SessionCompleted` 补 `status: "completed"`（变体本身没有该字段）
-    /// - `SessionUpdated` 补 `title: ""`（wire 上始终带 title 键）
-    /// - `Action` 额外派生 `silent`
-    /// - `ThoughtChunk` / `ReasoningChunk` 插入单调递增的 `seq`（调用方传入已
-    ///   自增的值，本函数保持纯函数化以便单测）
+    /// Construct the wire payload from an explicit DTO for every event. Dynamic
+    /// `Value` fields remain only where they are part of an intentional
+    /// extension point: tool input, web-search result, and usage diagnostics.
     fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
-        let mut payload = match event {
-            AgentEvent::SessionCreated(session) => {
-                return serde_json::to_value(SessionLifecycleEvent {
-                    session_id: session.id.clone(),
-                    status: session.status.as_str().to_string(),
-                    title: session.title.clone(),
-                })
-                .expect("session lifecycle event is serializable");
-            }
+        fn serialize<T: serde::Serialize>(payload: T) -> serde_json::Value {
+            serde_json::to_value(payload).expect("Tauri event DTO is serializable")
+        }
+
+        match event {
+            AgentEvent::Thought {
+                session_id,
+                thought,
+                step_number,
+                run_id,
+                message_id,
+            } => serialize(AgentThoughtEvent {
+                session_id: session_id.clone(),
+                thought: thought.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                message_id: message_id.clone(),
+            }),
+            AgentEvent::Action {
+                session_id,
+                tool_name,
+                input,
+                step_number,
+                run_id,
+                tool_call_id,
+                step_id,
+                suppress_streamed_thought,
+            } => serialize(AgentActionEvent {
+                session_id: session_id.clone(),
+                tool_name: tool_name.clone(),
+                input: input.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                tool_call_id: tool_call_id.clone(),
+                step_id: step_id.clone(),
+                suppress_streamed_thought: *suppress_streamed_thought,
+                silent: haven_tools::is_silent_action(tool_name, input),
+            }),
+            AgentEvent::Observation {
+                session_id,
+                observation,
+                tool_name,
+                step_number,
+                run_id,
+                silent,
+                tool_call_id,
+                ask_options,
+                step_id,
+            } => serialize(AgentObservationEvent {
+                session_id: session_id.clone(),
+                observation: observation.clone(),
+                tool_name: tool_name.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                silent: *silent,
+                tool_call_id: tool_call_id.clone(),
+                ask_options: ask_options.clone(),
+                step_id: step_id.clone(),
+            }),
+            AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
+                session_id: session.id.clone(),
+                status: session.status.as_str().to_string(),
+                title: session.title.clone(),
+            }),
             AgentEvent::SessionCompleted { session_id, title } => {
-                return serde_json::to_value(SessionLifecycleEvent {
+                serialize(SessionLifecycleEvent {
                     session_id: session_id.clone(),
                     status: "completed".into(),
                     title: Some(title.clone()),
                 })
-                .expect("session lifecycle event is serializable");
             }
-            AgentEvent::SessionUpdated { session_id, status } => {
-                return serde_json::to_value(SessionLifecycleEvent {
+            AgentEvent::SessionUpdated { session_id, status } => serialize(SessionLifecycleEvent {
+                session_id: session_id.clone(),
+                status: status.clone(),
+                title: Some(String::new()),
+            }),
+            AgentEvent::SessionError { session_id, error } => serialize(SessionErrorEvent {
+                session_id: session_id.clone(),
+                error: error.clone(),
+            }),
+            AgentEvent::BalancedModelActivated { session_id, reason } => {
+                serialize(AgentBalancedModelEvent {
                     session_id: session_id.clone(),
-                    status: status.clone(),
-                    title: Some(String::new()),
+                    reason: reason.clone(),
                 })
-                .expect("session lifecycle event is serializable");
             }
-            AgentEvent::SessionError { session_id, error } => {
-                return serde_json::to_value(SessionErrorEvent {
-                    session_id: session_id.clone(),
-                    error: error.clone(),
-                })
-                .expect("session error event is serializable");
-            }
-            _ => Self::variant_payload(event),
-        };
-        match event {
-            AgentEvent::Action {
-                tool_name, input, ..
-            } => {
-                payload["silent"] =
-                    serde_json::json!(haven_tools::is_silent_action(tool_name, input));
-            }
-            AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. } => {
-                payload["seq"] = serde_json::json!(chunk_seq.unwrap_or(0));
-            }
-            _ => {}
+            AgentEvent::ThoughtChunk {
+                session_id,
+                delta,
+                step_number,
+                run_id,
+                message_id,
+            } => serialize(AgentThoughtChunkEvent {
+                session_id: session_id.clone(),
+                delta: delta.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                message_id: message_id.clone(),
+                seq: chunk_seq.unwrap_or(0),
+            }),
+            AgentEvent::ReasoningChunk {
+                session_id,
+                delta,
+                step_number,
+                run_id,
+                message_id,
+            } => serialize(AgentReasoningChunkEvent {
+                session_id: session_id.clone(),
+                delta: delta.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                message_id: message_id.clone(),
+                seq: chunk_seq.unwrap_or(0),
+            }),
+            AgentEvent::WebSearch {
+                session_id,
+                phase,
+                step_number,
+                run_id,
+                call_id,
+                action,
+                result,
+            } => serialize(AgentWebSearchEvent {
+                session_id: session_id.clone(),
+                phase: phase.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                call_id: call_id.clone(),
+                action: action.clone(),
+                result: result.clone(),
+            }),
+            AgentEvent::StreamStalled { session_id } => serialize(AgentStreamStalledEvent {
+                session_id: session_id.clone(),
+            }),
+            AgentEvent::Supplement {
+                session_id,
+                additional_context,
+                step_number,
+                run_id,
+                inject_source,
+            } => serialize(AgentSupplementEvent {
+                session_id: session_id.clone(),
+                additional_context: additional_context.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                inject_source: *inject_source,
+            }),
+            AgentEvent::Compaction {
+                session_id,
+                summary,
+                tokens_before,
+                tokens_after,
+                episode_id,
+            } => serialize(AgentCompactionEvent {
+                session_id: session_id.clone(),
+                summary: summary.clone(),
+                tokens_before: *tokens_before,
+                tokens_after: *tokens_after,
+                episode_id: episode_id.clone(),
+            }),
+            AgentEvent::TitleUpdated { session_id, title } => serialize(SessionTitleUpdatedEvent {
+                session_id: session_id.clone(),
+                title: title.clone(),
+            }),
+            AgentEvent::Notification {
+                session_id,
+                title,
+                body,
+            } => serialize(AgentNotificationEvent {
+                session_id: session_id.clone(),
+                title: title.clone(),
+                body: body.clone(),
+            }),
+            AgentEvent::Usage {
+                session_id,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_creation_tokens,
+                cache_miss_tokens,
+                context_tokens,
+                cache_exclusive,
+                cache_accounting,
+                cost_usd,
+                model,
+                cumulative_prompt_tokens,
+                cumulative_completion_tokens,
+                cumulative_total_tokens,
+                cumulative_cached_tokens,
+                cumulative_cache_creation_tokens,
+                cumulative_cache_miss_tokens,
+                cache_diagnostics,
+                cumulative_cost_usd,
+                context_window,
+                step_number,
+                duration_ms,
+                role,
+                has_cost,
+            } => serialize(AgentUsageEvent {
+                session_id: session_id.clone(),
+                prompt_tokens: *prompt_tokens,
+                completion_tokens: *completion_tokens,
+                total_tokens: *total_tokens,
+                cached_tokens: *cached_tokens,
+                cache_creation_tokens: *cache_creation_tokens,
+                cache_miss_tokens: *cache_miss_tokens,
+                context_tokens: *context_tokens,
+                cache_exclusive: *cache_exclusive,
+                cache_accounting: cache_accounting.clone(),
+                cost_usd: *cost_usd,
+                model: model.clone(),
+                cumulative_prompt_tokens: *cumulative_prompt_tokens,
+                cumulative_completion_tokens: *cumulative_completion_tokens,
+                cumulative_total_tokens: *cumulative_total_tokens,
+                cumulative_cached_tokens: *cumulative_cached_tokens,
+                cumulative_cache_creation_tokens: *cumulative_cache_creation_tokens,
+                cumulative_cache_miss_tokens: *cumulative_cache_miss_tokens,
+                cache_diagnostics: cache_diagnostics.clone(),
+                cumulative_cost_usd: *cumulative_cost_usd,
+                context_window: *context_window,
+                step_number: *step_number,
+                duration_ms: *duration_ms,
+                role: role.clone(),
+                has_cost: *has_cost,
+            }),
         }
-        payload
     }
 
     /// 保留原有按变体区分的 tracing 日志（语义不变）。
@@ -424,23 +600,24 @@ impl desktop::ShellHandler for HavenShellHandler {
         };
         let _ = self.tray.set_icon(Some(make_tray_icon(status)));
         let _ = self.app_h.emit(
-            "tray:status_changed",
-            serde_json::json!({
-                "status": match status {
+            TRAY_STATUS_CHANGED_EVENT,
+            TrayStatusChangedEvent {
+                status: match status {
                     TrayStatus::Normal => "normal",
                     TrayStatus::Recording => "recording",
                     TrayStatus::Muted => "muted",
                     TrayStatus::Busy => "busy",
-                },
-                "tooltip": tooltip,
-            }),
+                }
+                .into(),
+                tooltip: tooltip.into(),
+            },
         );
     }
 
     fn on_mute_change(&self, muted: bool) {
         let _ = self
             .app_h
-            .emit("mute:changed", serde_json::json!({ "muted": muted }));
+            .emit(MUTE_CHANGED_EVENT, MuteChangedEvent { muted });
     }
 }
 
@@ -471,7 +648,7 @@ impl haven_input::InputHandler for HavenInputHandler {
             haven_input::vad::VadState::SilenceAfterSpeech { .. } => "silence_after_speech",
         };
         let _ = self.app_h.emit(
-            "recording:vad_status",
+            RECORDING_VAD_STATUS_EVENT,
             events::VadStatusEvent {
                 signal: signal_str.to_string(),
                 state: state_str.to_string(),
@@ -486,6 +663,12 @@ impl haven_input::InputHandler for HavenInputHandler {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Keep the versioned command directory live in the application binary as
+    // well as in CI/docs. A drift in the source registry is a startup error,
+    // not a silently stale contract inventory.
+    debug_assert_eq!(commands::contracts::IPC_CONTRACT_VERSION, 1);
+    debug_assert_eq!(commands::contracts::COMMAND_CONTRACTS.len(), 67);
+
     // Load config early so we can initialize tracing with the right level
     let config_loader = haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
         haven_common::config::ConfigLoader::load_from(
@@ -568,8 +751,8 @@ pub fn run() {
             // 加载中 chip instead of sitting on a black webview.
             {
                 let emit_handle = handle.clone();
-                state.spawn_background_init(move |event, payload| {
-                    let _ = emit_handle.emit(event, payload);
+                state.spawn_background_init(move |payload: AppBootstrapEvent| {
+                    let _ = emit_handle.emit(APP_BOOTSTRAP_EVENT, payload);
                 });
             }
 
@@ -584,7 +767,13 @@ pub fn run() {
                     loop {
                         match rx.recv().await {
                             Ok(ev) => {
-                                let _ = emit_handle.emit("mcp:status_change", &ev);
+                                let _ = emit_handle.emit(
+                                    MCP_STATUS_CHANGED_EVENT,
+                                    McpStatusChangedEvent {
+                                        name: ev.name,
+                                        status: ev.status,
+                                    },
+                                );
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -603,8 +792,10 @@ pub fn run() {
                     std::time::Duration::from_secs(3),
                     move || {
                         let _ = emit_handle.emit(
-                            "skills:status_change",
-                            serde_json::json!({ "op": "auto_refresh" }),
+                            SKILLS_STATUS_CHANGED_EVENT,
+                            SkillsStatusChangedEvent {
+                                op: "auto_refresh".into(),
+                            },
                         );
                     },
                 );
@@ -664,7 +855,18 @@ pub fn run() {
             let tool_output_handle = handle.clone();
             state.tools.live_outputs.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
-                    let _ = tool_output_handle.emit(&event, payload);
+                    if event != AGENT_TOOL_OUTPUT_EVENT {
+                        tracing::warn!(event, "dropping unknown live tool-output event");
+                        return;
+                    }
+                    match serde_json::from_value::<AgentToolOutputEvent>(payload) {
+                        Ok(projected) => {
+                            let _ = tool_output_handle.emit(AGENT_TOOL_OUTPUT_EVENT, projected);
+                        }
+                        Err(error) => {
+                            tracing::warn!("dropping malformed live tool-output event: {error}");
+                        }
+                    }
                 },
             ));
 
@@ -791,15 +993,15 @@ pub fn run() {
                                 let permission_key =
                                     haven_common::types::permission_key(&tool_name, &params);
                                 let _ = app_h.emit(
-                                    "confirm:requested",
-                                    serde_json::json!({
-                                        "step_id": step_id,
-                                        "tool_name": tool_name,
-                                        "risk_level": risk_level,
-                                        "session_id": session_id,
-                                        "params": params,
-                                        "permission_key": permission_key,
-                                    }),
+                                    CONFIRM_REQUESTED_EVENT,
+                                    ConfirmationRequestedEvent {
+                                        step_id,
+                                        tool_name,
+                                        risk_level,
+                                        session_id,
+                                        params,
+                                        permission_key,
+                                    },
                                 );
                             },
                         ));
@@ -818,19 +1020,19 @@ pub fn run() {
                         st_arc.executor.on_session_error.set(Arc::new(
                             move |session_id: String, reason: String| {
                                 let _ = app_h.emit(
-                                    "session:error",
-                                    serde_json::json!({
-                                        "session_id": session_id,
-                                        "error": reason,
-                                    }),
+                                    SESSION_ERROR_EVENT,
+                                    SessionErrorEvent {
+                                        session_id: session_id.clone(),
+                                        error: reason,
+                                    },
                                 );
                                 let _ = app_h.emit(
-                                    "session:updated",
-                                    serde_json::json!({
-                                        "session_id": session_id,
-                                        "status": "error",
-                                        "title": "",
-                                    }),
+                                    SESSION_UPDATED_EVENT,
+                                    SessionLifecycleEvent {
+                                        session_id,
+                                        status: "error".into(),
+                                        title: Some(String::new()),
+                                    },
                                 );
                             },
                         ));
@@ -897,11 +1099,11 @@ pub fn run() {
                 Err(e) => {
                     tracing::warn!("Hotkey conflict detected: {} - {}", key_binding, e);
                     let _ = handle.emit(
-                        "hotkey:conflict",
-                        serde_json::json!({
-                            "binding": key_binding,
-                            "error": e.to_string(),
-                        }),
+                        HOTKEY_CONFLICT_EVENT,
+                        HotkeyConflictEvent {
+                            binding: key_binding,
+                            error: e.to_string(),
+                        },
                     );
                 }
             }
@@ -1353,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn variant_payload_strips_enum_tag() {
+    fn thought_payload_uses_the_explicit_wire_dto() {
         let event = AgentEvent::Thought {
             session_id: "t1".into(),
             thought: "hello".into(),
@@ -1362,7 +1564,7 @@ mod tests {
             message_id: "msg-1".into(),
         };
         assert_eq!(
-            TauriEmitter::variant_payload(&event),
+            TauriEmitter::payload(&event, None),
             json!({
                 "session_id": "t1",
                 "thought": "hello",

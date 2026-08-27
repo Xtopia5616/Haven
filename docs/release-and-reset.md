@@ -8,6 +8,15 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 `ask`、`paranoid`、`autopilot`。旧配置会被备份为 `config.toml.*.bak` 并以安全默认值启动；请在
 备份中将该字段改为 `ask` 后再手工合并，或按下文完整重置。
 
+本版本同样不再迁移顶层 `[audio]`、已删除的 `[tool_settings.*]` 名称，或数据库中待执行
+定时任务的旧工具名。前两类配置会备份后以默认值启动；任一类旧数据存在时，建议按下文完整重置，
+再在新设置界面重新配置并创建任务。
+
+旧 Phase-7 ReAct 快照以及直接在 `[media.stt]`、`[media.tts]`、`[media.image_gen]` 中使用
+旧 provider 名和本地凭据的配置也不再兼容。加载器会为检测到的旧媒体 provider 名或凭据生成
+`config.toml.*.bak`，并以默认值启动；请删除整个数据根目录后重新配置命名 provider，不要
+手工混用新数据库与旧 `react_state`。
+
 ## 用户数据位置
 
 Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：

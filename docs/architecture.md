@@ -45,14 +45,17 @@
 | `haven-llm` | common | 只依赖共享层，不依赖任何业务 crate |
 | `haven-memory` | common | 持久化（SQLite schema、仓库） |
 | `haven-skills` | common | 技能目录解析 |
-| `haven-mcp` | common | MCP 客户端 / 传输 |
-| `haven-tools` | common, skills, mcp, llm | 工具注册表 + 各内置工具 |
+| `haven-mcp` | common, llm | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
+| `haven-tools` | common, memory, skills, mcp, llm, input | 工具注册表 + 各内置工具 |
 | `haven-input` | common, llm | 录音 / VAD / STT 编排（**不实现 provider**） |
-| `haven-agent` | common, llm, memory, tools, input | ReAct 循环 + 会话执行 |
+| `haven-agent` | common, llm, memory, tools | ReAct 循环 + 会话执行 |
 | `haven-app-binary` | 以上全部 + tauri | 装配 + Tauri 命令 + 事件桥 |
 
 > 依据 `crates/*/Cargo.toml` 实际 workspace 依赖整理。`haven-agent` 与 `haven-app-binary` 是最上层，
 > 其余全部是它们的底层依赖。`haven-llm` 不允许被业务 crate 反向依赖。
+
+CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖方向检查；新增或调整
+跨 crate 依赖时，必须先更新本表与该检查，并记录 ADR。
 
 ---
 

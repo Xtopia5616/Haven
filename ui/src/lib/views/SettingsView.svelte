@@ -286,9 +286,7 @@
 	let stt = $state({
 		provider: 'llm',
 		mcp_server: '',
-		api_key: '',
 		model: '',
-		base_url: '',
 		timeout_secs: 30,
 		min_confidence: 0.7,
 	});
@@ -470,9 +468,7 @@
 				stt: {
 					provider: stt.provider,
 					mcp_server: stt.mcp_server || null,
-					api_key: '',
 					model: stt.model,
-					base_url: '',
 					timeout_secs: asNumber(stt.timeout_secs),
 					min_confidence: asNumber(stt.min_confidence),
 				},
@@ -483,17 +479,13 @@
 				},
 				tts: {
 					provider: tts.provider,
-					api_key: '',
 					model: tts.model,
 					voice: tts.voice,
-					base_url: '',
 					timeout_secs: asNumber(tts.timeout_secs),
 				},
 				image_gen: {
 					provider: imageGen.provider,
-					api_key: '',
 					model: imageGen.model,
-					base_url: '',
 					timeout_secs: asNumber(imageGen.timeout_secs),
 				},
 			},
@@ -614,7 +606,15 @@
 			}
 			if (snap.context_limits) contextLimits = { ...contextLimits, ...snap.context_limits };
 			if (snap.media?.audio) audio = { ...audio, ...snap.media.audio };
-			if (snap.media?.stt) stt = { ...stt, ...snap.media.stt };
+			if (snap.media?.stt) {
+				stt = {
+					provider: snap.media.stt.provider || 'llm',
+					mcp_server: snap.media.stt.mcp_server || '',
+					model: snap.media.stt.model || '',
+					timeout_secs: snap.media.stt.timeout_secs || 30,
+					min_confidence: snap.media.stt.min_confidence ?? 0.7,
+				};
+			}
 			if (snap.media?.ocr) ocr = { ...ocr, ...snap.media.ocr };
 			if (snap.media?.tts) {
 				tts = {
@@ -837,9 +837,7 @@
 				stt = {
 					provider: media.stt?.provider || 'llm',
 					mcp_server: media.stt?.mcp_server || '',
-					api_key: media.stt?.api_key || '',
 					model: media.stt?.model || '',
-					base_url: media.stt?.base_url || '',
 					timeout_secs: media.stt?.timeout_secs || 30,
 					min_confidence: media.stt?.min_confidence ?? 0.7,
 				};
@@ -956,9 +954,7 @@
 						stt: {
 							provider: stt.provider,
 							mcp_server: stt.mcp_server || null,
-							api_key: '',
 							model: stt.model,
-							base_url: '',
 							timeout_secs: stt.timeout_secs,
 							min_confidence: stt.min_confidence,
 						},
@@ -972,17 +968,13 @@
 						},
 						tts: {
 							provider: tts.provider,
-							api_key: '',
 							model: tts.model,
 							voice: tts.voice,
-							base_url: '',
 							timeout_secs: tts.timeout_secs,
 						},
 						image_gen: {
 							provider: imageGen.provider,
-							api_key: '',
 							model: imageGen.model,
-							base_url: '',
 							timeout_secs: imageGen.timeout_secs,
 						},
 					},

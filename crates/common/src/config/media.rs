@@ -41,21 +41,13 @@ pub struct SttConfig {
     /// that provider's base URL + API key). Also accepts:
     /// - `llm`: transcribe via the configured `audio_model` LLM endpoint
     /// - `mcp`: route through an MCP server exposing `stt.transcribe`
-    /// - `openai` / `groq` / `gemini` / `deepgram` / `assemblyai`: legacy
-    ///   capability ids with local credentials
     /// - `none`: no transcription
     pub provider: String,
     /// MCP server name when `provider == "mcp"`.
     pub mcp_server: Option<String>,
-    /// Legacy / resolved API key. Unused when `provider` names an LLM
-    /// provider.
-    pub api_key: String,
     /// Model id for providers that require one (e.g. `whisper-1`,
     /// `nova-2`, `whisper-large-v3-turbo`).
     pub model: String,
-    /// Legacy / resolved base URL. Unused when `provider` names an LLM
-    /// provider.
-    pub base_url: String,
     /// Transcription timeout in seconds.
     pub timeout_secs: u64,
     /// Minimum transcription confidence (0.0-1.0) for the gateway's
@@ -71,9 +63,7 @@ impl Default for SttConfig {
         Self {
             provider: "llm".into(),
             mcp_server: None,
-            api_key: String::new(),
             model: String::new(),
-            base_url: String::new(),
             timeout_secs: 30,
             min_confidence: 0.7,
         }
@@ -127,21 +117,14 @@ impl Default for OcrConfig {
 pub struct TtsConfig {
     /// TTS provider. Prefer a name from `llm.providers` (reuses that
     /// provider's base URL + API key). Also accepts:
-    /// - `openai` / `elevenlabs`: legacy capability ids with local credentials
     /// - `none` / empty: no TTS client
     pub provider: String,
-    /// Legacy / resolved API key. When `provider` names an LLM provider this
-    /// is unused at build time (credentials come from that provider).
-    pub api_key: String,
     /// Model id for providers that require one (e.g. `tts-1`,
     /// `gpt-4o-mini-tts`).
     pub model: String,
     /// Voice id / name for providers that expose voices
     /// (e.g. `alloy`, `11labs_voice_id`).
     pub voice: String,
-    /// Legacy / resolved base URL. Unused when `provider` names an LLM
-    /// provider (URL comes from that provider).
-    pub base_url: String,
     /// TTS timeout in seconds.
     pub timeout_secs: u64,
 }
@@ -150,10 +133,8 @@ impl Default for TtsConfig {
     fn default() -> Self {
         Self {
             provider: "none".into(),
-            api_key: String::new(),
             model: String::new(),
             voice: String::new(),
-            base_url: String::new(),
             timeout_secs: 60,
         }
     }
@@ -163,20 +144,12 @@ impl Default for TtsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ImageGenConfig {
-    /// Image generation provider. Prefer a name from `llm.providers` (reuses
-    /// that provider's base URL + API key). Also accepts:
-    /// - `openai` / `gemini`: legacy capability ids with local credentials
-    /// - `none` / empty: no image generation client
+    /// Image generation provider. A name from `llm.providers` reuses that
+    /// provider's base URL and API key. `none` / empty disables the client.
     pub provider: String,
-    /// Legacy / resolved API key. Unused when `provider` names an LLM
-    /// provider.
-    pub api_key: String,
     /// Model id for providers that require one (e.g. `gpt-image-1`,
     /// `gemini-2.5-flash-image`).
     pub model: String,
-    /// Legacy / resolved base URL. Unused when `provider` names an LLM
-    /// provider.
-    pub base_url: String,
     /// Image generation timeout in seconds.
     pub timeout_secs: u64,
 }
@@ -185,9 +158,7 @@ impl Default for ImageGenConfig {
     fn default() -> Self {
         Self {
             provider: "none".into(),
-            api_key: String::new(),
             model: String::new(),
-            base_url: String::new(),
             timeout_secs: 120,
         }
     }

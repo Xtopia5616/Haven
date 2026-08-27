@@ -5,7 +5,6 @@
 //! - `none` / empty: no client
 //! - a name from `llm.providers`: credentials (base URL + API key) and the
 //!   OpenAI-compatible vs ElevenLabs backend are taken from that provider
-//! - legacy `openai` / `elevenlabs`: uses `TtsConfig.api_key` / `base_url`
 //!
 //! Every client returns raw audio bytes (MP3); decoding/playback is the
 //! caller's job.
@@ -22,22 +21,33 @@ pub trait TtsClient: Send + Sync {
     async fn synthesize(&self, text: &str) -> Result<Vec<u8>>;
 }
 
+/// Runtime-only TTS configuration resolved from a named `llm.providers`
+/// entry. Credentials and endpoint details intentionally do not live in the
+/// persisted `TtsConfig`.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedTtsConfig {
+    pub provider: String,
+    pub api_key: String,
+    pub model: String,
+    pub voice: String,
+    pub base_url: String,
+    pub timeout_secs: u64,
+}
+
 /// Resolve TTS config against named LLM providers. Returns `None` when TTS
 /// is disabled (`none` / empty). Rewrites a provider-name reference into a
 /// concrete backend (`openai` / `elevenlabs`) with that provider's URL + key.
 pub fn resolve_tts_config(
     cfg: &TtsConfig,
     providers: &[ProviderConfig],
-) -> Result<Option<TtsConfig>> {
+) -> Result<Option<ResolvedTtsConfig>> {
     let name = cfg.provider.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") {
         return Ok(None);
     }
-    // Named llm.providers win over legacy capability ids so a provider
-    // named `openai` / `elevenlabs` reuses that entry's URL + key.
     if let Some(p) = providers.iter().find(|p| p.name == name) {
         let backend = tts_backend_for(p)?;
-        return Ok(Some(TtsConfig {
+        return Ok(Some(ResolvedTtsConfig {
             provider: backend.to_string(),
             api_key: p.api_key.clone(),
             base_url: p.base_url.clone(),
@@ -45,9 +55,6 @@ pub fn resolve_tts_config(
             voice: cfg.voice.clone(),
             timeout_secs: cfg.timeout_secs,
         }));
-    }
-    if name == "openai" || name == "elevenlabs" {
-        return Ok(Some(cfg.clone()));
     }
     Err(anyhow::anyhow!("TTS references unknown provider '{name}'"))
 }
@@ -103,7 +110,7 @@ pub struct OpenAiTtsClient {
 }
 
 impl OpenAiTtsClient {
-    pub fn new(cfg: &TtsConfig, timeout: Duration) -> Self {
+    pub fn new(cfg: &ResolvedTtsConfig, timeout: Duration) -> Self {
         Self {
             client: tts_http_client(timeout),
             base_url: if cfg.base_url.trim().is_empty() {
@@ -168,7 +175,7 @@ pub struct ElevenLabsTtsClient {
 }
 
 impl ElevenLabsTtsClient {
-    pub fn new(cfg: &TtsConfig, timeout: Duration) -> Self {
+    pub fn new(cfg: &ResolvedTtsConfig, timeout: Duration) -> Self {
         Self {
             client: tts_http_client(timeout),
             api_key: cfg.api_key.clone(),
@@ -239,6 +246,14 @@ mod tests {
     use super::*;
     use haven_common::config::{ProviderConfig, TtsConfig};
 
+    fn resolved_tts(provider: &str, api_key: &str) -> ResolvedTtsConfig {
+        ResolvedTtsConfig {
+            provider: provider.into(),
+            api_key: api_key.into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn tts_default_cfg_dispatches_none() {
         assert!(
@@ -259,16 +274,31 @@ mod tests {
     }
 
     #[test]
+    fn tts_rejects_unconfigured_provider_name() {
+        let cfg = TtsConfig {
+            provider: "openai".into(),
+            ..Default::default()
+        };
+        let err = resolve_tts_config(&cfg, &[]).unwrap_err();
+        assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[test]
     fn tts_dispatch_known_providers() {
         for provider in ["openai", "elevenlabs"] {
             let cfg = TtsConfig {
                 provider: provider.into(),
-                api_key: "k".into(),
                 voice: "v".into(),
                 ..Default::default()
             };
+            let providers = vec![ProviderConfig {
+                name: provider.into(),
+                provider: provider.into(),
+                api_key: "k".into(),
+                ..Default::default()
+            }];
             assert!(
-                build_tts_client(&cfg, &[]).unwrap().is_some(),
+                build_tts_client(&cfg, &providers).unwrap().is_some(),
                 "provider {provider} should build"
             );
         }
@@ -301,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn tts_named_provider_openai_wins_over_legacy_id() {
+    fn tts_provider_named_openai_uses_named_credentials() {
         let providers = vec![ProviderConfig {
             name: "openai".into(),
             provider: "openai".into(),
@@ -311,8 +341,6 @@ mod tests {
         }];
         let cfg = TtsConfig {
             provider: "openai".into(),
-            api_key: "legacy".into(),
-            base_url: "https://legacy.example/v1".into(),
             ..Default::default()
         };
         let resolved = resolve_tts_config(&cfg, &providers)
@@ -344,7 +372,7 @@ mod tests {
 
     #[test]
     fn openai_tts_defaults_model_voice_and_base_url() {
-        let cfg = TtsConfig {
+        let cfg = ResolvedTtsConfig {
             provider: "openai".into(),
             ..Default::default()
         };
@@ -356,7 +384,7 @@ mod tests {
 
     #[test]
     fn openai_tts_honors_custom_voice_model_base_url() {
-        let cfg = TtsConfig {
+        let cfg = ResolvedTtsConfig {
             provider: "openai".into(),
             model: "gpt-4o-mini-tts".into(),
             voice: "nova".into(),
@@ -371,11 +399,7 @@ mod tests {
 
     #[test]
     fn elevenlabs_requires_voice_at_call_time() {
-        let cfg = TtsConfig {
-            provider: "elevenlabs".into(),
-            api_key: "k".into(),
-            ..Default::default()
-        };
+        let cfg = resolved_tts("elevenlabs", "k");
         let client = ElevenLabsTtsClient::new(&cfg, Duration::from_secs(10));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt.block_on(client.synthesize("hi")).unwrap_err();
@@ -384,11 +408,8 @@ mod tests {
 
     #[test]
     fn elevenlabs_requires_key_at_call_time() {
-        let cfg = TtsConfig {
-            provider: "elevenlabs".into(),
-            voice: "v".into(),
-            ..Default::default()
-        };
+        let mut cfg = resolved_tts("elevenlabs", "");
+        cfg.voice = "v".into();
         let client = ElevenLabsTtsClient::new(&cfg, Duration::from_secs(10));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt.block_on(client.synthesize("hi")).unwrap_err();

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use haven_common::types::{
-    CanonicalMessage, CanonicalToolCall, ContentPart, InjectSource, MessageAttachment,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
+    MessageAttachment,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -80,6 +81,7 @@ pub enum TranscriptRecord {
 /// Branch point saved before tool execution (§2 / Phase 8 F4).
 /// Stores only an index into the parent snapshot's `events` — no Arc Vec copies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BranchPoint {
     /// Index into parent `events` — restored state is `events[..event_cursor]`.
     pub event_cursor: usize,
@@ -88,11 +90,6 @@ pub struct BranchPoint {
     /// rollback, messages after this timestamp are deleted.
     #[serde(default)]
     pub last_msg_at: Option<String>,
-    /// Phase-7 upgrade only: per-BP canonical seed so step rollback can
-    /// replace events with content instead of a useless length-1 cursor.
-    /// New branch points leave this `None` (skipped in serde).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_canonical: Option<Vec<CanonicalMessage>>,
 }
 
 /// Pending `ask` tool state persisted in the snapshot (Phase 4 / C5).
@@ -158,6 +155,7 @@ pub struct RunBudget {
 /// Canonical and [`ReActRound`]s are derived via [`project_transcript`] /
 /// [`Self::project`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ReActSnapshot {
     pub events: Vec<TranscriptRecord>,
     pub step_number: u32,
@@ -178,82 +176,38 @@ pub struct ReActSnapshot {
     pub awaiting_answer: Option<AskPending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting_confirm: Option<ConfirmPending>,
-    /// Last run's effective step budget (R4). Omitted on legacy snapshots.
+    /// Last run's effective step budget (R4). Absent before a run starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_budget: Option<RunBudget>,
-    /// Filled only by legacy `from_json` for one-shot tool restore on resume.
-    /// Never serialized.
+    /// Reserved for in-process test fixtures. Snapshot parsing and resume no
+    /// longer use this as an upgrade path.
     #[serde(skip)]
     pub upgrade_tool_rounds: Vec<ReActRound>,
 }
 
 impl ReActSnapshot {
-    /// Parse a snapshot JSON, accepting the current events-authority shape or
-    /// the legacy Phase-7 `canonical`/`history` wire format.
+    /// Parse the current events-authority snapshot shape.
+    ///
+    /// Snapshot upgrades are deliberately unsupported: a snapshot without
+    /// `events` belongs to an incompatible Haven version and must be reset.
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        if let Ok(s) = serde_json::from_str::<ReActSnapshot>(json) {
-            return Ok(s);
-        }
-        // Legacy Phase-7 shape: canonical + history + BranchPoint with Arc-ish arrays
-        #[derive(Deserialize)]
-        struct LegacyBp {
-            #[serde(default)]
-            canonical: Option<Vec<CanonicalMessage>>,
-            step_number: u32,
-            #[serde(default)]
-            last_msg_at: Option<String>,
-        }
-        #[derive(Deserialize)]
-        struct LegacySnap {
-            canonical: Vec<CanonicalMessage>,
-            #[serde(default)]
-            history: serde_json::Value,
-            step_number: u32,
-            #[serde(default)]
-            branch_points: HashMap<u32, LegacyBp>,
-            #[serde(default)]
-            saved_at: Option<String>,
-            #[serde(default)]
-            awaiting_answer: Option<AskPending>,
-            #[serde(default)]
-            awaiting_confirm: Option<ConfirmPending>,
-        }
-        let legacy: LegacySnap = serde_json::from_str(json)
+        let snapshot: Self = serde_json::from_str(json)
             .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;
-        tracing::warn!("react_state used legacy Phase-7 snapshot shape; upgrading on next save");
-        let events = seed_events_from_canonical(legacy.canonical);
-        let event_len = events.len();
-        // Recover load_skill / load_mcp rounds from legacy history so resume
-        // can re-register per-session tools (CompactSummary alone yields empty rounds).
-        let upgrade_tool_rounds = legacy_history_to_tool_rounds(&legacy.history);
-        let branch_points = legacy
-            .branch_points
-            .into_iter()
-            .map(|(k, bp)| {
-                // Keep the BP's own canonical as a restore seed. Cursor alone
-                // is useless on a length-1 CompactSummary parent log.
-                (
-                    k,
-                    BranchPoint {
-                        event_cursor: event_len,
-                        step_number: bp.step_number,
-                        last_msg_at: bp.last_msg_at,
-                        legacy_canonical: bp.canonical,
-                    },
-                )
-            })
-            .collect();
-        Ok(ReActSnapshot {
-            events,
-            step_number: legacy.step_number,
-            branch_points,
-            saved_at: legacy.saved_at,
-            error_partial_message_ids: None,
-            awaiting_answer: legacy.awaiting_answer,
-            awaiting_confirm: legacy.awaiting_confirm,
-            run_budget: None,
-            upgrade_tool_rounds,
-        })
+        if snapshot.events.iter().any(|event| match event {
+            TranscriptRecord::UserInject { text, .. } => text.starts_with("[conversation] "),
+            TranscriptRecord::CompactSummary { compacted, .. } => compacted.iter().any(|message| {
+                message.role == CanonicalRole::User
+                    && message.content.iter().any(|part| {
+                        matches!(part, ContentPart::Text(text) if text.starts_with("[conversation] "))
+                    })
+            }),
+            _ => false,
+        }) {
+            anyhow::bail!(
+                "corrupt or incompatible react_state: legacy conversation seed is unsupported"
+            );
+        }
+        Ok(snapshot)
     }
 
     /// Project the full event log to canonical + rounds.
@@ -367,58 +321,6 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
 fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
     // Single helper shared with the live react path (via re-export).
     crate::react::attachment_to_content_part(att)
-}
-
-/// Recover load_skill / load_mcp rounds from a legacy Phase-7 `history` blob.
-fn legacy_history_to_tool_rounds(history: &Value) -> Vec<ReActRound> {
-    #[derive(Deserialize)]
-    struct LegacyStep {
-        step_number: u32,
-        #[serde(default)]
-        thought: Option<String>,
-        #[serde(default)]
-        action: Option<Action>,
-        #[serde(default)]
-        observation: Option<String>,
-    }
-    let Ok(steps) = serde_json::from_value::<Vec<LegacyStep>>(history.clone()) else {
-        return Vec::new();
-    };
-    let mut rounds: Vec<ReActRound> = Vec::new();
-    for step in steps {
-        let Some(action) = step.action else {
-            if step.thought.is_some() {
-                rounds.push(ReActRound {
-                    step_number: step.step_number,
-                    thought: step.thought,
-                    tools: Vec::new(),
-                });
-            }
-            continue;
-        };
-        if action.tool_name != "load_skill" && action.tool_name != "load_mcp" {
-            continue;
-        }
-        if let Some(last) = rounds
-            .last_mut()
-            .filter(|r| r.step_number == step.step_number)
-        {
-            last.tools.push(ToolRecord {
-                action,
-                observation: step.observation,
-            });
-        } else {
-            rounds.push(ReActRound {
-                step_number: step.step_number,
-                thought: step.thought,
-                tools: vec![ToolRecord {
-                    action,
-                    observation: step.observation,
-                }],
-            });
-        }
-    }
-    rounds
 }
 
 /// Test/helper: wrap a pre-built canonical list as a single CompactSummary
@@ -594,7 +496,6 @@ mod tests {
             event_cursor: 4,
             step_number: 5,
             last_msg_at: Some("2026-07-31T12:00:00Z".into()),
-            legacy_canonical: None,
         };
         let json = serde_json::to_string(&bp).unwrap();
         let back: BranchPoint = serde_json::from_str(&json).unwrap();
@@ -616,7 +517,6 @@ mod tests {
                 event_cursor: 1,
                 step_number: 4,
                 last_msg_at: None,
-                legacy_canonical: None,
             },
         );
         let json = serde_json::to_string(&snapshot).unwrap();
@@ -633,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_from_json_accepts_legacy_phase7_shape() {
+    fn snapshot_from_json_rejects_legacy_phase7_shape() {
         // ContentPart::Text is an untagged string on the wire.
         let legacy = serde_json::json!({
             "canonical": [
@@ -658,16 +558,8 @@ mod tests {
             },
             "saved_at": "2026-08-01T00:01:00Z"
         });
-        let snap = ReActSnapshot::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(snap.step_number, 3);
-        assert_eq!(snap.events.len(), 1);
-        assert_eq!(snap.branch_points.get(&2).unwrap().event_cursor, 1);
-        assert_eq!(
-            snap.branch_points.get(&2).unwrap().last_msg_at.as_deref(),
-            Some("2026-08-01T00:00:00Z")
-        );
-        let (canonical, _) = snap.project();
-        assert_eq!(canonical.len(), 1);
+        let err = ReActSnapshot::from_json(&legacy.to_string()).unwrap_err();
+        assert!(err.to_string().contains("incompatible"));
     }
 
     #[test]

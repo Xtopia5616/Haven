@@ -6,6 +6,7 @@ use haven_common::types::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +15,215 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub use haven_common::tools::ToolDef;
+
+/// Representative operation/risk rows used by the local-tool security
+/// regression matrix. Keep this list in the tools crate so the documented
+/// matrix has an executable source of truth for every builtin tool family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalToolSecurityCase {
+    pub tool_name: &'static str,
+    pub operation: &'static str,
+    pub risk_level: RiskLevel,
+}
+
+pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
+    LocalToolSecurityCase {
+        tool_name: "audio",
+        operation: "play",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "audio",
+        operation: "record",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "ask",
+        operation: "ask",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "files",
+        operation: "read",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "files",
+        operation: "search:content",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "files",
+        operation: "write",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "files",
+        operation: "delete",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "process",
+        operation: "list",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "process",
+        operation: "launch",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "process",
+        operation: "kill",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "clipboard",
+        operation: "read",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "clipboard",
+        operation: "write",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "shell",
+        operation: "execute",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "actions",
+        operation: "list",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "input",
+        operation: "move",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "input",
+        operation: "click",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "scheduled_action",
+        operation: "set",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "system",
+        operation: "info",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "system",
+        operation: "env:set",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "system",
+        operation: "registry:set",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "system",
+        operation: "power:lock",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "system",
+        operation: "power:hibernate",
+        risk_level: RiskLevel::Critical,
+    },
+    LocalToolSecurityCase {
+        tool_name: "window",
+        operation: "list",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "window",
+        operation: "focus",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "window",
+        operation: "close",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "window",
+        operation: "ocr",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "http",
+        operation: "request",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "notify",
+        operation: "notify",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "agent",
+        operation: "list",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "agent",
+        operation: "spawn",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "load_skill",
+        operation: "load",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "load_mcp",
+        operation: "load",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "memory",
+        operation: "search",
+        risk_level: RiskLevel::Safe,
+    },
+    LocalToolSecurityCase {
+        tool_name: "memory",
+        operation: "remember",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "memory",
+        operation: "forget",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "haven",
+        operation: "status",
+        risk_level: RiskLevel::Low,
+    },
+    LocalToolSecurityCase {
+        tool_name: "haven",
+        operation: "config_set",
+        risk_level: RiskLevel::High,
+    },
+];
+
+/// Check an absolute local path without applying a tool-specific allowlist.
+/// This is for native app entry points such as “open skills directory” and
+/// “open external path”; the normal tool path goes through `check`, which adds
+/// configured `allowed_paths` on top of this reparse-point check.
+pub fn is_safe_local_path(path: &Path) -> bool {
+    if !path.is_absolute() || is_unc_or_device_path(path) {
+        return false;
+    }
+    resolve_path_without_reparse(path).is_some()
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolResult {
@@ -689,12 +899,20 @@ fn parse_risk_override(raw: &str) -> Option<RiskLevel> {
 }
 
 fn match_grant(map: &HashMap<String, PermissionEffect>, key: &str) -> Option<PermissionEffect> {
-    for candidate in permission_key_candidates(key) {
-        if let Some(effect) = map.get(candidate) {
-            return Some(*effect);
-        }
+    let candidates = permission_key_candidates(key);
+    // A child Allow must never outrank a parent Deny. Check the entire
+    // inheritance chain for denies before considering any allow, otherwise a
+    // broad deny such as `files` could be bypassed by `files:read`.
+    if candidates
+        .iter()
+        .any(|candidate| map.get(*candidate) == Some(&PermissionEffect::Deny))
+    {
+        return Some(PermissionEffect::Deny);
     }
-    None
+    candidates
+        .iter()
+        .any(|candidate| map.get(*candidate) == Some(&PermissionEffect::Allow))
+        .then_some(PermissionEffect::Allow)
 }
 
 fn match_key_set(set: &HashSet<String>, key: &str) -> bool {
@@ -789,18 +1007,102 @@ fn collect_path_params(params: &Value) -> Vec<PathBuf> {
 }
 
 fn path_is_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
-    let Some(canon) = normalize_path(path) else {
+    // Relative paths and UNC/device paths are rejected even when the current
+    // working directory happens to be inside an allowed root. Otherwise the
+    // meaning of the same tool input changes with process launch context.
+    if !path.is_absolute() || is_unc_or_device_path(path) {
+        return false;
+    }
+    let Some(canon) = resolve_path_without_reparse(path) else {
         return false;
     };
     for base in allowed {
-        let Some(base_abs) = normalize_path(base) else {
+        if !base.is_absolute() || is_unc_or_device_path(base) {
+            continue;
+        }
+        let Some(base_abs) = resolve_path_without_reparse(base) else {
             continue;
         };
-        if canon.starts_with(&base_abs) {
+        if path_is_within(&canon, &base_abs) {
             return true;
         }
     }
     false
+}
+
+/// Resolve the existing prefix of a path while rejecting every symlink or
+/// Windows reparse point encountered on that prefix. The non-existing suffix
+/// is appended only after the trusted prefix has been canonicalized. This is
+/// intentionally fail-closed: a metadata/canonicalization error denies the
+/// operation instead of falling back to lexical prefix matching.
+fn resolve_path_without_reparse(path: &Path) -> Option<PathBuf> {
+    let abs = normalize_path(path)?;
+    let components: Vec<_> = abs.components().collect();
+    let mut existing = PathBuf::new();
+    let mut suffix: Vec<OsString> = Vec::new();
+    let mut missing_started = false;
+
+    for (index, component) in components.iter().enumerate() {
+        if missing_started {
+            suffix.push(component.as_os_str().to_owned());
+            continue;
+        }
+
+        existing.push(component.as_os_str());
+        match std::fs::symlink_metadata(&existing) {
+            Ok(metadata) => {
+                if is_reparse_point(&metadata) {
+                    return None;
+                }
+                if index + 1 < components.len() && !metadata.file_type().is_dir() {
+                    return None;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                existing.pop();
+                missing_started = true;
+                suffix.push(component.as_os_str().to_owned());
+            }
+            Err(_) => return None,
+        }
+    }
+
+    let mut resolved = std::fs::canonicalize(&existing).ok()?;
+    for component in suffix {
+        resolved.push(component);
+    }
+    Some(resolved)
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+fn is_unc_or_device_path(path: &Path) -> bool {
+    let value = path.to_string_lossy();
+    value.starts_with("\\\\") || value.starts_with("//")
+}
+
+fn path_is_within(path: &Path, base: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy().to_ascii_lowercase();
+        let base = base.to_string_lossy().to_ascii_lowercase();
+        Path::new(&path).starts_with(Path::new(&base))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(base)
+    }
 }
 
 /// Lexically normalize `.` / `..` after making the path absolute so
@@ -1370,6 +1672,276 @@ mod tests {
             .await,
             ConfirmationResult::Blocked { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_child_allow_cannot_bypass_parent_deny() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.grant(
+            None,
+            "files",
+            PermissionEffect::Deny,
+            PermissionScope::Always,
+        )
+        .await;
+        gw.grant(
+            None,
+            "files:read",
+            PermissionEffect::Allow,
+            PermissionScope::Always,
+        )
+        .await;
+
+        assert!(matches!(
+            gw.check(None, "files", &json!({"operation": "read"}), RiskLevel::Low)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_child_deny_cannot_be_bypassed_by_parent_allow() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.grant(
+            None,
+            "files",
+            PermissionEffect::Allow,
+            PermissionScope::Always,
+        )
+        .await;
+        gw.grant(
+            None,
+            "files:delete",
+            PermissionEffect::Deny,
+            PermissionScope::Always,
+        )
+        .await;
+
+        assert!(matches!(
+            gw.check(
+                None,
+                "files",
+                &json!({"operation": "delete"}),
+                RiskLevel::High
+            )
+            .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_session_parent_deny_beats_session_child_allow() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.grant(
+            Some("ses-a"),
+            "system:power",
+            PermissionEffect::Deny,
+            PermissionScope::Session,
+        )
+        .await;
+        gw.grant(
+            Some("ses-a"),
+            "system:power:lock",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+
+        assert!(matches!(
+            gw.check(
+                Some("ses-a"),
+                "system",
+                &json!({"scope": "power", "operation": "lock"}),
+                RiskLevel::High,
+            )
+            .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_permanent_deny_beats_session_allow() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.grant(
+            None,
+            "shell",
+            PermissionEffect::Deny,
+            PermissionScope::Always,
+        )
+        .await;
+        gw.grant(
+            Some("ses-a"),
+            "shell",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+
+        assert!(matches!(
+            gw.check(Some("ses-a"), "shell", &json!({}), RiskLevel::High)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_local_tool_security_matrix_gates_every_risk_bearing_case() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        for case in LOCAL_TOOL_SECURITY_MATRIX {
+            let result = gw
+                .check(None, case.tool_name, &json!({}), case.risk_level)
+                .await;
+            if case.risk_level >= RiskLevel::Medium {
+                assert!(
+                    matches!(result, ConfirmationResult::RequiresConfirmation { .. }),
+                    "{}:{} should be gated, got {result:?}",
+                    case.tool_name,
+                    case.operation
+                );
+            } else {
+                assert!(
+                    matches!(result, ConfirmationResult::AutoApproved),
+                    "{}:{} should be automatic, got {result:?}",
+                    case.tool_name,
+                    case.operation
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_adapter_authorization_is_shared_but_session_scoped() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let mcp_name = crate::McpToolAdapter::qualified_name_of("calendar", "create_event");
+        let skill_name = crate::SkillToolAdapter::qualified_name_of("calendar");
+
+        gw.grant(
+            None,
+            &mcp_name,
+            PermissionEffect::Allow,
+            PermissionScope::Always,
+        )
+        .await;
+        gw.grant(
+            Some("ses-a"),
+            &skill_name,
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+
+        assert!(matches!(
+            gw.check(None, &mcp_name, &json!({}), RiskLevel::High).await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(matches!(
+            gw.check(Some("ses-a"), &skill_name, &json!({}), RiskLevel::High)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(matches!(
+            gw.check(None, &skill_name, &json!({}), RiskLevel::High)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[test]
+    fn test_local_tool_security_matrix_covers_every_builtin_family() {
+        let names: HashSet<_> = LOCAL_TOOL_SECURITY_MATRIX
+            .iter()
+            .map(|case| case.tool_name)
+            .collect();
+        for expected in [
+            "audio",
+            "ask",
+            "files",
+            "process",
+            "clipboard",
+            "shell",
+            "actions",
+            "input",
+            "scheduled_action",
+            "system",
+            "window",
+            "http",
+            "notify",
+            "agent",
+            "load_skill",
+            "load_mcp",
+            "memory",
+            "haven",
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing matrix family: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_path_sandbox_rejects_symlink_reparse_escape() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = allowed.path().join("link");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        assert!(!path_is_allowed(
+            &link.join("secret.txt"),
+            &[allowed.path().to_path_buf()]
+        ));
+    }
+
+    #[test]
+    fn test_path_sandbox_allows_only_absolute_paths_inside_canonical_root() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let inside = allowed.path().join("new").join("file.txt");
+
+        assert!(path_is_allowed(&inside, &[allowed.path().to_path_buf()]));
+        assert!(!path_is_allowed(
+            &outside.path().join("file.txt"),
+            &[allowed.path().to_path_buf()]
+        ));
+        assert!(!path_is_allowed(
+            Path::new("relative.txt"),
+            &[allowed.path().to_path_buf()]
+        ));
+        assert!(!path_is_allowed(
+            Path::new("//server/share/file.txt"),
+            &[allowed.path().to_path_buf()]
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_path_sandbox_checks_source_and_destination_together() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut settings = HashMap::new();
+        settings.insert(
+            "files".into(),
+            ToolConfig {
+                allowed_paths: vec![allowed.path().to_string_lossy().into_owned()],
+                ..ToolConfig::default()
+            },
+        );
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.set_tool_settings(settings).await;
+
+        let result = gw
+            .check(
+                None,
+                "files",
+                &json!({
+                    "operation": "copy",
+                    "source": allowed.path().join("source.txt"),
+                    "destination": outside.path().join("destination.txt"),
+                }),
+                RiskLevel::Medium,
+            )
+            .await;
+        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
     }
 
     #[tokio::test]

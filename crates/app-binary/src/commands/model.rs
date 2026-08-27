@@ -25,21 +25,6 @@ fn normalize_endpoint_url(url: &str) -> String {
     url.trim_end_matches('/').to_ascii_lowercase()
 }
 
-/// Resolve the default base URL for an STT provider (used when the user has
-/// not overridden it), so the stored-key guard in `discover_models` can match
-/// the requested URL.
-fn stt_default_base_url(provider: &str) -> &'static str {
-    match provider {
-        "groq" => "https://api.groq.com/openai/v1",
-        "gemini" => "https://generativelanguage.googleapis.com/v1beta",
-        // Deepgram listen lives at `{base}/v1/listen`; keep the host root so
-        // the adapter and STT discovery share one canonical base URL.
-        "deepgram" => "https://api.deepgram.com",
-        "assemblyai" => "https://api.assemblyai.com",
-        _ => "https://api.openai.com/v1",
-    }
-}
-
 /// Infer an STT-only catalog from a base URL host (used when the provider is
 /// not yet persisted in config.toml, e.g. right after the settings dialog).
 fn stt_only_catalog_for_url(base_url: &str) -> Option<Vec<ModelInfo>> {
@@ -161,7 +146,7 @@ fn provider_is_configured(p: &ProviderConfig) -> bool {
     haven_common::config::provider_credentials_ready(p)
 }
 
-/// STT key status: named `llm.providers` entry wins; else legacy `api_key`.
+/// STT key status is derived only from the selected named provider.
 fn stt_key_configured(stt: &haven_common::config::SttConfig, providers: &[ProviderConfig]) -> bool {
     let name = stt.provider.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
@@ -170,7 +155,7 @@ fn stt_key_configured(stt: &haven_common::config::SttConfig, providers: &[Provid
     if let Some(p) = providers.iter().find(|p| p.name == name) {
         return provider_is_configured(p);
     }
-    !stt.api_key.is_empty()
+    false
 }
 
 /// Build the `{role: bool, providers: {name: bool}, stt/ocr/...}` payload the
@@ -282,22 +267,11 @@ pub async fn discover_models(
 
     // STT-only providers (Deepgram / AssemblyAI) have no `/models` endpoint;
     // return the static catalog so the role picker can still assign a model.
-    // Prefer the explicitly requested named provider / URL host; only fall
-    // back to disk `media.stt.provider` when it matches the request (or no
-    // named provider was supplied).
-    if let Some(name) = provider.as_deref().filter(|n| !n.is_empty()) {
-        if let Some(p) = cfg.llm.provider(name)
-            && let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str())
-        {
-            return Ok(list);
-        }
-        if name.eq_ignore_ascii_case(cfg.media.stt.provider.as_str())
-            && let Some(list) = stt_only_catalog(None, cfg.media.stt.provider.as_str())
-        {
-            return Ok(list);
-        }
-    } else if role.as_deref() == Some("stt")
-        && let Some(list) = stt_only_catalog(None, cfg.media.stt.provider.as_str())
+    // The selected STT value is always a name from `llm.providers`; unsaved
+    // discovery can still use the requested URL host below.
+    if let Some(name) = provider.as_deref().filter(|n| !n.is_empty())
+        && let Some(p) = cfg.llm.provider(name)
+        && let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str())
     {
         return Ok(list);
     }
@@ -306,8 +280,8 @@ pub async fn discover_models(
     }
 
     let key_and_auth = if role.as_deref() == Some("stt") {
-        // STT discovery: prefer an explicit key, then a named llm.providers
-        // entry (media.stt.provider or `provider` arg), then legacy media.stt.
+        // STT discovery: prefer an explicit key, otherwise use only the named
+        // `llm.providers` entry selected by the request or media settings.
         let stt = &cfg.media.stt;
         let requested = normalize_endpoint_url(&base_url);
         if !api_key.is_empty() {
@@ -347,18 +321,7 @@ pub async fn discover_models(
             let value = auth_value(&pfx, &p.api_key);
             Some((p.api_key.clone(), (h, value)))
         } else {
-            let stt_base = if stt.base_url.is_empty() {
-                stt_default_base_url(&stt.provider)
-            } else {
-                stt.base_url.as_str()
-            };
-            if normalize_endpoint_url(stt_base) == requested {
-                let (h, pfx) = stt_auth_scheme(&stt.provider);
-                let value = auth_value(&pfx, &stt.api_key);
-                Some((stt.api_key.clone(), (h, value)))
-            } else {
-                None
-            }
+            None
         }
     } else {
         resolve_discovery_auth(&cfg, &base_url, &api_key, provider.as_deref())
@@ -388,7 +351,9 @@ pub async fn discover_models(
 /// button); providers without a stored key or that fail to respond simply
 /// yield an empty list.
 #[tauri::command]
-pub async fn discover_all_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub async fn discover_all_models(
+    app: tauri::AppHandle,
+) -> Result<BTreeMap<String, Vec<ModelInfo>>, String> {
     let state = app.state::<Arc<AppState>>();
     let cfg = {
         let guard = state
@@ -399,7 +364,7 @@ pub async fn discover_all_models(app: tauri::AppHandle) -> Result<serde_json::Va
     };
     let providers = cfg.llm.providers.clone();
     let mut handles = Vec::new();
-    let mut results = std::collections::HashMap::new();
+    let mut results = BTreeMap::new();
     for p in &providers {
         if p.base_url.is_empty() || !provider_is_configured(p) {
             continue;
@@ -440,7 +405,7 @@ pub async fn discover_all_models(app: tauri::AppHandle) -> Result<serde_json::Va
         };
         results.insert(name, list);
     }
-    serde_json::to_value(results).map_err(|e| log_err("discover_all_models", e))
+    Ok(results)
 }
 
 /// §2.7: Switch a model endpoint role to a different model.

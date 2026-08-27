@@ -32,7 +32,7 @@ use crate::types::{
     BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript,
     seed_events_from_canonical,
 };
-use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart};
 use std::collections::HashMap;
 
 /// A recent conversation message (role, content) used by the FRESH-run /
@@ -168,12 +168,7 @@ impl AgentLayer {
                     );
                     // Re-register per-session tools (skills/MCP) from projected
                     // rounds, since in-memory registrations are lost on restart.
-                    // Legacy Phase-7 upgrades may stash load_skill/load_mcp
-                    // rounds separately (CompactSummary alone yields empty rounds).
-                    let (_, mut rounds) = snapshot.project();
-                    if rounds.is_empty() && !snapshot.upgrade_tool_rounds.is_empty() {
-                        rounds = std::mem::take(&mut snapshot.upgrade_tool_rounds);
-                    }
+                    let (_, rounds) = snapshot.project();
                     self.restore_per_session_tools(session_id, &rounds).await;
                     // Phase 4 / C5+F2: restore the explicit ask gate from the
                     // snapshot. Upgrade legacy "paused" status BEFORE publishing
@@ -361,24 +356,6 @@ impl AgentLayer {
         let (mut canonical, _) = project_transcript(&events);
         let start_step = snapshot.step_number;
         let mut branch_points = snapshot.branch_points;
-
-        // Legacy cleanup: snapshots saved by older resume implementations may
-        // carry `[conversation]`-wrapped lines from a previous re-seed. New
-        // snapshots never produce them, so strip defensively from both the
-        // projected LLM cache and the events authority (CompactSummary seeds
-        // would otherwise resurrect them on the next persist/project).
-        let is_stale_conversation = |m: &CanonicalMessage| {
-            m.role == CanonicalRole::User
-                && m.content
-                    .iter()
-                    .any(|p| matches!(p, ContentPart::Text(t) if t.starts_with("[conversation] ")))
-        };
-        canonical.retain(|m| !is_stale_conversation(m));
-        for ev in &mut events {
-            if let TranscriptRecord::CompactSummary { compacted, .. } = ev {
-                compacted.retain(|m| !is_stale_conversation(m));
-            }
-        }
 
         // X2 / G7: full system rebuild on resume (short index + MEMORY +
         // session). Pause-path infer writes the DB; this rebuild makes facts

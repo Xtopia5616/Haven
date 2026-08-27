@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::commands::contracts::MemoryRecallItem;
 use crate::commands::log_err;
 use std::sync::Arc;
 use tauri::State;
@@ -20,10 +21,16 @@ pub async fn recall_memory(
     kind: Option<String>,
     limit: Option<usize>,
     state: State<'_, Arc<AppState>>,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<MemoryRecallItem>, String> {
     let kind = kind.as_deref().unwrap_or("fact");
     let limit = limit.unwrap_or(5);
-    Ok(state.agent.recall_memory(&query, kind, limit).await)
+    state
+        .agent
+        .recall_memory(&query, kind, limit)
+        .await
+        .into_iter()
+        .map(|item| serde_json::from_value(item).map_err(|e| log_err("recall_memory", e)))
+        .collect()
 }
 
 // M6-04: Fact management commands

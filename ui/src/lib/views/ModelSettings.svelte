@@ -370,15 +370,7 @@
 	function mediaProviderKind(name, capability) {
 		if (!name || name === 'none') return '';
 		const p = providerByName(name);
-		if (!p) {
-			// Legacy capability ids when no matching llm.providers entry.
-			if (name === 'openai' || name === 'elevenlabs' || name === 'gemini') {
-				if (capability === 'tts' && name === 'gemini') return '';
-				if (capability === 'image_gen' && name === 'elevenlabs') return '';
-				return /** @type {'openai' | 'gemini' | 'elevenlabs'} */ (name);
-			}
-			return '';
-		}
+		if (!p) return '';
 		return mediaCapabilityBackend(p, capability);
 	}
 
@@ -406,9 +398,6 @@
 	 */
 	function sttBackendKind(name) {
 		if (!name || STT_SPECIAL.has(name)) return '';
-		if (['openai', 'groq', 'gemini', 'deepgram', 'assemblyai'].includes(name)) {
-			return /** @type {'openai' | 'groq' | 'gemini' | 'deepgram' | 'assemblyai'} */ (name);
-		}
 		const p = providerByName(name);
 		if (!p) return '';
 		return sttCapabilityBackend(p);

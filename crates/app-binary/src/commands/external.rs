@@ -1,6 +1,12 @@
+use crate::app_state::AppState;
 use crate::commands::log_err;
+use haven_common::types::RiskLevel;
+use haven_tools::ConfirmationResult;
+use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use tauri::State;
 
 /// Open a URL in the default browser, or a local filesystem path in the file manager.
 ///
@@ -8,10 +14,25 @@ use std::process::Command;
 /// - absolute local paths only → reveal file / open folder
 /// - UNC / relative / other schemes → rejected
 #[tauri::command]
-pub async fn open_external(target: String) -> Result<(), String> {
+pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> Result<(), String> {
     let value = target.trim();
     if value.is_empty() {
         return Err("empty target".into());
+    }
+
+    match state
+        .tools
+        .safety_gateway
+        .check(None, "open_external", &Value::Null, RiskLevel::Low)
+        .await
+    {
+        ConfirmationResult::AutoApproved => {}
+        ConfirmationResult::Blocked { .. } => {
+            return Err("external open blocked by security policy".into());
+        }
+        ConfirmationResult::RequiresConfirmation { .. } => {
+            return Err("external open requires confirmation".into());
+        }
     }
 
     if looks_like_http_url(value) {
@@ -19,6 +40,9 @@ pub async fn open_external(target: String) -> Result<(), String> {
         open_url(value).map_err(|e| log_err("open_external", e))
     } else {
         let path = validate_local_path(value)?;
+        if !haven_tools::is_safe_local_path(&path) {
+            return Err("local path contains an unsafe reparse point or cannot be resolved".into());
+        }
         open_path(&path).map_err(|e| log_err("open_external", e))
     }
 }

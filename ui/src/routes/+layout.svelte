@@ -6,7 +6,14 @@
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { actionEventListeners, registerListeners, sessionEventListeners } from '$lib/events.ts';
+	import {
+		actionEventListeners,
+		agentEventListeners,
+		appEventListeners,
+		recordingEventListeners,
+		registerListeners,
+		sessionEventListeners,
+	} from '$lib/events.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
@@ -529,6 +536,7 @@
 		}
 
 		const registrations = registerListeners({
+			...appEventListeners({
 			'app:bootstrap': (event) => {
 				const status = event?.payload?.status;
 				if (status === 'ready') {
@@ -538,13 +546,15 @@
 					bootstrapReady = false;
 				}
 			},
+			}),
+			...recordingEventListeners({
 			'recording:started': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				setOverlay({
 					visible: true,
 					isRecording: true,
 					processing: false,
-					sessionId: data.session_id || null,
+					sessionId: data.sessionId || null,
 					startedAt: Date.now(),
 					reason: null,
 					vadState: 'silent',
@@ -552,7 +562,7 @@
 				startTimer();
 			},
 			'recording:stopped': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				if (processingTimer) clearTimeout(processingTimer);
 				const reason = data.reason || null;
 				const isAuto = reason === 'silence' || reason === 'max_duration';
@@ -568,13 +578,13 @@
 				}
 			},
 			'recording:vad_status': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				if (get(recordingOverlay).isRecording) {
 					setOverlay({ vadState: data.state || 'silent' });
 				}
 			},
 			'recording:error': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				addNotification(data.error || '录音错误，请检查麦克风/STT 配置', 'error', 5000);
 				resetOverlay();
 			},
@@ -583,7 +593,7 @@
 				setOverlay({ processing: true });
 			},
 			'transcription:result': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				const text = (data.text || '').trim();
 				if (text) {
 					// Same path as a typed message (see `submitVoiceTranscript`):
@@ -596,7 +606,7 @@
 				} else {
 					// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
 					// 明确反馈，否则看起来像"点了没反应"。
-					const durationMs = data.duration_ms || 0;
+					const durationMs = data.durationMs || 0;
 					if (durationMs > 0 && durationMs < 1000) {
 						addNotification('录音时间太短，请再试一次', 'warning', 3000);
 					} else {
@@ -606,12 +616,14 @@
 				resetOverlay();
 			},
 			'transcription:error': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				addNotification(data.error || '转写失败，请检查 STT 服务配置', 'error', 5000);
 				resetOverlay();
 			},
+			}),
+			...appEventListeners({
 			'mute:changed': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				if (data.muted) {
 					addNotification('麦克风已静音', 'info');
 					if (get(recordingOverlay).isRecording) {
@@ -629,7 +641,7 @@
 				}
 			},
 			'hotkey:conflict': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				addNotification(
 					`热键冲突: ${data.binding} - ${data.error}`,
 					'error',
@@ -637,11 +649,12 @@
 				);
 			},
 			'hotkey:rebind': (event) => {
-				const data = event.payload || {};
-				if (data.new_binding) {
-					hotkeyBinding = data.new_binding;
+				const data = event.payload;
+				if (data.newBinding) {
+					hotkeyBinding = data.newBinding;
 				}
 			},
+			}),
 			...sessionEventListeners({
 			'session:created': (event) => {
 				const data = event.payload;
@@ -731,6 +744,7 @@
 				}
 			},
 			}),
+			...appEventListeners({
 			'mcp:status_change': (event) => {
 				const data = event.payload;
 				const name = data.name || '';
@@ -743,7 +757,11 @@
 					}
 				} else if (status === 'Disconnected') {
 					addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
-				} else if (status && status.Offline) {
+				} else if (
+					status &&
+					typeof status === 'object' &&
+					'Offline' in status
+				) {
 					const err = status.Offline.error || '';
 					addNotification(`MCP 离线: ${name}${err ? ` - ${err}` : ''}`, 'error', 5000);
 				}
@@ -751,10 +769,12 @@
 			'skills:status_change': () => {
 				// Skill list refresh is notified by the tools page refresh button.
 			},
+			}),
+			...agentEventListeners({
 			'agent:balanced_model': (event) => {
 				const data = event.payload;
 				const activeId = get(activeSessionIdStore);
-				if (data.session_id && activeId && data.session_id !== activeId) return;
+				if (data.sessionId && activeId && data.sessionId !== activeId) return;
 				updateModelState('balanced_model');
 				addNotification(`Balanced Model: ${data.reason}`, 'warning');
 			},
@@ -763,26 +783,31 @@
 				// (first-chunk wait or mid-step gap). Show the factual waiting
 				// state — not a guessed "slow" label. Cleared by the next chunk
 				// (streaming) or a terminal session event (ready/error).
-				const data = event.payload || {};
+				const data = event.payload;
 				const activeId = get(activeSessionIdStore);
-				if (data.session_id && activeId && data.session_id !== activeId) return;
+				if (data.sessionId && activeId && data.sessionId !== activeId) return;
 				updateModelState('stalled');
 			},
+			}),
 			// Router rebuilt (settings saved / model switched): re-probe LLM
 			// connectivity immediately instead of waiting for the next
 			// backoff-scheduled probe (which can be up to 120s away during a
 			// failure streak).
+			...appEventListeners({
 			'llm:config_changed': () => {
 				refreshLlmConnection();
 			},
+			}),
+			...agentEventListeners({
 			'notification:show': (event) => {
-				const data = event.payload || {};
+				const data = event.payload;
 				const title = data.title || 'Haven';
 				const body = data.body || '新通知';
 				// When the title is the default "Haven", showing "Haven: msg" is
 				// redundant — the toast itself already lives in the app.
 				addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
 			},
+			}),
 			...actionEventListeners({
 				// Action lifecycle is registered globally so tasks stay tracked while
 				// the user visits other tabs. Both action kinds now share the named

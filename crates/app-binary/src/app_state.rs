@@ -1,4 +1,5 @@
 use crate::desktop::DesktopShell;
+use crate::events::AppBootstrapEvent;
 use haven_agent::AgentLayer;
 use haven_agent::SessionExecutor;
 use haven_common::config::ConfigLoader;
@@ -354,11 +355,11 @@ impl AppState {
 
     /// Run MCP discover + skills scan + audio prewarm off the critical path
     /// that blocks window creation, then start the session dispatcher.
-    /// Emits `app:bootstrap` (`loading` / `ready`) through `emit` so the
-    /// status chip can track progress even when the frontend mounts mid-flight.
+    /// Emits typed `app:bootstrap` (`loading` / `ready`) payloads so the status
+    /// chip can track progress even when the frontend mounts mid-flight.
     pub fn spawn_background_init<F>(&self, emit: F)
     where
-        F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
+        F: Fn(AppBootstrapEvent) + Send + Sync + 'static,
     {
         let tools = self.tools.clone();
         let pipeline = self.pipeline.clone();
@@ -370,10 +371,9 @@ impl AppState {
         let skills_cfg_root = cfg.skills.root.clone();
         let skills_cfg_enabled = cfg.skills.enabled.clone();
 
-        emit(
-            "app:bootstrap",
-            serde_json::json!({ "status": BootstrapStatus::Loading.as_str() }),
-        );
+        emit(AppBootstrapEvent {
+            status: BootstrapStatus::Loading.as_str().to_string(),
+        });
 
         tokio::spawn(async move {
             // Audio engine + VAD worker: first recording must not pay spawn
@@ -420,10 +420,9 @@ impl AppState {
             }
 
             bootstrap_ready.store(true, Ordering::Release);
-            emit(
-                "app:bootstrap",
-                serde_json::json!({ "status": BootstrapStatus::Ready.as_str() }),
-            );
+            emit(AppBootstrapEvent {
+                status: BootstrapStatus::Ready.as_str().to_string(),
+            });
             tracing::info!("app bootstrap ready (MCP/skills/audio prewarm finished)");
         });
     }

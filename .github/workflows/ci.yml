@@ -21,6 +21,15 @@ jobs:
           components: rustfmt, clippy
       - name: Format check
         run: cargo fmt --check
+      - name: Verify internal crate dependency direction
+        shell: pwsh
+        run: ./scripts/check-crate-dependencies.ps1
+      - name: Verify Tauri IPC contract registry
+        shell: pwsh
+        run: ./scripts/check-ipc-contracts.ps1
+      - name: Verify Tauri IPC event directory
+        shell: pwsh
+        run: ./scripts/check-ipc-events.ps1
       - name: Cargo check
         run: cargo check
       - name: Clippy

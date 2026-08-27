@@ -9,6 +9,7 @@
 //! to its definition module.
 
 pub mod action;
+pub mod contracts;
 pub mod external;
 pub mod history;
 pub mod log;
@@ -21,6 +22,7 @@ pub mod settings;
 pub mod skills;
 
 use crate::app_state::AppState;
+use crate::events::LLM_CONFIG_CHANGED_EVENT;
 use haven_common::McpServerConfig;
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
@@ -33,8 +35,6 @@ use tauri::Emitter;
 /// frontend +layout listens to this to re-probe LLM connectivity immediately
 /// instead of waiting for the next backoff-scheduled probe (which may be up
 /// to 120s away during a failure-streak).
-pub(crate) const LLM_CONFIG_CHANGED_EVENT: &str = "llm:config_changed";
-
 /// Emit [`LLM_CONFIG_CHANGED_EVENT`] so the frontend probes immediately after
 /// a router hot-swap (settings save, model switch, …). Best-effort: a missing
 /// renderer must never fail the command.

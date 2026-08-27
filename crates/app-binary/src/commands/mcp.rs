@@ -1,10 +1,12 @@
 use crate::app_state::AppState;
 use crate::commands::confirmation_error;
 use crate::commands::connect_and_monitor;
+use crate::commands::contracts::McpToolCallResponse;
 use crate::commands::log_err;
+use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use haven_common::McpServerConfig;
 use haven_common::types::RiskLevel;
-use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent};
+use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,7 +52,26 @@ pub async fn list_mcp_tools(
 
     let mut result: Vec<_> = snapshots.into_values().collect();
     result.sort_by(|a, b| a.name.cmp(&b.name));
+    for snapshot in &mut result {
+        redact_mcp_snapshot(snapshot);
+    }
     Ok(result)
+}
+
+/// MCP env entries are configuration secrets in practice (API keys, bearer
+/// tokens, and private endpoints). Keep the shape needed by the settings UI,
+/// but never return values across the Tauri boundary.
+fn redact_mcp_snapshot(snapshot: &mut McpServerSnapshot) {
+    snapshot.env = snapshot
+        .env
+        .iter()
+        .map(|entry| {
+            entry
+                .split_once('=')
+                .map(|(name, _)| format!("{name}=<redacted>"))
+                .unwrap_or_else(|| "<redacted>".into())
+        })
+        .collect();
 }
 
 #[tauri::command]
@@ -154,8 +175,8 @@ pub async fn refresh_mcp_servers(
         state.tools.mcp_manager.remove_client(&server.name).await;
         updated.push(server.name.clone());
         let _ = app.emit(
-            "mcp:status_change",
-            McpStatusChangeEvent {
+            MCP_STATUS_CHANGED_EVENT,
+            McpStatusChangedEvent {
                 name: server.name.clone(),
                 status: McpClientStatus::Disconnected,
             },
@@ -174,8 +195,8 @@ pub async fn refresh_mcp_servers(
                     added.push(server.name.clone());
                 }
                 let _ = app.emit(
-                    "mcp:status_change",
-                    McpStatusChangeEvent {
+                    MCP_STATUS_CHANGED_EVENT,
+                    McpStatusChangedEvent {
                         name: server.name.clone(),
                         status: McpClientStatus::Connected,
                     },
@@ -199,8 +220,8 @@ pub async fn refresh_mcp_servers(
         state.tools.mcp_manager.remove_client(&name).await;
         removed.push(name.clone());
         let _ = app.emit(
-            "mcp:status_change",
-            McpStatusChangeEvent {
+            MCP_STATUS_CHANGED_EVENT,
+            McpStatusChangedEvent {
                 name,
                 status: McpClientStatus::Disconnected,
             },
@@ -222,7 +243,7 @@ pub async fn mcp_tool_call(
     client: String,
     tool: String,
     args: Value,
-) -> Result<Value, String> {
+) -> Result<McpToolCallResponse, String> {
     // Same qualified name + High risk as McpToolAdapter so Always grants from
     // agent confirms apply to UI invoke. No session context — threshold +
     // permanent grants only.
@@ -257,11 +278,11 @@ pub async fn mcp_tool_call(
         .call_tool(&client, &tool, args, cancel)
         .await
         .map_err(|e| log_err("mcp_tool_call", e))?;
-    Ok(serde_json::json!({
-        "success": result.success,
-        "output": result.output,
-        "error": result.error,
-    }))
+    Ok(McpToolCallResponse {
+        success: result.success,
+        output: result.output,
+        error: result.error,
+    })
 }
 
 /// Spawn the health monitor for a live MCP client. The `self` tool's
@@ -330,8 +351,8 @@ pub async fn add_mcp_server(
         .await
         .is_some();
     let _ = app.emit(
-        "mcp:status_change",
-        McpStatusChangeEvent {
+        MCP_STATUS_CHANGED_EVENT,
+        McpStatusChangedEvent {
             name: config.name,
             status: if connected {
                 McpClientStatus::Connected
@@ -377,8 +398,8 @@ pub async fn update_mcp_server(
     state.tools.rebuild_catalog().await;
     let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
     let _ = app.emit(
-        "mcp:status_change",
-        McpStatusChangeEvent {
+        MCP_STATUS_CHANGED_EVENT,
+        McpStatusChangedEvent {
             name,
             status: if connected {
                 McpClientStatus::Connected
@@ -414,8 +435,8 @@ pub async fn remove_mcp_server(
     // from the Reasoner, plus the UI status event.
     state.tools.rebuild_catalog().await;
     let _ = app.emit(
-        "mcp:status_change",
-        McpStatusChangeEvent {
+        MCP_STATUS_CHANGED_EVENT,
+        McpStatusChangedEvent {
             name,
             status: McpClientStatus::Disconnected,
         },
@@ -450,8 +471,8 @@ pub async fn toggle_mcp_server(
     state.tools.rebuild_catalog().await;
     let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
     let _ = app.emit(
-        "mcp:status_change",
-        McpStatusChangeEvent {
+        MCP_STATUS_CHANGED_EVENT,
+        McpStatusChangedEvent {
             name,
             status: if connected {
                 McpClientStatus::Connected
@@ -461,4 +482,33 @@ pub async fn toggle_mcp_server(
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_mcp_snapshot;
+    use haven_tools::{McpClientStatus, McpServerSnapshot};
+
+    #[test]
+    fn mcp_snapshot_redacts_environment_values() {
+        let mut snapshot = McpServerSnapshot {
+            name: "demo".into(),
+            transport: "stdio".into(),
+            command: "server".into(),
+            args: vec![],
+            env: vec!["API_KEY=secret".into(), "NO_VALUE".into()],
+            cwd: None,
+            url: String::new(),
+            enabled: true,
+            status: McpClientStatus::Disconnected,
+            tools: vec![],
+            last_error: None,
+            diagnostic: None,
+            last_seen_at: None,
+        };
+
+        redact_mcp_snapshot(&mut snapshot);
+
+        assert_eq!(snapshot.env, vec!["API_KEY=<redacted>", "<redacted>"]);
+    }
 }

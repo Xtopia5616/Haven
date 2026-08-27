@@ -57,11 +57,8 @@ settings_pair! {
     for p in settings.llm.providers.iter_mut() {
         p.api_key = String::new();
     }
-    settings.media.stt.api_key = String::new();
     settings.media.ocr.api_key = String::new();
     settings.media.ocr.api_secret = String::new();
-    settings.media.tts.api_key = String::new();
-    settings.media.image_gen.api_key = String::new();
 }
 
 // ---------------------------------------------------------------------------
@@ -108,66 +105,75 @@ fn backup_unparsable_config(path: &Path, err: &str) {
     }
 }
 
-/// Copy legacy top-level `[audio]` into `media.audio` when present.
-fn migrate_legacy_top_level_audio(value: &toml::Value, config: &mut AppConfig) {
-    let Some(legacy) = value.get("audio") else {
-        return;
-    };
-    match legacy.clone().try_into::<AudioConfig>() {
-        Ok(audio) => {
-            tracing::info!("migrating top-level [audio] into [media.audio]");
-            config.media.audio = audio;
-        }
-        Err(e) => tracing::warn!("ignoring legacy top-level [audio]: {e}"),
+/// Removed settings are a hard reset boundary. A backup preserves the source
+/// file, but the running process must never silently reinterpret old safety
+/// or tool semantics.
+fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
+    if value.get("audio").is_some() {
+        return Some("top-level [audio]");
     }
-}
-
-/// Remap renamed/removed builtin tool settings keys onto their successors.
-/// Prefer an existing new-key entry over the orphan; drop keys that folded
-/// into another tool without a 1:1 successor when the successor already has
-/// settings.
-fn migrate_tool_settings_keys(config: &mut AppConfig) -> bool {
-    // old → Some(new) rename; old → None drop (folded into another tool).
-    const RENAMES: &[(&str, Option<&str>)] = &[
-        ("facts", Some("memory")),
-        ("network", Some("http")),
-        ("self", Some("haven")),
-        ("action_status", Some("actions")),
-        ("env", Some("system")),
-        ("power", Some("system")),
-        ("registry", Some("system")),
-        ("agents_list", Some("agent")),
-        ("message_send", Some("agent")),
-        ("message_inbox", Some("agent")),
-        ("message_reply", Some("agent")),
-        ("message_request", Some("agent")),
-        ("agent_profile", Some("agent")),
-        ("agent_spawn", Some("agent")),
-    ];
-    let mut changed = false;
-    for &(old, new) in RENAMES {
-        let Some(old_cfg) = config.tool_settings.remove(old) else {
-            continue;
-        };
-        changed = true;
-        if let Some(new_name) = new {
-            let mut cfg = old_cfg;
-            // Merged successors (system/agent) must not inherit a legacy
-            // single-tool risk_override — e.g. env→system with override=safe
-            // would suppress confirm for hibernate / registry set.
-            if matches!(new_name, "system" | "agent") {
-                cfg.risk_override = None;
+    if let Some(media) = value.get("media").and_then(toml::Value::as_table) {
+        for section in ["stt", "tts", "image_gen"] {
+            if let Some(table) = media.get(section).and_then(toml::Value::as_table)
+                && (table.contains_key("api_key") || table.contains_key("base_url"))
+            {
+                return Some("removed media provider credentials");
             }
-            config
-                .tool_settings
-                .entry(new_name.to_string())
-                .or_insert(cfg);
-            tracing::info!("migrating tool_settings.{old} → tool_settings.{new_name}");
-        } else {
-            tracing::info!("dropping obsolete tool_settings.{old}");
+        }
+        let named_provider_exists = |name: &str| {
+            value
+                .get("llm")
+                .and_then(toml::Value::as_table)
+                .and_then(|llm| llm.get("providers"))
+                .and_then(toml::Value::as_array)
+                .is_some_and(|providers| {
+                    providers.iter().any(|provider| {
+                        provider
+                            .get("name")
+                            .and_then(toml::Value::as_str)
+                            .is_some_and(|configured| configured == name)
+                    })
+                })
+        };
+        let is_removed_capability_name = |section: &str, names: &[&str]| {
+            media
+                .get(section)
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get("provider"))
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .is_some_and(|name| names.contains(&name) && !named_provider_exists(name))
+        };
+        if is_removed_capability_name(
+            "stt",
+            &["openai", "groq", "gemini", "deepgram", "assemblyai"],
+        ) || is_removed_capability_name("tts", &["openai", "elevenlabs"])
+            || is_removed_capability_name("image_gen", &["openai", "gemini"])
+        {
+            return Some("removed media provider name");
         }
     }
-    changed
+    const REMOVED_TOOL_SETTINGS: &[&str] = &[
+        "facts",
+        "network",
+        "self",
+        "action_status",
+        "env",
+        "power",
+        "registry",
+        "agents_list",
+        "message_send",
+        "message_inbox",
+        "message_reply",
+        "message_request",
+        "agent_profile",
+        "agent_spawn",
+    ];
+    let settings = value.get("tool_settings")?.as_table()?;
+    REMOVED_TOOL_SETTINGS
+        .iter()
+        .find(|name| settings.contains_key(**name))
+        .map(|_| "removed [tool_settings] entry")
 }
 
 impl ConfigLoader {
@@ -220,25 +226,19 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path)?;
         let config: AppConfig = match toml::from_str::<toml::Value>(&content) {
             Ok(value) => {
-                let mut cfg: AppConfig = match value.clone().try_into() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        backup_unparsable_config(path, &e.to_string());
-                        AppConfig::default()
-                    }
-                };
-                // One-shot bridge: pre-unification configs stored capture under
-                // top-level `[audio]`. Prefer that over default `media.audio`
-                // so a Save does not permanently drop VAD/sample-rate tweaks.
-                migrate_legacy_top_level_audio(&value, &mut cfg);
-                let settings_migrated = migrate_tool_settings_keys(&mut cfg);
-                if settings_migrated {
-                    // Persist remapped keys so orphans do not linger.
-                    if let Ok(toml_str) = toml::to_string_pretty(&cfg) {
-                        let _ = std::fs::write(path, toml_str);
-                    }
+                if let Some(entry) = removed_config_entry(&value) {
+                    backup_unparsable_config(path, &format!("removed configuration: {entry}"));
+                    AppConfig::default()
+                } else {
+                    let cfg: AppConfig = match value.try_into() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            backup_unparsable_config(path, &e.to_string());
+                            AppConfig::default()
+                        }
+                    };
+                    cfg
                 }
-                cfg
             }
             Err(e) => {
                 backup_unparsable_config(path, &e.to_string());
@@ -328,35 +328,17 @@ impl ConfigLoader {
         // encrypt_sensitive has no UI yet; don't let the form force `true`.
         self.config.security.encrypt_sensitive = prev_encrypt;
         self.config.media = {
-            let incoming = settings.media.clone();
+            let mut media = settings.media.clone();
             let prev = &self.config.media;
-            let mut s = incoming;
-            // Preserve masked keys for every media capability.
-            if s.stt.api_key.is_empty() {
-                s.stt.api_key = prev.stt.api_key.clone();
+            // OCR remains a dedicated provider with its own credentials; keep
+            // masked values when the settings form sends empty strings.
+            if media.ocr.api_key.is_empty() {
+                media.ocr.api_key = prev.ocr.api_key.clone();
             }
-            if s.stt.base_url.is_empty() {
-                s.stt.base_url = prev.stt.base_url.clone();
+            if media.ocr.api_secret.is_empty() {
+                media.ocr.api_secret = prev.ocr.api_secret.clone();
             }
-            if s.ocr.api_key.is_empty() {
-                s.ocr.api_key = prev.ocr.api_key.clone();
-            }
-            if s.ocr.api_secret.is_empty() {
-                s.ocr.api_secret = prev.ocr.api_secret.clone();
-            }
-            if s.tts.api_key.is_empty() {
-                s.tts.api_key = prev.tts.api_key.clone();
-            }
-            if s.tts.base_url.is_empty() {
-                s.tts.base_url = prev.tts.base_url.clone();
-            }
-            if s.image_gen.api_key.is_empty() {
-                s.image_gen.api_key = prev.image_gen.api_key.clone();
-            }
-            if s.image_gen.base_url.is_empty() {
-                s.image_gen.base_url = prev.image_gen.base_url.clone();
-            }
-            s
+            media
         };
         // The settings form does not manage these sections — MCP servers are
         // mutated by their own bridge commands and the `self` tool, skills and
@@ -437,9 +419,7 @@ mod tests {
         assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(cfg.media.stt.timeout_secs, 30);
         assert!(cfg.media.stt.mcp_server.is_none());
-        assert!(cfg.media.stt.api_key.is_empty());
         assert!(cfg.media.stt.model.is_empty());
-        assert!(cfg.media.stt.base_url.is_empty());
         assert_eq!(cfg.media.stt.min_confidence, 0.7);
         assert_eq!(cfg.media.ocr.provider, "llm");
         assert!(cfg.media.ocr.api_key.is_empty());
@@ -636,58 +616,38 @@ mod tests {
     }
 
     #[test]
-    fn apply_settings_preserves_media_api_keys_when_empty() {
+    fn apply_settings_preserves_ocr_credentials_when_empty() {
         let mut cfg = AppConfig::default();
-        cfg.media.stt.provider = "openai".into();
-        cfg.media.stt.api_key = "keep-stt-key".to_string();
         cfg.media.ocr.api_key = "keep-ocr-key".to_string();
         cfg.media.ocr.api_secret = "keep-ocr-secret".to_string();
-        cfg.media.tts.api_key = "keep-tts-key".to_string();
-        cfg.media.tts.base_url = "https://tts-gateway.example/v1".to_string();
-        cfg.media.image_gen.api_key = "keep-ig-key".to_string();
-        cfg.media.image_gen.base_url = "https://ig-gateway.example/v1".to_string();
         let mut settings = Settings::from(&cfg);
-        // Frontend sends masked (empty) api keys / base URLs but new models/voices.
+        // Frontend sends masked OCR credentials but new media models/voices.
         settings.media.stt.model = "whisper-1".to_string();
         settings.media.ocr.provider = "baidu".to_string();
         settings.media.tts.voice = "alloy".to_string();
-        settings.media.tts.base_url.clear();
         settings.media.image_gen.model = "gpt-image-1".to_string();
-        settings.media.image_gen.base_url.clear();
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
         };
         loader.apply_settings(&settings);
         let media = &loader.config().media;
-        assert_eq!(media.stt.api_key, "keep-stt-key");
         assert_eq!(media.stt.model, "whisper-1");
-        assert_eq!(media.stt.provider, "openai");
         assert_eq!(media.ocr.api_key, "keep-ocr-key");
         assert_eq!(media.ocr.api_secret, "keep-ocr-secret");
         assert_eq!(media.ocr.provider, "baidu");
-        assert_eq!(media.tts.api_key, "keep-tts-key");
-        assert_eq!(media.tts.base_url, "https://tts-gateway.example/v1");
         assert_eq!(media.tts.voice, "alloy");
-        assert_eq!(media.image_gen.api_key, "keep-ig-key");
-        assert_eq!(media.image_gen.base_url, "https://ig-gateway.example/v1");
         assert_eq!(media.image_gen.model, "gpt-image-1");
     }
 
     #[test]
     fn settings_hide_media_api_keys() {
         let mut cfg = AppConfig::default();
-        cfg.media.stt.api_key = "stt-secret".to_string();
         cfg.media.ocr.api_key = "ocr-secret".to_string();
         cfg.media.ocr.api_secret = "ocr-secret-2".to_string();
-        cfg.media.tts.api_key = "tts-secret".to_string();
-        cfg.media.image_gen.api_key = "ig-secret".to_string();
         let settings = Settings::from(&cfg);
-        assert!(settings.media.stt.api_key.is_empty());
         assert!(settings.media.ocr.api_key.is_empty());
         assert!(settings.media.ocr.api_secret.is_empty());
-        assert!(settings.media.tts.api_key.is_empty());
-        assert!(settings.media.image_gen.api_key.is_empty());
     }
 
     #[test]
@@ -841,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn load_migrates_legacy_top_level_audio() {
+    fn load_backs_up_removed_top_level_audio_configuration() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -855,8 +815,39 @@ vad_threshold = 0.25
         )
         .unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config().media.audio.sample_rate, 22050);
-        assert!((loader.config().media.audio.vad_threshold - 0.25).abs() < f32::EPSILON);
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1, "removed configuration must require reset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_removed_tool_settings() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[tool_settings.power]\ntimeout_secs = 60\n").unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -889,6 +880,110 @@ confirmation_mode = "always"
             })
             .collect();
         assert_eq!(backups.len(), 1, "removed aliases must require reset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_removed_media_provider_credentials() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[media.stt]
+provider = "openai"
+api_key = "old-secret"
+base_url = "https://old.example/v1"
+
+[media.tts]
+provider = "openai"
+api_key = "old-secret"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1, "removed media credentials must require reset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_removed_media_provider_name() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[media.stt]
+provider = "deepgram"
+model = "nova-3"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(
+            backups, 1,
+            "removed media provider names must require reset"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_accepts_named_provider_that_uses_a_backend_name() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[media.stt]
+provider = "deepgram"
+
+[[llm.providers]]
+name = "deepgram"
+provider = "deepgram"
+api_key = "named-secret"
+base_url = "https://api.deepgram.com"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config().media.stt.provider, "deepgram");
+        assert_eq!(loader.config().llm.providers[0].name, "deepgram");
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 0, "named provider references are current config");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

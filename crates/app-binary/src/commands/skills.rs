@@ -1,8 +1,11 @@
 use crate::app_state::AppState;
 use crate::commands::confirmation_error;
+use crate::commands::contracts::{SkillExecutionResponse, ToolInfoResponse, ToolListResponse};
 use crate::commands::log_err;
+use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent};
 use haven_common::types::RiskLevel;
 use haven_tools::{ConfirmationResult, SkillInfo};
+use serde_json::Value;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::State;
@@ -28,8 +31,10 @@ pub async fn refresh_skills(
     state.tools.rebuild_catalog().await;
     // Notify the frontend that the registry changed so views can refetch.
     let _ = app.emit(
-        "skills:status_change",
-        serde_json::json!({ "op": "refresh" }),
+        SKILLS_STATUS_CHANGED_EVENT,
+        SkillsStatusChangedEvent {
+            op: "refresh".into(),
+        },
     );
     Ok(())
 }
@@ -97,9 +102,31 @@ pub async fn set_tool_enabled(
 #[tauri::command]
 pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     let root = state.tools.skills_engine.resolved_root().await;
+    if !haven_tools::is_safe_local_path(&root) {
+        return Err(
+            "skills directory contains an unsafe reparse point or cannot be resolved".into(),
+        );
+    }
+    match state
+        .tools
+        .safety_gateway
+        .check(None, "open_skills_dir", &Value::Null, RiskLevel::Low)
+        .await
+    {
+        ConfirmationResult::AutoApproved => {}
+        ConfirmationResult::Blocked { .. } => {
+            return Err("opening skills directory blocked by security policy".into());
+        }
+        ConfirmationResult::RequiresConfirmation { .. } => {
+            return Err("opening skills directory requires confirmation".into());
+        }
+    }
     // Ensure the directory exists so the file manager opens something sensible
     // instead of erroring; users may have an empty skills root on first run.
     let _ = std::fs::create_dir_all(&root);
+    if !haven_tools::is_safe_local_path(&root) {
+        return Err("skills directory changed to an unsafe reparse point".into());
+    }
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
@@ -130,7 +157,7 @@ pub async fn execute_skill(
     name: String,
     params: serde_json::Value,
     confirmed: Option<bool>,
-) -> Result<serde_json::Value, String> {
+) -> Result<SkillExecutionResponse, String> {
     let skill_info = state
         .tools
         .skills_engine
@@ -188,11 +215,11 @@ pub async fn execute_skill(
         .await
         .map_err(|e| log_err("execute_skill", e))?;
 
-    Ok(serde_json::json!({
-        "success": result.success,
-        "output": result.output,
-        "error": result.error,
-    }))
+    Ok(SkillExecutionResponse {
+        success: result.success,
+        output: result.output,
+        error: result.error,
+    })
 }
 
 #[tauri::command]
@@ -200,7 +227,14 @@ pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListRespon
     // List ALL builtin tools (enabled and disabled) with their enabled state
     // so the UI can toggle them. Disabled tools are excluded from the
     // registry the agent sees (see ToolsManager::rebuild_catalog).
-    let tools = state.tools.list_builtin_tools().await;
+    let tools = state
+        .tools
+        .list_builtin_tools()
+        .await
+        .into_iter()
+        .map(serde_json::from_value::<ToolInfoResponse>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| log_err("get_tools", e))?;
     Ok(ToolListResponse { tools })
 }
 
@@ -210,9 +244,4 @@ pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListRespon
 pub async fn reset_tool_circuits(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.tools.tool_circuits().reset_all();
     Ok(())
-}
-
-#[derive(serde::Serialize)]
-pub struct ToolListResponse {
-    pub tools: Vec<serde_json::Value>,
 }

@@ -41,8 +41,9 @@ pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, 
 pub use live_output::LiveOutputHub;
 pub use skill_runner::SkillRunner;
 pub use tool::{
-    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolDef, ToolRegistration, ToolRegistry,
-    ToolResult, ToolSignals, extract_ask_signal, extract_notify_signal, is_silent_action,
+    ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, SafetyGateway, Tool,
+    ToolBox, ToolDef, ToolRegistration, ToolRegistry, ToolResult, ToolSignals, extract_ask_signal,
+    extract_notify_signal, is_safe_local_path, is_silent_action,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.

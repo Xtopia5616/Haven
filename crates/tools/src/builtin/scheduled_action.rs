@@ -12,72 +12,6 @@ use crate::bg::{BackgroundActions, EventSink, EventSinkState};
 use crate::tool::RegistryProbe;
 use crate::{Tool, ToolResult};
 
-/// Rewrite stored scheduled tool calls after builtin renames/merges.
-fn migrate_legacy_scheduled_tool(name: &str, args: Option<Value>) -> (String, Option<Value>) {
-    let args = args.unwrap_or_else(|| serde_json::json!({}));
-    match name {
-        "facts" => ("memory".into(), Some(args)),
-        "network" => ("http".into(), Some(args)),
-        "self" => ("haven".into(), Some(args)),
-        "action_status" => ("actions".into(), Some(args)),
-        "env" | "power" | "registry" => {
-            let mut wrapped = args;
-            if let Some(obj) = wrapped.as_object_mut() {
-                obj.entry("scope".to_string())
-                    .or_insert_with(|| serde_json::json!(name));
-            }
-            ("system".into(), Some(wrapped))
-        }
-        "agents_list" => (
-            "agent".into(),
-            Some(serde_json::json!({"operation": "list"})),
-        ),
-        "message_send" => {
-            let mut wrapped = args;
-            if let Some(obj) = wrapped.as_object_mut() {
-                obj.insert("operation".into(), serde_json::json!("send"));
-            }
-            ("agent".into(), Some(wrapped))
-        }
-        "message_inbox" => {
-            let mut wrapped = args;
-            if let Some(obj) = wrapped.as_object_mut() {
-                obj.insert("operation".into(), serde_json::json!("inbox"));
-            }
-            ("agent".into(), Some(wrapped))
-        }
-        "message_reply" => {
-            let mut wrapped = args;
-            if let Some(obj) = wrapped.as_object_mut() {
-                obj.insert("operation".into(), serde_json::json!("reply"));
-            }
-            ("agent".into(), Some(wrapped))
-        }
-        "message_request" => {
-            let mut wrapped = args;
-            if let Some(obj) = wrapped.as_object_mut() {
-                obj.insert("operation".into(), serde_json::json!("request"));
-            }
-            ("agent".into(), Some(wrapped))
-        }
-        "agent_profile" => {
-            let mut wrapped = args;
-            if let Some(obj) = wrapped.as_object_mut() {
-                obj.insert("operation".into(), serde_json::json!("profile"));
-            }
-            ("agent".into(), Some(wrapped))
-        }
-        "agent_spawn" => {
-            let mut wrapped = args;
-            if let Some(obj) = wrapped.as_object_mut() {
-                obj.insert("operation".into(), serde_json::json!("spawn"));
-            }
-            ("agent".into(), Some(wrapped))
-        }
-        other => (other.to_string(), Some(args)),
-    }
-}
-
 /// What happens when a scheduled_action fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -334,18 +268,11 @@ impl ScheduledActionCenter {
                 .unwrap_or(now);
             let remaining = (due - now).num_seconds();
             let mode = ScheduleMode::parse(&row.mode).unwrap_or(ScheduleMode::Tool);
-            let mut tool_name = row.tool_name.clone();
-            let mut tool_args = row
+            let tool_name = row.tool_name.clone();
+            let tool_args = row
                 .tool_args
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok());
-            // Builtin renames: rewrite stored tool calls so pending timers
-            // still fire after upgrade.
-            if let Some(name) = tool_name.as_deref() {
-                let (new_name, new_args) = migrate_legacy_scheduled_tool(name, tool_args.clone());
-                tool_name = Some(new_name);
-                tool_args = new_args;
-            }
             let fired_payload = ScheduledActionFired {
                 action_id: row.id.clone(),
                 title: row.title.clone(),

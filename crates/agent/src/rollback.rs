@@ -160,17 +160,11 @@ impl AgentLayer {
                 event_cursor: snapshot.events.len(),
                 step_number: target_step,
                 last_msg_at: cutoff_ts,
-                legacy_canonical: None,
             }
         };
 
-        // Restore events/step from the branch point. Legacy Phase-7 upgrades
-        // stash the BP's canonical seed so truncate(1) is not a no-op.
-        if let Some(seed) = bp.legacy_canonical.clone() {
-            snapshot.events = crate::types::seed_events_from_canonical(seed);
-        } else {
-            snapshot.events.truncate(bp.event_cursor);
-        }
+        // Restore the append-only event log to the recorded cursor.
+        snapshot.events.truncate(bp.event_cursor);
         snapshot.step_number = bp.step_number;
 
         // If the branch point was saved right after a ToolCall event but
@@ -322,9 +316,9 @@ impl AgentLayer {
                     .retain(|&k, b| k <= target_step && b.event_cursor <= event_len);
                 found = true;
             } else {
-                // CompactSummary seed (test helpers / legacy snapshots): trim
-                // the compacted user row in place, then drop every event after
-                // that CompactSummary so post-summary transcript cannot linger.
+                // CompactSummary seed: trim the compacted user row in place,
+                // then drop every event after that CompactSummary so
+                // post-summary transcript cannot linger.
                 for idx in (0..snapshot.events.len()).rev() {
                     if let TranscriptRecord::CompactSummary { compacted, .. } =
                         &mut snapshot.events[idx]
@@ -449,8 +443,8 @@ impl AgentLayer {
                 // the known failed attempt, including its step projection.
                 self.db.truncate_session_after(session_id, cutoff, false)?;
             } else {
-                // A partially persisted legacy/error snapshot may lack a
-                // branch point. Its explicit recovery IDs are still safe.
+                // A partially persisted error snapshot may lack a branch
+                // point. Its explicit recovery IDs are still safe.
                 self.db
                     .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
             }

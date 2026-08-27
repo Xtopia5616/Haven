@@ -724,32 +724,11 @@ async fn process_input_paused_without_ask_is_plain_supplement() {
 }
 
 #[tokio::test]
-async fn resume_dedups_conversation_prefix_against_canonical() {
-    // A legacy snapshot may carry `[conversation]`-wrapped lines from an
-    // older resume implementation. They must be stripped, and nothing may
-    // be re-injected on top of the canonical's full transcript — the
-    // snapshot is the single authority for everything it contains.
+async fn resume_rejects_legacy_conversation_prefix_snapshot() {
+    // A snapshot carrying the old `[conversation]` seed is incompatible with
+    // the current events-authority format and must require a reset.
     let (agent, executor) = make_test_agent();
-    agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
-    agent
-        .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
-        .await
-        .unwrap();
-    agent
-        .persist_message_parts(
-            &session.id,
-            "assistant",
-            "hi there",
-            Some("text"),
-            &[],
-            false,
-        )
-        .await
-        .unwrap();
-    // Snapshot whose canonical already carries the full transcript PLUS
-    // a stale `[conversation]` prefix left by a previous resume ??the
-    // exact duplication that made the model re-answer old questions.
     let canonical = vec![
         CanonicalMessage::system(vec![ContentPart::text("sys")]),
         CanonicalMessage::user_text("hello"),
@@ -779,31 +758,8 @@ async fn resume_dedups_conversation_prefix_against_canonical() {
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
         .unwrap();
 
-    agent.run_session_from_id(&session.id).await.unwrap();
-
-    let saved: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
-    let (canonical, _) = saved.project();
-    let user_texts: Vec<String> = canonical
-        .iter()
-        .filter(|m| m.role == CanonicalRole::User)
-        .filter_map(|m| {
-            m.content.iter().find_map(|p| match p {
-                ContentPart::Text(t) => Some(t.clone()),
-                _ => None,
-            })
-        })
-        .collect();
-    assert!(
-        user_texts.iter().all(|t| !t.starts_with("[conversation] ")),
-        "stale [conversation] lines must be stripped: {:?}",
-        user_texts
-    );
-    assert_eq!(
-        user_texts.iter().filter(|t| t.as_str() == "hello").count(),
-        1,
-        "already-present messages must not be duplicated"
-    );
+    let err = agent.run_session_from_id(&session.id).await.unwrap_err();
+    assert!(err.to_string().contains("incompatible"));
 }
 
 #[tokio::test]
@@ -4001,7 +3957,6 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
             event_cursor: 1,
             step_number: 1,
             last_msg_at: Some(opening.created_at),
-            legacy_canonical: None,
         },
     );
     let snapshot = ReActSnapshot {
@@ -4202,7 +4157,6 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             event_cursor: 1, // CompactSummary seed length
             step_number: 1,
             last_msg_at: Some(thought_ts),
-            legacy_canonical: None,
         },
     );
     let snapshot = ReActSnapshot {
@@ -4302,7 +4256,6 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
             event_cursor: 1, // CompactSummary seed length
             step_number: 1,
             last_msg_at: Some(reply1_ts),
-            legacy_canonical: None,
         },
     );
     let snapshot = ReActSnapshot {
@@ -4392,7 +4345,6 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
             event_cursor: 1, // CompactSummary seed length
             step_number: 1,
             last_msg_at: Some(reply_a_ts),
-            legacy_canonical: None,
         },
     );
     let snapshot = ReActSnapshot {
@@ -4484,7 +4436,6 @@ fn seed_hello_snapshot(
             event_cursor: 1, // CompactSummary seed length
             step_number: 1,
             last_msg_at: Some(thinking_ts),
-            legacy_canonical: None,
         },
     );
     let snapshot = ReActSnapshot {
@@ -4662,7 +4613,6 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             event_cursor: 1, // CompactSummary seed length
             step_number: 1,
             last_msg_at: Some(thinking_ts),
-            legacy_canonical: None,
         },
     );
     let snapshot = ReActSnapshot {
@@ -4786,7 +4736,6 @@ async fn rollback_pause_matches_prefixed_supplement_in_canonical() {
             event_cursor: 1, // CompactSummary seed length
             step_number: 2,
             last_msg_at: Some(thinking_ts),
-            legacy_canonical: None,
         },
     );
     let snapshot = ReActSnapshot {

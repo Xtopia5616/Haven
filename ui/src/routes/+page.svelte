@@ -39,7 +39,13 @@
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
-	import { actionEventListeners, registerListeners, sessionEventListeners } from '$lib/events.ts';
+	import {
+		actionEventListeners,
+		agentEventListeners,
+		appEventListeners,
+		registerListeners,
+		sessionEventListeners,
+	} from '$lib/events.ts';
 	import {
 		sessionMessagesStore,
 		sessionStore,
@@ -1170,8 +1176,8 @@
 	function chunkHandler(isThought, msgType) {
 		return (/** @type {any} */ event) => {
 			const data = event.payload;
-			const tid = data.session_id;
-			const sid = data.message_id;
+			const tid = data.sessionId;
+			const sid = data.messageId;
 			const delta = data.delta || '';
 			const seq = data.seq;
 			// The model-state chip reflects the ACTIVE conversation only:
@@ -1183,7 +1189,7 @@
 			if (seqLastSeen(sid, seq, tid)) return;
 			// Remember this block's minted id so the thought snap and the
 			// action handler can find the sibling reasoning/thought bubble.
-			registerBlockId(tid, data.step_number, data.run_id, isThought ? 'thought' : 'reasoning', sid);
+			registerBlockId(tid, data.stepNumber, data.runId, isThought ? 'thought' : 'reasoning', sid);
 
 			// Queue the chunk; the reasoning finalize + accumulation run in
 			// order inside the flush, so per-event semantics are unchanged.
@@ -1192,8 +1198,8 @@
 				sid,
 				delta,
 				msgType,
-				stepNumber: data.step_number,
-				runId: data.run_id,
+				stepNumber: data.stepNumber,
+				runId: data.runId,
 				time: new Date().toLocaleTimeString(),
 				finalizeReasoning: isThought,
 			});
@@ -1508,10 +1514,11 @@
 					if (idx >= 0) sessions[idx] = { ...sessions[idx], title };
 				},
 				}),
+				...appEventListeners({
 				'hotkey:rebind': (event) => {
-					const data = event.payload || {};
-					if (data.new_binding) {
-						hotkeyBinding = data.new_binding;
+					const data = event.payload;
+					if (data.newBinding) {
+						hotkeyBinding = data.newBinding;
 					}
 				},
 				// Settings save / model switch rebuilds the router. Keep-alive
@@ -1524,15 +1531,17 @@
 					}
 					refreshDefaultModelFromBackend();
 				},
+				}),
+				...agentEventListeners({
 				'agent:thought': (event) => {
 					const data = event.payload;
-					const tid = data.session_id;
+					const tid = data.sessionId;
 					// The snap carries the minted message id the chunks streamed
 					// into (and the DB row is persisted under), so the reconcile
 					// is a plain id-keyed replace. The sibling reasoning id comes
 					// from the block registry (a `msg-*` id carries no step info).
-					const thoughtId = data.message_id;
-					const { reasoningId } = blockIdsOf(tid, data.step_number, data.run_id);
+					const thoughtId = data.messageId;
+					const { reasoningId } = blockIdsOf(tid, data.stepNumber, data.runId);
 					// The authoritative snap reconciles the streamed text: apply
 					// any queued chunks first so no delta is left to accumulate
 					// onto the finalized message afterwards.
@@ -1550,8 +1559,8 @@
 							messageId: thoughtId,
 							reasoningId,
 							thought: data.thought,
-							stepNumber: data.step_number,
-							runId: data.run_id,
+							stepNumber: data.stepNumber,
+							runId: data.runId,
 							time: new Date().toLocaleTimeString(),
 						}),
 					);
@@ -1559,23 +1568,23 @@
 				'agent:thought_chunk': chunkHandler(true, undefined),
 				'agent:reasoning_chunk': chunkHandler(false, 'reasoning'),
 				'agent:web_search': (event) => {
-					const data = event.payload || {};
-					const tid = data.session_id;
+					const data = event.payload;
+					const tid = data.sessionId;
 					if (!tid || (activeSessionId && tid !== activeSessionId)) return;
 					// Mirror agent:action: flush queued text first, then finalize
 					// the current thought/reasoning bubble so post-search deltas
 					// open a NEW bubble below this card instead of appending above.
 					flushChunksNow();
-					const callId = data.call_id || null;
+					const callId = data.callId || null;
 					// Skip unkeyed updates when the adapter had no call id —
 					// a null-id card would later collide with the real ws_* id.
 					if (!callId) return;
-					const wsId = webSearchId(tid, data.step_number, data.run_id, callId);
-					const placeholderId = webSearchId(tid, data.step_number, data.run_id, null);
+					const wsId = webSearchId(tid, data.stepNumber, data.runId, callId);
+					const placeholderId = webSearchId(tid, data.stepNumber, data.runId, null);
 					const { reasoningId, thoughtId } = blockIdsOf(
 						tid,
-						data.step_number,
-						data.run_id,
+						data.stepNumber,
+						data.runId,
 					);
 					updateSessionMessages(tid, (m) => {
 						let next = m;
@@ -1609,7 +1618,7 @@
 									next,
 									newToolMessage({
 										id: wsId,
-										stepNumber: data.step_number,
+									stepNumber: data.stepNumber,
 										toolName: 'web_search',
 										time: new Date().toLocaleTimeString(),
 										content,
@@ -1630,7 +1639,7 @@
 							next,
 							newToolMessage({
 								id: wsId,
-								stepNumber: data.step_number,
+								stepNumber: data.stepNumber,
 								toolName: 'web_search',
 								time: new Date().toLocaleTimeString(),
 								content,
@@ -1646,13 +1655,13 @@
 					// Background action auto-wake: insert a compact `actions`
 					// card so the conversation shows the resume bridge (not
 					// only a toast / sudden model restart).
-					const data = event.payload || {};
-					const tid = data.session_id;
-					const ctx = (data.additional_context || '').trim();
+					const data = event.payload;
+					const tid = data.sessionId;
+					const ctx = (data.additionalContext || '').trim();
 					if (!tid || !ctx) return;
-					const source = data.inject_source;
+					const source = data.injectSource;
 					if (source === 'cross_session') {
-						const cardId = `peer-mail-${data.step_number ?? 0}-${data.run_id ?? 0}-${ctx.length}`;
+						const cardId = `peer-mail-${data.stepNumber ?? 0}-${data.runId ?? 0}-${ctx.length}`;
 						const content = JSON.stringify({
 							operation: 'inbox',
 							auto: true,
@@ -1666,7 +1675,7 @@
 								m,
 								newToolMessage({
 									id: cardId,
-									stepNumber: data.step_number ?? 0,
+									stepNumber: data.stepNumber ?? 0,
 									toolName: 'agent',
 									content,
 									time: new Date().toLocaleTimeString(),
@@ -1678,7 +1687,7 @@
 					if (source === 'action_result') {
 						const parsed = parseActionResultInject(ctx);
 						const actionId = parsed?.action_id || 'unknown';
-						const cardId = `action-result-${actionId}-${data.step_number ?? 0}-${data.run_id ?? 0}`;
+						const cardId = `action-result-${actionId}-${data.stepNumber ?? 0}-${data.runId ?? 0}`;
 						const content = JSON.stringify(
 							parsed || {
 								operation: 'result_injected',
@@ -1693,7 +1702,7 @@
 								m,
 								newToolMessage({
 									id: cardId,
-									stepNumber: data.step_number ?? 0,
+									stepNumber: data.stepNumber ?? 0,
 									toolName: 'actions',
 									content,
 									time: new Date().toLocaleTimeString(),
@@ -1725,7 +1734,7 @@
 				},
 				'agent:action': (event) => {
 					const data = event.payload;
-					const tid = data.session_id;
+					const tid = data.sessionId;
 					// A tool action finalizes the step's streaming blocks:
 					// apply queued chunks first so the finalize is complete.
 					flushChunksNow();
@@ -1733,11 +1742,11 @@
 					// The event carries the minted `step-*` id — the same id the
 					// step row is persisted under — so the live card and the
 					// resume badge are one entity.
-					const toolMsgId = data.step_id;
+					const toolMsgId = data.stepId;
 					const { reasoningId, thoughtId } = blockIdsOf(
 						tid,
-						data.step_number,
-						data.run_id,
+						data.stepNumber,
+						data.runId,
 					);
 					if (reasoningId) pruneSeq(reasoningId);
 					if (thoughtId) pruneSeq(thoughtId);
@@ -1746,7 +1755,7 @@
 						// must still be finalized so it is inserted immediately.
 						updateSessionMessages(tid, (m) =>
 							finalizeStreamBlocks(
-								data.suppress_streamed_thought ? dropStreamedThought(m, thoughtId) : m,
+									data.suppressStreamedThought ? dropStreamedThought(m, thoughtId) : m,
 								reasoningId,
 								thoughtId,
 							),
@@ -1759,7 +1768,7 @@
 						// Finalized blocks drop straggler chunks that flush
 						// out of the batcher after this event.
 						const fixed = finalizeStreamBlocks(
-							data.suppress_streamed_thought ? dropStreamedThought(m, thoughtId) : m,
+								data.suppressStreamedThought ? dropStreamedThought(m, thoughtId) : m,
 							reasoningId,
 							thoughtId,
 						);
@@ -1769,8 +1778,8 @@
 							fixed,
 							newToolMessage({
 								id: toolMsgId,
-								stepNumber: data.step_number,
-								toolName: data.tool_name,
+								stepNumber: data.stepNumber,
+								toolName: data.toolName,
 								time: new Date().toLocaleTimeString(),
 								streaming: true,
 								toolArgs: data.input ?? null,
@@ -1782,15 +1791,15 @@
 					// Live stdout/stderr preview while a foreground tool runs.
 					// Side-channel store — does not rewrite the transcript list.
 					const data = event.payload || {};
-					const toolMsgId = data.step_id;
+					const toolMsgId = data.stepId;
 					const output = typeof data.output === 'string' ? data.output : '';
 					if (!toolMsgId) return;
 					setToolOutputPreview(toolMsgId, output);
 				},
 				'agent:observation': (event) => {
 					const data = event.payload;
-					const tid = data.session_id;
-					const toolMsgId = data.step_id;
+					const tid = data.sessionId;
+					const toolMsgId = data.stepId;
 					if (data.silent) {
 						// Empty inbox (and other silent tools): action may have
 						// already inserted a streaming placeholder — remove it.
@@ -1810,10 +1819,10 @@
 						const idx = m.findIndex((x) => x.id === toolMsgId);
 						const msg = newToolMessage({
 							id: toolMsgId,
-							stepNumber: data.step_number,
-							toolName: data.tool_name,
+							stepNumber: data.stepNumber,
+							toolName: data.toolName,
 							content: data.observation,
-							askOptions: data.ask_options || [],
+							askOptions: data.askOptions || [],
 							actionId,
 						});
 						if (idx >= 0) {
@@ -1828,6 +1837,7 @@
 						return insertAgentMessage(m, msg);
 					});
 				},
+				}),
 				...actionEventListeners({
 					'action:finished': (event) => {
 						// Persist terminal background output onto the tool card and
@@ -1836,6 +1846,7 @@
 						finalizeBackgroundActionMessages(event.payload);
 					},
 				}),
+				...appEventListeners({
 				'confirm:requested': (event) => {
 					const data = event.payload;
 					// Security confirmations are modal and resolve by step id, so
@@ -1851,69 +1862,71 @@
 					// session would silently deny the first operation the user never
 					// got to choose on — every request has a live backend wait, so
 					// there is no "moved on" case that needs a defensive denial.
-					const tid = data.session_id || '';
+					const tid = data.sessionId || '';
 					const session = sessions.find((t) => t.id === tid);
 					confirmQueue = [
 						...confirmQueue,
 						{
-							stepId: data.step_id,
-							toolName: data.tool_name,
+							stepId: data.stepId,
+							toolName: data.toolName,
 							sessionId: tid,
 							sessionTitle: session?.title || (tid || ''),
-							riskLevel: data.risk_level || 'medium',
+							riskLevel: data.riskLevel || 'medium',
 							params: data.params ?? null,
-							permissionKey: data.permission_key || data.tool_name || '',
+							permissionKey: data.permissionKey || data.toolName || '',
 						},
 					];
 					showNextConfirm();
 				},
+				}),
 				// Token usage / cost stats — emitted after every LLM step.
+				...agentEventListeners({
 				'agent:usage': (event) => {
-					const d = event.payload || {};
-					if (!d.session_id) return;
-					const prompt = d.prompt_tokens || 0;
-					const completion = d.completion_tokens || 0;
-					const cached = d.cached_tokens || 0;
-					const creation = d.cache_creation_tokens || 0;
-					const miss = d.cache_miss_tokens || 0;
+					const d = event.payload;
+					if (!d.sessionId) return;
+					const prompt = d.promptTokens || 0;
+					const completion = d.completionTokens || 0;
+					const cached = d.cachedTokens || 0;
+					const creation = d.cacheCreationTokens || 0;
+					const miss = d.cacheMissTokens || 0;
 					const total = coalesceTokenTotal(
 						prompt,
 						completion,
-						d.total_tokens || 0,
+						d.totalTokens || 0,
 						cached,
 						creation,
-						d.cache_accounting || 'unknown',
+						d.cacheAccounting || 'unknown',
 					);
-					const cumPrompt = d.cumulative_prompt_tokens || 0;
-					const cumCompletion = d.cumulative_completion_tokens || 0;
-					const cumCached = d.cumulative_cached_tokens || 0;
-					const cumCreation = d.cumulative_cache_creation_tokens || 0;
-					const cumMiss = d.cumulative_cache_miss_tokens || 0;
-					updateSessionTokenStats(d.session_id, {
+					const cumPrompt = d.cumulativePromptTokens || 0;
+					const cumCompletion = d.cumulativeCompletionTokens || 0;
+					const cumCached = d.cumulativeCachedTokens || 0;
+					const cumCreation = d.cumulativeCacheCreationTokens || 0;
+					const cumMiss = d.cumulativeCacheMissTokens || 0;
+					updateSessionTokenStats(d.sessionId, {
 						promptTokens: prompt,
 						completionTokens: completion,
 						totalTokens: total,
 						cachedTokens: cached,
 						cacheCreationTokens: creation,
 						cacheMissTokens: miss,
-						cacheAccounting: d.cache_accounting || 'unknown',
-						contextTokens: d.context_tokens || 0,
-						cacheExclusive: !!d.cache_exclusive,
+						cacheAccounting: d.cacheAccounting || 'unknown',
+						contextTokens: d.contextTokens || 0,
+						cacheExclusive: !!d.cacheExclusive,
 						cumulativePromptTokens: cumPrompt,
 						cumulativeCompletionTokens: cumCompletion,
 						cumulativeTotalTokens: coalesceTokenTotal(
 							cumPrompt,
 							cumCompletion,
-							d.cumulative_total_tokens || 0,
+							d.cumulativeTotalTokens || 0,
 							cumCached,
 							cumCreation,
 						),
 						cumulativeCachedTokens: cumCached,
 						cumulativeCacheCreationTokens: cumCreation,
 						cumulativeCacheMissTokens: cumMiss,
-						costUsd: d.cost_usd ?? null,
-						cumulativeCostUsd: d.cumulative_cost_usd ?? null,
-						contextWindow: d.context_window ?? null,
+						costUsd: d.costUsd ?? null,
+						cumulativeCostUsd: d.cumulativeCostUsd ?? null,
+						contextWindow: d.contextWindow ?? null,
 						model: d.model ?? null,
 						// A real usage event supersedes any restored estimate.
 						estimated: false,
@@ -1924,9 +1937,9 @@
 					// Also append the per-call detail so tool-card token chips
 					// (stepUsage) update live — previously they only appeared
 					// after restoreSessionLlmUsage on resume/reopen.
-					if (d.step_number != null) {
-						appendSessionLlmUsage(d.session_id, {
-							step_number: d.step_number,
+					if (d.stepNumber != null) {
+						appendSessionLlmUsage(d.sessionId, {
+							step_number: d.stepNumber,
 							role: d.role || undefined,
 							model: d.model ?? null,
 							prompt_tokens: prompt,
@@ -1935,21 +1948,22 @@
 							cached_tokens: cached,
 							cache_creation_tokens: creation,
 							cache_miss_tokens: miss,
-							cache_accounting: d.cache_accounting || 'unknown',
-							cache_diagnostics: d.cache_diagnostics || undefined,
-							cost_usd: d.cost_usd ?? null,
-							has_cost: !!d.has_cost,
-							duration_ms: d.duration_ms ?? null,
+							cache_accounting: d.cacheAccounting || 'unknown',
+							cache_diagnostics: d.cacheDiagnostics || undefined,
+							cost_usd: d.costUsd ?? null,
+							has_cost: !!d.hasCost,
+							duration_ms: d.durationMs ?? null,
 						});
 					}
 				},
 				// Context compaction notice — summarize a portion of the history.
 				'agent:compaction': (event) => {
-					const d = event.payload || {};
-					const before = formatTokenCount(d.tokens_before || 0);
-					const after = formatTokenCount(d.tokens_after || 0);
+					const d = event.payload;
+					const before = formatTokenCount(d.tokensBefore || 0);
+					const after = formatTokenCount(d.tokensAfter || 0);
 					addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
 				},
+				}),
 			},
 			{ tag: '+page' },
 		);

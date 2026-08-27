@@ -644,7 +644,6 @@ impl ReActEngine {
                 event_cursor: events.len(),
                 step_number,
                 last_msg_at,
-                legacy_canonical: None,
             },
         );
         // The throttle marker guard is confined to this block so it is always

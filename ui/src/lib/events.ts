@@ -11,6 +11,21 @@ import {
 	type ActionEventName,
 	type ActionPayload,
 } from './contracts/action.ts';
+import {
+	mapRecordingEvent,
+	type RecordingEventName,
+	type RecordingEventPayloadMap,
+} from './contracts/recording.ts';
+import {
+	mapAgentEvent,
+	type AgentEventName,
+	type AgentEventPayloadMap,
+} from './contracts/agent.ts';
+import {
+	mapAppEvent,
+	type AppEventName,
+	type AppEventPayloadMap,
+} from './contracts/app.ts';
 
 type SessionListenerMap = Partial<{
 	[K in SessionEventName]: (event: TauriEvent<SessionEventPayloadMap[K]>) => void;
@@ -18,6 +33,18 @@ type SessionListenerMap = Partial<{
 
 type ActionListenerMap = Partial<{
 	[K in ActionEventName]: (event: TauriEvent<ActionPayload>) => void;
+}>;
+
+type RecordingListenerMap = Partial<{
+	[K in RecordingEventName]: (event: TauriEvent<RecordingEventPayloadMap[K]>) => void;
+}>;
+
+type AgentListenerMap = Partial<{
+	[K in AgentEventName]: (event: TauriEvent<AgentEventPayloadMap[K]>) => void;
+}>;
+
+type AppListenerMap = Partial<{
+	[K in AppEventName]: (event: TauriEvent<AppEventPayloadMap[K]>) => void;
 }>;
 
 /**
@@ -106,6 +133,48 @@ export function actionEventListeners(
 			eventName,
 			(event: TauriEvent<unknown>) => {
 				handler?.(mapActionEvent({ ...event, event: eventName } as never) as never);
+			},
+		]),
+	);
+}
+
+/** Adapt recording events once, before routes consume their camelCase DTOs. */
+export function recordingEventListeners(
+	map: RecordingListenerMap,
+): Record<string, (event: TauriEvent<unknown>) => void> {
+	return Object.fromEntries(
+		Object.entries(map).map(([eventName, handler]) => [
+			eventName,
+			(event: TauriEvent<unknown>) => {
+				handler?.(mapRecordingEvent({ ...event, event: eventName } as never) as never);
+			},
+		]),
+	);
+}
+
+/** Adapt agent events once, before routes consume their camelCase DTOs. */
+export function agentEventListeners(
+	map: AgentListenerMap,
+): Record<string, (event: TauriEvent<unknown>) => void> {
+	return Object.fromEntries(
+		Object.entries(map).map(([eventName, handler]) => [
+			eventName,
+			(event: TauriEvent<unknown>) => {
+				handler?.(mapAgentEvent({ ...event, event: eventName } as never) as never);
+			},
+		]),
+	);
+}
+
+/** Adapt app-shell events once, before routes consume their camelCase DTOs. */
+export function appEventListeners(
+	map: AppListenerMap,
+): Record<string, (event: TauriEvent<unknown>) => void> {
+	return Object.fromEntries(
+		Object.entries(map).map(([eventName, handler]) => [
+			eventName,
+			(event: TauriEvent<unknown>) => {
+				handler?.(mapAppEvent({ ...event, event: eventName } as never) as never);
 			},
 		]),
 	);

@@ -1,12 +1,14 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::events::{
-    RecordingEvent, TranscriptionErrorEvent, TranscriptionResultEvent, TranscriptionStartedEvent,
+    RECORDING_ERROR_EVENT, RECORDING_STARTED_EVENT, RECORDING_STOPPED_EVENT, RecordingErrorEvent,
+    RecordingEvent, TRANSCRIPTION_ERROR_EVENT, TRANSCRIPTION_RESULT_EVENT,
+    TRANSCRIPTION_STARTED_EVENT, TranscriptionErrorEvent, TranscriptionResultEvent,
+    TranscriptionStartedEvent,
 };
 use haven_common::config::ContextLimitsConfig;
 use haven_input::{RecordingReason, RecordingResult};
 use serde::Serialize;
-use serde_json::Value;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::State;
@@ -59,7 +61,7 @@ pub(crate) fn emit_recording_started(
     session_id: &haven_common::types::SessionId,
 ) {
     let _ = app.emit(
-        "recording:started",
+        RECORDING_STARTED_EVENT,
         RecordingEvent {
             is_recording: true,
             session_id: Some(session_id.clone()),
@@ -79,7 +81,7 @@ pub(crate) fn emit_recording_stopped(
     duration_ms: Option<u64>,
 ) {
     let _ = app.emit(
-        "recording:stopped",
+        RECORDING_STOPPED_EVENT,
         RecordingEvent {
             is_recording: false,
             session_id: None,
@@ -93,11 +95,11 @@ pub(crate) fn emit_recording_stopped(
 /// user-facing error message.
 pub(crate) fn emit_recording_error(app: &tauri::AppHandle, error: impl Into<String>) {
     let _ = app.emit(
-        "recording:error",
-        serde_json::json!({
-            "session_id": haven_common::types::new_id("rec"),
-            "error": error.into(),
-        }),
+        RECORDING_ERROR_EVENT,
+        RecordingErrorEvent {
+            session_id: haven_common::types::new_id("rec").into(),
+            error: error.into(),
+        },
     );
 }
 
@@ -131,7 +133,7 @@ pub(crate) async fn finalize_transcription(
     // Tell the UI STT is about to run, before the (potentially slow)
     // network call, so it can show a "transcribing" hint right away.
     let _ = app.emit(
-        "transcription:started",
+        TRANSCRIPTION_STARTED_EVENT,
         TranscriptionStartedEvent {
             session_id: session_id.clone(),
         },
@@ -142,7 +144,7 @@ pub(crate) async fn finalize_transcription(
     match result.transcript {
         Some(text) => {
             let _ = app.emit(
-                "transcription:result",
+                TRANSCRIPTION_RESULT_EVENT,
                 TranscriptionResultEvent {
                     session_id: session_id.clone(),
                     text: text.clone(),
@@ -155,7 +157,7 @@ pub(crate) async fn finalize_transcription(
         None => {
             if let Some(err) = result.transcript_error {
                 let _ = app.emit(
-                    "transcription:error",
+                    TRANSCRIPTION_ERROR_EVENT,
                     TranscriptionErrorEvent {
                         session_id: session_id.clone(),
                         error: err,
@@ -167,7 +169,7 @@ pub(crate) async fn finalize_transcription(
                 // the "transcribing" overlay closed. The frontend treats an
                 // empty `transcription:result` as "close, add no message".
                 let _ = app.emit(
-                    "transcription:result",
+                    TRANSCRIPTION_RESULT_EVENT,
                     TranscriptionResultEvent {
                         session_id: session_id.clone(),
                         text: String::new(),
@@ -293,7 +295,7 @@ pub async fn process_transcript(
     active_session_id: Option<String>,
     attachments: Option<Vec<haven_common::types::MessageAttachment>>,
     voice: Option<bool>,
-) -> Result<Value, String> {
+) -> Result<haven_agent::ProcessResult, String> {
     let limits = state
         .config_loader
         .lock()
@@ -317,7 +319,7 @@ pub async fn process_transcript(
         .await
         .map_err(|e| log_err("process_transcript", e))?;
     tracing::debug!("process_transcript result: {:?}", result);
-    Ok(serde_json::to_value(result).unwrap_or_default())
+    Ok(result)
 }
 
 /// Root folder for user-uploaded files. Lives under the agent's default Temp

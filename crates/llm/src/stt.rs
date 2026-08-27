@@ -9,8 +9,6 @@
 //!   [`LlmRouter::transcribe_audio`] (same single-shot path as OCR `llm`)
 //! - a name from `llm.providers`: credentials + backend (openai/groq/gemini/
 //!   deepgram/assemblyai) are taken from that provider
-//! - legacy `openai` / `groq` / `gemini` / `deepgram` / `assemblyai`: local
-//!   `api_key` / `base_url` on [`SttConfig`]
 //!
 use anyhow::Result;
 use async_trait::async_trait;
@@ -33,6 +31,20 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 #[async_trait]
 pub trait SttClient: Send + Sync {
     async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult>;
+}
+
+/// Runtime-only STT configuration resolved from a named `llm.providers`
+/// entry. Credentials and endpoint details intentionally do not live in the
+/// persisted `SttConfig`.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedSttConfig {
+    pub provider: String,
+    pub mcp_server: Option<String>,
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+    pub timeout_secs: u64,
+    pub min_confidence: f32,
 }
 
 /// Outcome of an MCP tool invocation, decoupled from the tools crate's
@@ -59,29 +71,33 @@ pub trait McpToolCaller: Send + Sync {
 
 /// Resolve STT config against named LLM providers. Rewrites a provider-name
 /// reference into a concrete backend (`openai` / `groq` / …) with that
-/// provider's URL + key. Leaves `none` / `llm` / `mcp` and legacy capability
-/// ids unchanged when no matching `llm.providers` entry exists.
-pub fn resolve_stt_config(cfg: &SttConfig, providers: &[ProviderConfig]) -> Result<SttConfig> {
+/// provider's URL + key. `none`, `llm`, and `mcp` remain local control modes;
+/// every cloud provider must be named in `llm.providers`.
+pub fn resolve_stt_config(
+    cfg: &SttConfig,
+    providers: &[ProviderConfig],
+) -> Result<ResolvedSttConfig> {
     let name = cfg.provider.trim();
     if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
-        return Ok(cfg.clone());
+        return Ok(ResolvedSttConfig {
+            provider: name.to_string(),
+            mcp_server: cfg.mcp_server.clone(),
+            api_key: String::new(),
+            model: cfg.model.clone(),
+            base_url: String::new(),
+            timeout_secs: cfg.timeout_secs,
+            min_confidence: cfg.min_confidence,
+        });
     }
-    // Named llm.providers win over legacy capability ids.
     if let Some(p) = providers.iter().find(|p| p.name == name) {
         return stt_from_provider(cfg, p);
-    }
-    if matches!(
-        name,
-        "openai" | "groq" | "gemini" | "deepgram" | "assemblyai"
-    ) {
-        return Ok(cfg.clone());
     }
     anyhow::bail!("STT references unknown provider '{name}'")
 }
 
-fn stt_from_provider(cfg: &SttConfig, p: &ProviderConfig) -> Result<SttConfig> {
+fn stt_from_provider(cfg: &SttConfig, p: &ProviderConfig) -> Result<ResolvedSttConfig> {
     let backend = stt_backend_for(p)?;
-    Ok(SttConfig {
+    Ok(ResolvedSttConfig {
         provider: backend.to_string(),
         mcp_server: None,
         api_key: p.api_key.clone(),
@@ -147,7 +163,7 @@ pub fn build_stt_client(
             Box::new(McpSttClient::new(caller, &server, resolved.timeout_secs))
         }
         "openai" | "groq" | "gemini" | "deepgram" | "assemblyai" => {
-            let endpoint = endpoint_from_stt_config(&resolved);
+            let endpoint = endpoint_from_resolved_stt_config(&resolved);
             Box::new(LlmClientSttBridge {
                 client: adapter_for(&endpoint),
             })
@@ -159,7 +175,7 @@ pub fn build_stt_client(
 
 /// Map `[media.stt]` into a [`ModelEndpoint`] so dedicated STT providers share
 /// the same adapter dispatch as chat/vision roles.
-pub fn endpoint_from_stt_config(cfg: &SttConfig) -> ModelEndpoint {
+pub fn endpoint_from_resolved_stt_config(cfg: &ResolvedSttConfig) -> ModelEndpoint {
     let (provider, api_style, default_base, default_model) = match cfg.provider.as_str() {
         "groq" => (
             "groq",
@@ -521,7 +537,6 @@ mod tests {
     fn test_stt_cfg(provider: &str) -> SttConfig {
         SttConfig {
             provider: provider.into(),
-            api_key: "test-key".into(),
             ..Default::default()
         }
     }
@@ -561,8 +576,18 @@ mod tests {
         assert!(err.to_string().contains("MCP caller"));
 
         for provider in ["openai", "groq", "gemini", "deepgram", "assemblyai"] {
-            let cfg = test_stt_cfg(provider);
-            let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[]).unwrap();
+            let cfg = SttConfig {
+                provider: provider.into(),
+                ..Default::default()
+            };
+            let providers = vec![ProviderConfig {
+                name: provider.into(),
+                provider: provider.into(),
+                api_key: "test-key".into(),
+                ..Default::default()
+            }];
+            let client =
+                build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &providers).unwrap();
             assert!(
                 client.is_some(),
                 "provider {provider} should yield a client"
@@ -576,6 +601,12 @@ mod tests {
         let err = build_stt_client(mock_router("unused"), None, &cfg, &[])
             .err()
             .expect("expected unknown provider to fail");
+        assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[test]
+    fn stt_rejects_unconfigured_provider_name() {
+        let err = resolve_stt_config(&test_stt_cfg("openai"), &[]).unwrap_err();
         assert!(err.to_string().contains("unknown provider"));
     }
 
@@ -602,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_stt_named_openai_wins_over_legacy() {
+    fn resolve_stt_provider_named_openai_uses_named_credentials() {
         use haven_common::config::ProviderConfig;
         let providers = vec![ProviderConfig {
             name: "openai".into(),
@@ -613,8 +644,6 @@ mod tests {
         }];
         let cfg = SttConfig {
             provider: "openai".into(),
-            api_key: "legacy".into(),
-            base_url: "https://legacy.example/v1".into(),
             ..Default::default()
         };
         let resolved = resolve_stt_config(&cfg, &providers).unwrap();
@@ -624,28 +653,42 @@ mod tests {
 
     #[test]
     fn endpoint_from_stt_config_defaults() {
-        let cfg = SttConfig {
+        let cfg = ResolvedSttConfig {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "k".into(),
+            mcp_server: None,
+            model: String::new(),
+            timeout_secs: 30,
+            min_confidence: 0.7,
             ..Default::default()
         };
-        let ep = endpoint_from_stt_config(&cfg);
+        let ep = endpoint_from_resolved_stt_config(&cfg);
         assert_eq!(ep.base_url, "https://gateway.example/v1");
         assert_eq!(ep.model_name, "whisper-1");
         assert_eq!(ep.api_style.as_deref(), Some("openai-chat"));
 
-        let groq = endpoint_from_stt_config(&SttConfig {
+        let groq = endpoint_from_resolved_stt_config(&ResolvedSttConfig {
             provider: "groq".into(),
             api_key: "k".into(),
+            mcp_server: None,
+            model: String::new(),
+            base_url: String::new(),
+            timeout_secs: 30,
+            min_confidence: 0.7,
             ..Default::default()
         });
         assert_eq!(groq.base_url, "https://api.groq.com/openai/v1");
         assert!(groq.model_name.contains("whisper"));
 
-        let gemini = endpoint_from_stt_config(&SttConfig {
+        let gemini = endpoint_from_resolved_stt_config(&ResolvedSttConfig {
             provider: "gemini".into(),
             api_key: "k".into(),
+            mcp_server: None,
+            model: String::new(),
+            base_url: String::new(),
+            timeout_secs: 30,
+            min_confidence: 0.7,
             ..Default::default()
         });
         assert_eq!(
@@ -655,19 +698,27 @@ mod tests {
         assert_eq!(gemini.model_name, "gemini-2.5-flash");
         assert_eq!(gemini.api_style.as_deref(), Some("gemini"));
 
-        let deepgram = endpoint_from_stt_config(&SttConfig {
+        let deepgram = endpoint_from_resolved_stt_config(&ResolvedSttConfig {
             provider: "deepgram".into(),
             api_key: "dg".into(),
+            mcp_server: None,
+            model: String::new(),
+            base_url: String::new(),
+            timeout_secs: 30,
+            min_confidence: 0.7,
             ..Default::default()
         });
         assert_eq!(deepgram.api_style.as_deref(), Some("deepgram"));
         assert_eq!(deepgram.model_name, "nova-3");
 
-        let assembly = endpoint_from_stt_config(&SttConfig {
+        let assembly = endpoint_from_resolved_stt_config(&ResolvedSttConfig {
             provider: "assemblyai".into(),
             api_key: "aa".into(),
+            mcp_server: None,
             model: "universal-2".into(),
             base_url: "https://api.eu.assemblyai.com".into(),
+            timeout_secs: 30,
+            min_confidence: 0.7,
             ..Default::default()
         });
         assert_eq!(assembly.base_url, "https://api.eu.assemblyai.com");

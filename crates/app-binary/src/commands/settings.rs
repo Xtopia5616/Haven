@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::hot_swap_router;
 use crate::commands::log_err;
+use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use haven_llm::LlmRouter;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -233,11 +234,11 @@ pub async fn update_settings(
         }
 
         let _ = app.emit(
-            "hotkey:rebind",
-            serde_json::json!({
-                "old_binding": old_hotkey,
-                "new_binding": settings.hotkey.key_binding,
-            }),
+            HOTKEY_REBIND_EVENT,
+            HotkeyRebindEvent {
+                old_binding: old_hotkey,
+                new_binding: settings.hotkey.key_binding,
+            },
         );
     }
     tick("hotkey section");
