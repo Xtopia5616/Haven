@@ -167,84 +167,6 @@ impl AgentLayer {
         }
     }
 
-    /// Reopen a terminal session to Paused state.
-    /// Used by the history resume flow — shows the session as active on the chat
-    /// page. The dispatcher won't pick it up until the user sends a
-    /// follow-up message (which calls supplement_session Paused→Pending).
-    ///
-    /// If the session carries user inputs that were persisted but NEVER
-    /// injected into the agent (queued as steering/supplement and then lost
-    /// when the session errored, completed, or was cancelled mid-batch), they
-    /// are re-queued as supplements so a later Continue / follow-up can
-    /// deliver them. History resume itself stays Paused — auto-resuming here
-    /// would re-run ReAct on old chats and undo the memory-only
-    /// Completed→Paused guard.
-    pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
-        // Terminal sessions (Error/Completed) are removed from the in-memory
-        // list by unmark_running, so ensure_session_loaded is needed to bring
-        // them back before we can update their status.
-        self.executor.ensure_session_loaded(session_id).await?;
-        let state = self.executor.get_session_state(session_id).await;
-        if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
-            // Memory-only: viewing a finished conversation in history must not
-            // resurrect it in the DB (auto-restore on restart, session-menu
-            // persistence). The in-memory Paused status still lets follow-up
-            // messages continue it for the current run; the first real
-            // transition afterwards persists normally.
-            self.executor
-                .update_session_status_memory_only(session_id, SessionStatus::Paused)
-                .await?;
-        }
-        // Only a session whose in-memory queues are empty needs the DB scan:
-        // a Running/Paused session still holding its pending inputs in the
-        // supplement/steering queues injects them itself on the next step, and
-        // re-queueing from the DB there would double-inject. The scan only
-        // fires after a terminal cleanup or a restart reloaded the session
-        // with empty queues (the lost-input case).
-        if self.executor.has_pending_context(session_id).await {
-            return Ok(());
-        }
-        let db = self.db.clone();
-        let sid = session_id.to_string();
-        let since = haven_memory::repositories::messages::undelivered_recovery_since();
-        let undelivered = db
-            .run_blocking(move |db| {
-                db.get_undelivered_user_messages_since(&sid, Some(since.as_str()))
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to scan pending inputs: {e}"))?;
-        if undelivered.is_empty() {
-            return Ok(());
-        }
-        tracing::info!(
-            "reopen_session: re-queueing {} recent undelivered user input(s) for session {} (staying Paused until Continue)",
-            undelivered.len(),
-            session_id
-        );
-        for m in &undelivered {
-            if let Err(e) = self
-                .executor
-                .add_supplement_with_attachments(
-                    session_id,
-                    &m.content,
-                    &m.attachments,
-                    Some(m.id.clone()),
-                )
-                .await
-            {
-                tracing::warn!(
-                    "reopen_session: failed to re-queue input {} for session {}: {}",
-                    m.id,
-                    session_id,
-                    e
-                );
-            }
-        }
-        // Stay Paused: resume must not auto-dispatch. Continue / a new user
-        // message transitions to Pending and drains these supplements.
-        Ok(())
-    }
-
     pub fn set_emitter(&self, emitter: Arc<dyn AgentEventEmitter>) {
         self.events.set_emitter(emitter);
     }
@@ -726,48 +648,6 @@ impl AgentLayer {
         });
     }
 
-    /// Rebuild per-session tool registrations from saved step history.
-    ///
-    /// Per-session registrations (loaded via `load_skill`/`load_mcp`) live in
-    /// memory and are lost on app restart or rollback. This method clears any
-    /// existing registrations for the session, then scans the history for
-    /// `load_skill`/`load_mcp` actions and re-registers the corresponding
-    /// adapters. Only steps present in the (possibly truncated) history are
-    /// replayed, so rolling back to step N correctly drops tools loaded after
-    /// step N. Selective `load_mcp` calls restore only their `tool_names`.
-    pub(crate) async fn restore_per_session_tools(
-        &self,
-        session_id: &str,
-        rounds: &[crate::types::ReActRound],
-    ) {
-        let tools = self.executor.get_tools();
-        // Clear stale registrations first (e.g. tools loaded after a rollback
-        // point, or leftover from a previous run before restart).
-        tools.unregister_session(session_id).await;
-
-        for round in rounds {
-            for tool in &round.tools {
-                match tool.action.tool_name.as_str() {
-                    "load_skill" => {
-                        if let Some(name) = tool.action.tool_input["skill_name"].as_str() {
-                            tools.register_skill_for_session(session_id, name).await;
-                        }
-                    }
-                    "load_mcp" => {
-                        if let Some(name) = tool.action.tool_input["server_name"].as_str() {
-                            let tool_names =
-                                load_mcp_tool_names_from_input(&tool.action.tool_input);
-                            tools
-                                .register_mcp_for_session(session_id, name, tool_names.as_deref())
-                                .await;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
     pub async fn emit_session_completed(&self, session_id: &str, title: &str) {
         self.events.emit_session_completed(session_id, title).await;
         // Drop cumulative token counters for the finished session.
@@ -1044,50 +924,5 @@ impl AgentLayer {
             running_sessions: running,
             max_concurrent,
         })
-    }
-}
-
-/// Parse optional `tool_names` from a saved `load_mcp` tool_input for resume.
-/// Missing key → `None` (load-all). Present key → `Some` subset (possibly empty
-/// after trim; empty means register nothing, never collapse to load-all).
-fn load_mcp_tool_names_from_input(input: &Value) -> Option<Vec<String>> {
-    let arr = input.get("tool_names")?.as_array()?;
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for v in arr {
-        if let Some(s) = v.as_str() {
-            let trimmed = s.trim();
-            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
-                out.push(trimmed.to_string());
-            }
-        }
-    }
-    Some(out)
-}
-
-#[cfg(test)]
-mod load_mcp_resume_tests {
-    use super::load_mcp_tool_names_from_input;
-    use serde_json::json;
-
-    #[test]
-    fn parses_tool_names_subset() {
-        let names = load_mcp_tool_names_from_input(&json!({
-            "server_name": "srv",
-            "tool_names": [" a ", "", "b"]
-        }));
-        assert_eq!(names, Some(vec!["a".into(), "b".into()]));
-    }
-
-    #[test]
-    fn missing_tool_names_is_none_empty_array_is_empty_subset() {
-        assert!(load_mcp_tool_names_from_input(&json!({"server_name": "srv"})).is_none());
-        assert_eq!(
-            load_mcp_tool_names_from_input(&json!({
-                "server_name": "srv",
-                "tool_names": []
-            })),
-            Some(vec![])
-        );
     }
 }

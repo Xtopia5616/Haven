@@ -112,12 +112,12 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.4 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `transcript`），流式响应、快照/分支、压缩；`context` 只收集上下文来源，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界。
+- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript`），流式响应、快照/分支、压缩；`context` 只收集上下文来源，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
-- `layer.rs` + `ingress.rs` / `resume.rs`：对外入口与 resume 投影。
+- `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 投影；`resume_support` 只提供确定性的候选合并、无快照投影和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
-- `inference.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `title.rs` / `event.rs` / `partial.rs`。
+- `inference.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
 - 调用 `LlmRouter` 与 `MediaGateway`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
 

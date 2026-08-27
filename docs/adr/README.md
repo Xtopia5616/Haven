@@ -17,3 +17,4 @@
 - [0009：全量 Tauri 命令目录与本机工具安全矩阵](0009-tauri-command-and-local-security-matrix.md)
 - [0010：Agent 回合结束边界](0010-agent-turn-end-boundary.md)
 - [0011：Agent 待处理上下文来源边界](0011-agent-context-source-boundary.md)
+- [0012：Agent 恢复、回滚与 Hook 策略边界](0012-agent-resume-rollback-hooks-boundary.md)

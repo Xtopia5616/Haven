@@ -6,12 +6,11 @@
 //! readable; these methods operate on the same private fields (`db`,
 //! `executor`) via `impl AgentLayer` blocks in this module.
 
-use haven_common::types::{CanonicalRole, ContentPart};
-
 use crate::AgentLayer;
 use crate::lifecycle::{LifecycleOp, LifecycleWindow, decide};
+use crate::rollback_support::truncate_at_user_message;
 use crate::session::SessionStatus;
-use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
+use crate::types::{BranchPoint, ReActSnapshot};
 
 impl AgentLayer {
     /// Roll back a session to a specific branch point. The session is rewound
@@ -173,7 +172,7 @@ impl AgentLayer {
         // tool-result messages. Sending this to the LLM triggers a 400.
         // Trim the dangling ToolCall (and its Thought) so the loop
         // re-requests the tool call cleanly.
-        Self::trim_dangling_tool_call(&mut snapshot.events);
+        crate::rollback_support::trim_dangling_tool_call(&mut snapshot.events);
 
         // Newest branch-point cutoff (computed BEFORE pruning): used below to
         // detect a user message persisted after every branch point.
@@ -279,75 +278,23 @@ impl AgentLayer {
         // Skipped for orphan rollback: the orphaned message was never in the
         // events, so truncating would drop a legitimately processed inject.
         //
-        // Match `UserInject.text` (raw; adapters add wire prefixes) or a User
-        // row inside a CompactSummary seed. Also accept historically prefixed
-        // text via `InjectSource::match_prefixes`.
+        // Match the exact `UserInject.message_id` first. Only id-less legacy
+        // records and compacted canonical rows use the content fallback.
         if pause
             && !is_orphan_rollback
             && let Some(target) = target_msg
+            && !truncate_at_user_message(
+                &mut snapshot.events,
+                &mut snapshot.branch_points,
+                target_step,
+                &target.id,
+                &target.content,
+            )
         {
-            let target_content = target.content.as_str();
-            let prefixes = haven_common::types::InjectSource::match_prefixes();
-            let matches_target = |t: &str| {
-                t == target_content
-                    || prefixes.iter().any(|p| {
-                        t.strip_prefix(p.as_str())
-                            .is_some_and(|rest| rest == target_content)
-                    })
-            };
-            let mut found = false;
-            if let Some(pos) = snapshot.events.iter().rposition(|ev| {
-                matches!(
-                    ev,
-                    TranscriptRecord::UserInject { text, .. } if matches_target(text)
-                )
-            }) {
-                // Keep everything before the target inject. Drop it and any
-                // events that followed it.
-                snapshot.events.truncate(pos);
-                let event_len = snapshot.events.len();
-                for bp in snapshot.branch_points.values_mut() {
-                    if bp.event_cursor > event_len {
-                        bp.event_cursor = event_len;
-                    }
-                }
-                snapshot
-                    .branch_points
-                    .retain(|&k, b| k <= target_step && b.event_cursor <= event_len);
-                found = true;
-            } else {
-                // CompactSummary seed: trim the compacted user row in place,
-                // then drop every event after that CompactSummary so
-                // post-summary transcript cannot linger.
-                for idx in (0..snapshot.events.len()).rev() {
-                    if let TranscriptRecord::CompactSummary { compacted, .. } =
-                        &mut snapshot.events[idx]
-                        && let Some(pos) = compacted.iter().rposition(|m| {
-                            m.role == CanonicalRole::User
-                                && m.content
-                                    .iter()
-                                    .any(|p| matches!(p, ContentPart::Text(t) if matches_target(t)))
-                        })
-                    {
-                        compacted.truncate(pos);
-                        snapshot.events.truncate(idx + 1);
-                        let event_len = snapshot.events.len();
-                        for bp in snapshot.branch_points.values_mut() {
-                            if bp.event_cursor > event_len {
-                                bp.event_cursor = event_len;
-                            }
-                        }
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found {
-                return Err(anyhow::anyhow!(
-                    "rollback_session {}: target user message not found in the restored events",
-                    session_id
-                ));
-            }
+            return Err(anyhow::anyhow!(
+                "rollback_session {}: target user message not found in the restored events",
+                session_id
+            ));
         }
 
         // R6: branch restore must not resurrect ask/confirm gates from the
@@ -485,40 +432,5 @@ impl AgentLayer {
             session_id
         );
         Ok(())
-    }
-
-    /// If the event log ends with a [`TranscriptRecord::ToolCall`] that has
-    /// non-empty `tool_calls` and no following [`TranscriptRecord::ToolResult`],
-    /// the projected canonical ends with an assistant message carrying
-    /// `tool_calls` but no matching tool results — providers reject that with
-    /// a 400. This happens when a snapshot/branch point was saved right after
-    /// the assistant message but before tool results were appended
-    /// (`save_branch_point` runs before tool execution; the app may die or be
-    /// cancelled mid-batch).
-    ///
-    /// Empty-`tool_calls` ToolCalls are final-answer / search assistant turns
-    /// and must be kept.
-    ///
-    /// Pop the dangling `ToolCall` and, when present, the preceding
-    /// same-step `Thought` so the loop re-requests the tool call cleanly.
-    pub(crate) fn trim_dangling_tool_call(events: &mut Vec<TranscriptRecord>) {
-        let Some(TranscriptRecord::ToolCall {
-            step_number,
-            tool_calls,
-            ..
-        }) = events.last()
-        else {
-            return;
-        };
-        if tool_calls.is_empty() {
-            return;
-        }
-        let step = *step_number;
-        events.pop();
-        if let Some(TranscriptRecord::Thought { step_number, .. }) = events.last()
-            && *step_number == step
-        {
-            events.pop();
-        }
     }
 }

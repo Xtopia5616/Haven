@@ -26,13 +26,17 @@
 //! `message_id` and is idempotent (duplicate id is skipped).
 
 use crate::AgentLayer;
+use crate::resume_support::{
+    load_mcp_tool_names, merge_recovery_candidates, project_tool_chain_from_steps,
+};
+use crate::rollback_support::trim_dangling_tool_call;
 
 use crate::session::SessionStatus;
 use crate::types::{
     BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript,
     seed_events_from_canonical,
 };
-use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart};
+use haven_common::types::{CanonicalMessage, ContentPart};
 use std::collections::HashMap;
 
 /// A recent conversation message (role, content) used by the FRESH-run /
@@ -252,7 +256,7 @@ impl AgentLayer {
                         .await
                         .is_some();
                     if !has_confirm {
-                        Self::trim_dangling_tool_call(&mut snapshot.events);
+                        trim_dangling_tool_call(&mut snapshot.events);
                         let event_len = snapshot.events.len();
                         for bp in snapshot.branch_points.values_mut() {
                             if bp.event_cursor > event_len {
@@ -331,6 +335,67 @@ impl AgentLayer {
         result
     }
 
+    /// Reopen a terminal session for history viewing without dispatching it.
+    ///
+    /// Reopening is a resume concern, but it is deliberately not a run: the
+    /// session remains `Paused` until a real follow-up or Continue request.
+    /// Recent user rows without a session-step anchor are re-queued by id so a
+    /// restart cannot strand an input that never reached the event log.
+    pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
+        self.executor.ensure_session_loaded(session_id).await?;
+        let state = self.executor.get_session_state(session_id).await;
+        if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
+            // History viewing must not persist a terminal session as active;
+            // the memory-only transition only enables a later user action in
+            // this process.
+            self.executor
+                .update_session_status_memory_only(session_id, SessionStatus::Paused)
+                .await?;
+        }
+        // A live queue is authoritative for the current process. Scanning the
+        // DB while it still owns inputs would enqueue a second copy.
+        if self.executor.has_pending_context(session_id).await {
+            return Ok(());
+        }
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        let since = haven_memory::repositories::messages::undelivered_recovery_since();
+        let undelivered = db
+            .run_blocking(move |db| {
+                db.get_undelivered_user_messages_since(&sid, Some(since.as_str()))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to scan pending inputs: {e}"))?;
+        if undelivered.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(
+            "reopen_session: re-queueing {} recent undelivered user input(s) for session {} (staying Paused until Continue)",
+            undelivered.len(),
+            session_id
+        );
+        for message in undelivered {
+            if let Err(error) = self
+                .executor
+                .add_supplement_with_attachments(
+                    session_id,
+                    &message.content,
+                    &message.attachments,
+                    Some(message.id.clone()),
+                )
+                .await
+            {
+                tracing::warn!(
+                    "reopen_session: failed to re-queue input {} for session {}: {}",
+                    message.id,
+                    session_id,
+                    error
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// X2 / G7 (freeze-per-run): fully rebuild `canonical[0]` on resume
     /// (tools/skills/MCP short index + MEMORY + session). Mid-run memory
     /// refresh stays fence-only via hooks / M2.
@@ -406,17 +471,7 @@ impl AgentLayer {
                 .get_undelivered_user_messages_since(session_id, Some(since.as_str()))
                 .unwrap_or_default();
             let mut restored = 0usize;
-            // Id union: a row newer than `saved_at` AND anchor-less appears in
-            // both scans — only one re-queue per id.
-            let mut seen = std::collections::HashSet::new();
-            for msg in pending.iter().chain(undelivered.iter()) {
-                // Only user inputs are re-queued: assistant rows newer
-                // than the snapshot only exist mid-stream (persisted
-                // before their canonical push) and are recovered by the
-                // partial-message path instead.
-                if msg.role != "user" || !seen.insert(msg.id.as_str()) {
-                    continue;
-                }
+            for msg in merge_recovery_candidates(pending, undelivered) {
                 let is_answer = self.executor.is_ask_gated(session_id).await;
                 let queued = if is_answer {
                     self.executor
@@ -478,105 +533,33 @@ impl AgentLayer {
         }
     }
 
-    /// Shared projector: append canonical tool-call/result pairs from
-    /// persisted `session_steps` (Phase 7 / B4).
+    /// Rebuild per-session skill/MCP registrations from the restored rounds.
     ///
-    /// Used only on the **snapshot-less** path (`react_state` missing). A
-    /// valid snapshot remains the authority and never goes through this
-    /// helper; a corrupt snapshot hard-fails instead of calling it.
-    ///
-    /// Without projection the model forgets every tool it already ran and
-    /// re-executes them. The DB message stream stores mainly text
-    /// (user/assistant); tool calls/results live in `session_steps` (and
-    /// the snapshot). Projecting yields the same shape a snapshot would:
-    ///
-    /// ```text
-    /// assistant { tool_calls: [echo(...)] }   → from action_tool/action_input
-    /// tool { "result" }                       → from observation
-    /// ```
-    ///
-    /// Call-id policy: prefer a real `messages.tool_call_id` on a Tool-role
-    /// row whose content matches the observation (when present); otherwise
-    /// synthesize `resumed_{step_id}` (best-effort; not bit-identical to the
-    /// original provider id).
-    ///
-    /// Thought-only rows are skipped (text already in the message stream).
-    /// `ask` rows are skipped (question re-seeds from its message row).
-    /// Rows without an observation (interrupted in-flight) are skipped —
-    /// the dangling assistant tool_call would be dropped by sanitize.
-    fn project_tool_chain_from_steps(
-        &self,
-        session_id: &str,
-        canonical: &mut Vec<CanonicalMessage>,
-    ) {
-        let Ok(steps) = self.db.get_session_steps(session_id) else {
-            return;
-        };
-        // Optional real call ids from Tool-role messages (content → id).
-        // Consumed in encounter order so duplicate observations still map
-        // one-to-one when multiple Tool rows share the same text.
-        let mut unused_tool_ids: Vec<(String, String)> = self
-            .db
-            .get_session_messages(session_id)
-            .ok()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|m| {
-                if m.role == "tool" {
-                    m.tool_call_id.map(|id| (m.content, id))
-                } else {
-                    None
+    /// Registrations are runtime state, not transcript state. Resume and
+    /// rollback both call this after projecting the authoritative event log so
+    /// tools loaded after a branch point cannot leak into the restored run.
+    pub(crate) async fn restore_per_session_tools(&self, session_id: &str, rounds: &[ReActRound]) {
+        let tools = self.executor.get_tools();
+        tools.unregister_session(session_id).await;
+        for round in rounds {
+            for tool in &round.tools {
+                match tool.action.tool_name.as_str() {
+                    "load_skill" => {
+                        if let Some(name) = tool.action.tool_input["skill_name"].as_str() {
+                            tools.register_skill_for_session(session_id, name).await;
+                        }
+                    }
+                    "load_mcp" => {
+                        if let Some(name) = tool.action.tool_input["server_name"].as_str() {
+                            let tool_names = load_mcp_tool_names(&tool.action.tool_input);
+                            tools
+                                .register_mcp_for_session(session_id, name, tool_names.as_deref())
+                                .await;
+                        }
+                    }
+                    _ => {}
                 }
-            })
-            .collect();
-        let mut projected = 0usize;
-        for step in steps {
-            let Some(tool) = step.action_tool else {
-                continue;
-            };
-            if tool == "ask" {
-                continue;
             }
-            let Some(obs) = step.observation else {
-                continue;
-            };
-            let args: serde_json::Value = step
-                .action_input
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(serde_json::Value::Null);
-            let call_id = if let Some(pos) = unused_tool_ids
-                .iter()
-                .position(|(content, _)| content == &obs)
-            {
-                let (_content, id) = unused_tool_ids.remove(pos);
-                id
-            } else {
-                format!("resumed_{}", step.id)
-            };
-            canonical.push(CanonicalMessage::assistant(
-                vec![],
-                Some(vec![CanonicalToolCall {
-                    id: call_id.clone(),
-                    name: tool,
-                    arguments: args,
-                }]),
-                None,
-                Vec::new(),
-                Vec::new(),
-            ));
-            canonical.push(CanonicalMessage::tool(
-                vec![ContentPart::text(obs)],
-                Some(call_id),
-            ));
-            projected += 1;
-        }
-        if projected > 0 {
-            tracing::info!(
-                "run_session: projected {} tool step(s) from session_steps for session {}",
-                projected,
-                session_id
-            );
         }
     }
 
@@ -633,7 +616,7 @@ impl AgentLayer {
         // result pairs from session_steps via the shared B4 projector.
         // Corrupt snapshots hard-fail in `run_session_from_id` and never
         // reach here.
-        self.project_tool_chain_from_steps(session_id, &mut canonical);
+        project_tool_chain_from_steps(self.db.as_ref(), session_id, &mut canonical);
 
         // Seed events so pause/resume snapshots carry system+user (+ any
         // projected tool chain) as a CompactSummary; later applies append.
