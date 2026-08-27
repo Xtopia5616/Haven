@@ -43,7 +43,7 @@
 |---|---|---|
 | `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享 |
 | `haven-llm` | common | 只依赖共享层，不依赖任何业务 crate |
-| `haven-memory` | common | 持久化（SQLite schema、仓库） |
+| `haven-memory` | common | 持久化（当前 SQLite schema、历史迁移、仓库） |
 | `haven-skills` | common | 技能目录解析 |
 | `haven-mcp` | common, llm | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
 | `haven-tools` | common, memory, skills, mcp, llm, input | 工具注册表 + 各内置工具 |
@@ -99,7 +99,24 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 **判定标准**：一切「与模型 / 云端 provider 打交道的实现」都在这里；其它 crate 只通过
 `LlmRouter` / `*Client` trait 消费，不实现。
 
-### 2.3 `haven-input` —— 输入采集与语音生命周期
+### 2.3 `haven-memory` —— 持久化与记忆存储
+
+- `schema.rs`：当前幂等 SQLite schema、FTS/embedding 维护对象、必需列检查和
+  初始化编排。
+- `migrations.rs`：历史 schema/data migration、PRAGMA user_version 版本戳和
+  迁移顺序；只处理数据库转换，不承担 Agent 推理或 UI 展示。
+- `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；不拥有
+  schema 升级策略。
+- `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
+
+`schema.rs` 与 `migrations.rs` 的边界不改变 X12：`messages` /
+`session_steps` 仍是投影，`ReActSnapshot.events` 仍是恢复唯一权威；迁移只
+维护持久化结构，不成为新的业务真源。
+
+**判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
+provider 协议和 UI 展示逻辑不得进入本 crate。
+
+### 2.4 `haven-input` —— 输入采集与语音生命周期
 
 - `capture/`：CPAL 采集线程 + 环形缓冲 + 重采样。
 - `vad.rs`：tract ONNX 语音活动检测（含常驻 worker 线程）。
@@ -110,7 +127,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 **判定标准**：管「何时/怎么采」——录音生命周期、VAD、把音频交给 STT；**不实现**任何
 provider（STT 客户端来自 `haven-llm`）。
 
-### 2.4 `haven-agent` —— ReAct 编排与会话执行
+### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
 - `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript`），流式响应、快照/分支、压缩；`context` 只收集上下文来源，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
@@ -129,7 +146,7 @@ resume 会按 `per_run_cap = max(max_steps, start_step - 1 + max_steps)` 再给�
 
 **判定标准**：会话的业务编排中心，不知道也不关心 provider 细节 / 录音硬件细节。
 
-### 2.4.1 多 Agent 协作（Plan A）
+### 2.5.1 多 Agent 协作（Plan A）
 
 同一机器上多个 session 通过内置工具 `agent` + 文件总线协作；**不**单独做通讯 Tab（产品约束：协作过程以工具结果形式出现在对话页）。
 
@@ -155,7 +172,7 @@ Parent session                    Child session(s)
 
 协议约定：同伴消息 ≠ 用户指令；`in_reply_to` 对齐 request id；子会话默认工作目录仍为 Temp（全局约束）。
 
-### 2.4.2 内置 `system` 工具（机器信息与系统控制）
+### 2.5.2 内置 `system` 工具（机器信息与系统控制）
 
 统一入口：`haven-tools` `builtin/system.rs`（`env` / `registry` / `power` 子模块由 `scope=` 转发）。
 
@@ -183,7 +200,7 @@ Parent session                    Child session(s)
 
 实现依赖：`sysinfo` + Windows `windows-sys`（Gdi / Globalization / Power）。电源寿命字段为秒（Win32 `SYSTEM_POWER_STATUS`）。
 
-### 2.4.3 权限 / 确认（SafetyGateway）
+### 2.5.3 权限 / 确认（SafetyGateway）
 
 决策顺序（fail-closed）：
 
@@ -200,7 +217,7 @@ Parent session                    Child session(s)
 
 确认 UI：拒绝 / 仅本次 / 本对话允许 / 始终允许；拒绝菜单含本对话拒绝、始终拒绝。永久授权写入 `config.toml`，设置页可撤销。
 
-### 2.5 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
+### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
 - `app_state.rs`：装配 `AppState`（db / router / tools / executor / agent / pipeline / shell /
   config_loader / gateway / stt_client）。
@@ -271,3 +288,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-20 | 曾增加 memory / react 改进文档（后续合并为已归档的 backlog） |
 | 2026-08-21 | 删除 `memory-architecture.md` / `react-architecture-improvements.md` |
 | 2026-08-26 | 用 `stability-refactor-plan.md` 取代历史 backlog，重构目标改为稳定性与可维护性 |
+| 2026-08-27 | §2.3 Memory：将当前 schema 与历史迁移拆为独立模块，保持版本链和 X12 契约不变（ADR 0013） |
