@@ -15,7 +15,7 @@ $allowed = @{
     'haven-app-binary' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-tools', 'haven-input', 'haven-agent')
 }
 
-$metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+$metadata = cargo metadata --format-version 1 --no-deps --locked | ConvertFrom-Json
 # Resolve package names from Cargo metadata so external crates with similar
 # names cannot be mistaken for internal dependency edges.
 $workspace = @($metadata.packages | ForEach-Object { $_.name })

@@ -597,12 +597,13 @@ mod locale_imp {
 #[cfg(windows)]
 mod display_imp {
     use serde_json::Value;
-    use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
+    use windows_sys::Win32::Foundation::{LPARAM, RECT, TRUE};
     use windows_sys::Win32::Graphics::Gdi::{
         CreateDCW, DEVMODEW, DeleteDC, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors,
         EnumDisplaySettingsW, GetDeviceCaps, GetMonitorInfoW, HDC, HMONITOR, LOGPIXELSX,
         MONITORINFOEXW,
     };
+    use windows_sys::core::BOOL;
 
     pub fn enumerate_displays() -> anyhow::Result<Vec<Value>> {
         let mut displays: Vec<Value> = Vec::new();

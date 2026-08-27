@@ -1762,7 +1762,7 @@ impl McpManager {
         let max_retries = config.reconnect_max_retries;
 
         let clients = self.clients.lock().await;
-        for (_, client) in clients.iter() {
+        for client in clients.values() {
             let client = client.clone();
             let status_tx = self.status_tx.clone();
             client.spawn_monitor(
@@ -1800,7 +1800,7 @@ impl McpManager {
     pub async fn snapshot(&self) -> Vec<McpServerSnapshot> {
         let clients = self.clients.lock().await;
         let mut snapshots = Vec::new();
-        for (_, client) in clients.iter() {
+        for client in clients.values() {
             snapshots.push(client.snapshot().await);
         }
         snapshots
@@ -1821,7 +1821,7 @@ impl McpManager {
     pub async fn refresh_all_tools(&self) {
         let clients = self.clients.lock().await;
         let mut handles = Vec::new();
-        for (_, client) in clients.iter() {
+        for client in clients.values() {
             let client = client.clone();
             let name = client.name().to_string();
             handles.push(tokio::spawn(async move {

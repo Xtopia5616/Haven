@@ -64,8 +64,11 @@ pub fn encode_vector(v: &[f32]) -> Vec<u8> {
 
 /// Deserialize a stored little-endian f32 blob back into a vector.
 pub fn decode_vector(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    blob.as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(f32::from_le_bytes)
         .collect()
 }
 

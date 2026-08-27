@@ -1113,7 +1113,7 @@ impl OpenAiResponsesAdapter {
                                 model: state.last_model.clone(),
                                 reasoning: None,
                                 web_search: None,
-                                web_search_calls: state.web_search_calls.drain(..).collect(),
+                                web_search_calls: std::mem::take(&mut state.web_search_calls),
                                 thinking_blocks: Vec::new(),
                             })
                         };
@@ -1350,7 +1350,7 @@ impl OpenAiResponsesAdapter {
                                 model: state.last_model.clone(),
                                 reasoning: None,
                                 web_search: None,
-                                web_search_calls: state.web_search_calls.drain(..).collect(),
+                                web_search_calls: std::mem::take(&mut state.web_search_calls),
                                 thinking_blocks: Vec::new(),
                             }),
                             state,

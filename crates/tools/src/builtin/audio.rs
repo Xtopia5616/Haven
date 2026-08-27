@@ -296,7 +296,6 @@ impl AudioTool {
 
 #[cfg(windows)]
 mod imp {
-    use windows::Win32::Foundation::BOOL;
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{
         IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_ASYNC, SND_FILENAME,
@@ -305,7 +304,7 @@ mod imp {
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
     };
-    use windows::core::PCWSTR;
+    use windows::core::{BOOL, PCWSTR};
 
     fn get_endpoint_volume() -> anyhow::Result<IAudioEndpointVolume> {
         // RPC_E_CHANGED_MODE (0x80010106) is fine if COM is already initialized
@@ -346,7 +345,7 @@ mod imp {
     pub fn set_mute(muted: bool) -> anyhow::Result<()> {
         let ep = get_endpoint_volume()?;
         unsafe {
-            ep.SetMute(BOOL::from(muted), std::ptr::null())?;
+            ep.SetMute(muted, std::ptr::null())?;
         }
         Ok(())
     }

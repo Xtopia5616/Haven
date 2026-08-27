@@ -221,10 +221,9 @@ fn extract_pricing(m: &serde_json::Value) -> (Option<f64>, Option<f64>) {
 fn per_token_to_per_1k(v: &serde_json::Value) -> Option<f64> {
     let per_token = if let Some(n) = v.as_f64() {
         n
-    } else if let Some(s) = v.as_str() {
-        s.trim().parse::<f64>().ok()?
     } else {
-        return None;
+        let s = v.as_str()?;
+        s.trim().parse::<f64>().ok()?
     };
     if !per_token.is_finite() || per_token < 0.0 {
         return None;

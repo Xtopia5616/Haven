@@ -8,8 +8,7 @@
  * - Unix absolute: `/home/user/file`
  */
 
-import type MarkdownIt from 'markdown-it';
-import type Token from 'markdown-it/lib/token.mjs';
+import type { MarkdownIt, StateCore, Token } from 'markdown-it';
 
 /** markdown-it nesting: 1 = open, 0 = self-closing, -1 = close. */
 type Nesting = 1 | 0 | -1;
@@ -141,7 +140,7 @@ function makePathLinkTokens(Token: TokenCtor, path: string): Token[] {
  * Skipped while streaming (same deferral pattern as code fences).
  */
 export function pathifyPlugin(md: MarkdownIt): void {
-	md.core.ruler.after('text_join', 'haven_pathify', (state) => {
+	md.core.ruler.after('text_join', 'haven_pathify', (state: StateCore) => {
 		if (state.env?.havenStreaming) return;
 		const Token = state.Token;
 		for (const block of state.tokens) {

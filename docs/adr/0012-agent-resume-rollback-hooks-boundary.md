@@ -51,7 +51,7 @@ cargo fmt --all -- --check
 cargo check --workspace
 cargo clippy --workspace -- -D warnings
 cargo test --workspace -- --test-threads=1
-cd ui; npm run check; npm run test:run; npm run build
+pnpm --dir ui run check; pnpm --dir ui run test:run; pnpm --dir ui run build
 ```
 
 重点回归恢复候选按 ID 去重、无快照工具链投影、消息 ID 优先的回滚、旧快照

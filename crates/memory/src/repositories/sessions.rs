@@ -351,10 +351,10 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Session>> {
-        let query = query.and_then(|s| if s.is_empty() { None } else { Some(s) });
-        let status = status.and_then(|s| if s.is_empty() { None } else { Some(s) });
-        let start_date = start_date.and_then(|s| if s.is_empty() { None } else { Some(s) });
-        let end_date = end_date.and_then(|s| if s.is_empty() { None } else { Some(s) });
+        let query = query.filter(|s| !s.is_empty());
+        let status = status.filter(|s| !s.is_empty());
+        let start_date = start_date.filter(|s| !s.is_empty());
+        let end_date = end_date.filter(|s| !s.is_empty());
 
         // Unfiltered first page reuses the same short-TTL cache as list_sessions
         // so repeated visits to the history page skip the DB round-trip.

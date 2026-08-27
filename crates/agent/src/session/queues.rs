@@ -124,7 +124,8 @@ impl SessionExecutor {
         let Some(entry) = entry else {
             return Vec::new();
         };
-        entry.lock().await.follow_up_queue.drain(..).collect()
+        let mut session = entry.lock().await;
+        std::mem::take(&mut session.follow_up_queue)
     }
 
     /// Alias for [`Self::get_follow_ups`] (pre-Phase-4 name).
@@ -191,7 +192,8 @@ impl SessionExecutor {
         let Some(entry) = entry else {
             return Vec::new();
         };
-        entry.lock().await.steering_queue.drain(..).collect()
+        let mut session = entry.lock().await;
+        std::mem::take(&mut session.steering_queue)
     }
 
     /// Buffer a completed background-action result for a session. It is delivered
@@ -231,8 +233,8 @@ impl SessionExecutor {
             Some(entry) => {
                 let mut session = entry.lock().await;
                 (
-                    session.follow_up_queue.drain(..).collect(),
-                    session.steering_queue.drain(..).collect(),
+                    std::mem::take(&mut session.follow_up_queue),
+                    std::mem::take(&mut session.steering_queue),
                 )
             }
             None => (Vec::new(), Vec::new()),

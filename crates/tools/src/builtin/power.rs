@@ -133,16 +133,16 @@ mod imp {
     }
 
     pub fn sleep() -> anyhow::Result<()> {
-        let ret = unsafe { SetSuspendState(0, 1, 0) };
-        if ret == 0 {
+        let ret = unsafe { SetSuspendState(false, true, false) };
+        if !ret {
             anyhow::bail!("SetSuspendState (sleep) failed");
         }
         Ok(())
     }
 
     pub fn hibernate() -> anyhow::Result<()> {
-        let ret = unsafe { SetSuspendState(1, 1, 0) };
-        if ret == 0 {
+        let ret = unsafe { SetSuspendState(true, true, false) };
+        if !ret {
             anyhow::bail!("SetSuspendState (hibernate) failed");
         }
         Ok(())

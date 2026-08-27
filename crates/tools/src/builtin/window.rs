@@ -434,8 +434,9 @@ mod imp {
     use serde_json::Value;
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, TRUE};
+    use windows_sys::Win32::Foundation::{FALSE, HWND, LPARAM, TRUE};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    use windows_sys::core::BOOL;
 
     /// Read a window's visible title text, or None if the window is not
     /// visible or has no title. Shared by window enumeration and search.
@@ -710,7 +711,7 @@ mod imp {
 
             // BGRA (GDI) -> RGBA for the image crate.
             let mut rgba = pixels.clone();
-            for px in rgba.chunks_exact_mut(4) {
+            for px in rgba.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
             }
             let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba)

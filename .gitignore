@@ -1,9 +1,12 @@
 /target/
+/node_modules/
+/.pnpm-store/
 /ui/node_modules/
 /ui/build/
 /ui/.svelte-kit/
 *.db
 *.db-journal
+*.log
 .env
 .VSCodeCounter
 

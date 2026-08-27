@@ -61,7 +61,7 @@ cargo fmt --check
 cargo check --workspace
 cargo clippy --workspace -- -D warnings
 cargo test --workspace -- --test-threads=1
-cd ui && npm run check && npm run test:run && npm run build
+pnpm --dir ui run check && pnpm --dir ui run test:run && pnpm --dir ui run build
 ```
 
 重点回归测试包括：parent/child allow-deny precedence、permanent/session precedence、
