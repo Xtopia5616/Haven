@@ -21,6 +21,7 @@ export interface StreamMessage {
 	role?: string;
 	content?: string;
 	type?: string | null;
+	toolName?: string;
 	voice?: boolean;
 	stepNumber?: number | null;
 	runId?: number | null;
@@ -392,6 +393,18 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
 				if (messages[i].type === 'tool' || messages[i].type === 'ask') lastToolIdx = i;
 			}
 			if (lastToolIdx >= 0) {
+				// A normal completion ends at the function call. If its final
+				// deltas arrive after agent:action, they are delayed pre-tool
+				// text, not a new post-tool answer. Only built-in web_search
+				// deliberately resumes the same provider response below its card.
+				const boundary = messages[lastToolIdx];
+				if (boundary.toolName !== 'web_search') {
+					const content = delta.startsWith(curr) ? delta : curr + delta;
+					if (content === curr) return messages;
+					const next = [...messages];
+					next[idx] = { ...next[idx], content };
+					return next;
+				}
 				const postToolThoughts = messages
 					.slice(lastToolIdx + 1)
 					.filter((x) => x.id === messageId || x.id.startsWith(segPrefix));

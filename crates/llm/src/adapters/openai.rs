@@ -280,6 +280,49 @@ struct OpenAiStreamResponse {
     citations: Vec<String>,
 }
 
+/// Read text from one Chat Completions stream item. Most providers put the
+/// incremental text in `choices[].delta`, but a few gateways include a short
+/// delta together with the longer cumulative `choices[].message`. Prefer the
+/// longer message in that case so a tool-call boundary cannot truncate the
+/// preamble to the first token or two.
+fn stream_content(choice: &OpenAiChoice) -> Option<String> {
+    let delta = choice
+        .delta
+        .as_ref()
+        .and_then(|message| message.content.as_deref());
+    let message = choice
+        .message
+        .as_ref()
+        .and_then(|message| message.content.as_deref());
+    match (delta, message) {
+        (Some(delta), Some(message)) if message.chars().count() > delta.chars().count() => {
+            Some(message.to_string())
+        }
+        (Some(delta), _) => Some(delta.to_string()),
+        (None, Some(message)) => Some(message.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// Normalize providers that send cumulative text in `message` instead of
+/// incremental deltas. The router and UI both expect each stream chunk to be
+/// appendable, so emit only the unseen suffix when the new item contains the
+/// already accumulated text.
+fn append_stream_text(accumulated: &mut String, content: &str) -> Option<String> {
+    let delta = if content.starts_with(accumulated.as_str()) {
+        &content[accumulated.len()..]
+    } else if accumulated.starts_with(content) {
+        return None;
+    } else {
+        content
+    };
+    if delta.is_empty() {
+        return None;
+    }
+    accumulated.push_str(delta);
+    Some(delta.to_string())
+}
+
 /// True when `model` is a dedicated ASR id that speaks
 /// `/audio/transcriptions` (OpenAI `whisper-1` / `gpt-4o-transcribe*`, Groq
 /// `whisper-large-v3*`, SiliconFlow `FunAudioLLM/SenseVoiceSmall` /
@@ -1147,11 +1190,9 @@ impl OpenAiAdapter {
                             );
                         }
                         if let Some(choice) = resp.choices.into_iter().next() {
-                            if let Some(delta) = choice_delta(&choice)
-                                && let Some(content) = &delta.content
-                            {
-                                state.accumulated_text.push_str(content);
-                            }
+                            let text = stream_content(&choice).and_then(|content| {
+                                append_stream_text(&mut state.accumulated_text, &content)
+                            });
                             if let Some(delta) = choice_delta(&choice)
                                 && let Some(calls) = &delta.tool_calls
                             {
@@ -1185,7 +1226,7 @@ impl OpenAiAdapter {
                                 .and_then(|s| FinishReason::from_openai(s));
                             Some((
                                 Ok(StreamChunk {
-                                    text: choice_delta(&choice).and_then(|d| d.content.clone()),
+                                    text,
                                     reasoning: choice_delta(&choice)
                                         .and_then(|d| d.reasoning_content.clone()),
                                     tool_calls: Vec::new(),
@@ -2361,6 +2402,44 @@ mod tests {
         };
         let tc = OpenAiAdapter::extract_tool_calls(&choice);
         assert!(tc.is_empty());
+    }
+
+    #[test]
+    fn stream_content_recovers_long_message_next_to_short_delta() {
+        let choice = OpenAiChoice {
+            message: Some(OpenAiMessageOut {
+                role: Some("assistant".into()),
+                content: Some("我先读取文件".into()),
+                tool_calls: None,
+                reasoning_content: None,
+                web_search_call: Vec::new(),
+            }),
+            delta: Some(OpenAiMessageOut {
+                role: None,
+                content: Some("我先".into()),
+                tool_calls: None,
+                reasoning_content: None,
+                web_search_call: Vec::new(),
+            }),
+            finish_reason: Some("tool_calls".into()),
+        };
+        let mut accumulated = String::new();
+        let emitted = stream_content(&choice)
+            .and_then(|content| append_stream_text(&mut accumulated, &content));
+        assert_eq!(emitted.as_deref(), Some("我先读取文件"));
+        assert_eq!(accumulated, "我先读取文件");
+    }
+
+    #[test]
+    fn append_stream_text_converts_cumulative_message_to_delta() {
+        let mut accumulated = "我先".to_string();
+        let emitted = append_stream_text(&mut accumulated, "我先读取文件");
+        assert_eq!(emitted.as_deref(), Some("读取文件"));
+        assert_eq!(accumulated, "我先读取文件");
+
+        let duplicate = append_stream_text(&mut accumulated, "我先读取");
+        assert_eq!(duplicate, None);
+        assert_eq!(accumulated, "我先读取文件");
     }
 
     #[test]

@@ -4,14 +4,14 @@
   "private": true,
   "packageManager": "pnpm@11.24.0",
   "engines": {
-    "node": ">=24.19.0 <25",
-    "pnpm": ">=11.24.0 <12"
+    "node": ">=24.0.0 <25",
+    "pnpm": ">=11.0.0 <12"
   },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check",
+    "check": "svelte-check --tsgo",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage"
@@ -21,6 +21,7 @@
     "@sveltejs/kit": "^2.70.3",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@testing-library/svelte": "^5.4.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "jsdom": "^30.0.1",
     "prettier": "^3.9.6",
     "prettier-plugin-svelte": "^4.1.1",

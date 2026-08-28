@@ -501,6 +501,29 @@ describe('insertAgentMessage / steering anchors', () => {
 });
 
 describe('accumulateStreamChunk after websearch boundary', () => {
+	it('keeps late completion chunks before a regular tool card', () => {
+		let m = chunk([], '我');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: 'step-tool-1',
+				stepNumber: 1,
+				toolName: 'file',
+				content: '',
+				streaming: true,
+			}),
+		];
+
+		// The first chunk can be flushed before agent:action while later
+		// completion chunks are delivered just after the tool event.
+		m = chunk(m, '先读取');
+		m = chunk(m, '文件');
+
+		expect(m.map((x) => x.id)).toEqual([STEP_ID, 'step-tool-1']);
+		expect(m[0]).toMatchObject({ content: '我先读取文件', streaming: false });
+	});
+
 	it('opens a new bubble below the search card instead of appending above it', () => {
 		let m = chunk([], '我先查一下');
 		m = finalizeStreamBlocks(m, null, STEP_ID);

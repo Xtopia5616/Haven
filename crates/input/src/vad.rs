@@ -1,7 +1,5 @@
-use std::io::Cursor;
-
 use anyhow::Result;
-use tract_onnx::prelude::*;
+use tract::prelude::*;
 
 const MODEL_BYTES: &[u8] = include_bytes!("../../../assets/models/silero_vad.onnx");
 /// Audio samples per VAD frame (10 ms at 16 kHz). Single definition for the
@@ -10,6 +8,10 @@ const MODEL_BYTES: &[u8] = include_bytes!("../../../assets/models/silero_vad.onn
 pub(crate) const FRAME_SIZE: usize = 480;
 const STATE_DIM: usize = 128;
 const ENERGY_THRESHOLD: f32 = 0.001;
+
+fn zero_recurrent_state() -> Result<Tensor> {
+    Tensor::from_slice(&[2, 1, STATE_DIM], &vec![0.0f32; 2 * STATE_DIM])
+}
 
 /// Root-mean-square energy of a frame.
 pub fn frame_energy(frame: &[f32]) -> f32 {
@@ -22,8 +24,6 @@ pub fn frame_energy(frame: &[f32]) -> f32 {
 pub fn frame_has_energy(frame: &[f32]) -> bool {
     frame_energy(frame) >= ENERGY_THRESHOLD
 }
-
-type Model = SimplePlan<TypedFact, Box<dyn TypedOp>, TypedModel>;
 
 /// Silero VAD inference engine. The bundled model is the **v5** variant,
 /// whose interface is:
@@ -38,23 +38,35 @@ type Model = SimplePlan<TypedFact, Box<dyn TypedOp>, TypedModel>;
 /// bounds: len 3, index 3") and, because the panic crossed the non-unwinding
 /// global-hotkey C callback, aborted the whole process.
 pub struct VadEngine {
-    model: Model,
-    state: Tensor,
+    /// Stable facade handle for the optimized model.
+    model: Runnable,
+    /// Per-engine execution state owned by tract. Keeping this state alive
+    /// across frames avoids rebuilding the execution state for every call.
+    execution_state: State,
+    /// Silero v5's recurrent state is an explicit graph input/output. It is
+    /// distinct from tract's execution state and must be carried between
+    /// frames by the caller.
+    recurrent_state: Tensor,
 }
 
 impl VadEngine {
     pub fn new() -> Result<Self> {
-        let model = onnx()
-            .model_for_read(&mut Cursor::new(MODEL_BYTES))?
+        let model = tract::onnx()?
+            .load_buffer(MODEL_BYTES)?
             // The ONNX reader already supplies input facts with a symbolic
             // `batch` dim. Do NOT override them with concrete values: the v5
             // model's Pad op shape inference ("Impossible to unify Sym(batch)
             // with Val(1)") chokes when batch is pinned at graph-build time.
             // We keep batch symbolic and pass batch=1 tensors at run time.
-            .into_optimized()?
+            .into_model()?
             .into_runnable()?;
-        let state = Tensor::zero::<f32>(&[2, 1, STATE_DIM])?;
-        Ok(Self { model, state })
+        let execution_state = model.spawn_state()?;
+        let recurrent_state = zero_recurrent_state()?;
+        Ok(Self {
+            model,
+            execution_state,
+            recurrent_state,
+        })
     }
 
     /// Run one inference for a speech frame. The caller (recording loop)
@@ -67,30 +79,31 @@ impl VadEngine {
             return 0.0;
         }
 
-        let input = Tensor::from_shape(&[1, FRAME_SIZE], &frame[..FRAME_SIZE]).unwrap();
-        let sr = tensor0(16000i64);
-        let state = self.state.clone();
+        let input = Tensor::from_slice(&[1, FRAME_SIZE], &frame[..FRAME_SIZE]).unwrap();
+        let sr = Tensor::from_slice(&[], &[16000i64]).unwrap();
+        let recurrent_state = self.recurrent_state.clone();
 
         let result = self
-            .model
-            .run(tvec!(input.into(), sr.into(), state.into()))
+            .execution_state
+            .run([input, sr, recurrent_state])
             .unwrap();
 
         let prob = result[0]
-            .to_array_view::<f32>()
+            .as_slice::<f32>()
             .unwrap()
             .iter()
             .copied()
             .next()
             .unwrap_or(0.0);
 
-        self.state = result[1].clone().into_tensor();
+        self.recurrent_state = result[1].clone();
 
         prob
     }
 
     pub fn reset(&mut self) {
-        self.state = Tensor::zero::<f32>(&[2, 1, STATE_DIM]).unwrap();
+        self.execution_state = self.model.spawn_state().unwrap();
+        self.recurrent_state = zero_recurrent_state().unwrap();
     }
 }
 

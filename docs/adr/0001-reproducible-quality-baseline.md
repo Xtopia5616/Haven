@@ -11,7 +11,7 @@ Haven 的 Rust 工具链此前未固定，CI 仅覆盖 Linux，且严格 Clippy 
 
 - 以 `rust-toolchain.toml` 固定 Rust 1.98.0，并声明 `clippy`、`rustfmt` 组件；CI 显式使用同一版本。
 - CI 在 Linux 执行格式化、检查、严格 Clippy；在 Linux 与 Windows 执行 workspace 测试。
-- UI 使用 `.node-version` 固定在 Node 24.19.0、使用 `ui/package.json` 固定 pnpm 11.24.0，并在 Linux 与 Windows 执行类型检查、测试和生产构建；仅 Linux 上传构建产物。
+- UI 使用 `.node-version` 固定在 Node 24.20.0、使用 `ui/package.json` 固定 pnpm 11.24.0，并在 Linux 与 Windows 执行类型检查、测试和生产构建；仅 Linux 上传构建产物。
 - UI workspace 在 SvelteKit 仍声明 `cookie ^0.6.0` 时，通过 `ui/pnpm-workspace.yaml` 固定到已修复安全问题的 `cookie 0.7.2`；待上游依赖范围更新后应删除该 override 并重新审计。
 - 覆盖率生成和上传失败均使 CI 失败，不使用 `continue-on-error` 掩盖结果。
 
@@ -21,11 +21,11 @@ Haven 的 Rust 工具链此前未固定，CI 仅覆盖 Linux，且严格 Clippy 
 
 ## 影响
 
-开发者须安装匹配的 Rust 工具链、`.node-version` 指定的 Node 24.19.0 和 `ui/package.json` 指定的 pnpm 11.24.0。升级工具链、Node 或 pnpm 版本需单独变更对应版本文件、CI 与本 ADR（或新增替代 ADR），并重新通过所有门禁。
+开发者须安装匹配的 Rust 工具链、`.node-version` 指定的 Node 24.20.0 和 `ui/package.json` 指定的 pnpm 11.24.0。升级工具链、Node 或 pnpm 版本需单独变更对应版本文件、CI 与本 ADR（或新增替代 ADR），并重新通过所有门禁。
 
 ## 验证
 
-`cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked -- --test-threads=1`、`pnpm --dir ui run check`、`pnpm --dir ui run test:run` 与 `pnpm --dir ui run build`。
+`cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked -- --test-threads=1`、`corepack pnpm --dir ui run check`、`corepack pnpm --dir ui run test:run` 与 `corepack pnpm --dir ui run build`。
 
 ## 回滚与重置
 

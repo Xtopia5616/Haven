@@ -19,3 +19,8 @@
 - [0011：Agent 待处理上下文来源边界](0011-agent-context-source-boundary.md)
 - [0012：Agent 恢复、回滚与 Hook 策略边界](0012-agent-resume-rollback-hooks-boundary.md)
 - [0013：Memory 当前 Schema 与历史迁移边界](0013-memory-schema-migration-boundary.md)
+- [0014：使用 tract facade 作为 ONNX 推理公共 API](0014-tract-facade-public-api.md)
+- [0015：Linux 适配的宿主边界与验收路线](0015-linux-portability-roadmap.md)
+- [0016：使用 TypeScript 7 原生编译器进行 UI 类型检查](0016-typescript-7-native-check.md)
+- [0017：升级 Node.js 到 24.20.0 LTS](0017-node-24-20-lts-toolchain.md)
+- [0018：统一 VS Code 与 Tauri 的工具链入口](0018-vscode-toolchain-entrypoints.md)

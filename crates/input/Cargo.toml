@@ -10,7 +10,7 @@ tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 cpal.workspace = true
-tract-onnx.workspace = true
+tract.workspace = true
 tokio-util.workspace = true
 async-trait.workspace = true
 haven-common = { path = "../common" }

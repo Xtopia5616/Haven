@@ -1,4 +1,13 @@
 {
-  "svelte.enable-ts-plugin": true,
-  "js/ts.implicitProjectConfig.checkJs": false
+	"svelte.enable-ts-plugin": true,
+	"js/ts.implicitProjectConfig.checkJs": false,
+	"typescript.tsdk": "${workspaceFolder}/ui/node_modules/typescript/lib",
+	"typescript.enablePromptUseWorkspaceTsdk": true,
+	"rust-analyzer.cargo.extraArgs": ["--locked"],
+	"rust-analyzer.server.extraEnv": {
+		"PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+	},
+	"terminal.integrated.env.windows": {
+		"PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+	}
 }

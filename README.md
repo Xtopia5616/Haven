@@ -8,14 +8,14 @@ Haven 是一个面向 Windows 的本机语音助手。后端使用 Rust/Tauri 2�
 
 - Windows 10/11（桌面应用的运行与打包目标）
 - Rust 1.98.0，由 `rust-toolchain.toml` 固定；需包含 `clippy`、`rustfmt`
-- Node.js 24.19.0 与 pnpm 11.24.0；版本分别由 `.node-version` 和 `ui/package.json` 固定
+- Node.js 24.20.0 与 pnpm 11.24.0；版本分别由 `.node-version` 和 `ui/package.json` 固定
+- UI 类型检查使用 TypeScript 7.0.2 原生编译器；Svelte 兼容层保留 TypeScript 6.0.3
 - Tauri 的 Windows 前置依赖：Microsoft C++ Build Tools 和 WebView2 Runtime
 
 首次安装依赖：
 
 ```powershell
-corepack enable
-pnpm --dir ui install --frozen-lockfile
+corepack pnpm --dir ui install --frozen-lockfile
 cargo fetch --locked
 ```
 
@@ -24,7 +24,7 @@ cargo fetch --locked
 前端开发服务器：
 
 ```powershell
-pnpm --dir ui run dev
+corepack pnpm --dir ui run dev
 ```
 
 桌面开发与打包使用 Tauri CLI；如果尚未安装，可执行 `cargo install tauri-cli --version "^2"`，随后运行：
@@ -34,7 +34,7 @@ cargo tauri dev
 cargo tauri build
 ```
 
-`cargo tauri build` 会先执行 `pnpm --dir ui run build`，产物在 `target/release/bundle/`。请勿把 API 密钥提交到仓库；应用配置保存在用户数据目录。
+`cargo tauri build` 会先执行 `corepack pnpm --dir ui run build`，产物在 `target/release/bundle/`。请勿把 API 密钥提交到仓库；应用配置保存在用户数据目录。
 
 ## 质量检查
 
@@ -45,9 +45,9 @@ cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo clippy --workspace --locked -- -D warnings
 cargo test --workspace --locked -- --test-threads=1
-pnpm --dir ui run check
-pnpm --dir ui run test:run
-pnpm --dir ui run build
+corepack pnpm --dir ui run check
+corepack pnpm --dir ui run test:run
+corepack pnpm --dir ui run build
 ```
 
 Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用户配置、AppData 或访问网络。单个 crate 的测试命令见 [AGENTS.md](AGENTS.md)。

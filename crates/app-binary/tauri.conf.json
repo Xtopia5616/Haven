@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../../ui/build",
     "devUrl": "http://localhost:4721",
-    "beforeDevCommand": "pnpm --dir ui run dev",
-    "beforeBuildCommand": "pnpm --dir ui run build"
+    "beforeDevCommand": "corepack pnpm run dev",
+    "beforeBuildCommand": "corepack pnpm run build"
   },
   "app": {
     "windows": [

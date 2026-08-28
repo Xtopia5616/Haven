@@ -33,7 +33,7 @@
 
 #### 已完成记录
 
-- 2026-08-27：固定 Rust 1.98.0、Node 24.19.0 与 pnpm 11.24.0 的质量门禁，Linux/Windows 均执行 Rust workspace 测试与 UI 门禁；补齐 README、发布重置说明与 ADR 目录（ADR 0001）。
+- 2026-08-27：固定 Rust 1.98.0、Node 24.20.0 与 pnpm 11.24.0 的质量门禁，Linux/Windows 均执行 Rust workspace 测试与 UI 门禁；补齐 README、发布重置说明与 ADR 目录（ADR 0001）。
 - 2026-08-26：Agent 的严格 Clippy 清理完成；Shell 测试改为临时目录与 PowerShell 内置字节输出，避免写入默认工作目录或依赖 PATH 中的 Python。
 - 2026-08-26：MCP 配置生命周期与客户端集成测试改为进程内 HTTP MCP 端点，并删除 Python fixture；窗口单元测试不再要求可交互桌面。OCR 未配置视觉路由时不采集屏幕（ADR 0002）。
 
@@ -57,10 +57,6 @@
 - 2026-08-26：移除 Phase-7 ReAct 快照重建和未命名媒体 provider 的本地凭据回退；旧快照与媒体配置要求完整重置后重新配置（ADR 0008）。
 - 2026-08-27：补齐应用壳层与 Agent 事件 DTO：39 个事件统一由 Rust 名称常量、命名 wire DTO 和前端 contract 登记；新增 `scripts/check-ipc-events.ps1` 保护 channel 集合与 snake_case → camelCase 边界（ADR 0009）。
 - 2026-08-27：媒体能力的持久化配置仅保留命名 provider 与能力参数；STT/TTS/文生图凭据改为解析后的运行时 DTO，旧媒体 provider 名或本地凭据会备份配置并以默认值启动，避免再次读入旧兼容字段（ADR 0008）。
-- 2026-08-27：P2 Agent 首个切片完成：将 ReAct 回合结束流程从 `react/inject.rs` 移至独立 `react/turn_end.rs`，以 `TurnEndInput` 固定最终事件、并发注入、分支点与暂停的调用边界；行为与持久化契约不变（ADR 0010）。
-- 2026-08-27：P2 Agent 上下文来源切片完成：以 `react/context.rs` 的 `ContextSource` 聚合队列与 inbox，`react/inject.rs` 仅把拥有所有权的批次经 `apply_transcript` 投影，保留既有顺序、ask gate 清除和低信任净化（ADR 0011）。
-- 2026-08-27：P2 Agent 恢复/回滚/Hook 边界收口：恢复候选合并、无快照工具链投影和 MCP 选择移入 `resume_support.rs`；回滚事件操作移入 `rollback_support.rs` 并优先使用 `message_id`；生产 Hook 策略移入 `react/hook_policy.rs`，保持 `events` 为恢复唯一权威（ADR 0012）。
-- 2026-08-27：P2 Memory schema 边界收口：当前幂等 schema 与历史迁移目录拆分为 `schema.rs` / `migrations.rs`，保持 `user_version` 逐步戳记、迁移顺序与 X12 恢复权威不变（ADR 0013）。
 
 ### P2：按稳定接口拆解热点
 
@@ -68,6 +64,14 @@
 - LLM：提取供应商适配器共享的请求、流式、用量和重试管线；每个 provider 只保留协议映射。
 - Agent：将 loop、恢复、投影、队列和副作用 Hook 保持独立；禁止从快捷修复重新穿透层级。
 - UI：拆分聊天页的会话状态、事件归并、输入和渲染；将工具结果渲染改为按工具类型注册的组件，避免继续扩大单一页面与卡片组件。
+- 平台适配（待实施，见 ADR 0015）：保持核心契约平台无关；完善音频实时回调与设备恢复、tract CPU 回归、进程组取消、Windows 专属能力降级、通知/自启适配以及 Linux 桌面构建验收。
+
+#### 已完成记录
+
+- 2026-08-27：P2 Agent 首个切片完成：将 ReAct 回合结束流程从 `react/inject.rs` 移至独立 `react/turn_end.rs`，以 `TurnEndInput` 固定最终事件、并发注入、分支点与暂停的调用边界；行为与持久化契约不变（ADR 0010）。
+- 2026-08-27：P2 Agent 上下文来源切片完成：以 `react/context.rs` 的 `ContextSource` 聚合队列与 inbox，`react/inject.rs` 仅把拥有所有权的批次经 `apply_transcript` 投影，保留既有顺序、ask gate 清除和低信任净化（ADR 0011）。
+- 2026-08-27：P2 Agent 恢复/回滚/Hook 边界收口：恢复候选合并、无快照工具链投影和 MCP 选择移入 `resume_support.rs`；回滚事件操作移入 `rollback_support.rs` 并优先使用 `message_id`；生产 Hook 策略移入 `react/hook_policy.rs`，保持 `events` 为恢复唯一权威（ADR 0012）。
+- 2026-08-27：P2 Memory schema 边界收口：当前幂等 schema 与历史迁移目录拆分为 `schema.rs` / `migrations.rs`，保持 `user_version` 逐步戳记、迁移顺序与 X12 恢复权威不变（ADR 0013）。
 
 ## 完成标准
 

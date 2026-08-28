@@ -6,7 +6,7 @@
 Haven is a voice assistant for Windows PC built on the Pi Coding Agent (ReAct loop) architecture.
 Tech stack: Rust (Tauri 2) backend, Svelte 5 frontend.
 
-固定开发工具链：Rust 1.98.0、Node.js 24.19.0、pnpm 11.24.0；版本分别由 `rust-toolchain.toml`、`.node-version` 和 `ui/package.json` 固定。
+固定开发工具链：Rust 1.98.0、Node.js 24.20.0、pnpm 11.24.0；版本分别由 `rust-toolchain.toml`、`.node-version` 和 `ui/package.json` 固定。
 
 ## Test Workflow
 
@@ -34,16 +34,16 @@ cargo tarpaulin --out Html --output-dir target/coverage
 cd ui
 
 # Watch mode
-pnpm run test
+corepack pnpm run test
 
 # Single run
-pnpm run test:run
+corepack pnpm run test:run
 
 # With coverage
-pnpm run test:coverage
+corepack pnpm run test:coverage
 
 # Svelte type check
-pnpm run check
+corepack pnpm run check
 ```
 
 ### Kilo Commands
