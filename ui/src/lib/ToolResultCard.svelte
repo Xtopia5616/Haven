@@ -761,63 +761,6 @@
 				{:else}
 					<p class="tool-card-empty">没有匹配的结果</p>
 				{/if}
-			{:else if toolName === 'http'}
-				<div class="action-row">
-					<span
-						class="status-badge status-{data.status >= 200 && data.status < 300
-							? 'completed'
-							: 'failed'}">{data.status}</span
-					>
-					{#if data.truncated}<span class="tool-card-meta">（响应过长已截断）</span>{/if}
-				</div>
-				{#if typeof data.body === 'string' && data.body}
-					<pre class="content-preview">{data.body}</pre>
-				{/if}
-			{:else if toolName === 'clipboard'}
-				{#if data.written}
-					<p class="tool-card-empty">已写入剪贴板</p>
-				{:else if Array.isArray(data.entries)}
-					{#if data.entries.length > 0}
-						<div class="tool-card-list">
-							{#each data.entries as entry, i (i)}
-								<div class="search-row">
-									<span class="search-snippet">{entry.content}</span>
-								</div>
-							{/each}
-						</div>
-						<div class="tool-card-meta">共 {data.total} 条历史</div>
-					{:else}
-						<p class="tool-card-empty">剪贴板历史为空</p>
-					{/if}
-				{:else if typeof data.content === 'string' && data.content}
-					<pre class="content-preview">{data.content}</pre>
-				{:else}
-					<p class="tool-card-empty">剪贴板为空</p>
-				{/if}
-			{:else if toolName === 'web_search'}
-				<div class="tool-card-count">{data.label}</div>
-				{#if Array.isArray(data.queries) && data.queries.length > 0}
-					<div class="tool-card-meta">查询：{data.queries.join('；')}</div>
-				{/if}
-				{#if Array.isArray(data.results)}
-					{#if data.results.length > 0}
-						<div class="tool-card-list">
-							{#each data.results as r (r.url + r.title)}
-								<div class="search-row">
-									<ExternalRef class="search-path" target={r.url} />
-									{#if r.title && r.title !== r.url}
-										<span class="search-snippet">{r.title}</span>
-									{/if}
-								</div>
-								{#if r.snippet}
-									<div class="tool-card-meta">{r.snippet}</div>
-								{/if}
-							{/each}
-						</div>
-					{:else}
-						<p class="tool-card-empty">（未返回结果）</p>
-					{/if}
-				{/if}
 			{:else if toolName === 'agent'}
 				{#if data.auto && typeof data.text === 'string'}
 					<div class="tool-card-count">自动收到同伴消息（低信任）</div>

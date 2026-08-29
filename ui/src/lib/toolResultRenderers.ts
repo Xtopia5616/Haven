@@ -4,8 +4,11 @@ import ToolNotifyResult from './ToolNotifyResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
 import ToolProcessResult from './ToolProcessResult.svelte';
 import ToolActionResult from './ToolActionResult.svelte';
+import ToolClipboardResult from './ToolClipboardResult.svelte';
+import ToolHttpResult from './ToolHttpResult.svelte';
 import ToolScheduleResult from './ToolScheduleResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
+import ToolWebSearchResult from './ToolWebSearchResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
 
 const renderers = {
@@ -16,10 +19,9 @@ const renderers = {
 } as const;
 
 /**
- * Resolve the body component for a normalized tool-result kind. Custom tool
- * renderers remain in ToolResultCard until their data-specific state and
- * actions are extracted; this registry is the extension point that keeps
- * simple result types out of the card shell.
+ * Resolve the body component for a normalized tool-result kind. This registry
+ * keeps data-specific result rendering out of the shared card shell while
+ * allowing each custom tool to retain its own result shape.
  */
 
 export function getToolResultRenderer(
@@ -33,5 +35,8 @@ export function getToolResultRenderer(
 	if (kind === 'custom' && toolName === 'window') return ToolWindowResult;
 	if (kind === 'custom' && toolName === 'actions') return ToolActionResult;
 	if (kind === 'custom' && toolName === 'schedule') return ToolScheduleResult;
+	if (kind === 'custom' && toolName === 'http') return ToolHttpResult;
+	if (kind === 'custom' && toolName === 'clipboard') return ToolClipboardResult;
+	if (kind === 'custom' && toolName === 'web_search') return ToolWebSearchResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;
 }
