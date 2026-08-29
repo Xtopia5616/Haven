@@ -348,3 +348,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.6 UI：将 Agent thought/reasoning、web search、补充输入、工具 action/output/observation 的事件 handler 收口到 `ui/src/lib/chatAgentEventHandlers.ts`，路由页只保留状态与监听器编排（ADR 0044） |
 | 2026-08-30 | §2.6 UI：将 Agent 用量与上下文压缩事件投影收口到 `ui/src/lib/chatUsageEventHandlers.ts`，路由页只保留监听器编排（ADR 0045） |
 | 2026-08-30 | §2.6 UI：将 `confirm:requested` 到确认队列项的安全事件投影收口到 `ui/src/lib/chatConfirmationEventHandlers.ts`，路由页保留队列与授权 IPC 编排（ADR 0046） |
+| 2026-08-30 | §2.6 UI：将 session 生命周期事件的状态投影与终态清理收口到 `ui/src/lib/chatSessionEventHandlers.ts`，路由页保留响应式状态回调（ADR 0047） |

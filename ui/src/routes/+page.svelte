@@ -23,6 +23,7 @@
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
 	import { createChatConfirmationEventHandlers } from '$lib/chatConfirmationEventHandlers.ts';
+	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import {
@@ -1114,109 +1115,34 @@
 		// events arriving while the page initializes are never missed.
 		const registrations = registerListeners(
 			{
-				...sessionEventListeners({
-				'session:created': (event) => {
-					const tid = event.payload.sessionId;
-					if (tid) {
-						// Voice input appends the transcript to `_draft` before the
-						// backend session exists; once it is created, migrate those
-						// draft messages into the session and focus it. Without this,
-						// the agent's response (ask card / answer) lands in a session
-						// stream the chat view is not showing — visible only after
-						// re-entering the page (e.g. via history).
-						adoptDraftMessages(tid);
-						// Every `session:created` comes from a user submission
-						// (typed or voice) — the fresh-start intent is fulfilled
-						// by submit.ts when that submission's invoke resolves.
-						// This guard only covers the in-flight window between the
-						// session creation event and the invoke resolution: a
-						// submission that started before the 新对话 click must
-						// not hijack the blank draft in that window.
-						if (!get(newSessionIntentStore)) {
-							activeSessionId = tid;
-							activeSessionIdStore.set(tid);
-						}
-					}
-					loadSessions();
-				},
-				'session:updated': (event) => {
-					const data = event.payload;
-					const isActive = activeSessionId && data.sessionId === activeSessionId;
-					// A resume (pending) means the user's answer was received:
-					// stop showing the awaiting indicator on ask cards. Note the
-					// ask pause itself arrives as 'paused' right after the card is
-					// created, so that status must NOT clear the indicator.
-					if (isActive && data.status === 'pending') {
-						clearAskAwaiting(data.sessionId);
-					}
-					// A resumed session (pending/running) is no longer in the
-					// errored state the continue banner describes: dismiss a
-					// stale banner so it can't linger over a live generation
-					// (e.g. when the retry started before the continue-session
-					// invoke resolved, or a message resumed the session).
-					if (
-						sessionErrorId === data.sessionId &&
-						isBusyStatus(data.status)
-					) {
-						sessionErrorId = null;
-						activeSessionError = false;
-					}
-					// A background session reaching a terminal state has no more
-					// streaming events: evict its messages (switchToSession reloads
-					// from the DB on demand) so completed conversations don't
-					// accumulate in memory for the whole session.
-					if (data.status === 'completed' || data.status === 'error') {
-						evictTerminalSessionMemory(data.sessionId);
-						// The ACTIVE session is skipped by the eviction guard, but
-						// its streaming bookkeeping is dead too: no further chunk
-						// events will reference these (step, run) keys. Also drop
-						// leftover carets on Thinking / thought bubbles that never
-						// got an `agent:thought` snap (DeepSeek reasoning-only turns).
-						if (activeSessionId === data.sessionId) {
-							updateSessionMessages(data.sessionId, (m) =>
-								m.map((x) => (x.streaming ? { ...x, streaming: false } : x)),
-							);
-						}
-						clearStepBlockIds(data.sessionId);
-					}
-					loadSessions();
-				},
-				'session:completed': (event) => {
-					const data = event.payload;
-					if (activeSessionId && data.sessionId === activeSessionId) {
-						clearAskAwaiting(data.sessionId);
-						updateSessionMessages(data.sessionId, (m) =>
-							m.map((x) => (x.streaming ? { ...x, streaming: false } : x)),
-						);
-					}
-					evictTerminalSessionMemory(data.sessionId);
-					clearStepBlockIds(data.sessionId);
-					loadSessions();
-				},
-				'session:error': (event) => {
-					const { sessionId } = event.payload;
-					if (sessionId === activeSessionId) {
-						sessionErrorId = sessionId;
-						activeSessionError = true;
-						clearAskAwaiting(sessionId);
-						// The session died mid-tool-call: every streaming block
-						// (tool placeholder, reasoning, thought) would stay
-						// in its "expanded/streaming" state forever otherwise.
-						// Finalize them all so the UI reflects the stop.
-						updateSessionMessages(sessionId, (m) =>
-							m.map((x) => (x.streaming ? { ...x, streaming: false } : x))
-						);
-					}
-					evictTerminalSessionMemory(sessionId);
-					clearStepBlockIds(sessionId);
-					loadSessions();
-				},
-				'session:title-updated': (event) => {
-					const { sessionId, title } = event.payload;
-					const idx = sessions.findIndex((t) => t.id === sessionId);
-					if (idx >= 0) sessions[idx] = { ...sessions[idx], title };
-				},
-				}),
+				...sessionEventListeners(
+					createChatSessionEventHandlers({
+						getActiveSessionId: () => activeSessionId,
+						isFreshSessionIntent: () => get(newSessionIntentStore),
+						adoptDraftMessages,
+						setActiveSessionId: (sessionId) => {
+							activeSessionId = sessionId;
+							activeSessionIdStore.set(sessionId);
+						},
+						getSessionErrorId: () => sessionErrorId,
+						clearSessionError: () => {
+							sessionErrorId = null;
+							activeSessionError = false;
+						},
+						showSessionError: (sessionId) => {
+							sessionErrorId = sessionId;
+							activeSessionError = true;
+						},
+						clearAskAwaiting,
+						evictTerminalSessionMemory,
+						clearStepBlockIds,
+						updateSessionTitle: (sessionId, title) => {
+							const index = sessions.findIndex((session) => session.id === sessionId);
+							if (index >= 0) sessions[index] = { ...sessions[index], title };
+						},
+						loadSessions,
+					}),
+				),
 				...appEventListeners({
 				'hotkey:rebind': (event) => {
 					const data = event.payload;
