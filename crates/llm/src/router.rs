@@ -7,6 +7,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapters::adapter_for;
 use crate::client::{LlmClient, retry_delay};
+#[cfg(test)]
+use crate::endpoint_health::{CircuitBreaker, CircuitState};
+use crate::endpoint_health::{
+    EndpointHealth, EndpointHealthSlots, health_index, new_endpoint_health_slots,
+};
 use crate::request_pipeline::{
     RequestPolicy, RetryPolicy, execute_with_retry, execute_with_timeout,
 };
@@ -145,138 +150,10 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum CircuitState {
-    Closed,   // normal operation
-    Open,     // failing — requests rejected
-    HalfOpen, // probe one request
-}
-
-#[derive(Debug, Clone)]
-struct CircuitBreaker {
-    state: CircuitState,
-    consecutive_failures: u32,
-    last_failure_time: Option<Instant>,
-    failure_count: u32, // failures in recent window
-    total_calls: u32,   // total calls in recent window
-    opened_at: Option<Instant>,
-}
-
-impl CircuitBreaker {
-    fn new() -> Self {
-        Self {
-            state: CircuitState::Closed,
-            consecutive_failures: 0,
-            last_failure_time: None,
-            failure_count: 0,
-            total_calls: 0,
-            opened_at: None,
-        }
-    }
-
-    fn record_success(&mut self) {
-        // A success from a request dispatched BEFORE the breaker tripped must
-        // not close an Open breaker prematurely (M8): concurrent in-flight
-        // requests could otherwise keep the breaker perpetually closed despite
-        // recent failures. Only a HalfOpen probe (or a Closed-state success)
-        // may transition the breaker to Closed.
-        if self.state == CircuitState::Open {
-            return;
-        }
-        self.consecutive_failures = 0;
-        self.total_calls += 1;
-        self.state = CircuitState::Closed;
-        self.opened_at = None;
-    }
-
-    fn record_failure(&mut self) {
-        self.consecutive_failures += 1;
-        self.failure_count += 1;
-        self.total_calls += 1;
-        self.last_failure_time = Some(Instant::now());
-
-        // Open if >50% failure rate and >=3 consecutive failures
-        if self.consecutive_failures >= 3
-            && self.total_calls > 0
-            && (self.failure_count as f32 / self.total_calls as f32) > 0.5
-        {
-            self.state = CircuitState::Open;
-            self.opened_at = Some(Instant::now());
-        }
-    }
-
-    fn allow_request(&mut self) -> bool {
-        match self.state {
-            CircuitState::Closed | CircuitState::HalfOpen => true,
-            CircuitState::Open => {
-                // §2.6: 30s cool-down, then HalfOpen
-                if let Some(opened) = self.opened_at {
-                    if opened.elapsed() >= Duration::from_secs(30) {
-                        self.state = CircuitState::HalfOpen;
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Per-endpoint health state (§5.3)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-struct EndpointHealth {
-    consecutive_failures: u32,
-    last_failure_time: Option<Instant>,
-    is_healthy: bool,
-    circuit_breaker: CircuitBreaker,
-}
-
-impl EndpointHealth {
-    fn new() -> Self {
-        Self {
-            consecutive_failures: 0,
-            last_failure_time: None,
-            is_healthy: true,
-            circuit_breaker: CircuitBreaker::new(),
-        }
-    }
-
-    fn record_success(&mut self) {
-        // Mirror the circuit breaker: a stale success from a pre-open request
-        // must not mark the endpoint healthy again (M8).
-        if self.circuit_breaker.state == CircuitState::Open {
-            return;
-        }
-        self.consecutive_failures = 0;
-        self.is_healthy = true;
-        self.circuit_breaker.record_success();
-    }
-
-    fn record_failure(&mut self) {
-        self.consecutive_failures += 1;
-        self.last_failure_time = Some(Instant::now());
-        self.circuit_breaker.record_failure();
-        // Mark unhealthy after 3 consecutive failures
-        if self.consecutive_failures >= 3 {
-            self.is_healthy = false;
-        }
-    }
-
-    fn allow_request(&mut self) -> bool {
-        self.circuit_breaker.allow_request()
-    }
-}
-
 /// The mutable runtime state every `LlmRouter` constructor initializes the
 /// same way (health trackers, stream rules, semaphores, rate-limit cooldowns).
 type RuntimeStateParts = (
-    RwLock<[EndpointHealth; 6]>,
+    RwLock<EndpointHealthSlots>,
     RwLock<Vec<StreamRule>>,
     StdMutex<[Arc<tokio::sync::Semaphore>; 6]>,
     RwLock<[Option<Instant>; 6]>,
@@ -415,14 +292,7 @@ impl LlmRouter {
     /// trackers, stream rules, concurrency semaphores, and rate-limit flags.
     fn runtime_state(request_limit: usize) -> RuntimeStateParts {
         (
-            RwLock::new([
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-            ]),
+            RwLock::new(new_endpoint_health_slots()),
             RwLock::new(Vec::new()),
             StdMutex::new(Self::make_semaphores(request_limit)),
             RwLock::new([None, None, None, None, None, None]),
@@ -591,14 +461,7 @@ impl LlmRouter {
     }
 
     fn health_index(role: &EndpointRole) -> usize {
-        match role {
-            EndpointRole::SmallModel => 0,
-            EndpointRole::DefaultModel => 1,
-            EndpointRole::BalancedModel => 2,
-            EndpointRole::ImageModel => 3,
-            EndpointRole::AudioModel => 4,
-            EndpointRole::EmbeddingModel => 5,
-        }
+        health_index(role)
     }
 
     /// Returns true if the role has a non-empty api_key configured.

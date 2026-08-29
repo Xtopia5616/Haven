@@ -55,3 +55,4 @@
 - [0047：UI 会话生命周期事件边界](0047-ui-session-event-boundary.md)
 - [0048：UI 聊天消息时间线边界](0048-ui-chat-message-timeline-boundary.md)
 - [0049：UI ask 交互边界](0049-ui-ask-interaction-boundary.md)
+- [0051：LLM endpoint 健康与熔断边界](0051-llm-endpoint-health-boundary.md)

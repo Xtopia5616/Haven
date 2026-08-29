@@ -103,6 +103,7 @@
 - 2026-08-30：P2 UI 会话生命周期事件边界收口：session created/updated/completed/error/title-updated 的状态投影与终态清理集中到 `ui/src/lib/chatSessionEventHandlers.ts`，路由页保留响应式状态回调（ADR 0047）。
 - 2026-08-30：P2 UI 聊天消息时间线边界收口：欢迎态、消息列表、后台等待提示与错误继续按钮集中到 `ui/src/lib/ChatMessageTimeline.svelte`，路由页保留滚动容器与业务回调（ADR 0048）。
 - 2026-08-30：P2 UI ask 交互边界收口：选项选择、批量回答、忽略、恢复清理与重复提交防护集中到 `ui/src/lib/chatAskInteraction.ts`，路由页保留输入编排（ADR 0049）。
+- 2026-08-30：P2 LLM endpoint 健康与熔断边界收口：熔断器、连续失败统计、半开探测、role 索引与健康槽位初始化集中到 `crates/llm/src/endpoint_health.rs`，router 保留并发存储与请求时机（ADR 0051）。
 
 ## 完成标准
 

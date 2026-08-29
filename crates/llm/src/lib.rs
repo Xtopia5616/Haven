@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod client;
+mod endpoint_health;
 pub mod image_gen;
 pub mod media;
 pub mod ocr;
