@@ -94,6 +94,9 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   为普通聊天、工具聊天、embedding 和流式端点尝试提供同一份重试预算快照与
   总超时执行语义。router 仍拥有熔断、限流、fallback 和流式聚合，adapter
   不实现第二套重试。
+- `adapters/transport.rs`：所有 provider 共用的 reqwest client、代理/归因与
+  认证头、HTTP 状态错误、流式响应头超时和健康检查；不解析 provider payload，
+  也不拥有 router 的重试与路由状态（ADR 0024）。
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
@@ -308,3 +311,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-29 | §2.3 Agent/Memory：将 embedding provider 调用、有限索引 catch-up、向量召回与 LSH 重建收口到 `memory_index.rs`，保持 Database API 与召回语义不变（ADR 0021） |
 | 2026-08-29 | §2.3 Memory：将事实清理、衰减、来源规范化与矛盾候选扫描收口到 `fact_maintenance.rs`，保持 Database API 与维护语义不变（ADR 0022） |
 | 2026-08-29 | §2.2 LLM：将聊天、工具、embedding 与流式端点尝试的重试/总超时策略收口到 `request_pipeline.rs`，保持 router 路由与 provider wire 契约不变（ADR 0023） |
+| 2026-08-30 | §2.2 LLM：将 provider 共用 HTTP client、认证头、状态错误、流式 header 超时与健康检查收口到 `adapters/transport.rs`，保持 provider wire 契约不变（ADR 0024） |
