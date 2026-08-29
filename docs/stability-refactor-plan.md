@@ -77,6 +77,12 @@
 - 2026-08-29：P2 Agent/Memory 嵌入编排边界收口：embedding provider 调用、有限索引 catch-up、模型切换清理、向量召回与 LSH 重建集中到 Agent 的 `memory_index.rs`，保持 Memory `Database` API 与召回语义不变（ADR 0021）。
 - 2026-08-29：P2 Memory 维护持久化边界收口：事实去重、敏感清理、衰减清理、来源规范化与矛盾候选扫描集中到 `repositories/fact_maintenance.rs`，Agent 继续负责维护调度与 LLM 仲裁，保持 `Database` API 与维护语义不变（ADR 0022）。
 - 2026-08-29：P2 LLM 请求策略边界收口：普通聊天、工具聊天、embedding 与流式端点尝试共用 `request_pipeline.rs` 的重试预算快照与总超时执行器，保持 router 路由、fallback、流式聚合和 provider wire 契约不变（ADR 0023）。
+- 2026-08-30：P2 LLM 适配器传输边界收口：provider 共用 HTTP client、认证头、状态错误、流式 header 超时与健康检查集中到 `adapters/transport.rs`，保持 provider wire 契约不变（ADR 0024）。
+- 2026-08-30：P2 LLM 适配器流式 framing 边界收口：SSE/JSON-lines 行读取、EOF flush 与空 stream chunk 基线集中到 `adapters/stream.rs`，保持 provider wire 契约不变（ADR 0025）。
+- 2026-08-30：P2 LLM 适配器 embedding 边界收口：OpenAI-compatible embedding 的 URL、请求体、响应排序/校验与 usage 转换集中到 `adapters/embedding.rs`，保持 provider wire 契约不变（ADR 0026）。
+- 2026-08-30：P2 LLM 适配器 web search 边界收口：内置搜索 call 规范化、citation 结果和按 id 去重集中到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027）。
+- 2026-08-30：P2 LLM 适配器 provider feature 边界收口：vendor 检测、thinking/reasoning 映射、echo 判定与长度限制集中到 `adapters/provider_features.rs`，保持 Chat/Responses wire 契约不变（ADR 0028）。
+- 2026-08-30：P2 Agent 事实抽取边界收口：事实抽取 DTO、字段 coercion、标签/谓词规范化、prompt 清洗与 JSON array 提取集中到 `fact_extraction.rs`，保持抽取与持久化语义不变（ADR 0029）。
 
 ## 完成标准
 
