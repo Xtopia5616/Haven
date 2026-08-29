@@ -41,3 +41,4 @@
 - [0033：UI 工具结果渲染注册表](0033-ui-tool-result-renderer-registry.md)
 - [0034：UI 文件工具结果 renderer 边界](0034-ui-file-tool-renderer-boundary.md)
 - [0035：UI system 工具结果 renderer 边界](0035-ui-system-tool-renderer-boundary.md)
+- [0036：UI process 工具结果 renderer 边界](0036-ui-process-tool-renderer-boundary.md)

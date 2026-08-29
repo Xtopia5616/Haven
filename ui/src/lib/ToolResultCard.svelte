@@ -9,28 +9,6 @@
 		return typeof v === 'object' && v !== null && !Array.isArray(v);
 	}
 
-	/** @param {string | number} v */
-	function clampPct(v) {
-		const n = Number(v);
-		if (!Number.isFinite(n)) return 0;
-		return Math.max(0, Math.min(100, n));
-	}
-
-	/** @param {unknown} v */
-	function fmtBytes(v) {
-		const n = Number(v);
-		if (!Number.isFinite(n) || n < 0) return '—';
-		if (n < 1024) return `${n} B`;
-		const units = ['KB', 'MB', 'GB', 'TB'];
-		let u = n;
-		let i = -1;
-		while (u >= 1024 && i < units.length - 1) {
-			u /= 1024;
-			i++;
-		}
-		return `${u >= 100 ? u.toFixed(0) : u.toFixed(1)} ${units[i]}`;
-	}
-
 	/**
 	 * Whether this tool observation can be rendered as a card. Every non-empty
 	 * observation is renderable — structured JSON gets its dedicated renderer
@@ -360,56 +338,6 @@
 			: { title: rest, body: '' };
 	}
 	let notifyParts = $derived(notifyPartsOf());
-
-	// ── Process renderer state ─────────────────────────────────────────────
-	let processFilter = $state('');
-	let processShowAll = $state(false);
-	const PROC_VISIBLE_LIMIT = 50;
-	let processList = $derived(/** @type {any[]} */ (Array.isArray(data.processes) ? data.processes : []));
-	let filteredProcesses = $derived(
-		processFilter
-			? processList.filter((p) =>
-					String(p.name ?? '')
-						.toLowerCase()
-						.includes(processFilter.toLowerCase()),
-				)
-			: processList,
-	);
-	let visibleProcesses = $derived(
-		processFilter || processShowAll
-			? filteredProcesses
-			: filteredProcesses.slice(0, PROC_VISIBLE_LIMIT),
-	);
-	let maxProcMem = $derived(processList.reduce((m, p) => Math.max(m, Number(p.memory) || 0), 0));
-	/** @param {any} p */
-	function memPct(p) {
-		if (!maxProcMem) return 0;
-		return Math.min(100, ((Number(p.memory) || 0) / maxProcMem) * 100);
-	}
-	/** @type {Record<string, string>} */
-	const PROC_STATUS_LABELS = {
-		Run: '运行中',
-		Sleep: '休眠',
-		Idle: '空闲',
-		Stop: '已停止',
-		Zombie: '僵尸',
-		Dead: '已结束',
-		Tracing: '跟踪',
-		Unknown: '未知',
-	};
-	/** @param {any} status */
-	function procStatusLabel(status) {
-		return PROC_STATUS_LABELS[String(status ?? '')] ?? String(status ?? '未知');
-	}
-	/** @param {any} status */
-	function procStatusClass(status) {
-		const s = String(status ?? '').toLowerCase();
-		if (s.includes('run')) return 'running';
-		if (s.includes('sleep') || s.includes('idle')) return 'idle';
-		if (s.includes('zombie') || s.includes('dead')) return 'failed';
-		if (s.includes('stop') || s.includes('tracing')) return 'cancelled';
-		return 'not_found';
-	}
 
 	// Right-click: copy the visible observation (or the current selection),
 	// matching the chat-bubble menu. Live shell output uses displayContent
@@ -832,67 +760,6 @@
 					</div>
 				{:else}
 					<p class="tool-card-empty">没有匹配的结果</p>
-				{/if}
-			{:else if toolName === 'process'}
-				<div class="tool-card-count">
-					{#if processFilter}
-						{filteredProcesses.length} / {processList.length} 个进程
-					{:else}
-						{processList.length} 个进程
-					{/if}
-				</div>
-				<input
-					class="tool-search"
-					type="search"
-					placeholder="筛选进程..."
-					bind:value={processFilter}
-					aria-label="筛选进程"
-				/>
-				<div class="tool-card-list">
-					<table class="proc-table">
-						<thead>
-							<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
-						</thead>
-						<tbody>
-							{#each visibleProcesses as p (p.pid)}
-								<tr>
-									<td class="proc-name" title={p.name}>{p.name}</td>
-									<td class="proc-num">{p.pid}</td>
-									<td class="proc-num proc-meter-cell">
-										<span class="proc-meter"
-											><span
-												class="proc-meter-fill"
-												style="width: {clampPct(p.cpu)}%"
-											></span></span
-										>{Number(p.cpu ?? 0).toFixed(1)}%
-									</td>
-									<td class="proc-num proc-meter-cell">
-										<span class="proc-meter"
-											><span
-												class="proc-meter-fill"
-												style="width: {memPct(p)}%"
-											></span></span
-										>{fmtBytes(p.memory)}
-									</td>
-									<td class="proc-status"
-										><span
-											class="status-badge status-{procStatusClass(p.status)}"
-											>{procStatusLabel(p.status)}</span
-										></td
-									>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-				{#if !processFilter && processList.length > PROC_VISIBLE_LIMIT}
-					<button
-						class="show-all-btn"
-						type="button"
-						onclick={() => (processShowAll = !processShowAll)}
-					>
-						{processShowAll ? '收起' : `显示全部 ${processList.length} 个进程`}
-					</button>
 				{/if}
 			{:else if toolName === 'window'}
 				<div class="tool-card-count">{data.count ?? data.windows.length} 个窗口</div>
@@ -1357,41 +1224,6 @@
 		font-size: 10px;
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.proc-table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 11px;
-	}
-	.proc-table th {
-		position: sticky;
-		top: 0;
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-secondary-container) 45%,
-			var(--md-sys-color-surface)
-		);
-		text-align: left;
-		font-weight: 600;
-		color: var(--md-sys-color-on-surface-variant);
-		padding: 2px var(--md-sys-space-2xs);
-		font-size: 10px;
-	}
-	.proc-table td {
-		padding: 2px var(--md-sys-space-2xs);
-		border-bottom: 1px solid color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent);
-	}
-	.proc-name {
-		max-width: 150px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		color: var(--md-sys-color-on-surface);
-	}
-	.proc-num {
-		text-align: right;
-		font-family: var(--md-sys-typescale-mono);
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	.action-row {
 		display: flex;
 		align-items: center;
@@ -1434,64 +1266,6 @@
 	.status-idle {
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-search {
-		width: 100%;
-		box-sizing: border-box;
-		background: var(--md-sys-color-surface-container-high);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		color: var(--md-sys-color-on-surface);
-		font-size: 11px;
-		padding: 4px var(--md-sys-space-sm);
-		margin-bottom: var(--md-sys-space-xs);
-		outline: none;
-	}
-	.tool-search:focus {
-		border-color: var(--md-sys-color-primary);
-	}
-	.proc-meter-cell {
-		white-space: nowrap;
-	}
-	.proc-meter {
-		display: inline-block;
-		width: 36px;
-		height: 4px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-surface-container-highest);
-		overflow: hidden;
-		vertical-align: middle;
-		margin-right: 4px;
-	}
-	.proc-meter-fill {
-		display: block;
-		height: 100%;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary);
-	}
-	.proc-status {
-		padding-right: var(--md-sys-space-2xs) !important;
-	}
-	.proc-status .status-badge {
-		text-transform: none;
-		font-size: 9px;
-		padding: 1px 6px;
-	}
-	.show-all-btn {
-		width: 100%;
-		box-sizing: border-box;
-		margin-top: var(--md-sys-space-xs);
-		background: transparent;
-		border: 1px dashed var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		color: var(--md-sys-color-primary);
-		font-size: 11px;
-		font-weight: 600;
-		padding: 4px;
-		cursor: pointer;
-	}
-	.show-all-btn:hover {
-		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
 	}
 	.content-preview {
 		background: var(--md-sys-color-surface-container-high);
