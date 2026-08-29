@@ -4,6 +4,7 @@ pub mod image_gen;
 pub mod media;
 pub mod ocr;
 pub mod registry;
+mod request_pipeline;
 pub mod router;
 pub mod stream_rules;
 pub mod stt;

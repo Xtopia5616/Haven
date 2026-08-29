@@ -90,6 +90,10 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   复用聊天页「思考强度」，不另开线协议。
 - `router.rs`：`LlmRouter`，按 `EndpointRole`（small / default / balanced /
   image / audio / embedding）把请求路由到对应适配器。
+- `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
+  为普通聊天、工具聊天、embedding 和流式端点尝试提供同一份重试预算快照与
+  总超时执行语义。router 仍拥有熔断、限流、fallback 和流式聚合，adapter
+  不实现第二套重试。
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
@@ -303,3 +307,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-29 | §2.3 Memory：将事实读取、搜索/排序与维护策略分出内部 `fact_query.rs` 边界，保持 Database API 与持久化语义不变（ADR 0020） |
 | 2026-08-29 | §2.3 Agent/Memory：将 embedding provider 调用、有限索引 catch-up、向量召回与 LSH 重建收口到 `memory_index.rs`，保持 Database API 与召回语义不变（ADR 0021） |
 | 2026-08-29 | §2.3 Memory：将事实清理、衰减、来源规范化与矛盾候选扫描收口到 `fact_maintenance.rs`，保持 Database API 与维护语义不变（ADR 0022） |
+| 2026-08-29 | §2.2 LLM：将聊天、工具、embedding 与流式端点尝试的重试/总超时策略收口到 `request_pipeline.rs`，保持 router 路由与 provider wire 契约不变（ADR 0023） |

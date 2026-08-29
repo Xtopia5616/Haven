@@ -6,7 +6,10 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::adapter_for;
-use crate::client::{LlmClient, retry_delay, with_retry};
+use crate::client::{LlmClient, retry_delay};
+use crate::request_pipeline::{
+    RequestPolicy, RetryPolicy, execute_with_retry, execute_with_timeout,
+};
 use haven_common::types::{CanonicalMessage, ContentPart};
 
 use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
@@ -38,18 +41,6 @@ const IDLE_EXTRA_SECS_PER_1K_TOKENS: u64 = 2;
 
 /// Hard cap on the scaled data-gap idle window (base + context extra).
 const IDLE_SCALE_CAP_SECS: u64 = 90;
-
-/// Retry parameters used by one streaming endpoint attempt. Keeping the
-/// policy together prevents the streaming path from growing another
-/// positional-argument bundle whenever retry behavior changes.
-#[derive(Clone, Copy)]
-struct StreamRetryPolicy {
-    max_retries: u32,
-    base_secs: u64,
-    factor: u32,
-    max_secs: u64,
-    jitter: f32,
-}
 
 /// Conversation data shared by the primary and fallback streaming attempts.
 #[derive(Clone, Copy)]
@@ -738,14 +729,7 @@ impl LlmRouter {
         let cfg = self.config.read().await;
         let max_dur = cfg.max_total_duration_secs;
         drop(cfg);
-
-        match tokio::time::timeout(Duration::from_secs(max_dur), f()).await {
-            Ok(result) => result,
-            Err(_) => Err(LlmError::Timeout(format!(
-                "router total timeout after {}s",
-                max_dur
-            ))),
-        }
+        execute_with_timeout(max_dur, "router", f).await
     }
 
     // §2.11: execute with retry on endpoint, balanced_model with retry
@@ -757,39 +741,21 @@ impl LlmRouter {
         role: &EndpointRole,
     ) -> Result<LlmResponse, LlmError> {
         let cfg = self.config.read().await;
-        let primary_retries = cfg.retry_max_retries;
-        let fallback_retries = cfg.fallback_retry_max_retries;
-        let base = cfg.retry_base_secs;
-        let factor = cfg.retry_factor;
-        let max_secs = cfg.retry_max_secs;
-        let jitter = cfg.retry_jitter;
+        let primary_policy = RequestPolicy::primary(&cfg);
+        let fallback_policy = RequestPolicy::fallback(&cfg);
         drop(cfg);
 
         let primary_result = if tools.is_empty() {
-            with_retry(
-                primary_retries,
-                base,
-                factor,
-                max_secs,
-                jitter,
-                None,
-                || async { primary.chat(messages.clone()).await },
-            )
+            execute_with_retry(primary_policy.retry, None, || async {
+                primary.chat(messages.clone()).await
+            })
             .await
         } else {
-            with_retry(
-                primary_retries,
-                base,
-                factor,
-                max_secs,
-                jitter,
-                None,
-                || async {
-                    primary
-                        .chat_with_tools(messages.clone(), tools.clone())
-                        .await
-                },
-            )
+            execute_with_retry(primary_policy.retry, None, || async {
+                primary
+                    .chat_with_tools(messages.clone(), tools.clone())
+                    .await
+            })
             .await
         };
 
@@ -819,30 +785,16 @@ impl LlmRouter {
 
                 // §2.11: balanced model also gets retry
                 let balanced_result = if tools.is_empty() {
-                    with_retry(
-                        fallback_retries,
-                        base,
-                        factor,
-                        max_secs,
-                        jitter,
-                        None,
-                        || async { self.balanced_model.chat(messages.clone()).await },
-                    )
+                    execute_with_retry(fallback_policy.retry, None, || async {
+                        self.balanced_model.chat(messages.clone()).await
+                    })
                     .await
                 } else {
-                    with_retry(
-                        fallback_retries,
-                        base,
-                        factor,
-                        max_secs,
-                        jitter,
-                        None,
-                        || async {
-                            self.balanced_model
-                                .chat_with_tools(messages.clone(), tools.clone())
-                                .await
-                        },
-                    )
+                    execute_with_retry(fallback_policy.retry, None, || async {
+                        self.balanced_model
+                            .chat_with_tools(messages.clone(), tools.clone())
+                            .await
+                    })
                     .await
                 };
 
@@ -917,37 +869,22 @@ impl LlmRouter {
             self.check_circuit(&role).await?;
             let primary = self.select_endpoint(role);
             let cfg = self.config.read().await;
-            let retries = cfg.retry_max_retries;
-            let base = cfg.retry_base_secs;
-            let factor = cfg.retry_factor;
-            let max_secs = cfg.retry_max_secs;
-            let jitter = cfg.retry_jitter;
-            let max_dur = cfg.max_total_duration_secs;
+            let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
 
-            let result = tokio::time::timeout(Duration::from_secs(max_dur), async {
-                with_retry(retries, base, factor, max_secs, jitter, None, || {
-                    primary.embed(input.clone())
-                })
-                .await
+            let result = execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
+                execute_with_retry(policy.retry, None, || primary.embed(input.clone())).await
             })
             .await;
 
             match result {
-                Ok(Ok(v)) => {
+                Ok(v) => {
                     self.record_success(&role).await;
                     Ok(v)
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     self.record_failure(&role).await;
                     Err(e)
-                }
-                Err(_) => {
-                    self.record_failure(&role).await;
-                    Err(LlmError::Timeout(format!(
-                        "embedding total timeout after {}s",
-                        max_dur
-                    )))
                 }
             }
         })
@@ -1000,22 +937,12 @@ impl LlmRouter {
         self.check_circuit(&role).await?;
         let primary = self.select_endpoint(role);
         let cfg = self.config.read().await;
-        let primary_retries = cfg.retry_max_retries;
-        let fallback_retries = cfg.fallback_retry_max_retries;
-        let base = cfg.retry_base_secs;
-        let factor = cfg.retry_factor;
-        let max_secs = cfg.retry_max_secs;
-        let jitter = cfg.retry_jitter;
+        let primary_policy = RequestPolicy::primary(&cfg);
+        let fallback_policy = RequestPolicy::fallback(&cfg);
         drop(cfg);
-        match with_retry(
-            primary_retries,
-            base,
-            factor,
-            max_secs,
-            jitter,
-            None,
-            || primary.chat_stream(messages.clone()),
-        )
+        match execute_with_retry(primary_policy.retry, None, || {
+            primary.chat_stream(messages.clone())
+        })
         .await
         {
             Ok(stream) => {
@@ -1036,15 +963,9 @@ impl LlmRouter {
                     e
                 );
                 self.balanced_model_active.store(true, Ordering::SeqCst);
-                let stream = with_retry(
-                    fallback_retries,
-                    base,
-                    factor,
-                    max_secs,
-                    jitter,
-                    None,
-                    || self.balanced_model.chat_stream(messages.clone()),
-                )
+                let stream = execute_with_retry(fallback_policy.retry, None, || {
+                    self.balanced_model.chat_stream(messages.clone())
+                })
                 .await?;
                 self.record_success(&EndpointRole::BalancedModel).await;
                 Ok(Box::pin(PermitStream {
@@ -1168,25 +1089,15 @@ impl LlmRouter {
         let on_chunk = Arc::new(StdMutex::new(on_chunk));
 
         let cfg = self.config.read().await;
-        let max_dur = cfg.max_total_duration_secs;
-        let primary_retry = StreamRetryPolicy {
-            max_retries: cfg.retry_max_retries,
-            base_secs: cfg.retry_base_secs,
-            factor: cfg.retry_factor,
-            max_secs: cfg.retry_max_secs,
-            jitter: cfg.retry_jitter,
-        };
-        let fallback_retry = StreamRetryPolicy {
-            max_retries: cfg.fallback_retry_max_retries,
-            ..primary_retry
-        };
+        let primary_policy = RequestPolicy::primary(&cfg);
+        let fallback_policy = RequestPolicy::fallback(&cfg);
         // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
         // time out instantly, disabling all model replies.
         let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
         drop(cfg);
         let stream_context = StreamContext { messages, tools };
 
-        match tokio::time::timeout(Duration::from_secs(max_dur), async {
+        execute_with_timeout(primary_policy.total_timeout_secs, "router streaming", || async {
             let primary_result = self
                 .aggregate_stream_with_retry_before_output(
                     primary.clone(),
@@ -1194,7 +1105,7 @@ impl LlmRouter {
                     on_chunk.clone(),
                     cancel.clone(),
                     idle_dur,
-                    primary_retry,
+                    primary_policy.retry,
                 )
                 .await;
 
@@ -1241,7 +1152,7 @@ impl LlmRouter {
                             on_chunk,
                             cancel,
                             idle_dur,
-                            fallback_retry,
+                            fallback_policy.retry,
                         )
                         .await;
 
@@ -1263,13 +1174,6 @@ impl LlmRouter {
             }
         })
         .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(LlmError::Timeout(format!(
-                "router streaming total timeout after {}s",
-                max_dur
-            ))),
-        }
     }
 
     async fn aggregate_stream_with_retry_before_output(
@@ -1279,7 +1183,7 @@ impl LlmRouter {
         on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
         cancel: CancellationToken,
         idle_timeout: Duration,
-        retry: StreamRetryPolicy,
+        retry: RetryPolicy,
     ) -> Result<LlmResponse, LlmError> {
         for attempt in 0..=retry.max_retries {
             if cancel.is_cancelled() {

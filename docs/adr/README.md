@@ -28,3 +28,4 @@
 - [0020：Memory 事实查询与排序边界](0020-memory-fact-query-ranking-boundary.md)
 - [0021：Agent 记忆嵌入编排边界](0021-agent-memory-embedding-boundary.md)
 - [0022：Memory 事实维护持久化边界](0022-memory-fact-maintenance-boundary.md)
+- [0023：LLM 请求策略共享边界](0023-llm-request-policy-boundary.md)
