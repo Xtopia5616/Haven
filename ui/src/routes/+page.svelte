@@ -33,6 +33,10 @@
 		parseActionResultInject,
 	} from '$lib/streaming.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
+	import {
+		buildTokenUsageTooltip,
+		stepUsageFor,
+	} from '$lib/sessionUsagePresentation.ts';
 	import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
@@ -64,9 +68,7 @@
 		restoreSessionLlmUsage,
 		clearSessionLlmUsage,
 		formatTokenCount,
-		formatCostUsd,
 		coalesceTokenTotal,
-		cumulativeCacheHitRatePercent,
 		pruneSeq,
 		updateModelState,
 		modelStateStore,
@@ -211,53 +213,14 @@
 		if (!activeSessionId) llmUsage = [];
 	});
 
-	/**
-	 * Aggregate the persisted usage-detail rows for one ReAct step (a step
-	 * can carry more than one call when a compaction retry re-ran it). Returns
-	 * null when the step has no recorded detail (or the session predates per-call
-	 * persistence). Memoized per step: the each-block calls this for every
-	 * tool bubble on every streaming flush, and a fresh object per call would
-	 * churn child component updates across the whole long conversation.
-	 * @param {number|null} stepNumber
-	 * @returns {{prompt: number, completion: number, total: number, cost: number, hasCost: boolean, durationMs: number, model: string|null, cacheMiss: number, cacheDiagnostics: any, calls: number}|null}
-	 */
 	const stepUsageCache = new Map();
 	/** @param {number|null} stepNumber */
 	function stepUsage(stepNumber) {
-		if (stepNumber == null || llmUsage.length === 0) return null;
-		const cached = stepUsageCache.get(stepNumber);
-		if (cached !== undefined) return cached;
-		const calls = llmUsage.filter((u) => u.step_number === stepNumber);
-		if (calls.length === 0) return null;
-		const prompt = calls.reduce((s, u) => s + (u.prompt_tokens || 0), 0);
-		const completion = calls.reduce((s, u) => s + (u.completion_tokens || 0), 0);
-		const total = calls.reduce(
-			(s, u) =>
-				s +
-				coalesceTokenTotal(
-					u.prompt_tokens || 0,
-					u.completion_tokens || 0,
-					u.total_tokens || 0,
-					u.cached_tokens || 0,
-					u.cache_creation_tokens || 0,
-					u.cache_accounting || 'unknown',
-				),
-			0,
-		);
-		const value = {
-			prompt,
-			completion,
-			total,
-			cost: calls.reduce((s, u) => s + (u.cost_usd || 0), 0),
-			hasCost: calls.some((u) => u.has_cost),
-			durationMs: calls.reduce((s, u) => s + (u.duration_ms || 0), 0),
-			model: calls.map((u) => u.model).filter(Boolean).at(-1) || null,
-			cacheMiss: calls.reduce((s, u) => s + (u.cache_miss_tokens || 0), 0),
-			cacheDiagnostics: calls.map((u) => u.cache_diagnostics).filter(Boolean).at(-1) || null,
-			calls: calls.length,
-		};
-		stepUsageCache.set(stepNumber, value);
-		return value;
+		return stepUsageFor(llmUsage, stepNumber, stepUsageCache);
+	}
+	/** @param {any} stats */
+	function buildTokenTooltip(stats) {
+		return buildTokenUsageTooltip(stats, llmUsage);
 	}
 
 	/**
@@ -343,88 +306,6 @@
 		).length;
 	});
 
-	/**
-	 * Prompt-cache hit rate. Inclusive: cached/prompt.
-	 * Exclusive: cached/(prompt+cached+creation). `exclusive` comes from the
-	 * backend (`cache_exclusive`) for live stats; restored totals use an
-	 * exact identity on the coalesced total.
-	 * @param {number} prompt
-	 * @param {number} cached
-	 * @param {number} [creation]
-	 * @param {{exclusive?: boolean}} [opts]
-	 * @returns {number|null} percent 0–100, or null when no cache data
-	 */
-	function cacheHitRatePercent(prompt, cached, creation = 0, opts = {}) {
-		if (!cached || cached <= 0) return null;
-		const exclusive = !!opts.exclusive;
-		const denom = exclusive ? (prompt || 0) + cached + (creation || 0) : prompt || 0;
-		if (!denom) return null;
-		return Math.min(100, (cached / denom) * 100);
-	}
-
-	function buildTokenTooltip(/** @type {SessionTokenStats} */ s) {
-		const parts = [];
-		const cumPrompt = s.cumulativePromptTokens || 0;
-		const cumCompletion = s.cumulativeCompletionTokens || 0;
-		const cumCached = s.cumulativeCachedTokens || 0;
-		const cumCreation = s.cumulativeCacheCreationTokens || 0;
-		const cumTotal = coalesceTokenTotal(
-			cumPrompt,
-			cumCompletion,
-			s.cumulativeTotalTokens || 0,
-			cumCached,
-			cumCreation,
-		);
-		if (s.restored) {
-			parts.push(
-				`累计上传 ${s.cumulativePromptTokens || 0} → 累计生成 ${s.cumulativeCompletionTokens || 0} tokens`,
-			);
-			parts.push(`累计 ${cumTotal} tokens`);
-		} else {
-			parts.push(
-				`上传 ${s.promptTokens || 0} → 生成 ${s.completionTokens || 0} tokens`,
-			);
-			parts.push(`累计 ${cumTotal} tokens`);
-			if (s.cumulativePromptTokens != null)
-				parts.push(
-					`累计上传 ${s.cumulativePromptTokens} → 累计生成 ${s.cumulativeCompletionTokens} tokens`,
-				);
-		}
-		const liveCached = s.cachedTokens || 0;
-		const liveCreation = s.cacheCreationTokens || 0;
-		const liveMiss = s.cacheMissTokens || 0;
-		if (!s.restored && (liveCached > 0 || liveCreation > 0)) {
-			const rate = cacheHitRatePercent(s.promptTokens || 0, liveCached, liveCreation, {
-				exclusive: !!s.cacheExclusive,
-			});
-			let line = `本次缓存命中 ${formatTokenCount(liveCached)}`;
-			if (rate != null) line += `（${rate.toFixed(0)}%）`;
-			if (liveCreation > 0) line += ` / 写入 ${formatTokenCount(liveCreation)}`;
-			if (liveMiss > 0) line += ` / 未命中 ${formatTokenCount(liveMiss)}`;
-			parts.push(line);
-		}
-		if (cumCached > 0 || cumCreation > 0) {
-			const rate = cumulativeCacheHitRatePercent(llmUsage);
-			let line = `累计缓存命中 ${formatTokenCount(cumCached)}`;
-			if (rate != null) line += `（${rate.toFixed(0)}%）`;
-			if (cumCreation > 0) line += ` / 写入 ${formatTokenCount(cumCreation)}`;
-			parts.push(line);
-		}
-		if (llmUsage.length > 0) {
-			parts.push(`调用 ${llmUsage.length} 次`);
-		}
-		if (s.model) parts.push(`模型 ${s.model}`);
-		if (s.contextWindow) {
-			const used = s.contextTokens || s.promptTokens || 0;
-			const pct = used
-				? `${((used / s.contextWindow) * 100).toFixed(0)}%`
-				: '?';
-			parts.push(`上下文 ${pct} / ${formatTokenCount(s.contextWindow)}`);
-		}
-		if (s.cumulativeCostUsd != null) parts.push(`费用 ${formatCostUsd(s.cumulativeCostUsd)}`);
-		if (s.estimated) parts.push('估算值（历史对话，未计费）');
-		return parts.join('\n');
-	}
 
 	const effortOptions = [
 		{ value: '', label: '默认' },

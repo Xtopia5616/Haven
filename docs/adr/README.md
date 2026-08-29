@@ -48,3 +48,4 @@
 - [0040：UI agent result renderer 边界](0040-ui-agent-result-renderer.md)
 - [0041：UI 工具结果解析边界](0041-ui-tool-result-parsing-boundary.md)
 - [0042：UI 聊天工具栏边界](0042-ui-chat-toolbar-boundary.md)
+- [0043：UI 会话用量展示边界](0043-ui-session-usage-presentation-boundary.md)

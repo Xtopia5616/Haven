@@ -96,6 +96,7 @@
 - 2026-08-30：P2 UI agent renderer 边界收口：agent 结果集中到 `ToolAgentResult.svelte`，由 registry 按工具名选择（ADR 0040）。
 - 2026-08-30：P2 UI 工具结果解析边界收口：JSON 解码、空内容处理与 custom shape 分类集中到 `ui/src/lib/toolResultParsing.ts`，`ToolResultCard` 保留兼容 re-export（ADR 0041）。
 - 2026-08-30：P2 UI 聊天工具栏边界收口：会话切换/token 概览与模型/联网搜索菜单集中到独立组件，路由页继续负责状态与回调编排（ADR 0042）。
+- 2026-08-30：P2 UI 会话用量展示边界收口：每步用量聚合、缓存命中率与 token tooltip 集中到 `ui/src/lib/sessionUsagePresentation.ts`，路由页保留响应式状态适配（ADR 0043）。
 
 ## 完成标准
 
