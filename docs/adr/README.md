@@ -38,3 +38,4 @@
 - [0030：UI 会话消息状态边界](0030-ui-session-message-store-boundary.md)
 - [0031：UI 会话用量状态边界](0031-ui-session-usage-boundary.md)
 - [0032：UI 流式事件归并边界](0032-ui-stream-event-aggregator-boundary.md)
+- [0033：UI 工具结果渲染注册表](0033-ui-tool-result-renderer-registry.md)

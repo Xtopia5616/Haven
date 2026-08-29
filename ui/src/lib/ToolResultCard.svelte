@@ -206,6 +206,7 @@
 	import JsonView from '$lib/JsonView.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
+	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { copyText } from '$lib/clipboard.ts';
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import { actionStore, formatTokenCount, toolOutputPreviewStore } from '$lib/stores.ts';
@@ -341,6 +342,7 @@
 		lastStreaming = liveStreaming;
 	});
 	let kind = $derived(parsed?.kind ?? null);
+	let BodyRenderer = $derived(getToolResultRenderer(kind));
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
 	// The `raw` kind carries data: null for plain text and the parsed JSON
 	// value for arrays/primitives; `data` above would collapse the null to {},
@@ -839,38 +841,15 @@
 			{/if}
 		{/if}
 
-		{#if kind === 'shell'}
-			{#if data.truncated}
-				<div class="tool-card-count">输出过长已截断</div>
-			{/if}
-			{#if data.background && data.status === 'running'}
-				<div class="tool-card-count">后台运行中{#if data.action_id} · {data.action_id}{/if}</div>
-			{:else if data.background && data.status === 'cancelled'}
-				<div class="tool-card-count">后台已取消{#if data.action_id} · {data.action_id}{/if}</div>
-			{:else if data.background && (data.status === 'completed' || data.status === 'failed')}
-				<div class="tool-card-count">
-					后台{data.status === 'completed' ? '已完成' : '失败'}{#if data.action_id}
-						· {data.action_id}{/if}
-				</div>
-			{/if}
-			{#if shellText}
-				<pre class="content-preview" class:streaming={liveStreaming}>{shellText}</pre>
-			{:else if liveStreaming}
-				<p class="tool-card-empty">等待输出…</p>
-			{:else}
-				<p class="tool-card-empty">（无输出）</p>
-			{/if}
-		{:else if kind === 'notify'}
-			{#if notifyParts.title}
-				<p class="notify-title">{notifyParts.title}</p>
-			{/if}
-			{#if notifyParts.body}
-				<p class="notify-body">{notifyParts.body}</p>
-			{/if}
-		{:else if kind === 'generic'}
-			<JsonView value={data} />
-		{:else if kind === 'raw'}
-			<pre class="content-preview">{rawText}</pre>
+		{#if BodyRenderer}
+			<BodyRenderer
+				kind={kind ?? undefined}
+				data={data}
+				shellText={shellText}
+				liveStreaming={liveStreaming}
+				rawText={rawText}
+				parts={notifyParts}
+			/>
 		{:else if parsed}
 			{#if toolName === 'file_search' || (toolName === 'files' && Array.isArray(data.results))}
 				<div class="tool-card-count">
