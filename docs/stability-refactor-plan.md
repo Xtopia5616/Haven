@@ -87,6 +87,7 @@
 - 2026-08-30：P2 UI 会话用量状态边界收口：token usage、LLM 调用明细、恢复/清理与用量格式化集中到 `ui/src/lib/sessionUsage.ts`，由 `stores.ts` 兼容 re-export（ADR 0031）。
 - 2026-08-30：P2 UI 流式事件归并边界收口：chunk 排队、按帧归并、sequence 去重、step block 关联与同步 flush 集中到 `ui/src/lib/streamAggregator.ts`（ADR 0032）。
 - 2026-08-30：P2 UI 工具结果渲染注册表首片完成：shell、notify、generic/raw body 按 kind 注册到独立 renderer 组件，ToolResultCard 保留公共卡片壳与复杂工具分支（ADR 0033）。
+- 2026-08-30：P2 UI 文件工具 renderer 边界收口：`file` 工具的文件操作、目录和读取结果集中到 `ToolFileResult.svelte`，由 renderer registry 按工具名选择（ADR 0034）。
 
 ## 完成标准
 

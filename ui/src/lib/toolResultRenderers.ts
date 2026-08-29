@@ -1,3 +1,4 @@
+import ToolFileResult from './ToolFileResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolNotifyResult from './ToolNotifyResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
@@ -15,6 +16,12 @@ const renderers = {
  * actions are extracted; this registry is the extension point that keeps
  * simple result types out of the card shell.
  */
-export function getToolResultRenderer(kind: string | null | undefined) {
+
+export function getToolResultRenderer(
+	kind: string | null | undefined,
+	toolName = '',
+	_data: unknown = null,
+) {
+	if (kind === 'custom' && toolName === 'file') return ToolFileResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;
 }

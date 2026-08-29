@@ -342,8 +342,8 @@
 		lastStreaming = liveStreaming;
 	});
 	let kind = $derived(parsed?.kind ?? null);
-	let BodyRenderer = $derived(getToolResultRenderer(kind));
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
+	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));
 	// The `raw` kind carries data: null for plain text and the parsed JSON
 	// value for arrays/primitives; `data` above would collapse the null to {},
 	// so resolve the body text here against the original `parsed` payload.
@@ -1162,52 +1162,6 @@
 					</div>
 					{#if data.fires_at}
 						<div class="tool-card-meta">触发时间 {data.fires_at}</div>
-					{/if}
-				{/if}
-			{:else if toolName === 'file'}
-				{#if data.written}
-					<div class="file-row">
-						<span class="file-op">已写入</span><ExternalRef class="file-path" target={data.path} />
-					</div>
-				{:else if data.edited}
-					<div class="file-row">
-						<span class="file-op">已编辑</span><ExternalRef class="file-path" target={data.path} />{#if data.line != null}<span class="file-line">L{data.line}</span>{/if}
-					</div>
-				{:else if data.copied}
-					<div class="file-row">
-						<span class="file-op">已复制</span><ExternalRef class="file-path" target={data.from} />
-					</div>
-					<div class="file-row">
-						<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to} />
-					</div>
-				{:else if data.moved}
-					<div class="file-row">
-						<span class="file-op">已移动</span><ExternalRef class="file-path" target={data.from} />
-					</div>
-					<div class="file-row">
-						<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to} />
-					</div>
-				{:else if data.deleted}
-					<div class="file-row">
-						<span class="file-op">已删除</span><ExternalRef class="file-path" target={data.path} />
-					</div>
-				{:else if Array.isArray(data.entries)}
-					<div class="tool-card-count">{data.count ?? data.entries.length} 项</div>
-					{#if data.entries.length > 0}
-						<div class="tool-card-list">
-							{#each data.entries as e (e)}
-								<div class="env-row"><span class="env-name">{e}</span></div>
-							{/each}
-						</div>
-					{:else}
-						<p class="tool-card-empty">（空目录）</p>
-					{/if}
-				{:else}
-					<div class="tool-card-meta">
-						{data.size != null ? `${fmtBytes(data.size)} · ` : ''}读取完成
-					</div>
-					{#if typeof data.content === 'string' && data.content}
-						<pre class="content-preview">{data.content}</pre>
 					{/if}
 				{/if}
 			{:else if toolName === 'http'}
