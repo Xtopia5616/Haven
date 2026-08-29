@@ -22,6 +22,7 @@
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
+	import { createChatConfirmationEventHandlers } from '$lib/chatConfirmationEventHandlers.ts';
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import {
@@ -97,12 +98,12 @@
 	// batched ReAct step can fire several gated tool calls at once; each one
 	// must wait for its own user answer, so they are queued and displayed one
 	// at a time instead of auto-rejecting the visible dialog.
-	let confirmQueue = /** @type {Array<any>} */ ($state([]));
+	let confirmQueue = /** @type {Array<import('$lib/chatConfirmationEventHandlers.ts').ConfirmationQueueEntry>} */ ($state([]));
 	// Interactive countdown for the visible dialog. Starts when the dialog is
 	// shown (not when the request arrived) so queued confirms are not starved.
 	// Backend uses a longer absolute fail-closed ceiling for closed UI.
 	const CONFIRM_TIMEOUT_MS = 120_000;
-	let confirmDialog = $state({
+	let confirmDialog = /** @type {{ stepId: string | null, toolName: string, sessionId: string, sessionTitle: string, riskLevel: string, params: unknown, permissionKey: string, deadlineAt: number | null }} */ ($state({
 		stepId: null,
 		toolName: '',
 		sessionId: '',
@@ -111,7 +112,7 @@
 		params: null,
 		permissionKey: '',
 		deadlineAt: null,
-	});
+	}));
 	let activeSessionId = $state(get(activeSessionIdStore));
 	let rollbackDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
 	let rollbackLoading = $state(false);
@@ -1250,39 +1251,16 @@
 						finalizeBackgroundActionMessages(event.payload);
 					},
 				}),
-				...appEventListeners({
-				'confirm:requested': (event) => {
-					const data = event.payload;
-					// Security confirmations are modal and resolve by step id, so
-					// requests from background (non-active) sessions must still be
-					// surfaced — dropping them would leave the tool call waiting
-					// forever. The dialog shows which session the operation belongs
-					// to so an approval is never misattributed.
-					//
-					// Multiple pending requests are QUEUED and shown one at a time:
-					// a batched ReAct step can fire several gated tool calls at once,
-					// and every one must wait for its own user answer. Auto-rejecting
-					// the visible dialog when a second request arrives for the same
-					// session would silently deny the first operation the user never
-					// got to choose on — every request has a live backend wait, so
-					// there is no "moved on" case that needs a defensive denial.
-					const tid = data.sessionId || '';
-					const session = sessions.find((t) => t.id === tid);
-					confirmQueue = [
-						...confirmQueue,
-						{
-							stepId: data.stepId,
-							toolName: data.toolName,
-							sessionId: tid,
-							sessionTitle: session?.title || (tid || ''),
-							riskLevel: data.riskLevel || 'medium',
-							params: data.params ?? null,
-							permissionKey: data.permissionKey || data.toolName || '',
+				...appEventListeners(
+					createChatConfirmationEventHandlers({
+						getSessionTitle: (sessionId) =>
+							sessions.find((session) => session.id === sessionId)?.title || sessionId,
+						enqueueConfirmation: (entry) => {
+							confirmQueue = [...confirmQueue, entry];
 						},
-					];
-					showNextConfirm();
-				},
-				}),
+						showNextConfirm,
+					}),
+				),
 				...agentEventListeners(createChatUsageEventHandlers()),
 			},
 			{ tag: '+page' },
