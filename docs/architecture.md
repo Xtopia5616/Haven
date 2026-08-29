@@ -341,3 +341,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.6 UI：将 `window`、`actions`、`schedule` 结果分别收口到对应 renderer 组件，并由 registry 按工具名选择（ADR 0037） |
 | 2026-08-30 | §2.6 UI：将 `http`、`clipboard`、`web_search` 结果分别收口到对应 renderer 组件，并由 registry 按工具名选择（ADR 0038） |
 | 2026-08-30 | §2.6 UI：将 `file_search` 与带结果数组的 `files` 结果收口到 `ToolFileSearchResult.svelte`，并由 registry 按工具名与结果 shape 选择（ADR 0039） |
+| 2026-08-30 | §2.6 UI：将 `agent` 工具结果收口到 `ToolAgentResult.svelte`，并由 registry 按工具名选择（ADR 0040） |

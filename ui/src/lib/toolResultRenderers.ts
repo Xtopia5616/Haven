@@ -1,3 +1,4 @@
+import ToolAgentResult from './ToolAgentResult.svelte';
 import ToolFileResult from './ToolFileResult.svelte';
 import ToolFileSearchResult from './ToolFileSearchResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
@@ -30,6 +31,7 @@ export function getToolResultRenderer(
 	toolName = '',
 	_data: unknown = null,
 ) {
+	if (kind === 'custom' && toolName === 'agent') return ToolAgentResult;
 	if (kind === 'custom' && toolName === 'file') return ToolFileResult;
 	if (kind === 'custom' && toolName === 'file_search') return ToolFileSearchResult;
 	if (
