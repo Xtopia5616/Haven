@@ -33,7 +33,6 @@
 	import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
-	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
 	import {
@@ -71,11 +70,10 @@
 		newSessionIntentStore,
 	} from '$lib/stores.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
-	import ChatBubble from '$lib/ChatBubble.svelte';
+	import ChatMessageTimeline from '$lib/ChatMessageTimeline.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
-	import Logo from '$lib/Logo.svelte';
 	import InputRouter from '$lib/InputRouter.svelte';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
@@ -1695,68 +1693,19 @@
 
 	<div class="messages-wrap">
 		<div class="messages-area" bind:this={messagesEl} onscroll={onScroll}>
-			{#if messages.length === 0}
-				<div class="welcome" in:fly={{ y: 12, duration: 330 }}>
-					<Logo size={48} />
-					<h2>Haven</h2>
-					<p>按 {hotkeyBinding} 开始录音，或直接输入指令</p>
-				</div>
-			{:else}
-				<div class="message-list">
-					{#each messages as msg (msg.id)}
-						<ChatBubble
-							role={msg.role}
-							content={msg.content}
-							type={msg.type}
-							voice={msg.voice}
-							time={msg.time}
-							streaming={!!msg.streaming}
-							toolName={msg.toolName ?? ''}
-							messageId={msg.id}
-							stepNumber={msg.stepNumber}
-							usage={msg.type === 'tool' ? stepUsage(msg.stepNumber) : null}
-							toolArgs={msg.toolArgs ?? null}
-							attachments={msg.attachments}
-							options={msg.options ?? []}
-							awaiting={msg.awaiting ?? false}
-							received={msg.received ?? false}
-							resolved={msg.resolved ?? null}
-							actionId={msg.actionId ?? null}
-							onContextMenu={handleContextMenu}
-							onAskSelectionChange={handleAskSelectionChange}
-							onIgnore={handleIgnoreAsk}
-							onAskSubmit={handleAskSubmit}
-						/>
-					{/each}
-				</div>
-			{/if}
-			{#if awaitingBackground && !activeSessionError}
-				<div class="awaiting-bg-banner" in:fly={{ y: 8, duration: 300 }} role="status">
-					<span class="awaiting-bg-dot" aria-hidden="true"></span>
-					<span class="awaiting-bg-text">
-						等待后台任务结果{#if awaitingBackgroundCount > 1}（{awaitingBackgroundCount}）{/if}，完成后将自动继续
-					</span>
-				</div>
-			{/if}
-			{#if activeSessionError}
-				<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
-					<button
-						class="md-btn md-btn--filled continue-btn"
-						onclick={handleContinue}
-						type="button"
-					>
-						<svg
-							width="16"
-							height="16"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg
-						>
-						继续生成
-					</button>
-				</div>
-			{/if}
+			<ChatMessageTimeline
+				{messages}
+				{hotkeyBinding}
+				{awaitingBackground}
+				{awaitingBackgroundCount}
+				{activeSessionError}
+				{stepUsage}
+				onContextMenu={handleContextMenu}
+				onAskSelectionChange={handleAskSelectionChange}
+				onIgnore={handleIgnoreAsk}
+				onAskSubmit={handleAskSubmit}
+				onContinue={handleContinue}
+			/>
 		</div>
 		{#if !autoFollow && messages.length > 0}
 			<button
@@ -1885,79 +1834,5 @@
 	.jump-bottom:hover {
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
-	}
-	.welcome {
-		text-align: center;
-		padding: var(--md-sys-space-4xl) 0 var(--md-sys-space-3xl);
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: var(--md-sys-space-md);
-	}
-	.welcome h2 {
-		font-family: var(--md-ref-typeface-brand);
-		font-size: 32px;
-		font-weight: 700;
-		letter-spacing: 0.5px;
-		color: var(--md-sys-color-primary);
-	}
-	.welcome p {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-size, 14px);
-		max-width: 420px;
-	}
-	.message-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-sm);
-	}
-
-	.continue-banner {
-		display: flex;
-		align-items: center;
-		justify-content: flex-start;
-		gap: var(--md-sys-space-md);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		max-width: clamp(600px, 92vw, 800px);
-		margin: 0 auto;
-		width: 100%;
-	}
-	.continue-btn {
-		gap: var(--md-sys-space-xs);
-		font-size: 13px;
-	}
-
-	.awaiting-bg-banner {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		max-width: clamp(600px, 92vw, 800px);
-		margin: var(--md-sys-space-sm) auto 0;
-		width: 100%;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
-	}
-	.awaiting-bg-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--md-sys-color-tertiary, #7c9cff);
-		flex-shrink: 0;
-		animation: awaiting-bg-pulse 1.2s ease-in-out infinite;
-	}
-	.awaiting-bg-text {
-		line-height: 1.4;
-	}
-	@keyframes awaiting-bg-pulse {
-		0%,
-		100% {
-			opacity: 0.35;
-			transform: scale(0.9);
-		}
-		50% {
-			opacity: 1;
-			transform: scale(1);
-		}
 	}
 </style>

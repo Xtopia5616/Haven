@@ -53,3 +53,4 @@
 - [0045：UI Agent 用量事件边界](0045-ui-agent-usage-event-boundary.md)
 - [0046：UI 安全确认事件边界](0046-ui-confirmation-event-boundary.md)
 - [0047：UI 会话生命周期事件边界](0047-ui-session-event-boundary.md)
+- [0048：UI 聊天消息时间线边界](0048-ui-chat-message-timeline-boundary.md)
