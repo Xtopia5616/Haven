@@ -1,15 +1,13 @@
 use crate::db::Database;
-use chrono::{DateTime, Utc};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::fact_graph::FactGraph;
+use super::fact_maintenance::FactMaintenance;
+pub use super::fact_maintenance::{
+    CONTRADICTION_DEMOTE_MAX_AGE_DAYS, CONTRADICTION_LIVE_FLOOR, ContradictionCandidate,
+    ContradictionKind, fact_within_demote_age, pick_contradiction_keeper,
+};
 pub use super::fact_query::fact_effective_confidence;
-use super::fact_query::{FACT_COLS, fact_age_days, fact_from_row};
-
-/// Serialize merged tags for the fact maintenance path.
-fn serialize_tags(tags: &[&str]) -> String {
-    serde_json::to_string(tags).unwrap_or_else(|_| "[]".into())
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fact {
@@ -190,7 +188,7 @@ pub fn is_single_valued_predicate(predicate: &str) -> bool {
 
 /// All single-valued predicates for SQL `IN (...)` filters — same set as
 /// [`is_single_valued_predicate`].
-fn all_single_valued_predicates() -> impl Iterator<Item = &'static str> {
+pub(crate) fn all_single_valued_predicates() -> impl Iterator<Item = &'static str> {
     IDENTITY_PREDICATES
         .iter()
         .chain(SINGLE_VALUED_NON_IDENTITY.iter())
@@ -392,162 +390,25 @@ impl Database {
 
     /// Distinct predicates with row counts, highest count first (M6).
     pub fn list_predicate_counts(&self) -> anyhow::Result<Vec<(String, u64)>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT predicate, COUNT(*) AS n FROM memory_edges
-             GROUP BY predicate
-             ORDER BY n DESC, predicate ASC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        FactMaintenance::new(self).list_predicate_counts()
     }
 
     /// Rewrite every row with predicate `from` to `to`, then collapse exact
     /// duplicates. Used by maintenance LLM alias merge (M6). Returns rows
     /// updated before dedup.
     pub fn rewrite_predicate(&self, from: &str, to: &str) -> anyhow::Result<u64> {
-        let from = from.trim();
-        let to = to.trim();
-        if from.is_empty() || to.is_empty() || from == to {
-            return Ok(0);
-        }
-        let updated = {
-            let conn = self.conn();
-            conn.execute(
-                "UPDATE memory_edges SET predicate = ?1 WHERE predicate = ?2",
-                rusqlite::params![to, from],
-            )? as u64
-        };
-        if updated > 0 {
-            self.cache_invalidate_all_facts();
-            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-            // Drop the connection before dedup — `conn()` is a mutex pool.
-            let _ = self.dedup_facts()?;
-        }
-        Ok(updated)
+        FactMaintenance::new(self).rewrite_predicate(from, to)
     }
 
     pub fn dedup_facts(&self) -> anyhow::Result<u64> {
-        // P1-6: only load rows that participate in duplicate groups (not the
-        // full table), merge tags onto the keeper, then collapse with the same
-        // window DELETE used by migrate_v2.
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges
-             WHERE (subject, predicate, object) IN (
-                 SELECT subject, predicate, object FROM memory_edges
-                 GROUP BY subject, predicate, object
-                 HAVING COUNT(*) > 1
-             )"
-        ))?;
-        let rows = stmt.query_map([], fact_from_row)?;
-        let mut groups: HashMap<(String, String, String), Vec<Fact>> = HashMap::new();
-        for row in rows {
-            let fact = row?;
-            groups
-                .entry((
-                    fact.subject.clone(),
-                    fact.predicate.clone(),
-                    fact.object.clone(),
-                ))
-                .or_default()
-                .push(fact);
-        }
-
-        let mut keeper_updates: Vec<(Vec<String>, String)> = Vec::new();
-        let had_duplicate_groups = !groups.is_empty();
-        for mut group in groups.into_values() {
-            if group.len() <= 1 {
-                continue;
-            }
-            group.sort_by(|a, b| {
-                b.confidence
-                    .partial_cmp(&a.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| b.created_at.cmp(&a.created_at))
-            });
-            let keeper = group.remove(0);
-            let mut tags = keeper.tags.clone();
-            for fact in group.iter() {
-                for t in &fact.tags {
-                    if !tags.contains(t) {
-                        tags.push(t.clone());
-                    }
-                }
-            }
-            if tags != keeper.tags {
-                keeper_updates.push((tags, keeper.id));
-            }
-        }
-        for (tags, id) in &keeper_updates {
-            let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
-            conn.execute(
-                "UPDATE memory_edges SET tags = ?1 WHERE id = ?2",
-                rusqlite::params![serialize_tags(&tag_refs), id],
-            )?;
-        }
-
-        let deleted = if had_duplicate_groups {
-            conn.execute(
-                "DELETE FROM memory_edges
-                 WHERE id NOT IN (
-                     SELECT id FROM (
-                         SELECT id, ROW_NUMBER() OVER (
-                             PARTITION BY subject, predicate, object
-                             ORDER BY confidence DESC, created_at DESC
-                         ) AS rn FROM memory_edges
-                     ) WHERE rn = 1
-                 )",
-                [],
-            )? as u64
-        } else {
-            0
-        };
-        if deleted > 0 || !keeper_updates.is_empty() {
-            self.cache_invalidate_all_facts();
-            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-        }
-        Ok(deleted)
+        FactMaintenance::new(self).dedup_facts()
     }
 
     /// Remove facts whose predicate or object looks like a credential. Called
     /// during fact maintenance so secrets accidentally extracted in the past
     /// are purged from the database rather than merely hidden from prompts.
     pub fn delete_sensitive_facts(&self) -> anyhow::Result<u64> {
-        // P1-6: single bulk DELETE mirroring is_sensitive_predicate / object.
-        let conn = self.conn();
-        let deleted = conn.execute(
-            "DELETE FROM memory_edges WHERE
-                instr(lower(predicate), 'api_key') > 0
-             OR instr(lower(predicate), 'apikey') > 0
-             OR instr(lower(predicate), 'api-key') > 0
-             OR instr(lower(predicate), 'secret') > 0
-             OR instr(lower(predicate), 'token') > 0
-             OR instr(lower(predicate), 'password') > 0
-             OR instr(lower(predicate), 'passwd') > 0
-             OR instr(lower(predicate), 'credential') > 0
-             OR instr(lower(predicate), 'passphrase') > 0
-             OR instr(lower(predicate), 'access_key') > 0
-             OR instr(lower(predicate), 'private_key') > 0
-             OR instr(lower(predicate), 'authorization') > 0
-             OR lower(trim(object)) LIKE 'sk-%'
-             OR lower(trim(object)) LIKE 'tvly-%'
-             OR lower(trim(object)) LIKE 'ghp_%'
-             OR lower(trim(object)) LIKE 'gho_%'
-             OR lower(trim(object)) LIKE 'xoxb-%'
-             OR lower(trim(object)) LIKE 'aiza%'
-             OR lower(trim(object)) LIKE 'bearer %'
-             OR instr(lower(object), 'api_key=') > 0
-             OR instr(lower(object), 'apikey=') > 0",
-            [],
-        )? as u64;
-        if deleted > 0 {
-            self.cache_invalidate_all_facts();
-            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-        }
-        Ok(deleted)
+        FactMaintenance::new(self).delete_sensitive_facts()
     }
 
     /// Remove facts whose effective confidence (after recency decay) is below
@@ -563,52 +424,14 @@ impl Database {
     /// gives every persisted fact at least one full recall cycle; decay and
     /// durability still prune it from the second day on.
     pub fn flush_low_confidence(&self, threshold: f64) -> anyhow::Result<u64> {
-        // P1-6: SQL prefilter by grace-period cutoff (RFC3339 strings sort
-        // lexicographically), then exact `fact_effective_confidence` on that
-        // candidate set — avoids pulling fresh rows that cannot flush yet.
-        let cutoff = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges
-             WHERE COALESCE(last_seen_at, created_at) <= ?1"
-        ))?;
-        let rows = stmt.query_map(rusqlite::params![cutoff], fact_from_row)?;
-        let mut stale_ids: Vec<String> = Vec::new();
-        for row in rows {
-            let fact = row?;
-            if fact_effective_confidence(&fact) < threshold && fact_age_days(&fact) >= 1.0 {
-                stale_ids.push(fact.id);
-            }
-        }
-        if stale_ids.is_empty() {
-            return Ok(0);
-        }
-        let placeholders = vec!["?"; stale_ids.len()].join(",");
-        let count = conn.execute(
-            &format!("DELETE FROM memory_edges WHERE id IN ({placeholders})"),
-            rusqlite::params_from_iter(stale_ids.iter().map(|s| s.as_str())),
-        )? as u64;
-        self.cache_invalidate_all_facts();
-        self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-        Ok(count)
+        FactMaintenance::new(self).flush_low_confidence(threshold)
     }
 
     /// Normalize empty provenance_record_id strings. Item provenance is
     /// enforced by FK (`ON DELETE SET NULL`); opaque transcript record ids are
     /// intentional stable refs and are left alone (no messages-table scan).
     pub fn cleanup_orphan_source_refs(&self) -> anyhow::Result<u64> {
-        let conn = self.conn();
-        let n = conn.execute(
-            "UPDATE memory_edges
-             SET provenance_record_id = NULL
-             WHERE provenance_record_id IS NOT NULL
-               AND TRIM(provenance_record_id) = ''",
-            [],
-        )? as u64;
-        if n > 0 {
-            self.cache_invalidate_all_facts();
-        }
-        Ok(n)
+        FactMaintenance::new(self).cleanup_orphan_source_refs()
     }
 
     /// Maintenance contradiction engine (X5): scan polarity and single-valued
@@ -623,21 +446,7 @@ impl Database {
     /// `flush_low_confidence` delete window. Older residuals still surface via
     /// [`Self::list_ambiguous_contradictions`] for optional LLM arbitration.
     pub fn resolve_contradictions(&self) -> anyhow::Result<u64> {
-        let now = Utc::now();
-        let mut demote_ids: HashSet<String> = HashSet::new();
-        for group in self.collect_contradiction_groups()? {
-            let Some((_, losers)) = pick_contradiction_keeper(group.kind, &group.facts) else {
-                continue;
-            };
-            for loser in losers {
-                if fact_effective_confidence(loser) >= CONTRADICTION_LIVE_FLOOR
-                    && fact_within_demote_age(loser, now)
-                {
-                    demote_ids.insert(loser.id.clone());
-                }
-            }
-        }
-        self.demote_fact_ids(demote_ids.into_iter().collect())
+        FactMaintenance::new(self).resolve_contradictions()
     }
 
     /// Remaining live conflict groups for optional LLM arbitration (X5).
@@ -646,175 +455,14 @@ impl Database {
     /// both-user changes, residual polarity). `source_ref` snippets travel
     /// with each fact for evidence.
     pub fn list_ambiguous_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
-        let mut out = Vec::new();
-        for mut group in self.collect_contradiction_groups()? {
-            group
-                .facts
-                .retain(|f| fact_effective_confidence(f) >= CONTRADICTION_LIVE_FLOOR);
-            if group.facts.len() >= 2 {
-                out.push(group);
-            }
-        }
-        Ok(out)
+        FactMaintenance::new(self).list_ambiguous_contradictions()
     }
 
     /// Halve (or scale by `factor`) confidence for specific fact ids. Used by
     /// the maintenance LLM arbitrator after gated proposals. Preserves SPO and
     /// provenance. Returns how many rows were updated.
     pub fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
-        self.demote_fact_ids_by_factor(ids, CONTRADICTION_DEMOTE_FACTOR)
-    }
-
-    fn demote_fact_ids_by_factor(&self, ids: Vec<String>, factor: f64) -> anyhow::Result<u64> {
-        if ids.is_empty() {
-            return Ok(0);
-        }
-        let factor = factor.clamp(0.0, 1.0);
-        let conn = self.conn();
-        let placeholders = vec!["?"; ids.len()].join(",");
-        // params: factor first, then ids (all anonymous `?` binders).
-        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(ids.len() + 1);
-        params.push(factor.into());
-        for id in &ids {
-            params.push(id.clone().into());
-        }
-        let n = conn.execute(
-            &format!(
-                "UPDATE memory_edges SET confidence = confidence * ? WHERE id IN ({placeholders})"
-            ),
-            rusqlite::params_from_iter(params),
-        )? as u64;
-        if n > 0 {
-            self.cache_invalidate_all_facts();
-            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-        }
-        Ok(n)
-    }
-
-    fn collect_contradiction_groups(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
-        let mut groups = Vec::new();
-        groups.extend(self.scan_polarity_contradictions()?);
-        groups.extend(self.scan_single_valued_contradictions()?);
-        Ok(groups)
-    }
-
-    fn scan_polarity_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
-        let conn = self.conn();
-        // Case-insensitive object match so "Rust" / "rust" still conflict.
-        // `a.id < b.id` keeps each pair once; hydrate both ids in one IN query.
-        let mut stmt = conn.prepare(
-            "SELECT a.id, b.id FROM memory_edges a
-             INNER JOIN memory_edges b
-               ON a.subject = b.subject
-              AND lower(a.object) = lower(b.object)
-              AND a.id < b.id
-             WHERE ((a.predicate = 'likes' AND b.predicate = 'dislikes')
-                 OR (a.predicate = 'dislikes' AND b.predicate = 'likes'))
-               AND a.confidence >= ?1 AND b.confidence >= ?1",
-        )?;
-        let pairs: Vec<(String, String)> = stmt
-            .query_map(rusqlite::params![CONTRADICTION_LIVE_FLOOR], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(stmt);
-        drop(conn);
-
-        if pairs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut unique_ids: Vec<String> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        for (a, b) in &pairs {
-            if seen.insert(a.clone()) {
-                unique_ids.push(a.clone());
-            }
-            if seen.insert(b.clone()) {
-                unique_ids.push(b.clone());
-            }
-        }
-        let by_id: HashMap<String, Fact> = self
-            .get_facts_by_ids(&unique_ids)?
-            .into_iter()
-            .map(|f| (f.id.clone(), f))
-            .collect();
-        let mut out = Vec::new();
-        for (id_a, id_b) in pairs {
-            let Some(a) = by_id.get(&id_a) else {
-                continue;
-            };
-            let Some(b) = by_id.get(&id_b) else {
-                continue;
-            };
-            out.push(ContradictionCandidate {
-                kind: ContradictionKind::Polarity,
-                facts: vec![a.clone(), b.clone()],
-            });
-        }
-        Ok(out)
-    }
-
-    fn scan_single_valued_contradictions(&self) -> anyhow::Result<Vec<ContradictionCandidate>> {
-        let predicates: Vec<&str> = all_single_valued_predicates().collect();
-        let conn = self.conn();
-        let placeholders = vec!["?"; predicates.len()].join(",");
-        // One scan: all live single-valued rows, then group in Rust where
-        // distinct objects collide (avoids N+1 prepare per subject/predicate).
-        let sql = format!(
-            "SELECT {FACT_COLS} FROM memory_edges
-             WHERE lower(predicate) IN ({placeholders})
-               AND confidence >= ?"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let mut params: Vec<rusqlite::types::Value> =
-            predicates.iter().map(|p| (*p).to_string().into()).collect();
-        params.push(CONTRADICTION_LIVE_FLOOR.into());
-        let rows = stmt.query_map(rusqlite::params_from_iter(params), fact_from_row)?;
-        let mut by_key: HashMap<(String, String), Vec<Fact>> = HashMap::new();
-        for row in rows {
-            let fact = row?;
-            let key = (fact.subject.clone(), fact.predicate.to_ascii_lowercase());
-            by_key.entry(key).or_default().push(fact);
-        }
-        drop(stmt);
-        drop(conn);
-
-        let mut out = Vec::new();
-        for facts in by_key.into_values() {
-            let distinct_objects: HashSet<String> = facts
-                .iter()
-                .map(|f| f.object.to_ascii_lowercase())
-                .collect();
-            if distinct_objects.len() >= 2 && facts.len() >= 2 {
-                out.push(ContradictionCandidate {
-                    kind: ContradictionKind::SingleValued,
-                    facts,
-                });
-            }
-        }
-        Ok(out)
-    }
-}
-
-/// Live-floor for maintenance contradiction scans (X5). Below this, upsert
-/// demotion / flush already treat the fact as inactive in the prompt.
-pub const CONTRADICTION_LIVE_FLOOR: f64 = 0.4;
-/// Rule-engine demotion age cap (X5). Older losers are not mutated so a
-/// maintenance pass cannot push historical edges under the flush floor /
-/// rewrite unbounded ancient conflicts on first upgrade.
-pub const CONTRADICTION_DEMOTE_MAX_AGE_DAYS: i64 = 2;
-
-/// True when the fact was last seen (or created) within the X5 demote age cap.
-pub fn fact_within_demote_age(fact: &Fact, now: DateTime<Utc>) -> bool {
-    let ts = fact.last_seen_at.as_deref().unwrap_or(&fact.created_at);
-    match DateTime::parse_from_rfc3339(ts) {
-        Ok(dt) => {
-            now.signed_duration_since(dt.with_timezone(&Utc))
-                <= chrono::Duration::days(CONTRADICTION_DEMOTE_MAX_AGE_DAYS)
-        }
-        // Unparseable timestamps: skip demotion rather than risk mutating
-        // opaque historical rows into the flush window.
-        Err(_) => false,
+        FactMaintenance::new(self).demote_fact_ids(ids)
     }
 }
 
@@ -830,69 +478,6 @@ pub fn polarity_opposite(predicate: &str) -> Option<&'static str> {
 
 /// Shared demote strength for upsert corrections and the X5 engine.
 pub const CONTRADICTION_DEMOTE_FACTOR: f64 = 0.5;
-
-/// Kind of contradiction a maintenance candidate group represents (X5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContradictionKind {
-    /// `likes` ↔ `dislikes` on the same subject+object.
-    Polarity,
-    /// Single-valued predicate with multiple distinct objects.
-    SingleValued,
-}
-
-/// A conflict group surfaced to the optional LLM arbitrator (X5).
-#[derive(Debug, Clone)]
-pub struct ContradictionCandidate {
-    pub kind: ContradictionKind,
-    pub facts: Vec<Fact>,
-}
-
-/// Pick the keeper and the losers for a conflict group. Returns `None` when
-/// the group has fewer than two facts.
-///
-/// - **Polarity** (aligned with upsert): user > inferred, then newest
-///   observation (`last_seen_at`/`created_at`), then confidence / mentions.
-/// - **Single-valued**: user > inferred, then effective confidence, mentions,
-///   then recency.
-pub fn pick_contradiction_keeper(
-    kind: ContradictionKind,
-    facts: &[Fact],
-) -> Option<(&Fact, Vec<&Fact>)> {
-    if facts.len() < 2 {
-        return None;
-    }
-    let mut order: Vec<usize> = (0..facts.len()).collect();
-    order.sort_by(|&i, &j| contradiction_cmp(kind, &facts[j], &facts[i]));
-    let keeper = &facts[order[0]];
-    let losers: Vec<&Fact> = order[1..].iter().map(|&i| &facts[i]).collect();
-    Some((keeper, losers))
-}
-
-fn fact_recency_key(fact: &Fact) -> &str {
-    fact.last_seen_at.as_deref().unwrap_or(&fact.created_at)
-}
-
-fn contradiction_cmp(kind: ContradictionKind, a: &Fact, b: &Fact) -> std::cmp::Ordering {
-    let user_ord = (a.source == "user").cmp(&(b.source == "user"));
-    if user_ord != std::cmp::Ordering::Equal {
-        return user_ord;
-    }
-    match kind {
-        ContradictionKind::Polarity => fact_recency_key(a)
-            .cmp(fact_recency_key(b))
-            .then_with(|| {
-                fact_effective_confidence(a)
-                    .partial_cmp(&fact_effective_confidence(b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| a.mention_count.cmp(&b.mention_count)),
-        ContradictionKind::SingleValued => fact_effective_confidence(a)
-            .partial_cmp(&fact_effective_confidence(b))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.mention_count.cmp(&b.mention_count))
-            .then_with(|| fact_recency_key(a).cmp(fact_recency_key(b))),
-    }
-}
 
 #[cfg(test)]
 mod tests {

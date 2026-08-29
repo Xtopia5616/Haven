@@ -75,6 +75,7 @@
 - 2026-08-29：P2 Memory 图谱写入边界收口：事实插入、节点关联、用户权威、upsert 与删除集中到 `repositories/fact_graph.rs`，`Database` API 与 X12 契约不变（ADR 0019）。
 - 2026-08-29：P2 Memory 查询/排序边界收口：事实行映射、列表/批量读取、FTS/LIKE、标签查询、缓存读取与有效置信度排序集中到 `repositories/fact_query.rs`，保持 `Database` API 与持久化语义不变（ADR 0020）。
 - 2026-08-29：P2 Agent/Memory 嵌入编排边界收口：embedding provider 调用、有限索引 catch-up、模型切换清理、向量召回与 LSH 重建集中到 Agent 的 `memory_index.rs`，保持 Memory `Database` API 与召回语义不变（ADR 0021）。
+- 2026-08-29：P2 Memory 维护持久化边界收口：事实去重、敏感清理、衰减清理、来源规范化与矛盾候选扫描集中到 `repositories/fact_maintenance.rs`，Agent 继续负责维护调度与 LLM 仲裁，保持 `Database` API 与维护语义不变（ADR 0022）。
 
 ## 完成标准
 
