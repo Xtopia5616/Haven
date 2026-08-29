@@ -20,114 +20,11 @@ use haven_memory::repositories::session_steps::SessionStep;
 use serde::Deserialize;
 use tokio::sync::{Notify, Semaphore};
 
+use crate::fact_extraction::{
+    FactDraft, LlmFact, coerce_to_string, extract_json_array, normalize_predicate,
+    sanitize_fact_field, sanitize_tags,
+};
 use crate::memory_index::MemoryEmbeddingIndex;
-
-/// Maximum known facts listed in the extraction prompt as context, so the
-/// model can re-confirm or update existing facts instead of re-extracting
-/// everything from scratch. Embedding requests are chunked to stay under
-/// provider request limits.
-/// A fact extracted by the LLM, deserialized from the model's JSON response.
-#[derive(Clone, serde::Deserialize)]
-struct LlmFact {
-    #[serde(default = "default_subject", deserialize_with = "coerce_to_string")]
-    subject: String,
-    #[serde(deserialize_with = "coerce_to_string")]
-    predicate: String,
-    #[serde(deserialize_with = "coerce_to_string")]
-    object: String,
-    #[serde(default, deserialize_with = "coerce_string_array")]
-    tags: Vec<String>,
-    #[serde(default = "default_confidence")]
-    confidence: f64,
-    /// 0..1 rating of how long this fact stays useful. Missing/unsure falls
-    /// back to 0.6 (moderately durable) so an omitted field does not make a
-    /// fact immortal by defaulting to 1.0.
-    #[serde(default)]
-    durability: Option<f64>,
-    /// Index into the numbered conversation transcript of the message that
-    /// supports this fact (the model is asked to fill this in).
-    #[serde(default)]
-    message_index: Option<usize>,
-}
-
-fn default_subject() -> String {
-    "user".into()
-}
-
-/// Deserialize any JSON value into a string. The extraction model sometimes
-/// emits booleans or numbers for fact fields (e.g. `"object": true`), which
-/// would otherwise hard-fail the whole batch; coerce them to their string
-/// form instead of dropping the fact.
-/// Coerce any JSON value to its string form for a fact field. The extraction
-/// model sometimes emits booleans or numbers (e.g. `"object": true`), which
-/// would otherwise hard-fail the whole batch; coerce them instead of dropping
-/// the fact. Single shared implementation used by both the scalar and array
-/// deserializers so the coercion policy cannot drift.
-fn coerce_value_to_string(value: serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
-fn coerce_to_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(coerce_value_to_string(value))
-}
-
-/// Deserialize an array of arbitrary JSON values into strings, coercing each
-/// element the same way `coerce_to_string` does.
-fn coerce_string_array<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(values.into_iter().map(coerce_value_to_string).collect())
-}
-fn default_confidence() -> f64 {
-    0.7
-}
-
-/// One extracted fact ready for the shared persistence path:
-/// (subject, predicate, object, confidence, tags, source reference, durability).
-type FactDraft = (
-    String,
-    String,
-    String,
-    f64,
-    Vec<String>,
-    Option<FactSourceRef>,
-    f64,
-);
-
-/// Fact tags allowed to enter long-term memory. The extraction prompt asks
-/// the model to stick to these, but it may still emit arbitrary values; this
-/// whitelist keeps the prompt-side grouping (`tags.first()`) clean and stops
-/// tag drift from polluting the facts index.
-const ALLOWED_FACT_TAGS: &[&str] = &["identity", "preference", "workspace", "project"];
-
-/// Keep only tags from the allowed set, normalized to lowercase, capped in
-/// number and length so a stray model output cannot inflate the tag column.
-fn sanitize_tags(tags: &[String]) -> Vec<String> {
-    tags.iter()
-        .map(|t| t.trim().to_ascii_lowercase())
-        .filter(|t| ALLOWED_FACT_TAGS.contains(&t.as_str()))
-        .take(4)
-        .collect()
-}
-
-/// Normalize a predicate to its canonical form (trim + lowercase + alias
-/// mapping). Delegates to the memory layer so the inference path and the
-/// repository write paths share ONE normalization policy.
-fn normalize_predicate(predicate: &str) -> String {
-    haven_memory::repositories::facts::normalize_predicate(predicate)
-}
 
 pub struct InferenceEngine {
     db: Arc<Database>,
@@ -1680,28 +1577,6 @@ fn build_numbered_transcript(
     }
     lines.reverse();
     lines.join("\n")
-}
-
-/// Sanitize a fact field value before it is stored and later interpolated
-/// into the agent's system prompt. Strips newlines and control characters
-/// that could be used for indirect prompt injection, and caps the length.
-/// Shared implementation lives in `haven_common::text` so the policy cannot
-/// drift from prompt / tool index sanitization.
-fn sanitize_fact_field(value: &str, max_chars: usize) -> String {
-    haven_common::text::sanitize_prompt_field(value, max_chars)
-}
-
-/// Extract the first JSON array `[...]` from a string that may contain
-/// markdown code fences or surrounding text.
-fn extract_json_array(text: &str) -> String {
-    let trimmed = text.trim();
-    if let Some(start) = trimmed.find('[')
-        && let Some(end) = trimmed.rfind(']')
-        && end > start
-    {
-        return trimmed[start..=end].to_string();
-    }
-    trimmed.to_string()
 }
 
 #[cfg(test)]

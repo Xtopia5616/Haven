@@ -34,3 +34,4 @@
 - [0026：LLM 适配器 embedding 边界](0026-llm-adapter-embedding-boundary.md)
 - [0027：LLM 适配器 web search 边界](0027-llm-adapter-web-search-boundary.md)
 - [0028：LLM 适配器 provider feature 边界](0028-llm-adapter-provider-features-boundary.md)
+- [0029：Agent 事实抽取边界](0029-agent-fact-extraction-boundary.md)

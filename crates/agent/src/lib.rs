@@ -4,6 +4,7 @@ use std::sync::Arc;
 mod canonical;
 mod compactor;
 mod event;
+mod fact_extraction;
 mod inference;
 mod ingress;
 mod lifecycle;
