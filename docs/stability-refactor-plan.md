@@ -97,6 +97,7 @@
 - 2026-08-30：P2 UI 工具结果解析边界收口：JSON 解码、空内容处理与 custom shape 分类集中到 `ui/src/lib/toolResultParsing.ts`，`ToolResultCard` 保留兼容 re-export（ADR 0041）。
 - 2026-08-30：P2 UI 聊天工具栏边界收口：会话切换/token 概览与模型/联网搜索菜单集中到独立组件，路由页继续负责状态与回调编排（ADR 0042）。
 - 2026-08-30：P2 UI 会话用量展示边界收口：每步用量聚合、缓存命中率与 token tooltip 集中到 `ui/src/lib/sessionUsagePresentation.ts`，路由页保留响应式状态适配（ADR 0043）。
+- 2026-08-30：P2 UI Agent 事件 handler 边界收口：thought/reasoning、web search、补充输入、工具 action/output/observation 的事件到消息投影集中到 `ui/src/lib/chatAgentEventHandlers.ts`，路由页保留状态与监听器编排（ADR 0044）。
 
 ## 完成标准
 
