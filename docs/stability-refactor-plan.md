@@ -92,6 +92,7 @@
 - 2026-08-30：P2 UI process 工具 renderer 边界收口：筛选、显示上限、CPU/内存指标和状态表格集中到 `ToolProcessResult.svelte`，由 renderer registry 按工具名选择（ADR 0036）。
 - 2026-08-30：P2 UI window/action/schedule renderer 边界收口：三类结果分别集中到对应 renderer 组件，由 registry 按工具名选择（ADR 0037）。
 - 2026-08-30：P2 UI http/clipboard/web_search renderer 边界收口：三类结果分别集中到对应 renderer 组件，由 registry 按工具名选择（ADR 0038）。
+- 2026-08-30：P2 UI file_search/files renderer 边界收口：搜索结果集中到 `ToolFileSearchResult.svelte`，由 registry 按工具名与结果 shape 选择（ADR 0039）。
 
 ## 完成标准
 

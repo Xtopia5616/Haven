@@ -1,4 +1,5 @@
 import ToolFileResult from './ToolFileResult.svelte';
+import ToolFileSearchResult from './ToolFileSearchResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolNotifyResult from './ToolNotifyResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
@@ -30,6 +31,16 @@ export function getToolResultRenderer(
 	_data: unknown = null,
 ) {
 	if (kind === 'custom' && toolName === 'file') return ToolFileResult;
+	if (kind === 'custom' && toolName === 'file_search') return ToolFileSearchResult;
+	if (
+		kind === 'custom' &&
+		toolName === 'files' &&
+		typeof _data === 'object' &&
+		_data !== null &&
+		'results' in _data &&
+		Array.isArray(_data.results)
+	)
+		return ToolFileSearchResult;
 	if (kind === 'custom' && toolName === 'system') return ToolSystemResult;
 	if (kind === 'custom' && toolName === 'process') return ToolProcessResult;
 	if (kind === 'custom' && toolName === 'window') return ToolWindowResult;

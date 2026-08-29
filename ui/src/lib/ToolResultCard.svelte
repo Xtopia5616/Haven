@@ -174,7 +174,6 @@
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { copyText } from '$lib/clipboard.ts';
-	import ExternalRef from '$lib/ExternalRef.svelte';
 	import { actionStore, formatTokenCount, toolOutputPreviewStore } from '$lib/stores.ts';
 	import {
 		classifyToolSource,
@@ -740,28 +739,7 @@
 				parts={notifyParts}
 			/>
 		{:else if parsed}
-			{#if toolName === 'file_search' || (toolName === 'files' && Array.isArray(data.results))}
-				<div class="tool-card-count">
-					{data.count ?? data.results.length} 个结果 · {data.mode === 'content'
-						? '全文'
-						: '文件名'}
-				</div>
-				{#if data.results.length > 0}
-					<div class="tool-card-list">
-						{#each data.results as r (r.path + (r.line ?? ''))}
-							<div class="search-row">
-								<ExternalRef class="search-path" target={r.path} />
-								{#if r.line != null}
-									<span class="search-line">L{r.line}</span>
-									<span class="search-snippet">{r.snippet ?? ''}</span>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<p class="tool-card-empty">没有匹配的结果</p>
-				{/if}
-			{:else if toolName === 'agent'}
+			{#if toolName === 'agent'}
 				{#if data.auto && typeof data.text === 'string'}
 					<div class="tool-card-count">自动收到同伴消息（低信任）</div>
 					<pre class="content-preview">{data.text}</pre>
@@ -805,11 +783,11 @@
 
 			{/if}
 
-			{#if data.hint}
-				<div class="tool-card-hint">{data.hint}</div>
-			{/if}
 		{:else if liveStreaming}
 			<p class="tool-card-empty">等待输出…</p>
+		{/if}
+		{#if data.hint}
+			<div class="tool-card-hint">{data.hint}</div>
 		{/if}
 		</MaterialCollapsible>
 	</div>
@@ -1000,51 +978,6 @@
 		max-height: 200px;
 		overflow-y: auto;
 		border-radius: var(--md-sys-shape-extra-small);
-	}
-	.search-row {
-		display: flex;
-		align-items: baseline;
-		gap: var(--md-sys-space-xs);
-		padding: 3px var(--md-sys-space-2xs);
-		border-radius: 4px;
-		font-size: 12px;
-	}
-	.search-row:nth-child(odd),
-	.search-row:nth-child(odd) {
-		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
-	}
-	:global(.search-path) {
-		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	:global(.search-path) {
-		flex: 1;
-		min-width: 0;
-		color: var(--md-sys-color-primary);
-		text-decoration: underline;
-		text-underline-offset: 2px;
-		cursor: pointer;
-	}
-	:global(.search-path:hover) {
-		color: color-mix(in srgb, var(--md-sys-color-primary) 80%, var(--md-sys-color-on-surface));
-	}
-	.search-line {
-		flex: none;
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--md-sys-color-secondary);
-	}
-	.search-snippet {
-		flex: none;
-		max-width: 140px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: 11px;
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.content-preview {
 		background: var(--md-sys-color-surface-container-high);
