@@ -20,12 +20,7 @@ use haven_memory::repositories::session_steps::SessionStep;
 use serde::Deserialize;
 use tokio::sync::{Notify, Semaphore};
 
-/// Maximum inputs accepted by the configured embedding endpoint.
-const MAX_EMBEDDING_BATCH_SIZE: usize = 10;
-
-fn embedding_batch_size(configured_size: usize) -> usize {
-    configured_size.clamp(1, MAX_EMBEDDING_BATCH_SIZE)
-}
+use crate::memory_index::MemoryEmbeddingIndex;
 
 /// Maximum known facts listed in the extraction prompt as context, so the
 /// model can re-confirm or update existing facts instead of re-extracting
@@ -140,8 +135,6 @@ pub struct InferenceEngine {
     /// Cap (chars) for transcripts sent to the BalancedModel for fact
     /// extraction. Prevents unbounded token cost on long conversations.
     max_transcript_chars: usize,
-    /// Embedding requests are chunked to stay under provider request limits.
-    embed_chunk_size: usize,
     /// Max known facts listed in the extraction prompt as context.
     max_known_facts: usize,
     /// Max chars of a fact subject/predicate/object field (prompt-injection
@@ -168,6 +161,9 @@ pub struct InferenceEngine {
     memory_dirty: Mutex<HashMap<String, Instant>>,
     /// Last successful mid-run MEMORY patch per session (throttle key).
     memory_patch_last: Mutex<HashMap<String, Instant>>,
+    /// Provider-facing embedding/index lifecycle, kept outside fact
+    /// extraction and maintenance policy.
+    embedding_index: MemoryEmbeddingIndex,
 }
 
 impl InferenceEngine {
@@ -181,10 +177,9 @@ impl InferenceEngine {
         fact_extraction_min_interval_secs: u64,
     ) -> Self {
         Self {
-            db,
-            router,
+            db: db.clone(),
+            router: router.clone(),
             max_transcript_chars,
-            embed_chunk_size: embedding_batch_size(embed_chunk_size),
             max_known_facts,
             sanitize_max_chars,
             fact_extraction_min_interval_secs,
@@ -194,6 +189,11 @@ impl InferenceEngine {
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
             memory_patch_last: Mutex::new(HashMap::new()),
+            embedding_index: MemoryEmbeddingIndex::new(
+                db.clone(),
+                router.clone(),
+                embed_chunk_size,
+            ),
         }
     }
 
@@ -469,194 +469,6 @@ impl InferenceEngine {
         }
     }
 
-    /// True when the vector index holds embeddings from a different model
-    /// than the currently configured `embedding_model`. Vectors from another
-    /// model are not comparable (dimension mismatch → cosine similarity
-    /// degenerates to 0), so the index must be rebuilt.
-    async fn embedding_model_changed(&self) -> bool {
-        let current = self
-            .router
-            .config()
-            .await
-            .embedding_model
-            .model_name
-            .clone();
-        if current.is_empty() {
-            return false;
-        }
-        let db = self.db.clone();
-        let stored: Vec<String> = match db.run_blocking(move |db| db.list_embedding_models()).await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "embedding_model_changed: list_embedding_models failed: {}",
-                    e
-                );
-                Vec::new()
-            }
-        };
-        !stored.is_empty() && stored.iter().any(|m| m != &current)
-    }
-
-    /// Embed any facts or conversation events (user messages, compaction
-    /// summaries) that do not yet have a stored vector. No-op when the
-    /// `embedding_model` slot is unconfigured, so the feature degrades
-    /// gracefully to keyword-only retrieval.
-    async fn embed_new_memory(&self) {
-        if !self
-            .router
-            .is_role_configured(EndpointRole::EmbeddingModel)
-            .await
-        {
-            tracing::debug!("embedding_model unconfigured; skipping vector indexing");
-            return;
-        }
-        // Model switched since the last index? Drop the stale vectors so the
-        // rebuild below starts from a clean, dimension-consistent index.
-        if self.embedding_model_changed().await {
-            let db = self.db.clone();
-            if let Err(e) = db.run_blocking(move |db| db.clear_embeddings()).await {
-                tracing::error!(
-                    "embedding model changed: failed to clear vector index: {}",
-                    e
-                );
-            } else {
-                tracing::info!("embedding model changed: cleared vector index for rebuild");
-            }
-        }
-        let fallback_model = self
-            .router
-            .config()
-            .await
-            .embedding_model
-            .model_name
-            .clone();
-        if fallback_model.is_empty() {
-            return;
-        }
-        let db = self.db.clone();
-        let model_for_missing = fallback_model.clone();
-        let pending_raw = db
-            .run_blocking(move |db| {
-                let mut out: Vec<(String, String, String)> = Vec::new();
-                match db.missing_embedding_ids(entity_kind::FACT, &model_for_missing) {
-                    Ok(ids) => {
-                        for id in ids {
-                            match db.fact_text_by_id(&id) {
-                                Ok(Some(text)) => {
-                                    out.push((entity_kind::FACT.to_string(), id, text));
-                                }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "embed_new_memory: fact_text_by_id failed for {}: {}",
-                                        id,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "embed_new_memory: missing_embedding_ids(fact) failed: {}",
-                            e
-                        );
-                    }
-                }
-                match db.missing_embedding_ids(entity_kind::EPISODE, &model_for_missing) {
-                    Ok(ids) => {
-                        for id in ids {
-                            match db.episode_text(&id) {
-                                Ok(Some(text)) => {
-                                    out.push((entity_kind::EPISODE.to_string(), id, text));
-                                }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "embed_new_memory: episode_text failed for {}: {}",
-                                        id,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "embed_new_memory: missing_embedding_ids(episode) failed: {}",
-                            e
-                        );
-                    }
-                }
-                Ok::<Vec<(String, String, String)>, anyhow::Error>(out)
-            })
-            .await;
-        let pending: Vec<(String, String, String)> = match pending_raw {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "embed_new_memory: failed to collect pending embedding items: {}",
-                    e
-                );
-                Vec::new()
-            }
-        };
-        if pending.is_empty() {
-            return;
-        }
-        tracing::info!("embedding {} memory items", pending.len());
-        for chunk in pending.chunks(embedding_batch_size(self.embed_chunk_size)) {
-            let texts: Vec<String> = chunk.iter().map(|(_, _, t)| t.clone()).collect();
-            match self.router.embed(texts).await {
-                Ok(emb) => {
-                    let model = emb.model.clone().unwrap_or_else(|| fallback_model.clone());
-                    let owned: Vec<(String, String, String, Vec<f32>)> = chunk
-                        .iter()
-                        .zip(emb.vectors)
-                        .filter(|(_, v)| !v.is_empty())
-                        .map(|((kind, id, text), v)| (kind.clone(), id.clone(), text.clone(), v))
-                        .collect();
-                    let db = self.db.clone();
-                    let batch_len = owned.len();
-                    let _ = db
-                        .run_blocking(move |db| {
-                            let mut failures = 0usize;
-                            for (kind, id, text, vector) in owned {
-                                if let Err(e) =
-                                    db.save_embedding(&kind, &id, &model, &vector, &text)
-                                {
-                                    failures += 1;
-                                    if failures <= 3 {
-                                        tracing::warn!(
-                                            "save_embedding failed for {} {}: {}",
-                                            kind,
-                                            id,
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                            if failures > 0 {
-                                tracing::warn!(
-                                    "embedding batch: {} of {} items failed to save",
-                                    failures,
-                                    batch_len
-                                );
-                            }
-                            Ok::<(), anyhow::Error>(())
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!("embedding batch failed: {}", e);
-                    return;
-                }
-            }
-        }
-    }
-
     /// Full memory maintenance pass, independent of any extraction: collapse
     /// duplicate facts, purge sensitive facts, flush stale low-confidence
     /// facts, and prune embeddings whose source rows were deleted, then catch
@@ -757,34 +569,8 @@ impl InferenceEngine {
         // Catch up on vector indexing too, so memory that accumulated while
         // the embedding model was unconfigured gets indexed once it is set up.
         // Rebuild LSH only when the side table lags the embedding rows (M5).
-        self.embed_new_memory().await;
-        if self
-            .router
-            .is_role_configured(EndpointRole::EmbeddingModel)
-            .await
-        {
-            let model = self
-                .router
-                .config()
-                .await
-                .embedding_model
-                .model_name
-                .clone();
-            if !model.is_empty() {
-                let db = self.db.clone();
-                if let Err(e) = db
-                    .run_blocking(move |db| {
-                        if db.embedding_lsh_lagging(&model)? {
-                            db.rebuild_embedding_lsh(&model)?;
-                        }
-                        Ok::<(), anyhow::Error>(())
-                    })
-                    .await
-                {
-                    tracing::warn!("memory maintenance: embedding LSH rebuild failed: {}", e);
-                }
-            }
-        }
+        self.embedding_index.embed_new_memory().await;
+        self.embedding_index.rebuild_lsh_if_lagging().await;
         cleaned
             .saturating_add(merged)
             .saturating_add(resolved_after_merge)
@@ -1021,39 +807,18 @@ impl InferenceEngine {
         // Vector path: embed the query and cosine-search the index. Skipped
         // when the index still holds vectors from a previous model (they are
         // dimension-incompatible; maintenance rebuilds the index).
-        if self
-            .router
-            .is_role_configured(EndpointRole::EmbeddingModel)
-            .await
-            && !self.embedding_model_changed().await
-            && let Ok(vec) = self.router.embed_text(query).await
-            && !vec.is_empty()
-        {
-            let model = self
-                .router
-                .config()
-                .await
-                .embedding_model
-                .model_name
-                .clone();
-            let db = self.db.clone();
-            let entity_owned = entity.to_string();
-            if let Ok(hits) = db
-                .run_blocking(move |db| db.search_embeddings(&entity_owned, &vec, limit, &model))
-                .await
-            {
-                return hits
-                    .into_iter()
-                    .map(|(e, score)| {
-                        serde_json::json!({
-                            "entity_id": e.entity_id,
-                            "text": e.text,
-                            "score": score,
-                            "model": e.model,
-                        })
+        if let Some(hits) = self.embedding_index.search(entity, query, limit).await {
+            return hits
+                .into_iter()
+                .map(|(e, score)| {
+                    serde_json::json!({
+                        "entity_id": e.entity_id,
+                        "text": e.text,
+                        "score": score,
+                        "model": e.model,
                     })
-                    .collect();
-            }
+                })
+                .collect();
         }
 
         // Keyword fallback (CJK-aware terms for episodes; full query for FTS facts).
@@ -1342,14 +1107,14 @@ impl InferenceEngine {
     /// [`Self::run_memory_maintenance`].
     pub async fn infer_session(&self, session_id: &str) {
         self.infer_facts(session_id).await;
-        self.embed_new_memory().await;
+        self.embedding_index.embed_new_memory().await;
     }
 
     /// Pause-path variant: bypasses the extraction time throttle so a
     /// same-step interval infer cannot starve the fresher post-pause pass.
     pub async fn infer_session_on_pause(&self, session_id: &str) {
         self.infer_facts_on_pause(session_id).await;
-        self.embed_new_memory().await;
+        self.embedding_index.embed_new_memory().await;
     }
 
     /// Drop mid-run MEMORY patch bookkeeping for a finished session.
@@ -1942,6 +1707,7 @@ fn extract_json_array(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory_index::embedding_batch_size;
     use async_trait::async_trait;
     use haven_common::types::CanonicalMessage;
     use haven_llm::client::LlmClient;
@@ -2192,17 +1958,17 @@ mod tests {
 
     #[test]
     fn embedding_batch_size_caps_provider_limit_and_rejects_zero() {
-        assert_eq!(embedding_batch_size(64), MAX_EMBEDDING_BATCH_SIZE);
+        assert_eq!(embedding_batch_size(64), 10);
         assert_eq!(embedding_batch_size(5), 5);
         assert_eq!(embedding_batch_size(0), 1);
     }
 
     fn make_engine(db: Arc<Database>) -> InferenceEngine {
+        let router = mock_router("[]");
         InferenceEngine {
-            db,
-            router: mock_router("[]"),
+            db: db.clone(),
+            router: router.clone(),
             max_transcript_chars: 4_000,
-            embed_chunk_size: 64,
             max_known_facts: 40,
             sanitize_max_chars: 256,
             // 0 disables the time throttle; interval tests opt in explicitly.
@@ -2213,6 +1979,7 @@ mod tests {
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
             memory_patch_last: Mutex::new(HashMap::new()),
+            embedding_index: MemoryEmbeddingIndex::new(db.clone(), router, 64),
         }
     }
 
@@ -2519,11 +2286,12 @@ mod tests {
         engine.mark_memory_dirty("ses-a");
         // min interval 0 → no throttle
         assert!(engine.take_memory_dirty_throttled("ses-a"));
+        let db = temp_db();
+        let router = mock_router("[]");
         let engine = InferenceEngine {
-            db: temp_db(),
-            router: mock_router("[]"),
+            db: db.clone(),
+            router: router.clone(),
             max_transcript_chars: 4_000,
-            embed_chunk_size: 64,
             max_known_facts: 40,
             sanitize_max_chars: 256,
             fact_extraction_min_interval_secs: 3_600,
@@ -2533,6 +2301,7 @@ mod tests {
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
             memory_patch_last: Mutex::new(HashMap::new()),
+            embedding_index: MemoryEmbeddingIndex::new(db.clone(), router, 64),
         };
         engine.mark_memory_dirty("ses-b");
         assert!(engine.take_memory_dirty_throttled("ses-b"));
@@ -2602,11 +2371,11 @@ mod tests {
         let m1 = db
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
+        let router = mock_router("[]");
         let engine = InferenceEngine {
             db: db.clone(),
-            router: mock_router("[]"),
+            router: router.clone(),
             max_transcript_chars: 4_000,
-            embed_chunk_size: 64,
             max_known_facts: 40,
             sanitize_max_chars: 256,
             fact_extraction_min_interval_secs: 3_600,
@@ -2616,6 +2385,7 @@ mod tests {
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
             memory_patch_last: Mutex::new(HashMap::new()),
+            embedding_index: MemoryEmbeddingIndex::new(db.clone(), router, 64),
         };
         engine.infer_facts(&session.id).await;
         let cursor: Option<String> = db
@@ -2666,11 +2436,11 @@ mod tests {
         let m1 = db
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
+        let router = mock_router("not a json array");
         let engine = InferenceEngine {
             db: db.clone(),
-            router: mock_router("not a json array"),
+            router: router.clone(),
             max_transcript_chars: 4_000,
-            embed_chunk_size: 64,
             max_known_facts: 40,
             sanitize_max_chars: 256,
             fact_extraction_min_interval_secs: 0,
@@ -2680,6 +2450,7 @@ mod tests {
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
             memory_patch_last: Mutex::new(HashMap::new()),
+            embedding_index: MemoryEmbeddingIndex::new(db.clone(), router, 64),
         };
         engine.infer_facts(&session.id).await;
         let facts = db.get_facts("user").unwrap();

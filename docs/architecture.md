@@ -118,6 +118,11 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
 provider 协议和 UI 展示逻辑不得进入本 crate。
 
+Agent 的 `memory_index.rs` 是嵌入编排边界：它负责 embedding provider 调用、
+有界 catch-up、模型切换清理、向量召回和 LSH 重建；`InferenceEngine` 只编排事实
+抽取/维护并使用该组件，不把 provider 网络调用或跨 await 的 SQLite 连接下沉到
+Memory。事实清理与 LLM 仲裁仍属于 Agent 的维护策略，后续拆分需独立 ADR。
+
 ### 2.4 `haven-input` —— 输入采集与语音生命周期
 
 - `capture/`：CPAL 采集线程 + 环形缓冲 + 重采样。
@@ -293,3 +298,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-27 | §2.3 Memory：将当前 schema 与历史迁移拆为独立模块，保持版本链和 X12 契约不变（ADR 0013） |
 | 2026-08-29 | §2.3 Memory：将事实图谱写入与事实查询/维护分出内部 `FactGraph` 边界，保持 Database API 与 X12 契约不变（ADR 0019） |
 | 2026-08-29 | §2.3 Memory：将事实读取、搜索/排序与维护策略分出内部 `fact_query.rs` 边界，保持 Database API 与持久化语义不变（ADR 0020） |
+| 2026-08-29 | §2.3 Agent/Memory：将 embedding provider 调用、有限索引 catch-up、向量召回与 LSH 重建收口到 `memory_index.rs`，保持 Database API 与召回语义不变（ADR 0021） |

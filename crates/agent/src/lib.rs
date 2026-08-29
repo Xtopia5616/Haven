@@ -7,6 +7,7 @@ mod event;
 mod inference;
 mod ingress;
 mod lifecycle;
+mod memory_index;
 mod partial;
 mod prompt;
 mod react;
