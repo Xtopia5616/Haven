@@ -36,3 +36,4 @@
 - [0028：LLM 适配器 provider feature 边界](0028-llm-adapter-provider-features-boundary.md)
 - [0029：Agent 事实抽取边界](0029-agent-fact-extraction-boundary.md)
 - [0030：UI 会话消息状态边界](0030-ui-session-message-store-boundary.md)
+- [0031：UI 会话用量状态边界](0031-ui-session-usage-boundary.md)
