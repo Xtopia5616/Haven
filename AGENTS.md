@@ -46,11 +46,10 @@ corepack pnpm run test:coverage
 corepack pnpm run check
 ```
 
-### Kilo Commands
-- `/test [crate] [filter]` — run Rust tests
-- `/test-ui [--run|--coverage|--e2e]` — run UI tests
-- `/check [fmt|rust|clippy|ui]` — run static analysis
-- `/coverage [--ci|--ui]` — generate coverage reports
+### Codex Worktree Build Cache
+- Codex worktrees are supported; Kilo/Kilocode worktrees and commands are retired.
+- `.cargo/config.toml` disables Rust incremental compilation to prevent unbounded per-worktree cache growth.
+- To reclaim generated artifacts from the current checkout and Codex worktrees, run `pwsh -NoProfile -File scripts/cleanup-codex-targets.ps1 -IncludeCurrentWorktree -Confirm:$false`.
 
 ## Cargo Aliases (via .cargo/config.toml)
 - `cargo t` — `cargo test`

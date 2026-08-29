@@ -24,3 +24,4 @@
 - [0016：使用 TypeScript 7 原生编译器进行 UI 类型检查](0016-typescript-7-native-check.md)
 - [0017：升级 Node.js 到 24.20.0 LTS](0017-node-24-20-lts-toolchain.md)
 - [0018：统一 VS Code 与 Tauri 的工具链入口](0018-vscode-toolchain-entrypoints.md)
+- [0019：Memory 事实图谱写入边界](0019-memory-fact-graph-write-boundary.md)

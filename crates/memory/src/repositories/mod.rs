@@ -1,4 +1,5 @@
 pub mod episodes;
+pub(crate) mod fact_graph;
 pub mod facts;
 pub mod kv_store;
 pub mod messages;

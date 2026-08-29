@@ -105,8 +105,9 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   初始化编排。
 - `migrations.rs`：历史 schema/data migration、PRAGMA user_version 版本戳和
   迁移顺序；只处理数据库转换，不承担 Agent 推理或 UI 展示。
-- `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；不拥有
-  schema 升级策略。
+- `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；其中
+  `fact_graph.rs` 集中负责 `memory_edges` 写入与图谱不变量，`facts.rs`
+  负责事实读取、搜索/排序和维护任务；不拥有 schema 升级策略。
 - `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
 
 `schema.rs` 与 `migrations.rs` 的边界不改变 X12：`messages` /
@@ -289,3 +290,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-21 | 删除 `memory-architecture.md` / `react-architecture-improvements.md` |
 | 2026-08-26 | 用 `stability-refactor-plan.md` 取代历史 backlog，重构目标改为稳定性与可维护性 |
 | 2026-08-27 | §2.3 Memory：将当前 schema 与历史迁移拆为独立模块，保持版本链和 X12 契约不变（ADR 0013） |
+| 2026-08-29 | §2.3 Memory：将事实图谱写入与事实查询/维护分出内部 `FactGraph` 边界，保持 Database API 与 X12 契约不变（ADR 0019） |
