@@ -2,6 +2,7 @@ import ToolFileResult from './ToolFileResult.svelte';
 import ToolJsonResult from './ToolJsonResult.svelte';
 import ToolNotifyResult from './ToolNotifyResult.svelte';
 import ToolShellResult from './ToolShellResult.svelte';
+import ToolSystemResult from './ToolSystemResult.svelte';
 
 const renderers = {
 	shell: ToolShellResult,
@@ -23,5 +24,6 @@ export function getToolResultRenderer(
 	_data: unknown = null,
 ) {
 	if (kind === 'custom' && toolName === 'file') return ToolFileResult;
+	if (kind === 'custom' && toolName === 'system') return ToolSystemResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;
 }

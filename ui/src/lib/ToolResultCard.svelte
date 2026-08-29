@@ -31,18 +31,6 @@
 		return `${u >= 100 ? u.toFixed(0) : u.toFixed(1)} ${units[i]}`;
 	}
 
-	/** @param {unknown} v */
-	function fmtUptime(v) {
-		const secs = Number(v);
-		if (!Number.isFinite(secs) || secs < 0) return null;
-		const d = Math.floor(secs / 86400);
-		const h = Math.floor((secs % 86400) / 3600);
-		const m = Math.floor((secs % 3600) / 60);
-		if (d > 0) return `${d} 天 ${h} 小时`;
-		if (h > 0) return `${h} 小时 ${m} 分`;
-		return `${m} 分钟`;
-	}
-
 	/**
 	 * Whether this tool observation can be rendered as a card. Every non-empty
 	 * observation is renderable — structured JSON gets its dedicated renderer
@@ -421,33 +409,6 @@
 		if (s.includes('zombie') || s.includes('dead')) return 'failed';
 		if (s.includes('stop') || s.includes('tracing')) return 'cancelled';
 		return 'not_found';
-	}
-
-	// ── Environment renderer state ─────────────────────────────────────────
-	let envFilter = $state('');
-	let envList = $derived(/** @type {any[]} */ (Array.isArray(data.variables) ? data.variables : []));
-	let filteredEnv = $derived(
-		envFilter
-			? envList.filter((v) => {
-					const q = envFilter.toLowerCase();
-					return (
-						String(v.name ?? '')
-							.toLowerCase()
-							.includes(q) ||
-						String(v.value ?? '')
-							.toLowerCase()
-							.includes(q)
-					);
-				})
-			: envList,
-	);
-	/** @param {string} text */
-	async function copyEnvValue(text) {
-		try {
-			await navigator.clipboard.writeText(text);
-		} catch {
-			// Clipboard unavailable — ignore.
-		}
 	}
 
 	// Right-click: copy the visible observation (or the current selection),
@@ -871,157 +832,6 @@
 					</div>
 				{:else}
 					<p class="tool-card-empty">没有匹配的结果</p>
-				{/if}
-			{:else if toolName === 'system'}
-				{#if data.os}
-					<div class="sys-os">
-						<span class="sys-os-name">{data.os.name || '系统'}</span>
-						{#if data.os.hostname}<span class="sys-os-host">{data.os.hostname}</span
-							>{/if}
-					</div>
-				{/if}
-				{#if data.cpu}
-					<div class="meter-row">
-						<span class="meter-label">CPU</span>
-						<span class="meter-value"
-							>{Number(data.cpu.usage_pct ?? 0).toFixed(1)}%</span
-						>
-						<span class="meter-track"
-							><span class="meter-fill" style="width: {clampPct(data.cpu.usage_pct)}%"
-							></span></span
-						>
-						<span class="meter-sub"
-							>{data.cpu.cores ?? 0} 核 / {data.cpu.logical_cpus ?? 0} 线程</span
-						>
-					</div>
-				{/if}
-				{#if data.memory}
-					<div class="meter-row">
-						<span class="meter-label">内存</span>
-						<span class="meter-value"
-							>{fmtBytes(data.memory.used_bytes)} / {fmtBytes(
-								data.memory.total_bytes,
-							)}</span
-						>
-						<span class="meter-track"
-							><span
-								class="meter-fill"
-								style="width: {clampPct(
-									(Number(data.memory.used_bytes) /
-										Math.max(Number(data.memory.total_bytes), 1)) *
-										100,
-								)}%"
-							></span></span
-						>
-					</div>
-				{/if}
-				{#if Array.isArray(data.disks)}
-					{#each data.disks as d (d.mount)}
-						<div class="meter-row">
-							<span class="meter-label">{d.mount}</span>
-							<span class="meter-value"
-								>{fmtBytes(Number(d.total_bytes) - Number(d.available_bytes))} / {fmtBytes(
-									d.total_bytes,
-								)}</span
-							>
-							<span class="meter-track"
-								><span
-									class="meter-fill"
-									style="width: {clampPct(
-										(1 -
-											Number(d.available_bytes) /
-												Math.max(Number(d.total_bytes), 1)) *
-											100,
-									)}%"
-								></span></span
-							>
-						</div>
-					{/each}
-				{/if}
-				{#if data.os?.uptime_secs != null}
-					<div class="tool-card-meta">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
-				{/if}
-				{#if Array.isArray(data.displays)}
-					<div class="tool-card-count">{data.displays.length} 个显示器</div>
-					<div class="tool-card-list">
-						{#each data.displays as d (d.name ?? d.left)}
-							<div class="window-row">
-								<span class="window-title">{d.name || 'Display'}{d.primary ? ' · 主屏' : ''}</span>
-								<span class="window-pid">{d.width}×{d.height}</span>
-							</div>
-						{/each}
-					</div>
-				{/if}
-				{#if Array.isArray(data.variables)}
-					<div class="tool-card-count">
-						{#if envFilter}
-							{filteredEnv.length} / {envList.length} 个变量
-						{:else}
-							{envList.length} 个变量
-						{/if}
-					</div>
-					<input
-						class="tool-search"
-						type="search"
-						placeholder="筛选变量..."
-						bind:value={envFilter}
-						aria-label="筛选变量"
-					/>
-					{#if filteredEnv.length > 0}
-						<div class="tool-card-list">
-							{#each filteredEnv as v (v.name)}
-								<div class="env-row">
-									<span class="env-name" title={v.name}>{v.name}</span>
-									<span class="env-value" title={v.value ?? ''}
-										>{v.value ?? '(未设置)'}</span
-									>
-									{#if typeof v.value === 'string' && v.value}
-										<button
-											class="env-copy"
-											type="button"
-											aria-label="复制值"
-											title="复制值"
-											onclick={() => copyEnvValue(v.value)}>⧉</button
-										>
-									{/if}
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<p class="tool-card-empty">没有匹配的变量</p>
-					{/if}
-				{:else if data.name && ('value' in data || data.set || data.removed)}
-					<div class="env-row">
-						<span class="env-name">{data.name}</span>
-						<span class="env-value" title={data.value ?? ''}
-							>{data.value ?? '(未设置)'}</span
-						>
-					</div>
-				{/if}
-				{#if data.battery_percent != null}
-					<div class="meter-row">
-						<span class="meter-label">电池</span>
-						<span class="meter-value">{data.battery_percent}%</span>
-						<span class="meter-track"
-							><span
-								class="meter-fill"
-								style="width: {clampPct(data.battery_percent)}%"
-							></span></span
-						>
-						<span class="meter-sub"
-							>{data.battery_status ?? 'unknown'}{data.ac_power === 'online'
-								? ' · 已接电源'
-								: ''}</span
-						>
-					</div>
-				{:else if data.locked || data.sleep || data.hibernate}
-					<p class="tool-card-empty">
-						{data.locked
-							? '已锁定'
-							: data.sleep
-								? '已睡眠'
-								: '已休眠'}
-					</p>
 				{/if}
 			{:else if toolName === 'process'}
 				<div class="tool-card-count">
@@ -1475,8 +1285,6 @@
 	}
 	.search-row,
 	.window-row,
-	.env-row,
-	.file-row,
 	.scheduled-row {
 		display: flex;
 		align-items: baseline;
@@ -1487,16 +1295,12 @@
 	}
 	.search-row:nth-child(odd),
 	.window-row:nth-child(odd),
-	.env-row:nth-child(odd),
 	.scheduled-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
 	}
 	.search-path,
-	.file-path,
-	.env-name,
 	.window-title,
-	.scheduled-title,
-	.env-value {
+	.scheduled-title {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 11px;
 		overflow: hidden;
@@ -1538,49 +1342,6 @@
 		flex: none;
 		font-size: 10px;
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.env-name {
-		flex: none;
-		font-weight: 600;
-		color: var(--md-sys-color-secondary);
-	}
-	.env-value {
-		flex: 1;
-		min-width: 0;
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.file-op {
-		flex: none;
-		font-size: 10px;
-		font-weight: 700;
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-	}
-	.file-op-to {
-		flex: none;
-		font-size: 11px;
-		color: var(--md-sys-color-on-surface-variant);
-		width: 34px;
-		text-align: center;
-	}
-	.file-path {
-		flex: 1;
-		min-width: 0;
-		color: var(--md-sys-color-primary);
-		text-decoration: underline;
-		text-underline-offset: 2px;
-		cursor: pointer;
-	}
-	.file-path:hover {
-		color: color-mix(in srgb, var(--md-sys-color-primary) 80%, var(--md-sys-color-on-surface));
-	}
-	.file-line {
-		flex: none;
-		font-size: 10px;
-		font-weight: 700;
-		color: var(--md-sys-color-secondary);
 	}
 	.scheduled-mode {
 		flex: none;
@@ -1731,83 +1492,6 @@
 	}
 	.show-all-btn:hover {
 		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
-	}
-	.env-copy {
-		flex: none;
-		border: none;
-		background: transparent;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
-		line-height: 1;
-		padding: 2px 4px;
-		border-radius: 4px;
-		cursor: pointer;
-		opacity: 0;
-		transition:
-			opacity 0.15s ease,
-			background-color 0.15s ease,
-			color 0.15s ease;
-	}
-	.env-row:hover .env-copy,
-	.env-copy:focus-visible {
-		opacity: 1;
-	}
-	.env-copy:hover {
-		background: var(--md-sys-color-surface-container-highest);
-		color: var(--md-sys-color-on-surface);
-	}
-	.meter-row {
-		display: grid;
-		grid-template-columns: auto 1fr auto;
-		align-items: center;
-		column-gap: var(--md-sys-space-xs);
-		margin-bottom: var(--md-sys-space-xs);
-	}
-	.meter-label {
-		font-size: 11px;
-		font-weight: 600;
-		color: var(--md-sys-color-on-surface);
-	}
-	.meter-value {
-		grid-column: 2;
-		font-size: 11px;
-		font-family: var(--md-sys-typescale-mono);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.meter-track {
-		grid-column: 1 / -1;
-		height: 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-surface-container-high);
-		overflow: hidden;
-	}
-	.meter-fill {
-		display: block;
-		height: 100%;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary);
-		transition: width 0.4s ease;
-	}
-	.meter-sub {
-		grid-column: 2;
-		font-size: 10px;
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.sys-os {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		margin-bottom: var(--md-sys-space-sm);
-	}
-	.sys-os-name {
-		font-size: 12px;
-		font-weight: 700;
-		color: var(--md-sys-color-on-surface);
-	}
-	.sys-os-host {
-		font-size: 11px;
-		font-family: var(--md-sys-typescale-mono);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.content-preview {
 		background: var(--md-sys-color-surface-container-high);
