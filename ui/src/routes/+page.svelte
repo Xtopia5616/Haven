@@ -23,6 +23,7 @@
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
 	import { createChatConfirmationEventHandlers } from '$lib/chatConfirmationEventHandlers.ts';
+	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
@@ -1376,26 +1377,6 @@
 	// Deliver a user message to the backend. Shared by the normal send
 	// button and the queued follow-up flush (which sends a stashed message
 	// once the agent's current output completes).
-	// The agent's ask questions are "awaiting" only while the session is paused
-	// for the user's reply. Clear that state whenever the session resumes (the
-	// user answered — by quick reply, typing, or voice) or its turn ends
-	// (completed/error), so the "等待你的回答" indicator doesn't linger on
-	// answered or abandoned questions. The `resolved` label is cleared too:
-	// once the session resumes, any locally-chosen quick-reply answer that was
-	// NOT part of the submitted message (e.g. the user typed their own reply
-	// instead) must not keep displaying as "已选择/已忽略" — the submitted
-	// user bubble is the record of what was actually sent.
-	/** @param {string} sessionId */
-	function clearAskAwaiting(sessionId) {
-		updateSessionMessages(sessionId, (m) =>
-			m.map((x) => (x.type === 'ask' ? { ...x, awaiting: false, resolved: null } : x)),
-		);
-		// A resume/end also invalidates any locally-chosen quick-reply answers
-		// for the pending batch, so a later batch never inherits stale ones.
-		resolvedAskIds.delete(sessionId);
-		clearAskSelections(sessionId);
-	}
-
 	/** @param {string} text @param {any} [images] @param {any} [files] */
 	async function submitMessage(text, images, files) {
 		try {
@@ -1413,42 +1394,27 @@
 		}
 	}
 
-	// Selected ask option chips per session (msgId -> selected labels). Click
-	// toggles selection; Enter in the input box submits (see handleInputSubmit).
-	/** @type {Map<string, Map<string, string[]>>} */
-	let askSelections = new Map();
-
-	/** @param {string} sessionId */
-	function clearAskSelections(sessionId) {
-		askSelections.delete(sessionId);
-		askSelectionsReady = computeAskSelectionsReady();
-	}
-
-	/** @param {string} msgId @param {string[]} selected */
-	function handleAskSelectionChange(msgId, selected) {
-		if (!activeSessionId || !msgId) return;
-		const byMsg = askSelections.get(activeSessionId) || new Map();
-		if (!selected || selected.length === 0) byMsg.delete(msgId);
-		else byMsg.set(msgId, [...selected]);
-		if (byMsg.size === 0) askSelections.delete(activeSessionId);
-		else askSelections.set(activeSessionId, byMsg);
-		askSelectionsReady = computeAskSelectionsReady();
-	}
-
 	// True when every currently awaiting ask card has at least one selected
 	// option — InputRouter then allows Enter with an empty draft.
 	let askSelectionsReady = $state(false);
-
-	function computeAskSelectionsReady() {
-		if (!activeSessionId) return false;
-		const awaiting = (get(sessionMessagesStore)[activeSessionId] || []).filter(
-			(x) => x.type === 'ask' && x.awaiting,
-		);
-		if (awaiting.length === 0) return false;
-		const byMsg = askSelections.get(activeSessionId);
-		if (!byMsg) return false;
-		return awaiting.every((x) => (byMsg.get(x.id) || []).length > 0);
-	}
+	const askInteraction = createAskInteractionController({
+		getActiveSessionId: () => activeSessionId,
+		setAutoFollow: () => {
+			autoFollow = true;
+		},
+		setSelectionsReady: (ready) => {
+			askSelectionsReady = ready;
+		},
+		submitMessage,
+	});
+	const {
+		clearAskAwaiting,
+		computeAskSelectionsReady,
+		handleAskSelectionChange,
+		handleAskSubmit,
+		handleIgnoreAsk,
+		trySubmitAskSelections,
+	} = askInteraction;
 
 	$effect(() => {
 		activeSessionId;
@@ -1469,121 +1435,6 @@
 			return;
 		}
 		submitMessage(text, images, files);
-	}
-
-	// Enter pressed on a focused ask option chip (after clicking it, the
-	// button keeps focus) must submit the composed answers instead of the
-	// native button Enter behavior, which re-triggers the chip click and
-	// toggles the selection off. Empty payload: the page composes the chips.
-	function handleAskSubmit() {
-		if (!activeSessionId) return;
-		autoFollow = true;
-		trySubmitAskSelections(activeSessionId, '', [], []);
-	}
-
-	/**
-	 * @param {string} sessionId
-	 * @param {string} extraText
-	 * @param {any} images
-	 * @param {any} files
-	 */
-	function trySubmitAskSelections(sessionId, extraText, images, files) {
-		const awaiting = (get(sessionMessagesStore)[sessionId] || []).filter(
-			(x) => x.type === 'ask' && x.awaiting,
-		);
-		if (awaiting.length === 0) return false;
-		const byMsg = askSelections.get(sessionId);
-		if (!byMsg) return false;
-		if (!awaiting.every((x) => (byMsg.get(x.id) || []).length > 0)) return false;
-		for (const ask of awaiting) {
-			const selected = byMsg.get(ask.id) || [];
-			resolveAsk(ask.id, { answer: selected.join(' ') }, { deferSubmit: true });
-		}
-		const submitted = resolvedAskIds.get(sessionId);
-		resolvedAskIds.delete(sessionId);
-		clearAskSelections(sessionId);
-		submitActionAnswers(sessionId, submitted, extraText, images, files);
-		return true;
-	}
-
-	// Quick-reply answers / ignores chosen for the CURRENT batch of pending
-	// ask questions, per session. When the agent asks several questions in one
-	// batch (multiple `ask` calls in a single step), the session must stay
-	// paused until every question is resolved — answering only one would
-	// resume the session and silently discard the others. Once all are answered
-	// or ignored, a single composed reply is submitted. Typing a message in
-	// the input box bypasses this and resumes immediately (unless every ask
-	// already has selected options — then Enter merges selections + text).
-	let resolvedAskIds = new Map(); // sessionId -> Set<msgId>
-
-	// Mark one pending ask card as resolved (answered via option chips or
-	// ignored) and submit the composed answers once the batch is complete.
-	/** @param {string} msgId @param {any} resolved @param {{ deferSubmit?: boolean }} [opts] */
-	function resolveAsk(msgId, resolved, opts = {}) {
-		if (!activeSessionId || !msgId) return;
-		const ids = resolvedAskIds.get(activeSessionId) || new Set();
-		// Re-entry guard: a double-click / queued click on the same card (the
-		// DOM may not have re-rendered yet) must not compose and submit the
-		// same answer twice.
-		if (ids.has(msgId)) return;
-		updateSessionMessages(activeSessionId, (m) =>
-			m.map((x) =>
-				x.id === msgId && x.type === 'ask' && !x.resolved
-					? { ...x, awaiting: false, resolved }
-					: x,
-			),
-		);
-		ids.add(msgId);
-		resolvedAskIds.set(activeSessionId, ids);
-		const byMsg = askSelections.get(activeSessionId);
-		if (byMsg) {
-			byMsg.delete(msgId);
-			if (byMsg.size === 0) askSelections.delete(activeSessionId);
-		}
-		askSelectionsReady = computeAskSelectionsReady();
-		if (opts.deferSubmit) return;
-		const remainingMessages = (get(sessionMessagesStore)[activeSessionId] || []).filter(
-			(x) => x.type === 'ask' && x.awaiting,
-		);
-		if (remainingMessages.length === 0) {
-			const submitted = resolvedAskIds.get(activeSessionId);
-			resolvedAskIds.delete(activeSessionId);
-			submitActionAnswers(activeSessionId, submitted);
-		}
-	}
-
-	// Compose all answers chosen for the resolved batch into a single user
-	// message and deliver it, which resumes the paused session. A single
-	// question keeps the raw answer; multiple questions quote each one so the
-	// model can map answers back to its questions. Ignored questions are
-	// marked as 忽略. Optional typed text / attachments from the input box
-	// are appended when Enter submitted selected chips.
-	/** @param {string} sessionId @param {any} resolvedIds @param {string} [extraText] @param {any} [images] @param {any} [files] */
-	function submitActionAnswers(sessionId, resolvedIds, extraText = '', images = [], files = []) {
-		if (!resolvedIds || resolvedIds.size === 0) return;
-		const asks = (get(sessionMessagesStore)[sessionId] || []).filter(
-			(x) => x.type === 'ask' && x.resolved && resolvedIds.has(x.id),
-		);
-		if (asks.length === 0) return;
-		const single = asks.length === 1;
-		let text = asks
-			.map((x, i) => {
-				const answer = x.resolved.ignored ? '忽略' : x.resolved.answer;
-				return single ? answer : `关于「${x.content || `问题 ${i + 1}`}」：${answer}`;
-			})
-			.join('\n');
-		const extra = (extraText || '').trim();
-		if (extra) text = text ? `${text} ${extra}` : extra;
-		autoFollow = true;
-		submitMessage(text, images, files);
-	}
-
-	// The user chooses not to answer a pending question; counting as a
-	// resolution so the batch can resume once all questions are handled.
-	/** @param {string} msgId */
-	function handleIgnoreAsk(msgId) {
-		if (!activeSessionId) return;
-		resolveAsk(msgId, { ignored: true });
 	}
 
 	// Show the next queued confirmation once the current one is resolved

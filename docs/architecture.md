@@ -350,3 +350,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.6 UI：将 `confirm:requested` 到确认队列项的安全事件投影收口到 `ui/src/lib/chatConfirmationEventHandlers.ts`，路由页保留队列与授权 IPC 编排（ADR 0046） |
 | 2026-08-30 | §2.6 UI：将 session 生命周期事件的状态投影与终态清理收口到 `ui/src/lib/chatSessionEventHandlers.ts`，路由页保留响应式状态回调（ADR 0047） |
 | 2026-08-30 | §2.6 UI：将欢迎态、消息列表、后台等待提示与错误继续按钮收口到 `ui/src/lib/ChatMessageTimeline.svelte`，路由页保留滚动容器与业务回调（ADR 0048） |
+| 2026-08-30 | §2.6 UI：将 ask 选项选择、批量回答、忽略、恢复清理与重复提交防护收口到 `ui/src/lib/chatAskInteraction.ts`，路由页保留输入编排（ADR 0049） |
