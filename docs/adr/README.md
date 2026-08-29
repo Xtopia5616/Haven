@@ -35,3 +35,4 @@
 - [0027：LLM 适配器 web search 边界](0027-llm-adapter-web-search-boundary.md)
 - [0028：LLM 适配器 provider feature 边界](0028-llm-adapter-provider-features-boundary.md)
 - [0029：Agent 事实抽取边界](0029-agent-fact-extraction-boundary.md)
+- [0030：UI 会话消息状态边界](0030-ui-session-message-store-boundary.md)

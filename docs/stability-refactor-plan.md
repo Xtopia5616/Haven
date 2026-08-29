@@ -83,6 +83,7 @@
 - 2026-08-30：P2 LLM 适配器 web search 边界收口：内置搜索 call 规范化、citation 结果和按 id 去重集中到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027）。
 - 2026-08-30：P2 LLM 适配器 provider feature 边界收口：vendor 检测、thinking/reasoning 映射、echo 判定与长度限制集中到 `adapters/provider_features.rs`，保持 Chat/Responses wire 契约不变（ADR 0028）。
 - 2026-08-30：P2 Agent 事实抽取边界收口：事实抽取 DTO、字段 coercion、标签/谓词规范化、prompt 清洗与 JSON array 提取集中到 `fact_extraction.rs`，保持抽取与持久化语义不变（ADR 0029）。
+- 2026-08-30：P2 UI 会话消息状态边界收口：会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重集中到 `ui/src/lib/sessionMessages.ts`，由 `stores.ts` 兼容 re-export（ADR 0030）。
 
 ## 完成标准
 
