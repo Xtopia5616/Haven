@@ -42,3 +42,4 @@
 - [0034：UI 文件工具结果 renderer 边界](0034-ui-file-tool-renderer-boundary.md)
 - [0035：UI system 工具结果 renderer 边界](0035-ui-system-tool-renderer-boundary.md)
 - [0036：UI process 工具结果 renderer 边界](0036-ui-process-tool-renderer-boundary.md)
+- [0037：UI window/action/schedule renderer 边界](0037-ui-window-action-schedule-renderers.md)

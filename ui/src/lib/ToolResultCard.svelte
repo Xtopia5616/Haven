@@ -761,86 +761,6 @@
 				{:else}
 					<p class="tool-card-empty">没有匹配的结果</p>
 				{/if}
-			{:else if toolName === 'window'}
-				<div class="tool-card-count">{data.count ?? data.windows.length} 个窗口</div>
-				{#if data.windows.length > 0}
-					<div class="tool-card-list">
-						{#each data.windows as w (w.hwnd ?? w.title)}
-							<div class="window-row">
-								<span class="window-title" title={w.title}
-									>{w.title || '(无标题)'}</span
-								>
-								{#if w.pid}<span class="window-pid">PID {w.pid}</span>{/if}
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<p class="tool-card-empty">没有可见窗口</p>
-				{/if}
-			{:else if toolName === 'actions'}
-				{#if data.operation === 'result_injected'}
-					<div class="tool-card-count">
-						后台结果已回灌，正在继续{#if data.action_id}
-							· {data.action_id}{/if}
-					</div>
-					{#if data.status}
-						<div class="action-row">
-							<span class="action-id">{data.action_id || '—'}</span>
-							<span class="status-badge status-{data.status}">{data.status}</span>
-						</div>
-					{/if}
-				{:else if Array.isArray(data.actions)}
-					<div class="tool-card-count">{data.actions.length} 个后台任务</div>
-					{#if data.actions.length > 0}
-						<div class="tool-card-list">
-							{#each data.actions as a (a.action_id ?? a.job_id)}
-								<div class="action-row">
-									<span class="action-id">{a.action_id ?? a.job_id}</span>
-									<span class="status-badge status-{a.status}">{a.status}</span>
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<p class="tool-card-empty">没有后台任务</p>
-					{/if}
-				{:else}
-					<div class="action-row">
-						<span class="action-id">{data.action_id ?? data.job_id}</span>
-						<span class="status-badge status-{data.status}">{data.status}</span>
-					</div>
-					{#if data.exit_code != null}
-						<div class="tool-card-meta">退出码 {data.exit_code}</div>
-					{/if}
-				{/if}
-			{:else if toolName === 'schedule'}
-				{#if Array.isArray(data.scheduled_actions)}
-					<div class="tool-card-count">{data.scheduled_actions.length} 条定时任务</div>
-					{#if data.scheduled_actions.length > 0}
-						<div class="tool-card-list">
-							{#each data.scheduled_actions as r (r.id)}
-								<div class="scheduled-row">
-									<span class="scheduled-title">{r.title || r.body}</span>
-									{#if r.mode}
-										<span class="scheduled-mode">{r.mode}</span>
-									{/if}
-									{#if r.fires_at}
-										<span class="scheduled-time">{r.fires_at}</span>
-									{/if}
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<p class="tool-card-empty">没有待触发的定时任务</p>
-					{/if}
-				{:else}
-					<div class="action-row">
-						<span class="action-id">#{data.id}</span>
-						<span class="scheduled-mode">{data.mode}</span>
-					</div>
-					{#if data.fires_at}
-						<div class="tool-card-meta">触发时间 {data.fires_at}</div>
-					{/if}
-				{/if}
 			{:else if toolName === 'http'}
 				<div class="action-row">
 					<span
@@ -1106,18 +1026,6 @@
 		background: var(--md-sys-color-secondary);
 		animation: ask-pulse 1.2s ease-in-out infinite;
 	}
-	.notify-title {
-		margin: 0 0 var(--md-sys-space-2xs);
-		font-size: 12px;
-		font-weight: 700;
-		color: var(--md-sys-color-on-surface);
-	}
-	.notify-body {
-		margin: 0;
-		font-size: 12px;
-		line-height: 1.5;
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	@keyframes ask-pulse {
 		0%,
 		100% {
@@ -1150,9 +1058,7 @@
 		overflow-y: auto;
 		border-radius: var(--md-sys-shape-extra-small);
 	}
-	.search-row,
-	.window-row,
-	.scheduled-row {
+	.search-row {
 		display: flex;
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
@@ -1161,20 +1067,17 @@
 		font-size: 12px;
 	}
 	.search-row:nth-child(odd),
-	.window-row:nth-child(odd),
-	.scheduled-row:nth-child(odd) {
+	.search-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
 	}
-	.search-path,
-	.window-title,
-	.scheduled-title {
+	:global(.search-path) {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 11px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.search-path {
+	:global(.search-path) {
 		flex: 1;
 		min-width: 0;
 		color: var(--md-sys-color-primary);
@@ -1182,7 +1085,7 @@
 		text-underline-offset: 2px;
 		cursor: pointer;
 	}
-	.search-path:hover {
+	:global(.search-path:hover) {
 		color: color-mix(in srgb, var(--md-sys-color-primary) 80%, var(--md-sys-color-on-surface));
 	}
 	.search-line {
@@ -1200,73 +1103,6 @@
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.window-title {
-		flex: 1;
-		min-width: 0;
-		color: var(--md-sys-color-on-surface);
-	}
-	.window-pid {
-		flex: none;
-		font-size: 10px;
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.scheduled-mode {
-		flex: none;
-		font-size: 10px;
-		font-weight: 600;
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-	}
-	.scheduled-time {
-		flex: none;
-		font-size: 10px;
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.action-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		font-size: 12px;
-	}
-	.action-id {
-		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
-		color: var(--md-sys-color-on-surface);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.status-badge {
-		flex: none;
-		font-size: 10px;
-		font-weight: 700;
-		text-transform: uppercase;
-		padding: 1px 8px;
-		border-radius: var(--md-sys-shape-full);
-	}
-	.status-completed {
-		background: var(--md-sys-color-success);
-		color: var(--md-sys-color-on-success-container);
-	}
-	.status-failed {
-		background: var(--md-sys-color-error);
-		color: var(--md-sys-color-on-error);
-	}
-	.status-running {
-		background: var(--md-sys-color-secondary);
-		color: var(--md-sys-color-on-secondary);
-	}
-	.status-cancelled,
-	.status-not_found {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.status-idle {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	.content-preview {
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
@@ -1279,9 +1115,6 @@
 		max-height: 180px;
 		overflow-y: auto;
 		margin: var(--md-sys-space-xs) 0 0;
-	}
-	.content-preview.streaming {
-		max-height: 280px;
 	}
 	.usage-chip {
 		display: inline-block;

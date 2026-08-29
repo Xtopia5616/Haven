@@ -338,3 +338,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.6 UI：将 `file` 工具的文件操作、目录和读取结果收口到 `ToolFileResult.svelte`，并由 renderer registry 按工具名选择（ADR 0034） |
 | 2026-08-30 | §2.6 UI：将 `system` 工具的机器指标、显示器、环境变量筛选/复制与电源状态收口到 `ToolSystemResult.svelte`，并由 renderer registry 按工具名选择（ADR 0035） |
 | 2026-08-30 | §2.6 UI：将 `process` 工具的筛选、显示上限、CPU/内存指标和状态表格收口到 `ToolProcessResult.svelte`，并由 renderer registry 按工具名选择（ADR 0036） |
+| 2026-08-30 | §2.6 UI：将 `window`、`actions`、`schedule` 结果分别收口到对应 renderer 组件，并由 registry 按工具名选择（ADR 0037） |
