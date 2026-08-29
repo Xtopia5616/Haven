@@ -30,3 +30,4 @@
 - [0022：Memory 事实维护持久化边界](0022-memory-fact-maintenance-boundary.md)
 - [0023：LLM 请求策略共享边界](0023-llm-request-policy-boundary.md)
 - [0024：LLM 适配器传输边界](0024-llm-adapter-transport-boundary.md)
+- [0025：LLM 适配器流式 framing 边界](0025-llm-adapter-stream-framing-boundary.md)
