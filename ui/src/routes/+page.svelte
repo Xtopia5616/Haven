@@ -16,14 +16,12 @@
 
 <script>
 	import logger from '$lib/logger.ts';
-	import { withAnyValue } from '$lib/typedCallbacks.js';
 	import { formatError } from '$lib/formatError.ts';
 	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
 	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import {
-		accumulateStreamChunk,
 		applyThoughtSnap,
 		webSearchId,
 		webSearchCardContent,
@@ -34,6 +32,7 @@
 		actionIdFromObservation,
 		parseActionResultInject,
 	} from '$lib/streaming.ts';
+	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
@@ -68,7 +67,6 @@
 		formatCostUsd,
 		coalesceTokenTotal,
 		cumulativeCacheHitRatePercent,
-		seqLastSeen,
 		pruneSeq,
 		updateModelState,
 		modelStateStore,
@@ -1047,178 +1045,12 @@
 		if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 	}
 
-	// Streaming chunks are coalesced to ONE store flush per animation frame:
-	// a burst of chunk events (long answers, parallel streams) is applied to
-	// the message list in a single update, so the webview re-renders at most
-	// once per frame no matter how many chunks arrive. Without this, a fast
-	// stream saturates the webview main thread (every chunk re-renders the
-	// conversation), the Tauri IPC channel backs up, the backend's event
-	// buffer overflows and drops — and streaming visibly dies ("nothing, then
-	// a big dump"). Events that must see the flushed state (agent:thought
-	// snap, agent:action, agent:observation) flush synchronously first.
-	const pendingChunks = /** @type {Array<any>} */ ([]);
-	let chunkFlushRaf = 0;
-	// Hard cap on queued chunks: if the webview is hidden/occluded,
-	// requestAnimationFrame can stall indefinitely, so an unbounded queue
-	// would grow for the whole stream. On overflow the OLDEST queued chunk is
-	// dropped — chunks are self-healing (the step's final snap/full-text
-	// reconcile replaces accumulated deltas), so evicting old ones loses
-	// nothing authoritative, mirroring the backend's event-buffer policy.
-	const PENDING_CHUNK_MAX = 2000;
-	let pendingChunkDrops = 0;
 
-	// (session, step, run) → the minted ids of the step's two streaming
-	// blocks. Chunk events register them; the thought snap and the action
-	// handler look up the SIBLING id (a `msg-*` id carries no step
-	// information, so it cannot be derived from another block's id).
-	const stepBlockIds = new Map(); // sessionId -> Map<'step:run', {thoughtId, reasoningId}>
-	/** @param {number} stepNumber @param {number | string} runId */
-	function blockKey(stepNumber, runId) {
-		return `${stepNumber}:${runId}`;
-	}
-	/** @param {string} tid @param {number} stepNumber @param {number | string} runId @param {string} kind @param {string} messageId */
-	function registerBlockId(tid, stepNumber, runId, kind, messageId) {
-		if (!tid || !messageId) return;
-		let perSession = stepBlockIds.get(tid);
-		if (!perSession) stepBlockIds.set(tid, (perSession = new Map()));
-		const key = blockKey(stepNumber, runId);
-		const entry = perSession.get(key) || {};
-		// Readers destructure `{ thoughtId, reasoningId }`. Storing the
-		// kind string (`thought` / `reasoning`) as the key left every
-		// lookup undefined, so Thinking blocks never finalized.
-		if (kind === 'thought') entry.thoughtId = messageId;
-		else if (kind === 'reasoning') entry.reasoningId = messageId;
-		perSession.set(key, entry);
-	}
-	/** @param {string} tid @param {number} stepNumber @param {number | string} runId */
-	function blockIdsOf(tid, stepNumber, runId) {
-		return stepBlockIds.get(tid)?.get(blockKey(stepNumber, runId)) || {};
-	}
-	/** @param {string | null} sessionId */
-	function clearStepBlockIds(sessionId) {
-		const perSession = stepBlockIds.get(sessionId);
-		if (perSession) {
-			for (const { thoughtId, reasoningId } of perSession.values()) {
-				if (thoughtId) pruneSeq(thoughtId);
-				if (reasoningId) pruneSeq(reasoningId);
-			}
-		}
-		stepBlockIds.delete(sessionId);
-	}
-
-	function flushPendingChunks() {
-		chunkFlushRaf = 0;
-		if (pendingChunks.length === 0) return;
-		const batch = pendingChunks.splice(0);
-		// Merge deltas per step before touching the message list: each
-		// accumulateStreamChunk call copies the whole conversation array, so
-		// applying N chunks of the same step separately costs O(N × list) per
-		// flush — a long answer on a long conversation stalls the main thread.
-		// Concatenating the deltas preserves the final text (the step's snap
-		// reconciles everything anyway) and collapses the work to O(steps ×
-		// list), normally one array copy per flush.
-		const mergedBySid = new Map();
-		for (const c of batch) {
-			const prev = mergedBySid.get(c.sid);
-			if (prev) {
-				prev.delta = (prev.delta || '') + (c.delta || '');
-				prev.finalizeReasoning = prev.finalizeReasoning || c.finalizeReasoning;
-			} else {
-				mergedBySid.set(c.sid, { ...c });
-			}
-		}
-		// Group by session preserving arrival order within each session.
-		const bySession = new Map();
-		for (const c of mergedBySid.values()) {
-			let list = bySession.get(c.tid);
-			if (!list) bySession.set(c.tid, (list = []));
-			list.push(c);
-		}
-		for (const [tid, chunks] of bySession) {
-			updateSessionMessages(tid, (m) => {
-				let next = m;
-				for (const c of chunks) {
-					if (c.finalizeReasoning) {
-						const { reasoningId } = blockIdsOf(c.tid, c.stepNumber, c.runId);
-						if (reasoningId) {
-							next = finalizeStreamBlocks(next, reasoningId, null);
-							pruneSeq(reasoningId);
-						}
-					}
-					if (c.delta) {
-						next = accumulateStreamChunk(next, {
-							messageId: c.sid,
-							delta: c.delta,
-							msgType: c.msgType,
-							stepNumber: c.stepNumber,
-							runId: c.runId,
-							time: c.time,
-						});
-					}
-				}
-				return next;
-			});
-		}
-	}
-
-	/** Flush pending chunks synchronously (before snap/action/observation). */
-	function flushChunksNow() {
-		if (chunkFlushRaf) {
-			cancelAnimationFrame(chunkFlushRaf);
-			chunkFlushRaf = 0;
-		}
-		flushPendingChunks();
-	}
-
-	// Streaming chunk handler factory: finalizes the preceding reasoning block
-	// on the first thought chunk, dedups by per-block seq, and queues the
-	// delta for the per-frame flush (see flushPendingChunks).
-	/** @param {boolean} isThought @param {string | undefined} msgType */
-	function chunkHandler(isThought, msgType) {
-		return withAnyValue((event) => {
-			const data = event.payload;
-			const tid = data.sessionId;
-			const sid = data.messageId;
-			const delta = data.delta || '';
-			const seq = data.seq;
-			// The model-state chip reflects the ACTIVE conversation only:
-			// a background session streaming in parallel must not flip the
-			// active session's indicator to "streaming".
-			if (activeSessionId === tid) {
-				updateModelState('streaming');
-			}
-			if (seqLastSeen(sid, seq, tid)) return;
-			// Remember this block's minted id so the thought snap and the
-			// action handler can find the sibling reasoning/thought bubble.
-			registerBlockId(tid, data.stepNumber, data.runId, isThought ? 'thought' : 'reasoning', sid);
-
-			// Queue the chunk; the reasoning finalize + accumulation run in
-			// order inside the flush, so per-event semantics are unchanged.
-			pendingChunks.push({
-				tid,
-				sid,
-				delta,
-				msgType,
-				stepNumber: data.stepNumber,
-				runId: data.runId,
-				time: new Date().toLocaleTimeString(),
-				finalizeReasoning: isThought,
-			});
-			if (pendingChunks.length > PENDING_CHUNK_MAX) {
-				pendingChunks.shift();
-				pendingChunkDrops++;
-				if (pendingChunkDrops === 1) {
-					logger.warn(
-						'+page',
-						`chunk queue overflow (${PENDING_CHUNK_MAX}), evicting oldest chunks`,
-					);
-				}
-			}
-			if (!chunkFlushRaf) {
-				chunkFlushRaf = requestAnimationFrame(flushPendingChunks);
-			}
-		});
-	}
+	const streamEvents = createStreamEventAggregator({
+		getActiveSessionId: () => activeSessionId,
+		onActiveStream: () => updateModelState('streaming'),
+	});
+	const { blockIdsOf, chunkHandler, clearStepBlockIds, flushChunksNow } = streamEvents;
 
 	// Populate the toolbar model switcher from a per-session cache so page
 	// reloads (dev HMR reconnect, window re-show, single-instance re-entry)
