@@ -106,6 +106,9 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `adapters/web_search.rs`：内置 web search call 的 action 规范化、citation
   结果 DTO 和按 id 去重；provider 只捕获 wire 事件，Agent/UI 消费统一结果
   （ADR 0027）。
+- `adapters/provider_features.rs`：vendor 检测、thinking/reasoning 映射、
+  echo 判定及 reasoning 长度限制；Chat/Responses adapter 共享同一规则
+  （ADR 0028）。
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
@@ -324,3 +327,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.2 LLM：将 SSE/JSON-lines framing、EOF flush 与空 stream chunk 基线收口到 `adapters/stream.rs`，保持 provider wire 契约不变（ADR 0025） |
 | 2026-08-30 | §2.2 LLM：将 OpenAI-compatible embedding 的请求/响应规范化收口到 `adapters/embedding.rs`，保持 provider wire 契约不变（ADR 0026） |
 | 2026-08-30 | §2.2 LLM：将内置 web search call 规范化、citation 结果和按 id 去重收口到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027） |
+| 2026-08-30 | §2.2 LLM：将 vendor 检测、thinking/reasoning 映射、echo 判定与长度限制收口到 `adapters/provider_features.rs`，保持 Chat/Responses wire 契约不变（ADR 0028） |
