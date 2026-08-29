@@ -8,6 +8,7 @@ pub mod openai;
 pub mod openai_responses;
 mod stream;
 mod transport;
+mod web_search;
 
 pub use anthropic::AnthropicAdapter;
 pub use capabilities::{
@@ -19,8 +20,6 @@ pub use openai::OpenAiAdapter;
 
 use haven_common::config::ModelEndpoint;
 use haven_common::types::{ContentPart, InjectSource};
-use serde_json::Value;
-
 use crate::client::LlmClient;
 
 pub(crate) use embedding::{openai_compatible_embed, openai_embeddings_url};
@@ -28,6 +27,8 @@ pub(crate) use stream::{LineMode, empty_chunk, spawn_line_reader};
 pub(crate) use transport::{
     build_client, build_headers, health_check_request, send_request, stream_header_timeout,
 };
+pub use web_search::web_search_result_of;
+pub(crate) use web_search::{normalize_web_search_call_item, upsert_web_search_call};
 
 /// Phase 8 / B3: apply wire-only inject prefix to user content parts.
 ///
@@ -111,125 +112,8 @@ pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
     }
 }
 
-/// DeepSeek's web-search round-trip: a `web_search_call` item captured from
-/// the stream is echoed back verbatim into the next request's `input`.
-/// DeepSeek's Responses-compat layer deserializes the echoed item against a
-/// strict schema: the `action` field is an internally tagged enum
-/// (`WebSearchAction`) with variants `search` / `open_page` / `find_in_page`,
-/// and the `search` variant requires a `queries` string array. The
-/// `output_item.added` skeleton (only `type`/`id`/`status`) and the
-/// `web_search_call.*` status events lack `action` — echoing a bare skeleton
-/// 400s ("missing field `action`") — so the full `output_item.done` payload
-/// must be captured instead (see the adapter). As a last resort, fill the
-/// action when absent or malformed with `{"type": "search", "queries": []}`
-/// (verified accepted by DeepSeek); items that already carry a well-formed
-/// object `action` — e.g. an `output_item.done` payload — pass through
-/// untouched.
-/// Resolve prompt-cache hit tokens from nested details (`cached_tokens`) and
-/// optional flat aliases (e.g. DeepSeek `prompt_cache_hit_tokens`). Prefer the
-/// larger value so either reporting shape wins without double-counting.
 pub(crate) fn resolve_cached_tokens(nested: Option<u32>, flat_alias: u32) -> u32 {
     nested.unwrap_or(0).max(flat_alias)
-}
-
-pub(crate) fn normalize_web_search_call_item(item: serde_json::Value) -> serde_json::Value {
-    let mut item = item;
-    if !item.is_object() {
-        return item;
-    }
-    let has_valid_action = item.get("action").is_some_and(|a| a.is_object());
-    if !has_valid_action {
-        item["action"] = serde_json::json!({"type": "search", "queries": []});
-    }
-    item
-}
-
-/// Normalize one raw citation entry into `{title, url, snippet}`. Accepts
-/// objects with `title`/`url`/`snippet` (OpenAI / DeepSeek `citations`,
-/// Anthropic result rows) and plain URL strings (xAI Live Search citations).
-fn web_search_citation_of(raw: &serde_json::Value) -> Option<serde_json::Value> {
-    match raw {
-        serde_json::Value::String(url) if !url.is_empty() => {
-            Some(serde_json::json!({"title": url, "url": url, "snippet": ""}))
-        }
-        serde_json::Value::Object(o) => {
-            let title = o.get("title").and_then(Value::as_str).unwrap_or_default();
-            let url = o.get("url").and_then(Value::as_str).unwrap_or_default();
-            let snippet = o
-                .get("snippet")
-                .and_then(Value::as_str)
-                .or_else(|| o.get("content").and_then(Value::as_str))
-                .unwrap_or_default()
-                .chars()
-                .take(240)
-                .collect::<String>();
-            if title.is_empty() && url.is_empty() {
-                return None;
-            }
-            Some(serde_json::json!({"title": title, "url": url, "snippet": snippet}))
-        }
-        _ => None,
-    }
-}
-
-fn web_search_collect(src: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
-    match src {
-        serde_json::Value::Array(items) => {
-            for it in items {
-                if let Some(c) = web_search_citation_of(it) {
-                    out.push(c);
-                }
-            }
-        }
-        serde_json::Value::Object(o) => {
-            for key in ["results", "citations", "web_search_results"] {
-                if let Some(arr) = o.get(key).and_then(Value::as_array) {
-                    for it in arr {
-                        if let Some(c) = web_search_citation_of(it) {
-                            out.push(c);
-                        }
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Extract the tool return of a provider built-in web search from a
-/// `web_search_call` item: a compact `{queries, results}` payload where each
-/// result is `{title, url, snippet}`. Reads `action.search.citations` /
-/// `action.search.results` (OpenAI / DeepSeek / xAI), `action.result`
-/// (Anthropic `web_search_tool_result` blocks) and flat `citations` arrays
-/// (xAI Live Search). Returns `None` when the item carries no usable content
-/// (e.g. a bare Gemini grounding skeleton or an in-progress call), so the
-/// UI card falls back to the status label.
-pub fn web_search_result_of(item: &serde_json::Value) -> Option<serde_json::Value> {
-    let action = item.as_object()?.get("action")?.as_object()?;
-    let mut queries: Vec<String> = Vec::new();
-    if let Some(qs) = action.get("queries").and_then(Value::as_array) {
-        queries.extend(qs.iter().filter_map(Value::as_str).map(str::to_string));
-    }
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    for key in ["citations", "results", "result"] {
-        if let Some(src) = action.get(key) {
-            web_search_collect(src, &mut results);
-        }
-    }
-    // Anthropic web_search_tool_result puts the payload in `result.query`.
-    if queries.is_empty()
-        && let Some(q) = action
-            .get("result")
-            .and_then(Value::as_object)
-            .and_then(|r| r.get("query"))
-            .and_then(Value::as_str)
-    {
-        queries.push(q.to_string());
-    }
-    if queries.is_empty() && results.is_empty() {
-        return None;
-    }
-    Some(serde_json::json!({"queries": queries, "results": results}))
 }
 
 /// Lowercased `provider` + `base_url` + `model_name` haystack used to detect
@@ -425,37 +309,6 @@ pub(crate) fn reasoning_tail(text: String, cap: usize) -> String {
             .map(|(i, _)| i)
             .unwrap_or(text.len());
         text[start..].to_string()
-    }
-}
-
-/// Insert a captured `web_search_call` item into `calls`, replacing any
-/// earlier item with the same `id`. The `output_item.added` skeleton arrives
-/// first; a later `web_search_call.completed` payload — when the provider
-/// sends one — is the authoritative version. Both must never be echoed into
-/// the next request's input as duplicates.
-fn web_search_item_rank(item: &serde_json::Value) -> u8 {
-    let mut rank = 0u8;
-    if item.get("action").is_some_and(|a| a.is_object()) {
-        rank += 1;
-    }
-    if web_search_result_of(item).is_some() {
-        rank += 2;
-    }
-    rank
-}
-
-pub(crate) fn upsert_web_search_call(calls: &mut Vec<serde_json::Value>, item: serde_json::Value) {
-    let id = item.get("id").and_then(serde_json::Value::as_str);
-    if let Some(id) = id
-        && let Some(pos) = calls
-            .iter()
-            .position(|c| c.get("id").and_then(serde_json::Value::as_str) == Some(id))
-    {
-        if web_search_item_rank(&item) >= web_search_item_rank(&calls[pos]) {
-            calls[pos] = item;
-        }
-    } else {
-        calls.push(item);
     }
 }
 
@@ -900,189 +753,6 @@ mod tests {
         assert!(supports_builtin_web_search("openai-responses"));
         assert!(supports_builtin_web_search("xai"));
         assert!(!supports_builtin_web_search("openai-chat"));
-    }
-
-    #[test]
-    fn normalize_web_search_call_item_fills_missing_action() {
-        let skeleton = serde_json::json!({
-            "type": "web_search_call",
-            "id": "ws_1",
-            "status": "in_progress"
-        });
-        let out = normalize_web_search_call_item(skeleton);
-        // `action` is an internally tagged enum object; the `search` variant
-        // requires a `queries` array (verified against DeepSeek).
-        assert_eq!(
-            out["action"],
-            serde_json::json!({"type": "search", "queries": []})
-        );
-        assert_eq!(out["type"], "web_search_call");
-        assert_eq!(out["id"], "ws_1");
-        assert_eq!(out["status"], "in_progress");
-    }
-
-    #[test]
-    fn normalize_web_search_call_item_replaces_malformed_string_action() {
-        // A previous buggy fill wrote a bare string; DeepSeek rejects it
-        // ("invalid type: string, expected internally tagged enum
-        // WebSearchAction"), so it is replaced with the object form.
-        let skeleton = serde_json::json!({
-            "type": "web_search_call",
-            "id": "ws_1",
-            "status": "in_progress",
-            "action": "web_search"
-        });
-        let out = normalize_web_search_call_item(skeleton);
-        assert_eq!(
-            out["action"],
-            serde_json::json!({"type": "search", "queries": []})
-        );
-    }
-
-    #[test]
-    fn normalize_web_search_call_item_keeps_existing_action() {
-        let complete = serde_json::json!({
-            "type": "web_search_call",
-            "id": "ws_1",
-            "status": "completed",
-            "action": {"type": "open_page", "url": "https://example.com"},
-            "query": "foo"
-        });
-        let out = normalize_web_search_call_item(complete.clone());
-        assert_eq!(out, complete);
-    }
-
-    #[test]
-    fn normalize_web_search_call_item_skips_non_objects() {
-        assert_eq!(
-            normalize_web_search_call_item(serde_json::Value::Null),
-            serde_json::Value::Null
-        );
-    }
-
-    #[test]
-    fn web_search_result_of_reads_deepseek_citations() {
-        use serde_json::json;
-        let item = json!({
-            "type": "web_search_call",
-            "id": "ws_1",
-            "status": "completed",
-            "action": {
-                "type": "search",
-                "queries": ["capital of France"],
-                "citations": [
-                    {"id": "c1", "title": "Paris — Wikipedia", "url": "https://en.wikipedia.org/wiki/Paris", "snippet": "Paris is the capital of France.", "source": "wikipedia"},
-                    {"id": "c2", "title": "France", "url": "https://example.com/france"}
-                ]
-            }
-        });
-        let result = web_search_result_of(&item).expect("result payload");
-        assert_eq!(result["queries"], json!(["capital of France"]));
-        assert_eq!(result["results"][0]["title"], "Paris — Wikipedia");
-        assert_eq!(
-            result["results"][0]["url"],
-            "https://en.wikipedia.org/wiki/Paris"
-        );
-        assert_eq!(result["results"][1]["snippet"], "");
-    }
-
-    #[test]
-    fn web_search_result_of_accepts_flat_string_citations() {
-        use serde_json::json;
-        // xAI Live Search folds top-level URL citations into the item.
-        let item = json!({
-            "type": "web_search_call",
-            "id": "xai_citations",
-            "status": "completed",
-            "action": {"type": "search", "queries": [], "citations": ["https://a.com", "https://b.com"]}
-        });
-        let result = web_search_result_of(&item).expect("result payload");
-        assert_eq!(result["results"][0]["url"], "https://a.com");
-        assert_eq!(result["results"][0]["title"], "https://a.com");
-    }
-
-    #[test]
-    fn web_search_result_of_reads_anthropic_result_payload() {
-        use serde_json::json;
-        let item = json!({
-            "type": "web_search_call",
-            "id": "ws_result_3",
-            "status": "completed",
-            "action": {
-                "type": "search",
-                "queries": [],
-                "result": {
-                    "query": "best laptop 2026",
-                    "results": [
-                        {"title": "Top Laptops", "url": "https://reviews.example/laptops", "content": "long content…"}
-                    ]
-                }
-            }
-        });
-        let result = web_search_result_of(&item).expect("result payload");
-        assert_eq!(result["queries"], json!(["best laptop 2026"]));
-        assert_eq!(result["results"][0]["title"], "Top Laptops");
-        assert_eq!(result["results"][0]["snippet"], "long content…");
-    }
-
-    #[test]
-    fn web_search_result_of_empty_item_returns_none() {
-        use serde_json::json;
-        // Bare skeleton / Gemini grounding query-only item: no return value.
-        assert!(
-            web_search_result_of(
-                &json!({"type": "web_search_call", "id": "ws_1", "status": "in_progress"})
-            )
-            .is_none()
-        );
-        assert!(web_search_result_of(&json!({"type": "web_search_call", "id": "gemini_grounding", "status": "completed", "action": {"type": "search", "queries": ["foo"]}})).is_some());
-        assert!(web_search_result_of(&json!("nope")).is_none());
-    }
-
-    #[test]
-    fn upsert_web_search_call_replaces_same_id_and_appends_new() {
-        use serde_json::json;
-        let mut calls =
-            vec![json!({"type": "web_search_call", "id": "ws_1", "status": "in_progress"})];
-        // The completed payload replaces the in-progress skeleton by id.
-        upsert_web_search_call(
-            &mut calls,
-            json!({"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "queries": ["capital of France"]}}),
-        );
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0]["status"], "completed");
-        assert_eq!(
-            calls[0]["action"],
-            json!({"type": "search", "queries": ["capital of France"]})
-        );
-        // A different id is appended.
-        upsert_web_search_call(
-            &mut calls,
-            json!({"type": "web_search_call", "id": "ws_2", "status": "in_progress"}),
-        );
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[1]["id"], "ws_2");
-    }
-
-    #[test]
-    fn upsert_web_search_call_keeps_rich_item_over_skeleton() {
-        use serde_json::json;
-        let mut calls = vec![json!({
-            "type": "web_search_call",
-            "id": "ws_1",
-            "status": "completed",
-            "action": {
-                "type": "search",
-                "queries": ["capital of France"],
-                "citations": [{"title": "Paris", "url": "https://ex"}]
-            }
-        })];
-        upsert_web_search_call(
-            &mut calls,
-            json!({"type": "web_search_call", "id": "ws_1", "status": "completed"}),
-        );
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0]["action"]["citations"][0]["url"], "https://ex");
     }
 
     #[tokio::test]

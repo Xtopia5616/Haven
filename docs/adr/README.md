@@ -32,3 +32,4 @@
 - [0024：LLM 适配器传输边界](0024-llm-adapter-transport-boundary.md)
 - [0025：LLM 适配器流式 framing 边界](0025-llm-adapter-stream-framing-boundary.md)
 - [0026：LLM 适配器 embedding 边界](0026-llm-adapter-embedding-boundary.md)
+- [0027：LLM 适配器 web search 边界](0027-llm-adapter-web-search-boundary.md)

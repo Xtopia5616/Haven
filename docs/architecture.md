@@ -103,6 +103,9 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `adapters/embedding.rs`：OpenAI-compatible embedding 的 URL、请求体、响应
   排序/校验和 usage 转换；provider 选择 endpoint，transport 负责通用 HTTP
   错误（ADR 0026）。
+- `adapters/web_search.rs`：内置 web search call 的 action 规范化、citation
+  结果 DTO 和按 id 去重；provider 只捕获 wire 事件，Agent/UI 消费统一结果
+  （ADR 0027）。
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
@@ -320,3 +323,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.2 LLM：将 provider 共用 HTTP client、认证头、状态错误、流式 header 超时与健康检查收口到 `adapters/transport.rs`，保持 provider wire 契约不变（ADR 0024） |
 | 2026-08-30 | §2.2 LLM：将 SSE/JSON-lines framing、EOF flush 与空 stream chunk 基线收口到 `adapters/stream.rs`，保持 provider wire 契约不变（ADR 0025） |
 | 2026-08-30 | §2.2 LLM：将 OpenAI-compatible embedding 的请求/响应规范化收口到 `adapters/embedding.rs`，保持 provider wire 契约不变（ADR 0026） |
+| 2026-08-30 | §2.2 LLM：将内置 web search call 规范化、citation 结果和按 id 去重收口到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027） |
