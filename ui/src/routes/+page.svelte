@@ -22,6 +22,7 @@
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
+	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import {
 		buildTokenUsageTooltip,
@@ -51,7 +52,6 @@
 		resumeTargetStore,
 		activeSessionIdStore,
 		sessionTokenStatsStore,
-		updateSessionTokenStats,
 		clearSessionTokenStats,
 		restoreSessionTokenStats,
 		sessionLlmUsageStore,
@@ -59,13 +59,9 @@
 		clearSessionLlmUsage,
 		formatTokenCount,
 		coalesceTokenTotal,
-		pruneSeq,
 		updateModelState,
 		modelStateStore,
 		refreshActions,
-		setToolOutputPreview,
-		clearToolOutputPreview,
-		appendSessionLlmUsage,
 		finalizeBackgroundActionMessages,
 		actionStore,
 		DRAFT_KEY,
@@ -1287,91 +1283,7 @@
 					showNextConfirm();
 				},
 				}),
-				// Token usage / cost stats — emitted after every LLM step.
-				...agentEventListeners({
-				'agent:usage': (event) => {
-					const d = event.payload;
-					if (!d.sessionId) return;
-					const prompt = d.promptTokens || 0;
-					const completion = d.completionTokens || 0;
-					const cached = d.cachedTokens || 0;
-					const creation = d.cacheCreationTokens || 0;
-					const miss = d.cacheMissTokens || 0;
-					const total = coalesceTokenTotal(
-						prompt,
-						completion,
-						d.totalTokens || 0,
-						cached,
-						creation,
-						d.cacheAccounting || 'unknown',
-					);
-					const cumPrompt = d.cumulativePromptTokens || 0;
-					const cumCompletion = d.cumulativeCompletionTokens || 0;
-					const cumCached = d.cumulativeCachedTokens || 0;
-					const cumCreation = d.cumulativeCacheCreationTokens || 0;
-					const cumMiss = d.cumulativeCacheMissTokens || 0;
-					updateSessionTokenStats(d.sessionId, {
-						promptTokens: prompt,
-						completionTokens: completion,
-						totalTokens: total,
-						cachedTokens: cached,
-						cacheCreationTokens: creation,
-						cacheMissTokens: miss,
-						cacheAccounting: d.cacheAccounting || 'unknown',
-						contextTokens: d.contextTokens || 0,
-						cacheExclusive: !!d.cacheExclusive,
-						cumulativePromptTokens: cumPrompt,
-						cumulativeCompletionTokens: cumCompletion,
-						cumulativeTotalTokens: coalesceTokenTotal(
-							cumPrompt,
-							cumCompletion,
-							d.cumulativeTotalTokens || 0,
-							cumCached,
-							cumCreation,
-						),
-						cumulativeCachedTokens: cumCached,
-						cumulativeCacheCreationTokens: cumCreation,
-						cumulativeCacheMissTokens: cumMiss,
-						costUsd: d.costUsd ?? null,
-						cumulativeCostUsd: d.cumulativeCostUsd ?? null,
-						contextWindow: d.contextWindow ?? null,
-						model: d.model ?? null,
-						// A real usage event supersedes any restored estimate.
-						estimated: false,
-						// A live event means the conversation is active again:
-						// the widget switches back to the per-step context view.
-						restored: false,
-					});
-					// Also append the per-call detail so tool-card token chips
-					// (stepUsage) update live — previously they only appeared
-					// after restoreSessionLlmUsage on resume/reopen.
-					if (d.stepNumber != null) {
-						appendSessionLlmUsage(d.sessionId, {
-							step_number: d.stepNumber,
-							role: d.role || undefined,
-							model: d.model ?? null,
-							prompt_tokens: prompt,
-							completion_tokens: completion,
-							total_tokens: total,
-							cached_tokens: cached,
-							cache_creation_tokens: creation,
-							cache_miss_tokens: miss,
-							cache_accounting: d.cacheAccounting || 'unknown',
-							cache_diagnostics: d.cacheDiagnostics || undefined,
-							cost_usd: d.costUsd ?? null,
-							has_cost: !!d.hasCost,
-							duration_ms: d.durationMs ?? null,
-						});
-					}
-				},
-				// Context compaction notice — summarize a portion of the history.
-				'agent:compaction': (event) => {
-					const d = event.payload;
-					const before = formatTokenCount(d.tokensBefore || 0);
-					const after = formatTokenCount(d.tokensAfter || 0);
-					addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
-				},
-				}),
+				...agentEventListeners(createChatUsageEventHandlers()),
 			},
 			{ tag: '+page' },
 		);

@@ -50,3 +50,4 @@
 - [0042：UI 聊天工具栏边界](0042-ui-chat-toolbar-boundary.md)
 - [0043：UI 会话用量展示边界](0043-ui-session-usage-presentation-boundary.md)
 - [0044：UI Agent 事件 handler 边界](0044-ui-agent-event-handler-boundary.md)
+- [0045：UI Agent 用量事件边界](0045-ui-agent-usage-event-boundary.md)
