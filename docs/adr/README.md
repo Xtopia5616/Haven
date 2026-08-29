@@ -25,3 +25,4 @@
 - [0017：升级 Node.js 到 24.20.0 LTS](0017-node-24-20-lts-toolchain.md)
 - [0018：统一 VS Code 与 Tauri 的工具链入口](0018-vscode-toolchain-entrypoints.md)
 - [0019：Memory 事实图谱写入边界](0019-memory-fact-graph-write-boundary.md)
+- [0020：Memory 事实查询与排序边界](0020-memory-fact-query-ranking-boundary.md)

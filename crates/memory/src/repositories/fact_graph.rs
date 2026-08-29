@@ -5,9 +5,10 @@
 //! storage, user authority and inferred-fact reinforcement. Keeping those
 //! rules together prevents a new write path from bypassing graph invariants.
 
+use super::fact_query::{FACT_COLS, fact_from_row};
 use super::facts::{
-    FACT_COLS, Fact, FactSourceRef, UpsertOutcome, fact_from_row, is_single_valued_predicate,
-    normalize_predicate, polarity_opposite,
+    Fact, FactSourceRef, UpsertOutcome, is_single_valued_predicate, normalize_predicate,
+    polarity_opposite,
 };
 use crate::db::Database;
 use chrono::Utc;

@@ -73,6 +73,7 @@
 - 2026-08-27：P2 Agent 恢复/回滚/Hook 边界收口：恢复候选合并、无快照工具链投影和 MCP 选择移入 `resume_support.rs`；回滚事件操作移入 `rollback_support.rs` 并优先使用 `message_id`；生产 Hook 策略移入 `react/hook_policy.rs`，保持 `events` 为恢复唯一权威（ADR 0012）。
 - 2026-08-27：P2 Memory schema 边界收口：当前幂等 schema 与历史迁移目录拆分为 `schema.rs` / `migrations.rs`，保持 `user_version` 逐步戳记、迁移顺序与 X12 恢复权威不变（ADR 0013）。
 - 2026-08-29：P2 Memory 图谱写入边界收口：事实插入、节点关联、用户权威、upsert 与删除集中到 `repositories/fact_graph.rs`，`Database` API 与 X12 契约不变（ADR 0019）。
+- 2026-08-29：P2 Memory 查询/排序边界收口：事实行映射、列表/批量读取、FTS/LIKE、标签查询、缓存读取与有效置信度排序集中到 `repositories/fact_query.rs`，保持 `Database` API 与持久化语义不变（ADR 0020）。
 
 ## 完成标准
 
