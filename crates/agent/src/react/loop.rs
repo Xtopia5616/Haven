@@ -48,6 +48,19 @@ struct RunBudgetConfig {
     effective_max: u32,
 }
 
+/// Complete input for one run. Grouping the mutable transcript and run
+/// metadata keeps the public orchestration boundary stable as the loop gains
+/// more run-scoped state.
+pub(crate) struct RunInput<'a> {
+    pub(crate) session_id: &'a str,
+    pub(crate) canonical: &'a mut Vec<CanonicalMessage>,
+    pub(crate) events: &'a mut Vec<TranscriptRecord>,
+    pub(crate) start_step: u32,
+    pub(crate) branch_points: &'a mut HashMap<u32, BranchPoint>,
+    pub(crate) emitter: Arc<dyn AgentEventEmitter>,
+    pub(crate) run_id: u64,
+}
+
 impl RunBudgetConfig {
     fn new(max_steps: u32, session_max_steps: Option<u32>, start_step: u32) -> Self {
         let per_run_cap = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
@@ -81,16 +94,16 @@ impl ReActEngine {
     /// so the resume/rollback boundary can persist or project them after the
     /// run returns.
     #[allow(clippy::too_many_arguments)]
-    pub async fn run_react_loop(
-        &self,
-        session_id: &str,
-        canonical: &mut Vec<CanonicalMessage>,
-        events: &mut Vec<TranscriptRecord>,
-        start_step: u32,
-        branch_points: &mut HashMap<u32, BranchPoint>,
-        emitter: Arc<dyn AgentEventEmitter>,
-        run_id: u64,
-    ) -> anyhow::Result<LoopExit> {
+    pub(crate) async fn run_react_loop(&self, input: RunInput<'_>) -> anyhow::Result<LoopExit> {
+        let RunInput {
+            session_id,
+            canonical,
+            events,
+            start_step,
+            branch_points,
+            emitter,
+            run_id,
+        } = input;
         let budget = RunBudgetConfig::from_engine(self, start_step);
         let session_max_steps = *self.session_max_steps.lock().unwrap();
         self.clear_msg_ids_for_session(session_id);

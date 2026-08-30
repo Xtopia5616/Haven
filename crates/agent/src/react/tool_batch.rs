@@ -880,8 +880,15 @@ impl ReActEngine {
         };
         let step_num = pending.step_number;
         let max_obs = self.limits().max_observation_chars;
+        let proj_ctx = StepCtx {
+            session_id: session_id.to_string(),
+            step_num,
+            run_id,
+            emitter: emitter.clone(),
+        };
+        let mut batch_state = ToolBatchState::default();
 
-        for tool in &pending.tools {
+        for tool in pending.tools {
             let Some(decision) = tool.decision else {
                 continue;
             };
@@ -893,7 +900,7 @@ impl ReActEngine {
                 tool_call_id: tool_call_id.clone(),
             };
 
-            if decision {
+            let result = if decision {
                 let result = self
                     .executor
                     .execute_step_preconfirmed(
@@ -930,62 +937,22 @@ impl ReActEngine {
                         }
                         Err(e) => (e.to_string(), true, None, Vec::new(), None, None),
                     };
-                let _ = is_error;
-                if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
-                    emitter
-                        .emit(crate::event::AgentEvent::Notification {
-                            session_id: session_id.into(),
-                            title: title.clone(),
-                            body: body.clone(),
-                        })
-                        .await;
+                CompletedTool {
+                    action,
+                    tool_name: tool.tool_name,
+                    step_result: text,
+                    is_error,
+                    ask_question,
+                    ask_options,
+                    notify_title,
+                    notify_body,
+                    step_id: tool.step_id,
                 }
-                let silent = is_silent_action(&tool.tool_name, &tool.tool_input)
-                    || (is_agent_inbox_call(&tool.tool_name, &tool.tool_input)
-                        && empty_inbox_output(&text));
-                let display_observation = if let Some(q) = &ask_question {
-                    q.clone()
-                } else if let Some(title) = &notify_title {
-                    let body = notify_body.clone().unwrap_or_default();
-                    if body.is_empty() {
-                        text.clone()
-                    } else {
-                        format!("Notification sent: {title}: {body}")
-                    }
-                } else {
-                    text.clone()
-                };
-                let proj_ctx = StepCtx {
-                    session_id: session_id.to_string(),
-                    step_num,
-                    run_id,
-                    emitter: emitter.clone(),
-                };
-                self.apply_transcript(
-                    &proj_ctx,
-                    TranscriptEvent::ToolResult {
-                        canonical_observation: text,
-                        history_observation: display_observation,
-                        tool_call_id: tool_call_id.clone(),
-                        action,
-                        observation_card: Some(ObservationCard {
-                            tool_name: tool.tool_name.clone(),
-                            tool_call_id,
-                            step_id: tool.step_id.clone(),
-                            silent,
-                            ask_options,
-                        }),
-                    },
-                    events,
-                    canonical,
-                )
-                .await;
             } else {
                 let error = format!(
                     "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                     tool.tool_name
                 );
-                let silent = is_silent_action(&tool.tool_name, &tool.tool_input);
                 self.executor
                     .finish_interrupted_step(
                         session_id,
@@ -996,37 +963,39 @@ impl ReActEngine {
                         &error,
                     )
                     .await;
-                let proj_ctx = StepCtx {
-                    session_id: session_id.to_string(),
-                    step_num,
-                    run_id,
-                    emitter: emitter.clone(),
-                };
-                self.apply_transcript(
-                    &proj_ctx,
-                    TranscriptEvent::ToolResult {
-                        canonical_observation: error.clone(),
-                        history_observation: error,
-                        tool_call_id: tool_call_id.clone(),
-                        action,
-                        observation_card: Some(ObservationCard {
-                            tool_name: tool.tool_name.clone(),
-                            tool_call_id,
-                            step_id: tool.step_id.clone(),
-                            silent,
-                            ask_options: Vec::new(),
-                        }),
-                    },
-                    events,
-                    canonical,
-                )
+                CompletedTool {
+                    action,
+                    tool_name: tool.tool_name,
+                    step_result: error,
+                    is_error: true,
+                    ask_question: None,
+                    ask_options: Vec::new(),
+                    notify_title: None,
+                    notify_body: None,
+                    step_id: tool.step_id,
+                }
+            };
+            batch_state
+                .commit_tool_result(self, &proj_ctx, result, events, canonical)
                 .await;
-            }
         }
 
         self.executor
             .clear_awaiting_confirm_persisted(session_id)
             .await;
+
+        if !batch_state.asked_questions.is_empty() {
+            let question = batch_state.asked_questions.join("\n\n");
+            self.executor
+                .set_awaiting_answer(
+                    session_id,
+                    Some(crate::types::AskPending {
+                        question,
+                        step_ids: batch_state.ask_step_ids.clone(),
+                    }),
+                )
+                .await;
+        }
 
         // Same-batch ask was stashed while confirm paused first: surface it now.
         if let Some(ask) = self.executor.get_awaiting_answer(session_id).await {

@@ -26,6 +26,7 @@
 //! `message_id` and is idempotent (duplicate id is skipped).
 
 use crate::AgentLayer;
+use crate::react::RunInput;
 use crate::resume_support::{
     load_mcp_tool_names, merge_recovery_candidates, project_tool_chain_from_steps,
 };
@@ -512,15 +513,15 @@ impl AgentLayer {
         };
         let exit = self
             .react_engine
-            .run_react_loop(
+            .run_react_loop(RunInput {
                 session_id,
-                &mut canonical,
-                &mut events,
+                canonical: &mut canonical,
+                events: &mut events,
                 start_step,
-                &mut branch_points,
-                emitter_arc,
+                branch_points: &mut branch_points,
+                emitter: emitter_arc,
                 run_id,
-            )
+            })
             .await?;
         // C2: soft LoopExit::Error must hit the same host failure path as
         // hard Err so dispatcher cleanup (cancel actions / fail steps /
@@ -629,15 +630,15 @@ impl AgentLayer {
         let run_id = self.react_engine.next_run_id();
         let exit = self
             .react_engine
-            .run_react_loop(
+            .run_react_loop(RunInput {
                 session_id,
-                &mut canonical,
-                &mut events,
-                1,
-                &mut branch_points,
-                emitter_arc,
+                canonical: &mut canonical,
+                events: &mut events,
+                start_step: 1,
+                branch_points: &mut branch_points,
+                emitter: emitter_arc,
                 run_id,
-            )
+            })
             .await?;
         match exit {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),

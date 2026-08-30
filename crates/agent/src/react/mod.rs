@@ -35,6 +35,7 @@ use context::ContextSource;
 pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
+pub(crate) use r#loop::RunInput;
 pub use r#loop::{LoopExit, PauseReason};
 use sidecars::{
     BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs,
