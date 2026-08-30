@@ -6,7 +6,7 @@
 
 ## 决定
 
-- 将 `.node-version` 精确固定到 24.20.0；`ui/package.json` 的 `engines` 保持 Node 24 的兼容范围，避免把补丁版本差异变成启动硬阻断。
+- 将 `.node-version` 与 `ui/package.json` 的 `engines.node` 精确固定到 24.20.0，确保本地开发、CI 与 UI 依赖链使用同一 Node.js 补丁版本。
 - CI 继续通过 `.node-version` 读取版本，不新增独立版本来源。
 - pnpm 继续固定为 11.24.0；不因 Node 自带 npm 版本变化而引入第二套包管理入口。
 

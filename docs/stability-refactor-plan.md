@@ -58,13 +58,16 @@
 - 2026-08-27：补齐应用壳层与 Agent 事件 DTO：39 个事件统一由 Rust 名称常量、命名 wire DTO 和前端 contract 登记；新增 `scripts/check-ipc-events.ps1` 保护 channel 集合与 snake_case → camelCase 边界（ADR 0009）。
 - 2026-08-27：媒体能力的持久化配置仅保留命名 provider 与能力参数；STT/TTS/文生图凭据改为解析后的运行时 DTO，旧媒体 provider 名或本地凭据会备份配置并以默认值启动，避免再次读入旧兼容字段（ADR 0008）。
 
-### P2：按稳定接口拆解热点
+### P2：按稳定接口拆解热点（已完成：2026-08-30；平台适配暂缓）
 
 - Memory：将 schema、图谱写入、查询/排序、嵌入与迁移策略分离；仓库层不承担业务推理。
 - LLM：提取供应商适配器共享的请求、流式、用量和重试管线；每个 provider 只保留协议映射。
 - Agent：将 loop、恢复、投影、队列和副作用 Hook 保持独立；禁止从快捷修复重新穿透层级。
 - UI：拆分聊天页的会话状态、事件归并、输入和渲染；将工具结果渲染改为按工具类型注册的组件，避免继续扩大单一页面与卡片组件。
-- 平台适配（待实施，见 ADR 0015）：保持核心契约平台无关；完善音频实时回调与设备恢复、tract CPU 回归、进程组取消、Windows 专属能力降级、通知/自启适配以及 Linux 桌面构建验收。
+
+#### 暂缓项（不计入 P2 完成条件）
+
+平台适配（见 ADR 0015）暂缓并移出本阶段，后续单独立项处理音频实时回调与设备恢复、tract CPU 回归、进程组取消、Windows 专属能力降级、通知/自启适配以及 Linux 桌面构建验收。
 
 #### 已完成记录
 
@@ -105,6 +108,9 @@
 - 2026-08-30：P2 UI ask 交互边界收口：选项选择、批量回答、忽略、恢复清理与重复提交防护集中到 `ui/src/lib/chatAskInteraction.ts`，路由页保留输入编排（ADR 0049）。
 - 2026-08-30：P2 LLM endpoint 健康与熔断边界收口：熔断器、连续失败统计、半开探测、role 索引与健康槽位初始化集中到 `crates/llm/src/endpoint_health.rs`，router 保留并发存储与请求时机（ADR 0051）。
 - 2026-08-30：删除已到期的 UI `stores.ts` 消息/用量兼容 re-export，并删除未压缩 ReAct snapshot 读取回退；旧 UI 导入和旧数据库快照按发布说明迁移/重置（ADR 0052）。
+- 2026-08-30：P2 LLM 流式执行边界收口：流式上下文估算、idle scaling、规则门禁、chunk 聚合与首 chunk 前重试集中到 `streaming.rs`，router 保留 endpoint 编排（ADR 0053）。
+- 2026-08-30：P2 Agent 事实推理边界收口：增量抽取窗口、transcript 构造、来源解析与提案安全门禁集中到 `fact_inference.rs`，inference 保留调度与写入编排（ADR 0054）。
+- 2026-08-30：P2 UI 模型同步边界收口：默认模型发现缓存、设置投影、provider 能力归一化与刷新代次集中到 `chatModelSync.ts`，路由页保留状态与菜单编排（ADR 0055）。
 
 ## 完成标准
 

@@ -1,19 +1,3 @@
-<script module>
-	// Per-session cache for the toolbar model switcher's model discovery.
-	// Dev-mode page reloads (Vite HMR reconnect, window re-show, single-
-	// instance re-entry) remount the chat view and would otherwise fire a
-	// duplicate discover_models request against the same default endpoint.
-	// Cache the result per base URL and share in-flight requests so reloads
-	// reuse the list instead of re-hitting the provider's /models endpoint.
-	/** @type {{ baseUrl: string | null, list: any[] | null, inflight: Promise<any> | null, inflightUrl: string | null }} */
-	const defaultModelsCache = {
-		baseUrl: null,
-		list: null,
-		inflight: null,
-		inflightUrl: null,
-	};
-</script>
-
 <script>
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
@@ -26,12 +10,12 @@
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
+	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import {
 		buildTokenUsageTooltip,
 		stepUsageFor,
 	} from '$lib/sessionUsagePresentation.ts';
-	import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
@@ -926,126 +910,34 @@
 	});
 	const { blockIdsOf, chunkHandler, clearStepBlockIds, flushChunksNow } = streamEvents;
 
-	// Populate the toolbar model switcher from a per-session cache so page
-	// reloads (dev HMR reconnect, window re-show, single-instance re-entry)
-	// don't re-request the same model list. Concurrent mounts share the
-	// in-flight request, so the duplicate discover_models calls seen on
-	// reload disappear without losing the fresh-on-first-load behavior.
-	/** @param {string} baseUrl @param {string} providerName */
-	function ensureDefaultModelOptions(baseUrl, providerName) {
-		if (defaultModelsCache.baseUrl === baseUrl && defaultModelsCache.list) {
-			modelOptions = defaultModelsCache.list;
-			return;
-		}
-		// Settings can swap the default provider while this view stays mounted
-		// (keep-alive). Drop the previous endpoint's list; an in-flight fetch
-		// for a different URL is abandoned (its .then is stamped and no-ops).
-		if (defaultModelsCache.baseUrl !== baseUrl) {
-			defaultModelsCache.list = null;
-			defaultModelsCache.baseUrl = baseUrl;
-		}
-		if (defaultModelsCache.inflight && defaultModelsCache.inflightUrl === baseUrl) {
-			defaultModelsCache.inflight
-				.then((list) => {
-					if (!dead && defaultModelsCache.baseUrl === baseUrl) modelOptions = list;
-				})
-				.catch(() => {
-					if (!dead && defaultModelsCache.baseUrl === baseUrl) modelOptions = [];
-				});
-			return;
-		}
-		const requestedUrl = baseUrl;
-		defaultModelsCache.baseUrl = requestedUrl;
-		defaultModelsCache.inflightUrl = requestedUrl;
-		defaultModelsCache.inflight = invoke('discover_models', {
-			baseUrl: requestedUrl,
-			apiKey: '',
-			provider: providerName || '',
-		})
-			.then((list) => {
-				const next = list || [];
-				// Stale response after a provider swap: ignore.
-				if (defaultModelsCache.baseUrl !== requestedUrl) return next;
-				defaultModelsCache.list = next;
-				if (!dead) modelOptions = next;
-				return next;
-			})
-			.catch((e) => {
-				logger.warn('+page', 'discover_models error', e);
-				if (!dead && defaultModelsCache.baseUrl === requestedUrl) modelOptions = [];
-				throw e;
-			})
-			.finally(() => {
-				// Only clear the coalescing slot when we still own it.
-				if (defaultModelsCache.inflightUrl === requestedUrl) {
-					defaultModelsCache.inflight = null;
-					defaultModelsCache.inflightUrl = null;
-				}
-			});
-		// Swallow the rethrown rejection for the shared in-flight promise;
-		// the branch above already surfaces the failure to the UI.
-		defaultModelsCache.inflight.catch(() => {});
-	}
-
-	/**
-	 * Apply the default_model role from a get_settings payload onto the
-	 * toolbar switcher. Used on mount and whenever `llm:config_changed`
-	 * fires (settings save / toolbar switch) so keep-alive doesn't leave
-	 * the chat toolbar stuck on a stale model.
-	 * @param {any} s
-	 */
-	function applyDefaultModelFromSettings(s) {
-		const dmRole = (/** @type {any[]} */ (s?.llm?.roles || [])).find((r) => r.role === 'default_model');
-		const dmProvider = dmRole?.provider
-			? (/** @type {any[]} */ (s?.llm?.providers || [])).find((p) => p.name === dmRole.provider)
-			: null;
-		const dmModel = dmRole?.model || '';
-		currentModelId = dmModel;
-		currentModelName = dmModel;
-		currentEffort = dmRole?.reasoning_effort || '';
-		currentWebSearch = dmRole?.web_search || 'off';
-		currentApiStyle = normalizeApiStyle(dmProvider?.api_style || dmProvider?.provider);
-		webSearchSupported = supportsBuiltinWebSearch(currentApiStyle);
-		// Stale auto/always on an unsupported style: clear to off so it cannot
-		// resurrect when the user later switches to a supporting provider.
-		if (!webSearchSupported && currentWebSearch !== 'off') {
-			currentWebSearch = 'off';
-			invoke('set_web_search', { role: 'default_model', mode: 'off' }).catch((e) => {
-				logger.warn('+page', 'clear unsupported web_search failed', e);
-			});
-		} else if (webSearchSupported && currentApiStyle === 'gemini' && currentWebSearch === 'always') {
-			// Gemini Always ≡ Auto; normalize stored value.
-			currentWebSearch = 'auto';
-			invoke('set_web_search', { role: 'default_model', mode: 'auto' }).catch((e) => {
-				logger.warn('+page', 'normalize gemini web_search always→auto failed', e);
-			});
-		}
-		if (dmProvider?.base_url) {
-			ensureDefaultModelOptions(dmProvider.base_url, dmProvider.name);
-		} else {
-			modelOptions = [];
-		}
-	}
-
-	// Monotonic generation so overlapping get_settings refreshes never apply
-	// an older snapshot after a newer toolbar switch / settings save.
-	let defaultModelSyncGen = 0;
-	// Toolbar already wrote local state before emitting llm:config_changed —
-	// skip the redundant self-echo refresh once.
+	// Model discovery and default-model settings synchronization live outside the
+	// route component; this page only supplies Svelte state setters.
 	let skipNextDefaultModelRefresh = false;
-
-	/** Re-fetch settings and refresh the toolbar default-model controls. */
-	function refreshDefaultModelFromBackend() {
-		const gen = ++defaultModelSyncGen;
-		invoke('get_settings')
-			.then((s) => {
-				if (dead || gen !== defaultModelSyncGen) return;
-				applyDefaultModelFromSettings(s);
-			})
-			.catch((e) => {
-				logger.warn('+page', 'refresh default model error', e);
-			});
-	}
+	const modelSync = createChatModelSync({
+		isDead: () => dead,
+		setModelOptions: (value) => {
+			modelOptions = value;
+		},
+		setCurrentModelId: (value) => {
+			currentModelId = value;
+		},
+		setCurrentModelName: (value) => {
+			currentModelName = value;
+		},
+		setCurrentEffort: (value) => {
+			currentEffort = value;
+		},
+		setCurrentWebSearch: (value) => {
+			currentWebSearch = value;
+		},
+		setWebSearchSupported: (value) => {
+			webSearchSupported = value;
+		},
+		setCurrentApiStyle: (value) => {
+			currentApiStyle = value;
+		},
+	});
+	const { applyDefaultModelFromSettings, refreshDefaultModelFromBackend } = modelSync;
 
 	// Open a reviewed conversation (from the history page). The chat view
 	// stays mounted while other tabs are open, so this runs both at mount and

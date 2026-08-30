@@ -331,8 +331,8 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.2 LLM：将内置 web search call 规范化、citation 结果和按 id 去重收口到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027） |
 | 2026-08-30 | §2.2 LLM：将 vendor 检测、thinking/reasoning 映射、echo 判定与长度限制收口到 `adapters/provider_features.rs`，保持 Chat/Responses wire 契约不变（ADR 0028） |
 | 2026-08-30 | §2.4 Agent：将事实抽取 DTO、字段 coercion、标签/谓词规范化、prompt 清洗与 JSON array 提取收口到 `fact_extraction.rs`，保持抽取与持久化语义不变（ADR 0029） |
-| 2026-08-30 | §2.6 UI：将会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重收口到 `ui/src/lib/sessionMessages.ts`，由 `stores.ts` 兼容 re-export（ADR 0030） |
-| 2026-08-30 | §2.6 UI：将会话 token usage、LLM 调用明细、恢复/清理与用量格式化收口到 `ui/src/lib/sessionUsage.ts`，由 `stores.ts` 兼容 re-export（ADR 0031） |
+| 2026-08-30 | §2.6 UI：将会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重收口到 `ui/src/lib/sessionMessages.ts`（ADR 0030） |
+| 2026-08-30 | §2.6 UI：将会话 token usage、LLM 调用明细、恢复/清理与用量格式化收口到 `ui/src/lib/sessionUsage.ts`（ADR 0031） |
 | 2026-08-30 | §2.6 UI：将流式 chunk 排队、按帧归并、sequence 去重、step block 关联与同步 flush 收口到 `ui/src/lib/streamAggregator.ts`（ADR 0032） |
 | 2026-08-30 | §2.6 UI：将 shell、notify、generic/raw 工具结果 body 按 kind 注册到独立 renderer 组件，`ToolResultCard` 保留公共卡片壳与复杂工具分支（ADR 0033） |
 | 2026-08-30 | §2.6 UI：将 `file` 工具的文件操作、目录和读取结果收口到 `ToolFileResult.svelte`，并由 renderer registry 按工具名选择（ADR 0034） |
@@ -352,3 +352,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.6 UI：将欢迎态、消息列表、后台等待提示与错误继续按钮收口到 `ui/src/lib/ChatMessageTimeline.svelte`，路由页保留滚动容器与业务回调（ADR 0048） |
 | 2026-08-30 | §2.6 UI：将 ask 选项选择、批量回答、忽略、恢复清理与重复提交防护收口到 `ui/src/lib/chatAskInteraction.ts`，路由页保留输入编排（ADR 0049） |
 | 2026-08-30 | §2.2 LLM：将 endpoint 健康、熔断状态机、role 索引与健康槽位初始化收口到 `crates/llm/src/endpoint_health.rs`，router 保留并发存储与请求时机（ADR 0051） |
+| 2026-08-30 | §2.6 UI / 持久化：删除已到期的 `stores.ts` 消息/用量兼容 re-export 与未压缩 ReAct snapshot 读取回退；旧数据按发布说明重置（ADR 0052） |
+| 2026-08-30 | §2.2 LLM：将流式上下文估算、idle scaling、规则门禁、chunk 聚合与首 chunk 前重试收口到 `crates/llm/src/streaming.rs`，router 保留 endpoint 编排（ADR 0053） |
+| 2026-08-30 | §2.4 Agent：将增量事实抽取窗口、transcript 构造、来源解析与提案安全门禁收口到 `crates/agent/src/fact_inference.rs`，inference 保留调度与写入编排（ADR 0054） |
+| 2026-08-30 | §2.6 UI：将默认模型发现缓存、设置投影、provider 能力归一化与刷新代次收口到 `ui/src/lib/chatModelSync.ts`，路由页保留响应式状态与菜单编排（ADR 0055） |

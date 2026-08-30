@@ -13,8 +13,8 @@
 - 新增 `ui/src/lib/sessionUsage.ts`，集中拥有 `sessionTokenStatsStore`、
   `sessionLlmUsageStore`、恢复/追加/清理操作、token 总量与缓存命中率计算，
   以及用量显示格式化函数。
-- `stores.ts` 保留原有导出路径，通过 re-export 兼容聊天页、MemoryView、
-  ToolResultCard 和既有测试；后续新代码应直接依赖语义明确的用量模块。
+- 初始切片曾由 `stores.ts` 提供过渡性 re-export；该兼容层已按 ADR 0052 删除，
+  聊天页、MemoryView、ToolResultCard 和测试统一直接依赖本模块。
 - 保持实时 `agent:usage` 累计、恢复数据覆盖空列表、estimated/restored 标记、
   缓存 accounting 规则和格式化结果不变；本片不改变事件协议、后端用量 DTO 或
   持久化语义。
@@ -28,8 +28,8 @@
 
 ## 影响
 
-这是 UI 内部模块重组。原有 import 路径、用量展示和恢复行为保持不变，不需要
-清理 localStorage、数据库或重新配置。
+这是 UI 内部模块重组。用量展示和恢复行为保持不变，仓库内旧 `stores.ts` 导入已
+迁移，不需要清理 localStorage、数据库或重新配置。
 
 ## 验证
 
@@ -38,8 +38,8 @@ corepack pnpm --dir ui run check
 corepack pnpm --dir ui run test:run
 ```
 
-重点回归 stores re-export、恢复/清理、缓存 accounting 和 token/cost 格式化；
-本片 UI 测试集应全部通过。
+重点回归恢复/清理、缓存 accounting 和 token/cost 格式化；并用导入检查确认会话
+用量没有回到 `stores.ts`。本片 UI 测试集应全部通过。
 
 ## 回滚与重置
 

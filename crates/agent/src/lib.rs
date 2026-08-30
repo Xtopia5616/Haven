@@ -5,6 +5,7 @@ mod canonical;
 mod compactor;
 mod event;
 mod fact_extraction;
+mod fact_inference;
 mod inference;
 mod ingress;
 mod lifecycle;

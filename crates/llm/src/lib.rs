@@ -8,6 +8,7 @@ pub mod registry;
 mod request_pipeline;
 pub mod router;
 pub mod stream_rules;
+mod streaming;
 pub mod stt;
 pub mod tts;
 pub mod types;

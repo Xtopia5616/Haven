@@ -2,8 +2,8 @@
 
 ## 背景
 
-项目固定了 Node.js 与 pnpm 的推荐版本，但 VS Code 集成终端使用的是进程启动时
-继承的 PATH。因而裸 `pnpm` 可能指向其它版本；当 `engines` 使用固定版本下限时，
+项目固定了 Node.js 与 pnpm 的精确版本，但 VS Code 集成终端使用的是进程启动时
+继承的 PATH。因而裸 `pnpm` 可能指向其它版本；当 `engines` 使用精确版本时，
 pnpm 会在执行任何 UI 命令前直接退出。Tauri 的 `beforeDevCommand` 与
 `beforeBuildCommand` 也曾调用裸 `pnpm`，使同一问题阻断桌面开发和打包。
 
@@ -11,8 +11,8 @@ pnpm 会在执行任何 UI 命令前直接退出。Tauri 的 `beforeDevCommand` 
 
 - `ui/package.json` 的 `packageManager` 继续精确指定 pnpm 11.24.0，`.node-version`
   继续指定 Node.js 24.20.0；这两个文件仍是推荐工具链的唯一选择来源。
-- `engines` 只声明可工作的 Node.js 24 和 pnpm 11 兼容范围，不把本机补丁版本差异
-  变成硬阻断。
+- `engines` 同样精确指定 Node.js 24.20.0 和 pnpm 11.24.0，让版本漂移在 UI 命令
+  启动前直接失败并给出明确提示。
 - 仓库根目录维护的 UI 命令统一使用 `corepack pnpm --dir ui ...`，由 Corepack
   解析 `packageManager`；Tauri hook 使用 `corepack pnpm ...`，因为 Tauri 会在
   `ui` 工作目录执行 hook，避免重复拼接 `ui` 路径。
@@ -23,8 +23,8 @@ pnpm 会在执行任何 UI 命令前直接退出。Tauri 的 `beforeDevCommand` 
 
 ## 影响
 
-在已安装 Node.js 24、pnpm 11 的机器上，旧版本的裸 pnpm 不再阻止命令启动；需要
-完全可复现的检查时，Corepack 仍会使用声明的 pnpm 11.24.0。Rust 仍需安装 rustup
+在已安装 Node.js 24.20.0、pnpm 11.24.0 的机器上，旧版本的裸 pnpm 不再阻止命令
+启动；完全可复现的检查会由 `engines` 和 Corepack 共同约束这两个版本。Rust 仍需安装 rustup
 并让 `cargo` 可被 VS Code 找到；`rust-toolchain.toml` 会负责选择项目版本。此变更
 不修改数据库、配置或用户数据。
 

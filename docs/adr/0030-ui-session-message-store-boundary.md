@@ -13,8 +13,8 @@ sequence 去重以及清理。这些状态操作会被聊天页、提交流程�
 
 - 新增 `ui/src/lib/sessionMessages.ts`，集中拥有 `sessionMessagesStore`、
   `_draft` 生命周期、消息增删改、回滚截断、session 迁移和流式 sequence map。
-- `stores.ts` 保留原有导出路径，通过 re-export 兼容现有页面、提交流程和测试；
-  后续新代码应直接依赖语义明确的会话消息模块。
+- 初始切片曾由 `stores.ts` 提供过渡性 re-export；该兼容层已按 ADR 0052 删除，
+  现有页面、提交流程和测试统一直接依赖本模块。
 - 保持 optimistic user bubble 的 prepend/received/steering 处理、rollback cut
   规则、draft 保留策略、sequence 去重和清理时机不变；本片不改变 Tauri 事件
   协议、消息 DTO 或后端持久化。
@@ -28,8 +28,8 @@ sequence 去重以及清理。这些状态操作会被聊天页、提交流程�
 
 ## 影响
 
-这是 UI 内部模块重组。现有 `stores.ts` import、消息列表、流式渲染、提交和
-回滚行为保持不变，不需要清理 localStorage、数据库或重新配置。
+这是 UI 内部模块重组。消息列表、流式渲染、提交和回滚行为保持不变，仓库内旧
+`stores.ts` 导入已迁移，不需要清理 localStorage、数据库或重新配置。
 
 ## 验证
 
@@ -38,8 +38,8 @@ corepack pnpm --dir ui run check
 corepack pnpm --dir ui run test:run
 ```
 
-重点回归 stores re-export、draft/session 迁移、rollback 截断和 sequence map
-清理；本片 UI 测试集应全部通过。
+重点回归 draft/session 迁移、rollback 截断和 sequence map 清理；并用导入检查
+确认会话消息没有回到 `stores.ts`。本片 UI 测试集应全部通过。
 
 ## 回滚与重置
 
