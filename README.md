@@ -56,6 +56,7 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 
 - [架构与 crate 边界](docs/architecture.md)
 - [开发与架构治理规范](docs/development-standards.md)
+- [Git 提交流程](docs/git-workflow.md)
 - [稳定性重构计划](docs/stability-refactor-plan.md)
 - [重构实施手册](docs/refactor-execution-guide.md)
 - [发布与数据重置](docs/release-and-reset.md)

@@ -112,8 +112,11 @@ corepack pnpm run check
 
 统一规范见 `docs/naming.md`（Rust/前端各层命名、缩写大小写、跨层 snake↔camel 边界、自查清单）。要点：Rust 文件/模块 snake_case、类型 PascalCase、常量 UPPER_SNAKE；Svelte 组件文件名=组件名（PascalCase）、JS 模块 camelCase、store 尾缀 `Store`；缩写整词统一（`stt`/`ocr`/`tts`）；跨层只在边界转换。
 
-## Before Committing
-1. Run `/check` (fmt → check → clippy → svelte-check)
-2. Run `/test` (all workspace tests pass)
-3. Run `/test-ui --run` (UI tests pass)
-4. 对照 `docs/naming.md` 自查清单检查本次改动命名（见上文「命名规范」）
+## Git 提交
+完整流程见 `docs/git-workflow.md`。在本项目中，每轮逻辑改动完成且适用门禁通过后，直接提交，不等待用户再次确认；不自动推送远端。
+
+1. 用 `git status --short`、`git diff` 确认范围，保留用户已有的无关修改。
+2. 运行适用门禁：`/check`、`/test`、`/test-ui --run`；跨 crate/跨端改动还要运行项目要求的完整检查。
+3. 使用 `git add -- <明确路径>` 精确暂存，不默认使用 `git add .` 或 `git add -A`。
+4. 提交前运行 `git diff --cached --check` 并复核 staged diff，确认没有密钥、用户数据或生成产物。
+5. 使用 `<type>(<scope>): <imperative summary>` 提交，并在提交后复核 `git status --short` 和 `git log -1 --oneline`。
