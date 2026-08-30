@@ -346,6 +346,8 @@ mod queues;
 mod status;
 mod tool_runner;
 
+pub(crate) use queues::ReactContextBatch;
+
 impl SessionExecutor {
     pub fn new(db: Arc<Database>, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
         Self {
@@ -1362,27 +1364,29 @@ mod tests {
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
         exec.add_steering(&session.id, "steering").await.unwrap();
 
-        let (follow_ups, steering, action_results) = exec.drain_react_context(&session.id).await;
-        assert!(follow_ups.is_empty());
+        let batch = exec.drain_react_context(&session.id).await;
+        assert!(batch.follow_ups.is_empty());
         assert_eq!(
-            steering
+            batch
+                .steering
                 .into_iter()
                 .map(|item| item.text)
                 .collect::<Vec<_>>(),
             vec!["steering"]
         );
-        assert!(action_results.is_empty());
+        assert!(batch.action_results.is_empty());
 
-        let (follow_ups, steering, action_results) = exec.drain_react_context(&session.id).await;
+        let batch = exec.drain_react_context(&session.id).await;
         assert_eq!(
-            follow_ups
+            batch
+                .follow_ups
                 .into_iter()
                 .map(|item| item.text)
                 .collect::<Vec<_>>(),
             vec!["follow-up"]
         );
-        assert!(steering.is_empty());
-        assert!(action_results.is_empty());
+        assert!(batch.steering.is_empty());
+        assert!(batch.action_results.is_empty());
     }
 
     /// Phase 7 / D2: re-queue by the same `message_id` must not double-inject.

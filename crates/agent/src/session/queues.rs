@@ -15,6 +15,17 @@
 
 use super::*;
 
+/// Context selected for the next model request.
+///
+/// The field order documents the delivery policy: steering preempts
+/// follow-ups, while action results are independent system context.
+#[derive(Debug, Default)]
+pub(crate) struct ReactContextBatch {
+    pub(crate) steering: Vec<FollowUp>,
+    pub(crate) follow_ups: Vec<FollowUp>,
+    pub(crate) action_results: Vec<String>,
+}
+
 impl SessionExecutor {
     /// Queue routing (Phase 4 / D1):
     /// ```text
@@ -228,10 +239,7 @@ impl SessionExecutor {
     /// DB messages + snapshot `saved_at` + undelivered scan; resume may
     /// re-queue the same `message_id` after a restart, and enqueue is
     /// idempotent so a duplicate id does not double-inject.
-    pub async fn drain_react_context(
-        &self,
-        session_id: &str,
-    ) -> (Vec<FollowUp>, Vec<FollowUp>, Vec<String>) {
+    pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReactContextBatch {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
         let (follow_ups, steering) = match entry {
             Some(entry) => {
@@ -252,7 +260,11 @@ impl SessionExecutor {
             .await
             .remove(session_id)
             .unwrap_or_default();
-        (follow_ups, steering, action_results)
+        ReactContextBatch {
+            steering,
+            follow_ups,
+            action_results,
+        }
     }
 
     /// Non-draining check for pending user-facing context (follow-ups or

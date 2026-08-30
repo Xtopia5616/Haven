@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crate::react::sidecars::MessagingPoller;
-use crate::session::SessionExecutor;
+use crate::session::{ReactContextBatch, SessionExecutor};
 use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::Database;
 
@@ -58,8 +58,11 @@ impl ContextSource {
     /// are held back until steering is empty. Only source queues are touched
     /// here; the caller decides how to project each item.
     pub(super) async fn drain_pending_context(&self, session_id: &str) -> PendingContextBatch {
-        let (follow_ups, steering, action_results) =
-            self.executor.drain_react_context(session_id).await;
+        let ReactContextBatch {
+            steering,
+            follow_ups,
+            action_results,
+        } = self.executor.drain_react_context(session_id).await;
         let mut batch = PendingContextBatch::default();
 
         for steering_item in steering {
