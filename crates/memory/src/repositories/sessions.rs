@@ -472,9 +472,9 @@ impl Database {
         Ok(())
     }
 
-    /// Load serialized ReAct state for a paused session. Transparently
-    /// decompresses snapshots written by `save_react_state`; legacy
-    /// uncompressed rows (older versions, stored as TEXT) are returned as-is.
+    /// Load serialized ReAct state for a paused session. Snapshots must be
+    /// gzip-compressed rows written by `save_react_state`; older uncompressed
+    /// rows are incompatible and require a data reset.
     pub fn get_react_state(&self, session_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
         let value: Option<rusqlite::types::Value> = conn
@@ -486,15 +486,17 @@ impl Database {
             .map_err(anyhow::Error::from)?;
         match value {
             Some(rusqlite::types::Value::Blob(b)) => decompress_react_state(&b).map(Some),
-            // Legacy row written before compression (plain TEXT JSON).
-            Some(rusqlite::types::Value::Text(t)) => Ok(Some(t)),
+            Some(rusqlite::types::Value::Text(_)) => {
+                anyhow::bail!(
+                    "incompatible react_state: legacy uncompressed snapshot requires reset"
+                )
+            }
             _ => Ok(None),
         }
     }
 }
 
-/// gzip-compress a JSON snapshot. Writes a leading gzip magic, which
-/// `decompress_react_state` uses to distinguish compressed from legacy rows.
+/// Gzip-compress a JSON snapshot.
 fn compress_react_state(json: &str) -> anyhow::Result<Vec<u8>> {
     use std::io::Write;
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -502,8 +504,8 @@ fn compress_react_state(json: &str) -> anyhow::Result<Vec<u8>> {
     Ok(enc.finish()?)
 }
 
-/// Decompress a stored snapshot; returns the input unchanged when it is not
-/// gzip (legacy uncompressed row written by an older build).
+/// Decompress a stored snapshot. Non-gzip blobs are incompatible with the
+/// current snapshot contract and require a data reset.
 fn decompress_react_state(blob: &[u8]) -> anyhow::Result<String> {
     if blob.len() >= 2 && blob[0] == 0x1f && blob[1] == 0x8b {
         use std::io::Read;
@@ -512,7 +514,7 @@ fn decompress_react_state(blob: &[u8]) -> anyhow::Result<String> {
         dec.read_to_string(&mut out)?;
         Ok(out)
     } else {
-        String::from_utf8(blob.to_vec()).map_err(Into::into)
+        anyhow::bail!("incompatible react_state: legacy uncompressed snapshot requires reset")
     }
 }
 
@@ -998,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn test_react_state_legacy_uncompressed_still_reads() {
+    fn test_react_state_legacy_uncompressed_requires_reset() {
         let db = create_db();
         let session = db.create_session("input", "").unwrap();
         // Simulate a row written by an older build (plain TEXT, no gzip magic).
@@ -1008,7 +1010,25 @@ mod tests {
                 rusqlite::params![r#"{"legacy":true}"#, session.id],
             )
             .unwrap();
-        let loaded = db.get_react_state(&session.id).unwrap().unwrap();
-        assert_eq!(loaded, r#"{"legacy":true}"#);
+        let err = db.get_react_state(&session.id).unwrap_err();
+        assert!(err.to_string().contains("requires reset"));
+    }
+
+    #[test]
+    fn test_react_state_non_gzip_blob_requires_reset() {
+        let db = create_db();
+        let session = db.create_session("input", "").unwrap();
+        // A non-gzip BLOB is also outside the current snapshot contract.
+        db.conn()
+            .execute(
+                "UPDATE sessions SET react_state = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    rusqlite::types::Value::Blob(br#"{"legacy":true}"#.to_vec()),
+                    session.id
+                ],
+            )
+            .unwrap();
+        let err = db.get_react_state(&session.id).unwrap_err();
+        assert!(err.to_string().contains("requires reset"));
     }
 }

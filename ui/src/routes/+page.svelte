@@ -44,15 +44,27 @@
 		sessionEventListeners,
 	} from '$lib/events.ts';
 	import {
-		sessionMessagesStore,
 		sessionStore,
 		addNotification,
+		resumeTargetStore,
+		activeSessionIdStore,
+		updateModelState,
+		modelStateStore,
+		refreshActions,
+		finalizeBackgroundActionMessages,
+		actionStore,
+		NEW_ACTION_INTENT_KEY,
+		newSessionIntentStore,
+	} from '$lib/stores.ts';
+	import {
+		sessionMessagesStore,
 		updateSessionMessages,
 		adoptDraftMessages,
 		clearSessionMessages,
 		clearSeqMap,
-		resumeTargetStore,
-		activeSessionIdStore,
+		DRAFT_KEY,
+	} from '$lib/sessionMessages.ts';
+	import {
 		sessionTokenStatsStore,
 		clearSessionTokenStats,
 		restoreSessionTokenStats,
@@ -61,15 +73,7 @@
 		clearSessionLlmUsage,
 		formatTokenCount,
 		coalesceTokenTotal,
-		updateModelState,
-		modelStateStore,
-		refreshActions,
-		finalizeBackgroundActionMessages,
-		actionStore,
-		DRAFT_KEY,
-		NEW_ACTION_INTENT_KEY,
-		newSessionIntentStore,
-	} from '$lib/stores.ts';
+	} from '$lib/sessionUsage.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
 	import ChatMessageTimeline from '$lib/ChatMessageTimeline.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
@@ -187,7 +191,7 @@
 	// Per-LLM-call usage detail for the active session (restored from the
 	// persisted `llm_usage` when a resume conversation opens). Used to render
 	// per-step token chips on tool cards and the tooltip call count.
-	/** @type {Array<import('$lib/stores.ts').LlmUsage>} */
+	/** @type {Array<import('$lib/sessionUsage.ts').LlmUsage>} */
 	let llmUsage = $state([]);
 	$effect(() =>
 		syncStore(sessionLlmUsageStore, (m) => {

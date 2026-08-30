@@ -5,7 +5,7 @@ import type {
 } from './contracts/session.ts';
 import type { TauriEvent } from './contracts/session.ts';
 import { isBusyStatus } from './sessionStatus.ts';
-import { updateSessionMessages } from './stores.ts';
+import { updateSessionMessages } from './sessionMessages.ts';
 
 interface ChatSessionEventContext {
 	getActiveSessionId: () => string | null;

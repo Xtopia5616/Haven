@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { activeSessionIdStore, modelStateStore, sessionMessagesStore } from './stores.ts';
+import { activeSessionIdStore, modelStateStore } from './stores.ts';
+import { sessionMessagesStore } from './sessionMessages.ts';
 
 vi.mock('./tauri.ts', () => ({
 	invoke: vi.fn(),

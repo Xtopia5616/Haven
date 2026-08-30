@@ -74,13 +74,14 @@
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
-	import { formatMessageTime } from '$lib/stores.ts';
+	import { formatMessageTime, addNotification, activeSessionIdStore, resumeTargetStore } from '$lib/stores.ts';
+	import { clearAllSessionMessages, clearSessionMessages, updateSessionMessages } from '$lib/sessionMessages.ts';
+	import { restoreSessionLlmUsage, restoreSessionTokenStats } from '$lib/sessionUsage.ts';
 	import { statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.ts';
-	import { updateSessionMessages, clearSessionMessages, clearAllSessionMessages, resumeTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.ts';
 	import { registerSessionListener } from '$lib/events.ts';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';

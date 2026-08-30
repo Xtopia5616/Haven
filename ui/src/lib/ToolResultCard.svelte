@@ -10,7 +10,8 @@
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { parseToolResult } from '$lib/toolResultParsing.ts';
 	import { copyText } from '$lib/clipboard.ts';
-	import { actionStore, formatTokenCount, toolOutputPreviewStore } from '$lib/stores.ts';
+	import { actionStore, toolOutputPreviewStore } from '$lib/stores.ts';
+	import { formatTokenCount } from '$lib/sessionUsage.ts';
 	import {
 		classifyToolSource,
 		parseToolArgs,

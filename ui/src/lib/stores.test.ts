@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
 import {
-	notificationStore,
-	addNotification,
 	sessionMessagesStore,
 	setSessionMessages,
 	addSessionMessage,
@@ -14,10 +12,8 @@ import {
 	seqLastSeen,
 	pruneSeq,
 	clearSeqMap,
-	newMessage,
-	modelStateStore,
-	updateModelState,
-	clearModelStateTimer,
+} from './sessionMessages.ts';
+import {
 	sessionTokenStatsStore,
 	updateSessionTokenStats,
 	clearSessionTokenStats,
@@ -26,6 +22,14 @@ import {
 	formatCostUsd,
 	coalesceTokenTotal,
 	cumulativeCacheHitRatePercent,
+} from './sessionUsage.ts';
+import {
+	notificationStore,
+	addNotification,
+	newMessage,
+	modelStateStore,
+	updateModelState,
+	clearModelStateTimer,
 	actionStore,
 	upsertAction,
 	removeAction,

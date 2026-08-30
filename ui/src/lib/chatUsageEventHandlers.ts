@@ -3,13 +3,13 @@ import type {
 	AgentUsagePayload,
 } from './contracts/agent.ts';
 import type { TauriEvent } from './contracts/session.ts';
+import { addNotification } from './stores.ts';
 import {
-	addNotification,
 	appendSessionLlmUsage,
 	coalesceTokenTotal,
 	formatTokenCount,
 	updateSessionTokenStats,
-} from './stores.ts';
+} from './sessionUsage.ts';
 
 type UsageEvent = TauriEvent<AgentUsagePayload>;
 type CompactionEvent = TauriEvent<AgentCompactionPayload>;

@@ -11,11 +11,10 @@ import {
 } from './streaming';
 import {
 	clearToolOutputPreview,
-	pruneSeq,
 	setToolOutputPreview,
 	updateModelState,
-	updateSessionMessages,
 } from './stores';
+import { pruneSeq, updateSessionMessages } from './sessionMessages.ts';
 
 export interface ChatAgentEventContext {
 	getActiveSessionId: () => string | null;

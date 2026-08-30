@@ -1,5 +1,7 @@
 # ADR 0031：UI 会话用量状态边界
 
+> 部分决定已由 [ADR 0052：删除已到期的兼容层](0052-remove-expired-compatibility-layers.md) 取代；原 re-export 仅保留为历史记录。
+
 ## 背景
 
 `stores.ts` 在会话消息边界拆出后仍同时承载 token usage 状态、LLM 单次调用明细、

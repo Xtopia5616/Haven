@@ -1,5 +1,5 @@
 import { get } from 'svelte/store';
-import { sessionMessagesStore, updateSessionMessages } from './stores.ts';
+import { sessionMessagesStore, updateSessionMessages } from './sessionMessages.ts';
 
 interface AskMessage {
 	id: string;

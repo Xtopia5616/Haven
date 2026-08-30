@@ -1,5 +1,7 @@
 # ADR 0030：UI 会话消息状态边界
 
+> 部分决定已由 [ADR 0052：删除已到期的兼容层](0052-remove-expired-compatibility-layers.md) 取代；原 re-export 仅保留为历史记录。
+
 ## 背景
 
 `stores.ts` 同时保存任务、通知、会话消息、token usage、录音和模型状态。

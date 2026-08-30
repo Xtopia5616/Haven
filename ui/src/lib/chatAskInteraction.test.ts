@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
 import { createAskInteractionController } from './chatAskInteraction.ts';
-import { sessionMessagesStore, setSessionMessages } from './stores.ts';
+import { sessionMessagesStore, setSessionMessages } from './sessionMessages.ts';
 
 const SESSION_ID = 'ses-ask';
 

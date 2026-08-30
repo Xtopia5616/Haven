@@ -2,69 +2,7 @@ import { get, writable } from 'svelte/store';
 import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
 import { mapActionPayload, type ActionKind, type ActionPayload } from './contracts/action.ts';
-import {
-	DRAFT_KEY,
-	adoptDraftMessages,
-	addSessionMessage,
-	clearAllSessionMessages,
-	clearSeqMap,
-	clearSessionMessages,
-	moveSessionMessages,
-	pruneSeq,
-	seqLastSeen,
-	sessionMessagesStore,
-	setSessionMessages,
-	truncateSessionMessages,
-	updateSessionMessages,
-} from './sessionMessages.ts';
-import {
-	appendSessionLlmUsage,
-	clearSessionLlmUsage,
-	clearSessionTokenStats,
-	coalesceTokenTotal,
-	cumulativeCacheHitRatePercent,
-	formatCostUsd,
-	formatTokenCount,
-	type LlmUsage,
-	restoreSessionLlmUsage,
-	restoreSessionTokenStats,
-	sessionLlmUsageStore,
-	sessionTokenStatsStore,
-	updateSessionTokenStats,
-} from './sessionUsage.ts';
-
-export {
-	DRAFT_KEY,
-	adoptDraftMessages,
-	addSessionMessage,
-	clearAllSessionMessages,
-	clearSeqMap,
-	clearSessionMessages,
-	moveSessionMessages,
-	pruneSeq,
-	seqLastSeen,
-	sessionMessagesStore,
-	setSessionMessages,
-	truncateSessionMessages,
-	updateSessionMessages,
-} from './sessionMessages.ts';
-
-export {
-	appendSessionLlmUsage,
-	clearSessionLlmUsage,
-	clearSessionTokenStats,
-	coalesceTokenTotal,
-	cumulativeCacheHitRatePercent,
-	formatCostUsd,
-	formatTokenCount,
-	restoreSessionLlmUsage,
-	restoreSessionTokenStats,
-	sessionLlmUsageStore,
-	sessionTokenStatsStore,
-	updateSessionTokenStats,
-} from './sessionUsage.ts';
-
-export type { LlmUsage } from './sessionUsage.ts';
+import { sessionMessagesStore, updateSessionMessages } from './sessionMessages.ts';
 
 export const sessionStore = writable<any[]>([]);
 
@@ -309,11 +247,6 @@ export const NEW_ACTION_INTENT_KEY = 'haven.no_auto_restore';
  * own submission) or abandoned (explicit switch to another session).
  */
 export const newSessionIntentStore = writable(false);
-
-// Token usage state lives in sessionUsage.ts; this module re-exports it for
-// compatibility with existing UI imports.
-
-// Per-call usage detail lives in sessionUsage.ts.
 
 /**
  * Build a `data:` URL from a message attachment ({ media_type, data } where

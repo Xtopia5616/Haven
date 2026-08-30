@@ -2,17 +2,19 @@ import { get } from 'svelte/store';
 import { browser } from '$app/environment';
 import {
 	DRAFT_KEY,
-	NEW_ACTION_INTENT_KEY,
 	addSessionMessage,
+	moveSessionMessages,
+	sessionMessagesStore,
+	updateSessionMessages,
+} from './sessionMessages.ts';
+import {
 	activeSessionIdStore,
 	modelStateStore,
-	moveSessionMessages,
 	newMessage,
 	newSessionIntentStore,
-	sessionMessagesStore,
-	sessionStore,
-	updateSessionMessages,
+	NEW_ACTION_INTENT_KEY,
 } from './stores.ts';
+import { sessionStore } from './stores.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
 

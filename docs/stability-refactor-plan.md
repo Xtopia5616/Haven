@@ -83,8 +83,8 @@
 - 2026-08-30：P2 LLM 适配器 web search 边界收口：内置搜索 call 规范化、citation 结果和按 id 去重集中到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027）。
 - 2026-08-30：P2 LLM 适配器 provider feature 边界收口：vendor 检测、thinking/reasoning 映射、echo 判定与长度限制集中到 `adapters/provider_features.rs`，保持 Chat/Responses wire 契约不变（ADR 0028）。
 - 2026-08-30：P2 Agent 事实抽取边界收口：事实抽取 DTO、字段 coercion、标签/谓词规范化、prompt 清洗与 JSON array 提取集中到 `fact_extraction.rs`，保持抽取与持久化语义不变（ADR 0029）。
-- 2026-08-30：P2 UI 会话消息状态边界收口：会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重集中到 `ui/src/lib/sessionMessages.ts`，由 `stores.ts` 兼容 re-export（ADR 0030）。
-- 2026-08-30：P2 UI 会话用量状态边界收口：token usage、LLM 调用明细、恢复/清理与用量格式化集中到 `ui/src/lib/sessionUsage.ts`，由 `stores.ts` 兼容 re-export（ADR 0031）。
+- 2026-08-30：P2 UI 会话消息状态边界收口：会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重集中到 `ui/src/lib/sessionMessages.ts`（ADR 0030）。
+- 2026-08-30：P2 UI 会话用量状态边界收口：token usage、LLM 调用明细、恢复/清理与用量格式化集中到 `ui/src/lib/sessionUsage.ts`（ADR 0031）。
 - 2026-08-30：P2 UI 流式事件归并边界收口：chunk 排队、按帧归并、sequence 去重、step block 关联与同步 flush 集中到 `ui/src/lib/streamAggregator.ts`（ADR 0032）。
 - 2026-08-30：P2 UI 工具结果渲染注册表首片完成：shell、notify、generic/raw body 按 kind 注册到独立 renderer 组件，ToolResultCard 保留公共卡片壳与复杂工具分支（ADR 0033）。
 - 2026-08-30：P2 UI 文件工具 renderer 边界收口：`file` 工具的文件操作、目录和读取结果集中到 `ToolFileResult.svelte`，由 renderer registry 按工具名选择（ADR 0034）。
@@ -104,6 +104,7 @@
 - 2026-08-30：P2 UI 聊天消息时间线边界收口：欢迎态、消息列表、后台等待提示与错误继续按钮集中到 `ui/src/lib/ChatMessageTimeline.svelte`，路由页保留滚动容器与业务回调（ADR 0048）。
 - 2026-08-30：P2 UI ask 交互边界收口：选项选择、批量回答、忽略、恢复清理与重复提交防护集中到 `ui/src/lib/chatAskInteraction.ts`，路由页保留输入编排（ADR 0049）。
 - 2026-08-30：P2 LLM endpoint 健康与熔断边界收口：熔断器、连续失败统计、半开探测、role 索引与健康槽位初始化集中到 `crates/llm/src/endpoint_health.rs`，router 保留并发存储与请求时机（ADR 0051）。
+- 2026-08-30：删除已到期的 UI `stores.ts` 消息/用量兼容 re-export，并删除未压缩 ReAct snapshot 读取回退；旧 UI 导入和旧数据库快照按发布说明迁移/重置（ADR 0052）。
 
 ## 完成标准
 
