@@ -1,13 +1,14 @@
 //! Tool-batch helpers (failure classify/nudge) and `execute_tool_batch`.
 //!
-//! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
+//! Tool execution is concurrent, but transcript materialization is ordered by
+//! the assistant's tool-call list so the next model request is deterministic.
 
 use super::hooks::BeforeToolAction;
 use super::*;
 use crate::types::{Action, BranchPoint, ConfirmPending, ConfirmPendingTool, TranscriptRecord};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_tools::is_silent_action;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Failure classification used to shape the post-failure retry nudge.
@@ -22,15 +23,6 @@ pub(super) enum FailureKind {
     Unknown,
 }
 
-/// Stable identity for a tool call across the action/observation UI pairing,
-/// matching the frontend's `tool_call_id || tool_name` id so an interrupted
-/// observation lands on the same card the action event opened.
-pub(crate) fn tool_key(a: &Action) -> String {
-    a.tool_call_id
-        .clone()
-        .unwrap_or_else(|| a.tool_name.clone())
-}
-
 /// `agent` operation=inbox result is an empty poll (`count: 0`): nothing for
 /// the user to see, so the observation card is suppressed.
 pub(crate) fn empty_inbox_output(result: &str) -> bool {
@@ -43,6 +35,97 @@ pub(crate) fn empty_inbox_output(result: &str) -> bool {
 /// True when this is an `agent` inbox poll (check tool_input.operation).
 pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Value) -> bool {
     tool_name == "agent" && tool_input.get("operation").and_then(|v| v.as_str()) == Some("inbox")
+}
+
+#[derive(Default)]
+struct ToolBatchState {
+    any_tool_failure: bool,
+    failure_signals: Vec<(String, String)>,
+    last_failed_tool_call_id: Option<String>,
+    asked_questions: Vec<String>,
+    ask_step_ids: Vec<String>,
+}
+
+impl ToolBatchState {
+    async fn commit_tool_result(
+        &mut self,
+        engine: &ReActEngine,
+        ctx: &StepCtx,
+        result: CompletedTool,
+        events: &mut Vec<TranscriptRecord>,
+        canonical: &mut Vec<CanonicalMessage>,
+    ) {
+        let CompletedTool {
+            action,
+            tool_name,
+            step_result,
+            is_error,
+            ask_question,
+            ask_options,
+            notify_title,
+            notify_body,
+            step_id,
+        } = result;
+
+        if is_error {
+            self.any_tool_failure = true;
+            self.last_failed_tool_call_id = action.tool_call_id.clone();
+            if self.failure_signals.len() < 3 {
+                let cap: String = step_result.chars().take(600).collect();
+                self.failure_signals.push((tool_name.clone(), cap));
+            }
+        }
+        if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
+            ctx.emitter
+                .emit(crate::event::AgentEvent::Notification {
+                    session_id: ctx.session_id.clone(),
+                    title: title.clone(),
+                    body: body.clone(),
+                })
+                .await;
+        }
+        if let Some(question) = &ask_question {
+            self.asked_questions.push(question.clone());
+            self.ask_step_ids.push(step_id.clone());
+        }
+
+        let tool_call_id = action.tool_call_id.clone();
+        let silent = is_silent_action(&tool_name, &action.tool_input)
+            || (is_agent_inbox_call(&tool_name, &action.tool_input)
+                && empty_inbox_output(&step_result));
+        let display_observation = if let Some(question) = &ask_question {
+            question.clone()
+        } else if let Some(title) = &notify_title {
+            let body = notify_body.clone().unwrap_or_default();
+            if body.is_empty() {
+                step_result.clone()
+            } else {
+                format!("Notification sent: {title}: {body}")
+            }
+        } else {
+            step_result.clone()
+        };
+        engine
+            .apply_transcript(
+                ctx,
+                TranscriptEvent::ToolResult {
+                    canonical_observation: step_result,
+                    history_observation: display_observation,
+                    tool_call_id: tool_call_id.clone(),
+                    action,
+                    observation_card: Some(ObservationCard {
+                        tool_name,
+                        tool_call_id,
+                        step_id,
+                        silent,
+                        ask_options,
+                    }),
+                },
+                events,
+                canonical,
+            )
+            .await;
+    }
 }
 
 impl ReActEngine {
@@ -195,6 +278,22 @@ pub(super) enum ToolBatchOutcome {
     Done(LoopExit),
 }
 
+/// Result of one tool execution, kept in call order until the complete batch
+/// is materialized into the canonical transcript. Tool execution may finish
+/// in any order; the model must always receive tool observations in the same
+/// order as the assistant's tool-call list.
+struct CompletedTool {
+    action: Action,
+    tool_name: String,
+    step_result: String,
+    is_error: bool,
+    ask_question: Option<String>,
+    ask_options: Vec<String>,
+    notify_title: Option<String>,
+    notify_body: Option<String>,
+    step_id: String,
+}
+
 impl ReActEngine {
     /// Execute the non-final actions for one step: emit Action cards, run the
     /// batch (parallel), drain observations, failure nudge, and ask pause.
@@ -325,8 +424,8 @@ impl ReActEngine {
         use futures_util::StreamExt;
 
         // Phase 5 / E3: pre-check every non-final action before spawning.
-        // Proceed tools run in parallel; Block writes a failure observation
-        // immediately; NeedConfirm is collected and pauses after the drain.
+        // Proceed tools run in parallel; blocked calls become immediate
+        // results; NeedConfirm is collected and pauses after the drain.
         let gate_ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num,
@@ -335,28 +434,11 @@ impl ReActEngine {
         };
         let mut need_confirm: Vec<ConfirmPendingTool> = Vec::new();
         let mut proceed: Vec<(usize, Action, Option<bool>)> = Vec::new();
-        let mut any_tool_failure = false;
-        // Bounded per-step failure evidence (tool name + error tail) used
-        // to classify failures as environmental vs logic when composing
-        // the retry nudge — a broken proxy or a missing command must not
-        // push the model to abandon a sound approach.
-        let mut failure_signals: Vec<(String, String)> = Vec::new();
-        // Last failed tool_call_id in this batch; used to attach the nudge
-        // onto that observation instead of inventing a User message (G5).
-        let mut last_failed_tool_call_id: Option<String> = None;
-        // Tool calls in this batch that already produced a result, keyed
-        // by the same identity the action/observation pairing uses. When
-        // the batch is cancelled mid-flight, every `non_final` action NOT
-        // in this set was cut off — it must still be repaired with an
-        // "Interrupted" result and surfaced, not silently dropped.
-        let mut completed_tool_keys: HashSet<String> = HashSet::new();
-        // If the agent invoked the `ask` tool, the session must pause and
-        // wait for the user's reply (delivered as a supplement). Collect
-        // every question in the batch so all are surfaced, plus the step
-        // row id of each ask action: the question message is persisted
-        // under that id so the ask card and its content share one entity.
-        let mut asked_questions: Vec<String> = Vec::new();
-        let mut ask_step_ids: Vec<String> = Vec::new();
+        let mut completed_results: Vec<Option<CompletedTool>> =
+            (0..non_final.len()).map(|_| None).collect();
+        // Accumulates result-derived control signals while keeping the
+        // projection itself ordered by the assistant's tool-call list.
+        let mut batch_state = ToolBatchState::default();
 
         for (idx, action) in non_final.iter().enumerate() {
             match self
@@ -368,14 +450,7 @@ impl ReActEngine {
                     proceed.push((idx, (*action).clone(), confirmed));
                 }
                 BeforeToolAction::Block { error } => {
-                    any_tool_failure = true;
-                    last_failed_tool_call_id = action.tool_call_id.clone();
-                    if failure_signals.len() < 3 {
-                        let cap: String = error.chars().take(600).collect();
-                        failure_signals.push((action.tool_name.clone(), cap));
-                    }
                     let step_id = action_step_ids[idx].clone();
-                    let silent = is_silent_action(&action.tool_name, &action.tool_input);
                     self.executor
                         .finish_interrupted_step(
                             session_id,
@@ -386,26 +461,17 @@ impl ReActEngine {
                             &error,
                         )
                         .await;
-                    self.apply_transcript(
-                        &gate_ctx,
-                        TranscriptEvent::ToolResult {
-                            canonical_observation: error.clone(),
-                            history_observation: error,
-                            tool_call_id: action.tool_call_id.clone(),
-                            action: (*action).clone(),
-                            observation_card: Some(ObservationCard {
-                                tool_name: action.tool_name.clone(),
-                                tool_call_id: action.tool_call_id.clone(),
-                                step_id,
-                                silent,
-                                ask_options: Vec::new(),
-                            }),
-                        },
-                        events,
-                        canonical,
-                    )
-                    .await;
-                    completed_tool_keys.insert(tool_key(action));
+                    completed_results[idx] = Some(CompletedTool {
+                        action: (*action).clone(),
+                        tool_name: action.tool_name.clone(),
+                        step_result: error,
+                        is_error: true,
+                        ask_question: None,
+                        ask_options: Vec::new(),
+                        notify_title: None,
+                        notify_body: None,
+                        step_id,
+                    });
                 }
                 BeforeToolAction::NeedConfirm { risk_level } => {
                     need_confirm.push(ConfirmPendingTool {
@@ -533,15 +599,18 @@ impl ReActEngine {
                         }
                     };
                 (
-                    action,
-                    tool_name,
-                    text,
-                    is_error,
-                    ask_question,
-                    ask_options,
-                    notify_title,
-                    notify_body,
-                    step_id,
+                    idx,
+                    CompletedTool {
+                        action,
+                        tool_name,
+                        step_result: text,
+                        is_error,
+                        ask_question,
+                        ask_options,
+                        notify_title,
+                        notify_body,
+                        step_id,
+                    },
                 )
             });
         }
@@ -560,11 +629,9 @@ impl ReActEngine {
                     // and surface it in the UI as an interrupted
                     // observation card rather than leaving a silent gap.
                     for (idx, action) in non_final.iter().enumerate() {
-                        if completed_tool_keys.contains(&tool_key(action)) {
+                        if completed_results[idx].is_some() {
                             continue;
                         }
-                        let silent_action =
-                            is_silent_action(&action.tool_name, &action.tool_input);
                         let interrupted_text = crate::interrupted_result_text(
                             &action.tool_name,
                             &action.tool_input,
@@ -583,31 +650,22 @@ impl ReActEngine {
                                 &interrupted_text,
                             )
                             .await;
-                        let proj_ctx = StepCtx {
-                            session_id: session_id.to_string(),
-                            step_num,
-                            run_id,
-                            emitter: emitter.clone(),
-                        };
-                        self.apply_transcript(
-                            &proj_ctx,
-                            TranscriptEvent::ToolResult {
-                                canonical_observation: interrupted_text.clone(),
-                                history_observation: interrupted_text,
-                                tool_call_id: action.tool_call_id.clone(),
-                                action: (*action).clone(),
-                                observation_card: Some(ObservationCard {
-                                    tool_name: action.tool_name.clone(),
-                                    tool_call_id: action.tool_call_id.clone(),
-                                    step_id,
-                                    silent: silent_action,
-                                    ask_options: Vec::new(),
-                                }),
-                            },
-                            events,
-                            canonical,
-                        )
-                        .await;
+                        completed_results[idx] = Some(CompletedTool {
+                            action: (*action).clone(),
+                            tool_name: action.tool_name.clone(),
+                            step_result: interrupted_text,
+                            is_error: true,
+                            ask_question: None,
+                            ask_options: Vec::new(),
+                            notify_title: None,
+                            notify_body: None,
+                            step_id,
+                        });
+                    }
+                    for result in completed_results.into_iter().flatten() {
+                        batch_state
+                            .commit_tool_result(self, &gate_ctx, result, events, canonical)
+                            .await;
                     }
                     // A rollback that lands mid-batch must find the DB row
                     // at the pre-batch branch point (the response and
@@ -623,115 +681,40 @@ impl ReActEngine {
                     ));
                 }
                 item = tool_futures.next() => {
-                    let Some((
-                        action,
-                        tool_name,
-                        step_result,
-                        is_error,
-                        ask_question,
-                        ask_options,
-                        notify_title,
-                        notify_body,
-                        step_id,
-                    )) = item
-                    else {
+                    let Some((idx, result)) = item else {
                         break;
                     };
-                    if is_error {
-                        any_tool_failure = true;
-                        last_failed_tool_call_id = action.tool_call_id.clone();
-                        if failure_signals.len() < 3 {
-                            let cap: String = step_result.chars().take(600).collect();
-                            failure_signals.push((tool_name.clone(), cap));
-                        }
-                    }
-                    // The `notify` tool requests a user-facing notification:
-                    // emit it (in-app toast + Windows) without pausing the
-                    // ReAct loop.
-                    if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
-                        emitter
-                            .emit(crate::event::AgentEvent::Notification {
-                                session_id: session_id.into(),
-                                title: title.clone(),
-                                body: body.clone(),
-                            })
-                            .await;
-                    }
-                    // Surface an `ask` result as a readable question rather
-                    // than raw JSON. The user's reply arrives via
-                    // process_input —supplement —Paused → Pending resume.
-                    if let Some(q) = &ask_question {
-                        asked_questions.push(q.clone());
-                        ask_step_ids.push(step_id.clone());
-                    }
-                    // `ask` must never be silent: hiding the question
-                    // while the session pauses for an answer would leave the
-                    // user waiting on a question they can't see.
-                    let silent = is_silent_action(&tool_name, &action.tool_input)
-                        // An empty agent inbox poll carries no user
-                        // information — hide the card instead of spamming
-                        // the chat on every routine check.
-                        || (is_agent_inbox_call(&tool_name, &action.tool_input)
-                            && empty_inbox_output(&step_result));
-                    // For `ask`, the chat/resume bubble shows the readable
-                    // question text; the canonical (model) context keeps
-                    // the raw JSON so the model can still parse the flag.
-                    // Same for `notify`: show a readable confirmation
-                    // instead of the raw signal JSON.
-                    let display_observation = if let Some(q) = &ask_question {
-                        q.clone()
-                    } else if let Some(title) = &notify_title {
-                        let body = notify_body.clone().unwrap_or_default();
-                        if body.is_empty() {
-                            step_result.clone()
-                        } else {
-                            format!("Notification sent: {title}: {body}")
-                        }
-                    } else {
-                        step_result.clone()
-                    };
-                    // Phase 6.1: Observation card + projection via apply.
-                    let proj_ctx = StepCtx {
-                        session_id: session_id.to_string(),
-                        step_num,
-                        run_id,
-                        emitter: emitter.clone(),
-                    };
-                    self.apply_transcript(
-                        &proj_ctx,
-                        TranscriptEvent::ToolResult {
-                            canonical_observation: step_result,
-                            history_observation: display_observation,
-                            tool_call_id: action.tool_call_id.clone(),
-                            action: action.clone(),
-                            observation_card: Some(ObservationCard {
-                                tool_name: tool_name.clone(),
-                                tool_call_id: action.tool_call_id.clone(),
-                                step_id,
-                                silent,
-                                ask_options: ask_options.clone(),
-                            }),
-                        },
-                        events,
-                        canonical,
-                    )
-                    .await;
-                    completed_tool_keys.insert(tool_key(&action));
+                    completed_results[idx] = Some(result);
                 }
             }
+        }
+
+        // Futures finish nondeterministically, but canonical tool messages are
+        // an ordered protocol: each observation follows the corresponding
+        // assistant call. Buffering only the projection keeps parallel tools
+        // fast without making the next provider request depend on completion
+        // order.
+        for result in completed_results.into_iter().flatten() {
+            batch_state
+                .commit_tool_result(self, &gate_ctx, result, events, canonical)
+                .await;
         }
 
         // Skip the retry nudge when the batch asked the user or is about to
         // pause for confirm: it would be baked into the paused snapshot ahead
         // of the user's real answer / decision. Phase 7 / G5: append onto the
         // last failed tool observation — never a synthetic User message.
-        if any_tool_failure
-            && asked_questions.is_empty()
+        if batch_state.any_tool_failure
+            && batch_state.asked_questions.is_empty()
             && need_confirm.is_empty()
             && step_num < max_steps - 1
         {
-            let nudge = Self::build_failure_nudge(&failure_signals);
-            Self::attach_failure_nudge(canonical, &nudge, last_failed_tool_call_id.as_deref());
+            let nudge = Self::build_failure_nudge(&batch_state.failure_signals);
+            Self::attach_failure_nudge(
+                canonical,
+                &nudge,
+                batch_state.last_failed_tool_call_id.as_deref(),
+            );
         }
 
         // Phase 5 / E3: confirm before ask when both appear in one batch.
@@ -740,15 +723,15 @@ impl ReActEngine {
         // Prefer confirm pause; stash ask pending so finish_confirm_batch's
         // next turn still surfaces the question.
         if !need_confirm.is_empty() {
-            if !asked_questions.is_empty() {
+            if !batch_state.asked_questions.is_empty() {
                 // Ask question rows were projected inside apply(ToolResult).
-                let question = asked_questions.join("\n\n");
+                let question = batch_state.asked_questions.join("\n\n");
                 self.executor
                     .set_awaiting_answer(
                         session_id,
                         Some(crate::types::AskPending {
                             question,
-                            step_ids: ask_step_ids.clone(),
+                            step_ids: batch_state.ask_step_ids.clone(),
                         }),
                     )
                     .await;
@@ -787,8 +770,8 @@ impl ReActEngine {
         // answer. Their reply arrives as a supplement and resumes the session
         // (Paused —Pending —dispatcher re-enters the loop, injecting the
         // answer as context at the top of the next step).
-        if !asked_questions.is_empty() {
-            let question = asked_questions.join("\n\n");
+        if !batch_state.asked_questions.is_empty() {
+            let question = batch_state.asked_questions.join("\n\n");
             // X12: ask question messages were projected in apply(ToolResult)
             // under each ask step id (shared-id protocol).
             // Phase 4 / C3: no steering→answer queue transfer. Mid-run user
@@ -808,7 +791,7 @@ impl ReActEngine {
                         session_id,
                         Some(crate::types::AskPending {
                             question: question.clone(),
-                            step_ids: ask_step_ids.clone(),
+                            step_ids: batch_state.ask_step_ids.clone(),
                         }),
                     )
                     .await;

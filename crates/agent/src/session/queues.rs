@@ -216,15 +216,19 @@ impl SessionExecutor {
             .unwrap_or_default()
     }
 
-    /// Drain all pending context for a session in one lock pass: follow-ups
-    /// (paused-session replies / `ask` answers), steering (mid-run user
-    /// interjections) and buffered background-action results (system inject).
+    /// Drain the next model context for a session in one lock pass.
+    ///
+    /// Steering has priority over follow-ups, matching the agent-loop
+    /// contract: a message entered while tools were running must be delivered
+    /// before work that was queued for after the current turn. Follow-ups are
+    /// drained only when there is no steering waiting. Background-action
+    /// results are always drained in the same batch.
     ///
     /// Phase 7 / D2: this only clears the **RAM cache**. Durability lives in
     /// DB messages + snapshot `saved_at` + undelivered scan; resume may
     /// re-queue the same `message_id` after a restart, and enqueue is
     /// idempotent so a duplicate id does not double-inject.
-    pub async fn drain_pending_context(
+    pub async fn drain_react_context(
         &self,
         session_id: &str,
     ) -> (Vec<FollowUp>, Vec<FollowUp>, Vec<String>) {
@@ -232,10 +236,13 @@ impl SessionExecutor {
         let (follow_ups, steering) = match entry {
             Some(entry) => {
                 let mut session = entry.lock().await;
-                (
-                    std::mem::take(&mut session.follow_up_queue),
-                    std::mem::take(&mut session.steering_queue),
-                )
+                let steering = std::mem::take(&mut session.steering_queue);
+                let follow_ups = if steering.is_empty() {
+                    std::mem::take(&mut session.follow_up_queue)
+                } else {
+                    Vec::new()
+                };
+                (follow_ups, steering)
             }
             None => (Vec::new(), Vec::new()),
         };

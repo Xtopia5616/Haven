@@ -158,7 +158,7 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript`），流式响应、快照/分支、压缩；`context` 只收集上下文来源，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
+- `react/`：ReAct 循环（`loop` / `turn` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript`），按 Run → Turn → ToolBatch 分层；`loop` 只负责 run 预算与生命周期，`turn` 负责一次模型采样和响应策略，`tool_batch` 负责工具执行与按 assistant 调用顺序物化结果。流式响应、快照/分支、压缩仍由各自模块负责；`context` 只收集上下文来源，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 投影；`resume_support` 只提供确定性的候选合并、无快照投影和运行时工具选择恢复。
@@ -356,3 +356,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.2 LLM：将流式上下文估算、idle scaling、规则门禁、chunk 聚合与首 chunk 前重试收口到 `crates/llm/src/streaming.rs`，router 保留 endpoint 编排（ADR 0053） |
 | 2026-08-30 | §2.4 Agent：将增量事实抽取窗口、transcript 构造、来源解析与提案安全门禁收口到 `crates/agent/src/fact_inference.rs`，inference 保留调度与写入编排（ADR 0054） |
 | 2026-08-30 | §2.6 UI：将默认模型发现缓存、设置投影、provider 能力归一化与刷新代次收口到 `ui/src/lib/chatModelSync.ts`，路由页保留响应式状态与菜单编排（ADR 0055） |
+| 2026-08-31 | §2.5 Agent：将 ReAct loop 拆为 Run/Turn/ToolBatch，明确一次采样边界、steering 优先级和工具结果的 canonical 顺序（ADR 0056） |

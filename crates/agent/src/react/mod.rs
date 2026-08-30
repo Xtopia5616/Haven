@@ -28,12 +28,14 @@ mod snapshot_io;
 pub(crate) mod stream_step;
 mod tool_batch;
 mod transcript;
+mod turn;
 mod turn_end;
 
 use context::ContextSource;
 pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
+pub use r#loop::{LoopExit, PauseReason};
 use sidecars::{
     BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs,
     TokenEstimateCache, ToolDefCache, UsageTracker,
@@ -223,34 +225,6 @@ pub(super) enum StepCallOutcome {
     Cancelled,
     /// Persisted/emitted error already; the loop must propagate it.
     Fatal(String),
-}
-
-/// Why the ReAct run paused (Phase 2 / C2). Status is already written by
-/// `pause_turn*` before the loop returns; this only labels the exit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PauseReason {
-    /// Text-only / `final_answer` turn end.
-    TurnEnd,
-    /// `ask` tool (or pending-ask re-surface).
-    Ask,
-    /// Safety-gated tool awaiting user confirmation (Phase 5 / E3).
-    Confirm,
-    /// Per-run `max_steps` exhausted.
-    Budget,
-    /// Observed Paused* at step head or mid-batch (external flip).
-    External,
-}
-
-/// Explicit exit from `run_react_loop` (Phase 2 / C2). Replaces bare `Ok(())`
-/// so cancel / pause / complete / soft-error are distinguishable. Hard
-/// failures still return `Err`. Host maps non-`Error` exits to dispatcher
-/// success so the permit is released via `unmark_running`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LoopExit {
-    Paused { reason: PauseReason },
-    Cancelled,
-    Completed,
-    Error(String),
 }
 
 impl ReActEngine {

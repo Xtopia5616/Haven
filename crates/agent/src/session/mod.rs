@@ -1352,6 +1352,39 @@ mod tests {
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
     }
 
+    #[tokio::test]
+    async fn drain_react_context_prioritizes_steering_over_follow_ups() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = SessionExecutor::new(db, tools, 3);
+        let session = exec.create_session("context priority").await.unwrap();
+
+        exec.add_follow_up(&session.id, "follow-up").await.unwrap();
+        exec.add_steering(&session.id, "steering").await.unwrap();
+
+        let (follow_ups, steering, action_results) = exec.drain_react_context(&session.id).await;
+        assert!(follow_ups.is_empty());
+        assert_eq!(
+            steering
+                .into_iter()
+                .map(|item| item.text)
+                .collect::<Vec<_>>(),
+            vec!["steering"]
+        );
+        assert!(action_results.is_empty());
+
+        let (follow_ups, steering, action_results) = exec.drain_react_context(&session.id).await;
+        assert_eq!(
+            follow_ups
+                .into_iter()
+                .map(|item| item.text)
+                .collect::<Vec<_>>(),
+            vec!["follow-up"]
+        );
+        assert!(steering.is_empty());
+        assert!(action_results.is_empty());
+    }
+
     /// Phase 7 / D2: re-queue by the same `message_id` must not double-inject.
     #[tokio::test]
     async fn follow_up_same_message_id_is_idempotent() {

@@ -12,9 +12,9 @@ use super::*;
 use haven_tools::inbox::{Envelope, MessageType};
 
 impl ReActEngine {
-    /// Drain user-facing context into the canonical message list: follow-ups
-    /// (paused-session replies / ask answers), steering (mid-run user
-    /// interjections) and completed background-action results (system inject).
+    /// Drain user-facing context into the canonical message list: steering
+    /// (mid-run user interjections), follow-ups (paused-session replies / ask
+    /// answers) and completed background-action results (system inject).
     /// Each becomes a `User` message so the agent sees it on the next LLM call.
     ///
     /// Returns `true` when at least one message was injected. Called at the

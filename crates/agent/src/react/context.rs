@@ -54,28 +54,13 @@ impl ContextSource {
         }
     }
 
-    /// Drain follow-ups, steering and completed action results in the
-    /// historical order consumed by the model. Only the source queues are
-    /// touched here; the caller decides how to project each item.
+    /// Drain the next model context. Steering is delivered first; follow-ups
+    /// are held back until steering is empty. Only source queues are touched
+    /// here; the caller decides how to project each item.
     pub(super) async fn drain_pending_context(&self, session_id: &str) -> PendingContextBatch {
         let (follow_ups, steering, action_results) =
-            self.executor.drain_pending_context(session_id).await;
+            self.executor.drain_react_context(session_id).await;
         let mut batch = PendingContextBatch::default();
-
-        for follow_up in follow_ups {
-            let source = if follow_up.is_answer {
-                batch.clears_ask = true;
-                InjectSource::Answer
-            } else {
-                InjectSource::FollowUp
-            };
-            batch.items.push(PendingContext {
-                source,
-                text: follow_up.text,
-                attachments: follow_up.attachments,
-                message_id: follow_up.message_id,
-            });
-        }
 
         for steering_item in steering {
             let source = if steering_item.is_answer {
@@ -89,6 +74,21 @@ impl ContextSource {
                 text: steering_item.text,
                 attachments: steering_item.attachments,
                 message_id: steering_item.message_id,
+            });
+        }
+
+        for follow_up in follow_ups {
+            let source = if follow_up.is_answer {
+                batch.clears_ask = true;
+                InjectSource::Answer
+            } else {
+                InjectSource::FollowUp
+            };
+            batch.items.push(PendingContext {
+                source,
+                text: follow_up.text,
+                attachments: follow_up.attachments,
+                message_id: follow_up.message_id,
             });
         }
 

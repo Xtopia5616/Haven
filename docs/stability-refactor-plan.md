@@ -58,7 +58,7 @@
 - 2026-08-27：补齐应用壳层与 Agent 事件 DTO：39 个事件统一由 Rust 名称常量、命名 wire DTO 和前端 contract 登记；新增 `scripts/check-ipc-events.ps1` 保护 channel 集合与 snake_case → camelCase 边界（ADR 0009）。
 - 2026-08-27：媒体能力的持久化配置仅保留命名 provider 与能力参数；STT/TTS/文生图凭据改为解析后的运行时 DTO，旧媒体 provider 名或本地凭据会备份配置并以默认值启动，避免再次读入旧兼容字段（ADR 0008）。
 
-### P2：按稳定接口拆解热点（已完成：2026-08-30；平台适配暂缓）
+### P2：按稳定接口拆解热点（已完成：2026-08-31；平台适配暂缓）
 
 - Memory：将 schema、图谱写入、查询/排序、嵌入与迁移策略分离；仓库层不承担业务推理。
 - LLM：提取供应商适配器共享的请求、流式、用量和重试管线；每个 provider 只保留协议映射。
@@ -111,6 +111,7 @@
 - 2026-08-30：P2 LLM 流式执行边界收口：流式上下文估算、idle scaling、规则门禁、chunk 聚合与首 chunk 前重试集中到 `streaming.rs`，router 保留 endpoint 编排（ADR 0053）。
 - 2026-08-30：P2 Agent 事实推理边界收口：增量抽取窗口、transcript 构造、来源解析与提案安全门禁集中到 `fact_inference.rs`，inference 保留调度与写入编排（ADR 0054）。
 - 2026-08-30：P2 UI 模型同步边界收口：默认模型发现缓存、设置投影、provider 能力归一化与刷新代次集中到 `chatModelSync.ts`，路由页保留状态与菜单编排（ADR 0055）。
+- 2026-08-31：P2 Agent ReAct 控制流重组：以 Run/Turn/ToolBatch 明确模型采样、工具批次和生命周期边界；工具结果按 assistant 调用顺序物化，steering 优先于 follow-up（ADR 0056）。
 
 ## 完成标准
 
