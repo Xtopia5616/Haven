@@ -1,0 +1,959 @@
+use haven_common::types::CanonicalToolCall;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fmt;
+use thiserror::Error;
+
+/// How a provider accounts for prompt-cache tokens in `prompt_tokens`.
+///
+/// This must travel with each usage row. Anthropic cache reads sit outside
+/// `input_tokens`, while OpenAI-style cache hits are already inside prompt
+/// tokens; aggregate token counts cannot safely recover that distinction.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheAccounting {
+    Inclusive,
+    Exclusive,
+    #[default]
+    Unknown,
+}
+
+impl CacheAccounting {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inclusive => "inclusive",
+            Self::Exclusive => "exclusive",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Non-sensitive prompt-cache request and provider outcome metadata. This is
+/// persisted per call for diagnostics, never with the cache key or prompt.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CacheDiagnostics {
+    /// `off`, `key`, `split`, or `implicit` describes the effective wire strategy.
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub key_requested: bool,
+    #[serde(default)]
+    pub system_split: bool,
+    /// True when an optional cache extension was rejected and retried safely.
+    #[serde(default)]
+    pub downgraded: bool,
+    /// `disabled`, `unknown`, `hit`, or `miss`; no provider-usage response is
+    /// deliberately kept as `unknown`, never guessed as a cache miss.
+    #[serde(default)]
+    pub outcome: String,
+}
+
+impl CacheDiagnostics {
+    pub fn for_request(key_requested: bool, system_split: bool) -> Self {
+        Self {
+            mode: if system_split {
+                "split".into()
+            } else if key_requested {
+                "key".into()
+            } else {
+                "off".into()
+            },
+            key_requested,
+            system_split,
+            downgraded: false,
+            outcome: if key_requested || system_split {
+                "unknown".into()
+            } else {
+                "disabled".into()
+            },
+        }
+    }
+
+    /// Use for providers with cache controls or automatic prefix caching but
+    /// without an explicit routing key (Anthropic and Gemini).
+    pub fn for_provider_cache(system_split: bool) -> Self {
+        Self {
+            mode: if system_split {
+                "split".into()
+            } else {
+                "implicit".into()
+            },
+            key_requested: false,
+            system_split,
+            downgraded: false,
+            outcome: "unknown".into(),
+        }
+    }
+
+    pub fn with_provider_usage(mut self, cached_tokens: u32) -> Self {
+        if self.outcome != "disabled" {
+            self.outcome = if cached_tokens > 0 {
+                "hit".into()
+            } else {
+                "miss".into()
+            };
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    /// Prompt-cache hit / read tokens (OpenAI `cached_tokens`, Anthropic
+    /// `cache_read_input_tokens`, DeepSeek hit, Gemini `cachedContentTokenCount`).
+    /// Providers usually already include these inside `prompt_tokens` (OpenAI);
+    /// Anthropic reports them separately from `input_tokens`.
+    #[serde(default)]
+    pub cached_tokens: u32,
+    /// Prompt-cache write / creation tokens (Anthropic `cache_creation_input_tokens`).
+    /// Other providers typically leave this at 0.
+    #[serde(default)]
+    pub cache_creation_tokens: u32,
+    /// Input tokens that were not read from prompt cache. Adapters compute
+    /// this from their explicit accounting contract before aggregation.
+    #[serde(default)]
+    pub cache_miss_tokens: u32,
+    #[serde(default)]
+    pub cache_accounting: CacheAccounting,
+    #[serde(default)]
+    pub cache_diagnostics: Option<CacheDiagnostics>,
+    // §2.14: model name and cost tracking
+    pub model_name: Option<String>,
+    pub cost: Option<f64>,
+}
+
+impl Usage {
+    /// Build a canonical usage row and fill omitted `total_tokens`.
+    pub fn from_counts(
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        model_name: Option<String>,
+    ) -> Self {
+        Self::from_counts_with_accounting(
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            CacheAccounting::Unknown,
+            model_name,
+        )
+    }
+
+    pub fn from_counts_with_accounting(
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_accounting: CacheAccounting,
+        model_name: Option<String>,
+    ) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            cache_miss_tokens: 0,
+            cache_accounting,
+            cache_diagnostics: None,
+            model_name,
+            cost: None,
+        }
+        .normalize()
+    }
+
+    /// Fill `total_tokens` when the provider omitted it using the explicit
+    /// cache accounting contract supplied by the adapter.
+    pub fn normalize(mut self) -> Self {
+        if self.total_tokens == 0 {
+            let extra = if self.cache_accounting == CacheAccounting::Exclusive {
+                self.cached_tokens
+                    .saturating_add(self.cache_creation_tokens)
+            } else {
+                0
+            };
+            self.total_tokens = self
+                .prompt_tokens
+                .saturating_add(self.completion_tokens)
+                .saturating_add(extra);
+        }
+        self
+    }
+
+    /// True when cache read/write tokens are declared outside `prompt_tokens`.
+    /// Unknown legacy records are not guessed from their numeric values.
+    pub fn cache_exclusive_of_prompt(&self) -> bool {
+        self.cache_accounting == CacheAccounting::Exclusive
+    }
+
+    /// Tokens occupying the model context window for this call.
+    pub fn context_tokens(&self) -> u32 {
+        if self.cache_exclusive_of_prompt() {
+            self.prompt_tokens
+                .saturating_add(self.cached_tokens)
+                .saturating_add(self.cache_creation_tokens)
+        } else {
+            self.prompt_tokens
+        }
+    }
+
+    /// Normal, non-cached input tokens used for cache-aware pricing.
+    pub fn cache_miss_tokens(&self) -> u32 {
+        if self.cache_miss_tokens > 0 {
+            return self.cache_miss_tokens;
+        }
+        match self.cache_accounting {
+            CacheAccounting::Inclusive => self
+                .prompt_tokens
+                .saturating_sub(self.cached_tokens)
+                .saturating_sub(self.cache_creation_tokens),
+            CacheAccounting::Exclusive | CacheAccounting::Unknown => self.prompt_tokens,
+        }
+    }
+}
+
+/// Result of a live connectivity probe to a model endpoint. The top-right
+/// status chip maps these to 就绪 / 已断开 / 未配置.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmConnectionStatus {
+    /// Endpoint reachable (GET /models succeeded).
+    Ready,
+    /// Endpoint configured but unreachable (network/auth/server failure).
+    Disconnected,
+    /// No api_key configured for the role — no network probe was attempted.
+    Unconfigured,
+}
+
+impl LlmConnectionStatus {
+    /// Stable wire value used by the `check_llm_connection` Tauri command
+    /// (`"ready"` / `"disconnected"` / `"unconfigured"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Disconnected => "disconnected",
+            Self::Unconfigured => "unconfigured",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishReason {
+    Stop,
+    Length,
+    ToolCalls,
+    ContentFilter,
+    FunctionCall,
+}
+
+impl fmt::Display for FinishReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FinishReason::Stop => write!(f, "stop"),
+            FinishReason::Length => write!(f, "length"),
+            FinishReason::ToolCalls => write!(f, "tool_calls"),
+            FinishReason::ContentFilter => write!(f, "content_filter"),
+            FinishReason::FunctionCall => write!(f, "function_call"),
+        }
+    }
+}
+
+impl FinishReason {
+    /// Parse a finish_reason string from any OpenAI-compatible provider.
+    /// Accepts standard OpenAI values plus common non-standard variants
+    /// from Ollama, vLLM, Google Gemini, Anthropic, etc.
+    pub fn from_openai(s: &str) -> Option<Self> {
+        match s {
+            "stop" | "end" | "end_turn" | "completed" | "done" => Some(FinishReason::Stop),
+            "length" | "max_tokens" | "incomplete" | "max_length" => Some(FinishReason::Length),
+            "tool_calls" | "tool_use" | "tools" => Some(FinishReason::ToolCalls),
+            "function_call" => Some(FinishReason::FunctionCall),
+            "content_filter" | "safety" | "blocked" | "moderation" => {
+                Some(FinishReason::ContentFilter)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Live status of the provider's built-in web search tool (DeepSeek /
+/// OpenAI Responses API). Forwarded to the UI so the user sees
+/// "正在联网搜索…" while the search runs server-side.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchPhase {
+    #[default]
+    InProgress,
+    Searching,
+    Completed,
+}
+
+impl WebSearchPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WebSearchPhase::InProgress => "in_progress",
+            WebSearchPhase::Searching => "searching",
+            WebSearchPhase::Completed => "completed",
+        }
+    }
+}
+
+/// One live web-search status update. DeepSeek can emit several
+/// `web_search_call` items in a single turn (`search` → `open_page` →
+/// `find_in_page`); `call_id` / `action` let the UI render each as its own
+/// card instead of collapsing them into one indicator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct WebSearchUpdate {
+    pub phase: WebSearchPhase,
+    /// Provider item id (`ws_…` / `web_search_call` id). Optional when the
+    /// SSE status event omitted `item_id` and no prior `output_item.added`
+    /// was seen for this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// DeepSeek `action.type`: `search` / `open_page` / `find_in_page`.
+    /// Often absent until `output_item.done` carries the full payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Compact tool return `{queries, results:[{title,url,snippet}]}` captured
+    /// from the completed `web_search_call` item (see
+    /// [`crate::adapters::web_search_result_of`]). Present only when the
+    /// provider returned citations / result content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+}
+
+impl WebSearchUpdate {
+    pub fn new(phase: WebSearchPhase) -> Self {
+        Self {
+            phase,
+            call_id: None,
+            action: None,
+            result: None,
+        }
+    }
+
+    pub fn with_meta(mut self, call_id: Option<String>, action: Option<String>) -> Self {
+        self.call_id = call_id;
+        self.action = action;
+        self
+    }
+
+    pub fn with_result(mut self, result: Option<serde_json::Value>) -> Self {
+        self.result = result;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmResponse {
+    pub text: String,
+    pub tool_calls: Vec<CanonicalToolCall>,
+    pub finish_reason: Option<FinishReason>,
+    pub usage: Usage,
+    // §2.14: which model produced this response
+    pub model: Option<String>,
+    /// Internal reasoning/chain-of-thought produced by the model (e.g.
+    /// DeepSeek-R1's reasoning_content, Claude's extended thinking).
+    pub reasoning: Option<String>,
+    /// Raw `web_search_call` output items (see
+    /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_search_calls: Vec<serde_json::Value>,
+    /// Raw Anthropic `thinking` content blocks (see
+    /// [`haven_common::types::CanonicalMessage::thinking_blocks`]). Carried so
+    /// the agent can echo them back verbatim on tool-use turns. May include
+    /// the adapter's internal trailing `__layout` marker entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking_blocks: Vec<serde_json::Value>,
+}
+
+/// A batch of text embeddings produced by the dedicated `embedding_model`
+/// endpoint. `vectors[i]` corresponds to `input[i]` of the request.
+#[derive(Debug, Clone)]
+pub struct Embedding {
+    pub vectors: Vec<Vec<f32>>,
+    pub model: Option<String>,
+    pub usage: Usage,
+}
+
+/// OpenAI-compatible tool definition for function calling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+/// Canonical tool definition → LLM-boundary tool definition. The agent and
+/// providers consume the shared `haven_common::tools::ToolDef`; only at the
+/// provider boundary is it expressed as the OpenAI-shaped `ToolDefinition`
+/// each adapter converts to its own wire format.
+impl From<haven_common::tools::ToolDef> for ToolDefinition {
+    fn from(def: haven_common::tools::ToolDef) -> Self {
+        ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: def.name,
+                description: def.description,
+                parameters: sanitize_tool_parameters(def.input_schema),
+            },
+        }
+    }
+}
+
+/// Ensure tool `parameters` is a JSON Schema object acceptable to strict
+/// providers (OpenAI Responses meta-schema: schema = boolean | object).
+///
+/// - Null / non-object roots become `{"type":"object","properties":{}}`.
+/// - Keywords that must be boolean|object (`additionalProperties`,
+///   `additionalItems`, `items`, `not`, `if`/`then`/`else`, …) drop `null`
+///   (or coerce `additionalProperties`/`additionalItems` null → `false`).
+pub fn sanitize_tool_parameters(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut map) => {
+            sanitize_schema_object(&mut map);
+            Value::Object(map)
+        }
+        _ => serde_json::json!({"type": "object", "properties": {}}),
+    }
+}
+
+fn sanitize_schema_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => sanitize_schema_object(map),
+        Value::Array(items) => {
+            for item in items {
+                sanitize_schema_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_schema_object(map: &mut serde_json::Map<String, Value>) {
+    for key in ["additionalProperties", "additionalItems"] {
+        if matches!(map.get(key), Some(Value::Null)) {
+            map.insert(key.to_string(), Value::Bool(false));
+        }
+    }
+    for key in [
+        "items",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "propertyNames",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    ] {
+        match map.get(key) {
+            Some(Value::Null) => {
+                map.remove(key);
+            }
+            Some(_) => {
+                if let Some(v) = map.get_mut(key) {
+                    sanitize_schema_value(v);
+                }
+            }
+            None => {}
+        }
+    }
+    for key in [
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "$defs",
+        "definitions",
+    ] {
+        if let Some(Value::Object(nested)) = map.get_mut(key) {
+            for prop in nested.values_mut() {
+                sanitize_schema_value(prop);
+            }
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(items)) = map.get_mut(key) {
+            for item in items {
+                sanitize_schema_value(item);
+            }
+        }
+    }
+}
+
+/// Outcome of a speech-to-text call: the transcript plus an optional
+/// confidence (0.0-1.0) reported by the provider. `None` confidence means
+/// the provider does not report one; the gateway's confidence gate treats
+/// that as "no signal" and falls back on error / empty text instead.
+#[derive(Debug, Clone, Default)]
+pub struct SttResult {
+    pub text: String,
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Error)]
+pub enum LlmError {
+    #[error("network timeout: {0}")]
+    Timeout(String),
+
+    #[error("authentication failed: {0}")]
+    Auth(String),
+
+    #[error("rate limited by provider")]
+    RateLimit {
+        retry_after: Option<std::time::Duration>,
+    },
+
+    #[error("server error: {0}")]
+    ServerError(String),
+
+    #[error("invalid response: {0}")]
+    InvalidResponse(String),
+
+    #[error("request failed: {0}")]
+    RequestFailed(String),
+
+    #[error("cancelled by user")]
+    Cancelled,
+
+    #[error("stream truncated")]
+    StreamTruncated,
+
+    #[error("content filtered by provider")]
+    ContentFilter,
+
+    #[error("context length exceeded")]
+    ContextLengthExceeded,
+
+    #[error("billing issue: {0}")]
+    Billing(String),
+
+    /// Adapter does not implement the requested capability (e.g. STT /
+    /// embeddings). Callers may fall back to an alternate path.
+    #[error("unsupported capability: {0}")]
+    UnsupportedCapability(String),
+
+    #[error("unknown error: {0}")]
+    Unknown(String),
+
+    /// Composite error: primary + balanced model both failed
+    #[error("all endpoints failed: primary={0}, balanced_model={1}")]
+    AllEndpointsFailed(String, String),
+
+    /// Stream aborted by a configured stream rule (Abort mode).
+    /// Contains (rule_name, inject_text).
+    #[error("stream aborted by rule '{0}': {1}")]
+    StreamAborted(String, String),
+}
+
+impl LlmError {
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            LlmError::RateLimit { retry_after } => *retry_after,
+            _ => None,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            LlmError::Timeout(_)
+                | LlmError::ServerError(_)
+                | LlmError::RateLimit { .. }
+                | LlmError::StreamTruncated
+        )
+    }
+
+    /// True when the adapter lacks the requested capability (STT, embeddings,
+    /// …). Distinct from a hard request failure so callers can fall back.
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, LlmError::UnsupportedCapability(_))
+    }
+}
+
+impl From<reqwest::Error> for LlmError {
+    fn from(e: reqwest::Error) -> Self {
+        if e.is_timeout() {
+            LlmError::Timeout(e.to_string())
+        } else if e.is_connect() || e.is_body() || e.is_request() {
+            LlmError::ServerError(e.to_string())
+        } else if let Some(status) = e.status() {
+            if status.as_u16() == 401 || status.as_u16() == 403 {
+                LlmError::Auth(e.to_string())
+            } else if status.as_u16() == 429 {
+                LlmError::RateLimit { retry_after: None }
+            } else if status.is_server_error() {
+                LlmError::ServerError(e.to_string())
+            } else {
+                LlmError::RequestFailed(e.to_string())
+            }
+        } else {
+            LlmError::Unknown(e.to_string())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StreamChunk {
+    pub text: Option<String>,
+    pub tool_calls: Vec<CanonicalToolCall>,
+    pub finish_reason: Option<FinishReason>,
+    pub usage: Option<Usage>,
+    pub model: Option<String>,
+    /// Internal reasoning/chain-of-thought delta (e.g. DeepSeek-R1's
+    /// reasoning_content, Claude's extended thinking).
+    pub reasoning: Option<String>,
+    /// Live web search status (in_progress → searching → completed). Set on
+    /// the chunk matching the provider's stream event; the UI renders one
+    /// card per `call_id` from it.
+    pub web_search: Option<WebSearchUpdate>,
+    /// Raw `web_search_call` items accumulated while streaming (see
+    /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
+    pub web_search_calls: Vec<serde_json::Value>,
+    /// Raw Anthropic `thinking` content blocks accumulated while streaming (see
+    /// [`haven_common::types::CanonicalMessage::thinking_blocks`]). Emitted
+    /// when a thinking block completes so the aggregation keeps them verbatim;
+    /// the final chunk may carry the adapter's internal `__layout` marker.
+    pub thinking_blocks: Vec<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn finish_reason_all_variants_exist() {
+        let stop = FinishReason::Stop;
+        let length = FinishReason::Length;
+        let tool_calls = FinishReason::ToolCalls;
+        let content_filter = FinishReason::ContentFilter;
+        let function_call = FinishReason::FunctionCall;
+        assert_eq!(stop, FinishReason::Stop);
+        assert_eq!(length, FinishReason::Length);
+        assert_eq!(tool_calls, FinishReason::ToolCalls);
+        assert_eq!(content_filter, FinishReason::ContentFilter);
+        assert_eq!(function_call, FinishReason::FunctionCall);
+    }
+
+    #[test]
+    fn finish_reason_display() {
+        assert_eq!(FinishReason::Stop.to_string(), "stop");
+        assert_eq!(FinishReason::Length.to_string(), "length");
+        assert_eq!(FinishReason::ToolCalls.to_string(), "tool_calls");
+        assert_eq!(FinishReason::ContentFilter.to_string(), "content_filter");
+        assert_eq!(FinishReason::FunctionCall.to_string(), "function_call");
+    }
+
+    #[test]
+    fn finish_reason_from_openai_known_strings() {
+        assert_eq!(FinishReason::from_openai("stop"), Some(FinishReason::Stop));
+        assert_eq!(
+            FinishReason::from_openai("length"),
+            Some(FinishReason::Length)
+        );
+        assert_eq!(
+            FinishReason::from_openai("tool_calls"),
+            Some(FinishReason::ToolCalls)
+        );
+        assert_eq!(
+            FinishReason::from_openai("content_filter"),
+            Some(FinishReason::ContentFilter)
+        );
+        assert_eq!(
+            FinishReason::from_openai("function_call"),
+            Some(FinishReason::FunctionCall)
+        );
+    }
+
+    #[test]
+    fn finish_reason_from_openai_unknown_returns_none() {
+        assert_eq!(FinishReason::from_openai("unknown_reason"), None);
+        assert_eq!(FinishReason::from_openai(""), None);
+        assert_eq!(FinishReason::from_openai("STOP"), None);
+    }
+
+    #[test]
+    fn usage_default_values_are_zero() {
+        let u = Usage::default();
+        assert_eq!(u.prompt_tokens, 0);
+        assert_eq!(u.completion_tokens, 0);
+        assert_eq!(u.total_tokens, 0);
+        assert_eq!(u.cached_tokens, 0);
+        assert_eq!(u.cache_creation_tokens, 0);
+        assert_eq!(u.cache_accounting, CacheAccounting::Unknown);
+        assert!(u.model_name.is_none());
+        assert!(u.cost.is_none());
+    }
+
+    #[test]
+    fn usage_normalize_fills_omitted_total_inclusive() {
+        let u =
+            Usage::from_counts_with_accounting(100, 20, 0, 80, 0, CacheAccounting::Inclusive, None);
+        assert_eq!(u.total_tokens, 120);
+        assert!(!u.cache_exclusive_of_prompt());
+        assert_eq!(u.context_tokens(), 100);
+    }
+
+    #[test]
+    fn usage_normalize_fills_omitted_total_exclusive_cache() {
+        let u = Usage::from_counts_with_accounting(
+            100,
+            20,
+            0,
+            400,
+            50,
+            CacheAccounting::Exclusive,
+            None,
+        );
+        assert_eq!(u.total_tokens, 570);
+        assert!(u.cache_exclusive_of_prompt());
+        assert_eq!(u.context_tokens(), 550);
+    }
+
+    #[test]
+    fn usage_cache_miss_uses_explicit_provider_value() {
+        let mut usage = Usage::from_counts_with_accounting(
+            100,
+            10,
+            110,
+            70,
+            10,
+            CacheAccounting::Inclusive,
+            None,
+        );
+        usage.cache_miss_tokens = 24;
+        assert_eq!(usage.cache_miss_tokens(), 24);
+    }
+
+    #[test]
+    fn usage_normalize_keeps_provider_total() {
+        let u = Usage::from_counts(100, 20, 125, 80, 0, None);
+        assert_eq!(u.total_tokens, 125);
+        assert_eq!(u.context_tokens(), 100);
+    }
+
+    #[test]
+    fn llm_error_display_request_failed() {
+        let err = LlmError::RequestFailed("connection refused".into());
+        assert!(err.to_string().contains("connection refused"));
+    }
+
+    #[test]
+    fn llm_error_display_rate_limit() {
+        let err = LlmError::RateLimit { retry_after: None };
+        assert!(err.to_string().contains("rate limited"));
+    }
+
+    #[test]
+    fn llm_error_display_unauthorized() {
+        let err = LlmError::Auth("invalid api key".into());
+        assert!(err.to_string().contains("invalid api key"));
+    }
+
+    #[test]
+    fn llm_error_display_stream_truncated() {
+        assert!(LlmError::StreamTruncated.to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn llm_error_display_context_length_exceeded() {
+        assert!(
+            LlmError::ContextLengthExceeded
+                .to_string()
+                .contains("context length")
+        );
+    }
+
+    #[test]
+    fn llm_error_retry_after_returns_stored_duration() {
+        let d = Duration::from_secs(15);
+        let err = LlmError::RateLimit {
+            retry_after: Some(d),
+        };
+        assert_eq!(err.retry_after(), Some(d));
+    }
+
+    #[test]
+    fn llm_error_retry_after_returns_none_for_non_rate_limit() {
+        let err = LlmError::RequestFailed("boom".into());
+        assert_eq!(err.retry_after(), None);
+    }
+
+    #[test]
+    fn llm_error_is_retryable_rate_limit() {
+        assert!(LlmError::RateLimit { retry_after: None }.is_retryable());
+    }
+
+    #[test]
+    fn llm_error_is_retryable_timeout() {
+        assert!(LlmError::Timeout("t".into()).is_retryable());
+    }
+
+    #[test]
+    fn llm_error_is_retryable_server_error() {
+        assert!(LlmError::ServerError("s".into()).is_retryable());
+    }
+
+    #[test]
+    fn llm_error_is_retryable_stream_truncated() {
+        assert!(LlmError::StreamTruncated.is_retryable());
+    }
+
+    #[test]
+    fn llm_error_is_not_retryable_unauthorized() {
+        assert!(!LlmError::Auth("bad key".into()).is_retryable());
+    }
+
+    #[test]
+    fn llm_error_is_not_retryable_request_failed() {
+        assert!(!LlmError::RequestFailed("x".into()).is_retryable());
+    }
+
+    #[test]
+    fn llm_error_is_not_retryable_cancelled() {
+        assert!(!LlmError::Cancelled.is_retryable());
+    }
+
+    #[test]
+    fn stream_chunk_construction_with_text_only() {
+        let chunk = StreamChunk {
+            text: Some("delta".into()),
+            tool_calls: vec![],
+            finish_reason: None,
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        };
+        assert_eq!(chunk.text, Some("delta".into()));
+        assert!(chunk.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn stream_chunk_construction_with_tool_calls_and_finish_reason() {
+        let chunk = StreamChunk {
+            text: None,
+            tool_calls: vec![CanonicalToolCall {
+                id: "tc1".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                ..Default::default()
+            }),
+            model: Some("gpt-4o".into()),
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        };
+        assert_eq!(chunk.tool_calls.len(), 1);
+        assert_eq!(chunk.tool_calls[0].name, "shell");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(chunk.usage.as_ref().unwrap().total_tokens, 15);
+        assert_eq!(chunk.model.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn tool_definition_construction() {
+        let td = ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "my_tool".into(),
+                description: "does something useful".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        };
+        assert_eq!(td.tool_type, "function");
+        assert_eq!(td.function.name, "my_tool");
+        assert_eq!(td.function.description, "does something useful");
+    }
+
+    #[test]
+    fn tool_function_construction() {
+        let tf = ToolFunction {
+            name: "echo".into(),
+            description: "echoes back the input".into(),
+            parameters: serde_json::json!({}),
+        };
+        assert_eq!(tf.name, "echo");
+        assert!(tf.description.contains("echoes"));
+    }
+
+    #[test]
+    fn tool_definition_from_tool_def() {
+        let def = haven_common::tools::ToolDef::new(
+            "files",
+            "Read and write files",
+            serde_json::json!({"type": "object"}),
+            haven_common::types::RiskLevel::Safe,
+        );
+        let td = ToolDefinition::from(def);
+        assert_eq!(td.tool_type, "function");
+        assert_eq!(td.function.name, "files");
+        assert_eq!(td.function.description, "Read and write files");
+        assert_eq!(
+            td.function.parameters,
+            serde_json::json!({"type": "object"})
+        );
+    }
+
+    #[test]
+    fn sanitize_tool_parameters_replaces_null_root() {
+        let cleaned = sanitize_tool_parameters(Value::Null);
+        assert_eq!(cleaned["type"], "object");
+        assert!(cleaned["properties"].is_object());
+    }
+
+    #[test]
+    fn sanitize_tool_parameters_coerces_additional_properties_null() {
+        let cleaned = sanitize_tool_parameters(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "additionalProperties": null
+                }
+            },
+            "additionalProperties": null
+        }));
+        assert_eq!(cleaned["additionalProperties"], false);
+        assert_eq!(cleaned["properties"]["cwd"]["additionalProperties"], false);
+    }
+
+    #[test]
+    fn tool_definition_from_null_schema_is_object() {
+        let def = haven_common::tools::ToolDef::new(
+            "mcp_broken",
+            "schema was null",
+            Value::Null,
+            haven_common::types::RiskLevel::High,
+        );
+        let td = ToolDefinition::from(def);
+        assert!(td.function.parameters.is_object());
+        assert!(!td.function.parameters.is_null());
+    }
+}

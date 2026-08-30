@@ -1,0 +1,9 @@
+# Cargo tarpaulin configuration
+# Usage: cargo tarpaulin --config .config/tarpaulin.toml
+
+[tarpaulin]
+output-dir = "target/coverage"
+out = ["Html", "Lcov"]
+exclude-files = ["crates/app-binary/src/main.rs"]
+run-types = ["Unit", "Integration"]
+timeout = 300

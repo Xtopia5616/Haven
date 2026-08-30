@@ -1,0 +1,910 @@
+import { describe, it, expect } from 'vitest';
+import type { StreamMessage } from './streaming.ts';
+import {
+	accumulateStreamChunk,
+	agentInsertIndex,
+	applyThoughtSnap,
+	webSearchId,
+	webSearchLabel,
+	webSearchCardContent,
+	finalizeStreamBlocks,
+	dropStreamedThought,
+	insertAgentMessage,
+	newToolMessage,
+	actionIdFromObservation,
+	parseActionResultInject,
+} from './streaming.ts';
+
+const STEP_ID = 'msg-thought-1';
+const REASONING_ID = 'msg-reasoning-1';
+const BASE = {
+	messageId: STEP_ID,
+	msgType: undefined,
+	stepNumber: 1,
+	runId: 0,
+	time: '10:00',
+};
+
+const chunk = (
+	messages: StreamMessage[],
+	delta: string,
+	opts: { msgType?: string; stepNumber?: number; runId?: number; time?: string } = {},
+): StreamMessage[] => accumulateStreamChunk(messages, { ...BASE, delta, ...opts });
+
+const snap = (
+	messages: StreamMessage[],
+	thought: string,
+	opts: { reasoningId?: string; stepNumber?: number; runId?: number; time?: string } = {},
+): StreamMessage[] =>
+	applyThoughtSnap(messages, {
+		messageId: STEP_ID,
+		reasoningId: REASONING_ID,
+		thought,
+		stepNumber: 1,
+		runId: 0,
+		time: '10:00',
+		...opts,
+	});
+
+const last = (messages: StreamMessage[]) => messages[messages.length - 1];
+
+describe('accumulateStreamChunk (thought)', () => {
+	it('creates a streaming message for the first chunk', () => {
+		const out = chunk([], '好的');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '好的',
+			streaming: true,
+		});
+	});
+
+	it('appends incremental deltas to the streaming message', () => {
+		let m = chunk([], '好的');
+		m = chunk(m, '，我先');
+		m = chunk(m, '查一下');
+		expect(m).toHaveLength(1);
+		expect(last(m)).toMatchObject({ content: '好的，我先查一下', streaming: true });
+	});
+
+	it('never splits into separate bubbles at sentence boundaries', () => {
+		// Regression: sentence-completing chunks used to finalize the message
+		// and open a new segment, so the answer showed as several bubbles
+		// while streaming and only merged after the snap.
+		let m = chunk([], '好的。');
+		m = chunk(m, '今天20度。');
+		m = chunk(m, '适合出门。');
+		expect(m).toHaveLength(1);
+		expect(last(m)).toMatchObject({
+			id: STEP_ID,
+			content: '好的。今天20度。适合出门。',
+			streaming: true,
+		});
+	});
+
+	it('does not split inside a code fence', () => {
+		let m = chunk([], '```js');
+		m = chunk(m, 'console.log("a。")');
+		m = chunk(m, '```');
+		expect(m).toHaveLength(1);
+		expect(last(m)).toMatchObject({ content: '```jsconsole.log("a。")```', streaming: true });
+	});
+
+	it('replaces content for cumulative providers (no splitting)', () => {
+		let m = chunk([], '好的');
+		m = chunk(m, '好的，我先查一下');
+		m = chunk(m, '好的，我先查一下。今天20度。');
+		expect(m).toHaveLength(1);
+		expect(m[0].content).toBe('好的，我先查一下。今天20度。');
+		expect(m[0].streaming).toBe(true);
+	});
+
+	it('drops straggler chunks after a snap finalization', () => {
+		let m = chunk([], '好的');
+		m = chunk(m, '今天20度');
+		m = snap(m, '好的今天20度');
+		const before = m;
+		const out = chunk(m, '残留');
+		expect(out).toBe(before);
+	});
+
+	it('accepts a full-text reconcile after finalization', () => {
+		// A dropped middle batch leaves the accumulated content a
+		// prefix-MISMATCHED partial of the authoritative text. The final
+		// full-text delta must still replace it (length-based).
+		let m = chunk([], '开头的回答');
+		m = chunk(m, '结尾');
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = chunk(m, '开头的回答，中间被丢掉的内容，结尾');
+		expect(out).toHaveLength(1);
+		expect(out[0].content).toBe('开头的回答，中间被丢掉的内容，结尾');
+	});
+
+	it('rejects a stale incremental delta after finalization', () => {
+		let m = chunk([], '回答');
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = chunk(m, '多余');
+		expect(out).toBe(m);
+	});
+});
+
+describe('accumulateStreamChunk (reasoning)', () => {
+	const base = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+
+	it('never splits reasoning into segments', () => {
+		let m = accumulateStreamChunk([], { ...base, delta: '先想想。' });
+		m = accumulateStreamChunk(m, { ...base, delta: '再想想。' });
+		expect(m).toHaveLength(1);
+		expect(m[0]).toMatchObject({ id: REASONING_ID, content: '先想想。再想想。', streaming: true });
+	});
+
+	it('drops chunks after the reasoning block was finalized', () => {
+		let m = accumulateStreamChunk([], { ...base, delta: '想想' });
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = accumulateStreamChunk(m, { ...base, delta: '多余' });
+		expect(out).toBe(m);
+	});
+
+	it('accepts the authoritative reconciliation delta after finalization', () => {
+		// The backend emits the COMPLETE reasoning text as a final chunk
+		// after the stream is finalized (batcher-flush reconciliation).
+		// It must replace the content, not be dropped — otherwise dropped
+		// trailing characters are lost forever.
+		let m = accumulateStreamChunk([], { ...base, delta: '思考了一部分' });
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = accumulateStreamChunk(m, { ...base, delta: '思考了一部分，还有更多' });
+		expect(out).toHaveLength(1);
+		expect(out[0].content).toBe('思考了一部分，还有更多');
+	});
+
+	it('accepts a full-text reconcile when intermediate chunks were dropped', () => {
+		// A dropped middle batch leaves the accumulated content a
+		// prefix-MISMATCHED partial of the authoritative text. The final
+		// full-text reconcile must still replace it (length-based), or the
+		// reasoning block is permanently truncated.
+		let m = accumulateStreamChunk([], { ...base, delta: '开头的思考' });
+		m = accumulateStreamChunk(m, { ...base, delta: '结尾' });
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = accumulateStreamChunk(m, {
+			...base,
+			delta: '开头的思考，中间被丢掉的内容，结尾',
+		});
+		expect(out).toHaveLength(1);
+		expect(out[0].content).toBe('开头的思考，中间被丢掉的内容，结尾');
+	});
+
+	it('rejects a stale incremental delta after finalization', () => {
+		let m = accumulateStreamChunk([], { ...base, delta: '想想' });
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = accumulateStreamChunk(m, { ...base, delta: '多余' });
+		expect(out).toBe(m);
+	});
+
+	it('inserts a late reasoning block in front of the thought, not below it', () => {
+		// Interleaved providers may emit text first and reasoning after.
+		// The reasoning must sit ABOVE the answer from the first chunk —
+		// appending it at the end would show Thinking... below the content
+		// until the snap reorders it. The same-step thought is found by
+		// (stepNumber, runId), since message ids carry no step information.
+		let m = chunk([], '回答文字。');
+		m = accumulateStreamChunk(m, { ...base, delta: '迟到的推理' });
+		expect(m.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
+		expect(m[0]).toMatchObject({ id: REASONING_ID, content: '迟到的推理', streaming: true });
+	});
+
+	it('does not climb above another step with the same number but a different run', () => {
+		// A resumed session reuses step numbers; the reasoning of run 2 must
+		// anchor on run 2's thought, not run 1's.
+		const run1Thought = {
+			id: 'msg-run1',
+			role: 'assistant',
+			type: undefined,
+			content: '上一次的回答',
+			stepNumber: 1,
+			runId: 1,
+			streaming: false,
+		};
+		let m: StreamMessage[] = [run1Thought];
+		m = chunk(m, '这次的回答。');
+		m = accumulateStreamChunk(m, { ...base, delta: '这次的推理' });
+		expect(m.map((x) => x.id)).toEqual([run1Thought.id, REASONING_ID, STEP_ID]);
+	});
+
+	it('appends a reasoning block when no thought message exists yet', () => {
+		const m = accumulateStreamChunk([], { ...base, delta: '先推理' });
+		expect(m).toHaveLength(1);
+		expect(m[0].id).toBe(REASONING_ID);
+	});
+});
+
+describe('applyThoughtSnap', () => {
+	it('creates the message when no streamed thought exists yet', () => {
+		const out = snap([], '完整的回答。');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ id: STEP_ID, content: '完整的回答。', streaming: false });
+	});
+
+	it('finalizes and reconciles the streamed thought on snap', () => {
+		let m = chunk([], '好的。');
+		m = chunk(m, '今天20度');
+		const out = snap(m, '好的。今天20度');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '好的。今天20度',
+			streaming: false,
+		});
+	});
+
+	it('uses the authoritative snap text when deltas were dropped', () => {
+		let m = chunk([], '好的。');
+		m = chunk(m, '今天20度'); // "，适合出门" was dropped
+		const out = snap(m, '好的。今天20度，适合出门');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '好的。今天20度，适合出门',
+			streaming: false,
+		});
+	});
+
+	it('replaces the streamed text when the stream diverged (retry/fallback)', () => {
+		let m = chunk([], '坏掉的尝试');
+		m = chunk(m, '重试的完整回答。');
+		const out = snap(m, '重试的完整回答。');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({ id: STEP_ID, content: '重试的完整回答。', streaming: false });
+	});
+
+	it('drops straggler chunks after a snap finalization', () => {
+		let m = chunk([], '好的。');
+		m = chunk(m, '今天20度');
+		m = snap(m, '好的。今天20度');
+		const before = m;
+		const out = chunk(m, '残留');
+		expect(out).toBe(before);
+	});
+
+	it('finalizes a streaming reasoning block of the same step', () => {
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '思考中',
+			streaming: true,
+		};
+		const out = snap([reasoning], '回答');
+		expect(out.find((x) => x.id === REASONING_ID)).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === STEP_ID)).toMatchObject({ content: '回答' });
+	});
+
+	it('moves a trailing reasoning block in front of the merged thought', () => {
+		// Interleaved providers may stream reasoning AFTER the thought
+		// (text first). The snap must not leave the final order as
+		// [answer, Thinking...].
+		let m = chunk([], '回答文字。');
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '迟到的推理',
+			streaming: true,
+		};
+		m = [...m, reasoning];
+		const out = snap(m, '回答文字。');
+		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
+		expect(out[0]).toMatchObject({ content: '迟到的推理', streaming: false });
+		expect(out[1]).toMatchObject({ content: '回答文字。', streaming: false });
+	});
+
+	it('keeps a leading reasoning block in front of the merged thought', () => {
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '先推理',
+			streaming: true,
+		};
+		let m: StreamMessage[] = [reasoning];
+		m = chunk(m, '回答文字。');
+		const out = snap(m, '回答文字。');
+		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
+	});
+
+	it('keeps the user question before the reasoning (does not jump above it)', () => {
+		// Reported bug: with [user, reasoning, thought], the off-by-one
+		// insertion pushed thinking ABOVE the user question.
+		const user = { id: 'user-1', role: 'user', content: '问题' };
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '思考中',
+			streaming: true,
+		};
+		let m: StreamMessage[] = [user, reasoning];
+		m = chunk(m, '回答。');
+		const out = snap(m, '回答。');
+		expect(out.map((x) => x.id)).toEqual(['user-1', REASONING_ID, STEP_ID]);
+	});
+
+	it('keeps a tool card in order when collapsing a later step', () => {
+		// A prior tool card must not sink below the merged thought/reasoning
+		// when a subsequent step's message is collapsed.
+		const user = { id: 'user-1', role: 'user', content: '问题' };
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '先查一下',
+			streaming: true,
+		};
+		const tool = {
+			id: 'step-tool-1',
+			role: 'assistant',
+			type: 'tool',
+			content: '观察结果',
+			streaming: false,
+			stepNumber: 1,
+		};
+		let m: StreamMessage[] = [user, reasoning];
+		m = chunk(m, '我先查一下。');
+		m = [...m, tool];
+		const out = snap(m, '我先查一下。');
+		expect(out.map((x) => x.id)).toEqual(['user-1', REASONING_ID, STEP_ID, tool.id]);
+	});
+
+	it('is a no-op replace when the DB message (same id) is already in the list', () => {
+		// The turn finished and the list was rebuilt from the DB, then a
+		// replayed/late `agent:thought` snap arrives. The snap carries the
+		// SAME id the DB copy has, so the reconcile is a plain replace with
+		// identical content — no duplicate is appended.
+		const dbCopy = {
+			id: STEP_ID,
+			role: 'assistant',
+			content: '完整的回答。',
+			streaming: false,
+		};
+		const m = [{ id: 'user-1', role: 'user', content: '问题' }, dbCopy];
+		const out = snap(m, '完整的回答。');
+		expect(out).toEqual(m);
+		expect(out.filter((x) => x.content === '完整的回答。')).toHaveLength(1);
+	});
+
+	it('reconciles replayed chunks onto the DB copy without duplicating it', () => {
+		// Chunks replayed on a fresh context after a remount accumulate onto
+		// the DB copy (same id); the snap then settles it to the identical
+		// authoritative text — one bubble, streaming flag cleared.
+		const dbCopy = {
+			id: STEP_ID,
+			role: 'assistant',
+			content: '完整的回答。',
+			streaming: false,
+		};
+		let m: StreamMessage[] = [dbCopy];
+		m = chunk(m, '完整的回');
+		m = chunk(m, '答。');
+		const out = snap(m, '完整的回答。');
+		expect(out).toEqual([dbCopy]);
+		expect(out).toHaveLength(1);
+	});
+
+	it('keeps appending when the list has no equivalent content', () => {
+		// A fresh page that missed the stream still gets the full text.
+		const m = [{ id: 'user-1', role: 'user', content: '问题' }];
+		const out = snap(m, '完整的回答。');
+		expect(out.map((x) => x.id)).toEqual(['user-1', STEP_ID]);
+		expect(out[1]).toMatchObject({ content: '完整的回答。', streaming: false });
+	});
+});
+
+describe('webSearchId', () => {
+	it('builds the ephemeral web-search card id with a default run of 0', () => {
+		expect(webSearchId('t', 3, 7)).toBe('tool-t-3-7-web_search');
+		expect(webSearchId('t', 3, undefined)).toBe('tool-t-3-0-web_search');
+	});
+
+	it('keys one card per call id so multi-action searches stay separate', () => {
+		expect(webSearchId('t', 3, 7, 'ws_1')).toBe('tool-t-3-7-web_search-ws_1');
+		expect(webSearchId('t', 3, 7, 'ws_2')).toBe('tool-t-3-7-web_search-ws_2');
+	});
+});
+
+describe('webSearchLabel', () => {
+	it('renders phase + action specific copy', () => {
+		expect(webSearchLabel('in_progress', 'search')).toBe('正在联网搜索…');
+		expect(webSearchLabel('searching', 'search')).toBe('正在搜索…');
+		expect(webSearchLabel('completed', 'search')).toBe('已联网搜索');
+		expect(webSearchLabel('in_progress', 'open_page')).toBe('正在打开网页…');
+		expect(webSearchLabel('completed', 'open_page')).toBe('已打开网页');
+		expect(webSearchLabel('searching', 'find_in_page')).toBe('正在页内查找…');
+		expect(webSearchLabel('completed', 'find_in_page')).toBe('已页内查找');
+	});
+});
+
+describe('webSearchCardContent', () => {
+	it('serializes citations on completed', () => {
+		const body = webSearchCardContent({
+			phase: 'completed',
+			action: 'search',
+			result: { queries: ['paris'], results: [{ title: 'Paris', url: 'https://ex', snippet: '' }] },
+		});
+		expect(JSON.parse(body)).toMatchObject({
+			label: '已联网搜索',
+			queries: ['paris'],
+		});
+	});
+	it('keeps existing JSON when a later completed has no result', () => {
+		const prev = JSON.stringify({ label: '已联网搜索', queries: ['paris'], results: [] });
+		expect(
+			webSearchCardContent({ phase: 'completed', action: 'search' }, prev),
+		).toBe(prev);
+	});
+	it('uses the status label when there is no result and no JSON yet', () => {
+		expect(webSearchCardContent({ phase: 'in_progress', action: 'search' })).toBe(
+			'正在联网搜索…',
+		);
+	});
+});
+
+describe('insertAgentMessage / steering anchors', () => {
+	it('inserts continuing agent output before trailing steering users', () => {
+		const list: StreamMessage[] = [
+			{ id: 'u1', role: 'user', content: 'hi' },
+			{ id: STEP_ID, role: 'assistant', content: '想', streaming: true },
+			{ id: 'u2', role: 'user', content: '补充', steering: true },
+		];
+		expect(agentInsertIndex(list)).toBe(2);
+		const out = insertAgentMessage(
+			list,
+			newToolMessage({
+				id: 'step-tool-1',
+				stepNumber: 1,
+				toolName: 'shell',
+				streaming: true,
+			}),
+		);
+		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'step-tool-1', 'u2']);
+	});
+
+	it('appends at the end when there is no trailing steering user', () => {
+		const list: StreamMessage[] = [
+			{ id: 'u1', role: 'user', content: 'hi' },
+			{ id: STEP_ID, role: 'assistant', content: '好', streaming: false },
+		];
+		const out = insertAgentMessage(list, {
+			id: 'msg-next',
+			role: 'assistant',
+			content: '下一轮',
+			streaming: true,
+		});
+		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'msg-next']);
+	});
+
+	it('keeps a new stream segment above a mid-turn steer', () => {
+		let m: StreamMessage[] = [
+			{ id: 'u1', role: 'user', content: 'hi' },
+			{ id: STEP_ID, role: 'assistant', content: '先查', streaming: false },
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+			{ id: 'u2', role: 'user', content: '补充一句', steering: true },
+		];
+		m = chunk(m, '根据搜索');
+		expect(m.map((x) => x.id)).toEqual([
+			'u1',
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+			'u2',
+		]);
+	});
+});
+
+describe('accumulateStreamChunk after websearch boundary', () => {
+	it('keeps late completion chunks before a regular tool card', () => {
+		let m = chunk([], '我');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: 'step-tool-1',
+				stepNumber: 1,
+				toolName: 'file',
+				content: '',
+				streaming: true,
+			}),
+		];
+
+		// The first chunk can be flushed before agent:action while later
+		// completion chunks are delivered just after the tool event.
+		m = chunk(m, '先读取');
+		m = chunk(m, '文件');
+
+		expect(m.map((x) => x.id)).toEqual([STEP_ID, 'step-tool-1']);
+		expect(m[0]).toMatchObject({ content: '我先读取文件', streaming: false });
+	});
+
+	it('opens a new bubble below the search card instead of appending above it', () => {
+		let m = chunk([], '我先查一下');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '正在联网搜索…',
+				streaming: true,
+			}),
+		];
+		m = chunk(m, '根据搜索结果');
+		m = chunk(m, '，今天20度');
+		expect(m.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({ content: '我先查一下', streaming: false });
+		expect(m[2]).toMatchObject({ content: '根据搜索结果，今天20度', streaming: true });
+	});
+
+	it('opens a new Thinking bubble after search instead of appending to the previous one', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '先想想要不要搜' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '正在联网搜索…',
+				streaming: true,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '根据搜索结果继续想' });
+		m = accumulateStreamChunk(m, { ...r, delta: '，再下结论' });
+		expect(m.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({
+			type: 'reasoning',
+			content: '先想想要不要搜',
+			streaming: false,
+		});
+		expect(m[2]).toMatchObject({
+			type: 'reasoning',
+			content: '根据搜索结果继续想，再下结论',
+			streaming: true,
+		});
+	});
+
+	it('puts a full-text reasoning reconcile on the post-search segment', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '搜前' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '搜后' });
+		m = accumulateStreamChunk(m, { ...r, delta: '搜前搜后完整' });
+		expect(m.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({ content: '搜前', streaming: false });
+		expect(m[2]).toMatchObject({ content: '搜后完整', streaming: true });
+	});
+
+	it('strips the pre-search prefix from a full-text first post-search delta', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '搜前' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '搜前搜后完整' });
+		expect(m.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({ content: '搜前', streaming: false });
+		expect(m[2]).toMatchObject({ content: '搜后完整', streaming: true });
+	});
+
+	it('opens another segment after a second search call', () => {
+		let m = chunk([], '先搜');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = chunk(m, '再打开页面');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_2'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '正在打开网页…',
+				streaming: true,
+			}),
+		];
+		m = chunk(m, '最终答案');
+		expect(m.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+			'tool-t-1-0-web_search-ws_2',
+			STEP_ID + '-2',
+		]);
+		expect(m[2]).toMatchObject({ content: '再打开页面', streaming: false });
+		expect(m[4]).toMatchObject({ content: '最终答案', streaming: true });
+	});
+});
+
+describe('applyThoughtSnap with websearch segments', () => {
+	it('keeps split bubbles and puts the remainder on the last segment', () => {
+		let m = chunk([], '我先查一下');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = chunk(m, '今天20度');
+		const out = snap(m, '我先查一下今天20度');
+		expect(out.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+		]);
+		expect(out[0]).toMatchObject({ content: '我先查一下', streaming: false });
+		expect(out[2]).toMatchObject({ content: '今天20度', streaming: false });
+	});
+
+	it('keeps split Thinking bubbles and finalizes them in place', () => {
+		const r = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...r, delta: '搜前思考' });
+		m = finalizeStreamBlocks(m, REASONING_ID, null);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = accumulateStreamChunk(m, { ...r, delta: '搜后思考' });
+		m = chunk(m, '最终回答');
+		const out = snap(m, '最终回答');
+		expect(out.map((x) => x.id)).toEqual([
+			REASONING_ID,
+			'tool-t-1-0-web_search-ws_1',
+			REASONING_ID + '-1',
+			STEP_ID,
+		]);
+		expect(out[0]).toMatchObject({ content: '搜前思考', streaming: false });
+		expect(out[2]).toMatchObject({ content: '搜后思考', streaming: false });
+		expect(out[3]).toMatchObject({ content: '最终回答', streaming: false });
+	});
+
+	it('drops straggler deltas after a websearch-split snap', () => {
+		let m = chunk([], '我先查一下');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = chunk(m, '今天20度');
+		m = snap(m, '我先查一下今天20度');
+		const before = m;
+		const out = chunk(m, '残留');
+		expect(out).toBe(before);
+		expect(out.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+		]);
+	});
+});
+
+describe('finalizeStreamBlocks', () => {
+	it('finalizes reasoning and thought blocks; leaves others alone', () => {
+		const m = [
+			{ id: 'msg-reasoning-1', streaming: true },
+			{ id: 'msg-thought-1', streaming: true },
+			{ id: 'msg-thought-2', streaming: true },
+			{ id: 'm1', streaming: true },
+		];
+		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
+		expect(out.find((x) => x.id === 'msg-reasoning-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-thought-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-thought-2')).toMatchObject({ streaming: true });
+		expect(out.find((x) => x.id === 'm1')).toMatchObject({ streaming: true });
+	});
+
+	it('finalizes post-search reasoning segments as well as the original', () => {
+		const m = [
+			{ id: 'msg-reasoning-1', streaming: true },
+			{ id: 'msg-reasoning-1-1', streaming: true },
+			{ id: 'msg-thought-1-1', streaming: true },
+		];
+		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
+		expect(out.find((x) => x.id === 'msg-reasoning-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-reasoning-1-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-thought-1-1')).toMatchObject({ streaming: false });
+	});
+
+	it('is a no-op when reasoning is missing but the thought exists', () => {
+		const m = [{ id: 'msg-thought-1', streaming: true }];
+		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
+		expect(out.find((x) => x.id === 'msg-thought-1')).toMatchObject({ streaming: false });
+	});
+
+	it('is a no-op when both ids are unknown', () => {
+		const m = [{ id: 'm1', streaming: true }];
+		const out = finalizeStreamBlocks(m, undefined, undefined);
+		expect(out).toEqual(m);
+	});
+});
+
+describe('dropStreamedThought', () => {
+	it('removes all leaked thought segments but preserves reasoning', () => {
+		const out = dropStreamedThought(
+			[
+				{ id: STEP_ID, content: '我先', type: 'thought', streaming: true },
+				{ id: REASONING_ID, content: '想一下', type: 'reasoning', streaming: true },
+				{ id: `${STEP_ID}-1`, content: '读取', type: 'thought' },
+			],
+			STEP_ID,
+		);
+		expect(out.map((message) => message.id)).toEqual([REASONING_ID]);
+	});
+});
+
+describe('newToolMessage', () => {
+	it('builds a plain tool message', () => {
+		const msg = newToolMessage({ id: 'step-1', stepNumber: 1, toolName: 'file', time: '10:00' });
+		expect(msg).toEqual({
+			id: 'step-1',
+			role: 'assistant',
+			content: '',
+			toolName: 'file',
+			type: 'tool',
+			voice: false,
+			stepNumber: 1,
+			time: '10:00',
+			streaming: false,
+		});
+	});
+
+	it('marks ask messages as question cards with options and awaiting', () => {
+		const msg = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'ask',
+			content: '继续吗？',
+			askOptions: ['A', 'B'],
+		});
+		expect(msg.type).toBe('ask');
+		expect(msg.options).toEqual(['A', 'B']);
+		expect(msg.awaiting).toBe(true);
+	});
+
+	it('omits time when falsy so observation fills preserve the placeholder timestamp', () => {
+		const msg = newToolMessage({ id: 'x', stepNumber: 1, toolName: 'file', content: 'ok' });
+		expect('time' in msg).toBe(false);
+	});
+
+	it('carries actionId for background shell observations', () => {
+		const msg = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'shell',
+			content: '{"background":true}',
+			actionId: 'act-abc',
+		});
+		expect(msg.actionId).toBe('act-abc');
+	});
+
+	it('carries toolArgs from the Action placeholder and omits them when undefined', () => {
+		const withArgs = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'files',
+			streaming: true,
+			toolArgs: { operation: 'read', path: 'a.rs' },
+		});
+		expect(withArgs.toolArgs).toEqual({ operation: 'read', path: 'a.rs' });
+		const fill = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'files',
+			content: '{"ok":true}',
+		});
+		expect('toolArgs' in fill).toBe(false);
+	});
+});
+
+describe('actionIdFromObservation', () => {
+	it('extracts action_id from background shell observations', () => {
+		expect(
+			actionIdFromObservation(
+				JSON.stringify({ background: true, action_id: 'act-1', status: 'running' }),
+			),
+		).toBe('act-1');
+	});
+	it('returns null for foreground / non-JSON observations', () => {
+		expect(actionIdFromObservation('{"output":"hi"}')).toBeNull();
+		expect(actionIdFromObservation('plain text')).toBeNull();
+		expect(actionIdFromObservation('')).toBeNull();
+		expect(actionIdFromObservation(null)).toBeNull();
+	});
+});
+
+describe('parseActionResultInject', () => {
+	it('parses producer-labelled background action result injects', () => {
+		expect(
+			parseActionResultInject(
+				'[Background action result]\naction_id: act-9\nstatus: completed\n\nok',
+			),
+		).toEqual({
+			operation: 'result_injected',
+			action_id: 'act-9',
+			status: 'completed',
+			auto: true,
+		});
+	});
+	it('defaults status and tolerates missing action_id', () => {
+		expect(parseActionResultInject('[Background action result]\n\njust output')).toEqual({
+			operation: 'result_injected',
+			action_id: null,
+			status: 'completed',
+			auto: true,
+		});
+	});
+	it('returns null for unrelated text', () => {
+		expect(parseActionResultInject('hello')).toBeNull();
+		expect(parseActionResultInject('')).toBeNull();
+		expect(parseActionResultInject(null)).toBeNull();
+	});
+});

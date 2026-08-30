@@ -1,0 +1,819 @@
+import { describe, it, expect } from 'vitest';
+import { buildResumeMessages, mergeLiveStreaming, ASK_MSG_TOOL_CALL_ID } from './resumeMessages.ts';
+import { formatMessageTime } from './stores.ts';
+
+const sampleSession = {
+	id: 'session-1',
+	title: '打开记事本',
+	input_text: '打开记事本',
+	created_at: '2026-08-01T10:00:00.000Z',
+};
+
+describe('buildResumeMessages', () => {
+	it('converts session messages into chat bubble items', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '已打开', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[0]).toMatchObject({ id: 'm1', role: 'user', content: '打开记事本', streaming: false, voice: false });
+		expect(items[1]).toMatchObject({ id: 'm2', role: 'assistant', content: '已打开' });
+	});
+
+	it('preserves the voice flag from persisted messages', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'mv', role: 'user', content: '打开计算器', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [], voice: true },
+				{ id: 'mt', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [],
+		});
+		expect(items[0]).toMatchObject({ id: 'mv', voice: true });
+		expect(items[1]).toMatchObject({ id: 'mt', voice: false });
+	});
+
+	it('adds tool badges from steps with action_tool', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-s1', action_tool: 'file', observation: '{"ok":true}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'file', content: '{"ok":true}' });
+	});
+
+	it('normalizes persisted tool-role observations into tool cards', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: '检查', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'tool', content: '{"output":"ok"}', message_type: 'observation', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-s1', action_tool: 'shell', action_input: '{"cmd":"dir"}', observation: '{"output":"ok"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		const tool = items.find((item) => item.id === 'step-s1');
+		expect(tool).toMatchObject({
+			role: 'assistant',
+			type: 'tool',
+			toolName: 'shell',
+			toolArgs: '{"cmd":"dir"}',
+		});
+	});
+
+	it('carries action_input onto tool cards as toolArgs', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'mcp__filesystem__read',
+					action_input: '{"path":"a.rs"}',
+					observation: '{"ok":true}',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'tool',
+			toolName: 'mcp__filesystem__read',
+			toolArgs: '{"path":"a.rs"}',
+			content: '{"ok":true}',
+		});
+	});
+
+	it('hides silent tool steps like the live chat does', () => {
+		// `"silent": true` on a tool input hides its card live; the resume
+		// rebuild must not resurrect it as a tool badge.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 's1', action_tool: 'shell', observation: '{"silent":true,"ok":true}', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+	});
+
+	it('still assigns a stepNumber to the thought before a silent action step', () => {
+		// The silent action itself has no badge, but its preceding thought
+		// must resolve to the step via the matching thought step row so
+		// rollback targeting keeps working.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等，我检查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 't1', action_tool: null, thought: '稍等，我检查一下', silent: false, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 's1', action_tool: 'shell', observation: 'ok', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:01Z' },
+			],
+		});
+		expect(items.find((i) => i.id === 'm2')!.stepNumber).toBe(1);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+	});
+
+	it('falls back to the session input text when there are no messages', () => {
+		const items = buildResumeMessages({ session: sampleSession, messages: [], steps: [] });
+		expect(items).toHaveLength(1);
+		expect(items[0]).toMatchObject({ role: 'user', content: '打开记事本' });
+	});
+
+	it('sorts items chronologically', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'late', role: 'assistant', content: 'later', message_type: 'text', created_at: '2026-08-01T10:05:00Z', attachments: [] },
+				{ id: 'early', role: 'user', content: 'first', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [],
+		});
+		expect(items.map((i) => i.id)).toEqual(['early', 'late']);
+	});
+
+	it('orders a tool card by completed_at so it cannot land after the answer it precedes', () => {
+		// Regression: the step row's created_at (tool START) ties with the
+		// PRECEDING thought's row (same second), and the stable `_ts` sort
+		// kept "all messages before all steps" — the card was pushed below
+		// the following answer. The card's logical position is when its
+		// observation landed (completed_at), which sits between the thought
+		// and the next message whenever the tool spans a second boundary.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等，我查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'shell',
+					observation: 'ok',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+					completed_at: '2026-08-01T10:01:01Z',
+				},
+			],
+		});
+		expect(items.map((i) => i.id)).toEqual(['m1', 'm2', 'step-s1', 'm3']);
+	});
+
+	it('keeps a same-second tool card before its answer with ms timestamps', () => {
+		// Millisecond-precision rows (the backend writes them since the
+		// ordering fix): the answer row is persisted AFTER the tool
+		// completed, so its created_at is later than the card's completed_at
+		// even within one second — the card sorts between thought and answer.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00.100Z', attachments: [] },
+				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:01:00.900Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'shell',
+					observation: 'ok',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00.100Z',
+					completed_at: '2026-08-01T10:01:00.500Z',
+				},
+			],
+		});
+		expect(items.map((i) => i.id)).toEqual(['m1', 'm2', 'step-s1', 'm3']);
+	});
+
+	it('falls back to created_at for cards without completed_at', () => {
+		// Steps that never completed (interrupted/failed) have no
+		// completed_at; the card keeps its creation time as the sort key.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'shell',
+					observation: 'ok',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+					completed_at: null,
+				},
+			],
+		});
+		expect(items.map((i) => i.id)).toEqual(['m1', 'step-s1', 'm2']);
+	});
+
+	it('renders an ask step as a dedup question card, not a raw tool badge', () => {
+		// The ask tool persists the question BOTH as an assistant session
+		// message (marked `__ask__` in new records, or unmarked legacy) and as
+		// a step observation. It must surface once, as an `ask`-type card
+		// under the STEP row's id (the id the live card used) — no
+		// "Calling ask / Result" duplicate, no extra question bubble.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '你想要怎么处理？A 还是 B？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: '你想要怎么处理？A 还是 B？',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			toolName: 'ask',
+			content: '你想要怎么处理？A 还是 B？',
+		});
+		const toolBadges = items.filter((i) => i.type === 'tool');
+		expect(toolBadges).toHaveLength(0);
+		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
+	});
+
+	it('skips the marked ask question message by the __ask__ sentinel', () => {
+		// New records mark the question message with the `__ask__`
+		// tool_call_id sentinel; the resume build drops it by marker alone —
+		// no content comparison with the step observation.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '继续吗？', message_type: 'text', tool_call_id: '__ask__', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			toolName: 'ask',
+			content: '继续吗？',
+			options: ['A', 'B'],
+		});
+		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
+	});
+
+	it('extracts the question from a raw JSON ask observation for dedup', () => {
+		// The DB stores the ask tool's structured output as raw JSON, while
+		// the session message holds the readable question. The card must still
+		// match and render as ask (not a raw JSON tool badge).
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '哪个文件？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '哪个文件？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'ask', content: '哪个文件？' });
+		const toolBadges = items.filter((i) => i.type === 'tool');
+		expect(toolBadges).toHaveLength(0);
+	});
+
+	it('renders a raw JSON ask observation as an ask card when no session message matches', () => {
+		// Old sessions may lack the persisted session message for the question.
+		// The step must still surface as an ask card with the extracted
+		// question, never as a raw JSON tool badge.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			toolName: 'ask',
+			content: '继续吗？',
+			options: [],
+			awaiting: false,
+		});
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+	});
+
+	it('renders each ask call of a batched step as its own card', () => {
+		// When the model batches two ask calls in one step, the persisted
+		// assistant message joins the questions with "\n\n" while each step
+		// observes only its own question. The joined message is dropped
+		// (marker or legacy content match) and every step renders its own
+		// card, mirroring the live view — no raw tool badge, no duplicate
+		// text bubble.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: 'Q1？\n\nQ2？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-s1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 'step-s2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
+			],
+		});
+		expect(items).toHaveLength(3);
+		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual(['Q1？', 'Q2？']);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
+	});
+
+	it('links an ask card to its question message persisted under the step id', () => {
+		// New records persist ONE question message per ask step, under the
+		// step row's id (the message is the card's content authority). The
+		// resume build must skip the message by id and render the card from
+		// it — no sentinel, no content comparison.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			toolName: 'ask',
+			content: '继续吗？',
+			options: ['A', 'B'],
+		});
+		expect(items.filter((i) => i.id === 'step-s1')).toHaveLength(1);
+	});
+
+	it('renders each ask of a batched step from its own id-shared message', () => {
+		// The batched-ask case on new records: one message per ask step,
+		// each under its step id — both cards render, each from its message.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'assistant', content: 'Q1？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{ id: 'step-s2', role: 'assistant', content: 'Q2？', message_type: 'text', created_at: '2026-08-01T10:01:01Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-s1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 'step-s2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
+			],
+		});
+		expect(items).toHaveLength(3);
+		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual(['Q1？', 'Q2？']);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+	});
+
+	it('resolves a thought stepNumber by id when the message shares the step id', () => {
+		// New records persist the thought text only in messages, and the
+		// thought step row under the SAME id — no content matching needed.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-t1', role: 'assistant', content: '稍等，我检查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-t1', action_tool: null, thought: null, silent: false, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items.find((i) => i.id === 'step-t1')!.stepNumber).toBe(1);
+	});
+
+	it('resolves a supplement user message stepNumber by id', () => {
+		// Steering/supplement inputs: the thought step row is created under
+		// the user message's own id (no thought text), so the interrupted
+		// input resolves to its step by id after reload.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'm3', action_tool: null, thought: null, step_number: 2, created_at: '2026-08-01T10:02:00Z' },
+			],
+		});
+		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
+	});
+
+	it('matches an interrupted user message to its steering/supplement thought step', () => {
+		// A message sent mid-generation (steering) or as an answer to a paused
+		// session (supplement) is persisted as a thought step carrying the user's
+		// own words. After reload the input must resolve to that step even
+		// when nothing follows it (e.g. the session errored right after), so
+		// rollback stays available.
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 's2', action_tool: null, thought: '网络不好就让我帮忙', step_number: 2, created_at: '2026-08-01T10:02:00Z' },
+			],
+		});
+		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
+	});
+
+	it('restores ask options and awaiting from a paused session', () => {
+		// A session paused on an ask question must rebuild the card with its
+		// quick-reply options and awaiting state, otherwise the user cannot
+		// answer from the chat view after a switch/reload. Phase 4 / F2 uses
+		// distinct `paused_awaiting_answer`; plain `paused` still works.
+		const items = buildResumeMessages({
+			session: { ...sampleSession, status: 'paused_awaiting_answer' },
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			content: '继续吗？',
+			options: ['A', 'B'],
+			awaiting: true,
+		});
+	});
+
+	it('keeps ask cards non-awaiting for non-paused sessions', () => {
+		const items = buildResumeMessages({
+			session: { ...sampleSession, status: 'completed' },
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items[1]).toMatchObject({ type: 'ask', options: ['A', 'B'], awaiting: false });
+	});
+});
+
+describe('formatMessageTime', () => {
+	it('formats non-today ISO timestamps as yyyy/mm/dd hh:mm:ss', () => {
+		// Local-time ISO (no Z): the formatter renders in local time.
+		expect(formatMessageTime('2026-08-01T10:05:09')).toBe('2026/08/01 10:05:09');
+	});
+
+	it('formats today timestamps as wall-clock time only', () => {
+		// Same-day messages use the live-stream format so a merged resume
+		// list never mixes formats.
+		const now = new Date();
+		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 30, 15);
+		expect(formatMessageTime(today)).toBe(today.toLocaleTimeString());
+	});
+});
+
+describe('mergeLiveStreaming', () => {
+	const dbMessages = [
+		{ id: 'm1', role: 'user', content: 'hi' },
+		{ id: 'step-s1', type: 'tool', toolName: 'file', stepNumber: 1 },
+	];
+
+	it('merges DB messages with no streaming tail', () => {
+		const merged = mergeLiveStreaming(dbMessages, []);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1']);
+	});
+
+	it('appends streaming messages not already in the DB', () => {
+		const existing = [
+			{ id: 'step-s2', type: 'tool', stepNumber: 2, streaming: true },
+		];
+		const merged = mergeLiveStreaming(dbMessages, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-s2']);
+	});
+
+	it('drops streaming messages whose id already exists in the DB', () => {
+		const existing = [
+			{ id: 'm1', streaming: true },
+			{ id: 'step-other', type: 'tool', streaming: true },
+		];
+		const merged = mergeLiveStreaming(dbMessages, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-other']);
+		// The DB copy wins; the duplicate streaming copy is not appended twice.
+		expect(merged.filter((m) => m.id === 'm1')).toHaveLength(1);
+	});
+
+	it('keeps a single tool card when the live card and the DB badge share the step id', () => {
+		// The live tool card and the DB step badge are the SAME entity now
+		// (both keyed by the backend-minted `step-*` id), so the merge can
+		// never show a card plus a badge for one step.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-1', type: 'tool', toolName: 'file', stepNumber: 1, streaming: false },
+		];
+		const existing = [
+			{ id: 'step-1', type: 'tool', toolName: 'file', stepNumber: 1, streaming: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-1']);
+		expect(merged.filter((m) => m.id === 'step-1')).toHaveLength(1);
+	});
+
+	it('dedups finalized live reasoning against the DB copy by id', () => {
+		// The live reasoning bubble and the persisted reasoning row share the
+		// minted message id, so the DB copy simply replaces the live one.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
+		];
+		const existing = [
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		const reasoning = merged.filter((m) => m.type === 'reasoning');
+		expect(reasoning).toHaveLength(1);
+		expect(reasoning[0].id).toBe('msg-9');
+	});
+
+	it('keeps finalized live reasoning when the DB has no equivalent', () => {
+		// The snap may arrive before the DB write; dropping it would lose
+		// the block entirely.
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '新鲜推理', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toContain('msg-9');
+	});
+
+	it('keeps finalized live thought text missing from the DB', () => {
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'msg-8', role: 'assistant', content: '已定稿但未持久化', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toContain('msg-8');
+	});
+
+	it('keeps a finalized live-only assistant message before the DB row that follows it', () => {
+		// The snap-finalized reasoning (msg-8) has no DB row yet, but the DB
+		// already holds the user's later message (m2). The merge must not push
+		// the reasoning AFTER m2 (the old append-at-end behavior reordered
+		// [user, thinking, user] to [user, user, thinking] for one frame).
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm2', role: 'user', content: 'second' },
+		];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-8', role: 'assistant', content: '思考片段', streaming: false },
+			{ id: 'm2', role: 'user', content: 'second' },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
+	});
+
+	it('keeps a still-streaming live thought before a DB steer that follows it', () => {
+		// Same reorder bug as the finalized case, but the leftover is still
+		// streaming — the old unconditional streamingTail append pushed it
+		// after the persisted steer for one frame.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm2', role: 'user', content: 'second' },
+		];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-8', role: 'assistant', content: '思考中', streaming: true },
+			{ id: 'm2', role: 'user', content: 'second', steering: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
+		expect(merged.find((m) => m.id === 'msg-8')!.streaming).toBe(true);
+		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
+	});
+
+	it('preserves live steering on same-id user rows from the DB', () => {
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm2', role: 'user', content: '补充' },
+		];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi', received: true },
+			{ id: 'msg-t', role: 'assistant', content: '想', streaming: true },
+			{ id: 'm2', role: 'user', content: '补充', steering: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
+	});
+
+	it('keeps the interrupted partial reasoning after a continue resync', () => {
+		// After continue_session truncates the errored step's partial output
+		// from the DB, the resync must NOT clear the already-streamed
+		// "Thinking…" block. handleContinue preserves it by leaving it out of
+		// partialIds; mergeLiveStreaming keeps it because the DB (post-truncate)
+		// has no row with that id.
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '先想想一部分', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toContain('msg-9');
+		expect(merged.find((m) => m.id === 'msg-9')!.content).toBe('先想想一部分');
+	});
+
+	it('keeps finalized step-* tool cards and drops transient web_search', () => {
+		// Continue resync can race the retry's Action/Observation and miss the
+		// pending step row for one frame; dropping step-* cards made post-resume
+		// tool calls vanish. web_search indicators are never persisted — drop.
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'step-cut', type: 'tool', toolName: 'shell', content: 'Interrupted', streaming: false },
+			{ id: 'tool-t-1-0-web_search', type: 'tool', toolName: 'web_search', content: '已联网搜索', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-cut']);
+		expect(merged.find((m) => m.id === 'step-cut')).toMatchObject({
+			type: 'tool',
+			content: 'Interrupted',
+		});
+	});
+
+	it('drops finalized live user bubbles not in the DB (placeholder copies)', () => {
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'placeholder-xyz', role: 'user', content: 'hi', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1']);
+	});
+
+	it('keeps a finalized real user bubble until its DB row arrives', () => {
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-pending', role: 'user', content: '补充说明', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-pending']);
+	});
+
+	it('prefers a live awaiting ask card over the DB ask card of the same id', () => {
+		// The DB build may lack quick-reply options/awaiting (the pause status
+		// can land after the observation); the awaiting live card wins for the
+		// same step id so the user can answer.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-7', role: 'assistant', type: 'ask', content: '继续吗？', options: [], awaiting: false, streaming: false },
+		];
+		const existing = [
+			{ id: 'step-7', type: 'ask', toolName: 'ask', content: '继续吗？', options: ['A', 'B'], awaiting: true, streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		const asks = merged.filter((m) => m.type === 'ask');
+		expect(asks).toHaveLength(1);
+		expect(asks[0]).toMatchObject({ id: 'step-7', options: ['A', 'B'], awaiting: true });
+	});
+
+	it('prefers EVERY awaiting live ask card in a batched step', () => {
+		// Two asks in one batch: both live cards are awaiting in the
+		// observation→pause race window; both must keep their options, not
+		// just the first.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-1', role: 'assistant', type: 'ask', content: 'Q1？', options: [], awaiting: false, streaming: false },
+			{ id: 'step-2', role: 'assistant', type: 'ask', content: 'Q2？', options: [], awaiting: false, streaming: false },
+		];
+		const existing = [
+			{ id: 'step-1', type: 'ask', toolName: 'ask', content: 'Q1？', options: ['A'], awaiting: true, streaming: false },
+			{ id: 'step-2', type: 'ask', toolName: 'ask', content: 'Q2？', options: ['B'], awaiting: true, streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		const asks = merged.filter((m) => m.type === 'ask');
+		expect(asks).toHaveLength(2);
+		expect(asks[0]).toMatchObject({ id: 'step-1', options: ['A'], awaiting: true });
+		expect(asks[1]).toMatchObject({ id: 'step-2', options: ['B'], awaiting: true });
+	});
+
+	it('keeps the live streaming tool card over its empty DB badge mid-tool', () => {
+		// The step row exists from tool start with a NULL observation, so the
+		// DB badge is EMPTY while the live card is still streaming. Switching
+		// sessions mid-tool must keep the live card, not freeze an empty
+		// badge (the old dropToolSteps behavior, now id-based).
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, streaming: false },
+		];
+		const existing = [
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: '', streaming: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-9']);
+		expect(merged.find((m) => m.id === 'step-9')).toMatchObject({ streaming: true });
+	});
+
+	it('lets a FINALIZED live tool card yield to the DB badge', () => {
+		// Once the observation lands (live card finalized), the DB copy wins
+		// as before — the streaming preference only applies mid-tool.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: 'done', streaming: false },
+		];
+		const existing = [
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: 'done', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged).toEqual(db);
+	});
+});
+
+describe('ASK_MSG_TOOL_CALL_ID sentinel', () => {
+	it('pins the legacy marker old ask question messages carry', () => {
+		// New records no longer set the marker (the question message is
+		// persisted under the ask step row's id instead); the string stays
+		// pinned so legacy rows with it are still skipped by the resume
+		// builder.
+		expect(ASK_MSG_TOOL_CALL_ID).toBe('__ask__');
+	});
+});

@@ -1,0 +1,21 @@
+[package]
+name = "haven-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+tokio-util.workspace = true
+reqwest = { version = "0.13.4", features = ["json", "multipart", "stream"] }
+haven-common = { path = "../common" }
+haven-llm = { path = "../llm" }
+
+[dev-dependencies]
+base64.workspace = true

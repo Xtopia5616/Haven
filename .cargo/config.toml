@@ -1,0 +1,13 @@
+[alias]
+    t = "test --locked"
+    ts = "test --locked -- --nocapture"
+    c = "check --locked"
+    ci = "test --locked --no-fail-fast"
+    tc = "test --locked -p"
+    tf = "test --locked --"
+    cl = "clippy --locked -- -D warnings"
+
+[build]
+# Codex may create several worktrees. Disable per-worktree incremental caches so
+# `target/debug/incremental` cannot grow without a bound across those checkouts.
+incremental = false

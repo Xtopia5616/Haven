@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-check:
+    name: Rust — fmt + check + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Verify internal crate dependency direction
+        shell: pwsh
+        run: ./scripts/check-crate-dependencies.ps1
+      - name: Verify Tauri IPC contract registry
+        shell: pwsh
+        run: ./scripts/check-ipc-contracts.ps1
+      - name: Verify Tauri IPC event directory
+        shell: pwsh
+        run: ./scripts/check-ipc-events.ps1
+      - name: Cargo check
+        run: cargo check --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --locked -- -D warnings
+
+  rust-test:
+    name: Rust — cargo test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.98.0
+      - name: Run tests
+        run: cargo test --workspace --locked -- --test-threads=1
+
+  rust-coverage:
+    name: Rust — code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.98.0
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --version 0.37.0 --locked
+      - name: Generate coverage
+        run: cargo tarpaulin --workspace --engine llvm --locked --out Lcov --output-dir target/coverage -- --test-threads=1
+      - name: Upload coverage
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/coverage/lcov.info
+          format: lcov
+
+  ui-check:
+    name: UI — ${{ matrix.os }} — svelte-check + tests
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: "pnpm"
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Svelte check
+        run: pnpm run check
+      - name: Vitest run
+        run: pnpm run test:run
+      - name: Production build
+        run: pnpm run build
+      - name: Upload UI build
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: haven-ui-dist
+          path: ui/build
+          if-no-files-found: error

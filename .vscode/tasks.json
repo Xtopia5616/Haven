@@ -1,0 +1,72 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Haven: Install UI dependencies",
+			"type": "shell",
+			"command": "corepack",
+			"args": ["pnpm", "--dir", "ui", "install", "--frozen-lockfile"],
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Haven: UI check",
+			"type": "shell",
+			"command": "corepack",
+			"args": ["pnpm", "--dir", "ui", "run", "check"],
+			"problemMatcher": "$tsc",
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Haven: UI test",
+			"type": "shell",
+			"command": "corepack",
+			"args": ["pnpm", "--dir", "ui", "run", "test:run"],
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Haven: UI build",
+			"type": "shell",
+			"command": "corepack",
+			"args": ["pnpm", "--dir", "ui", "run", "build"],
+			"group": "build",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Haven: Rust check",
+			"type": "shell",
+			"command": "cargo",
+			"args": ["check", "--workspace", "--locked"],
+			"group": { "kind": "build", "isDefault": true },
+			"problemMatcher": "$rustc",
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Haven: Rust test",
+			"type": "shell",
+			"command": "cargo",
+			"args": ["test", "--workspace", "--locked", "--", "--test-threads=1"],
+			"problemMatcher": "$rustc",
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Haven: Tauri dev",
+			"type": "shell",
+			"command": "cargo",
+			"args": ["tauri", "dev"],
+			"problemMatcher": "$rustc",
+			"presentation": { "reveal": "always", "panel": "dedicated" }
+		},
+		{
+			"label": "Haven: Tauri build",
+			"type": "shell",
+			"command": "cargo",
+			"args": ["tauri", "build"],
+			"group": "build",
+			"problemMatcher": "$rustc",
+			"presentation": { "reveal": "always", "panel": "dedicated" }
+		}
+	]
+}

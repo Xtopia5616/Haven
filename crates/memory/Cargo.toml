@@ -1,0 +1,16 @@
+[package]
+name = "haven-memory"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+flate2.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+haven-common = { path = "../common" }

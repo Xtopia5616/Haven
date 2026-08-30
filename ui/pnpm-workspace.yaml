@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true
+overrides:
+  cookie: 0.7.2
+minimumReleaseAgeExclude:
+  - '@rolldown/binding-freebsd-x64@1.2.6'
+  - '@rolldown/binding-openharmony-arm64@1.2.6'
