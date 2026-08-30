@@ -241,7 +241,7 @@ impl SessionExecutor {
     /// idempotent so a duplicate id does not double-inject.
     pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReactContextBatch {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
-        let (follow_ups, steering) = match entry {
+        let (steering, follow_ups) = match entry {
             Some(entry) => {
                 let mut session = entry.lock().await;
                 let steering = std::mem::take(&mut session.steering_queue);
@@ -250,7 +250,7 @@ impl SessionExecutor {
                 } else {
                     Vec::new()
                 };
-                (follow_ups, steering)
+                (steering, follow_ups)
             }
             None => (Vec::new(), Vec::new()),
         };

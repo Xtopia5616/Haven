@@ -1363,6 +1363,8 @@ mod tests {
 
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
         exec.add_steering(&session.id, "steering").await.unwrap();
+        exec.add_action_completion(&session.id, "action result")
+            .await;
 
         let batch = exec.drain_react_context(&session.id).await;
         assert!(batch.follow_ups.is_empty());
@@ -1374,7 +1376,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["steering"]
         );
-        assert!(batch.action_results.is_empty());
+        assert_eq!(batch.action_results, vec!["action result"]);
 
         let batch = exec.drain_react_context(&session.id).await;
         assert_eq!(
