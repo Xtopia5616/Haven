@@ -47,10 +47,6 @@ impl ReActState {
         }
     }
 
-    pub(crate) fn event_count(&self) -> usize {
-        self.events.len()
-    }
-
     pub(crate) fn stage_retry_nudge(&mut self, tool_call_id: String, text: String) {
         self.retry_nudge = Some(RetryNudge { tool_call_id, text });
     }
@@ -59,8 +55,19 @@ impl ReActState {
         self.retry_nudge.take()
     }
 
-    /// Drop branch points after an event-log replacement (compaction).
-    pub(crate) fn clear_branch_points(&mut self) {
+    /// Replace the transcript root after compaction.
+    ///
+    /// Compaction changes both projections at once, so branch points into the
+    /// discarded prefix must be invalidated in the same state transition.
+    /// Keeping this invariant here prevents callers from updating only one of
+    /// the three pieces of run state.
+    pub(crate) fn replace_with_compaction(
+        &mut self,
+        record: TranscriptRecord,
+        compacted: Vec<CanonicalMessage>,
+    ) {
+        self.events = vec![record];
+        self.canonical = compacted;
         self.branch_points.clear();
     }
 }
@@ -84,14 +91,14 @@ mod tests {
 
         let state = ReActState::new(Vec::new(), canonical, branch_points);
 
-        assert_eq!(state.event_count(), 0);
+        assert_eq!(state.events.len(), 0);
         assert_eq!(state.canonical.len(), 1);
         assert!(state.branch_points.contains_key(&3));
         assert!(state.retry_nudge.is_none());
     }
 
     #[test]
-    fn clearing_branch_points_is_explicit_after_log_replacement() {
+    fn compaction_replaces_transcript_and_invalidates_branch_points() {
         let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
         state.branch_points.insert(
             1,
@@ -102,8 +109,17 @@ mod tests {
             },
         );
 
-        state.clear_branch_points();
+        let record = TranscriptRecord::CompactSummary {
+            compacted: Vec::new(),
+            summary: "summary".into(),
+            tokens_before: 100,
+            tokens_after: 20,
+            episode_id: "msg-summary".into(),
+        };
+        state.replace_with_compaction(record, vec![CanonicalMessage::user_text("recent")]);
 
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.canonical.len(), 1);
         assert!(state.branch_points.is_empty());
     }
 

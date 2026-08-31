@@ -11,7 +11,6 @@ use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
 use super::turn_end::{TurnEndInput, TurnEndOutcome};
 use super::*;
-use crate::types::TranscriptRecord;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use std::sync::Arc;
 use tracing::Instrument;
@@ -87,23 +86,10 @@ impl ReActEngine {
             .instrument(tracing::info_span!("inject", session_id, step_num))
             .await;
 
-        let events_before_hooks = state.event_count();
         self.hooks
             .before_step(self, &ctx, state)
             .instrument(tracing::info_span!("before_step", session_id, step_num))
             .await;
-        // CompactSummary replaces the event log with a new root. Branch
-        // cursors into the discarded prefix are no longer meaningful.
-        if state.event_count() < events_before_hooks
-            || (state.event_count() == 1
-                && matches!(
-                    state.events.first(),
-                    Some(TranscriptRecord::CompactSummary { .. })
-                )
-                && events_before_hooks > 1)
-        {
-            state.clear_branch_points();
-        }
 
         let has_image = canonical_has_image(&state.canonical);
         // Sanitization is a provider-boundary repair. Keep it out of the
@@ -141,7 +127,7 @@ impl ReActEngine {
             request_messages.len(),
             tools.len()
         );
-        let stream = super::stream_step::StreamSession::new(
+        let mut stream = super::stream_step::StreamSession::new(
             self,
             &ctx,
             router,
@@ -152,7 +138,7 @@ impl ReActEngine {
             &partial_reasoning,
         );
         let mut response = match stream
-            .run(state, &request_messages)
+            .run(state, &request_messages, retry_nudge.as_ref())
             .instrument(tracing::info_span!("llm", session_id, step_num))
             .await
         {

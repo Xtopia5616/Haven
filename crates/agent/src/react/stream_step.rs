@@ -8,7 +8,8 @@ use super::*;
 use haven_llm::{EndpointRole, LlmResponse, LlmRouter, ToolDefinition};
 
 /// Streaming session for one step: primary call + empty/cut-off retries.
-/// Owns partial buffers and msg-id reuse; the loop only matches outcomes.
+/// Owns the effective endpoint role, partial buffers and msg-id reuse; the
+/// loop only matches outcomes.
 pub(super) struct StreamSession<'a> {
     engine: &'a ReActEngine,
     ctx: &'a StepCtx,
@@ -49,20 +50,22 @@ impl<'a> StreamSession<'a> {
     /// canonical projection remains in `ReActState`; only compaction retries
     /// replace that projection and rebuild the provider request.
     pub(super) async fn run(
-        &self,
+        &mut self,
         state: &mut ReActState,
         request_messages: &[CanonicalMessage],
+        retry_nudge: Option<&RetryNudge>,
     ) -> StepCallOutcome {
         match self
             .engine
             .call_step_llm(
                 self.ctx,
                 self.router.clone(),
-                self.role,
+                &mut self.role,
                 self.tools,
                 self.cancel.clone(),
                 state,
                 request_messages,
+                retry_nudge,
                 self.partial_thought,
                 self.partial_reasoning,
             )
@@ -450,11 +453,12 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
-        role: EndpointRole,
+        role: &mut EndpointRole,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         state: &mut ReActState,
         request_messages: &[CanonicalMessage],
+        retry_nudge: Option<&RetryNudge>,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> StepCallOutcome {
@@ -462,7 +466,7 @@ impl ReActEngine {
             .stream_llm_step(
                 ctx,
                 router.clone(),
-                role,
+                *role,
                 request_messages,
                 tools,
                 cancel.clone(),
@@ -482,7 +486,7 @@ impl ReActEngine {
                 }
                 self.record_usage_and_emit(
                     &ctx.session_id,
-                    role,
+                    *role,
                     &resp,
                     ctx.step_num as i32,
                     Some(duration_ms),
@@ -497,7 +501,7 @@ impl ReActEngine {
                     ctx.session_id
                 );
                 if let Some(result) = {
-                    let compactor = self.context_compactor(role).await;
+                    let compactor = self.context_compactor(*role).await;
                     compactor.compact(&state.canonical, &self.router()).await
                 } {
                     tracing::debug!(
@@ -519,9 +523,6 @@ impl ReActEngine {
                         state,
                     )
                     .await;
-                    // CompactSummary replaces the event log; drop BPs that
-                    // pointed into the discarded prefix (same contract as loop).
-                    state.clear_branch_points();
                     // Retry streams the *compacted* canonical in place; the
                     // role must be re-resolved: summarizing away the last
                     // image-bearing turn changes routing for the retry.
@@ -530,12 +531,20 @@ impl ReActEngine {
                     } else {
                         EndpointRole::DefaultModel
                     };
+                    *role = retry_role;
                     // Reset the accumulators: the first attempt's partial
                     // text was based on pre-compaction context and should
                     // not be mixed with the retry's output.
                     partial_thought.lock().unwrap().clear();
                     partial_reasoning.lock().unwrap().clear();
                     let mut retry_messages = state.canonical.clone();
+                    if let Some(nudge) = retry_nudge {
+                        ReActEngine::attach_failure_nudge(
+                            &mut retry_messages,
+                            &nudge.text,
+                            Some(&nudge.tool_call_id),
+                        );
+                    }
                     let _ = crate::sanitize_canonical(&mut retry_messages);
                     match self
                         .stream_llm_step(
@@ -621,6 +630,212 @@ impl ReActEngine {
                 StepCallOutcome::Fatal(err_msg)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use futures_util::stream;
+    use haven_llm::client::LlmClient;
+    use haven_llm::{FinishReason, LlmError, StreamChunk, Usage};
+    use haven_memory::Database;
+    use haven_tools::ToolsManager;
+    use std::collections::VecDeque;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tokio_util::sync::CancellationToken;
+
+    struct NoopEmitter;
+
+    #[async_trait]
+    impl AgentEventEmitter for NoopEmitter {
+        async fn emit(&self, _event: AgentEvent) {}
+    }
+
+    enum ProbeResponse {
+        Error(LlmError),
+        Chunk(StreamChunk),
+    }
+
+    struct ProbeClient {
+        stream_responses: Mutex<VecDeque<ProbeResponse>>,
+        stream_calls: AtomicUsize,
+    }
+
+    impl ProbeClient {
+        fn new(responses: Vec<ProbeResponse>) -> Self {
+            Self {
+                stream_responses: Mutex::new(responses.into()),
+                stream_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for ProbeClient {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Ok(LlmResponse {
+                text: "Compacted summary.".into(),
+                ..Default::default()
+            })
+        }
+
+        async fn chat_with_tools(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat(Vec::new()).await
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::Unknown(
+                "probe: chat_stream not implemented".into(),
+            ))
+        }
+
+        async fn chat_stream_with_tools(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.stream_calls.fetch_add(1, Ordering::Relaxed);
+            match self.stream_responses.lock().unwrap().pop_front() {
+                Some(ProbeResponse::Error(error)) => Err(error),
+                Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(chunk)]))),
+                None => Err(LlmError::Unknown("probe responses exhausted".into())),
+            }
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    fn text_message(role: CanonicalRole, text: &str) -> CanonicalMessage {
+        CanonicalMessage {
+            role,
+            content: vec![ContentPart::text(text)],
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        }
+    }
+
+    fn image_message() -> CanonicalMessage {
+        CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::Image {
+                content_type: "image_url".into(),
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        }
+    }
+
+    fn chunk(text: &str, finish_reason: FinishReason) -> StreamChunk {
+        StreamChunk {
+            text: Some(text.into()),
+            finish_reason: Some(finish_reason),
+            usage: Some(Usage::default()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_retry_updates_role_for_followup_retries() {
+        let db_path =
+            std::env::temp_dir().join(format!("haven_stream_step_{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let executor = Arc::new(SessionExecutor::new(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let default_client = Arc::new(ProbeClient::new(vec![
+            ProbeResponse::Chunk(chunk("I will finish", FinishReason::Length)),
+            ProbeResponse::Chunk(chunk("Finished.", FinishReason::Stop)),
+        ]));
+        let image_client = Arc::new(ProbeClient::new(vec![ProbeResponse::Error(
+            LlmError::ContextLengthExceeded,
+        )]));
+        let fallback_client = Arc::new(ProbeClient::new(Vec::new()));
+        let router = Arc::new(LlmRouter::new_with_clients(
+            fallback_client.clone(),
+            default_client.clone(),
+            fallback_client.clone(),
+            image_client.clone(),
+            fallback_client,
+        ));
+        let engine = ReActEngine::new(
+            router.clone(),
+            executor,
+            db,
+            8,
+            ContextLimitsConfig::default(),
+        );
+        let emitter: Arc<dyn AgentEventEmitter> = Arc::new(NoopEmitter);
+        let ctx = StepCtx {
+            session_id: "ses-role-probe".into(),
+            step_num: 2,
+            run_id: 1,
+            emitter,
+        };
+        let partial_thought = Arc::new(Mutex::new(String::new()));
+        let partial_reasoning = Arc::new(Mutex::new(String::new()));
+        let canonical = vec![
+            text_message(CanonicalRole::System, "system"),
+            text_message(CanonicalRole::User, "anchor"),
+            image_message(),
+            text_message(CanonicalRole::User, "recent"),
+        ];
+        let request_messages = canonical.clone();
+        let mut state = ReActState::new(Vec::new(), canonical, HashMap::new());
+        let mut stream = StreamSession::new(
+            &engine,
+            &ctx,
+            router,
+            EndpointRole::ImageModel,
+            &[],
+            CancellationToken::new(),
+            &partial_thought,
+            &partial_reasoning,
+        );
+
+        let outcome = stream.run(&mut state, &request_messages, None).await;
+        assert!(matches!(outcome, StepCallOutcome::Response(_)));
+
+        let retry = stream.retry(&state.canonical).await.unwrap();
+        assert_eq!(retry.text, "Finished.");
+        assert_eq!(image_client.stream_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            default_client.stream_calls.load(Ordering::Relaxed),
+            2,
+            "both the compaction retry and the follow-up response retry must use the new role"
+        );
     }
 }
 

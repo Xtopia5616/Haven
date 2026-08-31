@@ -26,8 +26,9 @@ Pi Coding Agent 则把模型请求、工具批次、steering 和 follow-up 组�
   `events` 与 `canonical` 时同时清空 branch points，避免保留指向旧日志的游标。
 - provider 请求使用 `canonical.clone()` 形成请求态，在请求边界执行 sanitize；sanitize
   修复不会反写 canonical，也不会在恢复后悄悄消失。
-- 工具失败后的 retry nudge 使用 `RetryNudge` 作为一次性控制态，只附加到下一次 provider
-  请求的失败 observation；它不进入 events、canonical、snapshot 或 messages。
+- 工具失败后的 retry nudge 使用 `RetryNudge` 作为一次性控制态，只附加到当前 turn 的
+  provider 请求副本（包括上下文压缩后的即时重试）；它不进入 events、canonical、snapshot
+  或 messages。
 - 暂停/确认/ask/取消只 checkpoint 当前 `ReActState` 并改变 session lifecycle；已经由
   transcript writer 投影的 assistant 内容不再由 pause 路径二次写入。
 - 这是内部架构重构，不增加兼容层，不改变数据库 schema、snapshot wire shape、IPC

@@ -42,7 +42,7 @@ use sidecars::{
     BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs,
     TokenEstimateCache, ToolDefCache, UsageTracker,
 };
-pub(crate) use state::ReActState;
+pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ActionCard, ObservationCard, TranscriptEvent};
 
 pub(crate) use snapshot_io::set_status_and_emit;

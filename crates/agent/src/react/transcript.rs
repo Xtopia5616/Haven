@@ -385,11 +385,7 @@ impl ReActEngine {
             } => {
                 // Replace the log with the CompactSummary root so pre-compaction
                 // events (and embedded prior CompactSummaries) do not grow forever.
-                // Callers must drop stale branch_points (loop after before_step;
-                // stream_step after ContextLengthExceeded compact).
-                state.events = vec![record];
-                state.canonical = compacted;
-                state.clear_branch_points();
+                state.replace_with_compaction(record, compacted);
                 EventDispatcher::emit_compaction_from(
                     &ctx.emitter,
                     &ctx.session_id,
