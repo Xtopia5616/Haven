@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use super::env::{EnvOperation, EnvParams, EnvTool};
 use super::power::{PowerOperation, PowerParams, PowerTool};
 use super::registry::{RegistryOperation, RegistryParams, RegistryTool};
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// Unified system tool: machine info, env vars, registry, power, displays.
 pub struct SystemTool {
@@ -212,6 +212,29 @@ impl Tool for SystemTool {
                 _ => RiskLevel::Safe,
             },
             _ => RiskLevel::Safe,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        let scope = input["scope"].as_str().unwrap_or("info");
+        let operation = input["operation"].as_str();
+        match scope {
+            "info" | "overview" | "display" | "displays" => {
+                ToolConcurrency::SharedResource("system:info".into())
+            }
+            "env" if matches!(operation, None | Some("get") | Some("list")) => {
+                ToolConcurrency::SharedResource("system:env".into())
+            }
+            "registry" if matches!(operation, None | Some("get") | Some("list")) => {
+                ToolConcurrency::SharedResource("system:registry".into())
+            }
+            "power" if operation.is_none() || operation == Some("status") => {
+                ToolConcurrency::SharedResource("system:power".into())
+            }
+            "env" => ToolConcurrency::Resource("system:env".into()),
+            "registry" => ToolConcurrency::Resource("system:registry".into()),
+            "power" => ToolConcurrency::Resource("system:power".into()),
+            _ => ToolConcurrency::Exclusive,
         }
     }
 

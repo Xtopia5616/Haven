@@ -1,4 +1,4 @@
-# ADR 0059：工具批处理调度与观察结果投影
+# ADR 0061：工具批处理调度与观察结果投影
 
 ## 背景
 
@@ -12,15 +12,17 @@ snapshot-less 恢复看到的结果长度不同。
 - 用 `buffer_unordered(MAX_CONCURRENT_TOOL_CALLS)` 建立有界执行窗口，结合
   `CancellationToken` 在批次内取消；结果继续按 assistant tool-call 索引缓存并按
   canonical 顺序物化。
-- 工具通过 `ToolConcurrency` 声明 `ReadOnly`、`Resource(key)` 或 `Exclusive`。
-  安全只读工具默认可并行；资源写入按 key 串行；未声明的非安全工具默认全局串行。
+- 工具通过 `ToolConcurrency` 声明 `ReadOnly`、`SharedResource(key)`、
+  `Resource(key)` 或 `Exclusive`。安全只读工具默认可并行；同一资源的读读可并行，
+  读写与写写按 key 串行；未声明的非安全工具默认全局串行。
 - `ToolsManager::observation_text` 是 ToolResult 摘要的唯一容量入口，canonical、
   transcript history、session_steps 与 resume 都使用同一个有界文本。
 - action step 生命周期为 `pending → running → completed/failed`；尚未开始的取消
   为 `cancelled`，可能已经越过外部副作用边界的中断为 `unknown`，禁止将后者自动
   当作可安全重试的失败。
 - snapshot-less 恢复不再按 observation 内容匹配旧消息；它只使用 step projection
-  并生成 `resumed_{step_id}` 本地 call id。有效 snapshot 仍由 `events` 单一权威恢复。
+  并为缺少 provider id 的旧步骤生成 `call-*` 本地 call id。有效 snapshot 仍由
+  `events` 单一权威恢复。
 
 ## 影响与重置
 

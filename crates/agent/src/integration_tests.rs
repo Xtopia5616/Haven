@@ -1560,7 +1560,7 @@ async fn run_session_rebuilds_tool_chain_from_steps_without_snapshot() {
             matches!(m.role, CanonicalRole::Assistant)
                 && m.tool_calls.as_ref().is_some_and(|c| {
                     c.iter()
-                        .any(|tc| tc.name == "echo" && tc.id.starts_with("resumed_"))
+                        .any(|tc| tc.name == "echo" && tc.id.starts_with("call-"))
                 })
         });
         assert!(
@@ -1571,7 +1571,7 @@ async fn run_session_rebuilds_tool_chain_from_steps_without_snapshot() {
             matches!(m.role, CanonicalRole::Tool)
                 && m.tool_call_id
                     .as_deref()
-                    .is_some_and(|id| id.starts_with("resumed_"))
+                    .is_some_and(|id| id.starts_with("call-"))
         });
         assert!(
             rebuilt_result,

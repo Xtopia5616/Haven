@@ -1,4 +1,4 @@
-# ADR 0059：工具执行结果与幂等重试边界
+# ADR 0060：工具执行结果与幂等重试边界
 
 ## 背景
 
@@ -19,14 +19,15 @@
   保守标记为 `TimedOutUnknown`，不重新执行命令、脚本或远端调用。
 - HTTP GET 声明幂等，POST 声明非幂等；跨会话消息的发送、回复、请求和 spawn 均为
   非幂等。请求等待超时表示消息已投递但回复未知，不能重发。
-- `ToolConfig.timeout_secs` 改为可选覆盖；缺省值保留工具 intrinsic timeout。旧的
-  `retry_unsafe` 配置字段删除，需删除旧配置中的该字段或按当前配置重新保存。
+- `ToolConfig.timeout_secs`、`max_retries` 和 `retry_backoff_secs` 均改为可选覆盖；
+  缺省值保留工具 intrinsic policy，`Some(0)` 明确关闭重试。旧的 `retry_unsafe`
+  配置字段删除，需删除旧配置中的该字段或按当前配置重新保存。
 
 ## 影响与重置
 
 这是工具执行与配置契约的破坏性调整，不修改数据库。带有旧
-`tool_settings.*.retry_unsafe` 的配置需要删除该字段；只配置 enabled、输出上限或
-路径的工具设置不再改变工具 intrinsic timeout。
+`tool_settings.*.retry_unsafe` 的配置需要删除该字段；只配置 enabled、输出上限、路径
+或 timeout 的工具设置不再改变工具 intrinsic retry policy。
 
 ## 验证
 

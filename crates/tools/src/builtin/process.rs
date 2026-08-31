@@ -186,8 +186,8 @@ impl Tool for ProcessTool {
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         match input["operation"].as_str() {
-            Some("list") => ToolConcurrency::ReadOnly,
-            _ => ToolConcurrency::Exclusive,
+            Some("list") => ToolConcurrency::SharedResource("processes".into()),
+            _ => ToolConcurrency::Resource("processes".into()),
         }
     }
 

@@ -64,3 +64,5 @@
 - [0057：Agent ReAct Run 状态机与单一运行态](0057-agent-react-state-machine.md)
 - [0058：Agent 请求上下文与流式输出代次](0058-agent-request-context-and-stream-attempts.md)
 - [0059：Agent 工具调用身份与参数验证](0059-agent-tool-invocation-identity-and-validation.md)
+- [0060：工具执行结果与幂等重试边界](0060-tool-execution-outcomes-and-retry-policy.md)
+- [0061：工具批处理调度与观察结果投影](0061-agent-tool-batch-scheduling-and-observation-projection.md)

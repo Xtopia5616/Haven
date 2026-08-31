@@ -57,9 +57,9 @@ pub(crate) fn load_mcp_tool_names(input: &Value) -> Option<Vec<String>> {
 ///
 /// A valid snapshot keeps `events` as the sole authority. When no snapshot
 /// exists, this helper uses the durable step identity directly; legacy rows
-/// without a provider id receive a deterministic local id derived from the
-/// persisted step id. It never matches tool names, arguments, or observation
-/// text to infer an association.
+/// without a provider id receive a fresh local id from the canonical `call-*`
+/// namespace. It never matches tool names, arguments, or observation text to
+/// infer an association.
 pub(crate) fn project_tool_chain_from_steps(
     db: &Database,
     session_id: &str,
@@ -86,7 +86,7 @@ pub(crate) fn project_tool_chain_from_steps(
             .unwrap_or(Value::Null);
         let call_id = step
             .tool_call_id
-            .unwrap_or_else(|| format!("resumed_{}", step.id));
+            .unwrap_or_else(|| haven_common::types::new_id("call"));
         canonical.push(CanonicalMessage::assistant(
             Vec::new(),
             Some(vec![CanonicalToolCall {

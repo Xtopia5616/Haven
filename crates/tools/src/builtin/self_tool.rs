@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolRegistry, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolRegistry, ToolResult};
 use haven_mcp::{McpClientStatus, McpManager};
 use haven_skills::SkillsEngine;
 
@@ -1309,6 +1309,15 @@ impl Tool for SelfTool {
             RiskLevel::Medium
         } else {
             RiskLevel::High
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        let operation = input["operation"].as_str().unwrap_or("status");
+        if READ_ONLY_OPS.contains(&operation) {
+            ToolConcurrency::SharedResource("haven".into())
+        } else {
+            ToolConcurrency::Resource("haven".into())
         }
     }
 

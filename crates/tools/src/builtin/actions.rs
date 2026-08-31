@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::bg::BackgroundActions;
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// Background-action board for the current session.
 ///
@@ -87,6 +87,10 @@ impl Tool for ActionsTool {
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
         RiskLevel::Safe
+    }
+
+    fn concurrency(&self, _input: &Value) -> ToolConcurrency {
+        ToolConcurrency::SharedResource("actions".into())
     }
 
     /// Needs the private `_session_id` input so the action board is scoped to the

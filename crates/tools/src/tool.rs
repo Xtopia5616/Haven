@@ -287,13 +287,16 @@ pub struct ToolSignals {
 
 /// Scheduling contract for a tool call inside one assistant batch.
 ///
-/// `ReadOnly` calls may overlap. `Resource` calls serialize with other calls
-/// that return the same resource key, while `Exclusive` calls serialize with
-/// the whole batch. The conservative default is exclusive unless a tool
-/// explicitly opts into a less restrictive mode.
+/// `ReadOnly` calls may overlap without a resource key. `SharedResource`
+/// calls may overlap with other readers of the same key but serialize with a
+/// writer for that key. `Resource` calls serialize with all calls using the
+/// same key. `Exclusive` calls serialize with the whole batch. The
+/// conservative default is exclusive unless a tool explicitly opts into a
+/// less restrictive mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolConcurrency {
     ReadOnly,
+    SharedResource(String),
     Resource(String),
     Exclusive,
 }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::{OperationIdempotency, Tool, ToolExecutionOutcome, ToolResult};
+use crate::{OperationIdempotency, Tool, ToolConcurrency, ToolExecutionOutcome, ToolResult};
 
 pub struct HttpTool {
     /// Max retries for failed HTTP requests.
@@ -126,6 +126,13 @@ impl Tool for HttpTool {
             None | Some("GET") => OperationIdempotency::Idempotent,
             Some("POST") => OperationIdempotency::NonIdempotent,
             _ => OperationIdempotency::Unknown,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        match input.get("method").and_then(Value::as_str) {
+            None | Some("GET") => ToolConcurrency::SharedResource("http".into()),
+            _ => ToolConcurrency::Resource("http".into()),
         }
     }
 

@@ -877,11 +877,11 @@ impl ToolsManager {
             .unwrap_or_else(|| tool.timeout_secs_for(&exec_input));
         let max_retries = configured
             .as_ref()
-            .map(|c| c.max_retries)
+            .and_then(|c| c.max_retries)
             .unwrap_or_else(|| tool.default_max_retries());
         let backoff_secs = configured
             .as_ref()
-            .map(|c| c.retry_backoff_secs)
+            .and_then(|c| c.retry_backoff_secs)
             .unwrap_or_else(|| tool.default_retry_backoff_secs());
         let idempotency = tool.idempotency(&exec_input);
         drop(settings);
@@ -1339,7 +1339,8 @@ mod tests {
         mgr.set_tool_settings(HashMap::from([(
             "flaky".into(),
             ToolConfig {
-                retry_backoff_secs: 0,
+                max_retries: Some(1),
+                retry_backoff_secs: Some(0),
                 ..Default::default()
             },
         )]))
@@ -1402,6 +1403,70 @@ mod tests {
             .unwrap();
         assert_eq!(result.outcome, ToolExecutionOutcome::TimedOutUnknown);
         assert_eq!(result.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn settings_without_retry_fields_preserve_intrinsic_retry_policy() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct IntrinsicRetryTool {
+            attempts: Arc<AtomicU32>,
+        }
+
+        #[async_trait::async_trait]
+        impl Tool for IntrinsicRetryTool {
+            fn name(&self) -> String {
+                "intrinsic_retry".into()
+            }
+            fn description(&self) -> String {
+                "test tool".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn idempotency(&self, _: &Value) -> OperationIdempotency {
+                OperationIdempotency::Idempotent
+            }
+            fn default_max_retries(&self) -> u32 {
+                1
+            }
+            fn default_retry_backoff_secs(&self) -> u64 {
+                0
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+                if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("service unavailable")
+                }
+                Ok(ToolResult::ok(json!({"recovered": true})))
+            }
+        }
+
+        let mgr = ToolsManager::new();
+        let attempts = Arc::new(AtomicU32::new(0));
+        mgr.set_tool_settings(HashMap::from([(
+            "intrinsic_retry".into(),
+            ToolConfig {
+                max_output_chars: Some(100),
+                ..Default::default()
+            },
+        )]))
+        .await;
+        mgr.registry
+            .register(Arc::new(IntrinsicRetryTool {
+                attempts: attempts.clone(),
+            }))
+            .await;
+
+        let result = mgr
+            .execute_tool(None, "intrinsic_retry", json!({}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.attempts, 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]

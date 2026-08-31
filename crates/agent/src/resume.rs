@@ -12,8 +12,8 @@
 //! - **Snapshot missing (`react_state` row absent)** → best-effort fresh run
 //!   that projects tool-call/result pairs via
 //!   [`project_tool_chain_from_steps`] (same projector shape as would appear
-//!   in a snapshot). Call ids are deterministic `resumed_{step_id}` values;
-//!   the lossy path never matches observation text against message rows.
+//!   in a snapshot). Missing provider call ids receive fresh `call-*` local
+//!   ids; the lossy path never matches observation text against message rows.
 //! - **Snapshot corrupt / unparsable** → **hard-fail** with a user-visible
 //!   error. Never silently fall through to the projector (that would fork
 //!   semantics: synthetic ids, no awaiting_answer/confirm, different

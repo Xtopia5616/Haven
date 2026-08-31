@@ -445,10 +445,15 @@ pub struct ToolConfig {
     /// `context_limits.max_observation_chars` (the observation budget).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_chars: Option<usize>,
-    /// Retries after the initial execution for transient failures. The budget
-    /// is used only after the tool declares the operation idempotent.
-    pub max_retries: u32,
-    pub retry_backoff_secs: u64,
+    /// Optional retry budget after the initial execution. `None` preserves the
+    /// tool's intrinsic policy; `Some(0)` explicitly disables retries. The
+    /// budget is used only after the tool declares the operation idempotent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    /// Optional exponential-backoff base in seconds. `None` preserves the
+    /// tool's intrinsic policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_secs: Option<u64>,
     pub allowed_paths: Vec<String>,
     pub disabled_operations: Vec<String>,
     pub risk_override: Option<String>,
@@ -464,8 +469,8 @@ impl Default for ToolConfig {
             enabled: true,
             timeout_secs: None,
             max_output_chars: None,
-            max_retries: 1,
-            retry_backoff_secs: 2,
+            max_retries: None,
+            retry_backoff_secs: None,
             allowed_paths: Vec::new(),
             disabled_operations: Vec::new(),
             risk_override: None,

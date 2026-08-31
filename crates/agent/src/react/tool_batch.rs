@@ -13,9 +13,7 @@ use haven_tools::{ToolConcurrency, is_silent_action};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{
-    Mutex as AsyncMutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
-};
+use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 /// Hard safety ceilings for one assistant response. The first bounds total
 /// work admitted to the runtime; the second bounds live futures/tasks. The
@@ -311,13 +309,14 @@ struct CompletedTool {
 
 struct ToolBatchGate {
     all: Arc<RwLock<()>>,
-    resources: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    resources: AsyncMutex<HashMap<String, Arc<RwLock<()>>>>,
 }
 
 #[allow(dead_code)]
 enum ToolBatchPermit {
     Read(OwnedRwLockReadGuard<()>),
-    Resource(OwnedMutexGuard<()>, OwnedRwLockReadGuard<()>),
+    SharedResource(OwnedRwLockReadGuard<()>, OwnedRwLockReadGuard<()>),
+    Resource(OwnedRwLockWriteGuard<()>, OwnedRwLockReadGuard<()>),
     Exclusive(OwnedRwLockWriteGuard<()>),
 }
 
@@ -325,18 +324,24 @@ impl ToolBatchGate {
     async fn acquire(&self, policy: &ToolConcurrency) -> ToolBatchPermit {
         match policy {
             ToolConcurrency::ReadOnly => ToolBatchPermit::Read(self.all.clone().read_owned().await),
-            ToolConcurrency::Resource(key) => {
+            ToolConcurrency::SharedResource(key) | ToolConcurrency::Resource(key) => {
                 let resource = {
                     let mut resources = self.resources.lock().await;
                     resources
                         .entry(key.clone())
-                        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                        .or_insert_with(|| Arc::new(RwLock::new(())))
                         .clone()
                 };
-                ToolBatchPermit::Resource(
-                    resource.lock_owned().await,
-                    self.all.clone().read_owned().await,
-                )
+                let batch_read = self.all.clone().read_owned().await;
+                match policy {
+                    ToolConcurrency::SharedResource(_) => {
+                        ToolBatchPermit::SharedResource(resource.read_owned().await, batch_read)
+                    }
+                    ToolConcurrency::Resource(_) => {
+                        ToolBatchPermit::Resource(resource.write_owned().await, batch_read)
+                    }
+                    _ => unreachable!("resource branch only matches resource policies"),
+                }
             }
             ToolConcurrency::Exclusive => {
                 ToolBatchPermit::Exclusive(self.all.clone().write_owned().await)
@@ -1071,7 +1076,7 @@ impl ReActEngine {
                     tool.tool_name
                 );
                 self.executor
-                    .finish_interrupted_step_with_identity(
+                    .finish_step_with_outcome(
                         session_id,
                         &tool.tool_name,
                         &tool.tool_input,
@@ -1080,6 +1085,7 @@ impl ReActEngine {
                         tool_call_id.as_deref(),
                         &tool.step_id,
                         &error,
+                        ActionStepOutcome::Cancelled,
                     )
                     .await;
                 CompletedTool {
@@ -1314,16 +1320,40 @@ mod tests {
         )
         .await;
         assert!(waiting.is_err(), "same resource writes must serialize");
-        drop(first);
 
-        let read = gate.acquire(&ToolConcurrency::ReadOnly).await;
-        let second_read = tokio::time::timeout(
+        let blocked_reader = tokio::time::timeout(
             std::time::Duration::from_millis(20),
-            gate.acquire(&ToolConcurrency::ReadOnly),
+            gate.acquire(&ToolConcurrency::SharedResource("file-a".into())),
         )
         .await;
-        assert!(second_read.is_ok(), "read-only calls may overlap");
+        assert!(
+            blocked_reader.is_err(),
+            "resource readers must not overlap a resource write"
+        );
+        drop(first);
+
+        let read = gate
+            .acquire(&ToolConcurrency::SharedResource("file-a".into()))
+            .await;
+        let second_read = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            gate.acquire(&ToolConcurrency::SharedResource("file-a".into())),
+        )
+        .await;
+        assert!(second_read.is_ok(), "resource readers may overlap");
+        let blocked_writer = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            gate.acquire(&ToolConcurrency::Resource("file-a".into())),
+        )
+        .await;
+        assert!(
+            blocked_writer.is_err(),
+            "resource writes must wait for resource readers"
+        );
         drop(read);
+
+        let read_only = gate.acquire(&ToolConcurrency::ReadOnly).await;
+        drop(read_only);
     }
 
     #[test]

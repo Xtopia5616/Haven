@@ -486,6 +486,8 @@ mod tests {
         let file = cfg.tool_settings.get("file").unwrap();
         assert!(file.enabled);
         assert_eq!(file.timeout_secs, Some(60));
+        assert_eq!(file.max_retries, None);
+        assert_eq!(file.retry_backoff_secs, None);
         // Per-tool output cap defaults to None → inherits the global
         // `context_limits.max_observation_chars`.
         assert_eq!(file.max_output_chars, None);
@@ -502,7 +504,7 @@ mod tests {
         .unwrap();
         let http = cfg.tool_settings.get("http").unwrap();
         assert_eq!(http.timeout_secs, None);
-        assert_eq!(http.max_retries, 3);
+        assert_eq!(http.max_retries, Some(3));
     }
 
     #[test]

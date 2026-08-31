@@ -150,7 +150,7 @@ impl Tool for ClipboardTool {
         if input["operation"].as_str() == Some("write") {
             ToolConcurrency::Resource("clipboard".into())
         } else {
-            ToolConcurrency::ReadOnly
+            ToolConcurrency::SharedResource("clipboard".into())
         }
     }
 

@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bg::{BackgroundActions, EventSink, EventSinkState};
 use crate::tool::RegistryProbe;
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// What happens when a scheduled_action fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -881,6 +881,14 @@ impl Tool for ScheduledActionTool {
             // set only schedules a local timer —no system mutation.
             Some("set") => RiskLevel::Low,
             _ => RiskLevel::Safe,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        if input["operation"].as_str() == Some("list") {
+            ToolConcurrency::SharedResource("scheduled_actions".into())
+        } else {
+            ToolConcurrency::Resource("scheduled_actions".into())
         }
     }
 

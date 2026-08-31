@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// Default vision byte / timeout limits (aligned with FilesTool defaults).
 const DEFAULT_VISION_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -378,6 +378,15 @@ impl Tool for WindowTool {
             Some("focus") => RiskLevel::Medium,
             Some("ui_tree") | Some("wait") => RiskLevel::Low,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        match input["operation"].as_str() {
+            Some("list") | Some("foreground") | Some("ui_tree") | Some("wait") => {
+                ToolConcurrency::SharedResource("desktop".into())
+            }
+            _ => ToolConcurrency::Resource("desktop".into()),
         }
     }
 

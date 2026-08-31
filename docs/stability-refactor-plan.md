@@ -114,7 +114,8 @@
 - 2026-08-31：P2 Agent ReAct 控制流重组：以 Run/Turn/ToolBatch 明确模型采样、工具批次和生命周期边界；工具结果按 assistant 调用顺序物化，steering 优先于 follow-up（ADR 0056）。
 - 2026-08-31：P2 Agent ReAct 运行态收口：引入 `ReActState` 统一 events/canonical/branch points；sanitize 与失败 retry nudge 均限制在 provider 请求态，暂停恢复不产生隐式 transcript 写入（ADR 0057）。
 - 2026-08-31：P2 Agent 请求与流式代次收口：以 `RequestContext` 统一 provider 请求投影；inbox envelope 保留独立边界；thought/reasoning 共用有序 chunk 队列，并以 `agent:stream_reset` 隔离 failover/retry 输出；`PartialStore` 以 generation 丢弃晚到 checkpoint；前端只合并相邻 chunk；ReAct inbox 改为 claim/ack，snapshot 持久化前不确认并按 envelope id 幂等重投（ADR 0058）。
-- 2026-08-31：P2 Tools 执行语义收口：以操作幂等性而非 RiskLevel 决定自动重试；ToolResult 统一表达取消、已终止超时和终止未知；Shell/Skill/MCP 不对未知副作用重放；ToolConfig timeout 改为显式可选覆盖（ADR 0059）。
+- 2026-08-31：P2 Tools 执行语义收口：以操作幂等性而非 RiskLevel 决定自动重试；ToolResult 统一表达取消、已终止超时和终止未知；Shell/Skill/MCP 不对未知副作用重放；ToolConfig timeout、retry budget 与 backoff 均改为显式可选覆盖（ADR 0060）。
+- 2026-08-31：P2 Agent/Tools/Memory 工具批次收口：有界可取消调度、按资源声明并发、统一 observation 投影与 action step 终态（ADR 0061）。
 
 ## 完成标准
 

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// Desktop-wired recall callback (History `recall_memory` / InferenceEngine).
 /// Args: `(query, kind, limit)` → hit rows `{entity_id,text,score,model}`.
@@ -357,6 +357,13 @@ impl Tool for MemoryTool {
         match input["operation"].as_str() {
             Some("remember") | Some("forget") => RiskLevel::Medium,
             _ => RiskLevel::Safe,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        match input.get("operation").and_then(Value::as_str) {
+            Some("remember") | Some("forget") => ToolConcurrency::Resource("memory".into()),
+            _ => ToolConcurrency::SharedResource("memory".into()),
         }
     }
 

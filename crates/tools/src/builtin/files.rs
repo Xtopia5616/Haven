@@ -884,20 +884,12 @@ impl Tool for FilesTool {
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         match input["operation"].as_str() {
             Some("read") | Some("list") | Some("summary") | Some("search") => {
-                ToolConcurrency::ReadOnly
+                // A file read must not overlap a write from the same batch.
+                // One shared key keeps independent reads concurrent while a
+                // writer obtains the exclusive side of the same lock.
+                ToolConcurrency::SharedResource("files".into())
             }
-            _ => {
-                let path = input["path"].as_str().unwrap_or("files");
-                if matches!(input["operation"].as_str(), Some("copy") | Some("move")) {
-                    // A single key protects both source and destination
-                    // writes. Rename-like operations are deliberately
-                    // serialized across the files tool because one key
-                    // cannot represent overlapping path sets safely.
-                    ToolConcurrency::Resource("files:rename".into())
-                } else {
-                    ToolConcurrency::Resource(format!("files:{path}"))
-                }
-            }
+            _ => ToolConcurrency::Resource("files".into()),
         }
     }
 
