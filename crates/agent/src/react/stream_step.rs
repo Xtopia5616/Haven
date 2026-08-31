@@ -128,6 +128,7 @@ struct StreamForwarder {
     chunk_tx: crate::event::ChunkSender,
     ws_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     consumer: crate::event::ConsumerHandle,
+    checkpoint_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     ws_session: tokio::task::JoinHandle<()>,
     watchdog: tokio::task::JoinHandle<()>,
 }
@@ -165,6 +166,7 @@ impl StreamForwarder {
             std::time::Instant::now() - checkpoint_interval,
             0usize,
         )));
+        let checkpoint_tasks = Arc::new(std::sync::Mutex::new(Vec::new()));
         // Crash/stop recovery: the accumulated thought text is checkpointed
         // into the `partial_messages` scratch table while streaming so a
         // crash, user stop, or app exit does not lose the whole reply. The
@@ -186,6 +188,9 @@ impl StreamForwarder {
         let run_id = ctx.run_id;
         let last_chunk_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let last_chunk_c = last_chunk_ms.clone();
+        let attempt_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+            partial_store.generation(&checkpoint_session),
+        ));
         let thought_mid = Arc::<str>::from(thought_msg_id.as_str());
         let reasoning_mid = Arc::<str>::from(reasoning_msg_id.as_str());
         let reset_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -193,28 +198,39 @@ impl StreamForwarder {
         let reset_pr = pr.clone();
         let reset_checkpoint_state = checkpoint_state.clone();
         let reset_pending_c = reset_pending.clone();
+        let reset_last_chunk = last_chunk_ms.clone();
+        let reset_attempt_generation = attempt_generation.clone();
+        let attempt_session = checkpoint_session.clone();
+        let attempt_store = partial_store.clone();
         let on_attempt_start = move |replace_output: bool| {
             if !replace_output {
                 return;
             }
+            let generation = attempt_store.begin_attempt(&attempt_session);
+            reset_attempt_generation.store(generation, std::sync::atomic::Ordering::Release);
             reset_pt.lock().unwrap().clear();
             reset_pr.lock().unwrap().clear();
             let mut state = reset_checkpoint_state.lock().unwrap();
             state.0 = std::time::Instant::now() - checkpoint_interval;
             state.1 = 0;
             drop(state);
+            // A replacement attempt is a fresh stall episode. Do not carry
+            // the previous attempt's last-delta timestamp into its watchdog.
+            reset_last_chunk.store(0, std::sync::atomic::Ordering::Release);
             // Do not enqueue the marker here: a full bounded channel could
             // drop it. The first new delta enqueues Reset before itself and
             // retries until it succeeds, preserving the ordering guarantee.
             reset_pending_c.store(true, std::sync::atomic::Ordering::Release);
         };
         let checkpoint_state_c = checkpoint_state.clone();
+        let checkpoint_tasks_c = checkpoint_tasks.clone();
         let reset_pending_c = reset_pending.clone();
+        let attempt_generation_c = attempt_generation;
         let reset_session_id_c = session_id_c.clone();
         let reset_thought_mid_c = thought_mid.clone();
         let reset_reasoning_mid_c = reasoning_mid.clone();
         let on_chunk = move |c: &haven_llm::StreamChunk| {
-            if reset_pending_c.load(std::sync::atomic::Ordering::Acquire) {
+            let stream_ready = if reset_pending_c.load(std::sync::atomic::Ordering::Acquire) {
                 let marker = crate::event::ChunkItem::Reset {
                     session_id: reset_session_id_c.clone(),
                     thought_message_id: reset_thought_mid_c.clone(),
@@ -224,10 +240,14 @@ impl StreamForwarder {
                 };
                 if let Err(e) = chunk_tx_c.try_send(marker) {
                     tracing::debug!("stream reset waiting for chunk queue capacity: {}", e);
-                    return;
+                    false
+                } else {
+                    reset_pending_c.store(false, std::sync::atomic::Ordering::Release);
+                    true
                 }
-                reset_pending_c.store(false, std::sync::atomic::Ordering::Release);
-            }
+            } else {
+                true
+            };
             if let Some(t) = c.text.as_deref() {
                 // Single lock scope per chunk: push, read the new length
                 // and clone the checkpoint snapshot (when due) under one
@@ -257,41 +277,46 @@ impl StreamForwarder {
                         None
                     }
                 };
-                if let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
-                    session_id: session_id_c.clone(),
-                    message_id: thought_mid.clone(),
-                    delta: t.to_string(),
-                    step_number: step_num,
-                    run_id,
-                    reasoning: false,
-                }) {
+                if stream_ready
+                    && let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
+                        session_id: session_id_c.clone(),
+                        message_id: thought_mid.clone(),
+                        delta: t.to_string(),
+                        step_number: step_num,
+                        run_id,
+                        reasoning: false,
+                    })
+                {
                     tracing::warn!("thought chunk channel full, dropping: {}", e);
                 }
                 if let Some(snapshot) = checkpoint_snapshot {
                     // Generation captured BEFORE the write is spawned: if a
                     // promote/discard bumps it while the write is queued, the
                     // PartialStore drops the stale snapshot.
-                    let gen_id = partial_store.generation(&checkpoint_session);
+                    let gen_id = attempt_generation_c.load(std::sync::atomic::Ordering::Acquire);
                     let store = partial_store.clone();
                     let tid = checkpoint_session.clone();
                     let flag = checkpoint_inflight.clone();
-                    tokio::spawn(async move {
+                    let task = tokio::spawn(async move {
                         store.checkpoint(&tid, gen_id, &snapshot).await;
                         flag.store(false, std::sync::atomic::Ordering::Relaxed);
                     });
+                    checkpoint_tasks_c.lock().unwrap().push(task);
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
             if let Some(r) = &c.reasoning {
                 pr.lock().unwrap().push_str(r);
-                if let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
-                    session_id: session_id_c.clone(),
-                    message_id: reasoning_mid.clone(),
-                    delta: r.clone(),
-                    step_number: step_num,
-                    run_id,
-                    reasoning: true,
-                }) {
+                if stream_ready
+                    && let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
+                        session_id: session_id_c.clone(),
+                        message_id: reasoning_mid.clone(),
+                        delta: r.clone(),
+                        step_number: step_num,
+                        run_id,
+                        reasoning: true,
+                    })
+                {
                     tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
@@ -347,6 +372,7 @@ impl StreamForwarder {
                 chunk_tx,
                 ws_tx,
                 consumer: consumer_handle,
+                checkpoint_tasks,
                 ws_session,
                 watchdog,
             },
@@ -366,6 +392,18 @@ impl StreamForwarder {
             let _ = handle.await;
         }
         let _ = self.ws_session.await;
+        // The stream consumer has stopped before this point, so no callback
+        // can enqueue another checkpoint. Wait for every scratch write before
+        // the caller projects the final assistant message; otherwise a late
+        // checkpoint timestamp could make end-session promotion duplicate a
+        // response that was already persisted as a real message.
+        let checkpoint_tasks = {
+            let mut tasks = self.checkpoint_tasks.lock().unwrap();
+            std::mem::take(&mut *tasks)
+        };
+        for task in checkpoint_tasks {
+            let _ = task.await;
+        }
     }
 }
 
@@ -396,6 +434,13 @@ impl ReActEngine {
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<(LlmResponse, u64), haven_llm::LlmError> {
+        if replace_output_on_start {
+            // A replacement stream owns the partial scratch row from this
+            // step. Remove it before the new attempt starts so an empty retry
+            // cannot leave the previous attempt eligible for end-session
+            // promotion.
+            self.executor.partials.discard(&ctx.session_id).await;
+        }
         // Mint the block ids this call's chunks accumulate into. Reused by
         // the chunk events, the snap and the final persistence of this step.
         let thought_msg_id =
@@ -463,6 +508,7 @@ impl ReActEngine {
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<LlmResponse, haven_llm::LlmError> {
+        self.executor.partials.discard(&ctx.session_id).await;
         // Retry chunks reuse the primary call's minted ids (same step/run),
         // so the frontend continues the same bubble instead of splitting it.
         let thought_msg_id =

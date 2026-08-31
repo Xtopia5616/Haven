@@ -12,10 +12,10 @@ use std::sync::Arc;
 ///   an LLM response is in flight (crash/stop recovery). A checkpoint is a
 ///   generation-tagged write: the caller captures the session's generation
 ///   before spawning the async write, and the write is dropped if a
-///   promote/discard bumped the generation in the meantime. Without this a
-///   late checkpoint could land AFTER a promote and re-create the row —
-///   leading to a duplicated message on the next promote or a permanent
-///   orphan row.
+///   promote/discard or attempt replacement bumped the generation in the
+///   meantime. Without this a late checkpoint could land AFTER a promote or
+///   replacement and re-create/overwrite the row —leading to a duplicated
+///   message on the next promote or a permanent orphan row.
 /// - **promote** — session end (user stop / crash finalize): the row is
 ///   atomically taken and inserted as a real assistant message, unless a
 ///   newer real message already supersedes it.
@@ -34,9 +34,10 @@ pub struct PartialStore {
     /// not stall promote/discard on other sessions (no cross-session head-of-line
     /// blocking).
     locks: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    /// Per-session generation counter, bumped on every promote/discard. A
-    /// checkpoint captures it before its (possibly queued) write and re-checks
-    /// under the session lock; a stale write is dropped.
+    /// Per-session generation counter, bumped on every promote/discard and
+    /// stream-attempt replacement. A checkpoint captures it before its
+    /// (possibly queued) write and re-checks under the session lock; a stale
+    /// write is dropped.
     generation: std::sync::Mutex<HashMap<String, u64>>,
     /// Last checkpointed content per session: an unchanged snapshot skips the
     /// write entirely (the time throttle alone would otherwise rewrite the
@@ -78,10 +79,23 @@ impl PartialStore {
             .unwrap_or(0)
     }
 
+    /// Start a replacement stream attempt for a session.
+    ///
+    /// This is intentionally synchronous: provider retry callbacks run in a
+    /// synchronous hook while an old checkpoint task may still be queued.
+    /// Bumping the generation before the new attempt emits its first chunk
+    /// makes every checkpoint from the replaced attempt stale, even when the
+    /// two async writes race for the database lock.
+    pub fn begin_attempt(&self, session_id: &str) -> u64 {
+        let next = self.bump_generation(session_id);
+        self.last_written.lock().unwrap().remove(session_id);
+        next
+    }
+
     /// Persist streamed text for a session. `gen_id` must be the generation
-    /// captured before the write was spawned; if a promote/discard has
-    /// happened since, the write is dropped as stale. Skips writes whose
-    /// content is unchanged since the last checkpoint.
+    /// captured before the write was spawned; if a promote/discard or attempt
+    /// replacement has happened since, the write is dropped as stale. Skips
+    /// writes whose content is unchanged since the last checkpoint.
     pub async fn checkpoint(&self, session_id: &str, gen_id: u64, content: &str) {
         if content.trim().is_empty() {
             return;
@@ -157,10 +171,11 @@ impl PartialStore {
         }
     }
 
-    fn bump_generation(&self, session_id: &str) {
+    fn bump_generation(&self, session_id: &str) -> u64 {
         let mut gen_id = self.generation.lock().unwrap();
         let next = gen_id.get(session_id).copied().unwrap_or(0).wrapping_add(1);
         gen_id.insert(session_id.to_string(), next);
+        next
     }
 }
 
@@ -202,6 +217,32 @@ mod tests {
             .await
             .unwrap();
         assert!(row.is_none(), "stale checkpoint must not re-create the row");
+    }
+
+    #[tokio::test]
+    async fn replacement_attempt_invalidates_old_checkpoint_generation() {
+        let (store, db, _dir, session_id) = test_store();
+        let old_generation = store.generation(&session_id);
+        store
+            .checkpoint(&session_id, old_generation, "old attempt")
+            .await;
+
+        let new_generation = store.begin_attempt(&session_id);
+        assert_ne!(new_generation, old_generation);
+        store
+            .checkpoint(&session_id, old_generation, "late old attempt")
+            .await;
+        store
+            .checkpoint(&session_id, new_generation, "new attempt")
+            .await;
+
+        let tid = session_id;
+        let row = db
+            .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
+            .await
+            .unwrap()
+            .expect("new attempt should remain checkpointed");
+        assert_eq!(row.0, "new attempt");
     }
 
     #[tokio::test]

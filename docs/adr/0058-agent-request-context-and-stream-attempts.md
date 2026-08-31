@@ -45,8 +45,11 @@ transcript 不变，不需要数据迁移或兼容分支。provider 的旧公共
 调用者，Agent 使用带 attempt 边界的新入口。
 
 流式队列仍有固定容量，满载时允许丢弃可由最终 snap 修复的普通 chunk；reset 标记优先
-于普通事件并保持顺序。取消、超时和 provider 全失败仍由原有生命周期与 partial
-checkpoint 路径处理。
+于普通事件并保持顺序。每次替换尝试同时推进 `PartialStore` 的 session generation，
+并在替换前清理旧 scratch row，防止旧的异步 checkpoint 晚到后覆盖新尝试或被终态
+promote。每次流结束还会等待已创建的 checkpoint task，确保最终 assistant 投影先于
+scratch row 的时间戳收敛，避免成功响应在终态 promote 时被重复。取消、超时和 provider
+全失败仍由原有生命周期与 partial checkpoint 路径处理。
 
 ## 验证
 
@@ -62,8 +65,8 @@ corepack pnpm run build
 ```
 
 重点回归请求副本不污染 canonical、retry nudge 不累积、跨会话 envelope 边界、memory
-patch 与 compact 顺序、attempt reset 顺序、chunk 丢失后的最终投影修复，以及 A₁/B₁/A₂
-交错 chunk 不重排。
+patch 与 compact 顺序、attempt reset 顺序、partial checkpoint generation 隔离、chunk
+丢失后的最终投影修复，以及 A₁/B₁/A₂ 交错 chunk 不重排。
 
 ## 回滚
 
