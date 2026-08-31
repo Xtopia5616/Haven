@@ -10,7 +10,7 @@ use crate::react::sidecars::MessagingPoller;
 use crate::session::{ReactContextBatch, SessionExecutor};
 use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::Database;
-use haven_tools::inbox::{Envelope, MessageType};
+use haven_tools::inbox::{Envelope, InboxBus, MessageType};
 
 /// Fallback interval (in ReAct steps) for the automatic cross-session inbox
 /// check. Delivery notifications drive the check in-process (immediate), and
@@ -32,11 +32,54 @@ pub(super) struct PendingContext {
     pub(super) message_id: Option<String>,
 }
 
+/// A cross-session inbox claim that stays live until its projected transcript
+/// and snapshot are durable. Dropping it intentionally leaves the processing
+/// file in place so a later poll can redeliver the envelope.
+#[derive(Debug)]
+pub(super) struct InboxClaim {
+    bus: InboxBus,
+    recipient: String,
+    envelopes: Vec<Envelope>,
+}
+
+impl InboxClaim {
+    pub(super) async fn complete(self) -> bool {
+        let InboxClaim {
+            bus,
+            recipient,
+            envelopes,
+        } = self;
+        let ids: Vec<String> = envelopes
+            .iter()
+            .map(|envelope| envelope.id.clone())
+            .collect();
+        let result = tokio::task::spawn_blocking(move || {
+            bus.ack_claimed(&recipient, &ids)?;
+            let _receipts = bus.send_receipts(&recipient, &envelopes);
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => {
+                tracing::warn!("messaging inbox claim acknowledgement failed: {error}");
+                false
+            }
+            Err(error) => {
+                tracing::warn!("messaging inbox claim acknowledgement task failed: {error}");
+                false
+            }
+        }
+    }
+}
+
 /// All queue-owned context collected at one step boundary.
 #[derive(Debug, Default)]
 pub(super) struct PendingContextBatch {
     pub(super) items: Vec<PendingContext>,
     pub(super) clears_ask: bool,
+    pub(super) inbox_claim: Option<InboxClaim>,
 }
 
 /// Reads pending session context and cross-session messages.
@@ -175,9 +218,9 @@ impl ContextSource {
         }
 
         let poll_session_id = session_id_owned.clone();
+        let read_bus = bus.clone();
         let messages = match tokio::task::spawn_blocking(move || {
-            let read = bus.read_and_archive(&poll_session_id)?;
-            let _receipts = bus.send_receipts(&poll_session_id, &read);
+            let read = read_bus.claim_and_archive(&poll_session_id)?;
             Ok::<_, anyhow::Error>(read)
         })
         .await
@@ -203,10 +246,15 @@ impl ContextSource {
                     source: InjectSource::CrossSession,
                     text: format_cross_session_inject(envelope),
                     attachments: Vec::new(),
-                    message_id: None,
+                    message_id: Some(envelope.id.clone()),
                 })
                 .collect(),
             clears_ask: false,
+            inbox_claim: Some(InboxClaim {
+                bus,
+                recipient: session_id_owned,
+                envelopes: messages,
+            }),
         }
     }
 

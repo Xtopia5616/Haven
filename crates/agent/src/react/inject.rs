@@ -36,7 +36,11 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         state: &mut ReActState,
-        PendingContextBatch { items, clears_ask }: PendingContextBatch,
+        PendingContextBatch {
+            items,
+            clears_ask,
+            inbox_claim,
+        }: PendingContextBatch,
     ) -> bool {
         if clears_ask {
             self.executor
@@ -45,7 +49,34 @@ impl ReActEngine {
         }
         let injected = !items.is_empty();
         for item in items {
-            self.apply_pending_context(ctx, state, item).await;
+            let already_applied = item.message_id.as_deref().is_some_and(|message_id| {
+                state.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        TranscriptRecord::UserInject {
+                            message_id: Some(existing),
+                            ..
+                        } if existing == message_id
+                    )
+                })
+            });
+            if !already_applied {
+                self.apply_pending_context(ctx, state, item).await;
+            }
+        }
+
+        if let Some(claim) = inbox_claim {
+            if self
+                .save_snapshot_with_branches(&ctx.session_id, state, ctx.step_num)
+                .await
+            {
+                let _ = claim.complete().await;
+            } else {
+                tracing::warn!(
+                    "leaving cross-session inbox claim unacknowledged for {} because its snapshot was not durable",
+                    ctx.session_id
+                );
+            }
         }
 
         injected
@@ -81,8 +112,9 @@ impl ReActEngine {
     ///    the fallback cadence (three steps, for cross-process writers).
     ///    Each message is injected as low-trust user context for
     ///    the next LLM call — no reliance on the agent remembering to poll.
-    /// 3. **Receipts** — freshly read messages are auto-acked so senders
-    ///    learn their message was consumed.
+    /// 3. **Durability and receipts** — messages are acknowledged only after
+    ///    their transcript event and snapshot are durable, then read receipts
+    ///    are sent so senders learn they were consumed.
     pub(super) async fn maybe_poll_inbox(
         &self,
         session_id: &str,

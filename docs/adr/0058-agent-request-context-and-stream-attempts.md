@@ -25,6 +25,10 @@ Run/Turn/ToolBatch 拆分后，ReAct 仍有两类容易互相污染的临时数�
   相邻 chunk 移到一起。reset 只清理对应输出代次，工具卡片、搜索结果和用户消息不受影响。
 - Default hook 先完成 inbox 与 MEMORY fence 更新，再计算 compaction 的输入预算，
   让 compact 与随后的 `RequestContext` 使用同一份 canonical 视图。
+- ReAct 的跨会话 inbox 使用 claim/ack 两阶段消费：envelope 先保留在
+  `.processing`，直到 `UserInject` 事件及其 snapshot 都成功持久化后才确认；崩溃
+  会按 envelope id 至少一次重投并由事件幂等去重。同步 messaging tool 保留原有的
+  read-and-archive 语义。
 
 ## 替代方案
 
@@ -50,6 +54,8 @@ transcript 不变，不需要数据迁移或兼容分支。provider 的旧公共
 promote。每次流结束还会等待已创建的 checkpoint task，确保最终 assistant 投影先于
 scratch row 的时间戳收敛，避免成功响应在终态 promote 时被重复。取消、超时和 provider
 全失败仍由原有生命周期与 partial checkpoint 路径处理。
+跨会话消息的 claim 在 snapshot 成功前不会 ack；ack 失败会保留 processing 文件，下一次
+轮询可安全重投并按消息 id 跳过已落入事件日志的内容。
 
 ## 验证
 

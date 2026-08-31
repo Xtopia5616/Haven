@@ -15,9 +15,11 @@
 //! update) runs under the `.lock` mutex; registry updates additionally write a
 //! temp file and atomically rename it. Inbox reads are "read then move": the
 //! mailbox is renamed to `.processing` under the lock, so a concurrent append
-//! can never tear a read, and a message is never read twice — even across
-//! process crashes, a leftover `.processing` file is drained on the next call
-//! (crash recovery, with id-deduplication against the archive tail).
+//! can never tear a read. ReAct's claim/ack path intentionally keeps that
+//! `.processing` file until transcript projection and its snapshot are durable;
+//! a crash therefore causes at-least-once redelivery, which the agent
+//! de-duplicates by envelope id. The legacy read-and-archive path still drains
+//! the file immediately for synchronous tool calls.
 //!
 //! Envelopes are single-line JSON per the interop format; ids are canonical
 //! `msg-{uuid32}` ([`haven_common::types::new_id`]). Agent names double as
@@ -311,6 +313,10 @@ impl InboxBus {
         self.root.join(format!("{name}.jsonl.processing"))
     }
 
+    fn processing_tmp(&self, name: &str) -> PathBuf {
+        self.root.join(format!("{name}.jsonl.processing.tmp"))
+    }
+
     fn ensure_dir(&self) -> anyhow::Result<()> {
         Ok(std::fs::create_dir_all(&self.root)?)
     }
@@ -591,19 +597,7 @@ impl InboxBus {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
                 Err(e) => return Err(e.into()),
             };
-            let mut envs: Vec<Envelope> = Vec::new();
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<Envelope>(line) {
-                    Ok(env) => envs.push(env),
-                    Err(e) => {
-                        tracing::warn!("inbox: skipping corrupt line in mailbox '{name}': {e}")
-                    }
-                }
-            }
+            let envs = parse_envelopes(name, &content);
             let archive_ids = self.read_archive_tail_ids(name)?;
             if !envs.is_empty() {
                 let mut af = OpenOptions::new()
@@ -633,6 +627,127 @@ impl InboxBus {
             .append(true)
             .open(self.mailbox(name))?;
         Ok(collected)
+    }
+
+    /// Claim mailbox messages for a durable consumer without acknowledging
+    /// them yet.
+    ///
+    /// Unlike [`Self::read_and_archive`], this leaves the claimed envelopes in
+    /// `<name>.jsonl.processing`. The consumer must call [`Self::ack_claimed`]
+    /// after it has durably projected the batch. A crash between claim and ack
+    /// therefore produces at-least-once delivery instead of silently losing a
+    /// message after it was archived.
+    pub fn claim_and_archive(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
+        validate_agent_name(name)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        self.recover_processing_tmp_unlocked(name)?;
+        let pending = self.processing(name);
+        let mailbox = self.mailbox(name);
+
+        if !pending.exists() && mailbox.exists() {
+            std::fs::rename(&mailbox, &pending)?;
+        } else if pending.exists() && mailbox.exists() {
+            // A previous claim may have survived a crash while new messages
+            // arrived in the recreated mailbox. Merge both files atomically
+            // before parsing so the old claim is never stranded.
+            let old = std::fs::read_to_string(&pending)?;
+            let incoming = std::fs::read_to_string(&mailbox)?;
+            let tmp = self.processing_tmp(name);
+            let mut merged = old;
+            merged.push_str(&incoming);
+            std::fs::write(&tmp, merged)?;
+            match std::fs::remove_file(&pending) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            std::fs::rename(&tmp, &pending)?;
+            std::fs::remove_file(&mailbox)?;
+        }
+
+        // Keep the mailbox present while the claim is in flight: senders may
+        // continue delivering new messages, which will be merged on the next
+        // claim after this one is acknowledged.
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&mailbox)?;
+
+        let content = match std::fs::read_to_string(&pending) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let envs = parse_envelopes(name, &content);
+        if envs.is_empty() {
+            let _ = std::fs::remove_file(&pending);
+            return Ok(Vec::new());
+        }
+
+        // Archive at claim time for auditability, but do not treat archive
+        // presence as an acknowledgement. An unacknowledged processing file
+        // must still be returned after a crash.
+        let archive_ids = self.read_archive_tail_ids(name)?;
+        let mut archived_ids = archive_ids;
+        let mut archive: Option<File> = None;
+        for env in &envs {
+            if archived_ids.insert(env.id.clone()) {
+                if archive.is_none() {
+                    archive = Some(
+                        OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(self.archive(name))?,
+                    );
+                }
+                let file = archive.as_mut().expect("archive file was opened");
+                writeln!(file, "{}", serde_json::to_string(env)?)?;
+            }
+        }
+        if let Some(file) = archive.as_mut() {
+            file.flush()?;
+        }
+
+        // Remove expired/corrupt entries from the durable claim and de-dupe
+        // repeated envelope ids before returning. Expired messages are still
+        // archived, matching read-and-archive semantics, but must not pin the
+        // processing file forever.
+        let mut seen = HashSet::new();
+        let active: Vec<Envelope> = envs
+            .into_iter()
+            .filter(|env| !is_expired(env) && seen.insert(env.id.clone()))
+            .collect();
+        self.write_processing_unlocked(name, &active)?;
+        Ok(active)
+    }
+
+    /// Acknowledge a previously claimed batch. Only matching ids are removed;
+    /// messages that arrived after the claim remain in the mailbox and are
+    /// merged by the next claim.
+    pub fn ack_claimed(&self, name: &str, ids: &[String]) -> anyhow::Result<()> {
+        validate_agent_name(name)?;
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        self.recover_processing_tmp_unlocked(name)?;
+        let pending = self.processing(name);
+        let mailbox = self.mailbox(name);
+        if !pending.exists() {
+            OpenOptions::new().create(true).append(true).open(mailbox)?;
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(&pending)?;
+        let acknowledged: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let remaining: Vec<Envelope> = parse_envelopes(name, &content)
+            .into_iter()
+            .filter(|env| !acknowledged.contains(env.id.as_str()))
+            .collect();
+        self.write_processing_unlocked(name, &remaining)?;
+        OpenOptions::new().create(true).append(true).open(mailbox)?;
+        Ok(())
     }
 
     /// The most recent message this agent received (unread mailbox first,
@@ -834,6 +949,78 @@ impl InboxBus {
             .map(|e| e.id)
             .collect())
     }
+
+    /// Rewrite a claimed processing file while the inbox lock is held. The
+    /// contents are fully written before replacement, and an interrupted
+    /// replacement is recovered from the temp file on the next claim. An
+    /// empty claim is removed so it cannot be mistaken for a pending delivery
+    /// on the next poll.
+    fn write_processing_unlocked(&self, name: &str, envelopes: &[Envelope]) -> anyhow::Result<()> {
+        let pending = self.processing(name);
+        if envelopes.is_empty() {
+            match std::fs::remove_file(&pending) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            return Ok(());
+        }
+
+        let tmp = self.processing_tmp(name);
+        let mut file = File::create(&tmp)?;
+        for envelope in envelopes {
+            writeln!(file, "{}", serde_json::to_string(envelope)?)?;
+        }
+        file.flush()?;
+        // Windows cannot rename over an existing destination. Remove-and-move
+        // is still crash-safe here: if the process dies after removing the
+        // old claim, the next claim/ack call restores this fully-written temp
+        // file before touching the mailbox.
+        match std::fs::remove_file(&pending) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        std::fs::rename(tmp, pending)?;
+        Ok(())
+    }
+
+    fn recover_processing_tmp_unlocked(&self, name: &str) -> anyhow::Result<()> {
+        let pending = self.processing(name);
+        let tmp = self.processing_tmp(name);
+        if !tmp.exists() {
+            return Ok(());
+        }
+
+        if pending.exists() {
+            // The old claim survived, so the temp file was written before the
+            // replacement phase. The old claim is the recoverable source of
+            // truth; discard only the abandoned temp file.
+            std::fs::remove_file(tmp)?;
+        } else {
+            std::fs::rename(tmp, pending)?;
+        }
+        Ok(())
+    }
+}
+
+fn parse_envelopes(name: &str, content: &str) -> Vec<Envelope> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            match serde_json::from_str::<Envelope>(line) {
+                Ok(envelope) => Some(envelope),
+                Err(error) => {
+                    tracing::warn!("inbox: skipping corrupt line in mailbox '{name}': {error}");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 fn now_rfc3339() -> String {
@@ -1100,6 +1287,77 @@ mod tests {
             .unwrap();
         assert!(outcome.delivered);
         assert_eq!(bus.read_and_archive("ses-b").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn claim_redelivers_until_ack_and_archives_once() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let env = env_from("ses-a", "ses-b", "durable");
+        bus.deliver("ses-b", &env).unwrap();
+
+        let first = bus.claim_and_archive("ses-b").unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, env.id);
+
+        // Simulate a process crash after claim/archive but before transcript
+        // projection and acknowledgement.
+        let redelivered = bus.claim_and_archive("ses-b").unwrap();
+        assert_eq!(redelivered.len(), 1);
+        assert_eq!(redelivered[0].id, env.id);
+
+        bus.ack_claimed("ses-b", std::slice::from_ref(&env.id))
+            .unwrap();
+        assert!(bus.claim_and_archive("ses-b").unwrap().is_empty());
+        let archive = std::fs::read_to_string(bus.archive("ses-b")).unwrap();
+        assert_eq!(archive.lines().count(), 1);
+    }
+
+    #[test]
+    fn claim_merges_messages_arriving_while_previous_claim_is_pending() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let first = env_from("ses-a", "ses-b", "first");
+        let second = env_from("ses-a", "ses-b", "second");
+        bus.deliver("ses-b", &first).unwrap();
+        assert_eq!(bus.claim_and_archive("ses-b").unwrap().len(), 1);
+
+        bus.deliver("ses-b", &second).unwrap();
+        let merged = bus.claim_and_archive("ses-b").unwrap();
+        assert_eq!(
+            merged.iter().map(|env| env.id.as_str()).collect::<Vec<_>>(),
+            [first.id.as_str(), second.id.as_str()]
+        );
+
+        bus.ack_claimed("ses-b", std::slice::from_ref(&first.id))
+            .unwrap();
+        let remaining = bus.claim_and_archive("ses-b").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, second.id);
+        bus.ack_claimed("ses-b", std::slice::from_ref(&second.id))
+            .unwrap();
+    }
+
+    #[test]
+    fn claim_recovers_interrupted_processing_replacement() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let env = env_from("ses-a", "ses-b", "recover");
+        std::fs::write(
+            bus.processing_tmp("ses-b"),
+            format!("{}\n", serde_json::to_string(&env).unwrap()),
+        )
+        .unwrap();
+
+        let claimed = bus.claim_and_archive("ses-b").unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].id, env.id);
+        assert!(!bus.processing_tmp("ses-b").exists());
+        bus.ack_claimed("ses-b", std::slice::from_ref(&env.id))
+            .unwrap();
     }
 
     #[test]

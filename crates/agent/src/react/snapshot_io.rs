@@ -429,9 +429,9 @@ impl ReActEngine {
         session_id: &str,
         state: &ReActState,
         step_number: u32,
-    ) {
+    ) -> bool {
         self.save_snapshot_with_error_partials(session_id, state, step_number, None)
-            .await;
+            .await
     }
 
     /// Persist a snapshot carrying the recovery marker for a failed LLM
@@ -444,7 +444,7 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
         error_partial_message_ids: Option<&[String]>,
-    ) {
+    ) -> bool {
         let awaiting = self.executor.get_awaiting_answer(session_id).await;
         let awaiting_confirm = self.executor.get_awaiting_confirm(session_id).await;
         let run_budget = self.current_run_budget(session_id);
@@ -466,27 +466,42 @@ impl ReActEngine {
             let buf = bufs.entry(session_id.to_string()).or_default();
             buf.clear();
             if serde_json::to_writer(&mut *buf, &view).is_err() {
-                return;
+                return false;
             }
             std::mem::take(buf)
         };
-        let json = String::from_utf8(bytes).unwrap_or_default();
+        let json = match String::from_utf8(bytes) {
+            Ok(json) => json,
+            Err(error) => {
+                tracing::warn!("snapshot serialization produced invalid UTF-8: {error}");
+                return false;
+            }
+        };
         let db = self.db.clone();
         let tid_owned = session_id.to_string();
         // Return ownership of the serialized bytes so the allocation is
         // handed back to the session's buffer for reuse on the next snapshot.
-        let back: String = db
+        let back: String = match db
             .run_blocking(move |db| {
-                if let Err(e) = db.save_react_state(&tid_owned, &json) {
-                    tracing::warn!("save_react_state failed for session {}: {}", tid_owned, e);
-                }
-                Ok(json)
+                db.save_react_state(&tid_owned, &json)?;
+                Ok::<String, anyhow::Error>(json)
             })
             .await
-            .unwrap_or_default();
+        {
+            Ok(json) => json,
+            Err(error) => {
+                tracing::warn!(
+                    "save_react_state failed for session {}: {}",
+                    session_id,
+                    error
+                );
+                return false;
+            }
+        };
         if let Ok(mut bufs) = self.snapshot_bufs.try_lock() {
             *bufs.entry(session_id.to_string()).or_default() = back.into_bytes();
         }
+        true
     }
 
     /// and save a snapshot so the session can be resumed via "continue" or
