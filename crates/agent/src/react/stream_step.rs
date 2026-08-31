@@ -55,8 +55,7 @@ impl<'a> StreamSession<'a> {
         request_context: &RequestContext,
         retry_nudge: Option<&RetryNudge>,
     ) -> StepCallOutcome {
-        match self
-            .engine
+        self.engine
             .call_step_llm(
                 self.ctx,
                 self.router.clone(),
@@ -70,10 +69,6 @@ impl<'a> StreamSession<'a> {
                 self.partial_reasoning,
             )
             .await
-        {
-            StepCallOutcome::Response(resp) => StepCallOutcome::Response(resp),
-            other => other,
-        }
     }
 
     /// Empty / cut-off retry: reuses the primary call's minted msg-ids.
@@ -82,17 +77,19 @@ impl<'a> StreamSession<'a> {
         request_context: &RequestContext,
     ) -> Result<LlmResponse, haven_llm::LlmError> {
         self.engine
-            .stream_retry_step(
+            .stream_llm_call(
                 self.ctx,
                 self.router.clone(),
                 self.role,
                 request_context,
+                true,
                 self.tools,
                 self.cancel.clone(),
                 self.partial_thought,
                 self.partial_reasoning,
             )
             .await
+            .map(|(response, _)| response)
     }
 }
 
@@ -417,12 +414,11 @@ impl ReActEngine {
     /// drain the consumer and return the aggregated response. Shared by the
     /// primary step call and the post-compaction retry so the two cannot
     /// drift. Error handling stays at the call site.
-    /// One step's primary LLM call: streamed with live chunk forwarding,
-    /// cancellation, the stall watchdog and partial-text recovery. Returns
-    /// the aggregated response plus the wall-clock duration of the API call
-    /// in milliseconds (persisted with the per-call usage detail).
+    /// A primary call and every replacement retry use the same lifecycle;
+    /// `replace_output_on_start` only controls whether the previous partial
+    /// output is discarded before the provider attempt begins.
     #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
-    pub(super) async fn stream_llm_step(
+    pub(super) async fn stream_llm_call(
         &self,
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
@@ -489,57 +485,22 @@ impl ReActEngine {
         }
     }
 
-    /// One empty-response / cut-off retry with live chunk forwarding: streamed
-    /// text is accumulated into the partial buffers (crash recovery) and
-    /// forwarded to the frontend, so a recovering provider never leaves the
-    /// UI frozen for the retry's whole budget. The retry begins a new output
-    /// generation, including reasoning, so it never concatenates with the
-    /// failed attempt.
-    /// The stall watchdog runs exactly like the primary call.
-    #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
-    pub(super) async fn stream_retry_step(
+    async fn record_step_usage(
         &self,
         ctx: &StepCtx,
-        router: Arc<LlmRouter>,
         role: EndpointRole,
-        request_context: &RequestContext,
-        tools: &[ToolDefinition],
-        cancel: tokio_util::sync::CancellationToken,
-        partial_thought: &Arc<std::sync::Mutex<String>>,
-        partial_reasoning: &Arc<std::sync::Mutex<String>>,
-    ) -> Result<LlmResponse, haven_llm::LlmError> {
-        self.executor.partials.discard(&ctx.session_id).await;
-        // Retry chunks reuse the primary call's minted ids (same step/run),
-        // so the frontend continues the same bubble instead of splitting it.
-        let thought_msg_id =
-            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
-        let reasoning_msg_id =
-            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
-        let limits = self.limits();
-        let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
-            ctx,
-            limits.event_chunk_batch_max_bytes,
-            limits.stream_stall_warn_delay_ms,
-            partial_thought,
-            partial_reasoning,
-            self.executor.partials.clone(),
-            limits.partial_checkpoint_min_chars,
-            std::time::Duration::from_secs(limits.partial_checkpoint_interval_secs),
-            cancel.clone(),
-            thought_msg_id,
-            reasoning_msg_id,
-        );
-        let result = router
-            .chat_stream_with_tools_aggregated_cancellable_with_attempts(
-                role,
-                request_context.messages(),
-                tools,
-                StreamAttemptHooks::new(on_chunk, on_attempt_start, true),
-                cancel,
-            )
-            .await;
-        forwarder.flush().await;
-        result
+        response: &LlmResponse,
+        duration_ms: u64,
+    ) {
+        self.record_usage_and_emit(
+            &ctx.session_id,
+            role,
+            response,
+            ctx.step_num as i32,
+            Some(duration_ms),
+            &ctx.emitter,
+        )
+        .await;
     }
 
     /// One step's full LLM call, including the context-length compaction
@@ -562,7 +523,7 @@ impl ReActEngine {
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> StepCallOutcome {
         match self
-            .stream_llm_step(
+            .stream_llm_call(
                 ctx,
                 router.clone(),
                 *role,
@@ -584,15 +545,7 @@ impl ReActEngine {
                     )
                     .await;
                 }
-                self.record_usage_and_emit(
-                    &ctx.session_id,
-                    *role,
-                    &resp,
-                    ctx.step_num as i32,
-                    Some(duration_ms),
-                    &ctx.emitter,
-                )
-                .await;
+                self.record_step_usage(ctx, *role, &resp, duration_ms).await;
                 StepCallOutcome::Response(Box::new(resp))
             }
             Err(haven_llm::LlmError::ContextLengthExceeded) => {
@@ -634,7 +587,7 @@ impl ReActEngine {
                     *role = retry_role;
                     let retry_context = RequestContext::from_state(state, retry_nudge);
                     match self
-                        .stream_llm_step(
+                        .stream_llm_call(
                             ctx,
                             router.clone(),
                             retry_role,
@@ -648,15 +601,8 @@ impl ReActEngine {
                         .await
                     {
                         Ok((retry_resp, retry_duration_ms)) => {
-                            self.record_usage_and_emit(
-                                &ctx.session_id,
-                                retry_role,
-                                &retry_resp,
-                                ctx.step_num as i32,
-                                Some(retry_duration_ms),
-                                &ctx.emitter,
-                            )
-                            .await;
+                            self.record_step_usage(ctx, retry_role, &retry_resp, retry_duration_ms)
+                                .await;
                             StepCallOutcome::Response(Box::new(retry_resp))
                         }
                         Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,

@@ -307,6 +307,139 @@ struct CompletedTool {
     action_index: u32,
 }
 
+impl CompletedTool {
+    fn failed(action: Action, step_id: String, action_index: u32, step_result: String) -> Self {
+        Self {
+            tool_name: action.tool_name.clone(),
+            action,
+            step_result,
+            is_error: true,
+            ask_question: None,
+            ask_options: Vec::new(),
+            notify_title: None,
+            notify_body: None,
+            step_id,
+            action_index,
+        }
+    }
+}
+
+/// Execute one already-admitted tool call and normalize its result into the
+/// batch representation. Both the normal batch and the post-confirm resume
+/// path use this helper so observation truncation and tool-owned signals
+/// cannot drift between the two paths.
+async fn execute_tool_action(
+    executor: Arc<SessionExecutor>,
+    session_id: String,
+    action: Action,
+    step_num: u32,
+    action_index: u32,
+    step_id: String,
+    pre_confirmed: bool,
+) -> CompletedTool {
+    let tool_name = action.tool_name.clone();
+    let tool_input = action.tool_input.clone();
+    tracing::debug!(
+        "executing tool '{}' at step {} (input keys: {:?})",
+        tool_name,
+        step_num,
+        tool_input
+            .as_object()
+            .map(|o| o.keys().collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+    tracing::trace!(
+        "tool '{}' at step {} full input: {} chars",
+        tool_name,
+        step_num,
+        tool_input
+            .as_object()
+            .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
+            .unwrap_or(0)
+    );
+
+    let result = if pre_confirmed {
+        executor
+            .execute_step_preconfirmed_with_identity(
+                &session_id,
+                &tool_name,
+                tool_input,
+                step_num,
+                action_index,
+                action.tool_call_id.as_deref(),
+                &step_id,
+                true,
+            )
+            .await
+    } else {
+        executor
+            .execute_step_with_identity(
+                &session_id,
+                &tool_name,
+                tool_input,
+                step_num,
+                action_index,
+                action.tool_call_id.as_deref(),
+                &step_id,
+            )
+            .await
+    };
+
+    let (step_result, is_error, ask_question, ask_options, notify_title, notify_body) = match result
+    {
+        Ok(result) => {
+            tracing::debug!(
+                "tool '{}' at step {} completed: success={}, {} chars",
+                tool_name,
+                step_num,
+                result.success,
+                serde_json::to_string(&result.output)
+                    .map(|text| text.len())
+                    .unwrap_or(0)
+            );
+            tracing::trace!(
+                "tool '{}' at step {} full output: {} chars",
+                tool_name,
+                step_num,
+                serde_json::to_string(&result.output)
+                    .map(|text| text.len())
+                    .unwrap_or(0)
+            );
+            let step_result = executor.observation_text(&tool_name, &result).await;
+            (
+                step_result,
+                !result.success,
+                result.signals.ask_question,
+                result.signals.ask_options,
+                result.signals.notify_title,
+                result.signals.notify_body,
+            )
+        }
+        Err(error) => {
+            tracing::debug!(
+                "tool '{}' at step {} failed: {}",
+                tool_name,
+                step_num,
+                error
+            );
+            (error.to_string(), true, None, Vec::new(), None, None)
+        }
+    };
+
+    CompletedTool {
+        action,
+        tool_name,
+        step_result,
+        is_error,
+        ask_question,
+        ask_options,
+        notify_title,
+        notify_body,
+        step_id,
+        action_index,
+    }
+}
+
 struct ToolBatchGate {
     all: Arc<RwLock<()>>,
     resources: AsyncMutex<HashMap<String, Arc<RwLock<()>>>>,
@@ -351,6 +484,45 @@ impl ToolBatchGate {
 }
 
 impl ReActEngine {
+    /// Apply the shared post-ask transition. A reply that arrived while the
+    /// batch was running turns the session back into `Pending`; otherwise the
+    /// explicit ask gate is persisted before pausing. Keeping this transition
+    /// here makes normal execution and confirm-resume agree on queue and
+    /// snapshot semantics.
+    async fn pause_for_ask(
+        &self,
+        session_id: &str,
+        state: &mut ReActState,
+        step_num: u32,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        pending: crate::types::AskPending,
+    ) -> anyhow::Result<ToolBatchOutcome> {
+        self.executor.mark_user_queues_as_answer(session_id).await;
+        let has_answer = self.executor.has_pending_context(session_id).await;
+        let status = if has_answer {
+            self.executor.clear_awaiting_answer(session_id).await;
+            SessionStatus::Pending
+        } else {
+            self.executor
+                .set_awaiting_answer(session_id, Some(pending.clone()))
+                .await;
+            SessionStatus::PausedAwaitingAnswer
+        };
+        self.pause_turn(PauseTurnInput {
+            session_id,
+            state,
+            snapshot_step: step_num + 1,
+            emitter,
+            status,
+            final_text: &pending.question,
+            branch_point_step: None,
+        })
+        .await?;
+        Ok(ToolBatchOutcome::Done(LoopExit::Paused {
+            reason: PauseReason::Ask,
+        }))
+    }
+
     /// Execute the non-final actions for one step: emit Action cards, run the
     /// batch (parallel), drain observations, failure nudge, and ask pause.
     /// Behavior-preserving extract from `run_react_loop` (Phase 1 / E2).
@@ -513,18 +685,12 @@ impl ReActEngine {
                         ActionStepOutcome::Failed,
                     )
                     .await;
-                completed_results[idx] = Some(CompletedTool {
-                    action: (*action).clone(),
-                    tool_name: action.tool_name.clone(),
-                    step_result: error,
-                    is_error: true,
-                    ask_question: None,
-                    ask_options: Vec::new(),
-                    notify_title: None,
-                    notify_body: None,
+                completed_results[idx] = Some(CompletedTool::failed(
+                    (*action).clone(),
                     step_id,
-                    action_index: idx as u32,
-                });
+                    idx as u32,
+                    error,
+                ));
                 continue;
             }
             if let Some(failure) = validation_failures
@@ -545,18 +711,12 @@ impl ReActEngine {
                         &error,
                     )
                     .await;
-                completed_results[idx] = Some(CompletedTool {
-                    action: (*action).clone(),
-                    tool_name: action.tool_name.clone(),
-                    step_result: error,
-                    is_error: true,
-                    ask_question: None,
-                    ask_options: Vec::new(),
-                    notify_title: None,
-                    notify_body: None,
+                completed_results[idx] = Some(CompletedTool::failed(
+                    (*action).clone(),
                     step_id,
-                    action_index: idx as u32,
-                });
+                    idx as u32,
+                    error,
+                ));
                 continue;
             }
             match self
@@ -595,18 +755,12 @@ impl ReActEngine {
                             &error,
                         )
                         .await;
-                    completed_results[idx] = Some(CompletedTool {
-                        action: (*action).clone(),
-                        tool_name: action.tool_name.clone(),
-                        step_result: error,
-                        is_error: true,
-                        ask_question: None,
-                        ask_options: Vec::new(),
-                        notify_title: None,
-                        notify_body: None,
+                    completed_results[idx] = Some(CompletedTool::failed(
+                        (*action).clone(),
                         step_id,
-                        action_index: idx as u32,
-                    });
+                        idx as u32,
+                        error,
+                    ));
                 }
                 BeforeToolAction::NeedConfirm { risk_level } => {
                     need_confirm.push(ConfirmPendingTool {
@@ -635,8 +789,6 @@ impl ReActEngine {
         let mut tool_futures = futures_util::stream::iter(proceed)
             .map(|(idx, action, confirmed, concurrency)| {
                 let session_id = session_id.to_string();
-                let tool_name = action.tool_name.clone();
-                let tool_input = action.tool_input.clone();
                 let executor = self.executor.clone();
                 let gate = gate.clone();
                 let started = started.clone();
@@ -652,114 +804,17 @@ impl ReActEngine {
                     // conflicting write can therefore be cancelled as
                     // `cancelled`, not conservatively misreported unknown.
                     started[idx].store(true, Ordering::Release);
-                    tracing::debug!(
-                        "executing tool '{}' at step {} (input keys: {:?})",
-                        tool_name,
+                    let result = execute_tool_action(
+                        executor,
+                        session_id,
+                        action,
                         step_num,
-                        tool_input
-                            .as_object()
-                            .map(|o| o.keys().collect::<Vec<_>>())
-                            .unwrap_or_default()
-                    );
-                    tracing::trace!(
-                        "tool '{}' at step {} full input: {} chars",
-                        tool_name,
-                        step_num,
-                        tool_input
-                            .as_object()
-                            .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
-                            .unwrap_or(0)
-                    );
-                    let result = if pre_confirmed {
-                        executor
-                            .execute_step_preconfirmed_with_identity(
-                                &session_id,
-                                &tool_name,
-                                tool_input.clone(),
-                                step_num,
-                                idx as u32,
-                                action.tool_call_id.as_deref(),
-                                &step_id,
-                                true,
-                            )
-                            .await
-                    } else {
-                        executor
-                            .execute_step_with_identity(
-                                &session_id,
-                                &tool_name,
-                                tool_input.clone(),
-                                step_num,
-                                idx as u32,
-                                action.tool_call_id.as_deref(),
-                                &step_id,
-                            )
-                            .await
-                    };
-                    let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
-                        match result {
-                            Ok(r) => {
-                                tracing::debug!(
-                                    "tool '{}' at step {} completed: success={}, {} chars",
-                                    tool_name,
-                                    step_num,
-                                    r.success,
-                                    serde_json::to_string(&r.output)
-                                        .map(|s| s.len())
-                                        .unwrap_or(0)
-                                );
-                                tracing::trace!(
-                                    "tool '{}' at step {} full output: {} chars",
-                                    tool_name,
-                                    step_num,
-                                    serde_json::to_string(&r.output)
-                                        .map(|s| s.len())
-                                        .unwrap_or(0)
-                                );
-                                let text = executor.observation_text(&tool_name, &r).await;
-                                // The ask/notify signals are attached to the
-                                // result by the tool itself (declared via
-                                // `Tool::signals`) BEFORE the loop truncates
-                                // the observation text, so a question or toast
-                                // is never lost to the budget.
-                                let ask_question = r.signals.ask_question.clone();
-                                let ask_options = r.signals.ask_options.clone();
-                                let notify_title = r.signals.notify_title.clone();
-                                let notify_body = r.signals.notify_body.clone();
-                                (
-                                    text,
-                                    !r.success,
-                                    ask_question,
-                                    ask_options,
-                                    notify_title,
-                                    notify_body,
-                                )
-                            }
-                            Err(e) => {
-                                tracing::debug!(
-                                    "tool '{}' at step {} failed: {}",
-                                    tool_name,
-                                    step_num,
-                                    e
-                                );
-                                (e.to_string(), true, None, Vec::new(), None, None)
-                            }
-                        };
-                    (
-                        idx,
-                        CompletedTool {
-                            action,
-                            tool_name,
-                            step_result: text,
-                            is_error,
-                            ask_question,
-                            ask_options,
-                            notify_title,
-                            notify_body,
-                            step_id,
-                            action_index: idx as u32,
-                        },
+                        idx as u32,
+                        step_id,
+                        pre_confirmed,
                     )
+                    .await;
+                    (idx, result)
                 }
             })
             .buffer_unordered(MAX_CONCURRENT_TOOL_CALLS);
@@ -809,18 +864,12 @@ impl ReActEngine {
                                 outcome,
                             )
                             .await;
-                        completed_results[idx] = Some(CompletedTool {
-                            action: (*action).clone(),
-                            tool_name: action.tool_name.clone(),
-                            step_result: interrupted_text,
-                            is_error: true,
-                            ask_question: None,
-                            ask_options: Vec::new(),
-                            notify_title: None,
-                            notify_body: None,
+                        completed_results[idx] = Some(CompletedTool::failed(
+                            (*action).clone(),
                             step_id,
-                            action_index: idx as u32,
-                        });
+                            idx as u32,
+                            interrupted_text,
+                        ));
                     }
                     for result in completed_results.into_iter().flatten() {
                         batch_state
@@ -922,44 +971,18 @@ impl ReActEngine {
         // answer as context at the top of the next step).
         if !batch_state.asked_questions.is_empty() {
             let question = batch_state.asked_questions.join("\n\n");
-            // X12: ask question messages were projected in apply(ToolResult)
-            // under each ask step id (shared-id protocol).
-            // Phase 4 / C3: no steering→answer queue transfer. Mid-run user
-            // input landed in steering while status was still Running; mark
-            // those (and any follow-ups) as answers in place. Only set the
-            // explicit awaiting flag (C5) when no reply is queued yet —
-            // otherwise Pending + is_answer inject clears the gate without
-            // leaving a stale snapshot flag that could resurrect after crash.
-            self.executor.mark_user_queues_as_answer(session_id).await;
-            let has_answer = self.executor.has_pending_context(session_id).await;
-            let status = if has_answer {
-                self.executor.clear_awaiting_answer(session_id).await;
-                SessionStatus::Pending
-            } else {
-                self.executor
-                    .set_awaiting_answer(
-                        session_id,
-                        Some(crate::types::AskPending {
-                            question: question.clone(),
-                            step_ids: batch_state.ask_step_ids.clone(),
-                        }),
-                    )
-                    .await;
-                SessionStatus::PausedAwaitingAnswer
-            };
-            self.pause_turn(PauseTurnInput {
-                session_id,
-                state,
-                snapshot_step: step_num + 1,
-                emitter,
-                status,
-                final_text: &question,
-                branch_point_step: None,
-            })
-            .await?;
-            return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
-                reason: PauseReason::Ask,
-            }));
+            return self
+                .pause_for_ask(
+                    session_id,
+                    state,
+                    step_num,
+                    emitter,
+                    crate::types::AskPending {
+                        question,
+                        step_ids: batch_state.ask_step_ids.clone(),
+                    },
+                )
+                .await;
         }
 
         let session_state = self.executor.get_session_state(session_id).await;
@@ -1030,46 +1053,16 @@ impl ReActEngine {
             };
 
             let result = if decision {
-                let result = self
-                    .executor
-                    .execute_step_preconfirmed_with_identity(
-                        session_id,
-                        &tool.tool_name,
-                        tool.tool_input.clone(),
-                        step_num,
-                        tool.action_index,
-                        tool_call_id.as_deref(),
-                        &tool.step_id,
-                        true,
-                    )
-                    .await;
-                let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
-                    match result {
-                        Ok(r) => {
-                            let text = self.executor.observation_text(&tool.tool_name, &r).await;
-                            (
-                                text,
-                                !r.success,
-                                r.signals.ask_question.clone(),
-                                r.signals.ask_options.clone(),
-                                r.signals.notify_title.clone(),
-                                r.signals.notify_body.clone(),
-                            )
-                        }
-                        Err(e) => (e.to_string(), true, None, Vec::new(), None, None),
-                    };
-                CompletedTool {
+                execute_tool_action(
+                    self.executor.clone(),
+                    session_id.to_string(),
                     action,
-                    tool_name: tool.tool_name,
-                    step_result: text,
-                    is_error,
-                    ask_question,
-                    ask_options,
-                    notify_title,
-                    notify_body,
-                    step_id: tool.step_id,
-                    action_index: tool.action_index,
-                }
+                    step_num,
+                    tool.action_index,
+                    tool.step_id,
+                    true,
+                )
+                .await
             } else {
                 let error = format!(
                     "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
@@ -1088,18 +1081,7 @@ impl ReActEngine {
                         ActionStepOutcome::Cancelled,
                     )
                     .await;
-                CompletedTool {
-                    action,
-                    tool_name: tool.tool_name,
-                    step_result: error,
-                    is_error: true,
-                    ask_question: None,
-                    ask_options: Vec::new(),
-                    notify_title: None,
-                    notify_body: None,
-                    step_id: tool.step_id,
-                    action_index: tool.action_index,
-                }
+                CompletedTool::failed(action, tool.step_id, tool.action_index, error)
             };
             batch_state
                 .commit_tool_result(self, &proj_ctx, result, state)
@@ -1110,42 +1092,20 @@ impl ReActEngine {
             .clear_awaiting_confirm_persisted(session_id)
             .await;
 
-        if !batch_state.asked_questions.is_empty() {
-            let question = batch_state.asked_questions.join("\n\n");
-            self.executor
-                .set_awaiting_answer(
-                    session_id,
-                    Some(crate::types::AskPending {
-                        question,
-                        step_ids: batch_state.ask_step_ids.clone(),
-                    }),
-                )
-                .await;
-        }
-
-        // Same-batch ask was stashed while confirm paused first: surface it now.
-        if let Some(ask) = self.executor.get_awaiting_answer(session_id).await {
-            self.executor.mark_user_queues_as_answer(session_id).await;
-            let has_answer = self.executor.has_pending_context(session_id).await;
-            let status = if has_answer {
-                self.executor.clear_awaiting_answer(session_id).await;
-                SessionStatus::Pending
-            } else {
-                SessionStatus::PausedAwaitingAnswer
-            };
-            self.pause_turn(PauseTurnInput {
-                session_id,
-                state,
-                snapshot_step: step_num + 1,
-                emitter,
-                status,
-                final_text: &ask.question,
-                branch_point_step: None,
+        let pending_ask = if !batch_state.asked_questions.is_empty() {
+            Some(crate::types::AskPending {
+                question: batch_state.asked_questions.join("\n\n"),
+                step_ids: batch_state.ask_step_ids.clone(),
             })
-            .await?;
-            return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
-                reason: PauseReason::Ask,
-            }));
+        } else {
+            // Same-batch ask was stashed while confirm paused first: surface
+            // it now.
+            self.executor.get_awaiting_answer(session_id).await
+        };
+        if let Some(pending) = pending_ask {
+            return self
+                .pause_for_ask(session_id, state, step_num, emitter, pending)
+                .await;
         }
 
         Ok(ToolBatchOutcome::Continue)
