@@ -39,9 +39,8 @@ pub(super) struct Migration {
 /// - v10: per-call prompt-cache accounting provenance, so mixed providers do
 ///   not infer cache-hit rates from aggregate token values.
 /// - v11: cache miss totals and non-sensitive per-call cache diagnostics.
-/// - v12: stable action ordering and provider tool-call identity on
-///   `session_steps`, so confirmation and snapshot-less recovery never match
-///   calls by tool name, arguments, or observation text.
+/// - v12: stable action ordering/provider tool-call identity plus explicit
+///   cancelled/unknown action outcomes on `session_steps`.
 pub(super) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -85,24 +84,84 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 12,
-        apply: migrate_v12_session_step_tool_identity,
+        apply: migrate_v12_session_steps,
     },
 ];
 
-pub(super) fn migrate_v12_session_step_tool_identity(
-    conn: &rusqlite::Connection,
-) -> anyhow::Result<()> {
-    if table_exists(conn, "session_steps")? {
-        if !column_exists(conn, "session_steps", "action_index")? {
-            conn.execute(
-                "ALTER TABLE session_steps ADD COLUMN action_index INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-        if !column_exists(conn, "session_steps", "tool_call_id")? {
-            conn.execute("ALTER TABLE session_steps ADD COLUMN tool_call_id TEXT", [])?;
-        }
+/// Add invocation identity and expand the action-step outcome CHECK in one
+/// migration. SQLite cannot alter a CHECK in place, so old tables are rebuilt
+/// after the identity columns are added.
+pub(super) fn migrate_v12_session_steps(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "session_steps")? {
+        return Ok(());
     }
+
+    if !column_exists(conn, "session_steps", "action_index")? {
+        conn.execute(
+            "ALTER TABLE session_steps ADD COLUMN action_index INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !column_exists(conn, "session_steps", "tool_call_id")? {
+        conn.execute("ALTER TABLE session_steps ADD COLUMN tool_call_id TEXT", [])?;
+    }
+
+    let table_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_steps'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    if table_sql.contains("'cancelled'") && table_sql.contains("'unknown'") {
+        return Ok(());
+    }
+
+    conn.execute_batch("DROP TABLE IF EXISTS session_steps_v12")?;
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+    let rebuild = conn.execute_batch(
+        r#"
+        BEGIN IMMEDIATE;
+        CREATE TABLE session_steps_v12 (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            step_number INTEGER NOT NULL,
+            action_index INTEGER NOT NULL DEFAULT 0,
+            tool_name TEXT NOT NULL,
+            input TEXT NOT NULL DEFAULT '{}',
+            output TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','running','completed','failed','cancelled','unknown')),
+            is_high_risk INTEGER NOT NULL DEFAULT 0,
+            confirmed INTEGER,
+            started_at TEXT,
+            completed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            silent INTEGER NOT NULL DEFAULT 0,
+            thought TEXT,
+            action_tool TEXT,
+            action_input TEXT,
+            tool_call_id TEXT,
+            observation TEXT
+        );
+        INSERT INTO session_steps_v12
+            (id, session_id, step_number, action_index, tool_name, input, output, status,
+             is_high_risk, confirmed, started_at, completed_at, created_at,
+             silent, thought, action_tool, action_input, tool_call_id, observation)
+        SELECT id, session_id, step_number, action_index, tool_name, input, output,
+               CASE WHEN status = 'error' THEN 'failed' ELSE status END,
+               is_high_risk, confirmed, started_at, completed_at, created_at,
+               silent, thought, action_tool, action_input, tool_call_id, observation
+          FROM session_steps;
+        DROP TABLE session_steps;
+        ALTER TABLE session_steps_v12 RENAME TO session_steps;
+        CREATE INDEX IF NOT EXISTS idx_session_steps_session ON session_steps(session_id);
+        COMMIT;
+        "#,
+    );
+    let restore = conn.execute_batch("PRAGMA foreign_keys=ON");
+    rebuild?;
+    restore?;
     Ok(())
 }
 

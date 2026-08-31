@@ -620,7 +620,7 @@ impl SessionExecutor {
             .await;
     }
 
-    /// Fail every still-`pending` action step for a session (handler panic /
+    /// Finalize every unfinished action step for a session as `unknown` (handler panic /
     /// abort after [`Self::begin_action_step`]).
     pub async fn fail_pending_action_steps(&self, session_id: &str, observation: &str) {
         let session_id = session_id.to_string();

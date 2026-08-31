@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// One clipboard history entry.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -143,6 +143,14 @@ impl Tool for ClipboardTool {
         match input["operation"].as_str() {
             Some("write") => RiskLevel::Medium,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        if input["operation"].as_str() == Some("write") {
+            ToolConcurrency::Resource("clipboard".into())
+        } else {
+            ToolConcurrency::ReadOnly
         }
     }
 

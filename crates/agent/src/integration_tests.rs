@@ -8,7 +8,7 @@ use haven_common::types::{
 use haven_llm::{
     FinishReason, LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
 };
-use haven_tools::{Tool, ToolBox, ToolResult, ToolsManager};
+use haven_tools::{Tool, ToolBox, ToolConcurrency, ToolResult, ToolsManager};
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::time::Instant;
@@ -2642,11 +2642,13 @@ impl Tool for EchoTool {
 
 struct TimingState {
     intervals: std::sync::Mutex<Vec<(Instant, Instant)>>,
+    started: std::sync::atomic::AtomicUsize,
 }
 impl TimingState {
     fn new() -> Self {
         Self {
             intervals: std::sync::Mutex::new(Vec::new()),
+            started: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -2673,6 +2675,9 @@ impl Tool for TimingTool {
     fn risk_level(&self, _: &serde_json::Value) -> RiskLevel {
         RiskLevel::Safe
     }
+    fn concurrency(&self, _: &serde_json::Value) -> ToolConcurrency {
+        ToolConcurrency::ReadOnly
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -2681,6 +2686,9 @@ impl Tool for TimingTool {
         _: serde_json::Value,
         _: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.state
+            .started
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         let start = Instant::now();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         self.state
@@ -3556,11 +3564,13 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
         let session_id = session.id.clone();
         async move { agent.run_session_from_id(&session_id).await }
     });
-    // Wait until both action events were emitted (the assistant message
-    // with tool_calls is in canonical and the drain loop is running), then
-    // cancel while both tools (200ms sleeps) are still in flight.
+    // Wait until both action events and both tool executions are visible,
+    // then cancel while both tools (200ms sleeps) are still in flight.
     for _ in 0..50 {
-        if collector.has_action("delay_a") && collector.has_action("delay_b") {
+        if collector.has_action("delay_a")
+            && collector.has_action("delay_b")
+            && timing.started.load(std::sync::atomic::Ordering::Acquire) == 2
+        {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -3568,6 +3578,11 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     assert!(
         collector.has_action("delay_a") && collector.has_action("delay_b"),
         "batch must have started before the cancel"
+    );
+    assert_eq!(
+        timing.started.load(std::sync::atomic::Ordering::Acquire),
+        2,
+        "both tools must have entered execution before the cancel"
     );
     // end_session registers a real cancellation token (entry().or_insert) and
     // cancels it — the same path the frontend's "end session" button uses —

@@ -8,8 +8,20 @@ use super::snapshot_io::PauseTurnInput;
 use super::*;
 use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
-use haven_tools::is_silent_action;
+use haven_memory::repositories::session_steps::ActionStepOutcome;
+use haven_tools::{ToolConcurrency, is_silent_action};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{
+    Mutex as AsyncMutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
+};
+
+/// Hard safety ceilings for one assistant response. The first bounds total
+/// work admitted to the runtime; the second bounds live futures/tasks. The
+/// provider-facing tool-definition limit is not a runtime execution limit.
+pub(crate) const MAX_RUNTIME_TOOL_CALLS_PER_BATCH: usize = 64;
+const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
 
 /// Failure classification used to shape the post-failure retry nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +309,42 @@ struct CompletedTool {
     action_index: u32,
 }
 
+struct ToolBatchGate {
+    all: Arc<RwLock<()>>,
+    resources: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+}
+
+#[allow(dead_code)]
+enum ToolBatchPermit {
+    Read(OwnedRwLockReadGuard<()>),
+    Resource(OwnedMutexGuard<()>, OwnedRwLockReadGuard<()>),
+    Exclusive(OwnedRwLockWriteGuard<()>),
+}
+
+impl ToolBatchGate {
+    async fn acquire(&self, policy: &ToolConcurrency) -> ToolBatchPermit {
+        match policy {
+            ToolConcurrency::ReadOnly => ToolBatchPermit::Read(self.all.clone().read_owned().await),
+            ToolConcurrency::Resource(key) => {
+                let resource = {
+                    let mut resources = self.resources.lock().await;
+                    resources
+                        .entry(key.clone())
+                        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                        .clone()
+                };
+                ToolBatchPermit::Resource(
+                    resource.lock_owned().await,
+                    self.all.clone().read_owned().await,
+                )
+            }
+            ToolConcurrency::Exclusive => {
+                ToolBatchPermit::Exclusive(self.all.clone().write_owned().await)
+            }
+        }
+    }
+}
+
 impl ReActEngine {
     /// Execute the non-final actions for one step: emit Action cards, run the
     /// batch (parallel), drain observations, failure nudge, and ask pause.
@@ -434,7 +482,7 @@ impl ReActEngine {
             emitter: emitter.clone(),
         };
         let mut need_confirm: Vec<ConfirmPendingTool> = Vec::new();
-        let mut proceed: Vec<(usize, Action, Option<bool>)> = Vec::new();
+        let mut proceed: Vec<(usize, Action, Option<bool>, ToolConcurrency)> = Vec::new();
         let mut completed_results: Vec<Option<CompletedTool>> =
             (0..non_final.len()).map(|_| None).collect();
         // Accumulates result-derived control signals while keeping the
@@ -442,6 +490,38 @@ impl ReActEngine {
         let mut batch_state = ToolBatchState::default();
 
         for (idx, action) in non_final.iter().enumerate() {
+            if idx >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
+                let step_id = action_step_ids[idx].clone();
+                let error = format!(
+                    "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
+                );
+                self.executor
+                    .finish_step_with_outcome(
+                        session_id,
+                        &action.tool_name,
+                        &action.tool_input,
+                        step_num,
+                        idx as u32,
+                        action.tool_call_id.as_deref(),
+                        &step_id,
+                        &error,
+                        ActionStepOutcome::Failed,
+                    )
+                    .await;
+                completed_results[idx] = Some(CompletedTool {
+                    action: (*action).clone(),
+                    tool_name: action.tool_name.clone(),
+                    step_result: error,
+                    is_error: true,
+                    ask_question: None,
+                    ask_options: Vec::new(),
+                    notify_title: None,
+                    notify_body: None,
+                    step_id,
+                    action_index: idx as u32,
+                });
+                continue;
+            }
             if let Some(failure) = validation_failures
                 .iter()
                 .find(|failure| failure.action_index == idx as u32)
@@ -490,7 +570,11 @@ impl ReActEngine {
                 .await
             {
                 BeforeToolAction::Proceed { confirmed } => {
-                    proceed.push((idx, (*action).clone(), confirmed));
+                    let concurrency = self
+                        .executor
+                        .tool_concurrency(session_id, &action.tool_name, &action.tool_input)
+                        .await;
+                    proceed.push((idx, (*action).clone(), confirmed, concurrency));
                 }
                 BeforeToolAction::Block { error } => {
                     let step_id = action_step_ids[idx].clone();
@@ -534,135 +618,146 @@ impl ReActEngine {
             }
         }
 
-        let mut tool_futures = futures_util::stream::FuturesUnordered::new();
-        for (idx, action, confirmed) in proceed {
-            let session_id = session_id.to_string();
-            let tool_name = action.tool_name.clone();
-            let tool_input = action.tool_input.clone();
-            let max_obs = self.limits().max_observation_chars;
-            let executor = self.executor.clone();
-            // The same step id minted at Action-emit time keys the step
-            // row execute_step creates, so the live card id, the DB badge
-            // id and this step id are identical everywhere.
-            let step_id = action_step_ids[idx].clone();
-            let pre_confirmed = confirmed == Some(true);
-            tool_futures.push(async move {
-                tracing::debug!(
-                    "executing tool '{}' at step {} (input keys: {:?})",
-                    tool_name,
-                    step_num,
-                    tool_input
-                        .as_object()
-                        .map(|o| o.keys().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                );
-                tracing::trace!(
-                    "tool '{}' at step {} full input: {} chars",
-                    tool_name,
-                    step_num,
-                    tool_input
-                        .as_object()
-                        .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
-                        .unwrap_or(0)
-                );
-                let result = if pre_confirmed {
-                    executor
-                        .execute_step_preconfirmed(
-                            &session_id,
-                            &tool_name,
-                            tool_input.clone(),
-                            step_num,
-                            &step_id,
-                            true,
-                        )
-                        .await
-                } else {
-                    executor
-                        .execute_step(
-                            &session_id,
-                            &tool_name,
-                            tool_input.clone(),
-                            step_num,
-                            &step_id,
-                        )
-                        .await
-                };
-                let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
-                    match result {
-                        Ok(r) => {
-                            tracing::debug!(
-                                "tool '{}' at step {} completed: success={}, {} chars",
-                                tool_name,
-                                step_num,
-                                r.success,
-                                serde_json::to_string(&r.output)
-                                    .map(|s| s.len())
-                                    .unwrap_or(0)
-                            );
-                            tracing::trace!(
-                                "tool '{}' at step {} full output: {} chars",
-                                tool_name,
-                                step_num,
-                                serde_json::to_string(&r.output)
-                                    .map(|s| s.len())
-                                    .unwrap_or(0)
-                            );
-                            let text = r.summary_text();
-                            let text = if text.len() > max_obs {
-                                let cutoff = text.floor_char_boundary(max_obs);
-                                format!(
-                                    "{}[... truncated {} chars omitted]",
-                                    &text[..cutoff],
-                                    text.len() - cutoff
-                                )
-                            } else {
-                                text
-                            };
-                            // The ask/notify signals are attached to the
-                            // result by the tool itself (declared via
-                            // `Tool::signals`) BEFORE the loop truncates
-                            // the observation text, so a question or toast
-                            // is never lost to the budget.
-                            let ask_question = r.signals.ask_question.clone();
-                            let ask_options = r.signals.ask_options.clone();
-                            let notify_title = r.signals.notify_title.clone();
-                            let notify_body = r.signals.notify_body.clone();
-                            (
-                                text,
-                                !r.success,
-                                ask_question,
-                                ask_options,
-                                notify_title,
-                                notify_body,
-                            )
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "tool '{}' at step {} failed: {}",
-                                tool_name,
-                                step_num,
-                                e
-                            );
-                            (e.to_string(), true, None, Vec::new(), None, None)
-                        }
-                    };
-                (
-                    idx,
-                    CompletedTool {
-                        action,
+        let gate = Arc::new(ToolBatchGate {
+            all: Arc::new(RwLock::new(())),
+            resources: AsyncMutex::new(HashMap::new()),
+        });
+        let started = Arc::new(
+            (0..non_final.len())
+                .map(|_| AtomicBool::new(false))
+                .collect::<Vec<_>>(),
+        );
+        let mut tool_futures = futures_util::stream::iter(proceed)
+            .map(|(idx, action, confirmed, concurrency)| {
+                let session_id = session_id.to_string();
+                let tool_name = action.tool_name.clone();
+                let tool_input = action.tool_input.clone();
+                let executor = self.executor.clone();
+                let gate = gate.clone();
+                let started = started.clone();
+                // The same step id minted at Action-emit time keys the step
+                // row execute_step creates, so the live card id, the DB badge
+                // id and this step id are identical everywhere.
+                let step_id = action_step_ids[idx].clone();
+                let pre_confirmed = confirmed == Some(true);
+                async move {
+                    let _permit = gate.acquire(&concurrency).await;
+                    // The call is considered in-flight only after its
+                    // resource permit is acquired. A future waiting behind a
+                    // conflicting write can therefore be cancelled as
+                    // `cancelled`, not conservatively misreported unknown.
+                    started[idx].store(true, Ordering::Release);
+                    tracing::debug!(
+                        "executing tool '{}' at step {} (input keys: {:?})",
                         tool_name,
-                        step_result: text,
-                        is_error,
-                        ask_question,
-                        ask_options,
-                        notify_title,
-                        notify_body,
-                        step_id,
-                        action_index: idx as u32,
-                    },
-                )
-            });
-        }
+                        step_num,
+                        tool_input
+                            .as_object()
+                            .map(|o| o.keys().collect::<Vec<_>>())
+                            .unwrap_or_default()
+                    );
+                    tracing::trace!(
+                        "tool '{}' at step {} full input: {} chars",
+                        tool_name,
+                        step_num,
+                        tool_input
+                            .as_object()
+                            .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
+                            .unwrap_or(0)
+                    );
+                    let result = if pre_confirmed {
+                        executor
+                            .execute_step_preconfirmed_with_identity(
+                                &session_id,
+                                &tool_name,
+                                tool_input.clone(),
+                                step_num,
+                                idx as u32,
+                                action.tool_call_id.as_deref(),
+                                &step_id,
+                                true,
+                            )
+                            .await
+                    } else {
+                        executor
+                            .execute_step_with_identity(
+                                &session_id,
+                                &tool_name,
+                                tool_input.clone(),
+                                step_num,
+                                idx as u32,
+                                action.tool_call_id.as_deref(),
+                                &step_id,
+                            )
+                            .await
+                    };
+                    let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
+                        match result {
+                            Ok(r) => {
+                                tracing::debug!(
+                                    "tool '{}' at step {} completed: success={}, {} chars",
+                                    tool_name,
+                                    step_num,
+                                    r.success,
+                                    serde_json::to_string(&r.output)
+                                        .map(|s| s.len())
+                                        .unwrap_or(0)
+                                );
+                                tracing::trace!(
+                                    "tool '{}' at step {} full output: {} chars",
+                                    tool_name,
+                                    step_num,
+                                    serde_json::to_string(&r.output)
+                                        .map(|s| s.len())
+                                        .unwrap_or(0)
+                                );
+                                let text = executor.observation_text(&tool_name, &r).await;
+                                // The ask/notify signals are attached to the
+                                // result by the tool itself (declared via
+                                // `Tool::signals`) BEFORE the loop truncates
+                                // the observation text, so a question or toast
+                                // is never lost to the budget.
+                                let ask_question = r.signals.ask_question.clone();
+                                let ask_options = r.signals.ask_options.clone();
+                                let notify_title = r.signals.notify_title.clone();
+                                let notify_body = r.signals.notify_body.clone();
+                                (
+                                    text,
+                                    !r.success,
+                                    ask_question,
+                                    ask_options,
+                                    notify_title,
+                                    notify_body,
+                                )
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "tool '{}' at step {} failed: {}",
+                                    tool_name,
+                                    step_num,
+                                    e
+                                );
+                                (e.to_string(), true, None, Vec::new(), None, None)
+                            }
+                        };
+                    (
+                        idx,
+                        CompletedTool {
+                            action,
+                            tool_name,
+                            step_result: text,
+                            is_error,
+                            ask_question,
+                            ask_options,
+                            notify_title,
+                            notify_body,
+                            step_id,
+                            action_index: idx as u32,
+                        },
+                    )
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_TOOL_CALLS);
 
         // Drain tool results while remaining responsive to cancellation.
         // Without select!, a cancel arriving mid-batch would only be
@@ -681,16 +776,23 @@ impl ReActEngine {
                         if completed_results[idx].is_some() {
                             continue;
                         }
-                        let interrupted_text = crate::interrupted_result_text(
-                            &action.tool_name,
-                            &action.tool_input,
-                        );
-                        // Complete the pending step row minted at Action
-                        // time so resume rebuilds the Interrupted
-                        // card from session_steps (not live-only).
+                        let was_started = started[idx].load(Ordering::Acquire);
+                        let interrupted_text = if was_started {
+                            crate::canonical::interrupted_result_text(
+                                &action.tool_name,
+                                &action.tool_input,
+                            )
+                        } else {
+                            "tool call cancelled before execution".to_string()
+                        };
+                        let outcome = if was_started {
+                            ActionStepOutcome::Unknown
+                        } else {
+                            ActionStepOutcome::Cancelled
+                        };
                         let step_id = action_step_ids[idx].clone();
                         self.executor
-                            .finish_interrupted_step_with_identity(
+                            .finish_step_with_outcome(
                                 session_id,
                                 &action.tool_name,
                                 &action.tool_input,
@@ -699,6 +801,7 @@ impl ReActEngine {
                                 action.tool_call_id.as_deref(),
                                 &step_id,
                                 &interrupted_text,
+                                outcome,
                             )
                             .await;
                         completed_results[idx] = Some(CompletedTool {
@@ -901,7 +1004,6 @@ impl ReActEngine {
             return Ok(ToolBatchOutcome::Continue);
         };
         let step_num = pending.step_number;
-        let max_obs = self.limits().max_observation_chars;
         let proj_ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num,
@@ -939,17 +1041,7 @@ impl ReActEngine {
                 let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
                     match result {
                         Ok(r) => {
-                            let text = r.summary_text();
-                            let text = if text.len() > max_obs {
-                                let cutoff = text.floor_char_boundary(max_obs);
-                                format!(
-                                    "{}[... truncated {} chars omitted]",
-                                    &text[..cutoff],
-                                    text.len() - cutoff
-                                )
-                            } else {
-                                text
-                            };
+                            let text = self.executor.observation_text(&tool.tool_name, &r).await;
                             (
                                 text,
                                 !r.success,
@@ -1205,5 +1297,38 @@ mod tests {
             panic!("expected text");
         };
         assert_eq!(text, "hello");
+    }
+
+    #[tokio::test]
+    async fn tool_batch_gate_serializes_same_resource_and_allows_reads() {
+        let gate = Arc::new(ToolBatchGate {
+            all: Arc::new(RwLock::new(())),
+            resources: AsyncMutex::new(HashMap::new()),
+        });
+        let first = gate
+            .acquire(&ToolConcurrency::Resource("file-a".into()))
+            .await;
+        let waiting = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            gate.acquire(&ToolConcurrency::Resource("file-a".into())),
+        )
+        .await;
+        assert!(waiting.is_err(), "same resource writes must serialize");
+        drop(first);
+
+        let read = gate.acquire(&ToolConcurrency::ReadOnly).await;
+        let second_read = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            gate.acquire(&ToolConcurrency::ReadOnly),
+        )
+        .await;
+        assert!(second_read.is_ok(), "read-only calls may overlap");
+        drop(read);
+    }
+
+    #[test]
+    fn runtime_tool_call_limit_is_bounded() {
+        assert!(MAX_RUNTIME_TOOL_CALLS_PER_BATCH > 0);
+        assert!(MAX_RUNTIME_TOOL_CALLS_PER_BATCH < usize::MAX);
     }
 }

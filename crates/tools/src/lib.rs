@@ -42,9 +42,9 @@ pub use live_output::LiveOutputHub;
 pub use skill_runner::SkillRunner;
 pub use tool::{
     ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, OperationIdempotency,
-    SafetyGateway, Tool, ToolBox, ToolDef, ToolExecutionOutcome, ToolRegistration, ToolRegistry,
-    ToolResult, ToolSignals, extract_ask_signal, extract_notify_signal, is_safe_local_path,
-    is_silent_action,
+    SafetyGateway, Tool, ToolBox, ToolConcurrency, ToolDef, ToolExecutionOutcome, ToolRegistration,
+    ToolRegistry, ToolResult, ToolSignals, extract_ask_signal, extract_notify_signal,
+    is_safe_local_path, is_silent_action,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.
@@ -975,6 +975,34 @@ impl ToolsManager {
             .effective_risk(tool_name, reported)
             .await
     }
+
+    /// Return the tool's batch scheduling contract. Keeping this lookup in
+    /// `ToolsManager` lets the agent scheduler consume declarations without
+    /// reaching into the registry or duplicating tool identity rules.
+    pub async fn get_concurrency(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> ToolConcurrency {
+        self.get_tool_for_session(session_id, tool_name)
+            .await
+            .map(|tool| tool.concurrency(input))
+            .unwrap_or(ToolConcurrency::Exclusive)
+    }
+
+    /// Apply the configured per-tool/global observation cap to the stable
+    /// ToolResult summary. Agent, step persistence and resume all consume this
+    /// exact helper so an adapter cannot create a longer recovery observation.
+    pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
+        let limits = self.context_limits.read().await;
+        let settings = self.tool_settings.read().await;
+        let cap = settings
+            .get(tool_name)
+            .and_then(|config| config.max_output_chars)
+            .unwrap_or(limits.max_observation_chars);
+        result.observation_text(cap)
+    }
 }
 
 /// Retry only failures that are known to be transient. Unknown/cancelled
@@ -1045,6 +1073,19 @@ mod tests {
         };
         mgr.set_context_limits(limits).await;
         assert_eq!(mgr.context_limits.read().await.max_observation_chars, 5_000);
+    }
+
+    #[tokio::test]
+    async fn observation_text_uses_same_global_cap_for_adapters() {
+        let mgr = ToolsManager::new();
+        let mut limits = ContextLimitsConfig::default();
+        limits.max_observation_chars = 4;
+        mgr.set_context_limits(limits).await;
+        let result = ToolResult::ok(json!("123456"));
+        assert_eq!(
+            mgr.observation_text("adapter", &result).await,
+            "1234[... truncated 2 chars omitted]"
+        );
     }
 
     #[tokio::test]

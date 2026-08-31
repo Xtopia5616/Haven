@@ -364,3 +364,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-31 | §2.5 Agent：以 `RequestContext` 统一 provider 请求视图；inbox envelope 保留独立边界；流式 thought/reasoning 通过有序队列与 `agent:stream_reset` 隔离重试代次（ADR 0058） |
 | 2026-08-31 | §2.5 Agent / 持久化：为 ReAct 工具调用保存 `step_id + action_index + tool_call_id` 稳定身份，确认恢复与无快照投影按身份关联；参数验证改为结构化失败，不再猜测 schema 值（ADR 0059） |
 | 2026-08-31 | §2.5 Tools：工具重试改由操作幂等性策略决定；取消/超时统一为结构化执行结果；Shell/Skill/MCP 的未知终止禁止自动重试；工具超时配置只在显式设置时覆盖 intrinsic timeout（ADR 0059） |
+| 2026-08-31 | §2.5 Agent/Tools/Memory：工具批次改为有界可取消调度，工具声明只读/资源/独占并发策略；统一 observation 截断与 step 生命周期终态（ADR 0059） |

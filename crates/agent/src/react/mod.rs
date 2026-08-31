@@ -403,10 +403,13 @@ impl ReActEngine {
         actions: &[Action],
     ) -> Vec<ToolInputValidationFailure> {
         let mut failures = Vec::new();
-        for (action_index, action) in actions.iter().enumerate() {
+        let mut action_index = 0u32;
+        for action in actions.iter() {
             if action.is_final {
                 continue;
             }
+            let current_action_index = action_index;
+            action_index += 1;
             let Some(tool) = self
                 .executor
                 .get_tools()
@@ -417,7 +420,7 @@ impl ReActEngine {
             };
             if let Err(error) = tool.validate_input(&action.tool_input) {
                 failures.push(ToolInputValidationFailure {
-                    action_index: action_index as u32,
+                    action_index: current_action_index,
                     tool_name: action.tool_name.clone(),
                     details: vec![error.to_string()],
                 });

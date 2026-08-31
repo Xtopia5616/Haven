@@ -28,6 +28,28 @@ pub struct SessionStep {
     pub created_at: String,
 }
 
+/// Durable outcome of an action step. `Unknown` means execution may have
+/// crossed an external side-effect boundary before cancellation/abort, so a
+/// caller must not retry it automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionStepOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+    Unknown,
+}
+
+impl ActionStepOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 impl Database {
     /// Create a thought-only step row under a PRE-MINTED id.
     ///
@@ -287,19 +309,53 @@ impl Database {
         observation: &str,
         success: bool,
     ) -> anyhow::Result<()> {
-        let now = now_rfc3339_millis();
-        let status = if success { "completed" } else { "failed" };
-        let conn = self.conn();
-        conn.execute(
-            "UPDATE session_steps SET status = ?1, observation = ?2, completed_at = ?3 WHERE id = ?4",
-            rusqlite::params![status, observation, now, id],
+        self.finish_action_step(
+            id,
+            observation,
+            if success {
+                ActionStepOutcome::Completed
+            } else {
+                ActionStepOutcome::Failed
+            },
         )?;
         Ok(())
     }
 
-    /// Fail every still-`pending` action step for a session (handler panic /
-    /// abort after `begin_action_step`). Without this, resume rebuilds show
-    /// blank tool badges that never completed.
+    /// Mark a pending action as running. The update is idempotent for an
+    /// already-running row and refuses to revive a terminal row.
+    pub fn start_action_step(&self, id: &str) -> anyhow::Result<bool> {
+        let now = now_rfc3339_millis();
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE session_steps SET status = 'running', started_at = COALESCE(started_at, ?1) \
+             WHERE id = ?2 AND status IN ('pending','running')",
+            rusqlite::params![now, id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Finish an action with an explicit durable outcome. Only pending or
+    /// running rows can transition, making late tool completions harmless
+    /// after rollback/cancellation has already finalized the row.
+    pub fn finish_action_step(
+        &self,
+        id: &str,
+        observation: &str,
+        outcome: ActionStepOutcome,
+    ) -> anyhow::Result<bool> {
+        let now = now_rfc3339_millis();
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE session_steps SET status = ?1, observation = ?2, completed_at = ?3 \
+             WHERE id = ?4 AND status IN ('pending','running')",
+            rusqlite::params![outcome.as_str(), observation, now, id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Finalize every still-pending/running action step as `unknown` after a
+    /// handler panic/abort. The tool may have crossed an external side-effect
+    /// boundary, so recovery must not present it as a deterministic failure.
     pub fn fail_pending_action_steps(
         &self,
         session_id: &str,
@@ -308,8 +364,8 @@ impl Database {
         let now = now_rfc3339_millis();
         let conn = self.conn();
         let n = conn.execute(
-            "UPDATE session_steps SET status = 'failed', observation = ?1, completed_at = ?2 \
-             WHERE session_id = ?3 AND status = 'pending'",
+            "UPDATE session_steps SET status = 'unknown', observation = ?1, completed_at = ?2 \
+             WHERE session_id = ?3 AND status IN ('pending','running')",
             rusqlite::params![observation, now, session_id],
         )?;
         Ok(n)
@@ -371,6 +427,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::ActionStepOutcome;
     use crate::db::Database;
 
     fn test_db() -> Database {
@@ -446,6 +503,45 @@ mod tests {
     }
 
     #[test]
+    fn action_step_lifecycle_records_running_and_unknown() {
+        let db = test_db();
+        seed_session(&db, "ses-1");
+        let step = db
+            .create_action_step("ses-1", 0, "shell", "{}", false, false, None, None)
+            .unwrap();
+        assert!(db.start_action_step(&step.id).unwrap());
+        let running = db.get_session_steps("ses-1").unwrap();
+        assert_eq!(running[0].status, "running");
+        assert!(running[0].started_at.is_some());
+        assert!(
+            db.finish_action_step(
+                &step.id,
+                "cancelled while in flight",
+                ActionStepOutcome::Unknown
+            )
+            .unwrap()
+        );
+        let finished = db.get_session_steps("ses-1").unwrap();
+        assert_eq!(finished[0].status, "unknown");
+        assert!(finished[0].completed_at.is_some());
+        assert!(!db.start_action_step(&step.id).unwrap());
+
+        let cancelled = db
+            .create_action_step("ses-1", 1, "shell", "{}", false, false, None, None)
+            .unwrap();
+        db.finish_action_step(
+            &cancelled.id,
+            "cancelled before execution",
+            ActionStepOutcome::Cancelled,
+        )
+        .unwrap();
+        assert_eq!(
+            db.get_session_steps("ses-1").unwrap()[1].status,
+            "cancelled"
+        );
+    }
+
+    #[test]
     fn ensure_action_step_is_idempotent_and_updates_confirmed() {
         let db = test_db();
         seed_session(&db, "ses-1");
@@ -479,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_pending_action_steps_only_touches_pending() {
+    fn fail_pending_action_steps_finalizes_unfinished_only() {
         let db = test_db();
         seed_session(&db, "ses-1");
         db.ensure_action_step("ses-1", 0, "shell", "{}", false, false, None, "step-p1")
@@ -494,7 +590,7 @@ mod tests {
         assert_eq!(n, 1);
         let steps = db.get_session_steps("ses-1").unwrap();
         let pending = steps.iter().find(|s| s.id == "step-p1").unwrap();
-        assert_eq!(pending.status, "failed");
+        assert_eq!(pending.status, "unknown");
         assert_eq!(
             pending.observation.as_deref(),
             Some("Session ended before tool finished")

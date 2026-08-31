@@ -21,7 +21,7 @@ mod session;
 mod title;
 mod types;
 
-pub(crate) use canonical::{interrupted_result_text, is_dangling_boundary, sanitize_canonical};
+pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 
 pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};

@@ -5,6 +5,17 @@
 //! use [`SessionExecutor::request_scheduled_confirm`].
 
 use super::*;
+use haven_memory::repositories::session_steps::ActionStepOutcome;
+
+fn action_step_outcome(result: &ToolResult) -> ActionStepOutcome {
+    match result.outcome {
+        haven_tools::ToolExecutionOutcome::Succeeded => ActionStepOutcome::Completed,
+        haven_tools::ToolExecutionOutcome::Cancelled => ActionStepOutcome::Cancelled,
+        haven_tools::ToolExecutionOutcome::TimedOutUnknown => ActionStepOutcome::Unknown,
+        haven_tools::ToolExecutionOutcome::Failed
+        | haven_tools::ToolExecutionOutcome::TimedOutAndTerminated => ActionStepOutcome::Failed,
+    }
+}
 
 impl SessionExecutor {
     /// Persist a pending `session_steps` row under the pre-minted `step-*` id
@@ -82,7 +93,7 @@ impl SessionExecutor {
         step_id: &str,
         observation: &str,
     ) {
-        self.finish_interrupted_step_with_identity(
+        self.finish_step_with_outcome(
             session_id,
             tool_name,
             input,
@@ -91,12 +102,16 @@ impl SessionExecutor {
             None,
             step_id,
             observation,
+            ActionStepOutcome::Failed,
         )
         .await;
     }
 
+    /// Finalize a step that did not produce a normal ToolResult. Queued calls
+    /// are `Cancelled`; calls that may have crossed an external side-effect
+    /// boundary are `Unknown` and must not be retried automatically.
     #[allow(clippy::too_many_arguments)]
-    pub async fn finish_interrupted_step_with_identity(
+    pub async fn finish_step_with_outcome(
         &self,
         session_id: &str,
         tool_name: &str,
@@ -106,6 +121,7 @@ impl SessionExecutor {
         tool_call_id: Option<&str>,
         step_id: &str,
         observation: &str,
+        outcome: ActionStepOutcome,
     ) {
         let risk_level = self
             .tools
@@ -134,12 +150,118 @@ impl SessionExecutor {
                     None,
                     &step_id_owned,
                 )?;
-                db.complete_action_step(&step_id_owned, &observation, false)
+                db.finish_action_step(&step_id_owned, &observation, outcome)
             })
             .await
         {
-            tracing::warn!("finish_interrupted_step failed for step {}: {}", step_id, e);
+            tracing::warn!(
+                "finish_step_with_outcome failed for step {}: {}",
+                step_id,
+                e
+            );
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_interrupted_step_with_identity(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        observation: &str,
+    ) {
+        self.finish_step_with_outcome(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            action_index,
+            tool_call_id,
+            step_id,
+            observation,
+            ActionStepOutcome::Failed,
+        )
+        .await;
+    }
+
+    /// Move the Action-emit pending row to running immediately before the
+    /// tool is invoked. The ensure fallback keeps direct test/caller paths
+    /// safe when no Action event created the row first.
+    pub async fn start_action_step(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        step_id: &str,
+    ) {
+        self.start_action_step_with_identity(
+            session_id, tool_name, input, step_num, 0, None, step_id,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_action_step_with_identity(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+    ) {
+        let risk_level = self
+            .tools
+            .get_risk_level(Some(session_id), tool_name, input)
+            .await;
+        let silent = is_silent_action(tool_name, input);
+        let session_id = session_id.to_string();
+        let tool_name = tool_name.to_string();
+        let tool_input = input.to_string();
+        let tool_call_id = tool_call_id.map(str::to_string);
+        let step_id = step_id.to_string();
+        if let Err(e) = self
+            .db
+            .run_blocking(move |db| {
+                db.ensure_action_step_with_identity(
+                    &session_id,
+                    step_num as i32,
+                    action_index as i32,
+                    &tool_name,
+                    &tool_input,
+                    tool_call_id.as_deref(),
+                    risk_level != RiskLevel::Safe,
+                    silent,
+                    None,
+                    &step_id,
+                )?;
+                db.start_action_step(&step_id)
+            })
+            .await
+        {
+            tracing::warn!("start_action_step failed for step: {}", e);
+        }
+    }
+
+    pub async fn tool_concurrency(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+    ) -> haven_tools::ToolConcurrency {
+        self.tools
+            .get_concurrency(Some(session_id), tool_name, input)
+            .await
+    }
+
+    pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
+        self.tools.observation_text(tool_name, result).await
     }
 
     /// Execute a tool step. `step_id` is the pre-minted `step-*` id the frontend's
@@ -295,12 +417,22 @@ impl SessionExecutor {
         }
 
         let cancel = self.cancellation_token(session_id).await;
+        self.start_action_step_with_identity(
+            session_id,
+            tool_name,
+            &input,
+            step_num,
+            action_index,
+            tool_call_id.as_deref(),
+            step_id,
+        )
+        .await;
         let gated = match self
             .execute_gated(
                 Some(session_id),
                 tool_name,
                 input.clone(),
-                cancel,
+                cancel.clone(),
                 pre_confirmed,
                 Some(step_id),
             )
@@ -310,7 +442,7 @@ impl SessionExecutor {
             Err(e) => {
                 // Pending row was created at Action emit; record the failure
                 // so resume/resync does not rebuild an empty tool badge.
-                self.finish_interrupted_step_with_identity(
+                self.finish_step_with_outcome(
                     session_id,
                     tool_name,
                     &input,
@@ -319,6 +451,11 @@ impl SessionExecutor {
                     tool_call_id.as_deref(),
                     step_id,
                     &e.to_string(),
+                    if cancel.is_cancelled() {
+                        ActionStepOutcome::Unknown
+                    } else {
+                        ActionStepOutcome::Failed
+                    },
                 )
                 .await;
                 return Err(e);
@@ -395,8 +532,8 @@ impl SessionExecutor {
                     .await;
             }
         }
-        let obs = result.summary_text();
-        let success = result.success;
+        let obs = self.tools.observation_text(tool_name, &result).await;
+        let step_outcome = action_step_outcome(&result);
         let persist_step_id = step_id.to_string();
         let tool_name_owned = tool_name.to_string();
         // The in-memory StepInfo reuses the persisted step row's id so the
@@ -409,11 +546,7 @@ impl SessionExecutor {
                 tool_name: tool_name_owned.clone(),
                 input: input.clone(),
                 output: Some(result.output.clone()),
-                status: if success {
-                    "completed".into()
-                } else {
-                    "failed".into()
-                },
+                status: step_outcome.as_str().into(),
                 risk_level,
                 confirmed,
             });
@@ -438,7 +571,7 @@ impl SessionExecutor {
                     confirmed,
                     &persist_step_id,
                 )?;
-                db.complete_action_step(&persist_step_id, &obs, success)
+                db.finish_action_step(&persist_step_id, &obs, step_outcome)
             })
             .await?;
         Ok(result)

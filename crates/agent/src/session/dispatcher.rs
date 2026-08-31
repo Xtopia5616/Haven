@@ -174,7 +174,7 @@ impl SessionExecutor {
                         // the session spawned so their children cannot leak.
                         exec_inner.cancel_session_actions(&session_id).await;
                         // Panic/abort can leave Action-emit `pending` step rows
-                        // with no observation — fail them out so resume does
+                        // with no observation — finalize them as unknown so resume does
                         // not rebuild blank tool badges.
                         exec_inner
                             .fail_pending_action_steps(

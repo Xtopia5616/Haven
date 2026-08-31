@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_search::FileSearchEngine;
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// Classify a file by its extension into a coarse kind used to route binary
 /// reads. Returns `(kind, mime)` where kind is one of: image, pdf, archive,
@@ -878,6 +878,26 @@ impl Tool for FilesTool {
             Some("edit") | Some("copy") | Some("write") | Some("move") => RiskLevel::Medium,
             Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        match input["operation"].as_str() {
+            Some("read") | Some("list") | Some("summary") | Some("search") => {
+                ToolConcurrency::ReadOnly
+            }
+            _ => {
+                let path = input["path"].as_str().unwrap_or("files");
+                if matches!(input["operation"].as_str(), Some("copy") | Some("move")) {
+                    // A single key protects both source and destination
+                    // writes. Rename-like operations are deliberately
+                    // serialized across the files tool because one key
+                    // cannot represent overlapping path sets safely.
+                    ToolConcurrency::Resource("files:rename".into())
+                } else {
+                    ToolConcurrency::Resource(format!("files:{path}"))
+                }
+            }
         }
     }
 

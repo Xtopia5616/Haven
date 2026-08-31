@@ -3,7 +3,7 @@ use haven_common::types::RiskLevel;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
 pub struct ProcessTool {
     /// Output cap (chars) for process listings.
@@ -181,6 +181,13 @@ impl Tool for ProcessTool {
             Some("kill") => RiskLevel::High,
             Some("launch") => RiskLevel::Medium,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        match input["operation"].as_str() {
+            Some("list") => ToolConcurrency::ReadOnly,
+            _ => ToolConcurrency::Exclusive,
         }
     }
 

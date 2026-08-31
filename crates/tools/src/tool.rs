@@ -285,6 +285,19 @@ pub struct ToolSignals {
     pub notify_body: Option<String>,
 }
 
+/// Scheduling contract for a tool call inside one assistant batch.
+///
+/// `ReadOnly` calls may overlap. `Resource` calls serialize with other calls
+/// that return the same resource key, while `Exclusive` calls serialize with
+/// the whole batch. The conservative default is exclusive unless a tool
+/// explicitly opts into a less restrictive mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolConcurrency {
+    ReadOnly,
+    Resource(String),
+    Exclusive,
+}
+
 /// Per-session side effects a tool declares through its result. The session
 /// executor applies them (registering skill/MCP adapters, attaching
 /// background actions) without hard-coding tool names, so a new tool that needs
@@ -394,6 +407,27 @@ impl ToolResult {
             }
         }
     }
+
+    /// Build the bounded observation shared by canonical, history and step
+    /// projections. The signal fields are intentionally not derived from this
+    /// string; callers must read `signals` before applying the cap.
+    pub fn observation_text(&self, max_chars: usize) -> String {
+        let text = self.summary_text();
+        let char_count = text.chars().count();
+        if char_count <= max_chars {
+            return text;
+        }
+        let cutoff = text
+            .char_indices()
+            .nth(max_chars)
+            .map(|(index, _)| index)
+            .unwrap_or(text.len());
+        format!(
+            "{}[... truncated {} chars omitted]",
+            &text[..cutoff],
+            char_count - text[..cutoff].chars().count()
+        )
+    }
 }
 
 fn default_attempts() -> u32 {
@@ -483,6 +517,14 @@ pub trait Tool: Send + Sync {
     }
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult>;
     fn input_schema(&self) -> Value;
+
+    /// Declare how calls from one assistant batch may overlap. Tools are
+    /// exclusive by default; read-only/resource contracts must be explicit so
+    /// a non-idempotent implementation cannot accidentally run in parallel.
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        let _ = input;
+        ToolConcurrency::Exclusive
+    }
 
     /// Canonical structured definition of this tool (name / description /
     /// schema / default risk). `ToolDef` is the unified abstraction the
@@ -1324,6 +1366,13 @@ mod tests {
     }
 
     #[test]
+    fn observation_text_has_one_unicode_safe_budgeted_shape() {
+        let result = ToolResult::ok(json!("你好世界"));
+        let observation = result.observation_text(3);
+        assert_eq!(observation, "你好世[... truncated 1 chars omitted]");
+    }
+
+    #[test]
     fn test_extract_ask_signal() {
         let (q, opts) = extract_ask_signal(&json!({
             "ask": true,
@@ -1453,6 +1502,14 @@ mod tests {
         let registry = ToolRegistry::new();
         let tools = registry.list().await;
         assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn undeclared_tools_are_serialized_by_default() {
+        assert_eq!(
+            MockTool::new("undeclared").concurrency(&json!({})),
+            ToolConcurrency::Exclusive
+        );
     }
 
     #[tokio::test]
