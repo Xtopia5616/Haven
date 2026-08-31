@@ -10,9 +10,7 @@
 use super::tool_batch::ToolBatchOutcome;
 use super::turn::{TurnInput, TurnOutcome};
 use super::*;
-use crate::types::{BranchPoint, RunBudget, TranscriptRecord};
-use haven_common::types::CanonicalMessage;
-use std::collections::HashMap;
+use crate::types::RunBudget;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -53,10 +51,8 @@ struct RunBudgetConfig {
 /// more run-scoped state.
 pub(crate) struct RunInput<'a> {
     pub(crate) session_id: &'a str,
-    pub(crate) canonical: &'a mut Vec<CanonicalMessage>,
-    pub(crate) events: &'a mut Vec<TranscriptRecord>,
+    pub(crate) state: &'a mut ReActState,
     pub(crate) start_step: u32,
-    pub(crate) branch_points: &'a mut HashMap<u32, BranchPoint>,
     pub(crate) emitter: Arc<dyn AgentEventEmitter>,
     pub(crate) run_id: u64,
 }
@@ -89,18 +85,14 @@ impl RunBudgetConfig {
 }
 
 impl ReActEngine {
-    /// Run the session one turn at a time. `events` is the authoritative
-    /// transcript and `canonical` is its live projection; callers retain both
-    /// so the resume/rollback boundary can persist or project them after the
-    /// run returns.
-    #[allow(clippy::too_many_arguments)]
+    /// Run the session one turn at a time. The shared `ReActState` carries the
+    /// authoritative transcript, its live projection, and branch indexes so
+    /// every boundary checkpoints one coherent state.
     pub(crate) async fn run_react_loop(&self, input: RunInput<'_>) -> anyhow::Result<LoopExit> {
         let RunInput {
             session_id,
-            canonical,
-            events,
+            state,
             start_step,
-            branch_points,
             emitter,
             run_id,
         } = input;
@@ -140,14 +132,7 @@ impl ReActEngine {
             .is_some_and(|pending| pending.all_decided())
         {
             match self
-                .finish_confirm_batch(
-                    session_id,
-                    canonical,
-                    events,
-                    branch_points,
-                    &emitter,
-                    run_id,
-                )
+                .finish_confirm_batch(session_id, state, &emitter, run_id)
                 .await?
             {
                 ToolBatchOutcome::Continue => {}
@@ -161,20 +146,11 @@ impl ReActEngine {
             last_step = step_num;
             let cancel = self.executor.cancellation_token(session_id).await;
             if cancel.is_cancelled() {
-                return Ok(self
-                    .exit_cancelled(session_id, events, step_num, branch_points)
-                    .await);
+                return Ok(self.exit_cancelled(session_id, state, step_num).await);
             }
 
             match self
-                .run_state_boundary(
-                    session_id,
-                    events,
-                    step_num,
-                    branch_points,
-                    &emitter,
-                    run_id,
-                )
+                .run_state_boundary(session_id, state, step_num, &emitter, run_id)
                 .await
             {
                 RunBoundary::Run => {}
@@ -189,9 +165,7 @@ impl ReActEngine {
                         run_id,
                         emitter: emitter.clone(),
                     },
-                    canonical,
-                    events,
-                    branch_points,
+                    state,
                     cancel,
                     max_steps: budget.max_steps,
                     cut_off_retries: &mut cut_off_retries,
@@ -204,7 +178,7 @@ impl ReActEngine {
             }
         }
 
-        self.pause_turn_budget(session_id, events, last_step + 1, branch_points, &emitter)
+        self.pause_turn_budget(session_id, state, last_step + 1, &emitter)
             .await?;
         Ok(LoopExit::Paused {
             reason: PauseReason::Budget,
@@ -214,22 +188,15 @@ impl ReActEngine {
     async fn run_state_boundary(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         step_num: u32,
-        branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> RunBoundary {
         match self.executor.get_session_state(session_id).await {
             None | Some(SessionStatus::Completed) => RunBoundary::Exit(
-                self.exit_with_snapshot(
-                    session_id,
-                    events,
-                    step_num,
-                    branch_points,
-                    LoopExit::Completed,
-                )
-                .await,
+                self.exit_with_snapshot(session_id, state, step_num, LoopExit::Completed)
+                    .await,
             ),
             Some(SessionStatus::Error) => {
                 self.emit_error(emitter, session_id, "session interrupted")
@@ -237,24 +204,16 @@ impl ReActEngine {
                 RunBoundary::Exit(
                     self.exit_with_snapshot(
                         session_id,
-                        events,
+                        state,
                         step_num,
-                        branch_points,
                         LoopExit::Error("session interrupted".into()),
                     )
                     .await,
                 )
             }
             Some(status) if status.is_paused() => RunBoundary::Exit(
-                self.exit_external_pause(
-                    session_id,
-                    events,
-                    step_num,
-                    branch_points,
-                    emitter,
-                    run_id,
-                )
-                .await,
+                self.exit_external_pause(session_id, state, step_num, emitter, run_id)
+                    .await,
             ),
             _ => RunBoundary::Run,
         }

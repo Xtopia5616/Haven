@@ -24,8 +24,7 @@ impl ReActEngine {
     pub(super) async fn inject_pending_context(
         &self,
         ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
+        state: &mut ReActState,
     ) -> bool {
         let PendingContextBatch { items, clears_ask } = self
             .context_source
@@ -38,8 +37,7 @@ impl ReActEngine {
         }
         let injected = !items.is_empty();
         for item in items {
-            self.apply_pending_context(ctx, events, canonical, item)
-                .await;
+            self.apply_pending_context(ctx, state, item).await;
         }
 
         injected
@@ -48,8 +46,7 @@ impl ReActEngine {
     async fn apply_pending_context(
         &self,
         ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
+        state: &mut ReActState,
         context: PendingContext,
     ) {
         self.apply_transcript(
@@ -60,8 +57,7 @@ impl ReActEngine {
                 attachments: context.attachments,
                 message_id: context.message_id,
             },
-            events,
-            canonical,
+            state,
         )
         .await;
     }
@@ -83,12 +79,10 @@ impl ReActEngine {
         &self,
         session_id: &str,
         ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
+        state: &mut ReActState,
     ) {
         if let Some(context) = self.context_source.poll_inbox(session_id).await {
-            self.apply_pending_context(ctx, events, canonical, context)
-                .await;
+            self.apply_pending_context(ctx, state, context).await;
         }
     }
 }

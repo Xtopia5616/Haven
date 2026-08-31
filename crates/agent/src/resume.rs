@@ -26,7 +26,7 @@
 //! `message_id` and is idempotent (duplicate id is skipped).
 
 use crate::AgentLayer;
-use crate::react::RunInput;
+use crate::react::{ReActState, RunInput};
 use crate::resume_support::{
     load_mcp_tool_names, merge_recovery_candidates, project_tool_chain_from_steps,
 };
@@ -418,10 +418,10 @@ impl AgentLayer {
         run_id: u64,
         description: &str,
     ) -> anyhow::Result<Vec<ReActRound>> {
-        let mut events = snapshot.events;
+        let events = snapshot.events;
         let (mut canonical, _) = project_transcript(&events);
         let start_step = snapshot.step_number;
-        let mut branch_points = snapshot.branch_points;
+        let branch_points = snapshot.branch_points;
 
         // X2 / G7: full system rebuild on resume (short index + MEMORY +
         // session). Pause-path infer writes the DB; this rebuild makes facts
@@ -511,14 +511,13 @@ impl AgentLayer {
             Some(e) => e,
             None => return Ok(project_transcript(&events).1),
         };
+        let mut state = ReActState::new(events, canonical, branch_points);
         let exit = self
             .react_engine
             .run_react_loop(RunInput {
                 session_id,
-                canonical: &mut canonical,
-                events: &mut events,
+                state: &mut state,
                 start_step,
-                branch_points: &mut branch_points,
                 emitter: emitter_arc,
                 run_id,
             })
@@ -530,7 +529,7 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => Ok(project_transcript(&events).1),
+            | crate::react::LoopExit::Completed => Ok(project_transcript(&state.events).1),
         }
     }
 
@@ -621,21 +620,20 @@ impl AgentLayer {
 
         // Seed events so pause/resume snapshots carry system+user (+ any
         // projected tool chain) as a CompactSummary; later applies append.
-        let mut events: Vec<TranscriptRecord> = seed_events_from_canonical(canonical.clone());
-        let mut branch_points: HashMap<u32, BranchPoint> = HashMap::new();
+        let events: Vec<TranscriptRecord> = seed_events_from_canonical(canonical.clone());
+        let branch_points: HashMap<u32, BranchPoint> = HashMap::new();
         let emitter_arc = match self.events.emitter_arc() {
             Some(e) => e,
             None => return Ok(project_transcript(&events).1),
         };
+        let mut state = ReActState::new(events, canonical, branch_points);
         let run_id = self.react_engine.next_run_id();
         let exit = self
             .react_engine
             .run_react_loop(RunInput {
                 session_id,
-                canonical: &mut canonical,
-                events: &mut events,
+                state: &mut state,
                 start_step: 1,
-                branch_points: &mut branch_points,
                 emitter: emitter_arc,
                 run_id,
             })
@@ -644,7 +642,7 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => Ok(project_transcript(&events).1),
+            | crate::react::LoopExit::Completed => Ok(project_transcript(&state.events).1),
         }
     }
 }

@@ -7,14 +7,13 @@
 //! implementation without importing production side effects.
 
 use async_trait::async_trait;
-use haven_common::types::CanonicalMessage;
 use haven_tools::ConfirmationResult;
 use serde_json::Value;
 use tracing::Instrument;
 
 use super::hooks::{AfterLlmInput, BeforeToolAction, InferCallback, LoopHooks, MemoryPatchHandle};
 use super::retries::{AfterLlmAction, ResponsePolicy};
-use super::{PauseReason, ReActEngine, StepCtx, TranscriptRecord, canonical_has_image};
+use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_has_image};
 
 /// Production hooks: inbox poll, context compaction, interval + pause infer,
 /// throttled MEMORY fence refresh (M2), response policy, and confirm pre-check.
@@ -48,20 +47,12 @@ impl DefaultHooks {
 
 #[async_trait]
 impl LoopHooks for DefaultHooks {
-    async fn before_step(
-        &self,
-        engine: &ReActEngine,
-        ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
-    ) {
-        engine
-            .maybe_poll_inbox(&ctx.session_id, ctx, events, canonical)
-            .await;
-        let has_image = canonical_has_image(canonical);
+    async fn before_step(&self, engine: &ReActEngine, ctx: &StepCtx, state: &mut ReActState) {
+        engine.maybe_poll_inbox(&ctx.session_id, ctx, state).await;
+        let has_image = canonical_has_image(&state.canonical);
         // Phase 7 / I2: compact is a nested phase under before_step.
         let _ = engine
-            .maybe_compact(ctx, events, canonical, has_image)
+            .maybe_compact(ctx, state, has_image)
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,
@@ -80,7 +71,7 @@ impl LoopHooks for DefaultHooks {
             };
             patch
                 .prompt_builder
-                .patch_canonical_memory_fence(&ctx.session_id, &description, canonical)
+                .patch_canonical_memory_fence(&ctx.session_id, &description, &mut state.canonical)
                 .await;
         }
         let interval = engine.limits().fact_infer_interval_steps;

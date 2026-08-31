@@ -61,3 +61,4 @@
 - [0054：Agent 事实推理边界](0054-agent-fact-inference-boundary.md)
 - [0055：UI 聊天模型同步边界](0055-ui-chat-model-sync-boundary.md)
 - [0056：Agent ReAct Run/Turn 边界](0056-agent-react-run-turn-boundary.md)
+- [0057：Agent ReAct Run 状态机与单一运行态](0057-agent-react-state-machine.md)

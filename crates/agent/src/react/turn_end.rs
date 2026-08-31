@@ -6,13 +6,11 @@
 //! explicit prevents a new queue or inbox path from silently changing the
 //! turn-end persistence contract.
 
-use std::collections::HashMap;
-
 use serde_json::Value;
 
+use super::snapshot_io::PauseTurnInput;
 use super::transcript::TranscriptEvent;
 use super::*;
-use crate::types::{BranchPoint, TranscriptRecord};
 
 /// Inputs for the shared turn-end path used by both text-only responses and
 /// explicit `final_answer` responses.
@@ -21,9 +19,7 @@ use crate::types::{BranchPoint, TranscriptRecord};
 /// not grow another positional-argument list when turn-end behavior evolves.
 pub(super) struct TurnEndInput<'a> {
     pub(super) ctx: &'a StepCtx,
-    pub(super) events: &'a mut Vec<TranscriptRecord>,
-    pub(super) canonical: &'a mut Vec<CanonicalMessage>,
-    pub(super) branch_points: &'a mut HashMap<u32, BranchPoint>,
+    pub(super) state: &'a mut ReActState,
     pub(super) final_text: &'a str,
     pub(super) reasoning: Option<String>,
     pub(super) thinking_blocks: Vec<Value>,
@@ -44,16 +40,14 @@ impl ReActEngine {
     ) -> anyhow::Result<TurnEndOutcome> {
         let TurnEndInput {
             ctx,
-            events,
-            canonical,
-            branch_points,
+            state,
             final_text,
             reasoning,
             thinking_blocks,
             already_pushed,
         } = input;
 
-        let thought_projected = events.iter().any(|e| {
+        let thought_projected = state.events.iter().any(|e| {
             matches!(
                 e,
                 TranscriptRecord::Thought { step_number, .. }
@@ -86,8 +80,7 @@ impl ReActEngine {
                     action_cards: Vec::new(),
                     persist_text_id,
                 },
-                events,
-                canonical,
+                state,
             )
             .await;
         } else if let Some(ref mid) = persist_text_id {
@@ -106,24 +99,21 @@ impl ReActEngine {
 
         // Inject AFTER the final so canonical/events order is final → injects
         // (replaces the old insert-before-injects dance).
-        if self.inject_pending_context(ctx, events, canonical).await {
-            self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, false)
+        if self.inject_pending_context(ctx, state).await {
+            self.save_branch_point(&ctx.session_id, state, ctx.step_num, false)
                 .await;
             return Ok(TurnEndOutcome::Continue);
         }
 
-        self.pause_turn(
-            &ctx.session_id,
-            events,
-            ctx.step_num + 1,
-            branch_points,
-            &ctx.emitter,
-            SessionStatus::Paused,
+        self.pause_turn(PauseTurnInput {
+            session_id: &ctx.session_id,
+            state,
+            snapshot_step: ctx.step_num + 1,
+            emitter: &ctx.emitter,
+            status: SessionStatus::Paused,
             final_text,
-            Some(ctx.step_num),
-            None,
-            true,
-        )
+            branch_point_step: Some(ctx.step_num),
+        })
         .await?;
         Ok(TurnEndOutcome::Done(LoopExit::Paused {
             reason: PauseReason::TurnEnd,

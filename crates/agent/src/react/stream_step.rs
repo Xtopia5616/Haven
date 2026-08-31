@@ -45,13 +45,13 @@ impl<'a> StreamSession<'a> {
     }
 
     /// Primary step call including compaction retry / fatal paths.
-    /// Streams directly from `canonical` — no per-step deep clone on the
-    /// happy path; cut-off retries clone only when they append a nudge.
+    /// Streams from the turn-owned provider request buffer. The durable
+    /// canonical projection remains in `ReActState`; only compaction retries
+    /// replace that projection and rebuild the provider request.
     pub(super) async fn run(
         &self,
-        canonical: &mut Vec<CanonicalMessage>,
-        events: &mut Vec<TranscriptRecord>,
-        branch_points: &mut HashMap<u32, BranchPoint>,
+        state: &mut ReActState,
+        request_messages: &[CanonicalMessage],
     ) -> StepCallOutcome {
         match self
             .engine
@@ -61,9 +61,8 @@ impl<'a> StreamSession<'a> {
                 self.role,
                 self.tools,
                 self.cancel.clone(),
-                canonical,
-                events,
-                branch_points,
+                state,
+                request_messages,
                 self.partial_thought,
                 self.partial_reasoning,
             )
@@ -454,9 +453,8 @@ impl ReActEngine {
         role: EndpointRole,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
-        canonical: &mut Vec<CanonicalMessage>,
-        events: &mut Vec<TranscriptRecord>,
-        branch_points: &mut HashMap<u32, BranchPoint>,
+        state: &mut ReActState,
+        request_messages: &[CanonicalMessage],
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> StepCallOutcome {
@@ -465,7 +463,7 @@ impl ReActEngine {
                 ctx,
                 router.clone(),
                 role,
-                canonical,
+                request_messages,
                 tools,
                 cancel.clone(),
                 partial_thought,
@@ -500,7 +498,7 @@ impl ReActEngine {
                 );
                 if let Some(result) = {
                     let compactor = self.context_compactor(role).await;
-                    compactor.compact(canonical, &self.router()).await
+                    compactor.compact(&state.canonical, &self.router()).await
                 } {
                     tracing::debug!(
                         "compacted {} -> {} tokens",
@@ -518,17 +516,16 @@ impl ReActEngine {
                             tokens_after: result.tokens_after,
                             episode_id: result.episode_id,
                         },
-                        events,
-                        canonical,
+                        state,
                     )
                     .await;
                     // CompactSummary replaces the event log; drop BPs that
                     // pointed into the discarded prefix (same contract as loop).
-                    branch_points.clear();
+                    state.clear_branch_points();
                     // Retry streams the *compacted* canonical in place; the
                     // role must be re-resolved: summarizing away the last
                     // image-bearing turn changes routing for the retry.
-                    let retry_role = if canonical_has_image(canonical) {
+                    let retry_role = if canonical_has_image(&state.canonical) {
                         router.vision_role().await
                     } else {
                         EndpointRole::DefaultModel
@@ -538,12 +535,14 @@ impl ReActEngine {
                     // not be mixed with the retry's output.
                     partial_thought.lock().unwrap().clear();
                     partial_reasoning.lock().unwrap().clear();
+                    let mut retry_messages = state.canonical.clone();
+                    let _ = crate::sanitize_canonical(&mut retry_messages);
                     match self
                         .stream_llm_step(
                             ctx,
                             router.clone(),
                             retry_role,
-                            canonical,
+                            &retry_messages,
                             tools,
                             cancel,
                             partial_thought,
@@ -574,8 +573,7 @@ impl ReActEngine {
                             );
                             self.persist_partial_on_error(
                                 ctx,
-                                events,
-                                branch_points,
+                                state,
                                 partial_thought,
                                 partial_reasoning,
                             )
@@ -594,14 +592,8 @@ impl ReActEngine {
                         ctx.session_id,
                         err_msg
                     );
-                    self.persist_partial_on_error(
-                        ctx,
-                        events,
-                        branch_points,
-                        partial_thought,
-                        partial_reasoning,
-                    )
-                    .await;
+                    self.persist_partial_on_error(ctx, state, partial_thought, partial_reasoning)
+                        .await;
                     EventDispatcher::emit_session_error_from(
                         &ctx.emitter,
                         &ctx.session_id,
@@ -621,14 +613,8 @@ impl ReActEngine {
                     ctx.session_id,
                     err_msg
                 );
-                self.persist_partial_on_error(
-                    ctx,
-                    events,
-                    branch_points,
-                    partial_thought,
-                    partial_reasoning,
-                )
-                .await;
+                self.persist_partial_on_error(ctx, state, partial_thought, partial_reasoning)
+                    .await;
                 EventDispatcher::emit_session_error_from(&ctx.emitter, &ctx.session_id, &err_msg)
                     .await;
                 self.mark_session_error(&ctx.session_id).await;
@@ -665,9 +651,7 @@ impl ReActEngine {
         response: &LlmResponse,
         thought: &Option<String>,
         actions: &[Action],
-        canonical: &mut Vec<CanonicalMessage>,
-        events: &mut Vec<TranscriptRecord>,
-        branch_points: &mut HashMap<u32, BranchPoint>,
+        state: &mut ReActState,
     ) -> SearchContextOutcome {
         if response.web_search_calls.is_empty() {
             return SearchContextOutcome::Proceed {
@@ -705,15 +689,14 @@ impl ReActEngine {
                 action_cards: Vec::new(),
                 persist_text_id: None,
             },
-            events,
-            canonical,
+            state,
         )
         .await;
 
         if actions.is_empty() {
             // Search round: no answer yet — keep the turn open and re-request
             // with the search context in the next input.
-            self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, false)
+            self.save_branch_point(&ctx.session_id, state, ctx.step_num, false)
                 .await;
             tracing::debug!(
                 "ReAct step {} session {} server-side search round ({} item(s)); continuing",

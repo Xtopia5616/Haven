@@ -1,6 +1,8 @@
 //! Snapshot / branch / pause persistence helpers for the ReAct loop.
 //!
-//! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
+//! Owns checkpoint serialization and lifecycle exits for the shared
+//! [`ReActState`]; the loop modules delegate here instead of carrying their
+//! own snapshot argument lists.
 
 use tracing::Instrument;
 
@@ -81,6 +83,18 @@ struct SnapshotView<'a> {
     /// Per-run step budget for observability (R4); see `ReActSnapshot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_budget: Option<&'a crate::types::RunBudget>,
+}
+
+/// Inputs for a pause checkpoint. Keeping this boundary named prevents the
+/// lifecycle writer from growing another positional-argument list.
+pub(super) struct PauseTurnInput<'a> {
+    pub(super) session_id: &'a str,
+    pub(super) state: &'a mut ReActState,
+    pub(super) snapshot_step: u32,
+    pub(super) emitter: &'a Arc<dyn AgentEventEmitter>,
+    pub(super) status: SessionStatus,
+    pub(super) final_text: &'a str,
+    pub(super) branch_point_step: Option<u32>,
 }
 
 /// Update a session's status and emit the `SessionUpdated` event, in that order.
@@ -230,27 +244,18 @@ impl ReActEngine {
     /// frontend + inference.
     ///
     /// X12: chat content must already be projected via `apply_transcript`
-    /// before this call. `skip_message_persist` is retained as a safety latch
-    /// (always `true` for ask / turn-end after projection; legacy callers that
-    /// still pass `false` + `persist_message_id` get a one-shot project).
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn pause_turn(
-        &self,
-        session_id: &str,
-        events: &[TranscriptRecord],
-        snapshot_step: u32,
-        branch_points: &mut HashMap<u32, BranchPoint>,
-        emitter: &Arc<dyn AgentEventEmitter>,
-        status: SessionStatus,
-        final_text: &str,
-        branch_point_step: Option<u32>,
-        // Pre-minted id when a legacy caller still needs pause_turn to project
-        // (`None` mints a fresh id). Ignored when `skip_message_persist`.
-        persist_message_id: Option<&str>,
-        // True when content was already projected (ask / turn-end / confirm
-        // notice handled by caller). Prefer `true` after X12.
-        skip_message_persist: bool,
-    ) -> anyhow::Result<()> {
+    /// before this call. The pause path only checkpoints state and changes the
+    /// lifecycle; it never writes a second assistant message.
+    pub(super) async fn pause_turn(&self, input: PauseTurnInput<'_>) -> anyhow::Result<()> {
+        let PauseTurnInput {
+            session_id,
+            state,
+            snapshot_step,
+            emitter,
+            status,
+            final_text,
+            branch_point_step,
+        } = input;
         let status_label = status.as_str();
         async {
             tracing::info!(
@@ -260,28 +265,10 @@ impl ReActEngine {
                 status_label,
                 final_text.chars().count()
             );
-            if std::env::var("HAVEN_DEBUG_PAUSE").is_ok() {
-                eprintln!(
-                    "DEBUG pause_turn skip_persist={} id={:?} final={}",
-                    skip_message_persist, persist_message_id, final_text
-                );
-            }
-            if !skip_message_persist {
-                self.project_chat_message(
-                    session_id,
-                    "assistant",
-                    final_text,
-                    Some("text"),
-                    None,
-                    persist_message_id,
-                )
-                .await;
-            }
             if let Some(step) = branch_point_step {
-                self.save_branch_point(session_id, events, step, branch_points, false)
-                    .await;
+                self.save_branch_point(session_id, state, step, false).await;
             }
-            self.save_snapshot_with_branches(session_id, events, snapshot_step, branch_points)
+            self.save_snapshot_with_branches(session_id, state, snapshot_step)
                 .await;
             // The status itself carries the awaiting-answer flavor
             // (`PausedAwaitingAnswer`), so the transition is atomic: a
@@ -324,9 +311,8 @@ impl ReActEngine {
     pub(super) async fn pause_turn_budget(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         snapshot_step: u32,
-        branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
     ) -> anyhow::Result<()> {
         // Phase 7 / I2: pause span for budget exhaustion (no assistant persist).
@@ -336,7 +322,7 @@ impl ReActEngine {
                 session_id,
                 snapshot_step
             );
-            self.save_snapshot_with_branches(session_id, events, snapshot_step, branch_points)
+            self.save_snapshot_with_branches(session_id, state, snapshot_step)
                 .await;
             set_status_and_emit(&self.executor, emitter, session_id, SessionStatus::Paused).await?;
             emitter
@@ -373,11 +359,10 @@ impl ReActEngine {
     pub(super) async fn save_exit_snapshot(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         step_number: u32,
-        branch_points: &HashMap<u32, BranchPoint>,
     ) {
-        self.save_snapshot_with_branches(session_id, events, step_number, branch_points)
+        self.save_snapshot_with_branches(session_id, state, step_number)
             .await;
     }
 
@@ -387,18 +372,11 @@ impl ReActEngine {
     pub(super) async fn exit_cancelled(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         step_number: u32,
-        branch_points: &HashMap<u32, BranchPoint>,
     ) -> LoopExit {
-        self.exit_with_snapshot(
-            session_id,
-            events,
-            step_number,
-            branch_points,
-            LoopExit::Cancelled,
-        )
-        .await
+        self.exit_with_snapshot(session_id, state, step_number, LoopExit::Cancelled)
+            .await
     }
 
     /// Write the exit snapshot then return `exit`. Used by Completed / Error /
@@ -407,12 +385,11 @@ impl ReActEngine {
     pub(super) async fn exit_with_snapshot(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         step_number: u32,
-        branch_points: &HashMap<u32, BranchPoint>,
         exit: LoopExit,
     ) -> LoopExit {
-        self.save_exit_snapshot(session_id, events, step_number, branch_points)
+        self.save_exit_snapshot(session_id, state, step_number)
             .await;
         exit
     }
@@ -422,13 +399,12 @@ impl ReActEngine {
     pub(super) async fn exit_external_pause(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         step_number: u32,
-        branch_points: &HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> LoopExit {
-        self.save_snapshot_with_branches(session_id, events, step_number, branch_points)
+        self.save_snapshot_with_branches(session_id, state, step_number)
             .await;
         let ctx = StepCtx {
             session_id: session_id.to_string(),
@@ -451,18 +427,11 @@ impl ReActEngine {
     pub(super) async fn save_snapshot_with_branches(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         step_number: u32,
-        branch_points: &HashMap<u32, BranchPoint>,
     ) {
-        self.save_snapshot_with_error_partials(
-            session_id,
-            events,
-            step_number,
-            branch_points,
-            None,
-        )
-        .await;
+        self.save_snapshot_with_error_partials(session_id, state, step_number, None)
+            .await;
     }
 
     /// Persist a snapshot carrying the recovery marker for a failed LLM
@@ -472,18 +441,17 @@ impl ReActEngine {
     async fn save_snapshot_with_error_partials(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &ReActState,
         step_number: u32,
-        branch_points: &HashMap<u32, BranchPoint>,
         error_partial_message_ids: Option<&[String]>,
     ) {
         let awaiting = self.executor.get_awaiting_answer(session_id).await;
         let awaiting_confirm = self.executor.get_awaiting_confirm(session_id).await;
         let run_budget = self.current_run_budget(session_id);
         let view = SnapshotView {
-            events,
+            events: &state.events,
             step_number,
-            branch_points,
+            branch_points: &state.branch_points,
             saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             error_partial_message_ids,
             awaiting_answer: awaiting.as_ref(),
@@ -527,8 +495,7 @@ impl ReActEngine {
     pub(super) async fn persist_partial_on_error(
         &self,
         ctx: &StepCtx,
-        events: &[TranscriptRecord],
-        branch_points: &mut HashMap<u32, BranchPoint>,
+        state: &mut ReActState,
         partial_thought: &std::sync::Arc<std::sync::Mutex<String>>,
         partial_reasoning: &std::sync::Arc<std::sync::Mutex<String>>,
     ) {
@@ -541,7 +508,7 @@ impl ReActEngine {
         // FORCED write: continue_session / rollback_session locate this branch
         // point in the DB snapshot; a throttled (stale) row would silently
         // skip their message truncation.
-        self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, true)
+        self.save_branch_point(&ctx.session_id, state, ctx.step_num, true)
             .await;
 
         let thought_text = partial_thought.lock().unwrap().clone();
@@ -592,9 +559,8 @@ impl ReActEngine {
         // failed step, never an ordinary periodic pre-crash snapshot.
         self.save_snapshot_with_error_partials(
             &ctx.session_id,
-            events,
+            state,
             ctx.step_num,
-            branch_points,
             Some(&error_partial_message_ids),
         )
         .await;
@@ -618,9 +584,8 @@ impl ReActEngine {
     pub(super) async fn save_branch_point(
         &self,
         session_id: &str,
-        events: &[TranscriptRecord],
+        state: &mut ReActState,
         step_number: u32,
-        branch_points: &mut HashMap<u32, BranchPoint>,
         force: bool,
     ) {
         // Mid-run (`force=false`): prefer the in-process cache filled by
@@ -638,10 +603,10 @@ impl ReActEngine {
         };
         // Phase 8 / F4: store only an index into the parent events vec — no
         // Arc copies of transcript state.
-        branch_points.insert(
+        state.branch_points.insert(
             step_number,
             BranchPoint {
-                event_cursor: events.len(),
+                event_cursor: state.events.len(),
                 step_number,
                 last_msg_at,
             },
@@ -653,7 +618,7 @@ impl ReActEngine {
             store.on_step_boundary(session_id, step_number, force)
         };
         if due {
-            self.save_snapshot_with_branches(session_id, events, step_number, branch_points)
+            self.save_snapshot_with_branches(session_id, state, step_number)
                 .await;
         }
     }

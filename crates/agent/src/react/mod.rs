@@ -25,6 +25,7 @@ mod r#loop;
 mod retries;
 mod sidecars;
 mod snapshot_io;
+mod state;
 pub(crate) mod stream_step;
 mod tool_batch;
 mod transcript;
@@ -41,6 +42,7 @@ use sidecars::{
     BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs,
     TokenEstimateCache, ToolDefCache, UsageTracker,
 };
+pub(crate) use state::ReActState;
 use transcript::{ActionCard, ObservationCard, TranscriptEvent};
 
 pub(crate) use snapshot_io::set_status_and_emit;
@@ -909,11 +911,10 @@ impl ReActEngine {
     pub(crate) async fn maybe_compact(
         &self,
         ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
+        state: &mut ReActState,
         has_image: bool,
     ) -> bool {
-        if canonical.len() < 4 {
+        if state.canonical.len() < 4 {
             return false;
         }
         // The compaction window must match the endpoint the next step will
@@ -929,12 +930,12 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        if self.estimate_canonical_tokens(&ctx.session_id, canonical)
+        if self.estimate_canonical_tokens(&ctx.session_id, &state.canonical)
             <= compactor.threshold_tokens()
         {
             return false;
         }
-        if let Some(result) = compactor.compact(canonical, &router).await {
+        if let Some(result) = compactor.compact(&state.canonical, &router).await {
             tracing::info!(
                 "compaction for session {}: {} tokens -> {} tokens ({} msgs summarized)",
                 ctx.session_id,
@@ -954,8 +955,7 @@ impl ReActEngine {
                     tokens_after: result.tokens_after,
                     episode_id: result.episode_id,
                 },
-                events,
-                canonical,
+                state,
             )
             .await;
             true

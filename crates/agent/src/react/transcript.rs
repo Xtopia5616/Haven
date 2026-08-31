@@ -174,8 +174,7 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         event: TranscriptEvent,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
+        state: &mut ReActState,
     ) {
         let record = event.to_record(ctx.step_num);
         match event {
@@ -202,7 +201,7 @@ impl ReActEngine {
                     &self.db,
                 )
                 .await;
-                events.push(record);
+                state.events.push(record);
             }
             TranscriptEvent::Reasoning { text, message_id } => {
                 let trimmed = text.trim();
@@ -217,7 +216,7 @@ impl ReActEngine {
                     )
                     .await;
                 }
-                events.push(record);
+                state.events.push(record);
             }
             TranscriptEvent::ToolCall {
                 text,
@@ -265,8 +264,8 @@ impl ReActEngine {
                         })
                         .await;
                 }
-                events.push(record);
-                canonical.push(CanonicalMessage::assistant(
+                state.events.push(record);
+                state.canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(text)],
                     if tool_calls.is_empty() {
                         None
@@ -316,10 +315,10 @@ impl ReActEngine {
                         })
                         .await;
                 }
-                events.push(record);
+                state.events.push(record);
                 let is_final = action.is_final || action.tool_name == "final_answer";
                 if !is_final {
-                    canonical.push(CanonicalMessage::tool(
+                    state.canonical.push(CanonicalMessage::tool(
                         vec![ContentPart::text(canonical_observation)],
                         tool_call_id,
                     ));
@@ -370,10 +369,12 @@ impl ReActEngine {
                         })
                         .await;
                 }
-                events.push(record);
+                state.events.push(record);
                 let mut content = vec![ContentPart::text(text)];
                 content.extend(attachments.iter().map(attachment_to_content_part));
-                canonical.push(CanonicalMessage::user_with_source(content, source));
+                state
+                    .canonical
+                    .push(CanonicalMessage::user_with_source(content, source));
             }
             TranscriptEvent::CompactSummary {
                 compacted,
@@ -386,8 +387,9 @@ impl ReActEngine {
                 // events (and embedded prior CompactSummaries) do not grow forever.
                 // Callers must drop stale branch_points (loop after before_step;
                 // stream_step after ContextLengthExceeded compact).
-                *events = vec![record];
-                *canonical = compacted;
+                state.events = vec![record];
+                state.canonical = compacted;
+                state.clear_branch_points();
                 EventDispatcher::emit_compaction_from(
                     &ctx.emitter,
                     &ctx.session_id,
@@ -466,8 +468,7 @@ mod tests {
         let session = db.create_session("t", "hi").unwrap();
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
                 &ctx,
@@ -477,18 +478,17 @@ mod tests {
                     attachments: vec![],
                     message_id: None,
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
-        assert_eq!(canonical.len(), 1);
-        assert_eq!(canonical[0].source, Some(InjectSource::Steering));
-        let text = match &canonical[0].content[0] {
+        assert_eq!(state.canonical.len(), 1);
+        assert_eq!(state.canonical[0].source, Some(InjectSource::Steering));
+        let text = match &state.canonical[0].content[0] {
             ContentPart::Text(t) => t.as_str(),
             _ => panic!("expected text"),
         };
         assert_eq!(text, "be brief");
-        assert_eq!(events.len(), 1);
+        assert_eq!(state.events.len(), 1);
     }
 
     #[tokio::test]
@@ -501,8 +501,7 @@ mod tests {
         let session = db.create_session("t", "hi").unwrap();
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         let body = "[Background action result]\naction_id=act-1\nok";
         engine
             .apply_transcript(
@@ -513,12 +512,11 @@ mod tests {
                     attachments: vec![],
                     message_id: None,
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
-        assert_eq!(canonical[0].source, Some(InjectSource::ActionResult));
-        let text = match &canonical[0].content[0] {
+        assert_eq!(state.canonical[0].source, Some(InjectSource::ActionResult));
+        let text = match &state.canonical[0].content[0] {
             ContentPart::Text(t) => t.as_str(),
             _ => panic!("expected text"),
         };
@@ -540,8 +538,7 @@ mod tests {
         ctx.emitter = Arc::new(RecordingEmitter {
             events: recorded.clone(),
         });
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         let body = "[Background action result]\naction_id: act-9\nstatus: completed\n\nok";
         engine
             .apply_transcript(
@@ -552,8 +549,7 @@ mod tests {
                     attachments: vec![],
                     message_id: None,
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
         let emitted = recorded.lock().unwrap().clone();
@@ -585,8 +581,7 @@ mod tests {
         let mid = haven_common::types::new_id("step");
         let engine = test_engine(db.clone());
         let ctx = step_ctx(&session.id);
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
                 &ctx,
@@ -594,15 +589,14 @@ mod tests {
                     text: "thinking".into(),
                     message_id: mid.clone(),
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
-        assert_eq!(events.len(), 1);
-        let (_, rounds) = project_transcript(&events);
+        assert_eq!(state.events.len(), 1);
+        let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].thought.as_deref(), Some("thinking"));
-        assert!(canonical.is_empty());
+        assert!(state.canonical.is_empty());
         // X12: Thought projects the messages row under the shared id.
         let msgs = db.get_session_messages(&session.id).unwrap();
         assert!(
@@ -623,8 +617,7 @@ mod tests {
         let mid = haven_common::types::new_id("msg");
         let engine = test_engine(db.clone());
         let ctx = step_ctx(&session.id);
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
                 &ctx,
@@ -632,17 +625,16 @@ mod tests {
                     text: "why".into(),
                     message_id: mid.clone(),
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
-        assert_eq!(events.len(), 1);
+        assert_eq!(state.events.len(), 1);
         assert!(matches!(
-            &events[0],
+            &state.events[0],
             TranscriptRecord::Reasoning { message_id, .. } if message_id == &mid
         ));
-        assert!(canonical.is_empty());
-        let (canon, rounds) = project_transcript(&events);
+        assert!(state.canonical.is_empty());
+        let (canon, rounds) = project_transcript(&state.events);
         assert!(canon.is_empty());
         assert!(rounds.is_empty());
         let msgs = db.get_session_messages(&session.id).unwrap();
@@ -672,7 +664,7 @@ mod tests {
                 events: ui_events.clone(),
             }),
         };
-        let mut canonical = vec![
+        let canonical = vec![
             CanonicalMessage::user_text("old1"),
             CanonicalMessage::assistant(
                 vec![ContentPart::text("old2")],
@@ -682,7 +674,7 @@ mod tests {
                 Vec::new(),
             ),
         ];
-        let mut events = vec![TranscriptRecord::Thought {
+        let events = vec![TranscriptRecord::Thought {
             step_number: 1,
             text: "keep".into(),
             message_id: "step-keep".into(),
@@ -697,6 +689,15 @@ mod tests {
             ),
             CanonicalMessage::user_text("recent"),
         ];
+        let mut state = ReActState::new(events, canonical, std::collections::HashMap::new());
+        state.branch_points.insert(
+            1,
+            BranchPoint {
+                event_cursor: 1,
+                step_number: 1,
+                last_msg_at: None,
+            },
+        );
         engine
             .apply_transcript(
                 &ctx,
@@ -707,18 +708,18 @@ mod tests {
                     tokens_after: 40,
                     episode_id: haven_common::types::new_id("msg"),
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
-        assert_eq!(canonical.len(), 2);
+        assert_eq!(state.canonical.len(), 2);
         // CompactSummary replaces the event log (no pre-compaction growth).
-        assert_eq!(events.len(), 1);
+        assert_eq!(state.events.len(), 1);
         assert!(matches!(
-            &events[0],
+            &state.events[0],
             TranscriptRecord::CompactSummary { .. }
         ));
-        let (_, rounds) = project_transcript(&events);
+        assert!(state.branch_points.is_empty());
+        let (_, rounds) = project_transcript(&state.events);
         assert!(rounds.is_empty());
         let ev = ui_events.lock().unwrap();
         assert!(
@@ -753,8 +754,7 @@ mod tests {
             }),
         };
         let step_id = haven_common::types::new_id("step");
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
                 &ctx,
@@ -777,12 +777,11 @@ mod tests {
                     }],
                     persist_text_id: None,
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
-        assert_eq!(canonical.len(), 1);
-        assert_eq!(events.len(), 1);
+        assert_eq!(state.canonical.len(), 1);
+        assert_eq!(state.events.len(), 1);
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
@@ -816,8 +815,7 @@ mod tests {
             }),
         };
         let step_id = haven_common::types::new_id("step");
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         let action = Action {
             tool_name: "echo".into(),
             tool_input: serde_json::json!({}),
@@ -840,12 +838,11 @@ mod tests {
                         ask_options: vec![],
                     }),
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
-        assert_eq!(canonical.len(), 1);
-        let (_, rounds) = project_transcript(&events);
+        assert_eq!(state.canonical.len(), 1);
+        let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools[0].observation.as_deref(), Some("ok"));
         let ev = ui_events.lock().unwrap();
@@ -872,8 +869,7 @@ mod tests {
         let session = db.create_session("t", "hi").unwrap();
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
                 &ctx,
@@ -881,8 +877,7 @@ mod tests {
                     text: "both".into(),
                     message_id: haven_common::types::new_id("step"),
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
         for (id, name) in [("c1", "a"), ("c2", "b")] {
@@ -901,15 +896,14 @@ mod tests {
                         },
                         observation_card: None,
                     },
-                    &mut events,
-                    &mut canonical,
+                    &mut state,
                 )
                 .await;
         }
-        let (_, rounds) = project_transcript(&events);
+        let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools.len(), 2);
-        assert_eq!(canonical.len(), 2);
+        assert_eq!(state.canonical.len(), 2);
     }
 
     #[tokio::test]
@@ -923,8 +917,7 @@ mod tests {
         let step_id = haven_common::types::new_id("step");
         let engine = test_engine(db.clone());
         let ctx = step_ctx(&session.id);
-        let mut canonical = Vec::new();
-        let mut events = Vec::new();
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         engine
             .apply_transcript(
                 &ctx,
@@ -946,8 +939,7 @@ mod tests {
                         ask_options: vec!["A".into(), "B".into()],
                     }),
                 },
-                &mut events,
-                &mut canonical,
+                &mut state,
             )
             .await;
         let msgs = db.get_session_messages(&session.id).unwrap();

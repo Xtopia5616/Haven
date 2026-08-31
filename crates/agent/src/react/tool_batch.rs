@@ -4,11 +4,11 @@
 //! the assistant's tool-call list so the next model request is deterministic.
 
 use super::hooks::BeforeToolAction;
+use super::snapshot_io::PauseTurnInput;
 use super::*;
-use crate::types::{Action, BranchPoint, ConfirmPending, ConfirmPendingTool, TranscriptRecord};
+use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_tools::is_silent_action;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Failure classification used to shape the post-failure retry nudge.
@@ -52,8 +52,7 @@ impl ToolBatchState {
         engine: &ReActEngine,
         ctx: &StepCtx,
         result: CompletedTool,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
+        state: &mut ReActState,
     ) {
         let CompletedTool {
             action,
@@ -121,8 +120,7 @@ impl ToolBatchState {
                         ask_options,
                     }),
                 },
-                events,
-                canonical,
+                state,
             )
             .await;
     }
@@ -167,28 +165,28 @@ impl ReActEngine {
         }
     }
 
-    /// Append a failure-retry nudge onto the failed tool observation in
-    /// `canonical` (Phase 7 / G5). Requires `failed_tool_call_id` so a
-    /// parallel success that completes later cannot receive the nudge.
-    /// Never invents a User row — if the id is missing or unmatched, the
-    /// nudge is dropped rather than polluting the user transcript.
+    /// Append a failure-retry nudge onto the failed tool observation in a
+    /// provider request buffer (Phase 7 / G5). Requires
+    /// `failed_tool_call_id` so a parallel success that completes later cannot
+    /// receive the nudge. Never invents a User row — if the id is missing or
+    /// unmatched, the nudge is dropped rather than polluting the transcript.
     pub(super) fn attach_failure_nudge(
-        canonical: &mut [CanonicalMessage],
+        messages: &mut [CanonicalMessage],
         nudge: &str,
         failed_tool_call_id: Option<&str>,
     ) {
         let Some(id) = failed_tool_call_id else {
             return;
         };
-        let idx = canonical
+        let idx = messages
             .iter()
             .rev()
             .position(|m| m.role == CanonicalRole::Tool && m.tool_call_id.as_deref() == Some(id))
-            .map(|rev_i| canonical.len() - 1 - rev_i);
+            .map(|rev_i| messages.len() - 1 - rev_i);
         let Some(idx) = idx else {
             return;
         };
-        let msg = &mut canonical[idx];
+        let msg = &mut messages[idx];
         if let Some(ContentPart::Text(text)) = msg.content.last_mut() {
             text.push_str("\n\n");
             text.push_str(nudge);
@@ -306,10 +304,8 @@ impl ReActEngine {
     pub(super) async fn execute_tool_batch(
         &self,
         session_id: &str,
-        canonical: &mut Vec<CanonicalMessage>,
-        events: &mut Vec<TranscriptRecord>,
+        state: &mut ReActState,
         step_num: u32,
-        branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
         actions: &mut [Action],
@@ -412,13 +408,12 @@ impl ReActEngine {
                     action_cards,
                     persist_text_id: None,
                 },
-                events,
-                canonical,
+                state,
             )
             .await;
         }
 
-        self.save_branch_point(session_id, events, step_num, branch_points, false)
+        self.save_branch_point(session_id, state, step_num, false)
             .await;
 
         use futures_util::StreamExt;
@@ -664,19 +659,14 @@ impl ReActEngine {
                     }
                     for result in completed_results.into_iter().flatten() {
                         batch_state
-                            .commit_tool_result(self, &gate_ctx, result, events, canonical)
+                            .commit_tool_result(self, &gate_ctx, result, state)
                             .await;
                     }
                     // A rollback that lands mid-batch must find the DB row
                     // at the pre-batch branch point (the response and
                     // partial tool results are discarded by the exit).
                     return Ok(ToolBatchOutcome::Done(
-                        self.exit_cancelled(
-                            session_id,
-                            events,
-                            step_num,
-                            branch_points,
-                        )
+                        self.exit_cancelled(session_id, state, step_num)
                         .await,
                     ));
                 }
@@ -696,7 +686,7 @@ impl ReActEngine {
         // order.
         for result in completed_results.into_iter().flatten() {
             batch_state
-                .commit_tool_result(self, &gate_ctx, result, events, canonical)
+                .commit_tool_result(self, &gate_ctx, result, state)
                 .await;
         }
 
@@ -710,11 +700,9 @@ impl ReActEngine {
             && step_num < max_steps - 1
         {
             let nudge = Self::build_failure_nudge(&batch_state.failure_signals);
-            Self::attach_failure_nudge(
-                canonical,
-                &nudge,
-                batch_state.last_failed_tool_call_id.as_deref(),
-            );
+            if let Some(tool_call_id) = batch_state.last_failed_tool_call_id.clone() {
+                state.stage_retry_nudge(tool_call_id, nudge);
+            }
         }
 
         // Phase 5 / E3: confirm before ask when both appear in one batch.
@@ -748,18 +736,15 @@ impl ReActEngine {
             let notice = "Waiting for confirmation…";
             self.project_chat_message(session_id, "assistant", notice, Some("text"), None, None)
                 .await;
-            self.pause_turn(
+            self.pause_turn(PauseTurnInput {
                 session_id,
-                events,
-                step_num + 1,
-                branch_points,
+                state,
+                snapshot_step: step_num + 1,
                 emitter,
-                SessionStatus::PausedAwaitingConfirm,
-                notice,
-                None,
-                None,
-                true,
-            )
+                status: SessionStatus::PausedAwaitingConfirm,
+                final_text: notice,
+                branch_point_step: None,
+            })
             .await?;
             return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
                 reason: PauseReason::Confirm,
@@ -797,47 +782,35 @@ impl ReActEngine {
                     .await;
                 SessionStatus::PausedAwaitingAnswer
             };
-            self.pause_turn(
+            self.pause_turn(PauseTurnInput {
                 session_id,
-                events,
-                step_num + 1,
-                branch_points,
+                state,
+                snapshot_step: step_num + 1,
                 emitter,
                 status,
-                &question,
-                None,
-                // Ask questions already projected in apply(ToolResult).
-                None,
-                true,
-            )
+                final_text: &question,
+                branch_point_step: None,
+            })
             .await?;
             return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
                 reason: PauseReason::Ask,
             }));
         }
 
-        let state = self.executor.get_session_state(session_id).await;
-        match state {
+        let session_state = self.executor.get_session_state(session_id).await;
+        match session_state {
             Some(s) if s.is_paused() => {
                 return Ok(ToolBatchOutcome::Done(
-                    self.exit_external_pause(
-                        session_id,
-                        events,
-                        step_num,
-                        branch_points,
-                        emitter,
-                        run_id,
-                    )
-                    .await,
+                    self.exit_external_pause(session_id, state, step_num, emitter, run_id)
+                        .await,
                 ));
             }
             Some(SessionStatus::Error) => {
                 return Ok(ToolBatchOutcome::Done(
                     self.exit_with_snapshot(
                         session_id,
-                        events,
+                        state,
                         step_num,
-                        branch_points,
                         LoopExit::Error("session interrupted".into()),
                     )
                     .await,
@@ -846,14 +819,8 @@ impl ReActEngine {
             // Session gone (end_session/terminal cleanup) or completed: exit.
             None | Some(SessionStatus::Completed) => {
                 return Ok(ToolBatchOutcome::Done(
-                    self.exit_with_snapshot(
-                        session_id,
-                        events,
-                        step_num,
-                        branch_points,
-                        LoopExit::Completed,
-                    )
-                    .await,
+                    self.exit_with_snapshot(session_id, state, step_num, LoopExit::Completed)
+                        .await,
                 ));
             }
             _ => {}
@@ -869,9 +836,7 @@ impl ReActEngine {
     pub(super) async fn finish_confirm_batch(
         &self,
         session_id: &str,
-        canonical: &mut Vec<CanonicalMessage>,
-        events: &mut Vec<TranscriptRecord>,
-        branch_points: &mut HashMap<u32, BranchPoint>,
+        state: &mut ReActState,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> anyhow::Result<ToolBatchOutcome> {
@@ -892,7 +857,8 @@ impl ReActEngine {
             let Some(decision) = tool.decision else {
                 continue;
             };
-            let tool_call_id = tool_call_id_for(canonical, &tool.tool_name, &tool.tool_input);
+            let tool_call_id =
+                tool_call_id_for(&state.canonical, &tool.tool_name, &tool.tool_input);
             let action = Action {
                 tool_name: tool.tool_name.clone(),
                 tool_input: tool.tool_input.clone(),
@@ -976,7 +942,7 @@ impl ReActEngine {
                 }
             };
             batch_state
-                .commit_tool_result(self, &proj_ctx, result, events, canonical)
+                .commit_tool_result(self, &proj_ctx, result, state)
                 .await;
         }
 
@@ -1007,18 +973,15 @@ impl ReActEngine {
             } else {
                 SessionStatus::PausedAwaitingAnswer
             };
-            self.pause_turn(
+            self.pause_turn(PauseTurnInput {
                 session_id,
-                events,
-                step_num + 1,
-                branch_points,
+                state,
+                snapshot_step: step_num + 1,
                 emitter,
                 status,
-                &ask.question,
-                None,
-                None,
-                true,
-            )
+                final_text: &ask.question,
+                branch_point_step: None,
+            })
             .await?;
             return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
                 reason: PauseReason::Ask,

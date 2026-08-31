@@ -19,13 +19,11 @@ use serde_json::Value;
 
 use haven_common::types::RiskLevel;
 
-use super::retries::{AfterLlmAction, ResponsePolicyState};
-use super::{Action, PauseReason, ReActEngine, StepCtx};
-use crate::types::TranscriptRecord;
-
 #[cfg(test)]
 pub(crate) use super::hook_policy::{DefaultHooks, default_hooks_with_infer};
 pub(crate) use super::hook_policy::{default_hooks, default_hooks_with_infer_and_patch};
+use super::retries::{AfterLlmAction, ResponsePolicyState};
+use super::{Action, PauseReason, ReActEngine, ReActState, StepCtx};
 
 /// Fact-inference callback: `(session_id, bypass_throttle)`.
 /// `bypass_throttle=true` for pause-path infer so interval extract cannot starve
@@ -68,13 +66,7 @@ pub(crate) struct AfterLlmInput<'a> {
 pub(crate) trait LoopHooks: Send + Sync {
     /// Prologue side effects after inject, before sanitize.
     /// Interval infer (`infer(session, false)`) is time-throttled extraction.
-    async fn before_step(
-        &self,
-        engine: &ReActEngine,
-        ctx: &StepCtx,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
-    );
+    async fn before_step(&self, engine: &ReActEngine, ctx: &StepCtx, state: &mut ReActState);
 
     /// Classify the parsed LLM response (Phase 5 / G3). Default accepts.
     async fn after_llm(
@@ -110,14 +102,7 @@ pub(crate) struct NoopHooks;
 
 #[async_trait]
 impl LoopHooks for NoopHooks {
-    async fn before_step(
-        &self,
-        _engine: &ReActEngine,
-        _ctx: &StepCtx,
-        _events: &mut Vec<TranscriptRecord>,
-        _canonical: &mut Vec<CanonicalMessage>,
-    ) {
-    }
+    async fn before_step(&self, _engine: &ReActEngine, _ctx: &StepCtx, _state: &mut ReActState) {}
 }
 
 /// Shared handle stored on [`ReActEngine`].
@@ -235,12 +220,8 @@ mod tests {
             run_id: 1,
             emitter: emitter.clone(),
         };
-        let mut events = Vec::new();
-        let mut canonical = Vec::new();
-        engine
-            .hooks
-            .before_step(&engine, &ctx, &mut events, &mut canonical)
-            .await;
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
+        engine.hooks.before_step(&engine, &ctx, &mut state).await;
         engine
             .hooks
             .on_pause(&engine, &ctx, PauseReason::TurnEnd)

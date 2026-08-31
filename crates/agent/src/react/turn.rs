@@ -6,22 +6,20 @@
 //! The outer run owns the step budget and lifecycle transitions.
 
 use super::retries::{AfterLlmAction, ResponsePolicyState};
+use super::snapshot_io::PauseTurnInput;
 use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
 use super::turn_end::{TurnEndInput, TurnEndOutcome};
 use super::*;
-use crate::types::{BranchPoint, TranscriptRecord};
+use crate::types::TranscriptRecord;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::Instrument;
 
 /// Inputs owned by the outer run and borrowed by one model turn.
 pub(super) struct TurnInput<'a> {
     pub(super) ctx: StepCtx,
-    pub(super) canonical: &'a mut Vec<CanonicalMessage>,
-    pub(super) events: &'a mut Vec<TranscriptRecord>,
-    pub(super) branch_points: &'a mut HashMap<u32, BranchPoint>,
+    pub(super) state: &'a mut ReActState,
     pub(super) cancel: tokio_util::sync::CancellationToken,
     pub(super) max_steps: u32,
     pub(super) cut_off_retries: &'a mut u32,
@@ -74,9 +72,7 @@ impl ReActEngine {
     pub(super) async fn run_turn(&self, input: TurnInput<'_>) -> anyhow::Result<TurnOutcome> {
         let TurnInput {
             ctx,
-            canonical,
-            events,
-            branch_points,
+            state,
             cancel,
             max_steps,
             cut_off_retries,
@@ -87,30 +83,42 @@ impl ReActEngine {
         // Context is collected once at the turn boundary and projected by the
         // single transcript writer. Hooks may compact or refresh the context,
         // but they never own queue reads or persistence.
-        self.inject_pending_context(&ctx, events, canonical)
+        self.inject_pending_context(&ctx, state)
             .instrument(tracing::info_span!("inject", session_id, step_num))
             .await;
 
-        let events_before_hooks = events.len();
+        let events_before_hooks = state.event_count();
         self.hooks
-            .before_step(self, &ctx, events, canonical)
+            .before_step(self, &ctx, state)
             .instrument(tracing::info_span!("before_step", session_id, step_num))
             .await;
         // CompactSummary replaces the event log with a new root. Branch
         // cursors into the discarded prefix are no longer meaningful.
-        if events.len() < events_before_hooks
-            || (events.len() == 1
+        if state.event_count() < events_before_hooks
+            || (state.event_count() == 1
                 && matches!(
-                    events.first(),
+                    state.events.first(),
                     Some(TranscriptRecord::CompactSummary { .. })
                 )
                 && events_before_hooks > 1)
         {
-            branch_points.clear();
+            state.clear_branch_points();
         }
 
-        let has_image = canonical_has_image(canonical);
-        let repairs = crate::sanitize_canonical(canonical);
+        let has_image = canonical_has_image(&state.canonical);
+        // Sanitization is a provider-boundary repair. Keep it out of the
+        // durable run state because the repair itself is not a transcript
+        // event and must not be silently lost on resume.
+        let retry_nudge = state.take_retry_nudge();
+        let mut request_messages = state.canonical.clone();
+        if let Some(nudge) = retry_nudge.as_ref() {
+            Self::attach_failure_nudge(
+                &mut request_messages,
+                &nudge.text,
+                Some(&nudge.tool_call_id),
+            );
+        }
+        let repairs = crate::sanitize_canonical(&mut request_messages);
         if repairs > 0 {
             tracing::warn!(
                 session_id,
@@ -130,7 +138,7 @@ impl ReActEngine {
             "ReAct turn: session={} step={} messages={} tools={}",
             session_id,
             step_num,
-            canonical.len(),
+            request_messages.len(),
             tools.len()
         );
         let stream = super::stream_step::StreamSession::new(
@@ -144,15 +152,14 @@ impl ReActEngine {
             &partial_reasoning,
         );
         let mut response = match stream
-            .run(canonical, events, branch_points)
+            .run(state, &request_messages)
             .instrument(tracing::info_span!("llm", session_id, step_num))
             .await
         {
             StepCallOutcome::Response(response) => *response,
             StepCallOutcome::Cancelled => {
                 return Ok(TurnOutcome::Done(
-                    self.exit_cancelled(session_id, events, step_num, branch_points)
-                        .await,
+                    self.exit_cancelled(session_id, state, step_num).await,
                 ));
             }
             StepCallOutcome::Fatal(message) => return Err(anyhow::anyhow!(message)),
@@ -167,10 +174,19 @@ impl ReActEngine {
                 step_num
             );
             return Ok(TurnOutcome::Done(
-                self.exit_cancelled(session_id, events, step_num, branch_points)
-                    .await,
+                self.exit_cancelled(session_id, state, step_num).await,
             ));
         }
+
+        // `StreamSession` may have compacted the shared canonical after a
+        // context-length error. Response-policy retries must use that newest
+        // projection while preserving the one-shot failure hint when the
+        // failed observation survived compaction.
+        let mut retry_messages = state.canonical.clone();
+        if let Some(nudge) = retry_nudge.as_ref() {
+            Self::attach_failure_nudge(&mut retry_messages, &nudge.text, Some(&nudge.tool_call_id));
+        }
+        let _ = crate::sanitize_canonical(&mut retry_messages);
 
         if let Some(reasoning) = response.reasoning.clone() {
             let reasoning_id = self.block_msg_id(session_id, step_num, ctx.run_id, "reasoning");
@@ -180,8 +196,7 @@ impl ReActEngine {
                     text: reasoning.clone(),
                     message_id: reasoning_id.clone(),
                 },
-                events,
-                canonical,
+                state,
             )
             .await;
             // Reconcile streamed reasoning with the authoritative final text.
@@ -204,7 +219,7 @@ impl ReActEngine {
             .get_awaiting_answer(session_id)
             .await
             .is_some()
-            || Self::canonical_has_pending_ask(canonical);
+            || Self::canonical_has_pending_ask(&state.canonical);
 
         // Response policy is an explicit sub-loop. It can request another
         // model call, but it cannot mutate the transcript or decide lifecycle.
@@ -218,7 +233,7 @@ impl ReActEngine {
                         thought: &thought,
                         actions: &actions,
                         response: &response,
-                        canonical,
+                        canonical: &state.canonical,
                         state: ResponsePolicyState {
                             empty_retries_remaining,
                             empty_retry_delay_ms: limits.empty_response_retry_delay_ms,
@@ -237,12 +252,12 @@ impl ReActEngine {
                         biased;
                         _ = cancel.cancelled() => {
                             return Ok(TurnOutcome::Done(
-                                self.exit_cancelled(session_id, events, step_num, branch_points).await,
+                                self.exit_cancelled(session_id, state, step_num).await,
                             ));
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
                     }
-                    let retry = stream.retry(canonical).await;
+                    let retry = stream.retry(&retry_messages).await;
                     match retry {
                         Ok(retry_response) => {
                             let (retry_thought, retry_actions) =
@@ -255,8 +270,7 @@ impl ReActEngine {
                         }
                         Err(haven_llm::LlmError::Cancelled) => {
                             return Ok(TurnOutcome::Done(
-                                self.exit_cancelled(session_id, events, step_num, branch_points)
-                                    .await,
+                                self.exit_cancelled(session_id, state, step_num).await,
                             ));
                         }
                         Err(error) => {
@@ -271,8 +285,8 @@ impl ReActEngine {
                 }
                 AfterLlmAction::RetryCutOff { nudge } => {
                     *cut_off_retries += 1;
-                    let mut retry_messages = canonical.clone();
-                    retry_messages.push(CanonicalMessage {
+                    let mut cut_off_retry_messages = retry_messages.clone();
+                    cut_off_retry_messages.push(CanonicalMessage {
                         role: CanonicalRole::User,
                         content: vec![ContentPart::text(nudge)],
                         tool_call_id: None,
@@ -283,7 +297,7 @@ impl ReActEngine {
                         source: None,
                         id: None,
                     });
-                    match stream.retry(&retry_messages).await {
+                    match stream.retry(&cut_off_retry_messages).await {
                         Ok(retry_response) => {
                             let (retry_thought, retry_actions) =
                                 Self::parse_default_model_response(&retry_response, step_num);
@@ -297,8 +311,7 @@ impl ReActEngine {
                         }
                         Err(haven_llm::LlmError::Cancelled) => {
                             return Ok(TurnOutcome::Done(
-                                self.exit_cancelled(session_id, events, step_num, branch_points)
-                                    .await,
+                                self.exit_cancelled(session_id, state, step_num).await,
                             ));
                         }
                         Err(error) => {
@@ -337,25 +350,12 @@ impl ReActEngine {
 
         if let Some(text) = thought.clone() {
             let message_id = self.block_msg_id(session_id, step_num, ctx.run_id, "thought");
-            self.apply_transcript(
-                &ctx,
-                TranscriptEvent::Thought { text, message_id },
-                events,
-                canonical,
-            )
-            .await;
+            self.apply_transcript(&ctx, TranscriptEvent::Thought { text, message_id }, state)
+                .await;
         }
 
         let search_pushed = match self
-            .prepare_search_context(
-                &ctx,
-                &response,
-                &thought,
-                &actions,
-                canonical,
-                events,
-                branch_points,
-            )
+            .prepare_search_context(&ctx, &response, &thought, &actions, state)
             .await
         {
             SearchContextOutcome::ContinueWithoutTools => return Ok(TurnOutcome::Continue),
@@ -370,7 +370,7 @@ impl ReActEngine {
                 let question = pending
                     .as_ref()
                     .map(|pending| pending.question.clone())
-                    .unwrap_or_else(|| Self::extract_pending_ask_question(canonical));
+                    .unwrap_or_else(|| Self::extract_pending_ask_question(&state.canonical));
                 if pending.is_none() {
                     self.executor
                         .set_awaiting_answer(
@@ -391,18 +391,15 @@ impl ReActEngine {
                     None,
                 )
                 .await;
-                self.pause_turn(
+                self.pause_turn(PauseTurnInput {
                     session_id,
-                    events,
-                    step_num + 1,
-                    branch_points,
-                    &ctx.emitter,
-                    SessionStatus::PausedAwaitingAnswer,
-                    &question,
-                    None,
-                    None,
-                    true,
-                )
+                    state,
+                    snapshot_step: step_num + 1,
+                    emitter: &ctx.emitter,
+                    status: SessionStatus::PausedAwaitingAnswer,
+                    final_text: &question,
+                    branch_point_step: None,
+                })
                 .await?;
                 return Ok(TurnOutcome::Done(LoopExit::Paused {
                     reason: PauseReason::Ask,
@@ -420,9 +417,7 @@ impl ReActEngine {
             return self
                 .finish_turn_end(TurnEndInput {
                     ctx: &ctx,
-                    events,
-                    canonical,
-                    branch_points,
+                    state,
                     final_text: &text,
                     reasoning: response.reasoning.clone(),
                     thinking_blocks: response.thinking_blocks.clone(),
@@ -441,9 +436,7 @@ impl ReActEngine {
             return self
                 .finish_turn_end(TurnEndInput {
                     ctx: &ctx,
-                    events,
-                    canonical,
-                    branch_points,
+                    state,
                     final_text: &text,
                     reasoning: response.reasoning.clone(),
                     thinking_blocks: response.thinking_blocks.clone(),
@@ -459,10 +452,8 @@ impl ReActEngine {
         match self
             .execute_tool_batch(
                 session_id,
-                canonical,
-                events,
+                state,
                 step_num,
-                branch_points,
                 &ctx.emitter,
                 ctx.run_id,
                 &mut actions,
