@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{OperationIdempotency, Tool, ToolExecutionOutcome, ToolResult};
 
 pub struct HttpTool {
     /// Max retries for failed HTTP requests.
@@ -66,7 +66,7 @@ impl HttpTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
+            return Ok(ToolResult::cancelled("HTTP request cancelled"));
         }
 
         let url = params.url;
@@ -82,53 +82,19 @@ impl HttpTool {
             params.headers.unwrap_or_default().into_iter().collect();
 
         if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
+            return Ok(ToolResult::cancelled("HTTP request cancelled"));
         }
 
-        // GET is idempotent → retry on transient errors. POST is not retried.
-        let max_attempts = if method == "GET" {
-            1 + self.max_retries
-        } else {
-            1
-        };
-
-        for attempt in 0..max_attempts {
-            if attempt > 0 {
-                let delay = Duration::from_secs(self.backoff_base_secs * 2u64.pow(attempt - 1));
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {},
-                    _ = cancel.cancelled() => anyhow::bail!("cancelled"),
-                }
-            }
-            if cancel.is_cancelled() {
-                anyhow::bail!("cancelled");
-            }
-
-            match execute_once(
-                &url,
-                &method,
-                &headers,
-                body.as_deref(),
-                as_html,
-                timeout_secs,
-                self.max_body_bytes,
-            )
-            .await
-            {
-                Ok(result) => return Ok(result),
-                Err(e) if attempt + 1 < max_attempts && is_retryable_error(&e) => {
-                    tracing::debug!(
-                        "network tool attempt {} failed, retrying: {}",
-                        attempt + 1,
-                        e
-                    );
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        anyhow::bail!("unreachable: network tool retry loop exhausted")
+        execute_once(
+            &url,
+            &method,
+            &headers,
+            body.as_deref(),
+            as_html,
+            timeout_secs,
+            self.max_body_bytes,
+        )
+        .await
     }
 }
 
@@ -153,6 +119,29 @@ impl Tool for HttpTool {
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
         RiskLevel::Medium
+    }
+
+    fn idempotency(&self, input: &Value) -> OperationIdempotency {
+        match input.get("method").and_then(Value::as_str) {
+            None | Some("GET") => OperationIdempotency::Idempotent,
+            Some("POST") => OperationIdempotency::NonIdempotent,
+            _ => OperationIdempotency::Unknown,
+        }
+    }
+
+    fn timeout_outcome(&self) -> ToolExecutionOutcome {
+        // Dropping a reqwest request future closes the request body/response
+        // stream; unlike a shell or remote MCP server there is no child
+        // process that can continue after the future is dropped.
+        ToolExecutionOutcome::TimedOutAndTerminated
+    }
+
+    fn default_max_retries(&self) -> u32 {
+        self.max_retries
+    }
+
+    fn default_retry_backoff_secs(&self) -> u64 {
+        self.backoff_base_secs
     }
 
     fn input_schema(&self) -> Value {
@@ -394,24 +383,6 @@ fn html_to_text(html: &str) -> String {
         .join("\n")
 }
 
-fn is_retryable_error(err: &anyhow::Error) -> bool {
-    let msg = err.to_string().to_lowercase();
-    // Timeout: tokio timeout or reqwest timeout
-    if msg.contains("timed out") || msg.contains("timeout") || msg.contains("timedout") {
-        return true;
-    }
-    // Connection / DNS / IO errors
-    if msg.contains("connection refused")
-        || msg.contains("connection reset")
-        || msg.contains("dns")
-        || msg.contains("no route to host")
-        || msg.contains("eof")
-    {
-        return true;
-    }
-    false
-}
-
 fn map_reqwest_error(e: reqwest::Error) -> anyhow::Error {
     if e.is_timeout() {
         anyhow::anyhow!("request timed out: {}", e)
@@ -450,18 +421,20 @@ mod tests {
     }
 
     #[test]
-    fn test_is_retryable_error() {
-        let e1 = anyhow::anyhow!("request timed out");
-        assert!(is_retryable_error(&e1));
-
-        let e2 = anyhow::anyhow!("connection refused: 127.0.0.1:8080");
-        assert!(is_retryable_error(&e2));
-
-        let e3 = anyhow::anyhow!("HTTP error: 404 Not Found");
-        assert!(!is_retryable_error(&e3));
-
-        let e4 = anyhow::anyhow!("invalid URL: bad format");
-        assert!(!is_retryable_error(&e4));
+    fn retry_policy_only_allows_get_replay() {
+        let tool = HttpTool::default();
+        assert_eq!(
+            tool.idempotency(&json!({"method": "GET"})),
+            OperationIdempotency::Idempotent
+        );
+        assert_eq!(
+            tool.idempotency(&json!({"method": "POST"})),
+            OperationIdempotency::NonIdempotent
+        );
+        assert_eq!(
+            tool.idempotency(&json!({"method": "PUT"})),
+            OperationIdempotency::Unknown
+        );
     }
 
     /// Serve a single canned HTTP/1.1 response on a local listener and return
@@ -726,7 +699,7 @@ mod tests {
                 cancel,
             )
             .await;
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().outcome, ToolExecutionOutcome::Cancelled);
     }
 
     #[tokio::test]

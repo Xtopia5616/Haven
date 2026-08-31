@@ -330,9 +330,11 @@ impl SessionExecutor {
             confirmed,
         } = gated;
         tracing::info!(
-            "execute_step result: tool={} success={}",
-            tool_name,
-            result.success
+            tool = %tool_name,
+            success = result.success,
+            attempts = result.attempts,
+            outcome = ?result.outcome,
+            "execute_step result"
         );
 
         // Apply the tool's declared per-session side effects (skill/MCP adapter
@@ -479,6 +481,8 @@ impl SessionExecutor {
                             "operation '{tool_name}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach."
                         )),
                         truncated: false,
+                        outcome: haven_tools::ToolExecutionOutcome::Failed,
+                        attempts: 1,
                         signals: haven_tools::ToolSignals::default(),
                     },
                     risk_level,
@@ -510,6 +514,8 @@ impl SessionExecutor {
                                     tool_name
                                 )),
                                 truncated: false,
+                                outcome: haven_tools::ToolExecutionOutcome::Cancelled,
+                                attempts: 1,
                                 signals: haven_tools::ToolSignals::default(),
                             },
                             risk_level,

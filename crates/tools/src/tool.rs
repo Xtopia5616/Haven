@@ -225,12 +225,41 @@ pub fn is_safe_local_path(path: &Path) -> bool {
     resolve_path_without_reparse(path).is_some()
 }
 
+/// The durable meaning of a tool invocation's terminal state.
+///
+/// `TimedOutUnknown` is deliberately distinct from a normal failure: the
+/// caller must assume that an external side effect may still be in flight and
+/// must not replay the operation automatically.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionOutcome {
+    Succeeded,
+    #[default]
+    Failed,
+    Cancelled,
+    TimedOutAndTerminated,
+    TimedOutUnknown,
+}
+
+/// Whether replaying the same operation is safe after a transient failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationIdempotency {
+    Idempotent,
+    NonIdempotent,
+    Unknown,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolResult {
     pub success: bool,
     pub output: Value,
     pub error: Option<String>,
     pub truncated: bool,
+    #[serde(default)]
+    pub outcome: ToolExecutionOutcome,
+    /// Number of attempts used by the manager. Direct tool calls use 1.
+    #[serde(default = "default_attempts")]
+    pub attempts: u32,
     /// Side-channel signals the tool attaches to its own result (an `ask`
     /// question to pause for, a `notify` toast to surface). Populated by
     /// `ToolsManager::execute_tool` from the tool's `signals()` hook BEFORE
@@ -279,6 +308,8 @@ impl ToolResult {
             output,
             error: None,
             truncated: false,
+            outcome: ToolExecutionOutcome::Succeeded,
+            attempts: 1,
             signals: ToolSignals::default(),
         }
     }
@@ -289,6 +320,48 @@ impl ToolResult {
             output,
             error: None,
             truncated: true,
+            outcome: ToolExecutionOutcome::Succeeded,
+            attempts: 1,
+            signals: ToolSignals::default(),
+        }
+    }
+
+    pub fn failed(output: Value, error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            output,
+            error: Some(error.into()),
+            truncated: false,
+            outcome: ToolExecutionOutcome::Failed,
+            attempts: 1,
+            signals: ToolSignals::default(),
+        }
+    }
+
+    pub fn cancelled(error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            output: Value::Null,
+            error: Some(error.into()),
+            truncated: false,
+            outcome: ToolExecutionOutcome::Cancelled,
+            attempts: 1,
+            signals: ToolSignals::default(),
+        }
+    }
+
+    pub fn timed_out(outcome: ToolExecutionOutcome, error: impl Into<String>) -> Self {
+        debug_assert!(matches!(
+            outcome,
+            ToolExecutionOutcome::TimedOutAndTerminated | ToolExecutionOutcome::TimedOutUnknown
+        ));
+        Self {
+            success: false,
+            output: Value::Null,
+            error: Some(error.into()),
+            truncated: false,
+            outcome,
+            attempts: 1,
             signals: ToolSignals::default(),
         }
     }
@@ -321,6 +394,10 @@ impl ToolResult {
             }
         }
     }
+}
+
+fn default_attempts() -> u32 {
+    1
 }
 
 /// Extract the `ask` signal from a tool result's structured output: the
@@ -382,6 +459,28 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> String;
     fn description(&self) -> String;
     fn risk_level(&self, input: &Value) -> RiskLevel;
+    /// Retry policy is an operation property, not a safety-risk property.
+    /// The default is conservative because an unknown operation may have
+    /// performed an external side effect before returning an error.
+    fn idempotency(&self, _input: &Value) -> OperationIdempotency {
+        OperationIdempotency::Unknown
+    }
+
+    /// Whether an outer timeout can establish that this invocation stopped.
+    /// Tools backed by child processes or remote servers should return
+    /// `TimedOutUnknown` unless they can prove termination.
+    fn timeout_outcome(&self) -> ToolExecutionOutcome {
+        ToolExecutionOutcome::TimedOutUnknown
+    }
+
+    /// Intrinsic retry budget used when no per-tool configuration exists.
+    fn default_max_retries(&self) -> u32 {
+        0
+    }
+
+    fn default_retry_backoff_secs(&self) -> u64 {
+        0
+    }
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult>;
     fn input_schema(&self) -> Value;
 
@@ -436,15 +535,6 @@ pub trait Tool: Send + Sync {
     fn registrations(&self, output: &Value) -> Vec<ToolRegistration> {
         let _ = output;
         Vec::new()
-    }
-
-    /// Fallback result when this tool times out: instead of failing the step,
-    /// the tool may hand the work to a background mechanism and return a
-    /// success result carrying the continuation. Only invoked for timeout
-    /// errors of the final attempt; returning `None` keeps the error.
-    async fn timeout_fallback(&self, input: &Value) -> Option<ToolResult> {
-        let _ = input;
-        None
     }
 
     fn validate_input(&self, input: &Value) -> anyhow::Result<()> {
@@ -510,14 +600,26 @@ pub trait Tool: Send + Sync {
         cancel: CancellationToken,
         timeout_secs: u64,
     ) -> anyhow::Result<ToolResult> {
-        let result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            self.execute(input, cancel),
-        )
-        .await;
-        match result {
-            Ok(r) => r,
-            Err(_) => anyhow::bail!("tool '{}' timed out after {}s", self.name(), timeout_secs),
+        if cancel.is_cancelled() {
+            return Ok(ToolResult::cancelled(format!(
+                "tool '{}' cancelled before execution",
+                self.name()
+            )));
+        }
+        let execution_cancel = cancel.child_token();
+        tokio::select! {
+            result = self.execute(input, execution_cancel.clone()) => result,
+            _ = cancel.cancelled() => {
+                execution_cancel.cancel();
+                Ok(ToolResult::cancelled(format!("tool '{}' cancelled", self.name())))
+            }
+            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
+                execution_cancel.cancel();
+                Ok(ToolResult::timed_out(
+                    self.timeout_outcome(),
+                    format!("tool '{}' timed out after {}s", self.name(), timeout_secs),
+                ))
+            }
         }
     }
 }
@@ -1169,6 +1271,8 @@ mod tests {
             output: json!(null),
             error: Some("boom".into()),
             truncated: false,
+            outcome: ToolExecutionOutcome::Failed,
+            attempts: 1,
             signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), "boom");
@@ -1181,6 +1285,8 @@ mod tests {
             output: json!(null),
             error: None,
             truncated: false,
+            outcome: ToolExecutionOutcome::Failed,
+            attempts: 1,
             signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), "unknown failure");
@@ -1196,6 +1302,8 @@ mod tests {
             output: json!({"output": "some stdout"}),
             error: Some(String::new()),
             truncated: false,
+            outcome: ToolExecutionOutcome::Failed,
+            attempts: 1,
             signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), r#"{"output":"some stdout"}"#);
@@ -1208,6 +1316,8 @@ mod tests {
             output: json!(null),
             error: Some("   ".into()),
             truncated: false,
+            outcome: ToolExecutionOutcome::Failed,
+            attempts: 1,
             signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), "unknown failure");
@@ -2033,6 +2143,21 @@ mod tests {
         let result = tool
             .execute_with_timeout(json!({}), CancellationToken::new(), 1)
             .await;
-        assert!(result.is_err());
+        let result = result.unwrap();
+        assert_eq!(result.outcome, ToolExecutionOutcome::TimedOutUnknown);
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_cancelled_is_structured() {
+        let tool = MockTool::with_delay("cancelled", Duration::from_secs(10));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = tool
+            .execute_with_timeout(json!({}), cancel, 30)
+            .await
+            .unwrap();
+        assert_eq!(result.outcome, ToolExecutionOutcome::Cancelled);
+        assert!(!result.success);
     }
 }

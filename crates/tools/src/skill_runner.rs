@@ -78,6 +78,7 @@ impl SkillRunner {
         }
 
         let mut child = cmd
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn skill '{}': {}", skill.name(), e))?;
 
@@ -101,31 +102,27 @@ impl SkillRunner {
                     Err(e) => return Err(anyhow::anyhow!("skill '{}' wait error: {}", pid_label, e)),
                 }
             }
-            _ = tokio::time::sleep(timeout_dur) => {
-                let _ = child.start_kill();
-                let _ = tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            _ = cancel.cancelled() => {
                 let _ = child.kill().await;
-                return Ok(ToolResult {
-                    success: false,
-                    output: Value::Null,
-                    error: Some(format!(
-                        "skill '{}' timed out after {}s",
-                        pid_label, self.config.timeout_secs
-                    )),
-                    truncated: false,
-                    signals: crate::tool::ToolSignals::default(),
-                });
+                return Ok(ToolResult::cancelled(format!(
+                    "skill '{}' cancelled",
+                    pid_label
+                )));
+            }
+            _ = tokio::time::sleep(timeout_dur) => {
+                let _ = child.kill().await;
+                return Ok(ToolResult::timed_out(
+                    crate::ToolExecutionOutcome::TimedOutUnknown,
+                    format!("skill '{}' timed out after {}s", pid_label, self.config.timeout_secs),
+                ));
             }
         };
 
         if cancel.is_cancelled() {
-            return Ok(ToolResult {
-                success: false,
-                output: Value::Null,
-                error: Some(format!("skill '{}' cancelled by user", pid_label)),
-                truncated: false,
-                signals: crate::tool::ToolSignals::default(),
-            });
+            return Ok(ToolResult::cancelled(format!(
+                "skill '{}' cancelled by user",
+                pid_label
+            )));
         }
 
         // Read stdout/stderr from the pipes after the process has exited.
@@ -148,16 +145,13 @@ impl SkillRunner {
         let err_text = err_lines.join("\n");
 
         if exit_code != 0 || !err_text.is_empty() {
-            Ok(ToolResult {
-                success: false,
-                output: serde_json::json!({ "stdout": out_text, "stderr": err_text }),
-                error: Some(format!(
+            Ok(ToolResult::failed(
+                serde_json::json!({ "stdout": out_text, "stderr": err_text }),
+                format!(
                     "skill '{}' exited with code {}: {}",
                     pid_label, exit_code, err_text
-                )),
-                truncated: false,
-                signals: crate::tool::ToolSignals::default(),
-            })
+                ),
+            ))
         } else {
             let output: Value = serde_json::from_str(&out_text)
                 .unwrap_or_else(|_| serde_json::json!({ "result": out_text }));
@@ -202,6 +196,12 @@ mod tests {
         let result = runner
             .execute(&skill, &serde_json::json!({"text": "hi"}), cancel)
             .await;
-        assert!(result.is_err() || !result.unwrap().success);
+        assert!(
+            result.is_err()
+                || matches!(
+                    result.unwrap().outcome,
+                    crate::ToolExecutionOutcome::TimedOutUnknown
+                )
+        );
     }
 }

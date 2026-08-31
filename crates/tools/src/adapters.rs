@@ -76,6 +76,12 @@ impl Tool for McpToolAdapter {
             output: out.output,
             error: out.error,
             truncated: false,
+            outcome: if out.success {
+                crate::ToolExecutionOutcome::Succeeded
+            } else {
+                crate::ToolExecutionOutcome::Failed
+            },
+            attempts: 1,
             signals: crate::tool::ToolSignals::default(),
         })
     }

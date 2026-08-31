@@ -257,6 +257,8 @@ impl WindowTool {
                         }),
                         error: Some(format!("OCR vision call failed: {e}")),
                         truncated: false,
+                        outcome: crate::ToolExecutionOutcome::Failed,
+                        attempts: 1,
                         signals: crate::tool::ToolSignals::default(),
                     });
                 }
@@ -270,6 +272,8 @@ impl WindowTool {
                         }),
                         error: Some(format!("OCR vision call timed out after {timeout}s")),
                         truncated: false,
+                        outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
+                        attempts: 1,
                         signals: crate::tool::ToolSignals::default(),
                     });
                 }

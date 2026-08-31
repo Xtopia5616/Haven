@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bg::{self, BackgroundActions};
 use crate::live_output::LiveOutputHub;
-use crate::{Tool, ToolResult};
+use crate::{Tool, ToolExecutionOutcome, ToolResult};
 
 pub struct ShellTool {
     /// Registry of background actions for `background: true` invocations.
@@ -179,23 +179,27 @@ impl ShellTool {
         );
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
-        let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
-            tokio::join!(stdout_fut, stderr_fut);
-        if let Some(flag) = &running {
-            flag.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-        let status = match child.wait().await {
-            Ok(s) => s,
-            Err(e) => {
+        // Keep the whole wait/read operation inside the cancellation race so
+        // a foreground shell call does not ignore user cancellation.
+        let command_result = async {
+            let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
+                tokio::join!(stdout_fut, stderr_fut);
+            if let Some(flag) = &running {
+                flag.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            let status = child.wait().await?;
+            anyhow::Ok(((stdout, stdout_overflow), (stderr, stderr_overflow), status))
+        };
+        let ((stdout, stdout_overflow), (stderr, stderr_overflow), status) = tokio::select! {
+            result = command_result => result?,
+            _ = cancel.cancelled() => {
                 let _ = child.kill().await;
-                return Err(e.into());
+                if let Some(flag) = &running {
+                    flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                return Ok(ToolResult::cancelled("shell command cancelled"));
             }
         };
-
-        if cancel.is_cancelled() {
-            let _ = child.kill().await;
-            anyhow::bail!("cancelled");
-        }
 
         let mut raw_combined = String::new();
         if !stdout.is_empty() {
@@ -267,6 +271,8 @@ impl ShellTool {
                 output,
                 error: Some(format!("exit code {}:\n{}", code_str, err_text)),
                 truncated,
+                outcome: ToolExecutionOutcome::Failed,
+                attempts: 1,
                 signals: crate::tool::ToolSignals::default(),
             })
         }
@@ -279,17 +285,19 @@ impl Tool for ShellTool {
         "shell".into()
     }
     fn description(&self) -> String {
-        "Execute a shell command on the user's PC. The default shell is user-configurable in the app settings (cmd / Windows PowerShell / PowerShell 7, reported in the result's shell field; any shell is selectable per call via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. Commands that exceed the timeout are automatically moved to the background and keep running.".into()
+        "Execute a shell command on the user's PC. The default shell is user-configurable in the app settings (cmd / Windows PowerShell / PowerShell 7, reported in the result's shell field; any shell is selectable per call via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. Commands that exceed the timeout are terminated when possible, but Windows child processes may outlive the shell and are reported as an unknown timeout.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
         RiskLevel::High
     }
 
-    /// Shell commands get a generous timeout (5 min) so long-running
-    /// foreground work (git clone, npm install, build scripts) has room to
-    /// finish; truly hung commands are moved to the background by the tools
-    /// manager on timeout instead of failing the step.
+    fn timeout_outcome(&self) -> ToolExecutionOutcome {
+        ToolExecutionOutcome::TimedOutUnknown
+    }
+
+    /// Shell commands get a generous timeout (5 min). A timeout is unknown
+    /// because Windows child processes can outlive the shell process.
     fn default_timeout_secs(&self) -> u64 {
         300
     }
@@ -323,35 +331,8 @@ impl Tool for ShellTool {
         self.run(params, cancel).await
     }
 
-    /// Re-run a timed-out foreground command as a background action so the session
-    /// is not blocked by long-running work (git clone, npm install, build
-    /// scripts). Uses the same action registry as `background: true`, so the
-    /// result is pushed back to the session automatically on completion.
-    async fn timeout_fallback(&self, input: &Value) -> Option<ToolResult> {
-        let cmd = input["command"].as_str().unwrap_or("");
-        if cmd.trim().is_empty() {
-            return None;
-        }
-        let (shell, cwd) =
-            self.resolve_shell_and_cwd(input["shell"].as_str(), input["cwd"].as_str());
-        let max_chars = self.max_output_chars;
-        let action_id = self
-            .actions
-            .spawn_shell(cmd, &shell, max_chars, cwd)
-            .await
-            .ok()?;
-        let mut body = haven_common::tools::background_wait_object(
-            "Foreground command timed out and was moved to the background. END YOUR TURN now if you have nothing else useful to do — do not poll. You will be auto-woken with the output when it finishes. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this action's result.",
-        );
-        body.insert("background".into(), serde_json::json!(true));
-        body.insert("action_id".into(), serde_json::json!(action_id));
-        body.insert("shell".into(), serde_json::json!(shell));
-        body.insert("status".into(), serde_json::json!("running"));
-        Some(ToolResult::ok(serde_json::Value::Object(body)))
-    }
-
     /// Declare the background-action binding for `background: true` invocations
-    /// (and the timeout-fallback result above) so the executor attaches the
+    /// so the executor attaches the
     /// action to this session without name-matching "shell".
     fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
         if output.get("background").and_then(|v| v.as_bool()) != Some(true) {
@@ -467,6 +448,20 @@ mod tests {
             .execute(json!({"command": "echo hi"}), cancel)
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_shell_timeout_is_unknown_without_replay() {
+        #[cfg(windows)]
+        let command = "Start-Sleep -Seconds 5";
+        #[cfg(not(windows))]
+        let command = "sleep 5";
+        let result = ShellTool::default()
+            .execute_with_timeout(json!({"command": command}), CancellationToken::new(), 1)
+            .await
+            .unwrap();
+        assert_eq!(result.outcome, ToolExecutionOutcome::TimedOutUnknown);
+        assert!(!result.success);
     }
 
     #[cfg(windows)]

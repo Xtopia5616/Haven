@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::inbox::{Envelope, InboxBus, MessageType, validate_agent_name};
-use crate::{Tool, ToolResult};
+use crate::{OperationIdempotency, Tool, ToolResult};
 
 /// Max envelope field sizes (defensive caps; the bus is append-only JSONL).
 const MAX_TEXT_BYTES: usize = 16 * 1024;
@@ -693,7 +693,9 @@ impl AgentTool {
             }
             let now = Instant::now();
             if now >= deadline {
-                return Ok(ToolResult::ok(json!({
+                return Ok(ToolResult {
+                    success: false,
+                    output: json!({
                     "ok": false,
                     "timed_out": true,
                     "message_id": request_id,
@@ -701,7 +703,15 @@ impl AgentTool {
                     "delivered": outcome.delivered,
                     "recipient_status": outcome.status,
                     "timeout_secs": timeout_secs,
-                })));
+                    }),
+                    error: Some(format!(
+                        "agent request timed out after {timeout_secs}s; the request was delivered and may still receive a reply"
+                    )),
+                    truncated: false,
+                    outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
+                    attempts: 1,
+                    signals: crate::tool::ToolSignals::default(),
+                });
             }
             let wait = (deadline - now).min(REQUEST_WAIT_FALLBACK);
             tokio::select! {
@@ -791,6 +801,18 @@ impl Tool for AgentTool {
         match input.get("operation").and_then(|v| v.as_str()) {
             Some("spawn") => RiskLevel::Medium,
             _ => RiskLevel::Safe,
+        }
+    }
+
+    fn idempotency(&self, input: &Value) -> OperationIdempotency {
+        match input.get("operation").and_then(Value::as_str) {
+            Some("list") | Some("profile") => OperationIdempotency::Idempotent,
+            // inbox archives/claims messages; all delivery, reply, request and
+            // spawn operations have externally visible side effects.
+            Some("inbox") | Some("send") | Some("reply") | Some("request") | Some("spawn") => {
+                OperationIdempotency::NonIdempotent
+            }
+            _ => OperationIdempotency::Unknown,
         }
     }
 
@@ -1533,6 +1555,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["ok"], false);
         assert_eq!(result.output["timed_out"], true);
+        assert_eq!(result.outcome, crate::ToolExecutionOutcome::TimedOutUnknown);
         assert!(
             result.output["message_id"]
                 .as_str()

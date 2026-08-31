@@ -41,9 +41,10 @@ pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, 
 pub use live_output::LiveOutputHub;
 pub use skill_runner::SkillRunner;
 pub use tool::{
-    ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, SafetyGateway, Tool,
-    ToolBox, ToolDef, ToolRegistration, ToolRegistry, ToolResult, ToolSignals, extract_ask_signal,
-    extract_notify_signal, is_safe_local_path, is_silent_action,
+    ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, OperationIdempotency,
+    SafetyGateway, Tool, ToolBox, ToolDef, ToolExecutionOutcome, ToolRegistration, ToolRegistry,
+    ToolResult, ToolSignals, extract_ask_signal, extract_notify_signal, is_safe_local_path,
+    is_silent_action,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.
@@ -866,18 +867,23 @@ impl ToolsManager {
             }
         }
         let settings = self.tool_settings.read().await;
-        let cfg = settings.get(tool_name).cloned().unwrap_or_default();
-        let timeout_secs = if settings.contains_key(tool_name) {
-            cfg.timeout_secs
-        } else {
-            tool.timeout_secs_for(&exec_input)
-        };
-        let max_retries = cfg.max_retries;
-        let backoff_secs = cfg.retry_backoff_secs;
-        // A timeout can mean an external write actually completed but its
-        // response was lost. Retry Safe operations by default; higher-risk
-        // tools require an explicit per-tool opt-in.
-        let retry_allowed = tool.risk_level(&exec_input) == RiskLevel::Safe || cfg.retry_unsafe;
+        let configured = settings.get(tool_name).cloned();
+        let cfg = configured.clone().unwrap_or_default();
+        // A settings entry refines only fields explicitly configured. In
+        // particular, `None` must preserve operation-specific intrinsic
+        // timeouts instead of silently replacing them with 30 seconds.
+        let timeout_secs = cfg
+            .timeout_secs
+            .unwrap_or_else(|| tool.timeout_secs_for(&exec_input));
+        let max_retries = configured
+            .as_ref()
+            .map(|c| c.max_retries)
+            .unwrap_or_else(|| tool.default_max_retries());
+        let backoff_secs = configured
+            .as_ref()
+            .map(|c| c.retry_backoff_secs)
+            .unwrap_or_else(|| tool.default_retry_backoff_secs());
+        let idempotency = tool.idempotency(&exec_input);
         drop(settings);
 
         let max_attempts = 1 + max_retries;
@@ -888,59 +894,62 @@ impl ToolsManager {
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
-                    _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+                    _ = cancel.cancelled() => {
+                        return Ok(ToolResult::cancelled("tool execution cancelled during retry backoff"));
+                    },
                 }
             }
             if cancel.is_cancelled() {
-                anyhow::bail!("cancelled");
+                return Ok(ToolResult::cancelled("tool execution cancelled"));
             }
 
-            match tool
+            let mut result = match tool
                 .execute_with_timeout(exec_input.clone(), cancel.clone(), timeout_secs)
                 .await
             {
-                Ok(result) => {
-                    self.tool_circuits.record_success(tool_name);
-                    // Attach the tool's declared side-channel signals (ask
-                    // question / notify toast) BEFORE returning: consumers
-                    // (the ReAct loop) read structured signals instead of
-                    // name-matching and re-parsing the output JSON.
-                    let mut result = result;
-                    result.signals = tool.signals(&result.output);
-                    return Ok(result);
-                }
-                Err(e)
-                    if retry_allowed
-                        && attempt + 1 < max_attempts
-                        && is_retryable_tool_error(&e) =>
-                {
-                    tracing::debug!(
-                        "tool '{}' attempt {} failed, retrying: {}",
-                        tool_name,
-                        attempt + 1,
-                        e
-                    );
-                    continue;
-                }
+                Ok(result) => result,
                 Err(e) => {
-                    self.tool_circuits.record_failure(tool_name);
-                    // Long-running tools may hand the work to a background
-                    // mechanism on timeout instead of failing the step, so
-                    // the session can continue and pick the result up later
-                    // (auto-pushed on completion). Declared per-tool via
-                    // `Tool::timeout_fallback` (currently the shell tool).
-                    if !cancel.is_cancelled()
-                        && is_tool_timeout(&e)
-                        && let Some(result) = tool.timeout_fallback(&exec_input).await
-                    {
-                        return Ok(result);
+                    let message = e.to_string();
+                    let lower = message.to_ascii_lowercase();
+                    if cancel.is_cancelled() || lower.contains("cancel") {
+                        ToolResult::cancelled(message)
+                    } else if lower.contains("timeout") || lower.contains("timed out") {
+                        ToolResult::timed_out(tool.timeout_outcome(), message)
+                    } else {
+                        ToolResult::failed(Value::Null, message)
                     }
-                    return Err(e);
                 }
+            };
+            result.attempts = attempt + 1;
+            if result.success {
+                self.tool_circuits.record_success(tool_name);
+                // Attach the tool's declared side-channel signals (ask
+                // question / notify toast) BEFORE returning.
+                result.signals = tool.signals(&result.output);
+                return Ok(result);
             }
+
+            let can_retry = matches!(idempotency, OperationIdempotency::Idempotent)
+                && attempt + 1 < max_attempts
+                && retryable_result(&result);
+            if can_retry {
+                tracing::warn!(
+                    tool = %tool_name,
+                    attempt = result.attempts,
+                    max_attempts,
+                    outcome = ?result.outcome,
+                    "idempotent tool attempt failed; retrying"
+                );
+                continue;
+            }
+            self.tool_circuits.record_failure(tool_name);
+            return Ok(result);
         }
         self.tool_circuits.record_failure(tool_name);
-        anyhow::bail!("tool '{}' retries exhausted", tool_name);
+        Ok(ToolResult::failed(
+            Value::Null,
+            format!("tool '{}' retries exhausted", tool_name),
+        ))
     }
 
     pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
@@ -968,32 +977,39 @@ impl ToolsManager {
     }
 }
 
-/// Returns `true` if a tool execution error is transient and worth retrying.
-fn is_retryable_tool_error(err: &anyhow::Error) -> bool {
-    let msg = err.to_string().to_lowercase();
-    !msg.contains("cancelled")
-        && (msg.contains("timed out")
-            || msg.contains("timeout")
-            || msg.contains("connection refused")
-            || msg.contains("connection reset")
-            || msg.contains("connection aborted")
-            || msg.contains("connection closed")
-            || msg.contains("network is unreachable")
-            || msg.contains("temporary failure")
-            || msg.contains("temporarily unavailable")
-            || msg.contains("service unavailable")
-            || msg.contains("too many requests")
-            || msg.contains("rate limit")
-            || msg.contains("status 429")
-            || msg.contains("status 502")
-            || msg.contains("status 503")
-            || msg.contains("status 504")
-            || msg.contains("eof"))
-}
-
-/// Whether a tool call failed because its time budget ran out.
-fn is_tool_timeout(err: &anyhow::Error) -> bool {
-    err.to_string().to_lowercase().contains("timed out")
+/// Retry only failures that are known to be transient. Unknown/cancelled
+/// outcomes are never replayed, because the operation may still be running.
+fn retryable_result(result: &ToolResult) -> bool {
+    if matches!(
+        result.outcome,
+        ToolExecutionOutcome::Cancelled | ToolExecutionOutcome::TimedOutUnknown
+    ) {
+        return false;
+    }
+    result
+        .error
+        .as_deref()
+        .map(|error| {
+            let msg = error.to_ascii_lowercase();
+            msg.contains("timed out")
+                || msg.contains("timeout")
+                || msg.contains("connection refused")
+                || msg.contains("connection reset")
+                || msg.contains("connection aborted")
+                || msg.contains("connection closed")
+                || msg.contains("network is unreachable")
+                || msg.contains("temporary failure")
+                || msg.contains("temporarily unavailable")
+                || msg.contains("service unavailable")
+                || msg.contains("too many requests")
+                || msg.contains("rate limit")
+                || msg.contains("status 429")
+                || msg.contains("status 502")
+                || msg.contains("status 503")
+                || msg.contains("status 504")
+                || msg.contains("eof")
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -1220,7 +1236,7 @@ mod tests {
             let r = mgr
                 .execute_tool(None, "failing", json!({}), CancellationToken::new())
                 .await;
-            assert!(r.is_err(), "call {} should fail", i + 1);
+            assert!(!r.unwrap().success, "call {} should fail", i + 1);
         }
         assert!(mgr.tool_circuits().is_open("failing"));
 
@@ -1258,6 +1274,9 @@ mod tests {
             }
             fn risk_level(&self, _: &Value) -> RiskLevel {
                 RiskLevel::Safe
+            }
+            fn idempotency(&self, _: &Value) -> OperationIdempotency {
+                OperationIdempotency::Idempotent
             }
             fn input_schema(&self) -> Value {
                 json!({"type": "object"})
@@ -1298,17 +1317,64 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
+    #[tokio::test]
+    async fn settings_without_timeout_preserve_intrinsic_timeout() {
+        struct SlowIntrinsicTool;
+
+        #[async_trait::async_trait]
+        impl Tool for SlowIntrinsicTool {
+            fn name(&self) -> String {
+                "slow_intrinsic".into()
+            }
+            fn description(&self) -> String {
+                "test tool".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::High
+            }
+            fn default_timeout_secs(&self) -> u64 {
+                1
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Ok(ToolResult::ok(json!({"done": true})))
+            }
+        }
+
+        let mgr = ToolsManager::new();
+        mgr.set_tool_settings(HashMap::from([(
+            "slow_intrinsic".into(),
+            ToolConfig {
+                max_output_chars: Some(100),
+                ..Default::default()
+            },
+        )]))
+        .await;
+        mgr.registry.register(Arc::new(SlowIntrinsicTool)).await;
+
+        let result = mgr
+            .execute_tool(None, "slow_intrinsic", json!({}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.outcome, ToolExecutionOutcome::TimedOutUnknown);
+        assert_eq!(result.attempts, 1);
+    }
+
     #[test]
-    fn retryable_tool_errors_exclude_cancellation_and_logic_failures() {
-        assert!(is_retryable_tool_error(&anyhow::anyhow!("status 503")));
-        assert!(is_retryable_tool_error(&anyhow::anyhow!(
-            "connection reset"
+    fn retryable_tool_results_require_known_transient_failure() {
+        assert!(retryable_result(&ToolResult::failed(
+            Value::Null,
+            "status 503"
         )));
-        assert!(!is_retryable_tool_error(&anyhow::anyhow!(
+        assert!(!retryable_result(&ToolResult::cancelled(
             "cancelled while waiting"
         )));
-        assert!(!is_retryable_tool_error(&anyhow::anyhow!(
-            "input validation failed"
+        assert!(!retryable_result(&ToolResult::timed_out(
+            ToolExecutionOutcome::TimedOutUnknown,
+            "timeout"
         )));
     }
 

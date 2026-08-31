@@ -485,10 +485,24 @@ mod tests {
         let cfg: AppConfig = toml::from_str(toml_str).unwrap();
         let file = cfg.tool_settings.get("file").unwrap();
         assert!(file.enabled);
-        assert_eq!(file.timeout_secs, 60);
+        assert_eq!(file.timeout_secs, Some(60));
         // Per-tool output cap defaults to None → inherits the global
         // `context_limits.max_observation_chars`.
         assert_eq!(file.max_output_chars, None);
+    }
+
+    #[test]
+    fn tool_config_without_timeout_preserves_intrinsic_default() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+            [tool_settings.http]
+            max_retries = 3
+            "#,
+        )
+        .unwrap();
+        let http = cfg.tool_settings.get("http").unwrap();
+        assert_eq!(http.timeout_secs, None);
+        assert_eq!(http.max_retries, 3);
     }
 
     #[test]
@@ -663,7 +677,7 @@ mod tests {
         cfg.tool_settings.insert(
             "file".into(),
             ToolConfig {
-                timeout_secs: 60,
+                timeout_secs: Some(60),
                 ..Default::default()
             },
         );

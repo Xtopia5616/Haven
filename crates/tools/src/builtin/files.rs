@@ -160,6 +160,8 @@ async fn understand_image(
                 output: serde_json::json!({"image": true, "path": path, "understand_error": true}),
                 error: Some(format!("vision call failed: {}", e)),
                 truncated: false,
+                outcome: crate::ToolExecutionOutcome::Failed,
+                attempts: 1,
                 signals: crate::tool::ToolSignals::default(),
             });
         }
@@ -172,6 +174,8 @@ async fn understand_image(
                     summary_timeout_secs
                 )),
                 truncated: false,
+                outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
+                attempts: 1,
                 signals: crate::tool::ToolSignals::default(),
             });
         }
@@ -750,6 +754,8 @@ impl FilesTool {
                         }),
                         error: None,
                         truncated: false,
+                        outcome: crate::ToolExecutionOutcome::Succeeded,
+                        attempts: 1,
                         signals: crate::tool::ToolSignals::default(),
                     });
                 }
@@ -1008,6 +1014,8 @@ async fn summarize(
                 output: serde_json::json!({"summary_error": true, "path": path}),
                 error: Some(format!("summarizer call failed: {}", e)),
                 truncated: false,
+                outcome: crate::ToolExecutionOutcome::Failed,
+                attempts: 1,
                 signals: crate::tool::ToolSignals::default(),
             });
         }
@@ -1020,6 +1028,8 @@ async fn summarize(
                     summary_timeout_secs
                 )),
                 truncated: false,
+                outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
+                attempts: 1,
                 signals: crate::tool::ToolSignals::default(),
             });
         }
