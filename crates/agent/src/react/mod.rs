@@ -22,6 +22,7 @@ mod hooks;
 mod identity;
 mod inject;
 mod r#loop;
+mod request_context;
 mod retries;
 mod sidecars;
 mod snapshot_io;
@@ -38,6 +39,7 @@ use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
 pub(crate) use r#loop::RunInput;
 pub use r#loop::{LoopExit, PauseReason};
+pub(crate) use request_context::RequestContext;
 use sidecars::{
     BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs,
     TokenEstimateCache, ToolDefCache, UsageTracker,

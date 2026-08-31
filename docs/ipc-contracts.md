@@ -195,7 +195,7 @@ Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界�
 DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 `ui/src/lib/contracts/app.ts`、`ui/src/lib/contracts/agent.ts`，只能通过
 `appEventListeners` / `agentEventListeners` 进入路由。`scripts/check-ipc-events.ps1`
-会比较两侧的全部 39 个 channel，防止新增事件只改一侧。
+会比较两侧的全部 40 个 channel，防止新增事件只改一侧。
 
 | 事件 | Rust DTO（wire） | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|
@@ -212,6 +212,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 action 的 `step_id` / `tool_call_id` 关联；工具输出按后端门禁净化。 |
 | `agent:balanced_model` / `agent:stream_stalled` | 对应命名 DTO | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
 | `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 通过 `seq` 排序，丢失 chunk 时由完整消息投影兜底。 |
+| `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |
 | `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。 |
 | `agent:supplement` / `agent:compaction` | 对应命名 DTO | 聊天页 | 按 run/step 顺序消费；只发送摘要/补充上下文，不发送快照内部对象。 |
 | `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 固定 token/cost 字段；`cache_diagnostics` 仅为 provider 诊断扩展点。 |

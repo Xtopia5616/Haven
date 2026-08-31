@@ -11,7 +11,7 @@ import {
 	updateSessionMessages,
 } from './sessionMessages.ts';
 
-interface PendingChunk {
+export interface PendingChunk {
 	tid: string;
 	sid: string;
 	delta: string;
@@ -20,6 +20,32 @@ interface PendingChunk {
 	runId: number;
 	time: string;
 	finalizeReasoning: boolean;
+}
+
+/**
+ * Fold only adjacent chunks from one stream block. Keeping this as a pure
+ * operation makes the ordering rule explicit and testable without coupling
+ * it to the message store's reasoning-before-thought presentation policy.
+ */
+export function foldContiguousChunks(batch: readonly PendingChunk[]): PendingChunk[] {
+	const merged: PendingChunk[] = [];
+	for (const chunk of batch) {
+		const previous = merged[merged.length - 1];
+		if (
+			previous &&
+			previous.tid === chunk.tid &&
+			previous.sid === chunk.sid &&
+			previous.msgType === chunk.msgType &&
+			previous.stepNumber === chunk.stepNumber &&
+			previous.runId === chunk.runId
+		) {
+			previous.delta = (previous.delta || '') + (chunk.delta || '');
+			previous.finalizeReasoning = previous.finalizeReasoning || chunk.finalizeReasoning;
+		} else {
+			merged.push({ ...chunk });
+		}
+	}
+	return merged;
 }
 
 interface StepBlockIds {
@@ -103,24 +129,15 @@ export function createStreamEventAggregator({
 		chunkFlushRaf = 0;
 		if (pendingChunks.length === 0) return;
 		const batch = pendingChunks.splice(0);
-		// Merge deltas per step before touching the message list: each
-		// accumulateStreamChunk call copies the whole conversation array, so
-		// applying N chunks of the same step separately costs O(N × list) per
-		// flush. Concatenating deltas preserves the final text while collapsing
-		// the work to O(steps × list).
-		const mergedBySid = new Map<string, PendingChunk>();
-		for (const chunk of batch) {
-			const previous = mergedBySid.get(chunk.sid);
-			if (previous) {
-				previous.delta = (previous.delta || '') + (chunk.delta || '');
-				previous.finalizeReasoning = previous.finalizeReasoning || chunk.finalizeReasoning;
-			} else {
-				mergedBySid.set(chunk.sid, { ...chunk });
-			}
-		}
+		// Merge only contiguous chunks from the same stream block. A map keyed by
+		// message id is tempting, but it silently moves A₂ next to A₁ when the
+		// arrival order is A₁, B₁, A₂ (common around reasoning/search boundaries).
+		// That turns ordering into text corruption. Contiguous folding keeps the
+		// O(steps × list) batching benefit without inventing a new order.
+		const merged = foldContiguousChunks(batch);
 		// Group by session while preserving arrival order within each session.
 		const bySession = new Map<string, PendingChunk[]>();
-		for (const chunk of mergedBySid.values()) {
+		for (const chunk of merged) {
 			let list = bySession.get(chunk.tid);
 			if (!list) bySession.set(chunk.tid, (list = []));
 			list.push(chunk);

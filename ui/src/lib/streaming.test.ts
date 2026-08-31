@@ -13,6 +13,7 @@ import {
 	newToolMessage,
 	actionIdFromObservation,
 	parseActionResultInject,
+	resetStreamBlocks,
 } from './streaming.ts';
 
 const STEP_ID = 'msg-thought-1';
@@ -125,6 +126,23 @@ describe('accumulateStreamChunk (thought)', () => {
 		m = m.map((x) => ({ ...x, streaming: false }));
 		const out = chunk(m, '多余');
 		expect(out).toBe(m);
+	});
+});
+
+describe('resetStreamBlocks', () => {
+	it('removes all live output segments but keeps tool and user messages', () => {
+		const messages: StreamMessage[] = [
+			{ id: 'user-1', role: 'user', content: 'request' },
+			{ id: STEP_ID, role: 'assistant', content: 'old', streaming: true },
+			{ id: `${STEP_ID}-1`, role: 'assistant', content: 'old tail', streaming: false },
+			{ id: 'tool-1', role: 'assistant', type: 'tool', content: 'search', streaming: false },
+			{ id: REASONING_ID, role: 'assistant', type: 'reasoning', content: 'old reasoning', streaming: true },
+		];
+
+		expect(resetStreamBlocks(messages, REASONING_ID, STEP_ID).map((x) => x.id)).toEqual([
+			'user-1',
+			'tool-1',
+		]);
 	});
 });
 

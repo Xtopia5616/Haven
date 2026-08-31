@@ -9,6 +9,7 @@ export const AGENT_EVENT_NAMES = [
 	'agent:balanced_model',
 	'agent:thought_chunk',
 	'agent:reasoning_chunk',
+	'agent:stream_reset',
 	'agent:web_search',
 	'agent:stream_stalled',
 	'agent:supplement',
@@ -64,6 +65,14 @@ export interface AgentChunkPayload {
 	runId: number;
 	messageId: string;
 	seq: number;
+}
+
+export interface AgentStreamResetPayload {
+	sessionId: string;
+	stepNumber: number;
+	runId: number;
+	thoughtMessageId: string;
+	reasoningMessageId: string;
 }
 
 export interface AgentWebSearchPayload {
@@ -143,6 +152,7 @@ export interface AgentEventPayloadMap {
 	'agent:balanced_model': AgentBalancedModelPayload;
 	'agent:thought_chunk': AgentChunkPayload;
 	'agent:reasoning_chunk': AgentChunkPayload;
+	'agent:stream_reset': AgentStreamResetPayload;
 	'agent:web_search': AgentWebSearchPayload;
 	'agent:stream_stalled': AgentStreamStalledPayload;
 	'agent:supplement': AgentSupplementPayload;
@@ -192,6 +202,13 @@ interface AgentChunkWirePayload {
 	run_id: number;
 	message_id: string;
 	seq: number;
+}
+interface AgentStreamResetWirePayload {
+	session_id: string;
+	step_number: number;
+	run_id: number;
+	thought_message_id: string;
+	reasoning_message_id: string;
 }
 interface AgentWebSearchWirePayload {
 	session_id: string;
@@ -258,6 +275,7 @@ interface AgentWirePayloadMap {
 	'agent:balanced_model': AgentBalancedModelWirePayload;
 	'agent:thought_chunk': AgentChunkWirePayload;
 	'agent:reasoning_chunk': AgentChunkWirePayload;
+	'agent:stream_reset': AgentStreamResetWirePayload;
 	'agent:web_search': AgentWebSearchWirePayload;
 	'agent:stream_stalled': AgentStreamStalledWirePayload;
 	'agent:supplement': AgentSupplementWirePayload;
@@ -328,6 +346,16 @@ export function mapAgentEvent<K extends AgentEventName>(
 				runId: payload.run_id,
 				messageId: payload.message_id,
 				seq: payload.seq,
+			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
+		}
+		case 'agent:stream_reset': {
+			const payload = p as AgentStreamResetWirePayload;
+			return { ...event, payload: {
+				sessionId: payload.session_id,
+				stepNumber: payload.step_number,
+				runId: payload.run_id,
+				thoughtMessageId: payload.thought_message_id,
+				reasoningMessageId: payload.reasoning_message_id,
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:web_search': {

@@ -92,6 +92,49 @@ pub struct LlmRouter {
     rate_limited: RwLock<[Option<Instant>; 6]>,
 }
 
+/// Callbacks and output policy for one routed streaming request.
+///
+/// The provider may make several attempts for one logical Agent turn. The
+/// chunk callback receives provider deltas; the attempt callback marks whether
+/// a new attempt replaces the already visible output. Keeping these controls
+/// together prevents callers from accidentally handling retry boundaries as
+/// ordinary chunks.
+pub struct StreamAttemptHooks {
+    on_chunk: Box<dyn FnMut(&StreamChunk) + Send + 'static>,
+    on_attempt_start: Box<dyn FnMut(bool) + Send + 'static>,
+    replace_output_on_start: bool,
+}
+
+impl StreamAttemptHooks {
+    pub fn new(
+        on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
+        on_attempt_start: impl FnMut(bool) + Send + 'static,
+        replace_output_on_start: bool,
+    ) -> Self {
+        Self {
+            on_chunk: Box::new(on_chunk),
+            on_attempt_start: Box::new(on_attempt_start),
+            replace_output_on_start,
+        }
+    }
+}
+
+type ChunkCallback = Box<dyn FnMut(&StreamChunk) + Send + 'static>;
+type AttemptCallback = Box<dyn FnMut(bool) + Send + 'static>;
+
+struct ActiveStreamHooks {
+    on_chunk: Arc<StdMutex<ChunkCallback>>,
+    on_attempt_start: Arc<StdMutex<AttemptCallback>>,
+}
+
+struct RetryStreamRequest<'a> {
+    messages: &'a [CanonicalMessage],
+    tools: &'a [ToolDefinition],
+    cancel: CancellationToken,
+    error: LlmError,
+    replace_output: bool,
+}
+
 impl LlmRouter {
     pub fn new(config: RouterConfig) -> Self {
         Self::with_default_context_window(config, crate::registry::FALLBACK_CONTEXT_WINDOW)
@@ -785,9 +828,35 @@ impl LlmRouter {
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
+        self.chat_stream_with_tools_aggregated_cancellable_with_attempts(
+            role,
+            messages,
+            tools,
+            StreamAttemptHooks::new(on_chunk, |_| {}, false),
+            cancel,
+        )
+        .await
+    }
+
+    /// Stream-chat with explicit output-attempt boundaries.
+    ///
+    /// `on_attempt_start(true)` means the new provider attempt replaces the
+    /// previous visible output. The callback is deliberately separate from
+    /// `on_chunk`: a provider failover can start a new response before its
+    /// first chunk arrives, and concatenating both attempts is never valid.
+    /// The legacy cancellable method above keeps the old callback-only API for
+    /// non-agent callers.
+    pub async fn chat_stream_with_tools_aggregated_cancellable_with_attempts(
+        &self,
+        role: EndpointRole,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+        hooks: StreamAttemptHooks,
+        cancel: CancellationToken,
+    ) -> Result<LlmResponse, LlmError> {
         self.with_endpoint_permit(&role, || async {
             self.chat_stream_with_tools_aggregated_cancellable_inner(
-                role, messages, tools, on_chunk, cancel,
+                role, messages, tools, hooks, cancel,
             )
             .await
         })
@@ -801,19 +870,24 @@ impl LlmRouter {
     async fn retry_stream_with_guidance(
         &self,
         primary: &Arc<dyn LlmClient>,
-        messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
-        on_chunk: &Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
-        cancel: CancellationToken,
-        err: LlmError,
+        hooks: &ActiveStreamHooks,
+        request: RetryStreamRequest<'_>,
     ) -> Result<LlmResponse, LlmError> {
-        let LlmError::StreamAborted(rule_name, inject) = err else {
-            return Err(err);
+        let RetryStreamRequest {
+            messages,
+            tools,
+            cancel,
+            error,
+            replace_output,
+        } = request;
+        let LlmError::StreamAborted(rule_name, inject) = error else {
+            return Err(error);
         };
         tracing::warn!(
             "stream aborted by rule '{}', injecting guidance and retrying with primary",
             rule_name
         );
+        hooks.on_attempt_start.lock().unwrap()(replace_output);
         // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
         // time out instantly, disabling all model replies.
         let idle_dur =
@@ -829,7 +903,7 @@ impl LlmRouter {
             primary.clone(),
             retry_msgs,
             tools.to_vec(),
-            on_chunk.clone(),
+            hooks.on_chunk.clone(),
             cancel,
             &self.stream_rules,
             idle_dur,
@@ -842,7 +916,7 @@ impl LlmRouter {
         role: EndpointRole,
         messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
-        on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
+        hooks: StreamAttemptHooks,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         self.check_circuit(&role).await?;
@@ -853,7 +927,16 @@ impl LlmRouter {
             tools.len()
         );
         let primary = self.select_endpoint(role);
-        let on_chunk = Arc::new(StdMutex::new(on_chunk));
+        let StreamAttemptHooks {
+            on_chunk,
+            on_attempt_start,
+            replace_output_on_start,
+        } = hooks;
+        let hooks = ActiveStreamHooks {
+            on_chunk: Arc::new(StdMutex::new(on_chunk)),
+            on_attempt_start: Arc::new(StdMutex::new(on_attempt_start)),
+        };
+        hooks.on_attempt_start.lock().unwrap()(replace_output_on_start);
 
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
@@ -868,7 +951,7 @@ impl LlmRouter {
             let primary_result = streaming::aggregate_stream_with_retry_before_output(
                     primary.clone(),
                     stream_context,
-                    on_chunk.clone(),
+                    hooks.on_chunk.clone(),
                     cancel.clone(),
                     &self.stream_rules,
                     idle_dur,
@@ -885,11 +968,14 @@ impl LlmRouter {
                 Err(err @ LlmError::StreamAborted(_, _)) => {
                     self.retry_stream_with_guidance(
                         &primary,
-                        messages,
-                        tools,
-                        &on_chunk,
-                        cancel.clone(),
-                        err,
+                        &hooks,
+                        RetryStreamRequest {
+                            messages,
+                            tools,
+                            cancel: cancel.clone(),
+                            error: err,
+                            replace_output: true,
+                        },
                     )
                     .await
                 }
@@ -912,10 +998,11 @@ impl LlmRouter {
                         e
                     );
                     self.balanced_model_active.store(true, Ordering::SeqCst);
+                    hooks.on_attempt_start.lock().unwrap()(true);
                     let fb_result = streaming::aggregate_stream_with_retry_before_output(
                             self.balanced_model.clone(),
                             stream_context,
-                            on_chunk,
+                            hooks.on_chunk.clone(),
                             cancel,
                             &self.stream_rules,
                             idle_dur,

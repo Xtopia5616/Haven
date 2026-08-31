@@ -81,6 +81,16 @@ pub enum AgentEvent {
         /// Same semantics as `ThoughtChunk::message_id`.
         message_id: String,
     },
+    /// Ordered boundary emitted before a replacement stream attempt. The
+    /// frontend removes only the live thought/reasoning blocks for this step;
+    /// durable transcript events remain authoritative.
+    StreamReset {
+        session_id: String,
+        step_number: u32,
+        run_id: u64,
+        thought_message_id: String,
+        reasoning_message_id: String,
+    },
     /// Live status of the provider's built-in web search tool. Forwarded from
     /// the stream events (`in_progress` → `searching` → `completed`) so the
     /// UI can render one card per call. DeepSeek may emit several
@@ -227,9 +237,11 @@ pub trait AgentEventEmitter: Send + Sync {
 /// newest one. Chunk deltas are self-healing: the step's final
 /// `agent:thought` snap and the full-text reasoning reconcile replace the
 /// accumulated streamed text, so losing an old intermediate chunk is
-/// invisible in the end state. Dropping the newest event (or a non-chunk
-/// event like the snap, session status, completion, error) would lose
-/// authoritative state permanently — the very events that repair the stream.
+/// invisible in the end state. Stream-reset markers are authoritative ordering
+/// events and are kept in preference to ordinary status events. Dropping the
+/// newest event (or a non-chunk event like the snap, session status, completion,
+/// error) would lose authoritative state permanently — the very events that
+/// repair the stream.
 ///
 /// Ordering within one producer is preserved (FIFO); concurrent producers
 /// interleave, exactly as with direct awaited emits.
@@ -291,12 +303,24 @@ impl AgentEventEmitter for BufferedEmitter {
                     "event buffer full (capacity {}), evicting oldest queued chunk event",
                     self.capacity
                 );
-            } else {
-                queue.pop_front();
+            } else if let Some(pos) = queue.iter().position(|queued| !is_stream_reset(queued)) {
+                queue.remove(pos);
                 tracing::warn!(
-                    "event buffer full (capacity {}), evicting oldest event",
+                    "event buffer full (capacity {}), evicting ordinary event to preserve stream reset",
                     self.capacity
                 );
+            } else if is_stream_reset(&event) {
+                queue.pop_front();
+                tracing::warn!(
+                    "event buffer full (capacity {}), evicting oldest stream reset",
+                    self.capacity
+                );
+            } else {
+                tracing::warn!(
+                    "event buffer full (capacity {}), dropping incoming ordinary event",
+                    self.capacity
+                );
+                return;
             }
         }
         queue.push_back(event);
@@ -373,11 +397,34 @@ impl AgentEventEmitter for EventBus {
     }
 }
 
-/// One queued chunk item: `(session_id, message_id, delta, step, run_id)`.
-/// Both ids are `Arc<str>` so the producer's per-token hot loop shares one
-/// allocation (a cheap refcount clone) instead of owning a fresh `String`
-/// per chunk; the batcher converts to `String` once per emitted batch.
-pub(crate) type ChunkItem = (Arc<str>, Arc<str>, String, u32, u64);
+/// One ordered item in the live-stream event pipeline.
+///
+/// Thought and reasoning used to have independent queues, which meant a
+/// retry could overtake the other kind of chunk. A single queue makes output
+/// order explicit and lets a retry insert a reset marker before its first
+/// delta. Both ids are `Arc<str>` so the producer's per-token hot loop shares
+/// allocations instead of cloning the session/message ids each time.
+pub(crate) enum ChunkItem {
+    Delta {
+        session_id: Arc<str>,
+        message_id: Arc<str>,
+        delta: String,
+        step_number: u32,
+        run_id: u64,
+        reasoning: bool,
+    },
+    Reset {
+        session_id: Arc<str>,
+        thought_message_id: Arc<str>,
+        reasoning_message_id: Arc<str>,
+        step_number: u32,
+        run_id: u64,
+    },
+}
+
+fn is_stream_reset(event: &AgentEvent) -> bool {
+    matches!(event, AgentEvent::StreamReset { .. })
+}
 pub(crate) type ChunkSender = tokio::sync::mpsc::Sender<ChunkItem>;
 pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 
@@ -386,60 +433,117 @@ pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 /// the concatenated `delta` is emitted, dramatically reducing Tauri IPC frequency.
 const CHUNK_BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Runs a chunk batcher: aggregates incoming
-/// `(session_id, message_id, delta, step, run)` tuples for up to
-/// `CHUNK_BATCH_INTERVAL` (or until `max_batch_bytes`), then emits a single
-/// `AgentEvent::ThoughtChunk`/`ReasoningChunk` with the concatenated delta and
-/// the block's `message_id`. A batch boundary is also forced whenever the
-/// `(session_id, message_id, step, run)` key changes or the sender half is
-/// dropped (flush remainder then exit).
+async fn emit_chunk_delta(
+    emitter: &Arc<dyn AgentEventEmitter>,
+    session_id: Arc<str>,
+    message_id: Arc<str>,
+    delta: String,
+    step_number: u32,
+    run_id: u64,
+    reasoning: bool,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    let event = if reasoning {
+        AgentEvent::ReasoningChunk {
+            session_id: session_id.to_string(),
+            delta,
+            step_number,
+            run_id,
+            message_id: message_id.to_string(),
+        }
+    } else {
+        AgentEvent::ThoughtChunk {
+            session_id: session_id.to_string(),
+            delta,
+            step_number,
+            run_id,
+            message_id: message_id.to_string(),
+        }
+    };
+    emitter.emit(event).await;
+}
+
+async fn emit_stream_reset(
+    emitter: &Arc<dyn AgentEventEmitter>,
+    session_id: Arc<str>,
+    thought_message_id: Arc<str>,
+    reasoning_message_id: Arc<str>,
+    step_number: u32,
+    run_id: u64,
+) {
+    emitter
+        .emit(AgentEvent::StreamReset {
+            session_id: session_id.to_string(),
+            thought_message_id: thought_message_id.to_string(),
+            reasoning_message_id: reasoning_message_id.to_string(),
+            step_number,
+            run_id,
+        })
+        .await;
+}
+
+/// Runs one ordered chunk batcher. Deltas for the same stream block are
+/// aggregated for at most `CHUNK_BATCH_INTERVAL` (or until
+/// `max_batch_bytes`). Reset markers are hard boundaries: pending deltas are
+/// flushed first, then the reset is emitted, so the frontend never observes a
+/// new attempt before the old attempt has drained.
 async fn run_chunk_batcher(
     mut rx: tokio::sync::mpsc::Receiver<ChunkItem>,
     emitter: Arc<dyn AgentEventEmitter>,
-    is_reasoning: bool,
     max_batch_bytes: usize,
 ) {
-    let emit_batch = |tid: String, mid: String, sn: u32, rid: u64, delta: String| {
-        let emitter = emitter.clone();
-        async move {
-            if delta.is_empty() {
-                return;
-            }
-            let event = if is_reasoning {
-                AgentEvent::ReasoningChunk {
-                    session_id: tid,
-                    delta,
-                    step_number: sn,
-                    run_id: rid,
-                    message_id: mid,
-                }
-            } else {
-                AgentEvent::ThoughtChunk {
-                    session_id: tid,
-                    delta,
-                    step_number: sn,
-                    run_id: rid,
-                    message_id: mid,
-                }
-            };
-            emitter.emit(event).await;
-        }
-    };
-
     loop {
-        // Block until the first item of a new batch arrives.
-        let (mut tid, mut mid, mut delta, mut sn, mut rid) = match rx.recv().await {
-            Some(v) => v,
+        let first = match rx.recv().await {
+            Some(item) => item,
             None => return,
         };
+
+        let ChunkItem::Delta {
+            mut session_id,
+            mut message_id,
+            mut delta,
+            mut step_number,
+            mut run_id,
+            mut reasoning,
+        } = first
+        else {
+            if let ChunkItem::Reset {
+                session_id,
+                thought_message_id,
+                reasoning_message_id,
+                step_number,
+                run_id,
+            } = first
+            {
+                emit_stream_reset(
+                    &emitter,
+                    session_id,
+                    thought_message_id,
+                    reasoning_message_id,
+                    step_number,
+                    run_id,
+                )
+                .await;
+            }
+            continue;
+        };
+
         // Emit the first chunk immediately so the user sees text without the
         // 50ms batch delay. Subsequent chunks are aggregated normally.
-        emit_batch(tid.to_string(), mid.to_string(), sn, rid, delta.clone()).await;
+        emit_chunk_delta(
+            &emitter,
+            session_id.clone(),
+            message_id.clone(),
+            std::mem::take(&mut delta),
+            step_number,
+            run_id,
+            reasoning,
+        )
+        .await;
         let mut buf = String::new();
         let mut buf_bytes = 0usize;
-        delta.clear();
-        // Fresh deadline for this batch (fixed, not sliding — recreated each loop
-        // iteration with the same value so it fires at the original deadline).
         let mut deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
 
         loop {
@@ -447,38 +551,111 @@ async fn run_chunk_batcher(
                 biased;
                 val = rx.recv() => {
                     match val {
-                        Some((tid2, mid2, delta2, sn2, rid2)) => {
-                            if (&*tid2, &*mid2, sn2, rid2) != (&*tid, &*mid, sn, rid) {
+                        Some(ChunkItem::Delta {
+                            session_id: session_id_2,
+                            message_id: message_id_2,
+                            delta: delta_2,
+                            step_number: step_number_2,
+                            run_id: run_id_2,
+                            reasoning: reasoning_2,
+                        }) => {
+                            if (&*session_id_2, &*message_id_2, step_number_2, run_id_2, reasoning_2)
+                                != (&*session_id, &*message_id, step_number, run_id, reasoning)
+                            {
                                 // key changed: flush current batch, start a new one
-                                emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
-                                tid = tid2;
-                                mid = mid2;
-                                sn = sn2;
-                                rid = rid2;
-                                buf = delta2;
-                                buf_bytes = buf.len();
+                                emit_chunk_delta(
+                                    &emitter,
+                                    session_id.clone(),
+                                    message_id.clone(),
+                                    std::mem::take(&mut buf),
+                                    step_number,
+                                    run_id,
+                                    reasoning,
+                                ).await;
+                                session_id = session_id_2;
+                                message_id = message_id_2;
+                                step_number = step_number_2;
+                                run_id = run_id_2;
+                                reasoning = reasoning_2;
+                                emit_chunk_delta(
+                                    &emitter,
+                                    session_id.clone(),
+                                    message_id.clone(),
+                                    delta_2,
+                                    step_number,
+                                    run_id,
+                                    reasoning,
+                                ).await;
+                                buf.clear();
+                                buf_bytes = 0;
                                 deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
-                                if buf_bytes >= max_batch_bytes {
-                                    emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
-                                    break;
-                                }
                             } else {
-                                buf_bytes += delta2.len();
-                                buf.push_str(&delta2);
+                                buf_bytes += delta_2.len();
+                                buf.push_str(&delta_2);
                                 if buf_bytes >= max_batch_bytes {
-                                    emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
+                                    emit_chunk_delta(
+                                        &emitter,
+                                        session_id.clone(),
+                                        message_id.clone(),
+                                        std::mem::take(&mut buf),
+                                        step_number,
+                                        run_id,
+                                        reasoning,
+                                    ).await;
                                     break;
                                 }
                             }
                         }
+                        Some(ChunkItem::Reset {
+                            session_id: reset_session_id,
+                            thought_message_id,
+                            reasoning_message_id,
+                            step_number: reset_step_number,
+                            run_id: reset_run_id,
+                        }) => {
+                            emit_chunk_delta(
+                                &emitter,
+                                session_id.clone(),
+                                message_id.clone(),
+                                std::mem::take(&mut buf),
+                                step_number,
+                                run_id,
+                                reasoning,
+                            ).await;
+                            emit_stream_reset(
+                                &emitter,
+                                reset_session_id,
+                                thought_message_id,
+                                reasoning_message_id,
+                                reset_step_number,
+                                reset_run_id,
+                            ).await;
+                            break;
+                        }
                         None => {
-                            emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
+                            emit_chunk_delta(
+                                &emitter,
+                                session_id.clone(),
+                                message_id.clone(),
+                                std::mem::take(&mut buf),
+                                step_number,
+                                run_id,
+                                reasoning,
+                            ).await;
                             return;
                         }
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
+                    emit_chunk_delta(
+                        &emitter,
+                        session_id.clone(),
+                        message_id.clone(),
+                        std::mem::take(&mut buf),
+                        step_number,
+                        run_id,
+                        reasoning,
+                    ).await;
                     break;
                 }
             }
@@ -490,12 +667,14 @@ async fn run_chunk_batcher(
             // once it has passed the batch flushes on time no matter how hot
             // the producer is, so the UI always receives smooth ~50ms updates.
             if tokio::time::Instant::now() >= deadline {
-                emit_batch(
-                    tid.to_string(),
-                    mid.to_string(),
-                    sn,
-                    rid,
+                emit_chunk_delta(
+                    &emitter,
+                    session_id.clone(),
+                    message_id.clone(),
                     std::mem::take(&mut buf),
+                    step_number,
+                    run_id,
+                    reasoning,
                 )
                 .await;
                 break;
@@ -538,34 +717,25 @@ impl EventDispatcher {
         self.emitter.lock().unwrap().clone()
     }
 
-    pub fn spawn_chunk_consumer_raw(
+    pub(crate) fn spawn_chunk_consumer_raw(
         emitter: &Arc<dyn AgentEventEmitter>,
         max_batch_bytes: usize,
-    ) -> (ChunkSender, ChunkSender, ConsumerHandle) {
+    ) -> (ChunkSender, ConsumerHandle) {
         let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(1024);
-        let (reasoning_tx, reasoning_rx) = tokio::sync::mpsc::channel(1024);
 
         let em_clone = emitter.clone();
         let thought_session = tokio::spawn(run_chunk_batcher(
             chunk_rx,
             em_clone.clone(),
-            false,
             max_batch_bytes,
         ));
-        let reasoning_session = tokio::spawn(run_chunk_batcher(
-            reasoning_rx,
-            em_clone,
-            true,
-            max_batch_bytes,
-        ));
-        // Join both batchers so awaiting this handle guarantees all buffered chunks
-        // have been flushed (and emitted) before the caller proceeds.
+        // Awaiting this handle guarantees all buffered chunks and reset
+        // markers have been flushed before the caller proceeds.
         let consumer_handle = Some(tokio::spawn(async move {
             let _ = thought_session.await;
-            let _ = reasoning_session.await;
         }));
 
-        (chunk_tx, reasoning_tx, consumer_handle)
+        (chunk_tx, consumer_handle)
     }
 
     pub async fn emit_session_created(&self, session: &SessionInfo) {
@@ -837,6 +1007,24 @@ mod tests {
         (collector_emitter(), collector_emitter())
     }
 
+    fn delta(
+        session_id: &str,
+        message_id: &str,
+        text: impl Into<String>,
+        step_number: u32,
+        run_id: u64,
+        reasoning: bool,
+    ) -> ChunkItem {
+        ChunkItem::Delta {
+            session_id: Arc::from(session_id),
+            message_id: Arc::from(message_id),
+            delta: text.into(),
+            step_number,
+            run_id,
+            reasoning,
+        }
+    }
+
     #[tokio::test]
     async fn batcher_aggregates_into_fewer_emits_and_preserves_content() {
         let emitter = collector_emitter();
@@ -844,18 +1032,18 @@ mod tests {
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
             emitter.clone(),
-            false,
             DEFAULT_CHUNK_BATCH_MAX_BYTES,
         ));
 
         // Push 100 tiny per-token chunks faster than the batch interval.
         for i in 0..100u32 {
-            tx.send((
-                "t1".into(),
-                Arc::from("msg-thought-1"),
+            tx.send(delta(
+                "t1",
+                "msg-thought-1",
                 format!("{}", i % 10),
                 1,
                 7,
+                false,
             ))
             .await
             .unwrap();
@@ -900,14 +1088,13 @@ mod tests {
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
             emitter.clone(),
-            true,
             DEFAULT_CHUNK_BATCH_MAX_BYTES,
         ));
 
-        tx.send(("t2".into(), Arc::from("msg-1"), "hello ".into(), 3, 1))
+        tx.send(delta("t2", "msg-1", "hello ", 3, 1, true))
             .await
             .unwrap();
-        tx.send(("t2".into(), Arc::from("msg-1"), "world".into(), 3, 1))
+        tx.send(delta("t2", "msg-1", "world", 3, 1, true))
             .await
             .unwrap();
         drop(tx);
@@ -933,16 +1120,15 @@ mod tests {
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
             emitter.clone(),
-            false,
             DEFAULT_CHUNK_BATCH_MAX_BYTES,
         ));
 
         // Push enough data to cross the default max-batch threshold mid-batch.
         let big = "x".repeat(DEFAULT_CHUNK_BATCH_MAX_BYTES);
-        tx.send(("t3".into(), Arc::from("msg-3"), big.clone(), 1, 1))
+        tx.send(delta("t3", "msg-3", big.clone(), 1, 1, false))
             .await
             .unwrap();
-        tx.send(("t3".into(), Arc::from("msg-3"), "tail".into(), 1, 1))
+        tx.send(delta("t3", "msg-3", "tail", 1, 1, false))
             .await
             .unwrap();
         drop(tx);
@@ -951,6 +1137,45 @@ mod tests {
         let events = emitter.events.lock().unwrap().clone();
         let total: String = events.iter().filter_map(delta_of).collect();
         assert_eq!(total, format!("{}tail", big));
+    }
+
+    #[tokio::test]
+    async fn batcher_keeps_reset_between_old_and_new_attempts() {
+        let emitter = collector_emitter();
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChunkItem>(16);
+        let handle = tokio::spawn(run_chunk_batcher(
+            rx,
+            emitter.clone(),
+            DEFAULT_CHUNK_BATCH_MAX_BYTES,
+        ));
+
+        tx.send(delta("t4", "msg-4", "old", 2, 9, false))
+            .await
+            .unwrap();
+        tx.send(ChunkItem::Reset {
+            session_id: Arc::from("t4"),
+            thought_message_id: Arc::from("msg-4"),
+            reasoning_message_id: Arc::from("msg-r-4"),
+            step_number: 2,
+            run_id: 9,
+        })
+        .await
+        .unwrap();
+        tx.send(delta("t4", "msg-4", "new", 2, 9, false))
+            .await
+            .unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        let events = emitter.events.lock().unwrap().clone();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentEvent::ThoughtChunk { delta, .. },
+                AgentEvent::StreamReset { .. },
+                AgentEvent::ThoughtChunk { delta: next, .. },
+            ] if delta == "old" && next == "new"
+        ));
     }
 
     #[tokio::test]

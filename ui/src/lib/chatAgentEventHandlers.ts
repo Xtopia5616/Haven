@@ -6,6 +6,7 @@ import {
 	insertAgentMessage,
 	newToolMessage,
 	parseActionResultInject,
+	resetStreamBlocks,
 	webSearchCardContent,
 	webSearchId,
 } from './streaming';
@@ -63,6 +64,22 @@ export function createChatAgentEventHandlers({
 		},
 		'agent:thought_chunk': chunkHandler(true, undefined),
 		'agent:reasoning_chunk': chunkHandler(false, 'reasoning'),
+		'agent:stream_reset': (event) => {
+			const data = event.payload;
+			if (!data?.sessionId) return;
+			// Reset travels through the same backend queue as deltas. Flush the
+			// current UI frame before replacing the failed output generation.
+			flushChunksNow();
+			pruneSeq(data.thoughtMessageId);
+			pruneSeq(data.reasoningMessageId);
+			updateSessionMessages(data.sessionId, (messages) =>
+				resetStreamBlocks(
+					messages,
+					data.reasoningMessageId,
+					data.thoughtMessageId,
+				),
+			);
+		},
 		'agent:web_search': (event) => {
 			const data = event.payload;
 			const sessionId = data.sessionId;

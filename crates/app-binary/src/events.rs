@@ -55,6 +55,7 @@ pub(crate) const AGENT_OBSERVATION_EVENT: &str = "agent:observation";
 pub(crate) const AGENT_BALANCED_MODEL_EVENT: &str = "agent:balanced_model";
 pub(crate) const AGENT_THOUGHT_CHUNK_EVENT: &str = "agent:thought_chunk";
 pub(crate) const AGENT_REASONING_CHUNK_EVENT: &str = "agent:reasoning_chunk";
+pub(crate) const AGENT_STREAM_RESET_EVENT: &str = "agent:stream_reset";
 pub(crate) const AGENT_WEB_SEARCH_EVENT: &str = "agent:web_search";
 pub(crate) const AGENT_STREAM_STALLED_EVENT: &str = "agent:stream_stalled";
 pub(crate) const AGENT_SUPPLEMENT_EVENT: &str = "agent:supplement";
@@ -394,6 +395,15 @@ pub(crate) struct AgentReasoningChunkEvent {
     pub run_id: u64,
     pub message_id: String,
     pub seq: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct AgentStreamResetEvent {
+    pub session_id: String,
+    pub step_number: u32,
+    pub run_id: u64,
+    pub thought_message_id: String,
+    pub reasoning_message_id: String,
 }
 
 #[derive(Clone, Serialize)]

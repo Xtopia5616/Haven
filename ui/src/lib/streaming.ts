@@ -142,6 +142,21 @@ export function dropStreamedThought(
 }
 
 /**
+ * Remove live thought/reasoning blocks before a replacement provider attempt
+ * starts. Tool/search cards and user messages remain because this is an
+ * output-generation boundary, not a transcript rollback.
+ */
+export function resetStreamBlocks(
+	messages: StreamMessage[],
+	reasoningId: string | null | undefined,
+	thoughtId: string | null | undefined,
+) {
+	return messages.filter(
+		(x) => !isStreamSegment(x.id, reasoningId) && !isStreamSegment(x.id, thoughtId),
+	);
+}
+
+/**
  * Build a tool message. Shared by the `agent:action` placeholder (streaming
  * true, no content) and the `agent:observation` fill (content + optional ask
  * options). The `ask` tool surfaces as a dedicated question card, not a raw

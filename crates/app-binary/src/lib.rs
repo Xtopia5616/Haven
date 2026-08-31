@@ -10,14 +10,14 @@ use crate::desktop::TrayStatus;
 use crate::events::{
     ACTION_CREATED_EVENT, ACTION_FINISHED_EVENT, ACTION_OUTPUT_EVENT, ACTION_UPDATED_EVENT,
     AGENT_ACTION_EVENT, AGENT_BALANCED_MODEL_EVENT, AGENT_COMPACTION_EVENT,
-    AGENT_OBSERVATION_EVENT, AGENT_REASONING_CHUNK_EVENT, AGENT_STREAM_STALLED_EVENT,
-    AGENT_SUPPLEMENT_EVENT, AGENT_THOUGHT_CHUNK_EVENT, AGENT_THOUGHT_EVENT,
-    AGENT_TOOL_OUTPUT_EVENT, AGENT_USAGE_EVENT, AGENT_WEB_SEARCH_EVENT, APP_BOOTSTRAP_EVENT,
-    ActionEvent, ActionKind, AgentActionEvent, AgentBalancedModelEvent, AgentCompactionEvent,
-    AgentNotificationEvent, AgentObservationEvent, AgentReasoningChunkEvent,
-    AgentStreamStalledEvent, AgentSupplementEvent, AgentThoughtChunkEvent, AgentThoughtEvent,
-    AgentToolOutputEvent, AgentUsageEvent, AgentWebSearchEvent, AppBootstrapEvent,
-    CONFIRM_REQUESTED_EVENT, ConfirmationRequestedEvent, HOTKEY_CONFLICT_EVENT,
+    AGENT_OBSERVATION_EVENT, AGENT_REASONING_CHUNK_EVENT, AGENT_STREAM_RESET_EVENT,
+    AGENT_STREAM_STALLED_EVENT, AGENT_SUPPLEMENT_EVENT, AGENT_THOUGHT_CHUNK_EVENT,
+    AGENT_THOUGHT_EVENT, AGENT_TOOL_OUTPUT_EVENT, AGENT_USAGE_EVENT, AGENT_WEB_SEARCH_EVENT,
+    APP_BOOTSTRAP_EVENT, ActionEvent, ActionKind, AgentActionEvent, AgentBalancedModelEvent,
+    AgentCompactionEvent, AgentNotificationEvent, AgentObservationEvent, AgentReasoningChunkEvent,
+    AgentStreamResetEvent, AgentStreamStalledEvent, AgentSupplementEvent, AgentThoughtChunkEvent,
+    AgentThoughtEvent, AgentToolOutputEvent, AgentUsageEvent, AgentWebSearchEvent,
+    AppBootstrapEvent, CONFIRM_REQUESTED_EVENT, ConfirmationRequestedEvent, HOTKEY_CONFLICT_EVENT,
     HotkeyConflictEvent, MCP_STATUS_CHANGED_EVENT, MUTE_CHANGED_EVENT, McpStatusChangedEvent,
     MuteChangedEvent, NOTIFICATION_SHOW_EVENT, RECORDING_VAD_STATUS_EVENT, SESSION_COMPLETED_EVENT,
     SESSION_CREATED_EVENT, SESSION_ERROR_EVENT, SESSION_TITLE_UPDATED_EVENT, SESSION_UPDATED_EVENT,
@@ -156,6 +156,7 @@ impl TauriEmitter {
             AgentEvent::BalancedModelActivated { .. } => AGENT_BALANCED_MODEL_EVENT,
             AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
             AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
+            AgentEvent::StreamReset { .. } => AGENT_STREAM_RESET_EVENT,
             AgentEvent::WebSearch { .. } => AGENT_WEB_SEARCH_EVENT,
             AgentEvent::StreamStalled { .. } => AGENT_STREAM_STALLED_EVENT,
             AgentEvent::Supplement { .. } => AGENT_SUPPLEMENT_EVENT,
@@ -281,6 +282,19 @@ impl TauriEmitter {
                 run_id: *run_id,
                 message_id: message_id.clone(),
                 seq: chunk_seq.unwrap_or(0),
+            }),
+            AgentEvent::StreamReset {
+                session_id,
+                step_number,
+                run_id,
+                thought_message_id,
+                reasoning_message_id,
+            } => serialize(AgentStreamResetEvent {
+                session_id: session_id.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                thought_message_id: thought_message_id.clone(),
+                reasoning_message_id: reasoning_message_id.clone(),
             }),
             AgentEvent::WebSearch {
                 session_id,
@@ -1476,6 +1490,16 @@ mod tests {
                 "agent:reasoning_chunk",
             ),
             (
+                AgentEvent::StreamReset {
+                    session_id: "t".into(),
+                    step_number: 1,
+                    run_id: 1,
+                    thought_message_id: "msg-1".into(),
+                    reasoning_message_id: "msg-2".into(),
+                },
+                "agent:stream_reset",
+            ),
+            (
                 AgentEvent::WebSearch {
                     session_id: "t".into(),
                     phase: "searching".into(),
@@ -1634,6 +1658,28 @@ mod tests {
         let payload = TauriEmitter::payload(&reasoning, Some(43));
         assert_eq!(payload["seq"], json!(43));
         assert_eq!(payload["message_id"], json!("msg-2"));
+    }
+
+    #[test]
+    fn payload_projects_stream_reset_boundary() {
+        let event = AgentEvent::StreamReset {
+            session_id: "t".into(),
+            step_number: 3,
+            run_id: 7,
+            thought_message_id: "msg-thought".into(),
+            reasoning_message_id: "msg-reasoning".into(),
+        };
+        let payload = TauriEmitter::payload(&event, None);
+        assert_eq!(
+            payload,
+            json!({
+                "session_id": "t",
+                "step_number": 3,
+                "run_id": 7,
+                "thought_message_id": "msg-thought",
+                "reasoning_message_id": "msg-reasoning",
+            })
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! and never constructs [`StreamForwarder`].
 
 use super::*;
-use haven_llm::{EndpointRole, LlmResponse, LlmRouter, ToolDefinition};
+use haven_llm::{EndpointRole, LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
 
 /// Streaming session for one step: primary call + empty/cut-off retries.
 /// Owns the effective endpoint role, partial buffers and msg-id reuse; the
@@ -52,7 +52,7 @@ impl<'a> StreamSession<'a> {
     pub(super) async fn run(
         &mut self,
         state: &mut ReActState,
-        request_messages: &[CanonicalMessage],
+        request_context: &RequestContext,
         retry_nudge: Option<&RetryNudge>,
     ) -> StepCallOutcome {
         match self
@@ -64,7 +64,7 @@ impl<'a> StreamSession<'a> {
                 self.tools,
                 self.cancel.clone(),
                 state,
-                request_messages,
+                request_context,
                 retry_nudge,
                 self.partial_thought,
                 self.partial_reasoning,
@@ -79,14 +79,14 @@ impl<'a> StreamSession<'a> {
     /// Empty / cut-off retry: reuses the primary call's minted msg-ids.
     pub(super) async fn retry(
         &self,
-        messages: &[CanonicalMessage],
+        request_context: &RequestContext,
     ) -> Result<LlmResponse, haven_llm::LlmError> {
         self.engine
             .stream_retry_step(
                 self.ctx,
                 self.router.clone(),
                 self.role,
-                messages,
+                request_context,
                 self.tools,
                 self.cancel.clone(),
                 self.partial_thought,
@@ -113,7 +113,7 @@ fn now_millis() -> u64 {
 }
 
 /// One LLM call's live-chunk forwarding bundle: micro-batched
-/// thought/reasoning channels (see `spawn_chunk_consumer_raw`), the
+/// one ordered thought/reasoning queue (see `spawn_chunk_consumer_raw`), the
 /// web-search event session, and a stall watchdog that emits `StreamStalled`
 /// when the provider goes silent mid-call — the router only aborts at its
 /// idle timeout, so without the watchdog the UI would sit frozen with
@@ -122,13 +122,10 @@ fn now_millis() -> u64 {
 ///
 /// The `on_chunk` callback accumulates into the partial buffers
 /// (checkpointed into `partial_messages` for crash recovery) and forwards
-/// text chunks to the frontend. Reasoning chunks are always accumulated
-/// but only forwarded when `forward_reasoning` is set: the UI reasoning
-/// block may already hold the primary generation's reconciled text, and a
-/// fresh reasoning pass from a retry would concatenate onto it.
+/// text chunks to the frontend. Thought and reasoning chunks share the same
+/// queue, so interleaved provider output keeps its arrival order.
 struct StreamForwarder {
     chunk_tx: crate::event::ChunkSender,
-    reasoning_tx: crate::event::ChunkSender,
     ws_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     consumer: crate::event::ConsumerHandle,
     ws_session: tokio::task::JoinHandle<()>,
@@ -147,21 +144,27 @@ impl StreamForwarder {
         checkpoint_min_chars: usize,
         checkpoint_interval: std::time::Duration,
         cancel: tokio_util::sync::CancellationToken,
-        forward_reasoning: bool,
         // Minted ids shared with the chunk events, the snap and the final
         // persistence, so the live bubble and the DB row match.
         thought_msg_id: String,
         reasoning_msg_id: String,
-    ) -> (Self, impl FnMut(&haven_llm::StreamChunk) + Send + 'static) {
-        let (chunk_tx, reasoning_tx, consumer_handle) =
+    ) -> (
+        Self,
+        impl FnMut(&haven_llm::StreamChunk) + Send + 'static,
+        impl FnMut(bool) + Send + 'static,
+    ) {
+        let (chunk_tx, consumer_handle) =
             EventDispatcher::spawn_chunk_consumer_raw(&ctx.emitter, max_batch_bytes);
         let chunk_tx_c = chunk_tx.clone();
-        let reasoning_tx_c = reasoning_tx.clone();
         let session_id_c = Arc::<str>::from(ctx.session_id.as_str());
         let pt = partial_thought.clone();
         let pr = partial_reasoning.clone();
         let checkpoint_session = ctx.session_id.clone();
         let checkpoint_inflight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let checkpoint_state = Arc::new(std::sync::Mutex::new((
+            std::time::Instant::now() - checkpoint_interval,
+            0usize,
+        )));
         // Crash/stop recovery: the accumulated thought text is checkpointed
         // into the `partial_messages` scratch table while streaming so a
         // crash, user stop, or app exit does not lose the whole reply. The
@@ -171,8 +174,6 @@ impl StreamForwarder {
         // executor's `PartialStore`, which serializes them against
         // promote/discard and drops writes that land after the session was
         // ended/rolled back.
-        let mut checkpoint_at = std::time::Instant::now() - checkpoint_interval;
-        let mut checkpoint_len = 0usize;
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
         let ws_tx_c = ws_tx.clone();
         let em_ws = ctx.emitter.clone();
@@ -187,7 +188,46 @@ impl StreamForwarder {
         let last_chunk_c = last_chunk_ms.clone();
         let thought_mid = Arc::<str>::from(thought_msg_id.as_str());
         let reasoning_mid = Arc::<str>::from(reasoning_msg_id.as_str());
+        let reset_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reset_pt = pt.clone();
+        let reset_pr = pr.clone();
+        let reset_checkpoint_state = checkpoint_state.clone();
+        let reset_pending_c = reset_pending.clone();
+        let on_attempt_start = move |replace_output: bool| {
+            if !replace_output {
+                return;
+            }
+            reset_pt.lock().unwrap().clear();
+            reset_pr.lock().unwrap().clear();
+            let mut state = reset_checkpoint_state.lock().unwrap();
+            state.0 = std::time::Instant::now() - checkpoint_interval;
+            state.1 = 0;
+            drop(state);
+            // Do not enqueue the marker here: a full bounded channel could
+            // drop it. The first new delta enqueues Reset before itself and
+            // retries until it succeeds, preserving the ordering guarantee.
+            reset_pending_c.store(true, std::sync::atomic::Ordering::Release);
+        };
+        let checkpoint_state_c = checkpoint_state.clone();
+        let reset_pending_c = reset_pending.clone();
+        let reset_session_id_c = session_id_c.clone();
+        let reset_thought_mid_c = thought_mid.clone();
+        let reset_reasoning_mid_c = reasoning_mid.clone();
         let on_chunk = move |c: &haven_llm::StreamChunk| {
+            if reset_pending_c.load(std::sync::atomic::Ordering::Acquire) {
+                let marker = crate::event::ChunkItem::Reset {
+                    session_id: reset_session_id_c.clone(),
+                    thought_message_id: reset_thought_mid_c.clone(),
+                    reasoning_message_id: reset_reasoning_mid_c.clone(),
+                    step_number: step_num,
+                    run_id,
+                };
+                if let Err(e) = chunk_tx_c.try_send(marker) {
+                    tracing::debug!("stream reset waiting for chunk queue capacity: {}", e);
+                    return;
+                }
+                reset_pending_c.store(false, std::sync::atomic::Ordering::Release);
+            }
             if let Some(t) = c.text.as_deref() {
                 // Single lock scope per chunk: push, read the new length
                 // and clone the checkpoint snapshot (when due) under one
@@ -197,24 +237,34 @@ impl StreamForwarder {
                     guard.push_str(t);
                     let len = guard.len();
                     let now = std::time::Instant::now();
-                    if !checkpoint_inflight.load(std::sync::atomic::Ordering::Relaxed)
-                        && (now.duration_since(checkpoint_at) >= checkpoint_interval
-                            || len.saturating_sub(checkpoint_len) >= checkpoint_min_chars)
+                    let mut checkpoint = checkpoint_state_c.lock().unwrap();
+                    let due = now.duration_since(checkpoint.0) >= checkpoint_interval
+                        || len.saturating_sub(checkpoint.1) >= checkpoint_min_chars;
+                    if due
+                        && checkpoint_inflight
+                            .compare_exchange(
+                                false,
+                                true,
+                                std::sync::atomic::Ordering::AcqRel,
+                                std::sync::atomic::Ordering::Acquire,
+                            )
+                            .is_ok()
                     {
-                        checkpoint_at = now;
-                        checkpoint_len = len;
+                        checkpoint.0 = now;
+                        checkpoint.1 = len;
                         Some(guard.clone())
                     } else {
                         None
                     }
                 };
-                if let Err(e) = chunk_tx_c.try_send((
-                    session_id_c.clone(),
-                    thought_mid.clone(),
-                    t.to_string(),
-                    step_num,
+                if let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
+                    session_id: session_id_c.clone(),
+                    message_id: thought_mid.clone(),
+                    delta: t.to_string(),
+                    step_number: step_num,
                     run_id,
-                )) {
+                    reasoning: false,
+                }) {
                     tracing::warn!("thought chunk channel full, dropping: {}", e);
                 }
                 if let Some(snapshot) = checkpoint_snapshot {
@@ -234,15 +284,14 @@ impl StreamForwarder {
             }
             if let Some(r) = &c.reasoning {
                 pr.lock().unwrap().push_str(r);
-                if forward_reasoning
-                    && let Err(e) = reasoning_tx_c.try_send((
-                        session_id_c.clone(),
-                        reasoning_mid.clone(),
-                        r.clone(),
-                        step_num,
-                        run_id,
-                    ))
-                {
+                if let Err(e) = chunk_tx_c.try_send(crate::event::ChunkItem::Delta {
+                    session_id: session_id_c.clone(),
+                    message_id: reasoning_mid.clone(),
+                    delta: r.clone(),
+                    step_number: step_num,
+                    run_id,
+                    reasoning: true,
+                }) {
                     tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
@@ -296,13 +345,13 @@ impl StreamForwarder {
         (
             Self {
                 chunk_tx,
-                reasoning_tx,
                 ws_tx,
                 consumer: consumer_handle,
                 ws_session,
                 watchdog,
             },
             on_chunk,
+            on_attempt_start,
         )
     }
 
@@ -312,7 +361,6 @@ impl StreamForwarder {
     pub(super) async fn flush(self) {
         self.watchdog.abort();
         drop(self.chunk_tx);
-        drop(self.reasoning_tx);
         drop(self.ws_tx);
         if let Some(handle) = self.consumer {
             let _ = handle.await;
@@ -341,7 +389,8 @@ impl ReActEngine {
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
         role: EndpointRole,
-        llm_messages: &[CanonicalMessage],
+        request_context: &RequestContext,
+        replace_output_on_start: bool,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
@@ -354,7 +403,7 @@ impl ReActEngine {
         let reasoning_msg_id =
             self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
         let limits = self.limits();
-        let (forwarder, on_chunk) = StreamForwarder::new(
+        let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
             ctx,
             limits.event_chunk_batch_max_bytes,
             limits.stream_stall_warn_delay_ms,
@@ -364,17 +413,16 @@ impl ReActEngine {
             limits.partial_checkpoint_min_chars,
             std::time::Duration::from_secs(limits.partial_checkpoint_interval_secs),
             cancel.clone(),
-            true,
             thought_msg_id,
             reasoning_msg_id,
         );
         let started = std::time::Instant::now();
         let result = router
-            .chat_stream_with_tools_aggregated_cancellable(
+            .chat_stream_with_tools_aggregated_cancellable_with_attempts(
                 role,
-                llm_messages,
+                request_context.messages(),
                 tools,
-                on_chunk,
+                StreamAttemptHooks::new(on_chunk, on_attempt_start, replace_output_on_start),
                 cancel,
             )
             .await;
@@ -399,9 +447,9 @@ impl ReActEngine {
     /// One empty-response / cut-off retry with live chunk forwarding: streamed
     /// text is accumulated into the partial buffers (crash recovery) and
     /// forwarded to the frontend, so a recovering provider never leaves the
-    /// UI frozen for the retry's whole budget. Reasoning is accumulated but
-    /// NOT forwarded (the UI block may already hold the primary generation's
-    /// reconciled text; a fresh reasoning pass would concatenate onto it).
+    /// UI frozen for the retry's whole budget. The retry begins a new output
+    /// generation, including reasoning, so it never concatenates with the
+    /// failed attempt.
     /// The stall watchdog runs exactly like the primary call.
     #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
     pub(super) async fn stream_retry_step(
@@ -409,7 +457,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
         role: EndpointRole,
-        messages: &[CanonicalMessage],
+        request_context: &RequestContext,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
@@ -422,7 +470,7 @@ impl ReActEngine {
         let reasoning_msg_id =
             self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
         let limits = self.limits();
-        let (forwarder, on_chunk) = StreamForwarder::new(
+        let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
             ctx,
             limits.event_chunk_batch_max_bytes,
             limits.stream_stall_warn_delay_ms,
@@ -432,12 +480,17 @@ impl ReActEngine {
             limits.partial_checkpoint_min_chars,
             std::time::Duration::from_secs(limits.partial_checkpoint_interval_secs),
             cancel.clone(),
-            false,
             thought_msg_id,
             reasoning_msg_id,
         );
         let result = router
-            .chat_stream_with_tools_aggregated_cancellable(role, messages, tools, on_chunk, cancel)
+            .chat_stream_with_tools_aggregated_cancellable_with_attempts(
+                role,
+                request_context.messages(),
+                tools,
+                StreamAttemptHooks::new(on_chunk, on_attempt_start, true),
+                cancel,
+            )
             .await;
         forwarder.flush().await;
         result
@@ -457,7 +510,7 @@ impl ReActEngine {
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         state: &mut ReActState,
-        request_messages: &[CanonicalMessage],
+        request_context: &RequestContext,
         retry_nudge: Option<&RetryNudge>,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
@@ -467,7 +520,8 @@ impl ReActEngine {
                 ctx,
                 router.clone(),
                 *role,
-                request_messages,
+                request_context,
+                false,
                 tools,
                 cancel.clone(),
                 partial_thought,
@@ -532,26 +586,14 @@ impl ReActEngine {
                         EndpointRole::DefaultModel
                     };
                     *role = retry_role;
-                    // Reset the accumulators: the first attempt's partial
-                    // text was based on pre-compaction context and should
-                    // not be mixed with the retry's output.
-                    partial_thought.lock().unwrap().clear();
-                    partial_reasoning.lock().unwrap().clear();
-                    let mut retry_messages = state.canonical.clone();
-                    if let Some(nudge) = retry_nudge {
-                        ReActEngine::attach_failure_nudge(
-                            &mut retry_messages,
-                            &nudge.text,
-                            Some(&nudge.tool_call_id),
-                        );
-                    }
-                    let _ = crate::sanitize_canonical(&mut retry_messages);
+                    let retry_context = RequestContext::from_state(state, retry_nudge);
                     match self
                         .stream_llm_step(
                             ctx,
                             router.clone(),
                             retry_role,
-                            &retry_messages,
+                            &retry_context,
+                            true,
                             tools,
                             cancel,
                             partial_thought,
@@ -812,8 +854,8 @@ mod tests {
             image_message(),
             text_message(CanonicalRole::User, "recent"),
         ];
-        let request_messages = canonical.clone();
         let mut state = ReActState::new(Vec::new(), canonical, HashMap::new());
+        let request_context = RequestContext::from_state(&state, None);
         let mut stream = StreamSession::new(
             &engine,
             &ctx,
@@ -825,10 +867,11 @@ mod tests {
             &partial_reasoning,
         );
 
-        let outcome = stream.run(&mut state, &request_messages, None).await;
+        let outcome = stream.run(&mut state, &request_context, None).await;
         assert!(matches!(outcome, StepCallOutcome::Response(_)));
 
-        let retry = stream.retry(&state.canonical).await.unwrap();
+        let retry_context = RequestContext::from_state(&state, None);
+        let retry = stream.retry(&retry_context).await.unwrap();
         assert_eq!(retry.text, "Finished.");
         assert_eq!(image_client.stream_calls.load(Ordering::Relaxed), 1);
         assert_eq!(

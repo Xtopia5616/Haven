@@ -113,6 +113,7 @@
 - 2026-08-30：P2 UI 模型同步边界收口：默认模型发现缓存、设置投影、provider 能力归一化与刷新代次集中到 `chatModelSync.ts`，路由页保留状态与菜单编排（ADR 0055）。
 - 2026-08-31：P2 Agent ReAct 控制流重组：以 Run/Turn/ToolBatch 明确模型采样、工具批次和生命周期边界；工具结果按 assistant 调用顺序物化，steering 优先于 follow-up（ADR 0056）。
 - 2026-08-31：P2 Agent ReAct 运行态收口：引入 `ReActState` 统一 events/canonical/branch points；sanitize 与失败 retry nudge 均限制在 provider 请求态，暂停恢复不产生隐式 transcript 写入（ADR 0057）。
+- 2026-08-31：P2 Agent 请求与流式代次收口：以 `RequestContext` 统一 provider 请求投影；inbox envelope 保留独立边界；thought/reasoning 共用有序 chunk 队列，并以 `agent:stream_reset` 隔离 failover/retry 输出；前端只合并相邻 chunk（ADR 0058）。
 
 ## 完成标准
 

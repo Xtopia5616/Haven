@@ -1,5 +1,7 @@
 # ADR 0057：Agent ReAct Run 状态机与单一运行态
 
+> 请求上下文与流式重试代次的后续细化见 [ADR 0058](0058-agent-request-context-and-stream-attempts.md)。
+
 ## 背景
 
 Run、Turn、ToolBatch 已经按控制流职责拆分，但它们仍通过三组独立的可变参数传递

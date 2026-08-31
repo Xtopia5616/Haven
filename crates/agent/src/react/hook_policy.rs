@@ -49,18 +49,10 @@ impl DefaultHooks {
 impl LoopHooks for DefaultHooks {
     async fn before_step(&self, engine: &ReActEngine, ctx: &StepCtx, state: &mut ReActState) {
         engine.maybe_poll_inbox(&ctx.session_id, ctx, state).await;
-        let has_image = canonical_has_image(&state.canonical);
-        // Phase 7 / I2: compact is a nested phase under before_step.
-        let _ = engine
-            .maybe_compact(ctx, state, has_image)
-            .instrument(tracing::info_span!(
-                "compact",
-                session_id = %ctx.session_id,
-                step_num = ctx.step_num
-            ))
-            .await;
         // M2: after outbox fact writes, surgically refresh MEMORY fence
-        // (throttled). Never rebuild tools/skills/MCP short index.
+        // (throttled). It must run before compaction so the budget decision
+        // sees the exact system prompt that will be sent to the provider.
+        // Never rebuild tools/skills/MCP short index.
         if let Some(ref patch) = self.memory_patch
             && patch.inference.take_memory_dirty_throttled(&ctx.session_id)
         {
@@ -74,6 +66,19 @@ impl LoopHooks for DefaultHooks {
                 .patch_canonical_memory_fence(&ctx.session_id, &description, &mut state.canonical)
                 .await;
         }
+        let has_image = canonical_has_image(&state.canonical);
+        // Phase 7 / I2: compact is a nested phase under before_step. It is
+        // deliberately after all context sources and prompt patches have
+        // settled, so compaction and the following RequestContext snapshot
+        // observe one coherent canonical projection.
+        let _ = engine
+            .maybe_compact(ctx, state, has_image)
+            .instrument(tracing::info_span!(
+                "compact",
+                session_id = %ctx.session_id,
+                step_num = ctx.step_num
+            ))
+            .await;
         let interval = engine.limits().fact_infer_interval_steps;
         if ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval) {
             self.call_infer(&ctx.session_id, false);

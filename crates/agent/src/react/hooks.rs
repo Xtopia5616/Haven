@@ -2,7 +2,7 @@
 //! Phase 7 / G6 infer owned by hooks).
 //!
 //! Order contract (documented at the call site in `loop.rs`):
-//! `inject_pending_context` → `hooks.before_step` → `sanitize_canonical` → LLM
+//! `inject_pending_context` → `hooks.before_step` → `RequestContext` → LLM
 //! → `hooks.after_llm` (response policy) → tools (`before_tool` per call) / pause.
 //!
 //! Default hooks own prologue side effects (inbox / compact / interval infer),

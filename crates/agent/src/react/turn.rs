@@ -11,7 +11,6 @@ use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
 use super::turn_end::{TurnEndInput, TurnEndOutcome};
 use super::*;
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -91,32 +90,22 @@ impl ReActEngine {
             .instrument(tracing::info_span!("before_step", session_id, step_num))
             .await;
 
-        let has_image = canonical_has_image(&state.canonical);
-        // Sanitization is a provider-boundary repair. Keep it out of the
-        // durable run state because the repair itself is not a transcript
-        // event and must not be silently lost on resume.
+        // Build one immutable provider projection. Durable canonical state is
+        // never used as a scratch buffer by retries or provider repairs.
         let retry_nudge = state.take_retry_nudge();
-        let mut request_messages = state.canonical.clone();
-        if let Some(nudge) = retry_nudge.as_ref() {
-            Self::attach_failure_nudge(
-                &mut request_messages,
-                &nudge.text,
-                Some(&nudge.tool_call_id),
-            );
-        }
-        let repairs = crate::sanitize_canonical(&mut request_messages);
-        if repairs > 0 {
+        let request_context = RequestContext::from_state(state, retry_nudge.as_ref());
+        if request_context.repairs() > 0 {
             tracing::warn!(
                 session_id,
                 step_num,
-                repairs,
+                repairs = request_context.repairs(),
                 "sanitize_canonical repaired dangling tool calls before LLM"
             );
         }
 
         let tools = self.build_tool_definitions_for_session(session_id).await;
         let router = self.router();
-        let role = choose_agent_role(&router, has_image).await;
+        let role = choose_agent_role(&router, request_context.has_image()).await;
         let partial_thought = Arc::new(std::sync::Mutex::new(String::new()));
         let partial_reasoning = Arc::new(std::sync::Mutex::new(String::new()));
 
@@ -124,7 +113,7 @@ impl ReActEngine {
             "ReAct turn: session={} step={} messages={} tools={}",
             session_id,
             step_num,
-            request_messages.len(),
+            request_context.messages().len(),
             tools.len()
         );
         let mut stream = super::stream_step::StreamSession::new(
@@ -138,7 +127,7 @@ impl ReActEngine {
             &partial_reasoning,
         );
         let mut response = match stream
-            .run(state, &request_messages, retry_nudge.as_ref())
+            .run(state, &request_context, retry_nudge.as_ref())
             .instrument(tracing::info_span!("llm", session_id, step_num))
             .await
         {
@@ -168,11 +157,7 @@ impl ReActEngine {
         // context-length error. Response-policy retries must use that newest
         // projection while preserving the one-shot failure hint when the
         // failed observation survived compaction.
-        let mut retry_messages = state.canonical.clone();
-        if let Some(nudge) = retry_nudge.as_ref() {
-            Self::attach_failure_nudge(&mut retry_messages, &nudge.text, Some(&nudge.tool_call_id));
-        }
-        let _ = crate::sanitize_canonical(&mut retry_messages);
+        let retry_context = RequestContext::from_state(state, retry_nudge.as_ref());
 
         if let Some(reasoning) = response.reasoning.clone() {
             let reasoning_id = self.block_msg_id(session_id, step_num, ctx.run_id, "reasoning");
@@ -243,7 +228,7 @@ impl ReActEngine {
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
                     }
-                    let retry = stream.retry(&retry_messages).await;
+                    let retry = stream.retry(&retry_context).await;
                     match retry {
                         Ok(retry_response) => {
                             let (retry_thought, retry_actions) =
@@ -271,19 +256,8 @@ impl ReActEngine {
                 }
                 AfterLlmAction::RetryCutOff { nudge } => {
                     *cut_off_retries += 1;
-                    let mut cut_off_retry_messages = retry_messages.clone();
-                    cut_off_retry_messages.push(CanonicalMessage {
-                        role: CanonicalRole::User,
-                        content: vec![ContentPart::text(nudge)],
-                        tool_call_id: None,
-                        tool_calls: None,
-                        reasoning: None,
-                        web_search_calls: Vec::new(),
-                        thinking_blocks: Vec::new(),
-                        source: None,
-                        id: None,
-                    });
-                    match stream.retry(&cut_off_retry_messages).await {
+                    let cut_off_context = retry_context.with_user_instruction(nudge);
+                    match stream.retry(&cut_off_context).await {
                         Ok(retry_response) => {
                             let (retry_thought, retry_actions) =
                                 Self::parse_default_model_response(&retry_response, step_num);

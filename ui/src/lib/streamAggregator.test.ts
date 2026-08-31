@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import type { AgentChunkPayload } from './contracts/agent.ts';
 import { sessionMessagesStore } from './sessionMessages.ts';
-import { createStreamEventAggregator } from './streamAggregator.ts';
+import {
+	createStreamEventAggregator,
+	foldContiguousChunks,
+	type PendingChunk,
+} from './streamAggregator.ts';
 
 describe('createStreamEventAggregator', () => {
 	let frame: FrameRequestCallback | null = null;
@@ -67,6 +71,30 @@ describe('createStreamEventAggregator', () => {
 		expect(messages.map((message) => [message.content, message.streaming])).toEqual([
 			['reason', false],
 			['thought', true],
+		]);
+	});
+
+	it('keeps interleaved stream blocks in arrival order', () => {
+		const base: PendingChunk = {
+			tid: 'ses-stream-test',
+			sid: 'step-thought-a',
+			delta: '',
+			msgType: undefined,
+			stepNumber: 1,
+			runId: 1,
+			time: 'now',
+			finalizeReasoning: true,
+		};
+		const folded = foldContiguousChunks([
+			{ ...base, delta: 'A1' },
+			{ ...base, sid: 'step-reasoning-b', delta: 'B1', finalizeReasoning: false },
+			{ ...base, delta: 'A2' },
+		]);
+
+		expect(folded.map(({ sid, delta }) => [sid, delta])).toEqual([
+			['step-thought-a', 'A1'],
+			['step-reasoning-b', 'B1'],
+			['step-thought-a', 'A2'],
 		]);
 	});
 });

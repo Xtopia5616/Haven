@@ -158,7 +158,8 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `turn` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责一次模型采样和响应策略，`tool_batch` 负责工具执行与按 assistant 调用顺序物化结果。流式响应、快照/分支、压缩仍由各自模块负责；provider 请求在 turn 边界使用 canonical 的临时副本做 sanitize，失败 retry nudge 只存在于下一次请求态；`context` 只收集上下文来源，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
+- `react/`：ReAct 循环（`loop` / `turn` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责一次模型采样和响应策略，`tool_batch` 负责工具执行与按 assistant 调用顺序物化结果。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
+- 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider failover 或 retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
 - **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 投影；`resume_support` 只提供确定性的候选合并、无快照投影和运行时工具选择恢复。
@@ -196,7 +197,7 @@ Parent session                    Child session(s)
 | 总线 | `haven-tools` `inbox.rs` | `%APPDATA%/haven/inbox`：`agents.json` + 每 agent JSONL 邮箱 / archive；进程内 `InboxNotifier` |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
 | 接线 | `haven-app-binary` `app_state` | 安装 `AgentSpawner` 回调（tools 不依赖 agent） |
-| 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步 poll inbox 与低信任格式化；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
+| 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步 poll inbox；每个 envelope 保留为独立上下文项并在来源边界完成低信任格式化，`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
 | 生命周期 | `session/status.rs` | 终端态/`end_session` → BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
 | 信任 / 记忆 | `inference.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
 | UI | 对话页 tool card | `agent` 结构化卡片；自动同伴邮件以 `agent`/`inbox`/`auto` 卡片展示；kickoff 左侧「低信任委托」 |
@@ -358,3 +359,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.6 UI：将默认模型发现缓存、设置投影、provider 能力归一化与刷新代次收口到 `ui/src/lib/chatModelSync.ts`，路由页保留响应式状态与菜单编排（ADR 0055） |
 | 2026-08-31 | §2.5 Agent：将 ReAct loop 拆为 Run/Turn/ToolBatch，明确一次采样边界、steering 优先级和工具结果的 canonical 顺序（ADR 0056） |
 | 2026-08-31 | §2.5 Agent：以 `react::ReActState` 统一 Run/Turn/ToolBatch 的 events、canonical 与 branch points；provider sanitize 和失败 retry nudge 收口为临时请求态（ADR 0057） |
+| 2026-08-31 | §2.5 Agent：以 `RequestContext` 统一 provider 请求视图；inbox envelope 保留独立边界；流式 thought/reasoning 通过有序队列与 `agent:stream_reset` 隔离重试代次（ADR 0058） |

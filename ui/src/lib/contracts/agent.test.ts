@@ -71,4 +71,26 @@ describe('agent IPC contract', () => {
 		expect(event.payload.cacheDiagnostics).toEqual({ source: 'provider' });
 		expect(event.payload).not.toHaveProperty('prompt_tokens');
 	});
+
+	it('maps stream replacement boundaries to camelCase', () => {
+		const event = mapAgentEvent({
+			event: 'agent:stream_reset',
+			id: 3,
+			payload: {
+				session_id: 'ses-1',
+				step_number: 4,
+				run_id: 8,
+				thought_message_id: 'msg-thought',
+				reasoning_message_id: 'msg-reasoning',
+			},
+		});
+
+		expect(event.payload).toEqual({
+			sessionId: 'ses-1',
+			stepNumber: 4,
+			runId: 8,
+			thoughtMessageId: 'msg-thought',
+			reasoningMessageId: 'msg-reasoning',
+		});
+	});
 });

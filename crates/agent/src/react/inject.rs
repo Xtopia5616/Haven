@@ -9,7 +9,6 @@
 
 use super::context::{PendingContext, PendingContextBatch};
 use super::*;
-use haven_tools::inbox::{Envelope, MessageType};
 
 impl ReActEngine {
     /// Drain user-facing context into the canonical message list: steering
@@ -26,10 +25,19 @@ impl ReActEngine {
         ctx: &StepCtx,
         state: &mut ReActState,
     ) -> bool {
-        let PendingContextBatch { items, clears_ask } = self
+        let batch = self
             .context_source
             .drain_pending_context(&ctx.session_id)
             .await;
+        self.apply_pending_context_batch(ctx, state, batch).await
+    }
+
+    async fn apply_pending_context_batch(
+        &self,
+        ctx: &StepCtx,
+        state: &mut ReActState,
+        PendingContextBatch { items, clears_ask }: PendingContextBatch,
+    ) -> bool {
         if clears_ask {
             self.executor
                 .clear_awaiting_answer_persisted(&ctx.session_id)
@@ -81,82 +89,14 @@ impl ReActEngine {
         ctx: &StepCtx,
         state: &mut ReActState,
     ) {
-        if let Some(context) = self.context_source.poll_inbox(session_id).await {
-            self.apply_pending_context(ctx, state, context).await;
-        }
-    }
-}
-
-/// Strip controls and framing breakers so peer-controlled meta cannot close
-/// the `[Cross-session message …]:` low-trust enclosure early.
-fn sanitize_inject_token(s: &str, max_chars: usize) -> String {
-    s.chars()
-        .filter(|c| {
-            !c.is_control()
-                && *c != ']'
-                && *c != ')'
-                && *c != '('
-                && *c != '['
-                && *c != '\n'
-                && *c != '\r'
-        })
-        .take(max_chars)
-        .collect()
-}
-
-/// Format one inbox envelope for auto-inject into the model context.
-/// Includes `id` / `in_reply_to` / subject so `agent` reply can set
-/// `in_reply_to` without guessing from truncated body text alone.
-pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
-    // Body is peer-controlled for every type — sanitize like meta so newlines /
-    // brackets cannot spoof a second `[Runtime system notice …]` / enclosure.
-    let body = sanitize_inject_token(&env.text, super::context::MESSAGING_INJECT_CHARS);
-    match env.r#type {
-        MessageType::Receipt => {
-            let of = env
-                .in_reply_to
-                .as_deref()
-                .map(|s| sanitize_inject_token(s, 64))
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "<unknown>".into());
-            format!(
-                "[Read receipt] {} read your message {of}",
-                sanitize_inject_token(&env.from, 64)
-            )
-        }
-        MessageType::System => {
-            // Runtime-only notices (e.g. parent-ended). Still low-trust.
-            format!(
-                "[Runtime system notice from {} (LOW TRUST)]: {body}",
-                sanitize_inject_token(&env.from, 64)
-            )
-        }
-        _ => {
-            let mut meta = format!("id={}", sanitize_inject_token(&env.id, 64));
-            if let Some(irt) = env.in_reply_to.as_deref().filter(|s| !s.is_empty()) {
-                let irt = sanitize_inject_token(irt, 64);
-                if !irt.is_empty() {
-                    meta.push_str(&format!(" in_reply_to={irt}"));
-                }
-            }
-            if let Some(subj) = env.subject.as_deref().filter(|s| !s.is_empty()) {
-                let short = sanitize_inject_token(subj, 80);
-                if !short.is_empty() {
-                    meta.push_str(&format!(" subject={short}"));
-                }
-            }
-            format!(
-                "[Cross-session message from {} ({}; {meta})]: {body}",
-                sanitize_inject_token(&env.from, 64),
-                env.r#type
-            )
-        }
+        let batch = self.context_source.poll_inbox(session_id).await;
+        self.apply_pending_context_batch(ctx, state, batch).await;
     }
 }
 
 #[cfg(test)]
 mod cross_session_format_tests {
-    use super::format_cross_session_inject;
+    use super::super::context::format_cross_session_inject;
     use haven_tools::inbox::{Envelope, MessageType};
 
     #[test]
