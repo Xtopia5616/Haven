@@ -6,7 +6,7 @@
 //! reviewable without mixing it with the current table definition.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-pub(super) const SCHEMA_VERSION: i32 = 11;
+pub(super) const SCHEMA_VERSION: i32 = 12;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -39,6 +39,9 @@ pub(super) struct Migration {
 /// - v10: per-call prompt-cache accounting provenance, so mixed providers do
 ///   not infer cache-hit rates from aggregate token values.
 /// - v11: cache miss totals and non-sensitive per-call cache diagnostics.
+/// - v12: stable action ordering and provider tool-call identity on
+///   `session_steps`, so confirmation and snapshot-less recovery never match
+///   calls by tool name, arguments, or observation text.
 pub(super) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -80,7 +83,28 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         version: 11,
         apply: migrate_v11_usage_cache_diagnostics,
     },
+    Migration {
+        version: 12,
+        apply: migrate_v12_session_step_tool_identity,
+    },
 ];
+
+pub(super) fn migrate_v12_session_step_tool_identity(
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<()> {
+    if table_exists(conn, "session_steps")? {
+        if !column_exists(conn, "session_steps", "action_index")? {
+            conn.execute(
+                "ALTER TABLE session_steps ADD COLUMN action_index INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !column_exists(conn, "session_steps", "tool_call_id")? {
+            conn.execute("ALTER TABLE session_steps ADD COLUMN tool_call_id TEXT", [])?;
+        }
+    }
+    Ok(())
+}
 
 /// Rewrite pre-normalization predicate spellings to the canonical alias (the
 /// same map as `haven_memory::repositories::facts::normalize_predicate`),

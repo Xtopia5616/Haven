@@ -6,12 +6,14 @@ pub struct SessionStep {
     pub id: String,
     pub session_id: String,
     pub step_number: i32,
+    pub action_index: i32,
     /// Raw thought text from the Reasoner (replaces old `tool_name = "thought"` hack)
     pub thought: Option<String>,
     /// Tool name when this step represents a tool call action
     pub action_tool: Option<String>,
     /// JSON-serialized tool input parameters
     pub action_input: Option<String>,
+    pub tool_call_id: Option<String>,
     /// Tool observation / result text
     pub observation: Option<String>,
     pub status: String,
@@ -53,9 +55,11 @@ impl Database {
             id: id.into(),
             session_id: session_id.into(),
             step_number,
+            action_index: 0,
             thought: None,
             action_tool: None,
             action_input: None,
+            tool_call_id: None,
             observation: None,
             status: "completed".into(),
             is_high_risk: false,
@@ -110,9 +114,68 @@ impl Database {
             id,
             session_id: session_id.into(),
             step_number,
+            action_index: 0,
             thought: None,
             action_tool: Some(tool_name.into()),
             action_input: Some(tool_input.into()),
+            tool_call_id: None,
+            observation: None,
+            status: "pending".into(),
+            is_high_risk,
+            confirmed,
+            silent,
+            started_at: None,
+            completed_at: None,
+            created_at: now,
+        })
+    }
+
+    /// Create an action step with the durable invocation identity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_action_step_with_identity(
+        &self,
+        session_id: &str,
+        step_number: i32,
+        action_index: i32,
+        tool_name: &str,
+        tool_input: &str,
+        tool_call_id: Option<&str>,
+        is_high_risk: bool,
+        silent: bool,
+        confirmed: Option<bool>,
+        id: Option<&str>,
+    ) -> anyhow::Result<SessionStep> {
+        let id = id
+            .map(String::from)
+            .unwrap_or_else(|| haven_common::types::new_id("step"));
+        let now = now_rfc3339_millis();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                id,
+                session_id,
+                step_number,
+                action_index,
+                tool_name,
+                tool_input,
+                tool_call_id,
+                is_high_risk as i32,
+                now,
+                silent as i32,
+                confirmed.map(|c| c as i32)
+            ],
+        )?;
+        Ok(SessionStep {
+            id,
+            session_id: session_id.into(),
+            step_number,
+            action_index,
+            thought: None,
+            action_tool: Some(tool_name.into()),
+            action_input: Some(tool_input.into()),
+            tool_call_id: tool_call_id.map(String::from),
             observation: None,
             status: "pending".into(),
             is_high_risk,
@@ -169,6 +232,54 @@ impl Database {
         Ok(())
     }
 
+    /// Ensure an action step exists while retaining its stable invocation
+    /// identity. Existing rows are never rewritten after completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ensure_action_step_with_identity(
+        &self,
+        session_id: &str,
+        step_number: i32,
+        action_index: i32,
+        tool_name: &str,
+        tool_input: &str,
+        tool_call_id: Option<&str>,
+        is_high_risk: bool,
+        silent: bool,
+        confirmed: Option<bool>,
+        id: &str,
+    ) -> anyhow::Result<()> {
+        let now = now_rfc3339_millis();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                id,
+                session_id,
+                step_number,
+                action_index,
+                tool_name,
+                tool_input,
+                tool_call_id,
+                is_high_risk as i32,
+                now,
+                silent as i32,
+                confirmed.map(|c| c as i32)
+            ],
+        )?;
+        conn.execute(
+            "UPDATE session_steps SET action_index = COALESCE(action_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = 'pending'",
+            rusqlite::params![action_index, tool_call_id, id],
+        )?;
+        if confirmed.is_some() {
+            conn.execute(
+                "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = 'pending'",
+                rusqlite::params![confirmed.map(|c| c as i32), id],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Complete an action step by recording its observation.
     pub fn complete_action_step(
         &self,
@@ -207,28 +318,30 @@ impl Database {
     pub fn get_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, step_number, tool_name, input, output, thought, action_tool, action_input, observation,
+            "SELECT id, session_id, step_number, action_index, tool_name, input, output, thought, action_tool, action_input, tool_call_id, observation,
                     status, is_high_risk, confirmed, started_at, completed_at, created_at, silent
-             FROM session_steps WHERE session_id = ?1 ORDER BY step_number ASC",
+             FROM session_steps WHERE session_id = ?1 ORDER BY step_number ASC, action_index ASC, created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-            let output: Option<String> = row.get(5)?;
-            let obs: Option<String> = row.get(9)?;
+            let output: Option<String> = row.get(6)?;
+            let obs: Option<String> = row.get(11)?;
             Ok(SessionStep {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 step_number: row.get(2)?,
-                thought: row.get(6)?,
-                action_tool: row.get(7)?,
-                action_input: row.get(8)?,
+                thought: row.get(7)?,
+                action_index: row.get(3)?,
+                action_tool: row.get(8)?,
+                action_input: row.get(9)?,
+                tool_call_id: row.get(10)?,
                 observation: obs.or(output),
-                status: row.get(10)?,
-                is_high_risk: row.get::<_, i32>(11)? != 0,
-                confirmed: row.get(12)?,
-                started_at: row.get(13)?,
-                completed_at: row.get(14)?,
-                created_at: row.get(15)?,
-                silent: row.get::<_, i32>(16)? != 0,
+                status: row.get(12)?,
+                is_high_risk: row.get::<_, i32>(13)? != 0,
+                confirmed: row.get(14)?,
+                started_at: row.get(15)?,
+                completed_at: row.get(16)?,
+                created_at: row.get(17)?,
+                silent: row.get::<_, i32>(18)? != 0,
             })
         })?;
         let mut steps = Vec::new();

@@ -23,6 +23,7 @@ use migrations::{MIGRATIONS, SCHEMA_VERSION, apply_migrations, set_user_version,
 #[cfg(test)]
 use migrations::{
     Migration, migrate_v10_llm_usage_cache_accounting, migrate_v11_usage_cache_diagnostics,
+    migrate_v12_session_step_tool_identity,
 };
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
@@ -52,6 +53,7 @@ const SCHEMA_SQL: &[&str] = &[
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         step_number INTEGER NOT NULL,
+        action_index INTEGER NOT NULL DEFAULT 0,
         tool_name TEXT NOT NULL,
         input TEXT NOT NULL DEFAULT '{}',
         output TEXT NOT NULL DEFAULT '{}',
@@ -66,6 +68,7 @@ const SCHEMA_SQL: &[&str] = &[
         thought TEXT,
         action_tool TEXT,
         action_input TEXT,
+        tool_call_id TEXT,
         observation TEXT
     )",
     // Internal key-value store (fact-extraction cursors, etc.).
@@ -848,6 +851,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(miss, 0);
+    }
+
+    #[test]
+    fn v12_migration_adds_session_step_tool_identity() {
+        let conn = create_test_conn();
+        conn.execute_batch(
+            "CREATE TABLE session_steps (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                step_number INTEGER NOT NULL,
+                tool_name TEXT,
+                input TEXT,
+                action_tool TEXT,
+                action_input TEXT,
+                status TEXT NOT NULL,
+                is_high_risk INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO session_steps
+                (id, session_id, step_number, tool_name, input, action_tool,
+                 action_input, status, is_high_risk, created_at)
+            VALUES ('step-old', 'ses-old', 2, 'echo', '{}', 'echo', '{}',
+                    'completed', 0, '2026-08-31T00:00:00Z');",
+        )
+        .unwrap();
+
+        migrate_v12_session_step_tool_identity(&conn).unwrap();
+        migrate_v12_session_step_tool_identity(&conn).unwrap();
+        assert!(column_exists(&conn, "session_steps", "action_index").unwrap());
+        assert!(column_exists(&conn, "session_steps", "tool_call_id").unwrap());
+        let identity: (i32, Option<String>) = conn
+            .query_row(
+                "SELECT action_index, tool_call_id FROM session_steps WHERE id = 'step-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, (0, None));
     }
 
     #[test]

@@ -12,6 +12,10 @@ use serde_json::Value;
 pub struct ToolRecord {
     pub action: Action,
     pub observation: Option<String>,
+    #[serde(default)]
+    pub action_index: u32,
+    #[serde(default)]
+    pub step_id: String,
 }
 
 /// One LLM step; parallel tools share `step_number` as siblings in `tools`
@@ -53,6 +57,10 @@ pub enum TranscriptRecord {
     },
     ToolResult {
         step_number: u32,
+        #[serde(default)]
+        action_index: u32,
+        #[serde(default)]
+        step_id: String,
         canonical_observation: String,
         history_observation: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,7 +114,11 @@ pub struct ConfirmPendingTool {
     pub confirm_id: String,
     pub tool_name: String,
     pub tool_input: Value,
+    #[serde(default)]
+    pub tool_call_id: String,
     pub step_id: String,
+    #[serde(default)]
+    pub action_index: u32,
     pub risk_level: haven_common::types::RiskLevel,
     /// `None` = still waiting; `Some(true/false)` = user decided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,6 +277,8 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
             }
             TranscriptRecord::ToolResult {
                 step_number,
+                action_index,
+                step_id,
                 canonical_observation,
                 history_observation,
                 tool_call_id,
@@ -287,6 +301,8 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
                     round.tools.push(ToolRecord {
                         action: action.clone(),
                         observation: Some(history_observation.clone()),
+                        action_index: *action_index,
+                        step_id: step_id.clone(),
                     });
                 } else {
                     rounds.push(ReActRound {
@@ -295,6 +311,8 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
                         tools: vec![ToolRecord {
                             action: action.clone(),
                             observation: Some(history_observation.clone()),
+                            action_index: *action_index,
+                            step_id: step_id.clone(),
                         }],
                     });
                 }
@@ -452,6 +470,8 @@ mod tests {
             },
             TranscriptRecord::ToolResult {
                 step_number: 1,
+                action_index: 0,
+                step_id: "step-a".into(),
                 canonical_observation: "ra".into(),
                 history_observation: "ra".into(),
                 tool_call_id: Some("c1".into()),
@@ -464,6 +484,8 @@ mod tests {
             },
             TranscriptRecord::ToolResult {
                 step_number: 1,
+                action_index: 1,
+                step_id: "step-b".into(),
                 canonical_observation: "rb".into(),
                 history_observation: "rb".into(),
                 tool_call_id: Some("c2".into()),
@@ -593,6 +615,49 @@ mod tests {
         let pending = back.awaiting_answer.expect("flag restored");
         assert_eq!(pending.question, "which file?");
         assert_eq!(pending.step_ids, vec!["step-abc".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_awaiting_confirm_roundtrip_preserves_invocation_identity() {
+        let snapshot = ReActSnapshot {
+            events: vec![],
+            step_number: 4,
+            awaiting_confirm: Some(ConfirmPending {
+                step_number: 4,
+                tools: vec![
+                    ConfirmPendingTool {
+                        confirm_id: "conf-a".into(),
+                        tool_name: "run_command".into(),
+                        tool_input: serde_json::json!({"command":"same"}),
+                        tool_call_id: "call-a".into(),
+                        step_id: "step-a".into(),
+                        action_index: 0,
+                        risk_level: haven_common::types::RiskLevel::High,
+                        decision: None,
+                    },
+                    ConfirmPendingTool {
+                        confirm_id: "conf-b".into(),
+                        tool_name: "run_command".into(),
+                        tool_input: serde_json::json!({"command":"same"}),
+                        tool_call_id: "call-b".into(),
+                        step_id: "step-a".into(),
+                        action_index: 1,
+                        risk_level: haven_common::types::RiskLevel::High,
+                        decision: None,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
+        let tools = back.awaiting_confirm.unwrap().tools;
+        assert_eq!(tools[0].step_id, "step-a");
+        assert_eq!(tools[0].action_index, 0);
+        assert_eq!(tools[0].tool_call_id, "call-a");
+        assert_eq!(tools[1].step_id, "step-a");
+        assert_eq!(tools[1].action_index, 1);
+        assert_eq!(tools[1].tool_call_id, "call-b");
     }
 
     #[test]

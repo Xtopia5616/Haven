@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::{ConfirmPending, ConfirmPendingTool};
 use async_trait::async_trait;
 use futures_util::stream;
 use haven_common::types::{
@@ -383,6 +384,8 @@ async fn restore_per_session_tools_rebuilds_from_history() {
                 tool_call_id: Some("tc1".into()),
             },
             observation: Some(r#"{"skill":{"name":"skill__echo"}}"#.into()),
+            action_index: 0,
+            step_id: "step-skill".into(),
         }],
     }];
 
@@ -1623,10 +1626,10 @@ async fn corrupt_react_state_hard_fails_resume() {
     );
 }
 
-/// Phase 7 / B4: projector prefers a real messages.tool_call_id when the
-/// Tool-role content matches the step observation.
+/// Phase 7 / B4: projector uses the provider tool-call id persisted on the
+/// step row, without matching tool-role content.
 #[tokio::test]
-async fn project_tool_chain_prefers_real_tool_call_id() {
+async fn project_tool_chain_uses_step_tool_call_id() {
     let tools = Arc::new(ToolsManager::new());
     tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
@@ -1666,11 +1669,13 @@ async fn project_tool_chain_prefers_real_tool_call_id() {
         .run_blocking({
             let session_id = session.id.clone();
             move |db| {
-                let step = db.create_action_step(
+                let step = db.create_action_step_with_identity(
                     &session_id,
                     1,
+                    0,
                     "echo",
                     r#"{"text":"hi"}"#,
+                    Some("call_real_1"),
                     false,
                     false,
                     None,
@@ -1704,7 +1709,7 @@ async fn project_tool_chain_prefers_real_tool_call_id() {
     });
     assert!(
         used_real,
-        "projector must reuse messages.tool_call_id when observation matches"
+        "projector must reuse the tool_call_id persisted on session_steps"
     );
 }
 
@@ -2043,7 +2048,7 @@ impl Tool for ActionRequiredTool {
 }
 
 #[tokio::test]
-async fn supplement_missing_required_fields_fills_schema_defaults() {
+async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry
@@ -2053,7 +2058,8 @@ async fn supplement_missing_required_fields_fills_schema_defaults() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    // A call missing both required fields (`action` and `query`).
+    // Missing required fields is reported; validation never invents
+    // side-effecting values.
     let mut actions = vec![Action {
         tool_name: "action_required".into(),
         tool_input: serde_json::json!({}),
@@ -2062,18 +2068,16 @@ async fn supplement_missing_required_fields_fills_schema_defaults() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 1);
+    assert_eq!(repaired.len(), 1);
     let input = &actions[0].tool_input;
-    // `action` has a schema default ("go"); `query` has none, so it gets
-    // a type-appropriate placeholder (empty string).
-    assert_eq!(input["action"], "go");
-    assert_eq!(input["query"], "");
+    assert_eq!(input, &serde_json::json!({}));
+    assert!(repaired[0].render().contains("MISSING REQUIRED FIELD"));
 }
 
 #[tokio::test]
-async fn supplement_missing_required_fields_skips_fully_populated_and_final() {
+async fn valid_tool_inputs_and_final_actions_have_no_validation_failures() {
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry
@@ -2083,7 +2087,7 @@ async fn supplement_missing_required_fields_skips_fully_populated_and_final() {
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
 
-    // Complete call: nothing to supplement.
+    // Complete call: no validation failure.
     let mut actions = vec![Action {
         tool_name: "action_required".into(),
         tool_input: serde_json::json!({"action": "stop", "query": "hi"}),
@@ -2092,11 +2096,11 @@ async fn supplement_missing_required_fields_skips_fully_populated_and_final() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 0);
+    assert_eq!(repaired.len(), 0);
 
-    // Final actions are never repaired.
+    // Final actions are not validated in the tool batch.
     let mut actions = vec![Action {
         tool_name: "action_required".into(),
         tool_input: serde_json::json!({}),
@@ -2105,17 +2109,16 @@ async fn supplement_missing_required_fields_skips_fully_populated_and_final() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 0);
+    assert_eq!(repaired.len(), 0);
 }
 
 #[tokio::test]
-async fn supplement_missing_required_fields_repairs_null_input() {
+async fn null_tool_input_is_reported_without_repairing_arguments() {
     // Interrupted/truncated generation yields unparseable arguments,
-    // which parse_default_model_response converts to Null. The repair
-    // must still fill the required fields instead of shipping the bare
-    // Null to the tool (which fails validate_input for every field).
+    // which parse_default_model_response converts to Null. Report the
+    // malformed input instead of shipping a guessed object to the tool.
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry
@@ -2133,16 +2136,15 @@ async fn supplement_missing_required_fields_repairs_null_input() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 1);
-    assert!(actions[0].tool_input.is_object());
-    assert_eq!(actions[0].tool_input["action"], "go");
-    assert_eq!(actions[0].tool_input["query"], "");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(actions[0].tool_input, serde_json::Value::Null);
+    assert!(repaired[0].render().contains("validation failed"));
 }
 
 #[tokio::test]
-async fn supplement_missing_required_fields_fills_null_valued_fields() {
+async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
     // A required field explicitly set to null is as unusable as a
     // missing one: the validator rejects null for typed fields.
     let tools = Arc::new(ToolsManager::new());
@@ -2162,16 +2164,18 @@ async fn supplement_missing_required_fields_fills_null_valued_fields() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 1);
-    assert_eq!(actions[0].tool_input["action"], "go");
-    assert_eq!(actions[0].tool_input["query"], "");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(
+        actions[0].tool_input,
+        serde_json::json!({"action": null, "query": null})
+    );
 }
 /// A mock tool whose required field is enum-constrained with NO schema
 /// default, mirroring the `input` tool's `operation` discriminator.
-/// The type placeholder (`""`) would violate the enum, so the repair
-/// must fall back to the first declared enum value.
+/// An absent enum discriminator is invalid; validation must not select the
+/// first enum value because that could change the requested side effect.
 struct EnumRequiredTool;
 #[async_trait]
 impl Tool for EnumRequiredTool {
@@ -2245,7 +2249,7 @@ impl Tool for EnumWithOptionalTool {
 }
 
 #[tokio::test]
-async fn supplement_missing_required_fields_enum_field_gets_first_value() {
+async fn missing_enum_field_is_reported_without_guessing_a_value() {
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry
@@ -2263,20 +2267,21 @@ async fn supplement_missing_required_fields_enum_field_gets_first_value() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 1);
-    assert_eq!(actions[0].tool_input["operation"], "type");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(actions[0].tool_input, serde_json::json!({}));
+    assert!(repaired[0].render().contains("operation"));
 }
 
 #[tokio::test]
-async fn supplement_repairs_present_value_not_in_enum() {
+async fn invalid_enum_value_is_reported_without_repairing_arguments() {
     // The `action` field is PRESENT but its value is not in the schema
     // enum. Strict providers validate tool_use input against the declared
     // schema and reject the request with a 400 ("Failed to deserialize
     // the JSON body into the target type: input.action: ...") — the value
-    // must be replaced with the schema default before it reaches the
-    // provider, not just when the field is missing.
+    // must be reported before execution, not replaced with a guessed
+    // discriminator.
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry
@@ -2294,17 +2299,17 @@ async fn supplement_repairs_present_value_not_in_enum() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 1);
-    // `action` falls back to the schema default "go"; the valid `query`
-    // is left untouched.
-    assert_eq!(actions[0].tool_input["action"], "go");
-    assert_eq!(actions[0].tool_input["query"], "hi");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(
+        actions[0].tool_input,
+        serde_json::json!({"action": "bogus", "query": "hi"})
+    );
 }
 
 #[tokio::test]
-async fn supplement_repairs_present_value_of_wrong_type() {
+async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
     // Same provider 400 when a field's value type contradicts the schema
     // (e.g. a number where the schema declares a string enum).
     let tools = Arc::new(ToolsManager::new());
@@ -2324,15 +2329,17 @@ async fn supplement_repairs_present_value_of_wrong_type() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 1);
-    assert_eq!(actions[0].tool_input["action"], "go");
-    assert_eq!(actions[0].tool_input["query"], "hi");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(
+        actions[0].tool_input,
+        serde_json::json!({"action": 42, "query": "hi"})
+    );
 }
 
 #[tokio::test]
-async fn supplement_keeps_valid_enum_values_untouched() {
+async fn valid_enum_values_have_no_validation_failures() {
     // A value that conforms to the schema (in the enum, correct type)
     // must NOT be repaired.
     let tools = Arc::new(ToolsManager::new());
@@ -2352,17 +2359,17 @@ async fn supplement_keeps_valid_enum_values_untouched() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 0);
+    assert_eq!(repaired.len(), 0);
     assert_eq!(actions[0].tool_input["action"], "stop");
 }
 
 #[tokio::test]
-async fn supplement_repairs_invalid_optional_field() {
+async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     // Even a non-required property with an invalid value can trip the
     // provider's deserialization (the input object is validated as a
-    // whole), so it is repaired too.
+    // whole), so it is reported too.
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry
@@ -2380,12 +2387,69 @@ async fn supplement_repairs_invalid_optional_field() {
     }];
     let repaired = agent
         .react_engine
-        .supplement_missing_required_fields(&session.id, &mut actions)
+        .validate_tool_inputs(&session.id, &mut actions)
         .await;
-    assert_eq!(repaired, 1);
+    assert_eq!(repaired.len(), 1);
     assert_eq!(actions[0].tool_input["operation"], "type");
-    // Optional invalid enum field falls back to the first enum value.
-    assert_eq!(actions[0].tool_input["optional"], "a");
+    assert_eq!(actions[0].tool_input["optional"], "nope");
+}
+
+#[tokio::test]
+async fn confirmation_recovery_matches_the_full_invocation_identity() {
+    let tools = Arc::new(ToolsManager::new());
+    let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
+    let (_agent, executor) = make_test_agent_with(client, tools);
+    let session = executor.create_session("confirm").await.unwrap();
+    let pending = ConfirmPending {
+        step_number: 3,
+        tools: vec![
+            ConfirmPendingTool {
+                confirm_id: "conf-a".into(),
+                tool_name: "run_command".into(),
+                tool_input: serde_json::json!({"command":"same"}),
+                tool_call_id: "call-a".into(),
+                step_id: "step-3".into(),
+                action_index: 0,
+                risk_level: RiskLevel::High,
+                decision: Some(true),
+            },
+            ConfirmPendingTool {
+                confirm_id: "conf-b".into(),
+                tool_name: "run_command".into(),
+                tool_input: serde_json::json!({"command":"same"}),
+                tool_call_id: "call-b".into(),
+                step_id: "step-3".into(),
+                action_index: 1,
+                risk_level: RiskLevel::High,
+                decision: Some(false),
+            },
+        ],
+    };
+    let restored: ConfirmPending =
+        serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
+    executor
+        .set_awaiting_confirm(&session.id, Some(restored))
+        .await;
+
+    assert_eq!(
+        executor
+            .confirm_decision_for(&session.id, "step-3", 0, Some("call-a"))
+            .await,
+        Some(true)
+    );
+    assert_eq!(
+        executor
+            .confirm_decision_for(&session.id, "step-3", 1, Some("call-b"))
+            .await,
+        Some(false)
+    );
+    assert_eq!(
+        executor
+            .confirm_decision_for(&session.id, "step-3", 0, Some("call-b"))
+            .await,
+        None,
+        "same tool name and args must not associate the wrong call"
+    );
 }
 
 /// Scripted LlmClient that returns a pre-programmed sequence of responses

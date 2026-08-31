@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -92,65 +92,25 @@ pub(super) async fn choose_agent_role(router: &LlmRouter, has_image: bool) -> En
     }
 }
 
-/// A type-appropriate placeholder for a required JSON-schema field that has no
-/// declared `default`, used to repair tool-call arguments that are missing a
-/// required field. Keeps the call deserializable (avoiding a provider 400)
-/// without inventing a semantic value the tool would act on.
-fn placeholder_for_schema_type(ty: Option<&str>) -> serde_json::Value {
-    match ty {
-        Some("string") => serde_json::Value::String(String::new()),
-        Some("integer") | Some("number") => serde_json::Value::Number(0.into()),
-        Some("boolean") => serde_json::Value::Bool(false),
-        Some("array") => serde_json::Value::Array(Vec::new()),
-        Some("object") => serde_json::Value::Object(Default::default()),
-        _ => serde_json::Value::Null,
-    }
+/// A tool input that cannot be executed without changing the model's
+/// intended semantics. Invalid input is reported as a failed tool result;
+/// the agent never invents an enum member, default-like placeholder, or
+/// side-effecting discriminator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolInputValidationFailure {
+    pub action_index: u32,
+    pub tool_name: String,
+    pub details: Vec<String>,
 }
 
-/// The fallback value for a schema property whose field is missing, null, or
-/// holds a value that violates the schema: the declared `default`, else the
-/// first enum value (enum-constrained discriminators like `action`/`operation`
-/// must stay within the enum), else a type-appropriate placeholder.
-fn schema_property_fallback(prop: &serde_json::Value) -> serde_json::Value {
-    prop.get("default")
-        .cloned()
-        .or_else(|| {
-            prop.get("enum")
-                .and_then(|e| e.as_array())
-                .and_then(|arr| arr.first().cloned())
-        })
-        .unwrap_or_else(|| placeholder_for_schema_type(prop.get("type").and_then(|t| t.as_str())))
-}
-
-/// Whether a value conforms to a schema property's type/enum constraints.
-/// Detects tool-call inputs a strict provider would reject with a 400
-/// ("Failed to deserialize the JSON body into the target type: input.<field>")
-/// even though the field is present — e.g. an `action` set to a value outside
-/// the declared enum, or a number where the schema declares a string.
-fn value_conforms_to_prop(prop: &serde_json::Value, value: &serde_json::Value) -> bool {
-    if let Some(enum_arr) = prop.get("enum").and_then(|e| e.as_array())
-        && !enum_arr.contains(value)
-    {
-        return false;
-    }
-    let Some(ty) = prop.get("type") else {
-        return true;
-    };
-    let matches = |t: &str| match t {
-        "string" => value.is_string(),
-        "integer" => value.is_i64() || value.is_u64(),
-        "number" => value.is_number(),
-        "boolean" => value.is_boolean(),
-        "array" => value.is_array(),
-        "object" => value.is_object(),
-        "null" => value.is_null(),
-        // Unknown schema types (e.g. formats): don't guess, leave the value.
-        _ => true,
-    };
-    match ty {
-        serde_json::Value::String(t) => matches(t),
-        serde_json::Value::Array(types) => types.iter().filter_map(|t| t.as_str()).any(matches),
-        _ => true,
+impl ToolInputValidationFailure {
+    pub fn render(&self) -> String {
+        format!(
+            "tool input validation failed for '{}' (action_index={}): {}",
+            self.tool_name,
+            self.action_index,
+            self.details.join("; ")
+        )
     }
 }
 
@@ -431,25 +391,19 @@ impl ReActEngine {
         fetched
     }
 
-    /// Supplement missing or invalid fields on a tool call's arguments before
-    /// they reach the provider / tool. The model sometimes returns a call whose
-    /// `arguments` is valid JSON but omits a field the tool's input schema
-    /// marks required (e.g. an `action` discriminator) — most often after an
-    /// interrupted/continued generation — or fills it with a value that
-    /// violates the schema (wrong type, or not in the declared enum).
-    /// Providers reject such a call with a 400 when deserializing the request
-    /// body, so the ReAct loop repairs the arguments up front: a missing/null
-    /// required field is filled from the schema's `default` when declared,
-    /// otherwise from a type-appropriate placeholder; a present but
-    /// schema-violating value is replaced the same way. Returns the number of
-    /// actions that were repaired.
-    pub(crate) async fn supplement_missing_required_fields(
+    /// Validate every non-final tool call without altering its arguments.
+    ///
+    /// A missing discriminator, an invalid enum member, and a type mismatch
+    /// can all change the meaning of a side-effecting call if replaced with a
+    /// guessed value. The caller turns each failure into a normal failed tool
+    /// observation so the model receives an actionable, structured error.
+    pub(crate) async fn validate_tool_inputs(
         &self,
         session_id: &str,
-        actions: &mut [Action],
-    ) -> usize {
-        let mut repaired = 0usize;
-        for action in actions.iter_mut() {
+        actions: &[Action],
+    ) -> Vec<ToolInputValidationFailure> {
+        let mut failures = Vec::new();
+        for (action_index, action) in actions.iter().enumerate() {
             if action.is_final {
                 continue;
             }
@@ -461,81 +415,15 @@ impl ReActEngine {
             else {
                 continue;
             };
-            let schema = tool.input_schema();
-            // A truncated/interrupted generation often yields UNPARSEABLE
-            // arguments (parse_default_model_response falls back to Null),
-            // so the call arrives without any object to repair. Normalize it
-            // to an empty object before the schema checks so every non-object
-            // input is covered — otherwise the bare Null reaches
-            // validate_input and fails with "MISSING REQUIRED FIELD(S)" for
-            // every required field (or a type error when the schema declares
-            // none).
-            if !action.tool_input.is_object() {
-                action.tool_input = serde_json::json!({});
-            }
-            let required: Vec<&str> = schema
-                .get("required")
-                .and_then(|r| r.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                .unwrap_or_default();
-            let props = schema.get("properties").and_then(|p| p.as_object());
-            let Some(obj) = action.tool_input.as_object_mut() else {
-                continue;
-            };
-            let mut filled = 0usize;
-            // First pass: every declared property. Repair present-but-invalid
-            // values (wrong type / not in the enum / null for a typed field)
-            // so the provider can deserialize the echoed tool_use input — a
-            // 400 from a strict provider otherwise fails the whole step.
-            // `value_conforms_to_prop` already honors explicit nullability
-            // (`"type": ["string", "null"]`), so nulls are judged here, not
-            // blanket-skipped.
-            if let Some(props) = props {
-                for (field, prop) in props {
-                    let Some(value) = obj.get(field) else {
-                        continue;
-                    };
-                    if value_conforms_to_prop(prop, value) {
-                        continue;
-                    }
-                    let fallback = schema_property_fallback(prop);
-                    tracing::warn!(
-                        "repairing invalid value for field '{}' on tool call '{}': {:?} -> {:?}",
-                        field,
-                        action.tool_name,
-                        value,
-                        fallback
-                    );
-                    obj.insert(field.clone(), fallback);
-                    filled += 1;
-                }
-            }
-            // Second pass: required fields. A required field that is missing
-            // (or present but null — the validator rejects null for typed
-            // fields) is filled from the schema default / enum / placeholder.
-            for field in required {
-                let present = obj.get(field).is_some_and(|v| !v.is_null());
-                if present {
-                    continue;
-                }
-                let fallback = props
-                    .and_then(|p| p.get(field))
-                    .map(schema_property_fallback)
-                    .unwrap_or(serde_json::Value::Null);
-                tracing::warn!(
-                    "supplementing missing required field '{}' on tool call '{}' with {:?}",
-                    field,
-                    action.tool_name,
-                    fallback
-                );
-                obj.insert(field.to_string(), fallback);
-                filled += 1;
-            }
-            if filled > 0 {
-                repaired += 1;
+            if let Err(error) = tool.validate_input(&action.tool_input) {
+                failures.push(ToolInputValidationFailure {
+                    action_index: action_index as u32,
+                    tool_name: action.tool_name.clone(),
+                    details: vec![error.to_string()],
+                });
             }
         }
-        repaired
+        failures
     }
 
     /// Parse LLM response into thought text and actions.
@@ -563,6 +451,7 @@ impl ReActEngine {
         };
 
         let actions: Vec<Action> = if !response.tool_calls.is_empty() {
+            let mut seen_tool_call_ids = HashSet::new();
             response
                 .tool_calls
                 .iter()
@@ -571,15 +460,19 @@ impl ReActEngine {
                     // `final_answer` is the only name that marks a tool call
                     // as the conversation's final answer.
                     let is_final = tc.name == "final_answer";
+                    let provider_id = tc.id.trim();
+                    let tool_call_id = if provider_id.is_empty()
+                        || !seen_tool_call_ids.insert(provider_id.to_string())
+                    {
+                        haven_common::types::new_id("call")
+                    } else {
+                        provider_id.to_string()
+                    };
                     Action {
                         tool_name: tc.name.clone(),
                         tool_input: args,
                         is_final,
-                        tool_call_id: Some(if tc.id.is_empty() {
-                            haven_common::types::new_id("call")
-                        } else {
-                            tc.id.clone()
-                        }),
+                        tool_call_id: Some(tool_call_id),
                     }
                 })
                 .collect()
@@ -1449,6 +1342,33 @@ mod tests {
         assert_eq!(actions.len(), 2);
         assert_eq!(actions[0].tool_name, "search");
         assert_eq!(actions[1].tool_name, "read_file");
+    }
+
+    #[test]
+    fn parse_duplicate_provider_tool_call_ids_get_distinct_local_ids() {
+        let tcs = vec![
+            CanonicalToolCall {
+                id: "same".into(),
+                name: "search".into(),
+                arguments: serde_json::json!({"q": "x"}),
+            },
+            CanonicalToolCall {
+                id: "same".into(),
+                name: "search".into(),
+                arguments: serde_json::json!({"q": "x"}),
+            },
+        ];
+        let r = resp("", tcs, Some(FinishReason::ToolCalls));
+        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].tool_call_id.as_deref(), Some("same"));
+        assert_ne!(actions[0].tool_call_id, actions[1].tool_call_id);
+        assert!(
+            actions[1]
+                .tool_call_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("call-"))
+        );
     }
 
     #[test]

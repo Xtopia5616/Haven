@@ -204,7 +204,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `mute:changed` | `MuteChangedEvent { muted }` | 根布局、设置页 | 最新值覆盖；只含布尔状态。 |
 | `mcp:status_change` | `McpStatusChangedEvent { name, status }` | 工具视图、根布局 | 按 server name 合并；`Offline.error` 为净化错误，不含 env。 |
 | `skills:status_change` | `SkillsStatusChangedEvent { op }` | 技能视图 | refresh 通知可丢失，消费者重新读取受管 skills root。 |
-| `confirm:requested` | `ConfirmationRequestedEvent { step_id, tool_name, risk_level, session_id, params, permission_key }` | 聊天页 | 必须先由后端 SafetyGateway 创建；`params` 是确认所需动态扩展点，决策仍由后端校验。 |
+| `confirm:requested` | `ConfirmationRequestedEvent { step_id, invocation_step_id, action_index, tool_call_id, tool_name, risk_level, session_id, params, permission_key }` | 聊天页 | `step_id` 是确认请求 ID，用于 resolve；ReAct 工具另带稳定的 `invocation_step_id + action_index + tool_call_id`，定时/后台动作的 invocation identity 为空；必须先由后端 SafetyGateway 创建，决策仍由后端校验。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `session_id + run_id + step_number` 归并；文本不得重复写入普通日志。 |

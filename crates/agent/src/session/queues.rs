@@ -545,6 +545,9 @@ impl SessionExecutor {
                     tool.tool_name.clone(),
                     tool.risk_level,
                     tool.tool_input.clone(),
+                    Some(tool.step_id.clone()),
+                    tool.action_index,
+                    (!tool.tool_call_id.is_empty()).then(|| tool.tool_call_id.clone()),
                 );
             }
         }

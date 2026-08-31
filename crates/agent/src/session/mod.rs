@@ -207,7 +207,17 @@ pub struct StepInfo {
 }
 
 type ConfirmRequestCallback = OnceHandler<
-    dyn Fn(haven_common::types::ConfirmId, String, String, RiskLevel, Value) + Send + Sync,
+    dyn Fn(
+            haven_common::types::ConfirmId,
+            String,
+            String,
+            RiskLevel,
+            Value,
+            Option<String>,
+            u32,
+            Option<String>,
+        ) + Send
+        + Sync,
 >;
 
 /// Terminal-failure callback: invoked when the dispatcher marks a session as

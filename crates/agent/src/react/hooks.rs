@@ -50,6 +50,15 @@ pub(crate) enum BeforeToolAction {
     NeedConfirm { risk_level: RiskLevel },
 }
 
+/// Stable identity of one tool call within a ReAct step. Gate decisions must
+/// use this identity; tool names and JSON arguments are not unique.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ToolCallIdentity<'a> {
+    pub step_id: &'a str,
+    pub action_index: u32,
+    pub tool_call_id: Option<&'a str>,
+}
+
 /// Inputs needed to classify a completed LLM response. Grouping these
 /// immutable step values keeps the hook boundary explicit as it evolves.
 pub(crate) struct AfterLlmInput<'a> {
@@ -84,6 +93,7 @@ pub(crate) trait LoopHooks: Send + Sync {
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
+        _identity: ToolCallIdentity<'_>,
         _tool_name: &str,
         _input: &Value,
     ) -> BeforeToolAction {

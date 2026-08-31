@@ -8,6 +8,9 @@ describe('app-shell IPC contract', () => {
 			id: 1,
 			payload: {
 				step_id: 'conf-1',
+				invocation_step_id: 'step-1',
+				action_index: 1,
+				tool_call_id: 'call-1',
 				tool_name: 'run_command',
 				risk_level: 'high',
 				session_id: 'ses-1',
@@ -18,6 +21,9 @@ describe('app-shell IPC contract', () => {
 
 		expect(event.payload).toEqual({
 			stepId: 'conf-1',
+			invocationStepId: 'step-1',
+			actionIndex: 1,
+			toolCallId: 'call-1',
 			toolName: 'run_command',
 			riskLevel: 'high',
 			sessionId: 'ses-1',

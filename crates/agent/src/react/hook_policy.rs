@@ -11,7 +11,9 @@ use haven_tools::ConfirmationResult;
 use serde_json::Value;
 use tracing::Instrument;
 
-use super::hooks::{AfterLlmInput, BeforeToolAction, InferCallback, LoopHooks, MemoryPatchHandle};
+use super::hooks::{
+    AfterLlmInput, BeforeToolAction, InferCallback, LoopHooks, MemoryPatchHandle, ToolCallIdentity,
+};
 use super::retries::{AfterLlmAction, ResponsePolicy};
 use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_has_image};
 
@@ -104,13 +106,19 @@ impl LoopHooks for DefaultHooks {
         &self,
         engine: &ReActEngine,
         ctx: &StepCtx,
+        identity: ToolCallIdentity<'_>,
         tool_name: &str,
         input: &Value,
     ) -> BeforeToolAction {
         // Resume path: a prior confirm pause already recorded a decision.
         if let Some(decision) = engine
             .executor
-            .confirm_decision_for(&ctx.session_id, tool_name, input)
+            .confirm_decision_for(
+                &ctx.session_id,
+                identity.step_id,
+                identity.action_index,
+                identity.tool_call_id,
+            )
             .await
         {
             return if decision {

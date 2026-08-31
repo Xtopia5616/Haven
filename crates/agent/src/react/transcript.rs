@@ -34,6 +34,7 @@ pub(super) struct ActionCard {
     pub tool_input: Value,
     pub tool_call_id: Option<String>,
     pub step_id: String,
+    pub action_index: u32,
     pub suppress_streamed_thought: bool,
 }
 
@@ -44,6 +45,7 @@ pub(super) struct ObservationCard {
     pub tool_name: String,
     pub tool_call_id: Option<String>,
     pub step_id: String,
+    pub action_index: u32,
     pub silent: bool,
     pub ask_options: Vec<String>,
 }
@@ -77,6 +79,8 @@ pub(super) enum TranscriptEvent {
         history_observation: String,
         tool_call_id: Option<String>,
         action: Action,
+        action_index: u32,
+        step_id: String,
         observation_card: Option<ObservationCard>,
     },
     UserInject {
@@ -127,9 +131,13 @@ impl TranscriptEvent {
                 history_observation,
                 tool_call_id,
                 action,
+                action_index,
+                step_id,
                 ..
             } => TranscriptRecord::ToolResult {
                 step_number,
+                action_index: *action_index,
+                step_id: step_id.clone(),
                 canonical_observation: canonical_observation.clone(),
                 history_observation: history_observation.clone(),
                 tool_call_id: tool_call_id.clone(),
@@ -243,11 +251,13 @@ impl ReActEngine {
                 }
                 for card in &action_cards {
                     self.executor
-                        .begin_action_step(
+                        .begin_action_step_with_identity(
                             &ctx.session_id,
                             &card.tool_name,
                             &card.tool_input,
                             ctx.step_num,
+                            card.action_index,
+                            card.tool_call_id.as_deref(),
                             &card.step_id,
                         )
                         .await;
@@ -260,6 +270,7 @@ impl ReActEngine {
                             run_id: ctx.run_id,
                             tool_call_id: card.tool_call_id.clone(),
                             step_id: card.step_id.clone(),
+                            action_index: card.action_index,
                             suppress_streamed_thought: card.suppress_streamed_thought,
                         })
                         .await;
@@ -282,6 +293,8 @@ impl ReActEngine {
                 history_observation,
                 tool_call_id,
                 action,
+                action_index: _,
+                step_id: _,
                 observation_card,
             } => {
                 if let Some(ref card) = observation_card {
@@ -312,6 +325,7 @@ impl ReActEngine {
                             tool_call_id: card.tool_call_id.clone(),
                             ask_options: card.ask_options.clone(),
                             step_id: card.step_id.clone(),
+                            action_index: card.action_index,
                         })
                         .await;
                 }
@@ -769,6 +783,7 @@ mod tests {
                         tool_input: serde_json::json!({"x": 1}),
                         tool_call_id: Some("call-1".into()),
                         step_id: step_id.clone(),
+                        action_index: 0,
                         suppress_streamed_thought: false,
                     }],
                     persist_text_id: None,
@@ -826,10 +841,13 @@ mod tests {
                     history_observation: "ok".into(),
                     tool_call_id: Some("call-2".into()),
                     action,
+                    action_index: 0,
+                    step_id: step_id.clone(),
                     observation_card: Some(ObservationCard {
                         tool_name: "echo".into(),
                         tool_call_id: Some("call-2".into()),
                         step_id: step_id.clone(),
+                        action_index: 0,
                         silent: false,
                         ask_options: vec![],
                     }),
@@ -890,6 +908,8 @@ mod tests {
                             is_final: false,
                             tool_call_id: Some(id.into()),
                         },
+                        action_index: if id == "c1" { 0 } else { 1 },
+                        step_id: format!("step-{id}"),
                         observation_card: None,
                     },
                     &mut state,
@@ -927,10 +947,13 @@ mod tests {
                         is_final: false,
                         tool_call_id: Some("call-ask".into()),
                     },
+                    action_index: 0,
+                    step_id: step_id.clone(),
                     observation_card: Some(ObservationCard {
                         tool_name: "ask".into(),
                         tool_call_id: Some("call-ask".into()),
                         step_id: step_id.clone(),
+                        action_index: 0,
                         silent: false,
                         ask_options: vec!["A".into(), "B".into()],
                     }),

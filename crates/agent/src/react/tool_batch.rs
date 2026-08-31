@@ -3,7 +3,7 @@
 //! Tool execution is concurrent, but transcript materialization is ordered by
 //! the assistant's tool-call list so the next model request is deterministic.
 
-use super::hooks::BeforeToolAction;
+use super::hooks::{BeforeToolAction, ToolCallIdentity};
 use super::snapshot_io::PauseTurnInput;
 use super::*;
 use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
@@ -64,6 +64,7 @@ impl ToolBatchState {
             notify_title,
             notify_body,
             step_id,
+            action_index,
         } = result;
 
         if is_error {
@@ -112,10 +113,13 @@ impl ToolBatchState {
                     history_observation: display_observation,
                     tool_call_id: tool_call_id.clone(),
                     action,
+                    action_index,
+                    step_id: step_id.clone(),
                     observation_card: Some(ObservationCard {
                         tool_name,
                         tool_call_id,
                         step_id,
+                        action_index,
                         silent,
                         ask_options,
                     }),
@@ -290,6 +294,7 @@ struct CompletedTool {
     notify_title: Option<String>,
     notify_body: Option<String>,
     step_id: String,
+    action_index: u32,
 }
 
 impl ReActEngine {
@@ -297,9 +302,9 @@ impl ReActEngine {
     /// batch (parallel), drain observations, failure nudge, and ask pause.
     /// Behavior-preserving extract from `run_react_loop` (Phase 1 / E2).
     ///
-    /// Phase 7 / E5: schema repair (`supplement_missing_required_fields`) runs
-    /// at the tool-batch boundary before Action cards are emitted — not in the
-    /// thin loop.
+    /// Phase 7 / E5: tool-input validation runs at the tool-batch boundary
+    /// before Action cards are emitted — not in the thin loop. Invalid inputs
+    /// become failed observations and are never rewritten.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute_tool_batch(
         &self,
@@ -314,18 +319,18 @@ impl ReActEngine {
         cancel_res: &tokio_util::sync::CancellationToken,
         max_steps: u32,
     ) -> anyhow::Result<ToolBatchOutcome> {
-        if !actions.is_empty() {
-            let repaired = self
-                .supplement_missing_required_fields(session_id, actions)
-                .await;
-            if repaired > 0 {
-                tracing::warn!(
-                    "ReAct step {} session {} repaired {} tool call(s) with missing required fields",
-                    step_num,
-                    session_id,
-                    repaired
-                );
-            }
+        let validation_failures = if !actions.is_empty() {
+            self.validate_tool_inputs(session_id, actions).await
+        } else {
+            Vec::new()
+        };
+        if !validation_failures.is_empty() {
+            tracing::warn!(
+                "ReAct step {} session {} rejected {} invalid tool call(s)",
+                step_num,
+                session_id,
+                validation_failures.len()
+            );
         }
         let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
         // Mint one `step-*` id per action, shared by the Action event,
@@ -384,6 +389,7 @@ impl ReActEngine {
                     tool_input: action.tool_input.clone(),
                     tool_call_id: action.tool_call_id.clone(),
                     step_id: action_step_ids[idx].clone(),
+                    action_index: idx as u32,
                     suppress_streamed_thought,
                 })
                 .collect();
@@ -436,9 +442,51 @@ impl ReActEngine {
         let mut batch_state = ToolBatchState::default();
 
         for (idx, action) in non_final.iter().enumerate() {
+            if let Some(failure) = validation_failures
+                .iter()
+                .find(|failure| failure.action_index == idx as u32)
+            {
+                let error = failure.render();
+                let step_id = action_step_ids[idx].clone();
+                self.executor
+                    .finish_interrupted_step_with_identity(
+                        session_id,
+                        &action.tool_name,
+                        &action.tool_input,
+                        step_num,
+                        idx as u32,
+                        action.tool_call_id.as_deref(),
+                        &step_id,
+                        &error,
+                    )
+                    .await;
+                completed_results[idx] = Some(CompletedTool {
+                    action: (*action).clone(),
+                    tool_name: action.tool_name.clone(),
+                    step_result: error,
+                    is_error: true,
+                    ask_question: None,
+                    ask_options: Vec::new(),
+                    notify_title: None,
+                    notify_body: None,
+                    step_id,
+                    action_index: idx as u32,
+                });
+                continue;
+            }
             match self
                 .hooks
-                .before_tool(self, &gate_ctx, &action.tool_name, &action.tool_input)
+                .before_tool(
+                    self,
+                    &gate_ctx,
+                    ToolCallIdentity {
+                        step_id: &action_step_ids[idx],
+                        action_index: idx as u32,
+                        tool_call_id: action.tool_call_id.as_deref(),
+                    },
+                    &action.tool_name,
+                    &action.tool_input,
+                )
                 .await
             {
                 BeforeToolAction::Proceed { confirmed } => {
@@ -447,11 +495,13 @@ impl ReActEngine {
                 BeforeToolAction::Block { error } => {
                     let step_id = action_step_ids[idx].clone();
                     self.executor
-                        .finish_interrupted_step(
+                        .finish_interrupted_step_with_identity(
                             session_id,
                             &action.tool_name,
                             &action.tool_input,
                             step_num,
+                            idx as u32,
+                            action.tool_call_id.as_deref(),
                             &step_id,
                             &error,
                         )
@@ -466,6 +516,7 @@ impl ReActEngine {
                         notify_title: None,
                         notify_body: None,
                         step_id,
+                        action_index: idx as u32,
                     });
                 }
                 BeforeToolAction::NeedConfirm { risk_level } => {
@@ -473,7 +524,9 @@ impl ReActEngine {
                         confirm_id: haven_common::types::new_id("conf"),
                         tool_name: action.tool_name.clone(),
                         tool_input: action.tool_input.clone(),
+                        tool_call_id: action.tool_call_id.clone().unwrap_or_default(),
                         step_id: action_step_ids[idx].clone(),
+                        action_index: idx as u32,
                         risk_level,
                         decision: None,
                     });
@@ -605,6 +658,7 @@ impl ReActEngine {
                         notify_title,
                         notify_body,
                         step_id,
+                        action_index: idx as u32,
                     },
                 )
             });
@@ -636,11 +690,13 @@ impl ReActEngine {
                         // card from session_steps (not live-only).
                         let step_id = action_step_ids[idx].clone();
                         self.executor
-                            .finish_interrupted_step(
+                            .finish_interrupted_step_with_identity(
                                 session_id,
                                 &action.tool_name,
                                 &action.tool_input,
                                 step_num,
+                                idx as u32,
+                                action.tool_call_id.as_deref(),
                                 &step_id,
                                 &interrupted_text,
                             )
@@ -655,6 +711,7 @@ impl ReActEngine {
                             notify_title: None,
                             notify_body: None,
                             step_id,
+                            action_index: idx as u32,
                         });
                     }
                     for result in completed_results.into_iter().flatten() {
@@ -857,8 +914,7 @@ impl ReActEngine {
             let Some(decision) = tool.decision else {
                 continue;
             };
-            let tool_call_id =
-                tool_call_id_for(&state.canonical, &tool.tool_name, &tool.tool_input);
+            let tool_call_id = (!tool.tool_call_id.is_empty()).then(|| tool.tool_call_id.clone());
             let action = Action {
                 tool_name: tool.tool_name.clone(),
                 tool_input: tool.tool_input.clone(),
@@ -869,11 +925,13 @@ impl ReActEngine {
             let result = if decision {
                 let result = self
                     .executor
-                    .execute_step_preconfirmed(
+                    .execute_step_preconfirmed_with_identity(
                         session_id,
                         &tool.tool_name,
                         tool.tool_input.clone(),
                         step_num,
+                        tool.action_index,
+                        tool_call_id.as_deref(),
                         &tool.step_id,
                         true,
                     )
@@ -913,6 +971,7 @@ impl ReActEngine {
                     notify_title,
                     notify_body,
                     step_id: tool.step_id,
+                    action_index: tool.action_index,
                 }
             } else {
                 let error = format!(
@@ -920,11 +979,13 @@ impl ReActEngine {
                     tool.tool_name
                 );
                 self.executor
-                    .finish_interrupted_step(
+                    .finish_interrupted_step_with_identity(
                         session_id,
                         &tool.tool_name,
                         &tool.tool_input,
                         step_num,
+                        tool.action_index,
+                        tool_call_id.as_deref(),
                         &tool.step_id,
                         &error,
                     )
@@ -939,6 +1000,7 @@ impl ReActEngine {
                     notify_title: None,
                     notify_body: None,
                     step_id: tool.step_id,
+                    action_index: tool.action_index,
                 }
             };
             batch_state
@@ -990,26 +1052,6 @@ impl ReActEngine {
 
         Ok(ToolBatchOutcome::Continue)
     }
-}
-
-fn tool_call_id_for(
-    canonical: &[CanonicalMessage],
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-) -> Option<String> {
-    for msg in canonical.iter().rev() {
-        if msg.role != CanonicalRole::Assistant {
-            continue;
-        }
-        if let Some(calls) = &msg.tool_calls
-            && let Some(call) = calls
-                .iter()
-                .find(|c| c.name == tool_name && c.arguments == *tool_input)
-        {
-            return Some(call.id.clone());
-        }
-    }
-    None
 }
 
 #[cfg(test)]

@@ -316,7 +316,12 @@ pub(crate) struct SkillsStatusChangedEvent {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct ConfirmationRequestedEvent {
+    /// Confirmation request id used by `session:resolve_confirmation`.
     pub step_id: haven_common::types::ConfirmId,
+    /// ReAct invocation identity. `None` for scheduled/background actions.
+    pub invocation_step_id: Option<String>,
+    pub action_index: u32,
+    pub tool_call_id: Option<String>,
     pub tool_name: String,
     pub risk_level: haven_common::types::RiskLevel,
     pub session_id: String,
@@ -353,6 +358,7 @@ pub(crate) struct AgentActionEvent {
     pub step_number: u32,
     pub run_id: u64,
     pub tool_call_id: Option<String>,
+    pub action_index: u32,
     pub step_id: String,
     pub suppress_streamed_thought: bool,
     pub silent: bool,
@@ -367,6 +373,7 @@ pub(crate) struct AgentObservationEvent {
     pub run_id: u64,
     pub silent: bool,
     pub tool_call_id: Option<String>,
+    pub action_index: u32,
     pub ask_options: Vec<String>,
     pub step_id: String,
 }

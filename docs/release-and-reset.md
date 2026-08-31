@@ -17,6 +17,11 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 `config.toml.*.bak`，并以默认值启动；请删除整个数据根目录后重新配置命名 provider，不要
 手工混用新数据库与旧 `react_state`。
 
+本次 Agent 版本将数据库 schema 升至 v12，为 `session_steps` 增加工具调用顺序和
+`tool_call_id`。已有数据库会由迁移补齐列；没有这两个字段的旧步骤在无快照恢复时只能使用
+基于步骤 ID 的确定性 fallback。正在等待确认的旧快照缺少完整调用身份时不应继续混用，建议按
+下文完整重置后重新发起工具调用。
+
 ## 用户数据位置
 
 Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：

@@ -194,6 +194,7 @@ impl TauriEmitter {
                 step_number,
                 run_id,
                 tool_call_id,
+                action_index,
                 step_id,
                 suppress_streamed_thought,
             } => serialize(AgentActionEvent {
@@ -203,6 +204,7 @@ impl TauriEmitter {
                 step_number: *step_number,
                 run_id: *run_id,
                 tool_call_id: tool_call_id.clone(),
+                action_index: *action_index,
                 step_id: step_id.clone(),
                 suppress_streamed_thought: *suppress_streamed_thought,
                 silent: haven_tools::is_silent_action(tool_name, input),
@@ -215,6 +217,7 @@ impl TauriEmitter {
                 run_id,
                 silent,
                 tool_call_id,
+                action_index,
                 ask_options,
                 step_id,
             } => serialize(AgentObservationEvent {
@@ -225,6 +228,7 @@ impl TauriEmitter {
                 run_id: *run_id,
                 silent: *silent,
                 tool_call_id: tool_call_id.clone(),
+                action_index: *action_index,
                 ask_options: ask_options.clone(),
                 step_id: step_id.clone(),
             }),
@@ -1003,13 +1007,19 @@ pub fn run() {
                                   session_id: String,
                                   tool_name: String,
                                   risk_level: haven_common::types::RiskLevel,
-                                  params: serde_json::Value| {
+                                  params: serde_json::Value,
+                                  invocation_step_id: Option<String>,
+                                  action_index: u32,
+                                  tool_call_id: Option<String>| {
                                 let permission_key =
                                     haven_common::types::permission_key(&tool_name, &params);
                                 let _ = app_h.emit(
                                     CONFIRM_REQUESTED_EVENT,
                                     ConfirmationRequestedEvent {
                                         step_id,
+                                        invocation_step_id,
+                                        action_index,
+                                        tool_call_id,
                                         tool_name,
                                         risk_level,
                                         session_id,
@@ -1404,6 +1414,7 @@ mod tests {
                     run_id: 1,
                     tool_call_id: None,
                     step_id: "step-1".into(),
+                    action_index: 0,
                     suppress_streamed_thought: false,
                 },
                 "agent:action",
@@ -1419,6 +1430,7 @@ mod tests {
                     tool_call_id: None,
                     ask_options: vec![],
                     step_id: "step-1".into(),
+                    action_index: 0,
                 },
                 "agent:observation",
             ),
@@ -1609,6 +1621,7 @@ mod tests {
             run_id: 1,
             tool_call_id: Some("call-1".into()),
             step_id: "step-1".into(),
+            action_index: 0,
             suppress_streamed_thought: false,
         };
         let payload = TauriEmitter::payload(&event, None);
@@ -1628,6 +1641,7 @@ mod tests {
             run_id: 1,
             tool_call_id: None,
             step_id: "step-1".into(),
+            action_index: 0,
             suppress_streamed_thought: false,
         };
         let payload = TauriEmitter::payload(&event, None);

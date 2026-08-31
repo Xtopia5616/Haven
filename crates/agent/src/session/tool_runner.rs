@@ -20,6 +20,23 @@ impl SessionExecutor {
         step_num: u32,
         step_id: &str,
     ) {
+        self.begin_action_step_with_identity(
+            session_id, tool_name, input, step_num, 0, None, step_id,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn begin_action_step_with_identity(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+    ) {
         let risk_level = self
             .tools
             .get_risk_level(Some(session_id), tool_name, input)
@@ -29,15 +46,18 @@ impl SessionExecutor {
         let session_id = session_id.to_string();
         let tool_name = tool_name.to_string();
         let tool_input = input.to_string();
+        let tool_call_id = tool_call_id.map(str::to_string);
         let step_id_owned = step_id.to_string();
         if let Err(e) = self
             .db
             .run_blocking(move |db| {
-                db.ensure_action_step(
+                db.ensure_action_step_with_identity(
                     &session_id,
                     step_number,
+                    action_index as i32,
                     &tool_name,
                     &tool_input,
+                    tool_call_id.as_deref(),
                     risk_level != RiskLevel::Safe,
                     silent,
                     None,
@@ -62,6 +82,31 @@ impl SessionExecutor {
         step_id: &str,
         observation: &str,
     ) {
+        self.finish_interrupted_step_with_identity(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            0,
+            None,
+            step_id,
+            observation,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_interrupted_step_with_identity(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        observation: &str,
+    ) {
         let risk_level = self
             .tools
             .get_risk_level(Some(session_id), tool_name, input)
@@ -71,16 +116,19 @@ impl SessionExecutor {
         let session_id = session_id.to_string();
         let tool_name = tool_name.to_string();
         let tool_input = input.to_string();
+        let tool_call_id = tool_call_id.map(str::to_string);
         let step_id_owned = step_id.to_string();
         let observation = observation.to_string();
         if let Err(e) = self
             .db
             .run_blocking(move |db| {
-                db.ensure_action_step(
+                db.ensure_action_step_with_identity(
                     &session_id,
                     step_number,
+                    action_index as i32,
                     &tool_name,
                     &tool_input,
+                    tool_call_id.as_deref(),
                     risk_level != RiskLevel::Safe,
                     silent,
                     None,
@@ -108,8 +156,32 @@ impl SessionExecutor {
         step_num: u32,
         step_id: &str,
     ) -> anyhow::Result<ToolResult> {
-        self.execute_step_inner(session_id, tool_name, input, step_num, step_id, None)
+        self.execute_step_with_identity(session_id, tool_name, input, step_num, 0, None, step_id)
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_step_with_identity(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_step_inner(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            action_index,
+            tool_call_id,
+            step_id,
+            None,
+        )
+        .await
     }
 
     /// Like [`execute_step`], but skips the blocking confirm wait when
@@ -123,26 +195,57 @@ impl SessionExecutor {
         step_id: &str,
         pre_confirmed: bool,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_step_preconfirmed_with_identity(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            0,
+            None,
+            step_id,
+            pre_confirmed,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_step_preconfirmed_with_identity(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        pre_confirmed: bool,
+    ) -> anyhow::Result<ToolResult> {
         self.execute_step_inner(
             session_id,
             tool_name,
             input,
             step_num,
+            action_index,
+            tool_call_id,
             step_id,
             Some(pre_confirmed),
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_step_inner(
         &self,
         session_id: &str,
         tool_name: &str,
         input: Value,
         step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
         step_id: &str,
         pre_confirmed: Option<bool>,
     ) -> anyhow::Result<ToolResult> {
+        let tool_call_id = tool_call_id.map(str::to_string);
         tracing::debug!(
             "execute_step: session={} tool={} input={:?} pre_confirmed={:?}",
             session_id,
@@ -176,8 +279,15 @@ impl SessionExecutor {
                 }
             };
             if let Some(err) = refuse {
-                self.finish_interrupted_step(
-                    session_id, tool_name, &input, step_num, step_id, &err,
+                self.finish_interrupted_step_with_identity(
+                    session_id,
+                    tool_name,
+                    &input,
+                    step_num,
+                    action_index,
+                    tool_call_id.as_deref(),
+                    step_id,
+                    &err,
                 )
                 .await;
                 return Err(anyhow::anyhow!(err));
@@ -200,11 +310,13 @@ impl SessionExecutor {
             Err(e) => {
                 // Pending row was created at Action emit; record the failure
                 // so resume/resync does not rebuild an empty tool badge.
-                self.finish_interrupted_step(
+                self.finish_interrupted_step_with_identity(
                     session_id,
                     tool_name,
                     &input,
                     step_num,
+                    action_index,
+                    tool_call_id.as_deref(),
                     step_id,
                     &e.to_string(),
                 )
@@ -312,11 +424,13 @@ impl SessionExecutor {
         let silent = is_silent_action(tool_name, &input);
         self.db
             .run_blocking(move |db| {
-                db.ensure_action_step(
+                db.ensure_action_step_with_identity(
                     &session_id_owned,
                     step_number,
+                    action_index as i32,
                     &tool_name_owned,
                     &tool_input,
+                    tool_call_id.as_deref(),
                     risk_level != RiskLevel::Safe,
                     silent,
                     confirmed,
@@ -454,6 +568,9 @@ impl SessionExecutor {
                 tool_name.to_string(),
                 risk_level,
                 tool_args,
+                None,
+                0,
+                None,
             );
         }
         // Absolute fail-closed timer for closed/crashed UI. Interactive
@@ -575,15 +692,20 @@ impl SessionExecutor {
     pub async fn confirm_decision_for(
         &self,
         session_id: &str,
-        tool_name: &str,
-        input: &Value,
+        step_id: &str,
+        action_index: u32,
+        tool_call_id: Option<&str>,
     ) -> Option<bool> {
         let guard = self.awaiting_confirm.lock().await;
         let pending = guard.get(session_id)?;
         pending
             .tools
             .iter()
-            .find(|t| t.tool_name == tool_name && t.tool_input == *input)
+            .find(|t| {
+                t.step_id == step_id
+                    && t.action_index == action_index
+                    && t.tool_call_id == tool_call_id.unwrap_or_default()
+            })
             .and_then(|t| t.decision)
     }
 }

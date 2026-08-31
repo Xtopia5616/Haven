@@ -36,6 +36,7 @@ export interface AgentActionPayload {
 	stepNumber: number;
 	runId: number;
 	toolCallId: string | null;
+	actionIndex: number;
 	stepId: string;
 	suppressStreamedThought: boolean;
 	silent: boolean;
@@ -49,6 +50,7 @@ export interface AgentObservationPayload {
 	runId: number;
 	silent: boolean;
 	toolCallId: string | null;
+	actionIndex: number;
 	askOptions: string[];
 	stepId: string;
 }
@@ -177,6 +179,7 @@ interface AgentActionWirePayload {
 	step_number: number;
 	run_id: number;
 	tool_call_id: string | null;
+	action_index: number;
 	step_id: string;
 	suppress_streamed_thought: boolean;
 	silent: boolean;
@@ -190,6 +193,7 @@ interface AgentObservationWirePayload {
 	run_id: number;
 	silent: boolean;
 	tool_call_id: string | null;
+	action_index: number;
 	ask_options: string[];
 	step_id: string;
 }
@@ -310,6 +314,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				stepNumber: payload.step_number,
 				runId: payload.run_id,
 				toolCallId: payload.tool_call_id,
+				actionIndex: payload.action_index,
 				stepId: payload.step_id,
 				suppressStreamedThought: payload.suppress_streamed_thought,
 				silent: payload.silent,
@@ -325,6 +330,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				runId: payload.run_id,
 				silent: payload.silent,
 				toolCallId: payload.tool_call_id,
+				actionIndex: payload.action_index,
 				askOptions: payload.ask_options,
 				stepId: payload.step_id,
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;

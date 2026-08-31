@@ -29,6 +29,9 @@ export interface McpStatusPayload { name: string; status: McpStatus; }
 export interface SkillsStatusPayload { op: string; }
 export interface ConfirmationRequestedPayload {
 	stepId: string;
+	invocationStepId: string | null;
+	actionIndex: number;
+	toolCallId: string | null;
 	toolName: string;
 	riskLevel: RiskLevel;
 	sessionId: string;
@@ -58,6 +61,9 @@ interface AppWirePayloadMap {
 	'skills:status_change': { op: string };
 	'confirm:requested': {
 		step_id: string;
+		invocation_step_id: string | null;
+		action_index: number;
+		tool_call_id: string | null;
 		tool_name: string;
 		risk_level: RiskLevel;
 		session_id: string;
@@ -89,6 +95,9 @@ export function mapAppEvent<K extends AppEventName>(
 			const payload = p as AppWirePayloadMap['confirm:requested'];
 			return { ...event, payload: {
 				stepId: payload.step_id,
+				invocationStepId: payload.invocation_step_id,
+				actionIndex: payload.action_index,
+				toolCallId: payload.tool_call_id,
 				toolName: payload.tool_name,
 				riskLevel: payload.risk_level,
 				sessionId: payload.session_id,

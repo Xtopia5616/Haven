@@ -27,6 +27,8 @@ pub enum AgentEvent {
         step_number: u32,
         run_id: u64,
         tool_call_id: Option<String>,
+        /// Stable zero-based position in the assistant tool-call list.
+        action_index: u32,
         /// The `step-*` id of the step row this action is persisted under
         /// (minted before the action starts). The frontend uses it as the
         /// live tool-card id, matching the resume badge built from the DB.
@@ -43,6 +45,8 @@ pub enum AgentEvent {
         run_id: u64,
         silent: bool,
         tool_call_id: Option<String>,
+        /// Stable zero-based position in the assistant tool-call list.
+        action_index: u32,
         /// Quick-reply options surfaced when the observation comes from the
         /// `ask` tool, so the UI can render clickable answer buttons.
         ask_options: Vec<String>,

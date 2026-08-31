@@ -55,10 +55,11 @@ pub(crate) fn load_mcp_tool_names(input: &Value) -> Option<Vec<String>> {
 /// Project completed tool calls from the materialized step projection when the
 /// snapshot row is absent.
 ///
-/// This is the one intentionally lossy recovery path. A valid snapshot keeps
-/// `events` as the sole authority; this helper is used only when no snapshot
-/// exists and therefore synthesizes a stable local call id when the old tool
-/// message did not preserve the provider id.
+/// A valid snapshot keeps `events` as the sole authority. When no snapshot
+/// exists, this helper uses the durable step identity directly; legacy rows
+/// without a provider id receive a deterministic local id derived from the
+/// persisted step id. It never matches tool names, arguments, or observation
+/// text to infer an association.
 pub(crate) fn project_tool_chain_from_steps(
     db: &Database,
     session_id: &str,
@@ -67,20 +68,6 @@ pub(crate) fn project_tool_chain_from_steps(
     let Ok(steps) = db.get_session_steps(session_id) else {
         return;
     };
-    let unused_tool_ids: Vec<(String, String)> = db
-        .get_session_messages(session_id)
-        .ok()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|message| {
-            if message.role == "tool" {
-                message.tool_call_id.map(|id| (message.content, id))
-            } else {
-                None
-            }
-        })
-        .collect();
-    let mut unused_tool_ids = unused_tool_ids;
     let mut projected = 0usize;
     for step in steps {
         let Some(tool) = step.action_tool else {
@@ -97,15 +84,9 @@ pub(crate) fn project_tool_chain_from_steps(
             .as_deref()
             .and_then(|input| serde_json::from_str(input).ok())
             .unwrap_or(Value::Null);
-        let call_id = if let Some(position) = unused_tool_ids
-            .iter()
-            .position(|(content, _)| content == &observation)
-        {
-            let (_content, id) = unused_tool_ids.remove(position);
-            id
-        } else {
-            format!("resumed_{}", step.id)
-        };
+        let call_id = step
+            .tool_call_id
+            .unwrap_or_else(|| format!("resumed_{}", step.id));
         canonical.push(CanonicalMessage::assistant(
             Vec::new(),
             Some(vec![CanonicalToolCall {
@@ -179,5 +160,50 @@ mod tests {
             load_mcp_tool_names(&serde_json::json!({"tool_names": []})),
             Some(Vec::new())
         );
+    }
+
+    #[test]
+    fn project_tool_chain_preserves_duplicate_calls_by_step_identity() {
+        let db_path = std::env::temp_dir().join(format!(
+            "haven_resume_identity_test_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::open(&db_path).unwrap();
+        let session = db.create_session("resume", "").unwrap();
+        for (index, id) in [(0, "call-a"), (1, "call-b")] {
+            let step = db
+                .create_action_step_with_identity(
+                    &session.id,
+                    1,
+                    index,
+                    "echo",
+                    r#"{"text":"same"}"#,
+                    Some(id),
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            db.complete_action_step(&step.id, "same", true).unwrap();
+        }
+
+        let mut canonical = Vec::new();
+        project_tool_chain_from_steps(&db, &session.id, &mut canonical);
+
+        let call_ids: Vec<_> = canonical
+            .iter()
+            .filter(|message| message.role == haven_common::types::CanonicalRole::Assistant)
+            .flat_map(|message| message.tool_calls.as_deref().unwrap_or_default())
+            .map(|call| call.id.as_str())
+            .collect();
+        assert_eq!(call_ids, ["call-a", "call-b"]);
+        let result_ids: Vec<_> = canonical
+            .iter()
+            .filter_map(|message| message.tool_call_id.as_deref())
+            .collect();
+        assert_eq!(result_ids, ["call-a", "call-b"]);
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
     }
 }
