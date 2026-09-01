@@ -1,6 +1,6 @@
 # Haven 大文件与热点拆分执行计划
 
-> 用途：把当前代码审计结果交给后续 agent，按稳定职责拆分大文件，保持行为、IPC、持久化和安全契约不变。
+> 用途：把当前代码审计结果交给后续 agent，按稳定职责拆分大文件；允许破坏性结构重构，但保持行为、IPC、持久化和安全契约不变。
 >
 > 本文是执行计划，不授权新增功能或顺手清理无关代码。每个目标应独立完成、独立验证、独立提交。
 
@@ -33,6 +33,13 @@
 最大的非代码文件是 `assets/models/silero_vad.onnx`（约 2.7 MB），它是模型文件，不进行代码拆分。
 
 结论：当前优先做文件级拆分，不把 `agent`、`tools` 或 `llm` 直接拆成新 crate。它们已经按领域拥有较多子模块；贸然拆 crate 会扩大依赖、公共 API 和测试迁移范围。
+
+## 2.1 兼容层原则
+
+- 这是测试版项目，允许为了清晰的最终边界进行破坏性重构；不要为了保留旧的内部导入路径而长期维护 re-export、代理函数或双入口。
+- workspace 内部调用点应在同一轮重构中迁移到新模块。不能新增依赖旧 facade 的代码，也不能把 facade 当作永久 API 设计。
+- 如果拆分过程中确实需要 facade，它必须在文档或 ADR 中写明：用途、受影响调用点、删除条件和预计删除轮次；没有删除条件的 facade 不得保留。
+- “完成”不等于“旧入口还能工作”。完成标准是调用方已迁移、旧入口已删除，或有明确且必要的外部稳定 API 理由。
 
 ## 3. 执行顺序
 
@@ -67,7 +74,7 @@ cargo test --locked -p haven-agent
   - 单服务器 `McpClient`、限流、重连和健康监控
   - 多服务器 `McpManager`、配置 reconcile 和 `McpToolCaller` 适配
 - 建议拆为 `protocol.rs`、`transport.rs`、`client.rs`、`manager.rs`；已有的 `sse.rs` 继续保留。
-- `lib.rs` 只保留模块声明和必要的 `pub use` facade，不能改变现有外部导入路径。
+- `lib.rs` 最终只保留模块声明和真正需要的公共导出。workspace 内部调用方应迁移到新模块；如果阶段性保留旧导出，必须遵守 §2.1 并在本阶段末删除，除非它确实是外部稳定 API。
 - 不改变 MCP wire shape、`Mcp-Session-Id`、stdio 进程回收、健康监控、限流或二进制 payload 上限。
 
 验收：
@@ -87,7 +94,8 @@ cargo test --locked -p haven-tools --test mcp_integration
   - `background_actions.rs`：`BackgroundActions`、状态机、action registry、事件 sink
   - `output.rs`：输出收集、UTF-8/GBK 处理、CLIXML/ANSI 清洗、错误摘要和 Windows 诊断
   - 必要时再把进程树终止和 live tail 读取放到 `process.rs`
-- 可以保留 `bg.rs` 作为 facade，通过 `pub use` 维持现有 `crate::bg::*` 调用点，减少一次性迁移范围。
+- `bg.rs` facade 只允许作为临时迁移措施，不是目标架构。优先在同一轮中直接迁移所有 `crate::bg::*` 调用点并删除它；只有在拆分过程中确实需要分步编译时，才短暂保留 `bg.rs` 的 `pub use`。
+- 如果暂时保留 `bg.rs`，必须在该提交/ADR 中写明删除条件；不得新增对 facade 的调用，阶段完成前应再次搜索调用点并删除 facade。不能以“兼容性”作为长期保留理由。
 - 不改变 `CREATE_NO_WINDOW`、PowerShell `-EncodedCommand`、输出容量上限、日志落盘、取消和进程树终止语义。
 - Windows 专属路径必须继续保留对应的条件编译和负向测试。
 
@@ -107,7 +115,7 @@ cargo clippy --workspace --locked -- -D warnings
   - `Tool`、`ToolResult`、`ToolSignals`、`ToolExecutionOutcome`、重试/并发契约
   - `ToolRegistry` 和 session catalog
   - `SafetyGateway`、权限继承、disabled operation、路径沙箱和 reparse point 检查
-- 建议拆为 `tool_contract.rs`、`registry.rs`、`security.rs`；保留一个薄 facade 供现有 `haven_tools::{...}` 导入使用。
+- 建议拆为 `tool_contract.rs`、`registry.rs`、`security.rs`；workspace 内部调用方直接迁移到新模块。只有确实属于外部稳定 API 的导出才保留，不能为旧内部路径长期维护薄 facade。
 - 安全模块拆分时必须先建立目标接口，再迁移完整调用链；不能把安全检查复制到各 builtin。
 - 不改变 deny 优先级、权限继承、路径规范化、UNC/device path 拒绝、超时未知终态和操作幂等性语义。
 - `LOCAL_TOOL_SECURITY_MATRIX` 应继续只有一个权威来源，并保留安全回归测试。
@@ -205,7 +213,7 @@ corepack pnpm --dir ui run build
 ## 6. 每个拆分目标的完成标准
 
 1. 生产行为和测试行为不变；移动测试不能减少覆盖场景。
-2. 新模块职责单一，原入口文件只保留 facade 或组合编排。
+2. 新模块职责单一，原入口文件只保留真正需要的公共导出或组合编排；临时兼容 facade 不算完成，除非已记录删除条件和必要性。
 3. 没有新增反向依赖、循环依赖、重复实现或第二个契约真源。
 4. 相关 ADR/架构文档在确实改变边界时同步更新。
 5. 至少运行目标 crate 的测试、workspace 编译和严格 Clippy；跨端目标额外运行 UI check/test/build。
