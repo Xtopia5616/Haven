@@ -119,6 +119,8 @@
 - 2026-09-01：P2 Agent ReAct Loop 二次收口：响应策略重试移入 `response_cycle.rs`，工具调用身份/顺序由 `tool_batch_plan.rs` 单点生成；工具批次只接收“是否允许下一轮重试”的策略结果，修复暂停恢复后使用错误预算边界的问题（ADR 0062）。
 - 2026-09-01：P2 Agent 上下文与工具调度三次收口：turn-start 统一收集本地队列/inbox，turn-end 只补收本地输入；单工具与并行工具共用 plan、取消修复和 ordered projection（ADR 0064）。
 - 2026-09-01：P2 Memory 召回边界收口：`MemoryQuery` / `MemoryRecall` / `MemoryRetriever` 统一关键词、向量、敏感过滤与 prompt cache，embedding provider 只负责获取向量（ADR 0063）。
+- 2026-09-01：P2 Agent/Tools/Memory 失败安全边界收口：数据库读取、向量身份、事实写入、action durability 与未知副作用结果不再被静默降级或错误重试（ADR 0065）。
+- 2026-09-01：P2 Agent/Tools/Memory 缓存边界重构：查询缓存抽离为有界 LRU，prompt memory 支持多项复用，工具定义按全局/会话版本隔离，token estimate 以内容指纹保证等长替换一致（ADR 0066）。
 
 ## 完成标准
 

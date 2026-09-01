@@ -151,11 +151,13 @@ pub struct ToolsManager {
     /// reports recording as unavailable.
     audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
     /// Monotonic catalog version, bumped whenever the global registry or any
-    /// per-session registration changes. The ReAct loop caches per-session tool
-    /// definitions keyed by this version, so a bump forces a rebuild without
-    /// the loop re-querying schemas on every step. Shared as `Arc` so
-    /// `load_mcp` / `load_skill` can bump after in-tool atomic registration.
+    /// global catalog input changes. Per-session registrations use the
+    /// separate session version map below so loading a skill in session A does
+    /// not invalidate the tool-definition cache for every other session.
     catalog_version: Arc<AtomicU64>,
+    /// Version of each session's skill/MCP overlay. Shared with the two
+    /// progressive-loading meta-tools, which mutate the overlay directly.
+    session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
     /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
     agent_spawner: builtin::AgentSpawnerSlot,
     /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
@@ -200,6 +202,7 @@ impl ToolsManager {
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
             catalog_version: Arc::new(AtomicU64::new(0)),
+            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
             agent_spawner: builtin::new_agent_spawner_slot(),
             memory_recall: builtin::new_memory_recall_slot(),
         }
@@ -221,6 +224,30 @@ impl ToolsManager {
     /// value and rebuild only when it changes.
     pub fn catalog_version(&self) -> u64 {
         self.catalog_version.load(Ordering::Relaxed)
+    }
+
+    /// Version pair for a session's complete tool-definition view. The first
+    /// component covers global registry changes; the second covers only that
+    /// session's progressive skill/MCP overlay.
+    pub async fn catalog_version_for_session(&self, session_id: &str) -> (u64, u64) {
+        let session = self
+            .session_catalog_versions
+            .read()
+            .await
+            .get(session_id)
+            .copied()
+            .unwrap_or(0);
+        (self.catalog_version(), session)
+    }
+
+    async fn bump_session_catalog_version(&self, session_id: &str) {
+        let mut versions = self.session_catalog_versions.write().await;
+        let next = versions
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        versions.insert(session_id.to_string(), next);
     }
 
     /// Whether adding `net_new` unique session tools would exceed the
@@ -410,7 +437,7 @@ impl ToolsManager {
             *self.default_shell.read().await,
             audio_pipeline,
             self.session_registrations.clone(),
-            self.catalog_version.clone(),
+            self.session_catalog_versions.clone(),
             self.agent_spawner.clone(),
             self.memory_recall.clone(),
         )
@@ -441,13 +468,13 @@ impl ToolsManager {
             .entry(session_id.to_string())
             .or_default()
             .insert(name, tool);
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        self.bump_session_catalog_version(session_id).await;
     }
 
     /// Remove all per-session tool registrations for a given session.
     pub async fn unregister_session(&self, session_id: &str) {
         self.session_registrations.write().await.remove(session_id);
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        self.bump_session_catalog_version(session_id).await;
     }
 
     /// Register tools from an MCP server as per-session adapters.
@@ -524,7 +551,7 @@ impl ToolsManager {
             entry.insert(adapter.name(), Arc::new(adapter));
         }
         drop(reg);
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        self.bump_session_catalog_version(session_id).await;
         true
     }
 
@@ -563,7 +590,7 @@ impl ToolsManager {
         }
         entry.insert(name, Arc::new(adapter));
         drop(reg);
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        self.bump_session_catalog_version(session_id).await;
         true
     }
 
@@ -1520,6 +1547,49 @@ mod tests {
         let other = mgr.list_schemas_for_session("ses-b").await;
         assert_eq!(other.len(), base_count);
         assert!(!other.iter().any(|s| s["name"] == "skill__demo"));
+    }
+
+    #[tokio::test]
+    async fn test_session_catalog_version_does_not_invalidate_other_sessions() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        let before_a = mgr.catalog_version_for_session("ses-a").await;
+        let before_b = mgr.catalog_version_for_session("ses-b").await;
+
+        struct NamedStub(&'static str);
+        #[async_trait::async_trait]
+        impl Tool for NamedStub {
+            fn name(&self) -> String {
+                self.0.into()
+            }
+            fn description(&self) -> String {
+                "stub".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult::ok(json!({})))
+            }
+        }
+
+        mgr.register_for_session("ses-a", Arc::new(NamedStub("session_only")))
+            .await;
+        let after_a = mgr.catalog_version_for_session("ses-a").await;
+        let after_b = mgr.catalog_version_for_session("ses-b").await;
+        assert_eq!(after_a.0, before_a.0);
+        assert_eq!(after_a.1, before_a.1 + 1);
+        assert_eq!(after_b, before_b);
+
+        mgr.rebuild_catalog().await;
+        let after_global_a = mgr.catalog_version_for_session("ses-a").await;
+        let after_global_b = mgr.catalog_version_for_session("ses-b").await;
+        assert!(after_global_a.0 > after_a.0);
+        assert_eq!(after_global_a.1, after_a.1);
+        assert_eq!(after_global_b.1, after_b.1);
     }
 
     #[tokio::test]

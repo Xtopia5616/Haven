@@ -1,10 +1,11 @@
+use crate::cache::{CacheGeneration, QueryCacheStore};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Pooled SQLite connections for a file-backed database (WAL mode: one
 /// writer + many readers can proceed concurrently). Sized comfortably above
@@ -148,28 +149,12 @@ impl Drop for PooledConnection<'_> {
     }
 }
 
-#[derive(Clone)]
-struct CacheEntry<T: Clone> {
-    data: T,
-    expiry: Instant,
-}
-
-#[derive(Clone)]
-struct QueryCache {
-    messages: Option<CacheEntry<Vec<crate::repositories::messages::Message>>>,
-    sessions: Option<CacheEntry<Vec<crate::repositories::sessions::Session>>>,
-    facts: Option<CacheEntry<Vec<crate::repositories::facts::Fact>>>,
-    embeddings: Option<CacheEntry<Vec<crate::embeddings::EmbeddedText>>>,
-}
-
 pub struct Database {
     pool: ConnectionPool,
-    cache: Mutex<HashMap<String, QueryCache>>,
-    /// Global cache epoch. A per-key generation cannot protect a cache miss
-    /// whose key does not exist yet: the invalidation has nowhere to record
-    /// the generation. The global epoch closes that race for every cache
-    /// read, while invalidation still clears only the affected slots.
-    cache_epoch: AtomicU64,
+    /// Bounded process-local query cache. The cache mechanics are isolated in
+    /// [`crate::cache::QueryCacheStore`]; the database facade only exposes
+    /// repository-facing helpers and owns invalidation timing.
+    cache: QueryCacheStore,
     /// Monotonic in-process revision for all memory reads, including facts,
     /// episodes, and their embedding index. It is intentionally not persisted
     /// or part of the database schema; consumers use it only for cache keys.
@@ -210,8 +195,7 @@ impl Database {
         );
         Ok(Self {
             pool,
-            cache: Mutex::new(HashMap::new()),
-            cache_epoch: AtomicU64::new(0),
+            cache: QueryCacheStore::new(),
             memory_revision: AtomicU64::new(0),
             pending_embedding_models: Mutex::new(HashMap::new()),
             fact_write_gate: Mutex::new(()),
@@ -255,8 +239,7 @@ impl Database {
         );
         Ok(Self {
             pool,
-            cache: Mutex::new(HashMap::new()),
-            cache_epoch: AtomicU64::new(0),
+            cache: QueryCacheStore::new(),
             memory_revision: AtomicU64::new(0),
             pending_embedding_models: Mutex::new(HashMap::new()),
             fact_write_gate: Mutex::new(()),
@@ -301,58 +284,14 @@ impl Database {
         &self,
         session_id: &str,
     ) -> Option<Vec<crate::repositories::messages::Message>> {
-        let cache = self.cache.lock().ok()?;
-        let entry = cache.get(session_id)?.messages.as_ref()?;
-        if entry.expiry > Instant::now() {
-            Some(entry.data.clone())
-        } else {
-            None
-        }
+        self.cache.get_messages(session_id)
     }
 
     /// Returns the current cache generation for a key. Callers capture this
     /// before querying the DB and pass it to the corresponding `cache_put_*`
     /// to guard against stale-overwrite after a concurrent invalidation.
-    pub fn cache_generation(&self, _key: &str) -> u64 {
-        self.cache_epoch.load(Ordering::Acquire)
-    }
-
-    /// Shared write path for every `cache_put_*`: upsert the key's
-    /// `QueryCache` entry, skip the write if the global epoch moved (a
-    /// concurrent invalidation superseded this query's result), then store
-    /// `data` into the slot chosen by `set`.
-    fn cache_put<T: Clone + Send>(
-        &self,
-        key: String,
-        data: T,
-        ttl_secs: u64,
-        expected_gen: u64,
-        set: impl FnOnce(&mut QueryCache, CacheEntry<T>),
-    ) {
-        if let Ok(mut cache) = self.cache.lock() {
-            if self.cache_epoch.load(Ordering::Acquire) != expected_gen {
-                return;
-            }
-            let qc = cache.entry(key).or_insert(QueryCache {
-                messages: None,
-                sessions: None,
-                facts: None,
-                embeddings: None,
-            });
-            // The epoch is global, so an unrelated-key invalidation may have
-            // advanced it without touching this QueryCache entry. Only the
-            // epoch comparison above is authoritative for stale-write safety.
-            if self.cache_epoch.load(Ordering::Acquire) != expected_gen {
-                return;
-            }
-            set(
-                qc,
-                CacheEntry {
-                    expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
-                    data,
-                },
-            );
-        }
+    pub fn cache_generation(&self, key: &str) -> CacheGeneration {
+        self.cache.generation(key)
     }
 
     pub fn cache_put_messages(
@@ -360,51 +299,27 @@ impl Database {
         session_id: &str,
         data: Vec<crate::repositories::messages::Message>,
         ttl_secs: u64,
-        expected_gen: u64,
+        expected_gen: CacheGeneration,
     ) {
-        self.cache_put(
-            session_id.to_string(),
-            data,
-            ttl_secs,
-            expected_gen,
-            |qc, entry| qc.messages = Some(entry),
-        );
+        self.cache
+            .put_messages(session_id, data, ttl_secs, expected_gen);
     }
 
     pub fn cache_get_sessions(&self) -> Option<Vec<crate::repositories::sessions::Session>> {
-        let cache = self.cache.lock().ok()?;
-        let entry = cache.get("_sessions")?.sessions.as_ref()?;
-        if entry.expiry > Instant::now() {
-            Some(entry.data.clone())
-        } else {
-            None
-        }
+        self.cache.get_sessions()
     }
 
     pub fn cache_put_sessions(
         &self,
         data: Vec<crate::repositories::sessions::Session>,
         ttl_secs: u64,
-        expected_gen: u64,
+        expected_gen: CacheGeneration,
     ) {
-        self.cache_put(
-            "_sessions".to_string(),
-            data,
-            ttl_secs,
-            expected_gen,
-            |qc, entry| qc.sessions = Some(entry),
-        );
+        self.cache.put_sessions(data, ttl_secs, expected_gen);
     }
 
     pub fn cache_get_facts(&self, subject: &str) -> Option<Vec<crate::repositories::facts::Fact>> {
-        let cache = self.cache.lock().ok()?;
-        let key = format!("_facts_{}", subject);
-        let entry = cache.get(&key)?.facts.as_ref()?;
-        if entry.expiry > Instant::now() {
-            Some(entry.data.clone())
-        } else {
-            None
-        }
+        self.cache.get_facts(subject)
     }
 
     pub fn cache_put_facts(
@@ -412,24 +327,13 @@ impl Database {
         subject: &str,
         data: Vec<crate::repositories::facts::Fact>,
         ttl_secs: u64,
-        expected_gen: u64,
+        expected_gen: CacheGeneration,
     ) {
-        self.cache_put(
-            format!("_facts_{}", subject),
-            data,
-            ttl_secs,
-            expected_gen,
-            |qc, entry| qc.facts = Some(entry),
-        );
+        self.cache.put_facts(subject, data, ttl_secs, expected_gen);
     }
 
     pub fn cache_invalidate_messages(&self, session_id: &str) {
-        self.bump_cache_epoch();
-        if let Ok(mut cache) = self.cache.lock()
-            && let Some(qc) = cache.get_mut(session_id)
-        {
-            qc.messages = None;
-        }
+        self.cache.invalidate_messages(session_id);
     }
 
     /// Invalidate every per-session message cache. Bulk session deletion and
@@ -437,21 +341,11 @@ impl Database {
     /// global sweep is the only way to prevent deleted transcripts from being
     /// served by the read cache.
     pub fn cache_invalidate_all_messages(&self) {
-        self.bump_cache_epoch();
-        if let Ok(mut cache) = self.cache.lock() {
-            for qc in cache.values_mut() {
-                qc.messages = None;
-            }
-        }
+        self.cache.invalidate_all_messages();
     }
 
     pub fn cache_invalidate_sessions(&self) {
-        self.bump_cache_epoch();
-        if let Ok(mut cache) = self.cache.lock()
-            && let Some(qc) = cache.get_mut("_sessions")
-        {
-            qc.sessions = None;
-        }
+        self.cache.invalidate_sessions();
     }
 
     /// Cached copy of the full facts table (`list_facts`), keyed separately
@@ -459,64 +353,28 @@ impl Database {
     /// cache on any fact mutation, so the global list cannot drift from the
     /// subject views.
     pub fn cache_get_facts_all(&self) -> Option<Vec<crate::repositories::facts::Fact>> {
-        let cache = self.cache.lock().ok()?;
-        let entry = cache.get("_facts_all")?.facts.as_ref()?;
-        if entry.expiry > Instant::now() {
-            Some(entry.data.clone())
-        } else {
-            None
-        }
+        self.cache.get_facts_all()
     }
 
     pub fn cache_put_facts_all(
         &self,
         data: Vec<crate::repositories::facts::Fact>,
         ttl_secs: u64,
-        expected_gen: u64,
+        expected_gen: CacheGeneration,
     ) {
-        self.cache_put(
-            "_facts_all".to_string(),
-            data,
-            ttl_secs,
-            expected_gen,
-            |qc, entry| qc.facts = Some(entry),
-        );
+        self.cache.put_facts_all(data, ttl_secs, expected_gen);
     }
 
     pub fn cache_invalidate_facts(&self, subject: &str) {
         self.bump_memory_revision();
-        self.bump_cache_epoch();
-        if let Ok(mut cache) = self.cache.lock() {
-            // The subject view...
-            let key = format!("_facts_{}", subject);
-            if let Some(qc) = cache.get_mut(&key) {
-                qc.facts = None;
-            }
-            // ...and the all-subjects list: a mutation to ANY subject makes
-            // the global list stale too.
-            if let Some(qc) = cache.get_mut("_facts_all") {
-                qc.facts = None;
-            }
-        }
+        self.cache.invalidate_facts(subject);
     }
 
     /// Bump every facts cache entry (subject views + `_facts_all`). Used by
     /// bulk maintenance that may touch arbitrary subjects (P1-6).
     pub fn cache_invalidate_all_facts(&self) {
         self.bump_memory_revision();
-        self.bump_cache_epoch();
-        if let Ok(mut cache) = self.cache.lock() {
-            let keys: Vec<String> = cache
-                .keys()
-                .filter(|k| k.starts_with("_facts_"))
-                .cloned()
-                .collect();
-            for key in keys {
-                if let Some(qc) = cache.get_mut(&key) {
-                    qc.facts = None;
-                }
-            }
-        }
+        self.cache.invalidate_all_facts();
     }
 
     /// Cached copy of one memory domain's embedding list (`list_embeddings`).
@@ -526,14 +384,7 @@ impl Database {
         &self,
         entity_type: &str,
     ) -> Option<Vec<crate::embeddings::EmbeddedText>> {
-        let cache = self.cache.lock().ok()?;
-        let key = format!("_embeddings_{}", entity_type);
-        let entry = cache.get(&key)?.embeddings.as_ref()?;
-        if entry.expiry > Instant::now() {
-            Some(entry.data.clone())
-        } else {
-            None
-        }
+        self.cache.get_embeddings(entity_type)
     }
 
     pub fn cache_put_embeddings(
@@ -541,15 +392,10 @@ impl Database {
         entity_type: &str,
         data: Vec<crate::embeddings::EmbeddedText>,
         ttl_secs: u64,
-        expected_gen: u64,
+        expected_gen: CacheGeneration,
     ) {
-        self.cache_put(
-            format!("_embeddings_{}", entity_type),
-            data,
-            ttl_secs,
-            expected_gen,
-            |qc, entry| qc.embeddings = Some(entry),
-        );
+        self.cache
+            .put_embeddings(entity_type, data, ttl_secs, expected_gen);
     }
 
     /// Invalidate one domain's embeddings list cache. Called from the fact
@@ -561,13 +407,7 @@ impl Database {
     /// untouched, so invalidating would only thrash the cache.
     pub fn cache_invalidate_embeddings(&self, entity_type: &str) {
         self.bump_memory_revision();
-        self.bump_cache_epoch();
-        if let Ok(mut cache) = self.cache.lock() {
-            let key = format!("_embeddings_{}", entity_type);
-            if let Some(qc) = cache.get_mut(&key) {
-                qc.embeddings = None;
-            }
-        }
+        self.cache.invalidate_embeddings(entity_type);
     }
 
     /// Invalidate all memory-derived caches after a session deletion or
@@ -575,14 +415,7 @@ impl Database {
     /// changes the readable memory set even though no fact row changed.
     pub fn cache_invalidate_memory(&self) {
         self.bump_memory_revision();
-        self.bump_cache_epoch();
-        if let Ok(mut cache) = self.cache.lock() {
-            for (key, qc) in cache.iter_mut() {
-                if key.starts_with("_embeddings_") {
-                    qc.embeddings = None;
-                }
-            }
-        }
+        self.cache.invalidate_memory();
     }
 
     /// Current process-local revision of memory-readable state. Any fact,
@@ -594,10 +427,6 @@ impl Database {
 
     fn bump_memory_revision(&self) {
         self.memory_revision.fetch_add(1, Ordering::AcqRel);
-    }
-
-    fn bump_cache_epoch(&self) {
-        self.cache_epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     pub(crate) fn register_pending_embedding_model(
@@ -660,6 +489,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::QUERY_CACHE_MAX_KEYS;
     use std::thread;
     use std::time::Duration;
 
@@ -731,7 +561,8 @@ mod tests {
         let sid = "session-1";
         assert!(db.cache_get_messages(sid).is_none());
         let msgs = vec![make_msg("1", sid), make_msg("2", sid)];
-        db.cache_put_messages(sid, msgs.clone(), 60, 0);
+        let generation = db.cache_generation(sid);
+        db.cache_put_messages(sid, msgs.clone(), 60, generation);
         let cached = db.cache_get_messages(sid).unwrap();
         assert_eq!(cached.len(), 2);
         assert_eq!(cached[0].id, "1");
@@ -742,7 +573,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let sid = "session-1";
         let msgs = vec![make_msg("1", sid)];
-        db.cache_put_messages(sid, msgs, 1, 0);
+        let generation = db.cache_generation(sid);
+        db.cache_put_messages(sid, msgs, 1, generation);
         assert!(db.cache_get_messages(sid).is_some());
         thread::sleep(Duration::from_secs(2));
         assert!(db.cache_get_messages(sid).is_none());
@@ -753,7 +585,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let sid = "session-1";
         let msgs = vec![make_msg("1", sid)];
-        db.cache_put_messages(sid, msgs, 60, 0);
+        let generation = db.cache_generation(sid);
+        db.cache_put_messages(sid, msgs, 60, generation);
         assert!(db.cache_get_messages(sid).is_some());
         db.cache_invalidate_messages(sid);
         assert!(db.cache_get_messages(sid).is_none());
@@ -764,7 +597,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         assert!(db.cache_get_sessions().is_none());
         let sessions = vec![make_session("1"), make_session("2")];
-        db.cache_put_sessions(sessions.clone(), 60, 0);
+        let generation = db.cache_generation("_sessions");
+        db.cache_put_sessions(sessions.clone(), 60, generation);
         let cached = db.cache_get_sessions().unwrap();
         assert_eq!(cached.len(), 2);
     }
@@ -773,7 +607,8 @@ mod tests {
     fn test_cache_actions_ttl_expiry() {
         let db = Database::open_in_memory().unwrap();
         let sessions = vec![make_session("1")];
-        db.cache_put_sessions(sessions, 1, 0);
+        let generation = db.cache_generation("_sessions");
+        db.cache_put_sessions(sessions, 1, generation);
         assert!(db.cache_get_sessions().is_some());
         thread::sleep(Duration::from_secs(2));
         assert!(db.cache_get_sessions().is_none());
@@ -783,7 +618,8 @@ mod tests {
     fn test_cache_invalidate_sessions() {
         let db = Database::open_in_memory().unwrap();
         let sessions = vec![make_session("1")];
-        db.cache_put_sessions(sessions, 60, 0);
+        let generation = db.cache_generation("_sessions");
+        db.cache_put_sessions(sessions, 60, generation);
         assert!(db.cache_get_sessions().is_some());
         db.cache_invalidate_sessions();
         assert!(db.cache_get_sessions().is_none());
@@ -795,7 +631,8 @@ mod tests {
         let subj = "user";
         assert!(db.cache_get_facts(subj).is_none());
         let facts = vec![make_fact("1", subj), make_fact("2", subj)];
-        db.cache_put_facts(subj, facts.clone(), 60, 0);
+        let generation = db.cache_generation("_facts_user");
+        db.cache_put_facts(subj, facts.clone(), 60, generation);
         let cached = db.cache_get_facts(subj).unwrap();
         assert_eq!(cached.len(), 2);
     }
@@ -805,7 +642,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let subj = "user";
         let facts = vec![make_fact("1", subj)];
-        db.cache_put_facts(subj, facts, 1, 0);
+        let generation = db.cache_generation("_facts_user");
+        db.cache_put_facts(subj, facts, 1, generation);
         assert!(db.cache_get_facts(subj).is_some());
         thread::sleep(Duration::from_secs(2));
         assert!(db.cache_get_facts(subj).is_none());
@@ -816,7 +654,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let subj = "user";
         let facts = vec![make_fact("1", subj)];
-        db.cache_put_facts(subj, facts, 60, 0);
+        let generation = db.cache_generation("_facts_user");
+        db.cache_put_facts(subj, facts, 60, generation);
         assert!(db.cache_get_facts(subj).is_some());
         db.cache_invalidate_facts(subj);
         assert!(db.cache_get_facts(subj).is_none());
@@ -827,12 +666,75 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let f1 = vec![make_fact("1", "subject-a")];
         let f2 = vec![make_fact("2", "subject-b")];
-        db.cache_put_facts("subject-a", f1, 60, 0);
-        db.cache_put_facts("subject-b", f2, 60, 0);
+        let generation_a = db.cache_generation("_facts_subject-a");
+        let generation_b = db.cache_generation("_facts_subject-b");
+        db.cache_put_facts("subject-a", f1, 60, generation_a);
+        db.cache_put_facts("subject-b", f2, 60, generation_b);
         assert!(db.cache_get_facts("subject-a").is_some());
         assert!(db.cache_get_facts("subject-b").is_some());
         db.cache_invalidate_facts("subject-a");
         assert!(db.cache_get_facts("subject-a").is_none());
         assert!(db.cache_get_facts("subject-b").is_some());
+    }
+
+    #[test]
+    fn test_cache_is_bounded_and_evicts_least_recently_used_key() {
+        let db = Database::open_in_memory().unwrap();
+
+        for index in 0..QUERY_CACHE_MAX_KEYS {
+            let session_id = format!("session-{index}");
+            let generation = db.cache_generation(&session_id);
+            db.cache_put_messages(
+                &session_id,
+                vec![make_msg(&index.to_string(), &session_id)],
+                60,
+                generation,
+            );
+        }
+
+        // Refresh the oldest entry so the next insertion must evict the
+        // second entry instead.
+        assert!(db.cache_get_messages("session-0").is_some());
+        let overflow_id = "session-overflow";
+        let generation = db.cache_generation(overflow_id);
+        db.cache_put_messages(
+            overflow_id,
+            vec![make_msg("overflow", overflow_id)],
+            60,
+            generation,
+        );
+
+        assert!(db.cache_get_messages("session-0").is_some());
+        assert!(db.cache_get_messages(overflow_id).is_some());
+        assert!(
+            db.cache_get_messages("session-1").is_none(),
+            "the least recently used logical key should be evicted at capacity"
+        );
+    }
+
+    #[test]
+    fn test_cache_generation_is_key_scoped_and_rejects_stale_writes() {
+        let db = Database::open_in_memory().unwrap();
+        let session_id = "session-a";
+        let generation = db.cache_generation(session_id);
+
+        // Invalidating another session must not make this independent write
+        // miss, which was the old process-wide epoch behaviour.
+        db.cache_invalidate_messages("session-b");
+        db.cache_put_messages(session_id, vec![make_msg("a", session_id)], 60, generation);
+        assert!(db.cache_get_messages(session_id).is_some());
+
+        let stale_generation = db.cache_generation(session_id);
+        db.cache_invalidate_messages(session_id);
+        db.cache_put_messages(
+            session_id,
+            vec![make_msg("stale", session_id)],
+            60,
+            stale_generation,
+        );
+        assert!(
+            db.cache_get_messages(session_id).is_none(),
+            "a query that started before invalidation must not repopulate stale data"
+        );
     }
 }

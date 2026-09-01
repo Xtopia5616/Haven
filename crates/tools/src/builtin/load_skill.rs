@@ -3,7 +3,6 @@ use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -16,7 +15,7 @@ pub struct LoadSkillTool {
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub registry: ToolRegistry,
     pub session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
-    pub catalog_version: Arc<AtomicU64>,
+    pub session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
     pub max_tools_per_request: usize,
 }
 
@@ -124,7 +123,13 @@ impl LoadSkillTool {
         }
         entry.insert(name, Arc::new(adapter));
         drop(map);
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        let mut versions = self.session_catalog_versions.write().await;
+        let next = versions
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        versions.insert(session_id.to_string(), next);
         Ok(SkillActivateOutcome::Loaded(skill_def))
     }
 }
@@ -234,7 +239,7 @@ mod tests {
             skill_runner: runner,
             registry: ToolRegistry::new(),
             session_registrations: Arc::new(RwLock::new(HashMap::new())),
-            catalog_version: Arc::new(AtomicU64::new(0)),
+            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
             max_tools_per_request: max_tools,
         }
     }

@@ -66,3 +66,8 @@
 - [0059：Agent 工具调用身份与参数验证](0059-agent-tool-invocation-identity-and-validation.md)
 - [0060：工具执行结果与幂等重试边界](0060-tool-execution-outcomes-and-retry-policy.md)
 - [0061：工具批处理调度与观察结果投影](0061-agent-tool-batch-scheduling-and-observation-projection.md)
+- [0062：ReAct Loop 响应周期与工具批次计划](0062-react-loop-response-cycle-and-batch-plan.md)
+- [0063：Typed memory recall and revision-keyed prompt context](0063-memory-context-and-recall.md)
+- [0064：ReAct 上下文组装与统一工具调度边界](0064-react-context-and-tool-dispatch-boundaries.md)
+- [0065：上下文、工具与记忆边界的失败安全收紧](0065-context-tool-memory-boundaries.md)
+- [0066：有界缓存与上下文一致性](0066-bounded-cache-and-context-consistency.md)

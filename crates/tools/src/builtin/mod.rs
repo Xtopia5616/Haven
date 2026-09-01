@@ -77,7 +77,7 @@ pub async fn register_builtin_tools(
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
     session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
-    catalog_version: Arc<std::sync::atomic::AtomicU64>,
+    session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
     agent_spawner: messaging::AgentSpawnerSlot,
     memory_recall: memory::MemoryRecallSlot,
 ) -> Option<Arc<self_tool::SelfTool>> {
@@ -154,7 +154,7 @@ pub async fn register_builtin_tools(
         skill_runner: skill_runner.clone(),
         registry: registry.clone(),
         session_registrations: session_registrations.clone(),
-        catalog_version: catalog_version.clone(),
+        session_catalog_versions: session_catalog_versions.clone(),
         max_tools_per_request: max_tools,
     }));
     tools.push(Arc::new(load_mcp::LoadMcpTool {
@@ -162,7 +162,7 @@ pub async fn register_builtin_tools(
         server_configs: server_configs.clone(),
         registry: registry.clone(),
         session_registrations,
-        catalog_version,
+        session_catalog_versions,
         max_tools_per_request: max_tools,
     }));
     if let Some(ctx) = self_context {

@@ -4,7 +4,6 @@ use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +18,7 @@ pub struct LoadMcpTool {
     /// per-request tool budget check.
     pub registry: ToolRegistry,
     pub session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
-    pub catalog_version: Arc<AtomicU64>,
+    pub session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
     /// Snapshot of `context_limits.max_tools_per_request` at catalog rebuild.
     pub max_tools_per_request: usize,
 }
@@ -250,7 +249,13 @@ impl LoadMcpTool {
             entry.insert(adapter.name(), Arc::new(adapter));
         }
         drop(map);
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        let mut versions = self.session_catalog_versions.write().await;
+        let next = versions
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        versions.insert(session_id.to_string(), next);
         Ok(ActivateOutcome::Loaded(tool_schemas))
     }
 }
@@ -396,7 +401,7 @@ mod tests {
             server_configs: Arc::new(RwLock::new(HashMap::new())),
             registry: ToolRegistry::new(),
             session_registrations: Arc::new(RwLock::new(HashMap::new())),
-            catalog_version: Arc::new(AtomicU64::new(0)),
+            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
             max_tools_per_request: 128,
         }
     }
@@ -499,7 +504,7 @@ mod tests {
             server_configs: configs,
             registry: ToolRegistry::new(),
             session_registrations: Arc::new(RwLock::new(HashMap::new())),
-            catalog_version: Arc::new(AtomicU64::new(0)),
+            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
             max_tools_per_request: 128,
         };
         let result = tool
@@ -562,7 +567,7 @@ mod tests {
             server_configs: Arc::new(RwLock::new(HashMap::new())),
             registry,
             session_registrations: session_registrations.clone(),
-            catalog_version: Arc::new(AtomicU64::new(0)),
+            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
             max_tools_per_request: 6,
         };
         assert!(ToolsManager::tool_budget_would_exceed(6, 0, 5, 3));
@@ -576,13 +581,13 @@ mod tests {
     async fn test_activate_server_tools_registers_under_budget() {
         let session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let catalog_version = Arc::new(AtomicU64::new(0));
+        let session_catalog_versions = Arc::new(RwLock::new(HashMap::new()));
         let tool = LoadMcpTool {
             mcp_manager: Arc::new(McpManager::new()),
             server_configs: Arc::new(RwLock::new(HashMap::new())),
             registry: ToolRegistry::new(),
             session_registrations: session_registrations.clone(),
-            catalog_version: catalog_version.clone(),
+            session_catalog_versions: session_catalog_versions.clone(),
             max_tools_per_request: 10,
         };
         let name = McpToolAdapter::qualified_name_of("srv", "only");
@@ -594,7 +599,7 @@ mod tests {
             );
         }
         assert!(!ToolsManager::tool_budget_would_exceed(1, 0, 1, 0));
-        assert_eq!(catalog_version.load(Ordering::Relaxed), 0);
+        assert!(session_catalog_versions.read().await.is_empty());
         let _ = tool;
         let _ = name;
     }

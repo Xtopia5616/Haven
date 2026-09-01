@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::RwLock;
 
 use haven_common::prompts::{
@@ -39,10 +40,11 @@ pub struct SystemPromptBuilder {
     /// `load_mcp` registrations do **not** bump this cache — those tools
     /// appear only in the API `tools[]` list (G7 freeze-per-run).
     schema_cache: RwLock<Option<SchemaCache>>,
-    /// Cached memory-only render keyed by the exact query scope, embedding
-    /// model, and database memory revision. Dirty notifications can therefore
-    /// refresh the fence without repeating retrieval when no memory changed.
-    memory_cache: RwLock<Option<MemoryCache>>,
+    /// Cached memory-only render keyed by the canonicalized query scope,
+    /// embedding model, and database memory revision. Dirty notifications can
+    /// therefore refresh the fence without repeating retrieval when no memory
+    /// changed.
+    memory_cache: Mutex<MemoryCache>,
 }
 
 #[derive(Clone)]
@@ -53,7 +55,7 @@ struct SchemaCache {
     mcp_server_index_section: String,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct MemoryCacheKey {
     query: String,
     embedding_model: String,
@@ -61,10 +63,43 @@ struct MemoryCacheKey {
     exclude_session_id: Option<String>,
 }
 
-#[derive(Clone)]
 struct MemoryCache {
-    key: MemoryCacheKey,
-    sections: MemorySections,
+    /// A small LRU keeps prompt recall reusable across alternating sessions
+    /// without allowing descriptions/session ids to grow memory forever.
+    entries: HashMap<MemoryCacheKey, MemorySections>,
+    order: VecDeque<MemoryCacheKey>,
+}
+
+impl MemoryCache {
+    const CAPACITY: usize = 32;
+
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &MemoryCacheKey) -> Option<MemorySections> {
+        let sections = self.entries.get(key).cloned();
+        if sections.is_some() {
+            self.order.retain(|cached| cached != key);
+            self.order.push_back(key.clone());
+        }
+        sections
+    }
+
+    fn insert(&mut self, key: MemoryCacheKey, sections: MemorySections) {
+        self.order.retain(|cached| cached != &key);
+        while self.entries.len() >= Self::CAPACITY && !self.entries.contains_key(&key) {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.entries.insert(key.clone(), sections);
+        self.order.push_back(key);
+    }
 }
 
 #[derive(Default)]
@@ -186,6 +221,14 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// Canonicalize whitespace before it becomes a memory-cache key or embedding
+/// input. Voice transcription and UI submission often differ only in spaces
+/// or line breaks; collapsing those differences turns equivalent recalls into
+/// one cache entry without changing the visible prompt text.
+fn normalize_memory_query(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Render the newest complete history entries that fit in the additional
 /// context budget. History is already ordered oldest-to-newest, so packing
 /// from the tail preserves the information most relevant to the next turn and
@@ -255,7 +298,7 @@ impl SystemPromptBuilder {
             db,
             router,
             schema_cache: RwLock::new(None),
-            memory_cache: RwLock::new(None),
+            memory_cache: Mutex::new(MemoryCache::new()),
         }
     }
 
@@ -376,7 +419,8 @@ impl SystemPromptBuilder {
     ) -> MemorySections {
         // The shared memory boundary owns the query cap. Prompt descriptions
         // are best-effort context, so trim rather than fail prompt assembly.
-        let query_text = truncate_chars(session_description.trim(), MAX_MEMORY_QUERY_CHARS);
+        let normalized_query = normalize_memory_query(session_description);
+        let query_text = truncate_chars(&normalized_query, MAX_MEMORY_QUERY_CHARS);
         let embedding_model = self.current_embedding_model().await;
         let cache_key = MemoryCacheKey {
             query: query_text.clone(),
@@ -387,30 +431,34 @@ impl SystemPromptBuilder {
                 .filter(|id| !id.is_empty())
                 .map(str::to_string),
         };
-        if let Ok(cache) = self.memory_cache.read()
-            && let Some(entry) = cache.as_ref()
-            && entry.key == cache_key
+        if let Ok(mut cache) = self.memory_cache.lock()
+            && let Some(sections) = cache.get(&cache_key)
         {
-            return entry.sections.clone();
+            return sections;
         }
 
         let mut facts_section = String::new();
         let mut episodes_section = String::new();
         let session_terms = haven_common::text::memory_recall_terms(&query_text);
 
-        let vector = if query_text.is_empty()
+        let (vector, cacheable) = if query_text.is_empty()
             || embedding_model.is_empty()
             || !MemoryRetriever::visible_text(&query_text)
         {
-            None
+            (None, true)
         } else if let Some(router) = &self.router {
-            router
-                .embed_text(&query_text)
-                .await
-                .ok()
-                .filter(|v| !v.is_empty())
+            match router.embed_text(&query_text).await {
+                Ok(vector) if !vector.is_empty() => (Some(vector), true),
+                Ok(_) => (None, true),
+                Err(error) => {
+                    tracing::debug!(
+                        "prompt memory embedding failed; skipping memory cache for this pass: {error}"
+                    );
+                    (None, false)
+                }
+            }
         } else {
-            None
+            (None, true)
         };
         let db = self.db.clone();
         let query_text_for_reads = query_text.clone();
@@ -629,11 +677,8 @@ impl SystemPromptBuilder {
             facts: facts_section,
             episodes: episodes_section,
         };
-        if let Ok(mut cache) = self.memory_cache.write() {
-            *cache = Some(MemoryCache {
-                key: cache_key,
-                sections: sections.clone(),
-            });
+        if cacheable && let Ok(mut cache) = self.memory_cache.lock() {
+            cache.insert(cache_key, sections.clone());
         }
         sections
     }
@@ -800,6 +845,9 @@ impl SystemPromptBuilder {
     }
 
     async fn get_or_build_sections(&self) -> SchemaCache {
+        // The registry version is the authority for this frozen global index.
+        // Per-session registrations do not enter the index and therefore do
+        // not invalidate it.
         let version = self.tools.registry.version();
         {
             let cache = self.schema_cache.read().unwrap();
@@ -996,6 +1044,38 @@ mod tests {
     fn sanitize_caps_length() {
         let out = sanitize_prompt_field(&"x".repeat(300));
         assert_eq!(out.len(), 256);
+    }
+
+    #[test]
+    fn memory_query_normalizes_transcription_whitespace() {
+        assert_eq!(
+            normalize_memory_query("  set\n\tup   dark   theme  "),
+            "set up dark theme"
+        );
+    }
+
+    #[test]
+    fn memory_cache_is_bounded_and_evicts_least_recently_used_entry() {
+        let mut cache = MemoryCache::new();
+        let key = |query: &str| MemoryCacheKey {
+            query: query.into(),
+            embedding_model: String::new(),
+            memory_revision: 0,
+            exclude_session_id: None,
+        };
+
+        for index in 0..MemoryCache::CAPACITY {
+            let query = format!("query-{index}");
+            cache.insert(key(&query), MemorySections::default());
+        }
+        assert!(cache.get(&key("query-0")).is_some());
+
+        cache.insert(key("query-overflow"), MemorySections::default());
+
+        assert!(cache.get(&key("query-0")).is_some());
+        assert!(cache.get(&key("query-overflow")).is_some());
+        assert!(cache.get(&key("query-1")).is_none());
+        assert_eq!(cache.entries.len(), MemoryCache::CAPACITY);
     }
 
     /// Dummy tool so tests can control which tools appear in the registry.

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -13,6 +14,7 @@ use std::sync::MutexGuard;
 use haven_common::types::CanonicalMessage;
 use haven_llm::{EndpointRole, ToolDefinition};
 use haven_tools::inbox::InboxBus;
+use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use crate::compactor::estimate_message_tokens;
@@ -232,44 +234,77 @@ impl Default for UsageTracker {
     }
 }
 
-/// Per-session tool-definition cache keyed by ToolsManager catalog version.
-/// Values are `Arc` so cache hits share one schema vec across steps.
-type ToolDefCacheEntry = (u64, Arc<Vec<ToolDefinition>>);
+/// Per-session tool-definition cache keyed by the global catalog and the
+/// session-local registration overlay version.
+/// Values are `Arc` so cache hits share one schema vec across steps. It is
+/// bounded because ended sessions are normally removed eagerly, but a burst
+/// of short-lived sessions must not grow this sidecar without limit.
+type ToolDefCacheEntry = ((u64, u64), Arc<Vec<ToolDefinition>>);
 type ToolDefCacheMap = HashMap<String, ToolDefCacheEntry>;
 
+struct ToolDefCacheState {
+    entries: ToolDefCacheMap,
+    order: VecDeque<String>,
+}
+
 pub(crate) struct ToolDefCache {
-    cache: Mutex<ToolDefCacheMap>,
+    cache: Mutex<ToolDefCacheState>,
 }
 
 impl ToolDefCache {
+    pub(crate) const CAPACITY: usize = 128;
+
     pub(crate) fn new() -> Self {
         Self {
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(ToolDefCacheState {
+                entries: HashMap::new(),
+                order: VecDeque::new(),
+            }),
         }
     }
 
     pub(super) fn get_if_version(
         &self,
         session_id: &str,
-        version: u64,
+        version: (u64, u64),
     ) -> Option<Arc<Vec<ToolDefinition>>> {
-        self.cache
-            .lock()
-            .unwrap()
+        let mut state = self.cache.lock().unwrap();
+        let result = state
+            .entries
             .get(session_id)
             .filter(|(v, _)| *v == version)
-            .map(|(_, defs)| Arc::clone(defs))
+            .map(|(_, defs)| Arc::clone(defs));
+        if result.is_some() {
+            state.order.retain(|cached| cached != session_id);
+            state.order.push_back(session_id.to_string());
+        }
+        result
     }
 
-    pub(super) fn insert(&self, session_id: &str, version: u64, defs: Arc<Vec<ToolDefinition>>) {
-        self.cache
-            .lock()
-            .unwrap()
+    pub(super) fn insert(
+        &self,
+        session_id: &str,
+        version: (u64, u64),
+        defs: Arc<Vec<ToolDefinition>>,
+    ) {
+        let mut state = self.cache.lock().unwrap();
+        state.order.retain(|cached| cached != session_id);
+        while state.entries.len() >= Self::CAPACITY && !state.entries.contains_key(session_id) {
+            let Some(oldest) = state.order.pop_front() else {
+                break;
+            };
+            state.entries.remove(&oldest);
+        }
+        state
+            .entries
             .insert(session_id.to_string(), (version, defs));
+        state.order.push_back(session_id.to_string());
     }
 
     pub(crate) fn remove(&self, session_id: &str) {
-        self.cache.lock().unwrap().remove(session_id);
+        let mut state = self.cache.lock().unwrap();
+        state.entries.remove(session_id);
+        state.order.retain(|cached| cached != session_id);
     }
 }
 
@@ -320,62 +355,107 @@ impl Default for ToolDefCache {
 pub(super) struct TokenEstimate {
     msgs_len: usize,
     tokens: u32,
-    passes: u32,
+    /// Fingerprint of the exact canonical prefix represented by `tokens`.
+    /// Length alone is not a valid cache key: rollback, repair, or a caller
+    /// can replace a message without changing the vector length.
+    fingerprint: [u8; 32],
+}
+
+fn canonical_fingerprint(messages: &[CanonicalMessage]) -> [u8; 32] {
+    match serde_json::to_vec(messages) {
+        Ok(encoded) => Sha256::digest(encoded).into(),
+        Err(_) => {
+            // Canonical messages currently serialize infallibly. Keep the
+            // fallback deterministic if a future content part adds a
+            // non-serializable field, and never turn the failure into a false
+            // cache hit.
+            Sha256::digest(format!("{messages:?}").as_bytes()).into()
+        }
+    }
 }
 
 /// Per-session incremental token-estimate cache.
+/// Entries are bounded for the same reason as [`ToolDefCache`]; eviction only
+/// costs a fresh estimate and cannot affect durable canonical state.
 pub(crate) struct TokenEstimateCache {
-    cache: Mutex<HashMap<String, TokenEstimate>>,
+    cache: Mutex<TokenEstimateCacheState>,
+}
+
+struct TokenEstimateCacheState {
+    entries: HashMap<String, TokenEstimate>,
+    order: VecDeque<String>,
 }
 
 impl TokenEstimateCache {
+    pub(crate) const CAPACITY: usize = 256;
+
     pub(crate) fn new() -> Self {
         Self {
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(TokenEstimateCacheState {
+                entries: HashMap::new(),
+                order: VecDeque::new(),
+            }),
         }
     }
 
     pub(super) fn estimate(&self, session_id: &str, canonical: &[CanonicalMessage]) -> u32 {
-        const FULL_ESTIMATE_PASS_INTERVAL: u32 = 8;
-        // Snapshot decision under the lock; run tiktoken outside so concurrent
-        // sessions are not serialized behind one mutex for the whole estimate.
-        let (full_pass, msgs_len, tokens, passes) = {
-            let cache = self.cache.lock().unwrap();
-            match cache.get(session_id) {
-                Some(entry) => {
-                    let full_pass = entry.tokens == 0
-                        || entry.msgs_len > canonical.len()
-                        || entry.passes.is_multiple_of(FULL_ESTIMATE_PASS_INTERVAL);
-                    (full_pass, entry.msgs_len, entry.tokens, entry.passes)
-                }
-                None => (true, 0, 0, 0),
-            }
+        let fingerprint = canonical_fingerprint(canonical);
+        // Snapshot the prior entry under the lock; run tiktoken outside so
+        // concurrent sessions are not serialized behind one mutex for the
+        // whole estimate.
+        let prior = {
+            let state = self.cache.lock().unwrap();
+            state.entries.get(session_id).cloned()
         };
-        let (new_msgs_len, new_tokens) = if full_pass {
-            (canonical.len(), estimate_message_tokens(canonical))
-        } else if msgs_len < canonical.len() {
+        if let Some(entry) = &prior
+            && entry.fingerprint == fingerprint
+        {
+            let mut state = self.cache.lock().unwrap();
+            if state.entries.contains_key(session_id) {
+                state.order.retain(|cached| cached != session_id);
+                state.order.push_back(session_id.to_string());
+            }
+            return entry.tokens;
+        }
+
+        let (new_msgs_len, new_tokens) = if let Some(entry) = prior
+            && entry.msgs_len < canonical.len()
+            && entry.fingerprint == canonical_fingerprint(&canonical[..entry.msgs_len])
+        {
             (
                 canonical.len(),
-                tokens.saturating_add(estimate_message_tokens(&canonical[msgs_len..])),
+                entry
+                    .tokens
+                    .saturating_add(estimate_message_tokens(&canonical[entry.msgs_len..])),
             )
         } else {
-            (msgs_len, tokens)
+            (canonical.len(), estimate_message_tokens(canonical))
         };
-        let new_passes = passes.saturating_add(1);
-        let mut cache = self.cache.lock().unwrap();
-        cache.insert(
-            session_id.to_string(),
+        let mut state = self.cache.lock().unwrap();
+        state.order.retain(|cached| cached != session_id);
+        while state.entries.len() >= Self::CAPACITY && !state.entries.contains_key(session_id) {
+            let Some(oldest) = state.order.pop_front() else {
+                break;
+            };
+            state.entries.remove(&oldest);
+        }
+        let session_key = session_id.to_string();
+        state.entries.insert(
+            session_key.clone(),
             TokenEstimate {
                 msgs_len: new_msgs_len,
                 tokens: new_tokens,
-                passes: new_passes,
+                fingerprint,
             },
         );
+        state.order.push_back(session_key);
         new_tokens
     }
 
     pub(crate) fn remove(&self, session_id: &str) {
-        self.cache.lock().unwrap().remove(session_id);
+        let mut state = self.cache.lock().unwrap();
+        state.entries.remove(session_id);
+        state.order.retain(|cached| cached != session_id);
     }
 }
 
@@ -516,6 +596,38 @@ mod tests {
     }
 
     #[test]
+    fn tool_definition_cache_is_bounded_and_evicts_least_recently_used() {
+        let cache = ToolDefCache::new();
+        for index in 0..ToolDefCache::CAPACITY {
+            cache.insert(&format!("ses-{index}"), (0, 0), Arc::new(Vec::new()));
+        }
+        assert!(cache.get_if_version("ses-0", (0, 0)).is_some());
+
+        cache.insert("ses-overflow", (0, 0), Arc::new(Vec::new()));
+
+        assert!(cache.get_if_version("ses-0", (0, 0)).is_some());
+        assert!(cache.get_if_version("ses-overflow", (0, 0)).is_some());
+        assert!(cache.get_if_version("ses-1", (0, 0)).is_none());
+    }
+
+    #[test]
+    fn token_estimate_cache_is_bounded_and_evicts_least_recently_used() {
+        let cache = TokenEstimateCache::new();
+        for index in 0..TokenEstimateCache::CAPACITY {
+            cache.estimate(&format!("ses-{index}"), &[]);
+        }
+        cache.estimate("ses-0", &[]);
+
+        cache.estimate("ses-overflow", &[]);
+
+        let state = cache.cache.lock().unwrap();
+        assert_eq!(state.entries.len(), TokenEstimateCache::CAPACITY);
+        assert!(state.entries.contains_key("ses-0"));
+        assert!(state.entries.contains_key("ses-overflow"));
+        assert!(!state.entries.contains_key("ses-1"));
+    }
+
+    #[test]
     fn usage_tracker_invalidate_bumps_epoch_and_clears_map() {
         let tracker = UsageTracker::new();
         assert_eq!(tracker.epoch("ses-a"), 0);
@@ -527,5 +639,36 @@ mod tests {
         let totals =
             tracker.record_with_seed("ses-a", 1, 1, 2, 0, 0, 1, None, CumulativeUsage::default);
         assert_eq!(totals.total_tokens, 2);
+    }
+
+    #[test]
+    fn token_estimate_cache_detects_same_length_content_changes() {
+        let cache = TokenEstimateCache::new();
+        let mut messages = vec![CanonicalMessage::user_text("short")];
+        assert_eq!(
+            cache.estimate("ses-a", &messages),
+            estimate_message_tokens(&messages)
+        );
+
+        messages[0] = CanonicalMessage::user_text(
+            "a substantially longer replacement message with different content",
+        );
+        assert_eq!(
+            cache.estimate("ses-a", &messages),
+            estimate_message_tokens(&messages)
+        );
+    }
+
+    #[test]
+    fn token_estimate_cache_reuses_valid_prefix_for_appends() {
+        let cache = TokenEstimateCache::new();
+        let mut messages = vec![CanonicalMessage::user_text("first")];
+        let first = cache.estimate("ses-a", &messages);
+
+        messages.push(CanonicalMessage::user_text("second"));
+        let appended = cache.estimate("ses-a", &messages);
+
+        assert_eq!(first, estimate_message_tokens(&messages[..1]));
+        assert_eq!(appended, estimate_message_tokens(&messages));
     }
 }

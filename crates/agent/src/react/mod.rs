@@ -344,17 +344,19 @@ impl ReActEngine {
     /// runs. After `load_skill` / `load_mcp`, new tool schemas appear here on
     /// the next step; they are **not** spliced into the prompt index.
     ///
-    /// The result is cached per session against the ToolsManager catalog version:
-    /// the definitions only change when a per-session registration
-    /// (`load_skill`/`load_mcp`) or a catalog rebuild bumps the version, so
-    /// the registry query + JSON mapping is skipped on the vast majority of
-    /// steps (the per-session registry query takes the global tools lock and
-    /// rebuilds schema JSON on every step otherwise).
+    /// The result is cached per session against both the global catalog
+    /// version and that session's registration-overlay version. This keeps a
+    /// registration in one session from invalidating definitions for every
+    /// other session while still rebuilding after global or local changes.
     pub(super) async fn build_tool_definitions_for_session(
         &self,
         session_id: &str,
     ) -> Arc<Vec<ToolDefinition>> {
-        let version = self.executor.get_tools().catalog_version();
+        let version = self
+            .executor
+            .get_tools()
+            .catalog_version_for_session(session_id)
+            .await;
         if let Some(cached) = self.tool_defs.get_if_version(session_id, version) {
             return cached;
         }
@@ -790,15 +792,11 @@ impl ReActEngine {
 
     /// Incremental token estimate for a session's canonical message list.
     ///
-    /// The estimate is cached per session: each step adds only the token count
-    /// of the messages appended since the last pass instead of re-tokenizing
-    /// the whole history (which is O(n) per step, O(n^2) over a long session).
-    /// A full pass re-runs every `FULL_ESTIMATE_PASS_INTERVAL` calls and
-    /// whenever the list shrank (sanitize drops, compaction), which bounds
-    /// drift from mid-array inserts and from restored snapshots whose length
-    /// coincidentally matches the cache. Under-counting by one message's
-    /// worth of tokens is acceptable: the forced-compaction 400 retry remains
-    /// the safety net for genuine overflow.
+    /// The estimate is cached per session. Appends reuse the previous prefix
+    /// estimate, while a content fingerprint forces a full tokenization pass for
+    /// replacement, rollback, repair, or compaction changes. This preserves
+    /// the cheap append path without allowing equal-length histories to return
+    /// a stale token count.
     pub(super) fn estimate_canonical_tokens(
         &self,
         session_id: &str,

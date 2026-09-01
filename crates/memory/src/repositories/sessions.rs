@@ -127,11 +127,7 @@ impl Database {
         {
             return Ok(cached);
         }
-        let cache_gen = if offset == 0 && limit == 50 {
-            self.cache_generation("_sessions")
-        } else {
-            0
-        };
+        let cache_gen = (offset == 0 && limit == 50).then(|| self.cache_generation("_sessions"));
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at, transcript 
@@ -142,7 +138,7 @@ impl Database {
         for row in rows {
             sessions.push(row?);
         }
-        if offset == 0 && limit == 50 {
+        if let Some(cache_gen) = cache_gen {
             self.cache_put_sessions(sessions.clone(), 10, cache_gen);
         }
         Ok(sessions)
@@ -399,11 +395,7 @@ impl Database {
         if cacheable && let Some(cached) = self.cache_get_sessions() {
             return Ok(cached);
         }
-        let cache_gen = if cacheable {
-            self.cache_generation("_sessions")
-        } else {
-            0
-        };
+        let cache_gen = cacheable.then(|| self.cache_generation("_sessions"));
 
         let mut wheres: Vec<String> = Vec::new();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -480,7 +472,7 @@ impl Database {
         for row in rows {
             sessions.push(row?);
         }
-        if cacheable {
+        if let Some(cache_gen) = cache_gen {
             self.cache_put_sessions(sessions.clone(), 10, cache_gen);
         }
         Ok(sessions)
