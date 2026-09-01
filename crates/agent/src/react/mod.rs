@@ -11,7 +11,7 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::Database;
 
-use crate::compactor::ContextCompactor;
+use crate::compactor::{ContextCompactor, estimate_tokens};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, TranscriptRecord};
 use chrono::Utc;
@@ -386,11 +386,20 @@ impl ReActEngine {
     pub(super) async fn refresh_last_msg_at(&self, session_id: &str) -> Option<String> {
         let db = self.db.clone();
         let session_id_owned = session_id.to_string();
-        let fetched = db
+        let fetched = match db
             .run_blocking(move |db| Ok(db.get_last_message_created_at(&session_id_owned)))
             .await
-            .ok()
-            .flatten();
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    "failed to refresh last message timestamp for session {}: {}",
+                    session_id,
+                    error
+                );
+                None
+            }
+        };
         self.note_last_msg_at(session_id, fetched.clone());
         fetched
     }
@@ -815,6 +824,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         state: &mut ReActState,
         has_image: bool,
+        tool_defs: &[ToolDefinition],
     ) -> bool {
         if state.canonical.len() < 4 {
             return false;
@@ -832,9 +842,15 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        if self.estimate_canonical_tokens(&ctx.session_id, &state.canonical)
-            <= compactor.threshold_tokens()
-        {
+        let message_tokens = self.estimate_canonical_tokens(&ctx.session_id, &state.canonical);
+        // Provider tool schemas are sent alongside messages but do not live in
+        // the canonical transcript. Include their serialized cost in the
+        // preflight estimate; otherwise a large MCP overlay can pass the
+        // compaction check and still hit a provider 400 on the next request.
+        let tool_tokens = serde_json::to_string(tool_defs)
+            .map(|json| estimate_tokens(&json))
+            .unwrap_or(0);
+        if message_tokens.saturating_add(tool_tokens) <= compactor.threshold_tokens() {
             return false;
         }
         if let Some(result) = compactor.compact(&state.canonical, &router).await {

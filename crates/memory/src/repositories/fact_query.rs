@@ -316,6 +316,7 @@ impl Database {
         &self,
         match_expr: &str,
         limit: Option<usize>,
+        fact_subject: Option<&str>,
     ) -> anyhow::Result<Option<Vec<Fact>>> {
         let conn = self.conn();
         let edge = crate::embeddings::fts_kind::EDGE;
@@ -327,8 +328,9 @@ impl Database {
                      JOIN memory_fts ON memory_fts.entity_id = f.id
                        AND memory_fts.entity_type = '{edge}'
                      WHERE memory_fts MATCH ?1
+                       AND (?2 IS NULL OR f.subject = ?2)
                      ORDER BY bm25(memory_fts)
-                     LIMIT ?2"
+                     LIMIT ?3"
                 ),
                 Some(lim as i64),
             )
@@ -340,6 +342,7 @@ impl Database {
                      JOIN memory_fts ON memory_fts.entity_id = f.id
                        AND memory_fts.entity_type = '{edge}'
                      WHERE memory_fts MATCH ?1
+                       AND (?2 IS NULL OR f.subject = ?2)
                      ORDER BY bm25(memory_fts)"
                 ),
                 None,
@@ -348,10 +351,11 @@ impl Database {
         let Ok(mut stmt) = conn.prepare(&fts_sql) else {
             return Ok(None);
         };
+        let subject = fact_subject.map(str::to_string);
         let rows = if let Some(lim) = bind_limit {
-            stmt.query_map(rusqlite::params![match_expr, lim], fact_from_row)
+            stmt.query_map(rusqlite::params![match_expr, subject, lim], fact_from_row)
         } else {
-            stmt.query_map(rusqlite::params![match_expr], fact_from_row)
+            stmt.query_map(rusqlite::params![match_expr, subject], fact_from_row)
         };
         let Ok(rows) = rows else {
             return Ok(None);
@@ -366,7 +370,12 @@ impl Database {
         Ok(Some(facts))
     }
 
-    fn search_facts_like_any(&self, terms: &[&str], limit: usize) -> anyhow::Result<Vec<Fact>> {
+    fn search_facts_like_any(
+        &self,
+        terms: &[&str],
+        limit: usize,
+        fact_subject: Option<&str>,
+    ) -> anyhow::Result<Vec<Fact>> {
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
@@ -381,10 +390,11 @@ impl Database {
             ));
             patterns.push(format!("%{}%", Self::escape_like_term(term)));
         }
-        let limit_param = terms.len() + 1;
+        let subject_param = terms.len() + 1;
+        let limit_param = terms.len() + 2;
         let sql = format!(
             "SELECT {FACT_COLS} FROM memory_edges
-             WHERE {}
+             WHERE ({}) AND (?{subject_param} IS NULL OR subject = ?{subject_param})
              ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
              LIMIT ?{limit_param}",
             clauses.join(" OR ")
@@ -394,6 +404,11 @@ impl Database {
             .into_iter()
             .map(rusqlite::types::Value::Text)
             .collect();
+        params.push(
+            fact_subject
+                .map(str::to_string)
+                .map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Text),
+        );
         params.push(rusqlite::types::Value::Integer(limit as i64));
         let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
         let mut facts = Vec::new();
@@ -426,21 +441,32 @@ impl Database {
     /// trigram is preferred; escaped LIKE handles short terms and unavailable
     /// FTS while preserving the existing long-query miss semantics.
     pub fn search_facts(&self, query: &str) -> anyhow::Result<Vec<Fact>> {
+        self.search_facts_scoped(query, None)
+    }
+
+    /// Full-text fact search with an optional exact subject scope. The scope is
+    /// applied in every SQL branch before its limit, so a noisy subject cannot
+    /// crowd out the requested entity's matches.
+    pub fn search_facts_scoped(
+        &self,
+        query: &str,
+        fact_subject: Option<&str>,
+    ) -> anyhow::Result<Vec<Fact>> {
         let terms: Vec<&str> = query.split_whitespace().collect();
         if terms.is_empty() {
             return Ok(Vec::new());
         }
         let match_expr = Self::build_fts_query(&terms);
         let short = Self::short_like_terms(&terms);
-        match self.search_facts_fts(&match_expr, None)? {
+        match self.search_facts_fts(&match_expr, None, fact_subject)? {
             Some(facts) if short.is_empty() => return Ok(facts),
             Some(facts) => {
-                let like = self.search_facts_like_any(&short, 50)?;
+                let like = self.search_facts_like_any(&short, 50, fact_subject)?;
                 return Ok(Self::merge_facts_limited(facts, like, 50));
             }
             None if short.is_empty() => {}
             None => {
-                let like_short = self.search_facts_like_any(&short, 50)?;
+                let like_short = self.search_facts_like_any(&short, 50, fact_subject)?;
                 if !like_short.is_empty() {
                     return Ok(like_short);
                 }
@@ -450,10 +476,12 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {FACT_COLS} FROM memory_edges
-             WHERE subject LIKE ?1 ESCAPE '\\' OR predicate LIKE ?1 ESCAPE '\\'
-                OR object LIKE ?1 ESCAPE '\\' OR tags LIKE ?1 ESCAPE '\\'"
+             WHERE (?2 IS NULL OR subject = ?2)
+               AND (subject LIKE ?1 ESCAPE '\\' OR predicate LIKE ?1 ESCAPE '\\'
+                OR object LIKE ?1 ESCAPE '\\' OR tags LIKE ?1 ESCAPE '\\')"
         ))?;
-        let rows = stmt.query_map(rusqlite::params![pattern], fact_from_row)?;
+        let subject = fact_subject.map(str::to_string);
+        let rows = stmt.query_map(rusqlite::params![pattern, subject], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
             facts.push(row?);
@@ -465,23 +493,35 @@ impl Database {
     /// Multi-term prompt recall: one FTS OR query with SQL LIMIT, unioned with
     /// short-term LIKE hits when trigram cannot index them.
     pub fn search_facts_any(&self, terms: &[&str], limit: usize) -> anyhow::Result<Vec<Fact>> {
+        self.search_facts_any_scoped(terms, limit, None)
+    }
+
+    /// Multi-term recall with an optional exact subject scope applied before
+    /// SQL `LIMIT`. Scoping after a global candidate limit can hide the only
+    /// matching fact when another subject has many higher-confidence hits.
+    pub fn search_facts_any_scoped(
+        &self,
+        terms: &[&str],
+        limit: usize,
+        fact_subject: Option<&str>,
+    ) -> anyhow::Result<Vec<Fact>> {
         let terms: Vec<&str> = terms.iter().copied().filter(|t| !t.is_empty()).collect();
         if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
         let match_expr = Self::build_fts_query_or(&terms);
         let short = Self::short_like_terms(&terms);
-        let fts = self.search_facts_fts(&match_expr, Some(limit))?;
+        let fts = self.search_facts_fts(&match_expr, Some(limit), fact_subject)?;
 
         match fts {
             Some(facts) if short.is_empty() => Ok(facts),
             Some(facts) => {
-                let like = self.search_facts_like_any(&short, limit)?;
+                let like = self.search_facts_like_any(&short, limit, fact_subject)?;
                 Ok(Self::merge_facts_limited(facts, like, limit))
             }
-            None if short.is_empty() => self.search_facts_like_any(&terms, limit),
+            None if short.is_empty() => self.search_facts_like_any(&terms, limit, fact_subject),
             None => {
-                let like_short = self.search_facts_like_any(&short, limit)?;
+                let like_short = self.search_facts_like_any(&short, limit, fact_subject)?;
                 if like_short.len() >= limit {
                     return Ok(like_short);
                 }
@@ -493,7 +533,7 @@ impl Database {
                 if long.is_empty() {
                     return Ok(like_short);
                 }
-                let like_long = self.search_facts_like_any(&long, limit)?;
+                let like_long = self.search_facts_like_any(&long, limit, fact_subject)?;
                 Ok(Self::merge_facts_limited(like_short, like_long, limit))
             }
         }

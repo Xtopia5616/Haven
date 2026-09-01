@@ -268,8 +268,16 @@ impl ReActEngine {
             if let Some(step) = branch_point_step {
                 self.save_branch_point(session_id, state, step, false).await;
             }
-            self.save_snapshot_with_branches(session_id, state, snapshot_step)
-                .await;
+            if !self
+                .save_snapshot_with_branches(session_id, state, snapshot_step)
+                .await
+            {
+                anyhow::bail!(
+                    "failed to durably checkpoint session '{}' at step {}",
+                    session_id,
+                    snapshot_step
+                );
+            }
             // The status itself carries the awaiting-answer flavor
             // (`PausedAwaitingAnswer`), so the transition is atomic: a
             // background-action completion landing concurrently reads the final
@@ -333,8 +341,15 @@ impl ReActEngine {
                 session_id,
                 snapshot_step
             );
-            self.save_snapshot_with_branches(session_id, state, snapshot_step)
-                .await;
+            if !self
+                .save_snapshot_with_branches(session_id, state, snapshot_step)
+                .await
+            {
+                anyhow::bail!(
+                    "failed to durably checkpoint session '{}' after step-budget exhaustion",
+                    session_id
+                );
+            }
             set_status_and_emit(&self.executor, emitter, session_id, SessionStatus::Paused).await?;
             emitter
                 .emit(crate::event::AgentEvent::Notification {
@@ -372,9 +387,9 @@ impl ReActEngine {
         session_id: &str,
         state: &ReActState,
         step_number: u32,
-    ) {
+    ) -> bool {
         self.save_snapshot_with_branches(session_id, state, step_number)
-            .await;
+            .await
     }
 
     /// Phase 7 / C4: single cancel-exit path — write the exit snapshot then
@@ -400,9 +415,17 @@ impl ReActEngine {
         step_number: u32,
         exit: LoopExit,
     ) -> LoopExit {
-        self.save_exit_snapshot(session_id, state, step_number)
-            .await;
-        exit
+        if self
+            .save_exit_snapshot(session_id, state, step_number)
+            .await
+        {
+            exit
+        } else {
+            LoopExit::Error(format!(
+                "failed to durably checkpoint session '{}' before exit",
+                session_id
+            ))
+        }
     }
 
     /// Shared External-pause exit (step-head and mid-batch): snapshot →
@@ -415,8 +438,15 @@ impl ReActEngine {
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> LoopExit {
-        self.save_snapshot_with_branches(session_id, state, step_number)
-            .await;
+        if !self
+            .save_snapshot_with_branches(session_id, state, step_number)
+            .await
+        {
+            return LoopExit::Error(format!(
+                "failed to durably checkpoint session '{}' before pause",
+                session_id
+            ));
+        }
         let ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num: step_number,

@@ -681,6 +681,37 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
 }
 
 #[tokio::test]
+async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
+    let (agent, executor) = make_test_agent();
+    let session = executor.create_session("input text").await.unwrap();
+    // The initial user seed is not a recoverable supplement. Reproduce the
+    // normal transcript shape so both later unanchored inputs are candidates.
+    agent
+        .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+        .await
+        .unwrap();
+    agent
+        .persist_message_parts(&session.id, "user", "answer", Some("text"), &[], false)
+        .await
+        .unwrap();
+    agent
+        .persist_message_parts(&session.id, "user", "follow-up", Some("text"), &[], false)
+        .await
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::PausedAwaitingAnswer)
+        .await
+        .unwrap();
+
+    agent.reopen_session(&session.id).await.unwrap();
+
+    let recovered = executor.get_supplements(&session.id).await;
+    assert_eq!(recovered.len(), 2);
+    assert!(recovered[0].is_answer);
+    assert!(!recovered[1].is_answer);
+}
+
+#[tokio::test]
 async fn reopen_session_without_pending_inputs_stays_paused() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("input text").await.unwrap();

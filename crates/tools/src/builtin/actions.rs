@@ -43,19 +43,23 @@ impl ActionsTool {
             anyhow::bail!("cancelled");
         }
 
+        let session_id = params
+            .session_id
+            .ok_or_else(|| anyhow::anyhow!("actions requires a session context"))?;
+
         if let Some(action_id) = params
             .action_id
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
         {
-            let status = self.actions.status(action_id).await;
+            let status = self
+                .actions
+                .status_for_session(action_id, &session_id)
+                .await;
             return Ok(ToolResult::ok(status));
         }
 
-        let session_id = params
-            .session_id
-            .ok_or_else(|| anyhow::anyhow!("actions requires a session context"))?;
         let filter = params.status;
         let mut rows = self.actions.list_for_session(&session_id).await;
         if let Some(f) = filter.as_deref() {

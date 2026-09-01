@@ -174,6 +174,11 @@ impl SessionExecutor {
     /// `update_session_status` terminal path.
     async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
         Self::unregister_from_inbox(session_id);
+        self.tools.unregister_session(session_id).await;
+        self.scheduled_confirms
+            .lock()
+            .await
+            .retain(|_, pending| pending.session_id.as_deref() != Some(session_id));
         // Leaf sessions (never spawned peers) skip registry I/O entirely.
         if cascade && self.may_have_children(session_id).await {
             self.cascade_end_children(session_id).await;
@@ -259,6 +264,7 @@ impl SessionExecutor {
         // tool result. The run gate is released only after the handler's
         // cleanup path has finished.
         self.await_run_finished(session_id).await;
+        self.tools.unregister_session(session_id).await;
         self.tools
             .safety_gateway
             .clear_session_trust(session_id)
@@ -269,6 +275,13 @@ impl SessionExecutor {
         self.action_completions.lock().await.remove(session_id);
         self.awaiting_answer.lock().await.remove(session_id);
         self.awaiting_confirm.lock().await.remove(session_id);
+        // A scheduled confirmation owns a detached timer and execution task;
+        // removing the session must invalidate both before the timer can
+        // resolve it after the session has left the working set.
+        self.scheduled_confirms
+            .lock()
+            .await
+            .retain(|_, pending| pending.session_id.as_deref() != Some(session_id));
     }
 
     pub async fn update_session_title(&self, session_id: &str, title: &str) {
@@ -327,6 +340,7 @@ impl SessionExecutor {
         self.action_completions.lock().await.clear();
         self.awaiting_answer.lock().await.clear();
         self.awaiting_confirm.lock().await.clear();
+        self.scheduled_confirms.lock().await.clear();
     }
 
     /// Subscribe to a session's status changes. Level-triggered: the receiver
@@ -633,6 +647,27 @@ impl SessionExecutor {
         Some(entry?.lock().await.status.clone())
     }
 
+    /// Return whether a scheduled event may still target this session. The
+    /// working set is authoritative while loaded; after restart, consult the
+    /// durable status instead of treating an absent in-memory entry as alive.
+    /// Database failures fail closed because a scheduled event must never
+    /// resurrect an unknown session.
+    pub async fn session_is_live(&self, session_id: &str) -> bool {
+        if let Some(status) = self.get_session_state(session_id).await {
+            return !status.is_terminal();
+        }
+        let session_id = session_id.to_string();
+        self.db
+            .run_blocking(move |db| {
+                let Some(session) = db.get_session(&session_id)? else {
+                    return Ok(false);
+                };
+                Ok(!SessionStatus::from_status_str(&session.status).is_terminal())
+            })
+            .await
+            .unwrap_or(false)
+    }
+
     pub fn get_tools(&self) -> Arc<ToolsManager> {
         self.tools.clone()
     }
@@ -648,11 +683,11 @@ impl SessionExecutor {
     pub async fn cancel_session_actions(&self, session_id: &str) {
         self.tools
             .background_actions
-            .cancel_for_session(session_id)
+            .cancel_owned_by_session(session_id)
             .await;
         self.tools
             .scheduled_actions
-            .cancel_for_session(session_id)
+            .cancel_owned_by_session(session_id)
             .await;
     }
 

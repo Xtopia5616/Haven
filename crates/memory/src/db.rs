@@ -178,6 +178,11 @@ pub struct Database {
     /// entity being embedded. Providers may return a canonical/aliased model
     /// name; persistence must retain the configured index identity instead.
     pending_embedding_models: Mutex<HashMap<(String, String), String>>,
+    /// Serializes fact-graph mutations within one application process. SQLite
+    /// still provides the durable transaction boundary, while this gate keeps
+    /// read/decide/write graph policies from interleaving across pooled
+    /// connections (for example, single-valued fact replacement).
+    fact_write_gate: Mutex<()>,
 }
 
 impl Database {
@@ -209,6 +214,7 @@ impl Database {
             cache_epoch: AtomicU64::new(0),
             memory_revision: AtomicU64::new(0),
             pending_embedding_models: Mutex::new(HashMap::new()),
+            fact_write_gate: Mutex::new(()),
         })
     }
 
@@ -253,6 +259,7 @@ impl Database {
             cache_epoch: AtomicU64::new(0),
             memory_revision: AtomicU64::new(0),
             pending_embedding_models: Mutex::new(HashMap::new()),
+            fact_write_gate: Mutex::new(()),
         })
     }
 
@@ -260,6 +267,20 @@ impl Database {
         self.pool
             .get()
             .expect("database connection checkout failed")
+    }
+
+    /// Run one fact-graph mutation while excluding other fact mutations issued
+    /// through this database handle. The closure stays synchronous so callers
+    /// can compose several SQL statements into one transaction when needed.
+    pub(crate) fn with_fact_write<T>(
+        &self,
+        f: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let _guard = self
+            .fact_write_gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fact write gate poisoned"))?;
+        f()
     }
 
     /// Run a blocking DB closure on the tokio blocking thread pool. Keeps

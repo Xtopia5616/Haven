@@ -355,6 +355,7 @@ mod dispatcher;
 mod queues;
 mod status;
 mod tool_runner;
+pub(crate) use tool_runner::ActionStepPersistenceError;
 
 pub(crate) use queues::ReactContextBatch;
 

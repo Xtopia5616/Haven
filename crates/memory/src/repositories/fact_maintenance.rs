@@ -198,11 +198,27 @@ impl<'db> FactMaintenance<'db> {
              OR lower(trim(object)) LIKE 'tvly-%'
              OR lower(trim(object)) LIKE 'ghp_%'
              OR lower(trim(object)) LIKE 'gho_%'
+             OR lower(trim(object)) LIKE 'ghs_%'
+             OR lower(trim(object)) LIKE 'github_pat_%'
+             OR lower(trim(object)) LIKE 'glpat-%'
              OR lower(trim(object)) LIKE 'xoxb-%'
+             OR lower(trim(object)) LIKE 'xoxp-%'
+             OR lower(trim(object)) LIKE 'xoxa-%'
+             OR lower(trim(object)) LIKE 'xoxr-%'
+             OR lower(trim(object)) LIKE 'xapp-%'
+             OR lower(trim(object)) LIKE 'npm_%'
+             OR lower(trim(object)) LIKE 'pypi-%'
+             OR lower(trim(object)) LIKE 'dop_v1_%'
              OR lower(trim(object)) LIKE 'aiza%'
+             OR lower(trim(object)) LIKE 'akia%'
+             OR lower(trim(object)) LIKE 'asia%'
              OR lower(trim(object)) LIKE 'bearer %'
+             OR (lower(trim(object)) LIKE 'eyj%.%.%')
+             OR (lower(trim(object)) LIKE '-----begin%' AND instr(lower(trim(object)), 'private key') > 0)
              OR instr(lower(object), 'api_key=') > 0
-             OR instr(lower(object), 'apikey=') > 0",
+             OR instr(lower(object), 'apikey=') > 0
+             OR (instr(lower(object), '://') > 0
+                 AND instr(object, '@') > instr(lower(object), '://'))",
             [],
         )? as u64;
         if deleted > 0 {

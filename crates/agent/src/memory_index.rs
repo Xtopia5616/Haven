@@ -8,10 +8,14 @@
 
 use std::sync::Arc;
 
+use haven_common::config::ModelEndpoint;
+use haven_llm::adapters::api_style_for;
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
 use haven_memory::embeddings::entity_kind;
 use haven_memory::recall::{MemoryHit, MemoryQuery, MemoryRetriever};
+use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 
 /// Maximum inputs accepted by one embedding request, regardless of the
 /// configured batch size. The provider contract is intentionally enforced at
@@ -25,11 +29,37 @@ pub(crate) fn embedding_batch_size(configured_size: usize) -> usize {
 
 type PendingEmbedding = (String, String, String);
 
+/// The persisted model column is a vector-space identity, not merely a
+/// provider model label. The same label served by two gateways can produce
+/// incompatible vectors, so include the effective wire style and endpoint in
+/// an opaque digest. Keeping the endpoint out of the stored value avoids
+/// leaking private gateway URLs through memory recall results.
+pub(crate) fn embedding_index_model(endpoint: &ModelEndpoint) -> String {
+    let canonical = format!(
+        "provider={}\nstyle={}\nbase_url={}\nmodel={}",
+        endpoint.provider.trim().to_ascii_lowercase(),
+        api_style_for(endpoint),
+        endpoint.base_url.trim().trim_end_matches('/'),
+        endpoint.model_name.trim(),
+    );
+    let digest = Sha256::digest(canonical.as_bytes());
+    format!("embedding-v2:{digest:x}")
+}
+
+#[derive(Debug, Clone)]
+struct EmbeddingIdentity {
+    storage_model: String,
+    provider_model: String,
+}
+
 /// Agent-side owner of embedding lifecycle operations.
 pub(crate) struct MemoryEmbeddingIndex {
     db: Arc<Database>,
     router: Arc<LlmRouter>,
     embed_chunk_size: usize,
+    /// Serializes maintenance passes so two schedulers cannot embed the same
+    /// missing rows concurrently and race their derived-index updates.
+    maintenance_gate: Mutex<()>,
 }
 
 impl MemoryEmbeddingIndex {
@@ -38,13 +68,13 @@ impl MemoryEmbeddingIndex {
             db,
             router,
             embed_chunk_size: embedding_batch_size(embed_chunk_size),
+            maintenance_gate: Mutex::new(()),
         }
     }
 
-    /// Return the configured model name, or `None` when embedding is not
-    /// configured. The model name is the identity of the vector space and is
-    /// therefore resolved once per operation rather than inferred from rows.
-    async fn configured_model(&self) -> Option<String> {
+    /// Resolve the configured vector-space identity once per operation rather
+    /// than inferring it from persisted rows.
+    async fn configured_identity(&self) -> Option<EmbeddingIdentity> {
         if !self
             .router
             .is_role_configured(EndpointRole::EmbeddingModel)
@@ -52,14 +82,11 @@ impl MemoryEmbeddingIndex {
         {
             return None;
         }
-        let model = self
-            .router
-            .config()
-            .await
-            .embedding_model
-            .model_name
-            .clone();
-        (!model.is_empty()).then_some(model)
+        let endpoint = self.router.config().await.embedding_model.clone();
+        (!endpoint.model_name.trim().is_empty()).then_some(EmbeddingIdentity {
+            storage_model: embedding_index_model(&endpoint),
+            provider_model: endpoint.model_name,
+        })
     }
 
     /// True when persisted vectors belong to another model and cannot be
@@ -79,12 +106,13 @@ impl MemoryEmbeddingIndex {
     /// model. Work is bounded by the memory repository backlog limits and by
     /// the provider-safe request chunk size.
     pub(crate) async fn embed_new_memory(&self) {
-        let Some(model) = self.configured_model().await else {
+        let _maintenance_guard = self.maintenance_gate.lock().await;
+        let Some(identity) = self.configured_identity().await else {
             tracing::debug!("embedding_model unconfigured; skipping vector indexing");
             return;
         };
 
-        match self.model_changed(&model).await {
+        match self.model_changed(&identity.storage_model).await {
             Ok(true) => {
                 let db = self.db.clone();
                 match db.run_blocking(move |db| db.clear_embeddings()).await {
@@ -108,7 +136,7 @@ impl MemoryEmbeddingIndex {
         }
 
         let db = self.db.clone();
-        let model_for_missing = model.clone();
+        let model_for_missing = identity.storage_model.clone();
         let pending = match db
             .run_blocking(move |db| collect_pending_from_db(db, &model_for_missing))
             .await
@@ -137,17 +165,77 @@ impl MemoryEmbeddingIndex {
                     return;
                 }
             };
+            if embedding.vectors.len() != chunk.len() {
+                tracing::warn!(
+                    expected = chunk.len(),
+                    actual = embedding.vectors.len(),
+                    "memory embedding provider returned a vector count different from the request"
+                );
+                return;
+            }
             if let Some(provider_model) = embedding.model.as_deref()
-                && provider_model != model
+                && provider_model != identity.provider_model
             {
                 tracing::warn!(
-                    configured_model = %model,
+                    configured_model = %identity.provider_model,
                     provider_model,
                     "memory embedding provider returned a different model; refusing to persist vectors"
                 );
                 return;
             }
-            let stored_model = model.clone();
+            let dimensions: Vec<usize> = embedding
+                .vectors
+                .iter()
+                .filter(|vector| !vector.is_empty())
+                .map(Vec::len)
+                .collect();
+            let Some(&dimension) = dimensions.first() else {
+                tracing::warn!("memory embedding provider returned no usable vectors");
+                return;
+            };
+            if dimensions.iter().any(|candidate| *candidate != dimension) {
+                tracing::warn!(
+                    configured_model = %identity.provider_model,
+                    "memory embedding provider returned mixed vector dimensions; refusing to persist batch"
+                );
+                return;
+            }
+            let db_for_dimensions = self.db.clone();
+            let model_for_dimensions = identity.storage_model.clone();
+            let stored_dimensions = match db_for_dimensions
+                .run_blocking(move |db| db.list_embedding_dimensions(&model_for_dimensions))
+                .await
+            {
+                Ok(dimensions) => dimensions,
+                Err(error) => {
+                    tracing::warn!(
+                        "memory embedding: failed to inspect stored dimensions: {}",
+                        error
+                    );
+                    return;
+                }
+            };
+            if stored_dimensions
+                .iter()
+                .any(|stored_dimension| *stored_dimension != dimension)
+            {
+                let db = self.db.clone();
+                match db.run_blocking(move |db| db.clear_embeddings()).await {
+                    Ok(_) => tracing::info!(
+                        configured_model = %identity.provider_model,
+                        dimension,
+                        "memory embedding dimension changed: cleared vector index for rebuild"
+                    ),
+                    Err(error) => {
+                        tracing::error!(
+                            "memory embedding dimension changed: failed to clear vector index: {}",
+                            error
+                        );
+                        return;
+                    }
+                }
+            }
+            let stored_model = identity.storage_model.clone();
             let rows: Vec<_> = chunk
                 .iter()
                 .zip(embedding.vectors)
@@ -194,14 +282,15 @@ impl MemoryEmbeddingIndex {
     /// rows. This is a maintenance operation and never runs on the recall
     /// hot path.
     pub(crate) async fn rebuild_lsh_if_lagging(&self) {
-        let Some(model) = self.configured_model().await else {
+        let _maintenance_guard = self.maintenance_gate.lock().await;
+        let Some(identity) = self.configured_identity().await else {
             return;
         };
         let db = self.db.clone();
         if let Err(error) = db
             .run_blocking(move |db| {
-                if db.embedding_lsh_lagging(&model)? {
-                    db.rebuild_embedding_lsh(&model)?;
+                if db.embedding_lsh_lagging(&identity.storage_model)? {
+                    db.rebuild_embedding_lsh(&identity.storage_model)?;
                 }
                 Ok::<(), anyhow::Error>(())
             })
@@ -222,10 +311,10 @@ impl MemoryEmbeddingIndex {
         &self,
         query: &MemoryQuery,
     ) -> anyhow::Result<Option<Vec<MemoryHit>>> {
-        let Some(model) = self.configured_model().await else {
+        let Some(identity) = self.configured_identity().await else {
             return Ok(None);
         };
-        if self.model_changed(&model).await? {
+        if self.model_changed(&identity.storage_model).await? {
             return Ok(None);
         }
         let vector = match self.router.embed_text(&query.text).await {
@@ -241,11 +330,31 @@ impl MemoryEmbeddingIndex {
         if vector.is_empty() {
             return Ok(None);
         }
+        let db_for_dimensions = self.db.clone();
+        let model_for_dimensions = identity.storage_model.clone();
+        let query_dimension = vector.len();
+        let stored_dimensions = db_for_dimensions
+            .run_blocking(move |db| db.list_embedding_dimensions(&model_for_dimensions))
+            .await?;
+        if stored_dimensions
+            .iter()
+            .any(|stored_dimension| *stored_dimension != query_dimension)
+        {
+            tracing::warn!(
+                configured_model = %identity.provider_model,
+                query_dimension,
+                ?stored_dimensions,
+                "memory vector index dimension mismatch; using keyword fallback"
+            );
+            return Ok(None);
+        }
         let db = self.db.clone();
         let query = query.clone();
-        db.run_blocking(move |db| MemoryRetriever::new(db).vector(&query, &vector, &model))
-            .await
-            .map(Some)
+        db.run_blocking(move |db| {
+            MemoryRetriever::new(db).vector(&query, &vector, &identity.storage_model)
+        })
+        .await
+        .map(Some)
     }
 }
 
@@ -283,6 +392,23 @@ mod tests {
         assert_eq!(embedding_batch_size(0), 1);
         assert_eq!(embedding_batch_size(4), 4);
         assert_eq!(embedding_batch_size(64), MAX_EMBEDDING_BATCH_SIZE);
+    }
+
+    #[test]
+    fn embedding_index_model_partitions_same_label_across_endpoints() {
+        let mut first = ModelEndpoint::default();
+        first.provider = "openai".into();
+        first.model_name = "text-embedding-3-small".into();
+        first.base_url = "https://gateway-a.example/v1/".into();
+        let mut second = first.clone();
+        second.base_url = "https://gateway-b.example/v1".into();
+
+        assert_ne!(
+            embedding_index_model(&first),
+            embedding_index_model(&second)
+        );
+        assert!(embedding_index_model(&first).starts_with("embedding-v2:"));
+        assert!(!embedding_index_model(&first).contains("gateway-a"));
     }
 
     #[test]

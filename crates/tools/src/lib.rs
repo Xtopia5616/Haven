@@ -583,7 +583,7 @@ impl ToolsManager {
         self.registry.get(name).await
     }
 
-    /// Build a skill index (raw name + description) for injection into the
+    /// Build a skill index (name + description) for injection into the
     /// system prompt (refine §4.7). The LLM uses `load_skill` to get full
     /// schemas. The raw skill name is shown so the value passed to
     /// `load_skill(skill_name)` matches (the index previously advertised the
@@ -595,8 +595,8 @@ impl ToolsManager {
             .filter(|s| s.enabled)
             .map(|s| {
                 serde_json::json!({
-                    "name": s.name,
-                    "description": s.description,
+                    "name": sanitize_index_field(&s.name),
+                    "description": sanitize_index_field(&s.description),
                 })
             })
             .collect()
@@ -625,24 +625,19 @@ impl ToolsManager {
             // order after reconnect. Keep the cacheable prompt index stable.
             tool_names.sort();
             tool_names.dedup();
+            // Never expose the configured process command or arguments to the
+            // model. Besides being irrelevant to `load_mcp`, args commonly
+            // contain credentials and are untrusted prompt text. The server
+            // name/tool names are enough to choose a server; full schemas are
+            // loaded only after the explicit tool call.
+            let safe_name = sanitize_index_field(&s.name);
             let description = if tool_names.is_empty() {
-                format!(
-                    "MCP server '{}' via {} ({})",
-                    s.name,
-                    s.command,
-                    s.args.join(" ")
-                )
+                format!("MCP server '{safe_name}'")
             } else {
-                format!(
-                    "MCP server '{}' via {} ({}); tools: {}",
-                    s.name,
-                    s.command,
-                    s.args.join(" "),
-                    tool_names.join(", ")
-                )
+                format!("MCP server '{safe_name}'; tools: {}", tool_names.join(", "))
             };
             entries.push(serde_json::json!({
-                "name": s.name.clone(),
+                "name": safe_name,
                 "description": description,
             }));
         }
@@ -911,7 +906,12 @@ impl ToolsManager {
                 Err(e) => {
                     let message = e.to_string();
                     let lower = message.to_ascii_lowercase();
-                    if cancel.is_cancelled() || lower.contains("cancel") {
+                    // Cancellation is a control-plane fact owned by the
+                    // token, not a substring in an arbitrary tool error. A
+                    // normal tool failure such as "cancelled request was
+                    // rejected" must remain Failed so retry/telemetry do not
+                    // treat it as an externally cancelled run.
+                    if cancel.is_cancelled() {
                         ToolResult::cancelled(message)
                     } else if lower.contains("timeout") || lower.contains("timed out") {
                         ToolResult::timed_out(tool.timeout_outcome(), message)
@@ -1082,10 +1082,7 @@ mod tests {
         limits.max_observation_chars = 4;
         mgr.set_context_limits(limits).await;
         let result = ToolResult::ok(json!("123456"));
-        assert_eq!(
-            mgr.observation_text("adapter", &result).await,
-            "1234[... truncated 2 chars omitted]"
-        );
+        assert_eq!(mgr.observation_text("adapter", &result).await, "1234");
     }
 
     #[tokio::test]
@@ -1547,6 +1544,27 @@ mod tests {
         let names: Vec<&str> = index.iter().filter_map(|e| e["name"].as_str()).collect();
         assert!(names.contains(&"on"));
         assert!(!names.contains(&"off"), "disabled server should not appear");
+    }
+
+    #[tokio::test]
+    async fn test_build_mcp_index_does_not_expose_process_args() {
+        use haven_common::config::McpServerConfig;
+
+        let mgr = ToolsManager::new();
+        mgr.upsert_mcp_server_config(McpServerConfig {
+            name: "safe-server".into(),
+            command: "server.exe".into(),
+            args: vec!["--token".into(), "SECRET_SHOULD_NOT_REACH_PROMPT".into()],
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        let index = mgr.build_mcp_index().await;
+        let description = index[0]["description"].as_str().unwrap_or("");
+        assert!(!description.contains("server.exe"));
+        assert!(!description.contains("SECRET_SHOULD_NOT_REACH_PROMPT"));
+        assert!(description.contains("safe-server"));
     }
 
     #[tokio::test]

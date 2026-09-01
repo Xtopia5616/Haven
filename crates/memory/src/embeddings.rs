@@ -611,7 +611,18 @@ impl Database {
         }
         let conn = self.conn();
         let lsh_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM embedding_lsh WHERE entity_type = ?1 AND model = ?2",
+            &format!(
+                "SELECT COUNT(*) FROM embedding_lsh l
+                 WHERE l.entity_type = ?1 AND l.model = ?2
+                   AND EXISTS (
+                       SELECT 1 FROM memory_embeddings e
+                       WHERE e.entity_type = l.entity_type
+                         AND e.entity_id = l.entity_id
+                         AND e.model = l.model
+                         AND {}
+                   )",
+                live_owner_filter("e")
+            ),
             rusqlite::params![entity_type, model],
             |r| r.get(0),
         )?;
@@ -625,12 +636,27 @@ impl Database {
         }
         let conn = self.conn();
         let embeds: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory_embeddings WHERE model = ?1",
+            &format!(
+                "SELECT COUNT(*) FROM memory_embeddings
+                 WHERE model = ?1 AND {}",
+                live_owner_filter("")
+            ),
             rusqlite::params![model],
             |r| r.get(0),
         )?;
         let lsh: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM embedding_lsh WHERE model = ?1",
+            &format!(
+                "SELECT COUNT(*) FROM embedding_lsh l
+                 WHERE l.model = ?1
+                   AND EXISTS (
+                       SELECT 1 FROM memory_embeddings e
+                       WHERE e.entity_type = l.entity_type
+                         AND e.entity_id = l.entity_id
+                         AND e.model = l.model
+                         AND {}
+                   )",
+                live_owner_filter("e")
+            ),
             rusqlite::params![model],
             |r| r.get(0),
         )?;
@@ -1079,6 +1105,32 @@ impl Database {
         ))?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Distinct vector dimensions stored for one model. A model name alone is
+    /// not a sufficient index identity: provider upgrades or endpoint changes
+    /// can keep the name while changing the returned dimension.
+    pub fn list_embedding_dimensions(&self, model: &str) -> anyhow::Result<Vec<usize>> {
+        if model.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT length(vector) FROM memory_embeddings e
+             WHERE model = ?1 AND {}",
+            live_owner_filter("e")
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![model], |row| row.get::<_, i64>(0))?;
+        let mut dimensions = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            if bytes < 0 || bytes % 4 != 0 {
+                anyhow::bail!("stored embedding has invalid vector byte length: {bytes}");
+            }
+            dimensions.push((bytes / 4) as usize);
+        }
+        dimensions.sort_unstable();
+        Ok(dimensions)
     }
 
     /// Drop every stored embedding. Used when the configured embedding model
@@ -1581,6 +1633,18 @@ mod tests {
     }
 
     #[test]
+    fn list_embedding_dimensions_detects_mixed_provider_shapes() {
+        let db = db();
+        insert_fact_with_id(&db, "f1");
+        insert_fact_with_id(&db, "f2");
+        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "x")
+            .unwrap();
+        db.save_embedding(entity_kind::FACT, "f2", "m", &[1.0, 0.0, 0.0], "y")
+            .unwrap();
+        assert_eq!(db.list_embedding_dimensions("m").unwrap(), vec![2, 3]);
+    }
+
+    #[test]
     fn clear_embeddings_drops_everything() {
         let db = db();
         insert_fact_with_id(&db, "f1");
@@ -1875,5 +1939,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bucket, lsh_bucket(&[0.25, 0.75]));
+    }
+
+    #[test]
+    fn lsh_lagging_ignores_orphan_side_rows() {
+        let db = db();
+        insert_fact_with_id(&db, "f1");
+        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "x")
+            .unwrap();
+        db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![entity_kind::FACT, "deleted-fact", "m", 1i64],
+            )
+            .unwrap();
+
+        assert!(
+            db.embedding_lsh_lagging("m").unwrap(),
+            "orphan LSH rows must not make a live embedding partition look complete"
+        );
     }
 }

@@ -15,6 +15,23 @@ use std::collections::{HashMap, HashSet};
 /// Maximum result count accepted by the shared recall contract.
 pub const MAX_RECALL_LIMIT: usize = 20;
 
+/// Maximum query size accepted by memory retrieval. Keeping this bound at the
+/// shared boundary prevents an agent/tool/UI caller from turning a recall into
+/// an unbounded FTS or embedding request.
+pub const MAX_MEMORY_QUERY_CHARS: usize = 2_000;
+
+/// Normalize and validate text used to query memory.
+pub fn normalize_memory_query(text: &str) -> anyhow::Result<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        anyhow::bail!("query is required for memory recall");
+    }
+    if text.chars().count() > MAX_MEMORY_QUERY_CHARS {
+        anyhow::bail!("memory query is too long (max {MAX_MEMORY_QUERY_CHARS} characters)");
+    }
+    Ok(text.to_string())
+}
+
 /// Memory entity domain used by the shared recall contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemoryKind {
@@ -53,12 +70,9 @@ pub struct MemoryQuery {
 
 impl MemoryQuery {
     pub fn new(text: &str, kind: MemoryKind, limit: usize) -> anyhow::Result<Self> {
-        let text = text.trim();
-        if text.is_empty() {
-            anyhow::bail!("query is required for memory recall");
-        }
+        let text = normalize_memory_query(text)?;
         Ok(Self {
-            text: text.to_string(),
+            text,
             kind,
             limit: limit.clamp(1, MAX_RECALL_LIMIT),
             exclude_session_id: None,
@@ -150,7 +164,24 @@ impl<'db> MemoryRetriever<'db> {
     }
 
     pub fn filter_visible_facts(facts: impl IntoIterator<Item = Fact>) -> Vec<Fact> {
-        facts.into_iter().filter(Self::visible_fact).collect()
+        facts
+            .into_iter()
+            .filter_map(|mut fact| {
+                if !Self::visible_fact(&fact) {
+                    return None;
+                }
+                if let Some(source_ref) = fact.source_ref.as_mut()
+                    && !Self::visible_text(&source_ref.snippet)
+                {
+                    // A safe SPO row can still carry a credential-like
+                    // provenance snippet. Redact at the shared boundary so
+                    // IPC, tool output, prompt recall, and future callers do
+                    // not need separate source-ref policies.
+                    source_ref.snippet = "[redacted]".to_string();
+                }
+                Some(fact)
+            })
+            .collect()
     }
 
     pub fn visible_text(text: &str) -> bool {
@@ -165,17 +196,11 @@ impl<'db> MemoryRetriever<'db> {
             MemoryKind::Fact => {
                 let terms = haven_common::text::memory_recall_terms(&query.text);
                 let term_refs = haven_common::text::memory_recall_term_sample(&terms, 6);
-                let facts = self
-                    .db
-                    .search_facts_any(&term_refs, query.limit.saturating_mul(4))?
-                    .into_iter()
-                    .filter(|fact| {
-                        query
-                            .fact_subject
-                            .as_deref()
-                            .is_none_or(|subject| fact.subject == subject)
-                    })
-                    .collect::<Vec<_>>();
+                let facts = self.db.search_facts_any_scoped(
+                    &term_refs,
+                    query.limit.saturating_mul(4),
+                    query.fact_subject.as_deref(),
+                )?;
                 let mut facts = Self::filter_visible_facts(facts);
                 facts.truncate(query.limit);
                 facts
@@ -412,5 +437,63 @@ mod tests {
         assert_eq!(recall.mode, MemoryRecallMode::Keyword);
         assert_eq!(recall.hits[0].entity_id, fact.id);
         assert!(recall.hits[0].model.is_empty());
+    }
+
+    #[test]
+    fn query_boundary_rejects_unbounded_recall_input() {
+        let error = MemoryQuery::new(&"x".repeat(MAX_MEMORY_QUERY_CHARS + 1), MemoryKind::Fact, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("too long"));
+    }
+
+    #[test]
+    fn fact_subject_scope_is_applied_before_candidate_limit() {
+        let db = Database::open_in_memory().unwrap();
+        for index in 0..8 {
+            db.insert_fact(
+                &format!("other-{index}"),
+                "likes",
+                "needle",
+                "user",
+                1.0,
+                &[],
+            )
+            .unwrap();
+        }
+        let target = db
+            .insert_fact("target", "likes", "needle", "user", 0.1, &[])
+            .unwrap();
+
+        let query = MemoryQuery::new("needle", MemoryKind::Fact, 1)
+            .unwrap()
+            .with_fact_subject(Some("target"));
+        let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();
+
+        assert_eq!(recall.hits.len(), 1);
+        assert_eq!(recall.hits[0].entity_id, target.id);
+    }
+
+    #[test]
+    fn visible_fact_redacts_sensitive_provenance_snippets() {
+        let db = Database::open_in_memory().unwrap();
+        let source_ref = crate::repositories::facts::FactSourceRef {
+            message_id: "msg-source".into(),
+            snippet: "password=super-secret".into(),
+        };
+        db.insert_fact_with_source_ref(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.9,
+            &[],
+            Some(&source_ref),
+            1.0,
+        )
+        .unwrap();
+
+        let facts = MemoryRetriever::filter_visible_facts(db.list_facts().unwrap());
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].source_ref.as_ref().unwrap().snippet, "[redacted]");
     }
 }

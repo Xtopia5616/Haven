@@ -64,10 +64,8 @@ pub(crate) fn project_tool_chain_from_steps(
     db: &Database,
     session_id: &str,
     canonical: &mut Vec<CanonicalMessage>,
-) {
-    let Ok(steps) = db.get_session_steps(session_id) else {
-        return;
-    };
+) -> anyhow::Result<()> {
+    let steps = db.get_session_steps(session_id)?;
     let mut projected = 0usize;
     for step in steps {
         let Some(tool) = step.action_tool else {
@@ -111,6 +109,7 @@ pub(crate) fn project_tool_chain_from_steps(
             session_id
         );
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -189,7 +188,7 @@ mod tests {
         }
 
         let mut canonical = Vec::new();
-        project_tool_chain_from_steps(&db, &session.id, &mut canonical);
+        project_tool_chain_from_steps(&db, &session.id, &mut canonical).unwrap();
 
         let call_ids: Vec<_> = canonical
             .iter()

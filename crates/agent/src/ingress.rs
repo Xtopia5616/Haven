@@ -152,11 +152,10 @@ impl AgentLayer {
         // steering/supplement fallback paths below rely on it being on disk.
         // If the session turns out to be terminal, the persisted row is removed
         // again below so history never shows a ghost user message.
-        let mut persisted_msg = None;
-        if let Some(session_id) = active_session_id {
-            match self
+        let mut persisted_msg = if let Some(session_id) = active_session_id.as_ref() {
+            let msg = match self
                 .persist_message_parts(
-                    &session_id,
+                    session_id,
                     "user",
                     transcript,
                     Some("text"),
@@ -165,17 +164,19 @@ impl AgentLayer {
                 )
                 .await
             {
-                Ok(msg) => persisted_msg = Some(msg),
+                Ok(msg) => msg,
                 Err(e) => {
-                    tracing::warn!(
-                        "process_input: failed to persist user message for session {}: {}",
-                        session_id,
-                        e
-                    );
+                    return Err(anyhow::anyhow!(
+                        "failed to persist user message for session {session_id}: {e}"
+                    ));
                 }
-            }
-
-            let state = self.executor.get_session_state(&session_id).await;
+            };
+            Some(msg)
+        } else {
+            None
+        };
+        if let Some(session_id) = active_session_id.as_ref() {
+            let state = self.executor.get_session_state(session_id).await;
 
             // Phase 4 / D1 routing (+ Phase 5 / E3 confirm gate):
             //   Running                 → steering
@@ -191,7 +192,7 @@ impl AgentLayer {
                 && match self
                     .executor
                     .add_steering_with_attachments(
-                        &session_id,
+                        session_id,
                         transcript,
                         attachments,
                         persisted_msg.as_ref().map(|m| m.id.clone()),
@@ -225,18 +226,18 @@ impl AgentLayer {
                 // free-text as the ask reply — confirm must finish first.
                 let confirm_pending = self
                     .executor
-                    .is_confirm_gated_with(&session_id, state.as_ref())
+                    .is_confirm_gated_with(session_id, state.as_ref())
                     .await;
                 let is_answer = !confirm_pending
                     && self
                         .executor
-                        .is_ask_gated_with(&session_id, state.as_ref())
+                        .is_ask_gated_with(session_id, state.as_ref())
                         .await;
                 let message_id = persisted_msg.as_ref().map(|m| m.id.clone());
                 let was_in_memory = if is_answer {
                     self.executor
                         .add_answer_with_attachments(
-                            &session_id,
+                            session_id,
                             transcript,
                             attachments,
                             message_id.clone(),
@@ -246,7 +247,7 @@ impl AgentLayer {
                 } else {
                     self.executor
                         .add_follow_up_with_attachments(
-                            &session_id,
+                            session_id,
                             transcript,
                             attachments,
                             message_id.clone(),
@@ -258,7 +259,7 @@ impl AgentLayer {
                     // Session may be stale/deleted — fall back to creating a new session
                     if self
                         .executor
-                        .ensure_session_loaded(&session_id)
+                        .ensure_session_loaded(session_id)
                         .await
                         .is_err()
                     {
@@ -279,7 +280,7 @@ impl AgentLayer {
                     // were ended on purpose and must be reopened explicitly via
                     // the resume flow — auto-converting them would resurrect a
                     // ghost session.
-                    let fresh_state = self.executor.get_session_state(&session_id).await;
+                    let fresh_state = self.executor.get_session_state(session_id).await;
                     if fresh_state == Some(SessionStatus::Completed)
                         || fresh_state == Some(SessionStatus::Error)
                     {
@@ -315,17 +316,17 @@ impl AgentLayer {
                         let fresh_status =
                             fresh_state.as_ref().map(|s| s.as_str()).unwrap_or("error");
                         self.events
-                            .emit_session_updated(&session_id, fresh_status)
+                            .emit_session_updated(session_id, fresh_status)
                             .await;
                         // Do not keep the reloaded terminal session in the working
                         // set — it was ended and should not be dispatchable.
-                        self.executor.remove_session(&session_id).await;
+                        self.executor.remove_session(session_id).await;
                         return Ok(ProcessResult::supplemented(None));
                     } else {
                         if is_answer {
                             self.executor
                                 .add_answer_with_attachments(
-                                    &session_id,
+                                    session_id,
                                     transcript,
                                     attachments,
                                     message_id.clone(),
@@ -334,7 +335,7 @@ impl AgentLayer {
                         } else {
                             self.executor
                                 .add_follow_up_with_attachments(
-                                    &session_id,
+                                    session_id,
                                     transcript,
                                     attachments,
                                     message_id.clone(),
@@ -345,10 +346,10 @@ impl AgentLayer {
                         // resolve_confirmation finishes the gated batch.
                         let confirm_blocked = self
                             .executor
-                            .is_confirm_gated_with(&session_id, fresh_state.as_ref())
+                            .is_confirm_gated_with(session_id, fresh_state.as_ref())
                             .await;
                         if matches!(fresh_state, Some(s) if s.is_paused()) && !confirm_blocked {
-                            self.set_session_status(&session_id, SessionStatus::Pending)
+                            self.set_session_status(session_id, SessionStatus::Pending)
                                 .await?;
                         }
                     }
@@ -356,10 +357,10 @@ impl AgentLayer {
                 }
                 let confirm_blocked = self
                     .executor
-                    .is_confirm_gated_with(&session_id, state.as_ref())
+                    .is_confirm_gated_with(session_id, state.as_ref())
                     .await;
                 if matches!(state.as_ref(), Some(s) if s.is_paused()) && !confirm_blocked {
-                    self.set_session_status(&session_id, SessionStatus::Pending)
+                    self.set_session_status(session_id, SessionStatus::Pending)
                         .await?;
                 }
             }

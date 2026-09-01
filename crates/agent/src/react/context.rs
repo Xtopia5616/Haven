@@ -203,17 +203,25 @@ impl ContextSource {
         let title = match cached_title {
             Some(title) => title,
             None => {
-                let title = self
+                let title = match self
                     .db
                     .run_blocking({
                         let sid = session_id.to_string();
                         move |db| {
-                            let title = db.get_session(&sid).ok().flatten().and_then(|s| s.title);
+                            let title = db.get_session(&sid)?.and_then(|s| s.title);
                             Ok::<Option<String>, anyhow::Error>(title)
                         }
                     })
                     .await
-                    .unwrap_or(None);
+                {
+                    Ok(title) => title,
+                    Err(error) => {
+                        tracing::warn!(
+                            "failed to load title for messaging heartbeat {session_id}: {error}"
+                        );
+                        None
+                    }
+                };
                 self.messaging
                     .lock()
                     .title_cache
@@ -225,14 +233,25 @@ impl ContextSource {
         let (bus, due) = {
             let mut state = self.messaging.lock();
             let bus = state.bus.clone();
-            state.steps_since_poll += 1;
-            let notified = state.rx.has_changed().unwrap_or(false);
+            let steps = {
+                let steps_since_poll = state
+                    .steps_since_poll
+                    .entry(session_id.to_string())
+                    .or_insert(0);
+                *steps_since_poll += 1;
+                *steps_since_poll
+            };
+            let rx = state
+                .receivers
+                .entry(session_id.to_string())
+                .or_insert_with(|| bus.subscribe());
+            let notified = rx.has_changed().unwrap_or(false);
             if notified {
-                let _ = state.rx.borrow_and_update();
+                let _ = rx.borrow_and_update();
             }
-            let due = notified || state.steps_since_poll >= MESSAGING_POLL_EVERY_STEPS;
+            let due = notified || steps >= MESSAGING_POLL_EVERY_STEPS;
             if due {
-                state.steps_since_poll = 0;
+                state.steps_since_poll.insert(session_id.to_string(), 0);
             }
             (bus, due)
         };

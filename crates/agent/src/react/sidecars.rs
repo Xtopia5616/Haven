@@ -17,23 +17,24 @@ use tokio::sync::watch;
 
 use crate::compactor::estimate_message_tokens;
 
-/// State for the automatic cross-session inbox check, one per engine
-/// (shared across sessions — each session's mailbox is keyed by its own id).
+/// State for the automatic cross-session inbox check, one per engine.
+/// Notification cursors and fallback cadence are per session: the process-wide
+/// inbox notifier is a shared wake-up signal, but consuming session A's signal
+/// must never postpone session B's delivery.
 pub(super) struct MessagingState {
     pub(super) bus: InboxBus,
-    pub(super) rx: watch::Receiver<u64>,
-    pub(super) steps_since_poll: u32,
+    pub(super) receivers: HashMap<String, watch::Receiver<u64>>,
+    pub(super) steps_since_poll: HashMap<String, u32>,
     pub(super) title_cache: HashMap<String, Option<String>>,
 }
 
 impl MessagingState {
     pub(super) fn new() -> Self {
         let bus = InboxBus::default_root();
-        let rx = bus.subscribe();
         Self {
             bus,
-            rx,
-            steps_since_poll: 0,
+            receivers: HashMap::new(),
+            steps_since_poll: HashMap::new(),
             title_cache: HashMap::new(),
         }
     }
@@ -75,7 +76,10 @@ impl MessagingPoller {
 
     /// Drop per-session title cache so finished sessions do not accumulate.
     pub(crate) fn clear_session(&self, session_id: &str) {
-        self.inner.lock().unwrap().title_cache.remove(session_id);
+        let mut state = self.inner.lock().unwrap();
+        state.title_cache.remove(session_id);
+        state.receivers.remove(session_id);
+        state.steps_since_poll.remove(session_id);
         self.heartbeat_inflight.lock().unwrap().remove(session_id);
     }
 }

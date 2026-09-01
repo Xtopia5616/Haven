@@ -197,7 +197,7 @@ impl AgentLayer {
     /// low-confidence flush, embedding pruning, bounded embed catch-up).
     /// Exposed for the app-level scheduler and the manual settings command;
     /// hot-path infer does not call this.
-    pub async fn run_memory_maintenance(&self) -> u64 {
+    pub async fn run_memory_maintenance(&self) -> anyhow::Result<u64> {
         self.inference.run_memory_maintenance().await
     }
 
@@ -453,6 +453,18 @@ impl AgentLayer {
                     let _fire_guard = fire_span.enter();
                     match fired.mode {
                         ScheduleMode::Tool => {
+                            if let Some(session_id) = fired.session_id.as_deref()
+                                && !agent.executor.session_is_live(session_id).await
+                            {
+                                agent
+                                    .events
+                                    .emit_notification(
+                                        &fired.title,
+                                        "Scheduled tool was NOT executed: its session is no longer active.",
+                                    )
+                                    .await;
+                                continue;
+                            }
                             let Some(tool_name) = fired.tool_name else {
                                 agent
                                     .events
@@ -599,6 +611,16 @@ impl AgentLayer {
                                     .await;
                                 continue;
                             };
+                            if !agent.executor.session_is_live(&session_id).await {
+                                agent
+                                    .events
+                                    .emit_notification(
+                                        &fired.title,
+                                        "定时任务无法继续：关联会话已结束或不存在。",
+                                    )
+                                    .await;
+                                continue;
+                            }
                             match agent
                                 .process_input_with_attachments(
                                     &message,

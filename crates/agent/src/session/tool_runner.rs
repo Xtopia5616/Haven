@@ -7,6 +7,28 @@
 use super::*;
 use haven_memory::repositories::session_steps::ActionStepOutcome;
 
+/// The tool may already have produced an external side effect when its final
+/// action-step projection fails. Callers must surface this as an unknown
+/// outcome, never as an ordinary retryable failure.
+#[derive(Debug)]
+pub(crate) struct ActionStepPersistenceError(anyhow::Error);
+
+impl std::fmt::Display for ActionStepPersistenceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "tool executed but action-step persistence failed: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ActionStepPersistenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 fn action_step_outcome(result: &ToolResult) -> ActionStepOutcome {
     match result.outcome {
         haven_tools::ToolExecutionOutcome::Succeeded => ActionStepOutcome::Completed,
@@ -492,6 +514,22 @@ impl SessionExecutor {
         } else {
             Vec::new()
         };
+        let step_number = step_num as i32;
+        // Guard against rollback/cancel: if the session has been removed from the
+        // running set while the tool was executing (e.g. rollback_session marked
+        // it Error and restored a snapshot), skip persisting step records that
+        // would otherwise corrupt the restored state.
+        if !self.running_sessions.lock().await.contains(session_id) {
+            tracing::warn!(
+                "execute_step: session {} left running set during tool execution; skipping step record",
+                session_id
+            );
+            return Ok(result);
+        }
+        // Apply session-local registrations only after the terminal/rollback
+        // fence above. A tool can finish successfully just as its session is
+        // ended; registering its skill/MCP overlay after that point would
+        // leak tools into a dead session and let a late result mutate state.
         for reg in &registrations {
             match reg {
                 haven_tools::ToolRegistration::Skill(name) => {
@@ -504,21 +542,8 @@ impl SessionExecutor {
                         .register_mcp_for_session(session_id, name, None)
                         .await;
                 }
-                // Action is applied after the running-set guard.
                 haven_tools::ToolRegistration::Action(_) => {}
             }
-        }
-        let step_number = step_num as i32;
-        // Guard against rollback/cancel: if the session has been removed from the
-        // running set while the tool was executing (e.g. rollback_session marked
-        // it Error and restored a snapshot), skip persisting step records that
-        // would otherwise corrupt the restored state.
-        if !self.running_sessions.lock().await.contains(session_id) {
-            tracing::warn!(
-                "execute_step: session {} left running set during tool execution; skipping step record",
-                session_id
-            );
-            return Ok(result);
         }
         // Tie a background action to its session so end/rollback can clean it up.
         // Applied only AFTER the running-set guard above passed (a rollback
@@ -573,7 +598,8 @@ impl SessionExecutor {
                 )?;
                 db.finish_action_step(&persist_step_id, &obs, step_outcome)
             })
-            .await?;
+            .await
+            .map_err(|error| anyhow::Error::new(ActionStepPersistenceError(error)))?;
         Ok(result)
     }
 
@@ -768,6 +794,21 @@ impl SessionExecutor {
     }
 
     async fn finish_scheduled_confirm(&self, pending: ScheduledConfirmPending, confirmed: bool) {
+        if confirmed
+            && let Some(session_id) = pending.session_id.as_deref()
+            && !self.session_is_live(session_id).await
+        {
+            if let Some(cb) = self.on_scheduled_confirm_outcome.snap() {
+                cb(
+                    pending.title,
+                    format!(
+                        "Scheduled tool '{}' was NOT executed: its session is no longer active.",
+                        pending.tool_name
+                    ),
+                );
+            }
+            return;
+        }
         let tool_name = pending.tool_name;
         let title = pending.title;
         if !confirmed {

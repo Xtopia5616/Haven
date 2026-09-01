@@ -58,17 +58,25 @@ impl AgentLayer {
     /// (`prompt_builder.build`). Resume does not consume this: the restored
     /// events snapshot is the single authority, and post-snapshot inputs
     /// are recovered by timestamp in `run_session_resumed`.
-    fn load_conversation_history(&self, session_id: &str) -> Vec<ConversationMessage> {
-        self.db
-            .get_session_messages_limit(session_id, self.conversation_window_size)
-            .ok()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| ConversationMessage {
-                role: m.role,
-                content: m.content,
-            })
-            .collect()
+    async fn load_conversation_history(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<ConversationMessage>> {
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        let limit = self.conversation_window_size;
+        db.run_blocking(move |db| {
+            Ok(db
+                .get_session_messages_limit(&sid, limit)?
+                .into_iter()
+                .map(|m| ConversationMessage {
+                    role: m.role,
+                    content: m.content,
+                })
+                .collect())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to load conversation history: {error}"))
     }
 
     /// Dispatcher entrypoint. Looks up the session by id, fills in the
@@ -137,7 +145,7 @@ impl AgentLayer {
 
         // Conversation history and message persistence are keyed by the session
         // itself — there is no separate session indirection anymore.
-        let conv_history = self.load_conversation_history(session_id);
+        let conv_history = self.load_conversation_history(session_id).await?;
 
         // Multimodal: carry the first user message's image attachments into
         // the initial canonical user message so the model sees them from the
@@ -146,25 +154,25 @@ impl AgentLayer {
         // follow-ups are supplements (injected by the ReAct loop at step
         // start) and must NOT be attached to the initial turn or they would
         // be duplicated.
-        let initial_attachments = match self.db.get_session_messages(session_id) {
-            Ok(msgs) => msgs
-                .into_iter()
-                .find(|m| m.role == "user")
-                .filter(|m| !m.attachments.is_empty())
-                .map(|m| m.attachments)
-                .unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!(
-                    "continue_session {}: get_session_messages failed, attachments not restored: {}",
-                    session_id,
-                    e
-                );
-                Vec::new()
-            }
-        };
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        let (initial_attachments, react_state) = db
+            .run_blocking(move |db| {
+                let messages = db.get_session_messages(&sid)?;
+                let attachments = messages
+                    .into_iter()
+                    .find(|m| m.role == "user")
+                    .filter(|m| !m.attachments.is_empty())
+                    .map(|m| m.attachments)
+                    .unwrap_or_default();
+                let react_state = db.get_react_state(&sid)?;
+                Ok((attachments, react_state))
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to load session resume data: {error}"))?;
 
-        let result = match self.db.get_react_state(session_id) {
-            Ok(Some(state_json)) => match ReActSnapshot::from_json(&state_json) {
+        let result = match react_state {
+            Some(state_json) => match ReActSnapshot::from_json(&state_json) {
                 Ok(mut snapshot) => {
                     tracing::info!(
                         "restoring ReAct state for session {} ({} events)",
@@ -285,7 +293,7 @@ impl AgentLayer {
                     ))
                 }
             },
-            Ok(None) => {
+            None => {
                 // No snapshot row: best-effort fresh run +
                 // `project_tool_chain_from_steps` (documented Phase 7 / B4).
                 self.run_session(
@@ -296,22 +304,6 @@ impl AgentLayer {
                     &initial_attachments,
                 )
                 .await
-            }
-            Err(e) => {
-                // Phase 7 / B4 review: IO failure must not soft-fall through to
-                // the snapshot-less projector (forked synthetic ids / lost
-                // ask-confirm). Align with corrupt-body hard-fail; missing row
-                // (`Ok(None)`) remains the only best-effort projector path.
-                tracing::error!(
-                    "failed to read react_state for session {} ({}); refusing resume",
-                    session_id,
-                    e
-                );
-                Err(anyhow::anyhow!(
-                    "session '{}' snapshot is unreadable ({}); cannot resume — retry or start a new session",
-                    session_id,
-                    e
-                ))
             }
         };
 
@@ -345,6 +337,7 @@ impl AgentLayer {
     pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
         self.executor.ensure_session_loaded(session_id).await?;
         let state = self.executor.get_session_state(session_id).await;
+        let mut answer_pending = state == Some(SessionStatus::PausedAwaitingAnswer);
         if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
             // History viewing must not persist a terminal session as active;
             // the memory-only transition only enables a later user action in
@@ -376,22 +369,36 @@ impl AgentLayer {
             session_id
         );
         for message in undelivered {
-            if let Err(error) = self
-                .executor
-                .add_supplement_with_attachments(
-                    session_id,
-                    &message.content,
-                    &message.attachments,
-                    Some(message.id.clone()),
-                )
-                .await
-            {
+            let result = if answer_pending {
+                self.executor
+                    .add_answer_with_attachments(
+                        session_id,
+                        &message.content,
+                        &message.attachments,
+                        Some(message.id.clone()),
+                    )
+                    .await
+            } else {
+                self.executor
+                    .add_supplement_with_attachments(
+                        session_id,
+                        &message.content,
+                        &message.attachments,
+                        Some(message.id.clone()),
+                    )
+                    .await
+            };
+            if let Err(error) = result {
                 tracing::warn!(
                     "reopen_session: failed to re-queue input {} for session {}: {}",
                     message.id,
                     session_id,
                     error
                 );
+            } else if answer_pending {
+                // Only the first recovered message answers the outstanding
+                // question; later messages are ordinary follow-ups.
+                answer_pending = false;
             }
         }
         Ok(())
@@ -458,22 +465,31 @@ impl AgentLayer {
         if let Some(saved_at) = snapshot.saved_at.as_deref()
             && !self.executor.has_pending_context(session_id).await
         {
-            let pending = self
-                .db
-                .get_session_messages_since(session_id, saved_at)
-                .unwrap_or_default();
             // Bound the anchor-less scan to the recovery window so ancient
             // false positives (legacy missing anchors) are never re-injected
             // on first post-upgrade resume. Rows newer than `saved_at` are
             // already covered by `pending` above.
             let since = haven_memory::repositories::messages::undelivered_recovery_since();
-            let undelivered = self
-                .db
-                .get_undelivered_user_messages_since(session_id, Some(since.as_str()))
-                .unwrap_or_default();
+            let db = self.db.clone();
+            let sid = session_id.to_string();
+            let saved_at_for_query = saved_at.to_string();
+            let (pending, undelivered) = db
+                .run_blocking(move |db| {
+                    let pending = db.get_session_messages_since(&sid, &saved_at_for_query)?;
+                    let undelivered =
+                        db.get_undelivered_user_messages_since(&sid, Some(since.as_str()))?;
+                    Ok((pending, undelivered))
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to recover post-snapshot inputs for session {session_id}: {error}"
+                    )
+                })?;
             let mut restored = 0usize;
+            let mut answer_pending = self.executor.is_ask_gated(session_id).await;
             for msg in merge_recovery_candidates(pending, undelivered) {
-                let is_answer = self.executor.is_ask_gated(session_id).await;
+                let is_answer = answer_pending;
                 let queued = if is_answer {
                     self.executor
                         .add_answer_with_attachments(
@@ -495,6 +511,9 @@ impl AgentLayer {
                 };
                 if queued.is_ok() {
                     restored += 1;
+                    if is_answer {
+                        answer_pending = false;
+                    }
                 }
             }
             if restored > 0 {
@@ -616,7 +635,19 @@ impl AgentLayer {
         // result pairs from session_steps via the shared B4 projector.
         // Corrupt snapshots hard-fail in `run_session_from_id` and never
         // reach here.
-        project_tool_chain_from_steps(self.db.as_ref(), session_id, &mut canonical);
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        canonical = db
+            .run_blocking(move |db| {
+                project_tool_chain_from_steps(db, &sid, &mut canonical)?;
+                Ok(canonical)
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to project legacy tool steps for session {session_id}: {error}"
+                )
+            })?;
 
         // Seed events so pause/resume snapshots carry system+user (+ any
         // projected tool chain) as a CompactSummary; later applies append.

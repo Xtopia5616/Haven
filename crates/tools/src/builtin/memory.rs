@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::recall::{
-    MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall, MemoryRetriever,
+    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
+    MemoryRetriever, normalize_memory_query,
 };
 use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
 use serde_json::{Value, json};
@@ -135,7 +136,9 @@ impl MemoryTool {
                     .source_ref
                     .as_ref()
                     .map(|r| r.snippet.trim())
-                    .filter(|s| !s.is_empty() && MemoryRetriever::visible_text(s))
+                    .filter(|s| {
+                        !s.is_empty() && *s != "[redacted]" && MemoryRetriever::visible_text(s)
+                    })
                 {
                     row["source_snippet"] = json!(snippet);
                 }
@@ -152,8 +155,18 @@ impl MemoryTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("query is required for operation=search"))?;
+        let query = normalize_memory_query(query).map_err(|error| {
+            anyhow::anyhow!(
+                "invalid memory search query (max {MAX_MEMORY_QUERY_CHARS} characters): {error}"
+            )
+        })?;
         let limit = Self::parse_limit(params, 10);
-        let mut facts = Self::visible_facts(db.search_facts(query)?);
+        let subject = params
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let mut facts = Self::visible_facts(db.search_facts_scoped(&query, subject)?);
         facts.truncate(limit);
         Ok(ToolResult::ok(Self::to_output_rows(&facts)))
     }
@@ -319,9 +332,10 @@ impl MemoryTool {
     pub async fn run(
         &self,
         params: MemoryParams,
+        session_id: Option<String>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        self.run_with_session(params, None, cancel).await
+        self.run_with_session(params, session_id, cancel).await
     }
 }
 
@@ -901,6 +915,7 @@ mod tests {
                     subject: None,
                     kind: None,
                 },
+                None,
                 CancellationToken::new(),
             )
             .await

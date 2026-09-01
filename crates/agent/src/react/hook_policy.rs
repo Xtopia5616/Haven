@@ -69,12 +69,18 @@ impl LoopHooks for DefaultHooks {
                 .await;
         }
         let has_image = canonical_has_image(&state.canonical);
+        // Resolve the exact per-session tool projection before compaction so
+        // schema tokens participate in the context decision. The turn reuses
+        // the same cached Arc immediately afterwards.
+        let tool_defs = engine
+            .build_tool_definitions_for_session(&ctx.session_id)
+            .await;
         // Phase 7 / I2: compact is a nested phase under before_step. It is
         // deliberately after all context sources and prompt patches have
         // settled, so compaction and the following RequestContext snapshot
         // observe one coherent canonical projection.
         let _ = engine
-            .maybe_compact(ctx, state, has_image)
+            .maybe_compact(ctx, state, has_image, &tool_defs)
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,

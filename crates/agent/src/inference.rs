@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use anyhow::Context as _;
 use haven_common::prompts::{
     COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
     predicate_merge_system_prompt,
@@ -200,8 +201,8 @@ impl InferenceEngine {
     /// Tries LLM-assisted extraction via the BalancedModel first. On any
     /// failure (network error, circuit breaker open, bad JSON) the extraction
     /// is skipped for this window with a non-fatal warning — nothing is
-    /// persisted, and the cursor still advances so a persistent failure does
-    /// not re-analyze the same messages every turn. An empty `Ok([])` from
+    /// persisted, and the cursor stays put so a later run can retry the same
+    /// messages. An empty `Ok([])` from
     /// the LLM is treated as a valid "no facts found" response.
     ///
     /// Extraction is also time-throttled: a run within
@@ -229,15 +230,24 @@ impl InferenceEngine {
         // maintenance pass.
         if !bypass_throttle && self.fact_extraction_min_interval_secs > 0 {
             let last_key = format!("fact_extraction_last_run.{}", session_id);
-            let last_run = self
+            let last_run = match self
                 .db
                 .run_blocking({
                     let key = last_key.clone();
                     move |db| db.get_kv(&key)
                 })
                 .await
-                .ok()
-                .flatten();
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(
+                        "fact inference throttle read failed for session {}: {}",
+                        session_id,
+                        error
+                    );
+                    return;
+                }
+            };
             if let Some(ts) = last_run
                 && let Ok(prev) = chrono::DateTime::parse_from_rfc3339(&ts)
                 && (chrono::Utc::now() - prev.with_timezone(&chrono::Utc)).num_seconds()
@@ -255,18 +265,22 @@ impl InferenceEngine {
 
         let (messages, steps) = {
             let db = self.db.clone();
-            let session_id = session_id.to_string();
+            let session_id_for_db = session_id.to_string();
             match db
                 .run_blocking(move |db| {
-                    let messages = db.get_session_messages(&session_id)?;
-                    let steps = db.get_session_steps(&session_id).unwrap_or_default();
+                    let messages = db.get_session_messages(&session_id_for_db)?;
+                    let steps = db.get_session_steps(&session_id_for_db)?;
                     Ok::<_, anyhow::Error>((messages, steps))
                 })
                 .await
             {
                 Ok(pair) => pair,
-                _ => {
-                    tracing::warn!("fact inference: failed to load messages");
+                Err(error) => {
+                    tracing::warn!(
+                        "fact inference: failed to load transcript for session {}: {}",
+                        session_id,
+                        error
+                    );
                     return;
                 }
             }
@@ -280,15 +294,24 @@ impl InferenceEngine {
         // context so short confirmations and tool-grounded replies stay
         // aligned with the model's recent vision — not a full transcript.
         let cursor_key = format!("fact_extraction.{}", session_id);
-        let cursor = self
+        let cursor = match self
             .db
             .run_blocking({
                 let key = cursor_key.clone();
                 move |db| db.get_kv(&key)
             })
             .await
-            .ok()
-            .flatten();
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    "fact inference cursor read failed for session {}: {}",
+                    session_id,
+                    error
+                );
+                return;
+            }
+        };
         let window = build_extraction_window(&messages, cursor.as_deref(), &steps);
         if window.messages.is_empty() {
             tracing::debug!("fact inference: no new messages since cursor");
@@ -297,12 +320,19 @@ impl InferenceEngine {
             if let Some(last) = window.cursor_last {
                 let db = self.db.clone();
                 let key = cursor_key.clone();
-                let _ = db
+                if let Err(error) = db
                     .run_blocking(move |db| {
                         db.set_kv(&key, &last)?;
                         Ok::<(), anyhow::Error>(())
                     })
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        "fact inference cursor advance failed for session {}: {}",
+                        session_id,
+                        error
+                    );
+                }
             }
             return;
         }
@@ -315,35 +345,57 @@ impl InferenceEngine {
             let db = self.db.clone();
             let key = format!("fact_extraction_last_run.{}", session_id);
             let now = chrono::Utc::now().to_rfc3339();
-            let _ = db
+            if let Err(error) = db
                 .run_blocking(move |db| {
                     db.set_kv(&key, &now)?;
                     Ok::<(), anyhow::Error>(())
                 })
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    "fact inference throttle stamp failed for session {}; skipping LLM call: {}",
+                    session_id,
+                    error
+                );
+                return;
+            }
         }
 
-        match self.infer_facts_with_llm(&window.messages).await {
+        let extraction_succeeded = match self.infer_facts_with_llm(&window.messages).await {
             Ok(facts) if !facts.is_empty() => {
-                let wrote = self.persist_facts(&facts, &window.messages).await;
-                if wrote {
-                    self.mark_memory_dirty(session_id);
+                match self.persist_facts(&facts, &window.messages).await {
+                    Ok(wrote) => {
+                        if wrote {
+                            self.mark_memory_dirty(session_id);
+                        }
+                        true
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "fact persistence failed for session {}, keeping extraction cursor unchanged: {}",
+                            session_id,
+                            error
+                        );
+                        false
+                    }
                 }
             }
             Ok(_) => {
                 tracing::debug!("LLM found no facts in session {}", session_id);
+                true
             }
             Err(e) => {
-                // Non-fatal: skip extraction for this window. The extraction
-                // cursor is still advanced below so a persistent failure does
-                // not re-analyze the same messages every turn; the maintenance
-                // pass keeps memory consistent regardless.
                 tracing::warn!(
-                    "LLM fact extraction failed for session {}, skipping: {}",
+                    "LLM fact extraction failed for session {}, keeping extraction cursor unchanged: {}",
                     session_id,
                     e
                 );
+                false
             }
+        };
+
+        if !extraction_succeeded {
+            return;
         }
 
         // Advance the cursor so the next run only sees brand-new user messages.
@@ -379,19 +431,24 @@ impl InferenceEngine {
     /// Returns the sum of rows touched by dedup / sensitive / flush / prune /
     /// contradiction demotes / predicate rewrites (cursor cleanup and embed
     /// catch-up are best-effort and not counted).
-    pub async fn run_memory_maintenance(&self) -> u64 {
+    pub async fn run_memory_maintenance(&self) -> anyhow::Result<u64> {
         let db = self.db.clone();
         let cleaned = db
             .run_blocking(move |db| {
                 let mut total = 0u64;
+                let mut failures = Vec::new();
                 match db.dedup_facts() {
                     Ok(n) => total += n,
-                    Err(e) => tracing::warn!("memory maintenance: dedup_facts failed: {}", e),
+                    Err(e) => {
+                        tracing::warn!("memory maintenance: dedup_facts failed: {}", e);
+                        failures.push(format!("dedup_facts: {e}"));
+                    }
                 }
                 match db.delete_sensitive_facts() {
                     Ok(n) => total += n,
                     Err(e) => {
-                        tracing::error!("memory maintenance: delete_sensitive_facts failed: {}", e)
+                        tracing::error!("memory maintenance: delete_sensitive_facts failed: {}", e);
+                        failures.push(format!("delete_sensitive_facts: {e}"));
                     }
                 }
                 // X5: demote recent polarity / single-valued losers that
@@ -408,42 +465,57 @@ impl InferenceEngine {
                         total += n;
                     }
                     Err(e) => {
-                        tracing::warn!("memory maintenance: resolve_contradictions failed: {}", e)
+                        tracing::warn!("memory maintenance: resolve_contradictions failed: {}", e);
+                        failures.push(format!("resolve_contradictions: {e}"));
                     }
                 }
                 match db.flush_low_confidence(0.3) {
                     Ok(n) => total += n,
                     Err(e) => {
-                        tracing::warn!("memory maintenance: flush_low_confidence failed: {}", e)
+                        tracing::warn!("memory maintenance: flush_low_confidence failed: {}", e);
+                        failures.push(format!("flush_low_confidence: {e}"));
                     }
                 }
                 match db.prune_orphaned_embeddings() {
                     Ok(n) => total += n,
-                    Err(e) => tracing::warn!(
-                        "memory maintenance: prune_orphaned_embeddings failed: {}",
-                        e
-                    ),
+                    Err(e) => {
+                        tracing::warn!(
+                            "memory maintenance: prune_orphaned_embeddings failed: {}",
+                            e
+                        );
+                        failures.push(format!("prune_orphaned_embeddings: {e}"));
+                    }
                 }
                 if let Err(e) = db.cleanup_orphan_extraction_cursors() {
                     tracing::warn!(
                         "memory maintenance: cleanup_orphan_extraction_cursors failed: {}",
                         e
                     );
+                    failures.push(format!("cleanup_orphan_extraction_cursors: {e}"));
                 }
                 // provenance_item_id is FK ON DELETE SET NULL; opaque
                 // provenance_record_id values are intentional transcript refs.
                 // Still normalize empty record ids.
                 match db.cleanup_orphan_source_refs() {
                     Ok(n) => total += n,
-                    Err(e) => tracing::warn!(
-                        "memory maintenance: cleanup_orphan_source_refs failed: {}",
-                        e
-                    ),
+                    Err(e) => {
+                        tracing::warn!(
+                            "memory maintenance: cleanup_orphan_source_refs failed: {}",
+                            e
+                        );
+                        failures.push(format!("cleanup_orphan_source_refs: {e}"));
+                    }
                 }
-                Ok::<u64, anyhow::Error>(total)
+                if failures.is_empty() {
+                    Ok(total)
+                } else {
+                    Err(anyhow::anyhow!(
+                        "memory maintenance failed: {}",
+                        failures.join("; ")
+                    ))
+                }
             })
-            .await
-            .unwrap_or(0);
+            .await?;
         let merged = self.merge_predicates_with_llm().await;
         // Alias merges can create new single-valued multi-object conflicts;
         // re-run the rule keeper before LLM arbitration so merge-created
@@ -468,10 +540,10 @@ impl InferenceEngine {
         // Rebuild LSH only when the side table lags the embedding rows (M5).
         self.embedding_index.embed_new_memory().await;
         self.embedding_index.rebuild_lsh_if_lagging().await;
-        cleaned
+        Ok(cleaned
             .saturating_add(merged)
             .saturating_add(resolved_after_merge)
-            .saturating_add(arbitrated)
+            .saturating_add(arbitrated))
     }
 
     /// Maintenance LLM pass (X5): residual contradiction groups after the
@@ -720,12 +792,12 @@ impl InferenceEngine {
     /// Persist a batch of LLM-extracted facts. `messages` is the extraction
     /// window (may include assistant+user pairs); `message_index` resolves to
     /// a user line when possible for `FactSourceRef` (M1).
-    /// Returns `true` when at least one fact was inserted/reinforced/corrected.
+    /// Returns whether persistence completed and whether it changed memory.
     async fn persist_facts(
         &self,
         facts: &[LlmFact],
         messages: &[haven_memory::repositories::messages::Message],
-    ) -> bool {
+    ) -> anyhow::Result<bool> {
         let batch: Vec<FactDraft> = facts
             .iter()
             .map(|f| {
@@ -754,7 +826,7 @@ impl InferenceEngine {
     /// inlined here — it runs on the app scheduler via
     /// `run_memory_maintenance`, so the ReAct hot path never pays for a
     /// full-table sweep after every extract.
-    async fn persist_fact_batch(&self, facts: Vec<FactDraft>) -> bool {
+    async fn persist_fact_batch(&self, facts: Vec<FactDraft>) -> anyhow::Result<bool> {
         let db = self.db.clone();
         let sanitize_max = self.sanitize_max_chars;
         // Hard floor for NEW facts entering long-term memory. The extraction
@@ -813,12 +885,7 @@ impl InferenceEngine {
                 .iter()
                 .map(|(s, _, _, _, _, _, _)| s.as_str())
                 .collect();
-            let (existing_triples, existing_pairs) = db
-                .facts_exist_batch(&subjects)
-                // Fail in the same direction as the per-fact queries they
-                // replace: on error, nothing exists -> the confidence
-                // floor applies.
-                .unwrap_or_default();
+            let (existing_triples, existing_pairs) = db.facts_exist_batch(&subjects)?;
             for (subject, predicate, object, confidence, tags_raw, src_ref, durability) in
                 candidates
             {
@@ -862,20 +929,17 @@ impl InferenceEngine {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "fact inference: failed to persist fact '{} {} {}': {}",
-                            subject,
-                            predicate,
-                            object,
-                            e
-                        );
+                        return Err(e).context(format!(
+                            "failed to persist fact '{} {} {}'",
+                            subject, predicate, object
+                        ));
                     }
                 }
             }
             Ok::<bool, anyhow::Error>(wrote)
         })
         .await
-        .unwrap_or(false)
+        .map_err(|error| anyhow::anyhow!("fact batch persistence failed: {error}"))
     }
 
     /// Send the conversation transcript to the BalancedModel and ask it to
@@ -1017,7 +1081,8 @@ impl InferenceEngine {
                     .await
                 {
                     SummaryExtractOutcome::Done => return,
-                    SummaryExtractOutcome::Throttled { wait_secs } => {
+                    SummaryExtractOutcome::Throttled { wait_secs }
+                    | SummaryExtractOutcome::Retryable { wait_secs } => {
                         tracing::debug!(
                             session = %session_id,
                             episode = %episode_id,
@@ -1040,8 +1105,8 @@ impl InferenceEngine {
     /// Light extraction from a CompactSummary episode (M3). Respects the
     /// shared extraction time throttle and an episode cursor
     /// (`fact_extraction_episode.{session_id}`); never touches the user
-    /// message cursor. Throttle returns [`SummaryExtractOutcome::Throttled`]
-    /// without advancing the episode cursor so the caller can retry.
+    /// message cursor. Throttle and transient failures return without advancing
+    /// the episode cursor so the caller can retry.
     pub async fn infer_facts_from_summary(
         &self,
         session_id: &str,
@@ -1061,15 +1126,24 @@ impl InferenceEngine {
             return SummaryExtractOutcome::Done;
         }
         let episode_cursor_key = format!("fact_extraction_episode.{}", session_id);
-        let last_episode = self
+        let last_episode = match self
             .db
             .run_blocking({
                 let key = episode_cursor_key.clone();
                 move |db| db.get_kv(&key)
             })
             .await
-            .ok()
-            .flatten();
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    "summary fact extraction cursor read failed for session {}: {}",
+                    session_id,
+                    error
+                );
+                return SummaryExtractOutcome::Retryable { wait_secs: 1 };
+            }
+        };
         if last_episode.as_deref() == Some(episode_id) {
             return SummaryExtractOutcome::Done;
         }
@@ -1077,15 +1151,24 @@ impl InferenceEngine {
         // cannot bypass the interval and spam the balanced model.
         if self.fact_extraction_min_interval_secs > 0 {
             let last_key = format!("fact_extraction_last_run.{}", session_id);
-            let last_run = self
+            let last_run = match self
                 .db
                 .run_blocking({
                     let key = last_key.clone();
                     move |db| db.get_kv(&key)
                 })
                 .await
-                .ok()
-                .flatten();
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(
+                        "summary fact extraction throttle read failed for session {}: {}",
+                        session_id,
+                        error
+                    );
+                    return SummaryExtractOutcome::Retryable { wait_secs: 1 };
+                }
+            };
             if let Some(ts) = last_run
                 && let Ok(prev) = chrono::DateTime::parse_from_rfc3339(&ts)
             {
@@ -1099,12 +1182,20 @@ impl InferenceEngine {
             }
             let db = self.db.clone();
             let now = chrono::Utc::now().to_rfc3339();
-            let _ = db
+            if let Err(error) = db
                 .run_blocking(move |db| {
                     db.set_kv(&last_key, &now)?;
                     Ok::<(), anyhow::Error>(())
                 })
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    "summary fact extraction throttle stamp failed for session {}: {}",
+                    session_id,
+                    error
+                );
+                return SummaryExtractOutcome::Retryable { wait_secs: 1 };
+            }
         }
 
         let synthetic = haven_memory::repositories::messages::Message {
@@ -1127,9 +1218,20 @@ impl InferenceEngine {
             .await
         {
             Ok(facts) if !facts.is_empty() => {
-                let wrote = self
+                let wrote = match self
                     .persist_facts(&facts, std::slice::from_ref(&synthetic))
-                    .await;
+                    .await
+                {
+                    Ok(wrote) => wrote,
+                    Err(error) => {
+                        tracing::warn!(
+                            "summary fact persistence failed for session {}, keeping episode cursor unchanged: {}",
+                            session_id,
+                            error
+                        );
+                        return SummaryExtractOutcome::Retryable { wait_secs: 1 };
+                    }
+                };
                 if wrote {
                     self.mark_memory_dirty(session_id);
                 }
@@ -1142,10 +1244,11 @@ impl InferenceEngine {
             }
             Err(e) => {
                 tracing::warn!(
-                    "LLM summary fact extraction failed for session {}, skipping: {}",
+                    "LLM summary fact extraction failed for session {}, keeping episode cursor unchanged: {}",
                     session_id,
                     e
                 );
+                return SummaryExtractOutcome::Retryable { wait_secs: 1 };
             }
         }
 
@@ -1164,6 +1267,7 @@ impl InferenceEngine {
                 session_id,
                 e
             );
+            return SummaryExtractOutcome::Retryable { wait_secs: 1 };
         }
         SummaryExtractOutcome::Done
     }
@@ -1174,6 +1278,7 @@ impl InferenceEngine {
 pub enum SummaryExtractOutcome {
     Done,
     Throttled { wait_secs: u64 },
+    Retryable { wait_secs: u64 },
 }
 
 #[cfg(test)]
@@ -1921,13 +2026,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn infer_facts_llm_failure_skips_and_advances_cursor() {
+    async fn infer_facts_llm_failure_keeps_cursor_for_retry() {
         // Balanced model reply is not valid JSON -> extraction fails. The
-        // failure is non-fatal: nothing is persisted, and the cursor still
-        // advances so the same messages are not re-analyzed next turn.
+        // failure is non-fatal, but the cursor stays behind so a later run can
+        // retry instead of silently losing the message window.
         let db = temp_db();
         let session = db.create_session("t1", "").unwrap();
-        let m1 = db
+        let _m1 = db
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
         let router = mock_router("not a json array");
@@ -1955,7 +2060,7 @@ mod tests {
         let cursor: Option<String> = db
             .get_kv(&format!("fact_extraction.{}", session.id))
             .unwrap();
-        assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
+        assert_eq!(cursor, None);
     }
 
     #[test]

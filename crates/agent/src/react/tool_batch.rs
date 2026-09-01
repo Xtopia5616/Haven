@@ -11,6 +11,7 @@ use super::tool_batch_policy::{
     empty_inbox_output, is_agent_inbox_call, is_retryable_failure_outcome,
 };
 use super::*;
+use crate::session::ActionStepPersistenceError;
 use crate::types::Action;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
@@ -333,7 +334,11 @@ pub(super) async fn execute_tool_action(
                 (
                     error.to_string(),
                     true,
-                    ToolExecutionOutcome::Failed,
+                    if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
+                        ToolExecutionOutcome::TimedOutUnknown
+                    } else {
+                        ToolExecutionOutcome::Failed
+                    },
                     None,
                     Vec::new(),
                     None,

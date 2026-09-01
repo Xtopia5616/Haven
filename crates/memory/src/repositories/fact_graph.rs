@@ -12,6 +12,7 @@ use super::facts::{
 };
 use crate::db::Database;
 use chrono::Utc;
+use rusqlite::OptionalExtension;
 
 const CONTRADICTION_DEMOTE_FACTOR: f64 = super::facts::CONTRADICTION_DEMOTE_FACTOR;
 
@@ -143,12 +144,51 @@ impl<'db> FactGraph<'db> {
                 rusqlite::params![refer.message_id],
                 |_| Ok(true),
             )
-            .unwrap_or(false);
+            .optional()?
+            .is_some();
         if in_items {
             Ok((Some(refer.message_id.clone()), None, snippet))
         } else {
             Ok((None, Some(refer.message_id.clone()), snippet))
         }
+    }
+
+    fn insert_user_row(
+        conn: &rusqlite::Connection,
+        subject: &str,
+        subject_id: &str,
+        predicate: &str,
+        object: &str,
+        object_id: &str,
+        tags: &[&str],
+    ) -> anyhow::Result<Fact> {
+        let id = haven_common::types::new_id("fact");
+        let now = Utc::now().to_rfc3339();
+        let tags_json = serialize_tags(tags);
+        conn.execute(
+            "INSERT INTO memory_edges (
+                id, subject, subject_id, predicate, object, object_id,
+                source, confidence, created_at, tags, mention_count, last_seen_at,
+                durability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'user', 1.0, ?7, ?8, 0, ?7, 1.0)",
+            rusqlite::params![
+                id, subject, subject_id, predicate, object, object_id, now, tags_json
+            ],
+        )?;
+        Ok(Fact {
+            id,
+            subject: subject.into(),
+            predicate: predicate.into(),
+            object: object.into(),
+            source: "user".into(),
+            confidence: 1.0,
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            created_at: now.clone(),
+            mention_count: 0,
+            last_seen_at: Some(now),
+            source_ref: None,
+            durability: 1.0,
+        })
     }
 
     /// Store a fact explicitly stated by the user. User facts are
@@ -161,22 +201,27 @@ impl<'db> FactGraph<'db> {
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
-        let triple_exists: Option<Fact> = {
-            let conn = self.db.conn();
-            conn.query_row(
-                &format!(
-                    "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
-                ),
-                rusqlite::params![subject, predicate, object],
-                fact_from_row,
-            )
-            .ok()
-        };
-        if let Some(existing) = triple_exists {
-            if existing.source == "user" {
+        // Resolve node ids before opening the edge transaction. Node creation is
+        // independently idempotent; the transaction below makes the user-edge
+        // replacement itself atomic, so a failed insert cannot leave a missing
+        // single-valued fact after the old value was deleted.
+        let subject_id = self.db.ensure_node(node_kind_for_label(subject), subject)?;
+        let object_id = self.db.ensure_node(node_kind_for_label(object), object)?;
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<(Fact, bool)> {
+            let existing: Option<Fact> = conn
+                .query_row(
+                    &format!(
+                        "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
+                    ),
+                    rusqlite::params![subject, predicate, object],
+                    fact_from_row,
+                )
+                .optional()?;
+            if let Some(existing) = existing {
                 let now = Utc::now().to_rfc3339();
-                {
-                    let conn = self.db.conn();
+                if existing.source == "user" {
                     conn.execute(
                         "UPDATE memory_edges
                          SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0,
@@ -184,45 +229,61 @@ impl<'db> FactGraph<'db> {
                          WHERE id = ?2",
                         rusqlite::params![now, existing.id],
                     )?;
+                    let mut fact = existing;
+                    fact.confidence = 1.0;
+                    fact.durability = 1.0;
+                    fact.mention_count += 1;
+                    fact.last_seen_at = Some(now);
+                    return Ok((fact, true));
                 }
-                self.db.cache_invalidate_facts(subject);
-                self.db
-                    .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-                let mut fact = existing;
-                fact.confidence = 1.0;
-                fact.durability = 1.0;
-                fact.mention_count += 1;
-                fact.last_seen_at = Some(now);
-                return Ok(fact);
-            }
-            let now = Utc::now().to_rfc3339();
-            {
-                let conn = self.db.conn();
                 conn.execute(
-                    "UPDATE memory_edges SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0 WHERE id = ?2",
+                    "UPDATE memory_edges
+                     SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0
+                     WHERE id = ?2",
                     rusqlite::params![now, existing.id],
                 )?;
+                let mut fact = existing;
+                fact.source = "user".into();
+                fact.confidence = 1.0;
+                fact.durability = 1.0;
+                fact.last_seen_at = Some(now);
+                return Ok((fact, true));
             }
-            self.db.cache_invalidate_facts(subject);
-            self.db
-                .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-            let mut fact = existing;
-            fact.source = "user".into();
-            fact.confidence = 1.0;
-            fact.durability = 1.0;
-            fact.last_seen_at = Some(now);
-            return Ok(fact);
-        }
-        if is_single_valued_predicate(&predicate) {
-            let conn = self.db.conn();
-            conn.execute(
-                "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2",
-                rusqlite::params![subject, predicate],
+            let replaced = if is_single_valued_predicate(&predicate) {
+                conn.execute(
+                    "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2",
+                    rusqlite::params![subject, predicate],
+                )? > 0
+            } else {
+                false
+            };
+            let fact = Self::insert_user_row(
+                &conn,
+                subject,
+                &subject_id,
+                &predicate,
+                object,
+                &object_id,
+                tags,
             )?;
+            Ok((fact, replaced))
+        })();
+        let result = match result {
+            Ok(result) => {
+                conn.execute_batch("COMMIT")?;
+                result
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        };
+        self.db.cache_invalidate_facts(subject);
+        if result.1 {
             self.db
                 .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
-        self.insert(subject, &predicate, object, "user", 1.0, tags)
+        Ok(result.0)
     }
 
     pub(crate) fn delete_by_triple(
@@ -267,7 +328,7 @@ impl<'db> FactGraph<'db> {
                 rusqlite::params![subject, predicate, object],
                 fact_from_row,
             )
-            .ok()
+            .optional()?
         };
         if let Some(existing) = existing {
             return Ok(existing);
@@ -303,7 +364,7 @@ impl<'db> FactGraph<'db> {
                     rusqlite::params![subject, predicate, object],
                     fact_from_row,
                 )
-                .ok();
+                .optional()?;
             if let Some(existing) = existing {
                 let boosted = (existing.confidence * 1.05).min(1.0).max(confidence);
                 let merged_durability = existing.durability.max(durability).clamp(0.0, 1.0);
@@ -353,8 +414,8 @@ impl<'db> FactGraph<'db> {
                         rusqlite::params![subject, predicate, object],
                         |r| r.get::<_, i32>(0),
                     )
-                    .map(|_| true)
-                    .unwrap_or(false);
+                    .optional()?
+                    .is_some();
                 if has_user_value && source == "inferred" {
                     return Ok(UpsertOutcome::Skipped);
                 }
@@ -404,7 +465,7 @@ impl<'db> FactGraph<'db> {
                 rusqlite::params![id],
                 |r| r.get(0),
             )
-            .ok();
+            .optional()?;
         conn.execute(
             "DELETE FROM memory_edges WHERE id = ?1",
             rusqlite::params![id],

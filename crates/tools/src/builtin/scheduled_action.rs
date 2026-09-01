@@ -122,6 +122,9 @@ struct ScheduledActionEntry {
 /// delivery mechanism while the app runs; the DB is the source of truth.
 pub struct ScheduledActionCenter {
     scheduled_actions: RwLock<HashMap<String, ScheduledActionEntry>>,
+    /// Serializes schedule mutations so cap checks, persistence, firing and
+    /// cancellation form one ordering without holding the map lock across I/O.
+    mutation_gate: tokio::sync::Mutex<()>,
     fired_tx: tokio::sync::mpsc::UnboundedSender<ScheduledActionFired>,
     fired_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ScheduledActionFired>>>,
     /// Persistent store; `None` in headless/test builds (in-memory only).
@@ -149,6 +152,7 @@ impl ScheduledActionCenter {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             scheduled_actions: RwLock::new(HashMap::new()),
+            mutation_gate: tokio::sync::Mutex::new(()),
             fired_tx: tx,
             fired_rx: Mutex::new(Some(rx)),
             db: RwLock::new(None),
@@ -217,24 +221,37 @@ impl ScheduledActionCenter {
     /// `ScheduledActionFired` payload, and persist the fired flag. Shared by the
     /// overdue re-arm path (`restore_pending`) and the action-watch timer.
     async fn fire_entry(self: &Arc<Self>, id: &str) {
-        let mut scheduled_actions = self.scheduled_actions.write().await;
-        if let Some(entry) = scheduled_actions.get_mut(id)
-            && !entry.fired
-        {
+        let entry = {
+            let _mutation = self.mutation_gate.lock().await;
+            let mut scheduled_actions = self.scheduled_actions.write().await;
+            let Some(entry) = scheduled_actions.get_mut(id) else {
+                return;
+            };
+            if entry.fired {
+                return;
+            }
             entry.fired = true;
-            self.emit_fired(id, entry);
-            let _ = self.fired_tx.send(ScheduledActionFired {
-                action_id: id.to_string(),
-                title: entry.title.clone(),
-                body: entry.body.clone(),
-                mode: entry.mode,
-                session_id: entry.session_id.clone(),
-                tool_name: entry.tool_name.clone(),
-                tool_args: entry.tool_args.clone(),
-                prompt: entry.prompt.clone(),
-            });
-            if let Some(db) = self.db.read().await.as_ref() {
-                let _ = db.mark_scheduled_action_fired(id);
+            entry.clone()
+        };
+
+        self.emit_fired(id, &entry);
+        let _ = self.fired_tx.send(ScheduledActionFired {
+            action_id: id.to_string(),
+            title: entry.title.clone(),
+            body: entry.body.clone(),
+            mode: entry.mode,
+            session_id: entry.session_id.clone(),
+            tool_name: entry.tool_name.clone(),
+            tool_args: entry.tool_args.clone(),
+            prompt: entry.prompt.clone(),
+        });
+        if let Some(db) = self.db.read().await.clone() {
+            let action_id = id.to_string();
+            if let Err(e) = db
+                .run_blocking(move |db| db.mark_scheduled_action_fired(&action_id))
+                .await
+            {
+                tracing::warn!(action_id = %id, "failed to persist scheduled action fired state: {e}");
             }
         }
     }
@@ -252,9 +269,17 @@ impl ScheduledActionCenter {
         let Some(db) = self.db.read().await.clone() else {
             return 0;
         };
-        let Ok(rows) = db.list_pending_scheduled_actions() else {
-            return 0;
+        let rows = match db
+            .run_blocking(|db| db.list_pending_scheduled_actions())
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("restore_pending: failed to load scheduled actions: {e}");
+                return 0;
+            }
         };
+        let _mutation = self.mutation_gate.lock().await;
         let now = chrono::Utc::now();
         let mut overdue = 0usize;
         for row in rows {
@@ -303,7 +328,13 @@ impl ScheduledActionCenter {
                     .insert(row.id.clone(), entry.clone());
                 self.emit_fired(&row.id, &entry);
                 let _ = self.fired_tx.send(fired_payload);
-                let _ = db.mark_scheduled_action_fired(&row.id);
+                let action_id = row.id.clone();
+                if let Err(e) = db
+                    .run_blocking(move |db| db.mark_scheduled_action_fired(&action_id))
+                    .await
+                {
+                    tracing::warn!(action_id = %row.id, "restore_pending: failed to persist fired state: {e}");
+                }
                 overdue += 1;
             } else {
                 let center = self.clone();
@@ -432,44 +463,56 @@ impl ScheduledActionCenter {
 
         let id = haven_common::types::new_id("act");
         let due_at_rfc = due.map(|d| d.to_rfc3339()).unwrap_or_default();
+        let _mutation = self.mutation_gate.lock().await;
+        let max_scheduled_actions = *self.max_scheduled_actions.read().await;
         {
             let mut scheduled_actions = self.scheduled_actions.write().await;
             // Reap fired entries so they never occupy the cap.
             scheduled_actions.retain(|_, e| !e.fired);
-            if scheduled_actions.len() >= *self.max_scheduled_actions.read().await {
+            if scheduled_actions.len() >= max_scheduled_actions {
                 anyhow::bail!(
                     "too many pending scheduled_actions (limit {}); cancel some first",
-                    *self.max_scheduled_actions.read().await
+                    max_scheduled_actions
                 );
             }
-            // Persist BEFORE inserting into memory so a failed DB write
-            // aborts the whole `set` with an explicit error (the scheduled_action
-            // would otherwise silently exist only in memory and vanish on
-            // restart — the DB is the source of truth). The write lock is
-            // held across the insert, so the cap check above and the insert
-            // below cannot be interleaved by a concurrent `set`.
-            // Action-watch scheduled_actions skip the DB entirely: the watched action
-            // cannot survive a restart, so persisting them would just leave
-            // dangling rows that restore_pending could never satisfy.
-            if watch_action_id.is_none()
-                && let Some(db) = self.db.read().await.as_ref()
-            {
-                let args_json = tool_args.as_ref().map(|v| v.to_string());
+        }
+        // Persist BEFORE inserting into memory so a failed DB write aborts the
+        // whole `set` with an explicit error. The mutation gate keeps the cap
+        // check and insert ordered with concurrent set/cancel/fire operations;
+        // the map lock itself is not held across SQLite I/O.
+        // Action-watch scheduled_actions skip the DB entirely: the watched action
+        // cannot survive a restart, so persisting them would just leave dangling
+        // rows that restore_pending could never satisfy.
+        if watch_action_id.is_none()
+            && let Some(db) = self.db.read().await.clone()
+        {
+            let action_id = id.clone();
+            let due_at = due_at_rfc.clone();
+            let title_for_db = title.clone();
+            let body_for_db = body.clone();
+            let mode = mode.as_str().to_string();
+            let session_id = session_id.clone();
+            let tool_name = tool_name.clone();
+            let args_json = tool_args.as_ref().map(|v| v.to_string());
+            let prompt = prompt.clone();
+            db.run_blocking(move |db| {
                 db.save_scheduled_action(
-                    &id,
-                    &due_at_rfc,
-                    &title,
-                    &body,
-                    mode.as_str(),
+                    &action_id,
+                    &due_at,
+                    &title_for_db,
+                    &body_for_db,
+                    &mode,
                     session_id.as_deref(),
                     tool_name.as_deref(),
                     args_json.as_deref(),
                     prompt.as_deref(),
                 )
-                .map_err(|e| {
-                    anyhow::anyhow!("failed to persist scheduled_action '{}': {}", id, e)
-                })?;
-            }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to persist scheduled_action '{}': {e}", id))?;
+        }
+        {
+            let mut scheduled_actions = self.scheduled_actions.write().await;
             scheduled_actions.insert(
                 id.clone(),
                 ScheduledActionEntry {
@@ -535,16 +578,20 @@ impl ScheduledActionCenter {
             if status["status"].as_str() == Some("running") {
                 continue;
             }
-            let mut scheduled_actions = self.scheduled_actions.write().await;
-            let Some(entry) = scheduled_actions.get_mut(&id) else {
-                return;
-            };
-            if entry.fired {
-                return;
-            }
-            entry.fired = true;
             let prompt = action_finished_prompt(action_id, &status);
-            self.emit_fired(&id, entry);
+            let entry = {
+                let _mutation = self.mutation_gate.lock().await;
+                let mut scheduled_actions = self.scheduled_actions.write().await;
+                let Some(entry) = scheduled_actions.get_mut(&id) else {
+                    return;
+                };
+                if entry.fired {
+                    return;
+                }
+                entry.fired = true;
+                entry.clone()
+            };
+            self.emit_fired(&id, &entry);
             let _ = self.fired_tx.send(ScheduledActionFired {
                 action_id: id.clone(),
                 title: entry.title.clone(),
@@ -561,10 +608,23 @@ impl ScheduledActionCenter {
 
     /// List pending (not yet fired) scheduled_actions, newest first.
     pub async fn list(&self) -> Vec<Value> {
+        self.list_scoped(None).await
+    }
+
+    /// List pending scheduled actions belonging to one session. Agent-facing
+    /// callers must not see another session's prompt or tool arguments.
+    pub async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
+        self.list_scoped(Some(session_id)).await
+    }
+
+    async fn list_scoped(&self, owner: Option<&str>) -> Vec<Value> {
         let scheduled_actions = self.scheduled_actions.read().await;
         let mut rows: Vec<Value> = scheduled_actions
             .iter()
-            .filter(|(_, e)| !e.fired)
+            .filter(|(_, e)| {
+                !e.fired
+                    && owner.is_none_or(|session_id| e.session_id.as_deref() == Some(session_id))
+            })
             .map(|(id, e)| {
                 serde_json::json!({
                     "id": id,
@@ -586,18 +646,41 @@ impl ScheduledActionCenter {
 
     /// Cancel a pending scheduled_action (no-op if already fired or unknown).
     pub async fn cancel(&self, id: &str) -> bool {
-        let mut scheduled_actions = self.scheduled_actions.write().await;
-        let cancelled = match scheduled_actions.get_mut(id) {
-            Some(entry) if !entry.fired => {
-                entry.fired = true;
-                true
+        self.cancel_scoped(id, None).await
+    }
+
+    /// Cancel a scheduled action only when it belongs to `session_id`.
+    pub async fn cancel_for_session(&self, id: &str, session_id: &str) -> bool {
+        self.cancel_scoped(id, Some(session_id)).await
+    }
+
+    async fn cancel_scoped(&self, id: &str, owner: Option<&str>) -> bool {
+        let _mutation = self.mutation_gate.lock().await;
+        let cancelled = {
+            let mut scheduled_actions = self.scheduled_actions.write().await;
+            match scheduled_actions.get_mut(id) {
+                Some(entry)
+                    if !entry.fired
+                        && owner.is_none_or(|session_id| {
+                            entry.session_id.as_deref() == Some(session_id)
+                        }) =>
+                {
+                    entry.fired = true;
+                    true
+                }
+                _ => false,
             }
-            _ => false,
         };
         if cancelled {
             self.emit("action:updated", serde_json::json!({ "id": id }));
-            if let Some(db) = self.db.read().await.as_ref() {
-                let _ = db.delete_scheduled_action(id);
+            if let Some(db) = self.db.read().await.clone() {
+                let action_id = id.to_string();
+                if let Err(e) = db
+                    .run_blocking(move |db| db.delete_scheduled_action(&action_id))
+                    .await
+                {
+                    tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation: {e}");
+                }
             }
         }
         cancelled
@@ -606,20 +689,33 @@ impl ScheduledActionCenter {
     /// Cancel every pending scheduled_action owned by `session_id`. Called when the
     /// session ends, is removed, or is rolled back so its scheduled_actions cannot
     /// fire against a session that no longer exists.
-    pub async fn cancel_for_session(&self, session_id: &str) {
-        let mut scheduled_actions = self.scheduled_actions.write().await;
-        let ids: Vec<String> = scheduled_actions
-            .iter()
-            .filter(|(_, e)| !e.fired && e.session_id.as_deref() == Some(session_id))
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            if let Some(entry) = scheduled_actions.get_mut(&id) {
-                entry.fired = true;
+    pub async fn cancel_owned_by_session(&self, session_id: &str) {
+        let _mutation = self.mutation_gate.lock().await;
+        let ids: Vec<String> = {
+            let mut scheduled_actions = self.scheduled_actions.write().await;
+            let ids: Vec<String> = scheduled_actions
+                .iter()
+                .filter(|(_, e)| !e.fired && e.session_id.as_deref() == Some(session_id))
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &ids {
+                if let Some(entry) = scheduled_actions.get_mut(id) {
+                    entry.fired = true;
+                }
             }
+            ids
+        };
+        let db = self.db.read().await.clone();
+        for id in ids {
             self.emit("action:updated", serde_json::json!({ "id": id }));
-            if let Some(db) = self.db.read().await.as_ref() {
-                let _ = db.delete_scheduled_action(&id);
+            if let Some(db) = db.clone() {
+                let action_id = id.clone();
+                if let Err(e) = db
+                    .run_blocking(move |db| db.delete_scheduled_action(&action_id))
+                    .await
+                {
+                    tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation: {e}");
+                }
             }
         }
     }
@@ -841,16 +937,24 @@ impl ScheduledActionTool {
                 Ok(ToolResult::ok(output))
             }
             ScheduleOperation::List => {
-                let rows = self.center.list().await;
+                let session_id = params
+                    .session_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("schedule list requires a session context"))?;
+                let rows = self.center.list_for_session(session_id).await;
                 Ok(ToolResult::ok(
                     serde_json::json!({ "scheduled_actions": rows }),
                 ))
             }
             ScheduleOperation::Cancel => {
+                let session_id = params
+                    .session_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("schedule cancel requires a session context"))?;
                 let id = params
                     .action_id
                     .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
-                if self.center.cancel(&id).await {
+                if self.center.cancel_for_session(&id, session_id).await {
                     Ok(ToolResult::ok(serde_json::json!({ "cancelled": id })))
                 } else {
                     anyhow::bail!("scheduled_action '{}' not found or already fired", id)
@@ -1597,7 +1701,8 @@ mod tests {
                     "title": "Drink",
                     "body": "water",
                     "mode": "tool",
-                    "tool_name": "notify"
+                    "tool_name": "notify",
+                    "_session_id": "ses-test"
                 }),
                 CancellationToken::new(),
             )
@@ -1606,7 +1711,10 @@ mod tests {
         let id = result.output["id"].as_str().unwrap().to_string();
 
         let list = tool
-            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .execute(
+                json!({"operation": "list", "_session_id": "ses-test"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1619,7 +1727,7 @@ mod tests {
 
         let cancelled = tool
             .execute(
-                json!({"operation": "cancel", "action_id": id}),
+                json!({"operation": "cancel", "action_id": id, "_session_id": "ses-test"}),
                 CancellationToken::new(),
             )
             .await
@@ -1629,7 +1737,7 @@ mod tests {
         // Cancelling again fails.
         let err = tool
             .execute(
-                json!({"operation": "cancel", "action_id": id}),
+                json!({"operation": "cancel", "action_id": id, "_session_id": "ses-test"}),
                 CancellationToken::new(),
             )
             .await;
@@ -1637,7 +1745,10 @@ mod tests {
 
         // List is empty after cancel.
         let list = tool
-            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .execute(
+                json!({"operation": "list", "_session_id": "ses-test"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(

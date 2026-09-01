@@ -25,6 +25,7 @@ pub struct ToolCircuitBreaker {
     state: CircuitState,
     consecutive_failures: u32,
     opened_at: Option<Instant>,
+    probe_in_flight: bool,
     failure_threshold: u32,
     cooldown: Duration,
 }
@@ -35,6 +36,7 @@ impl ToolCircuitBreaker {
             state: CircuitState::Closed,
             consecutive_failures: 0,
             opened_at: None,
+            probe_in_flight: false,
             failure_threshold,
             cooldown,
         }
@@ -42,12 +44,24 @@ impl ToolCircuitBreaker {
 
     pub fn allow_request(&mut self) -> bool {
         match self.state {
-            CircuitState::Closed | CircuitState::HalfOpen => true,
+            CircuitState::Closed => true,
+            CircuitState::HalfOpen => {
+                // The state is shared by concurrent tool calls. Once the
+                // cooldown probe has been claimed, fail closed until that
+                // probe records a success or failure.
+                if self.probe_in_flight {
+                    false
+                } else {
+                    self.probe_in_flight = true;
+                    true
+                }
+            }
             CircuitState::Open => {
                 if let Some(opened) = self.opened_at
                     && opened.elapsed() >= self.cooldown
                 {
                     self.state = CircuitState::HalfOpen;
+                    self.probe_in_flight = true;
                     true
                 } else {
                     false
@@ -60,6 +74,7 @@ impl ToolCircuitBreaker {
         self.consecutive_failures = 0;
         self.state = CircuitState::Closed;
         self.opened_at = None;
+        self.probe_in_flight = false;
     }
 
     pub fn record_failure(&mut self) {
@@ -67,6 +82,7 @@ impl ToolCircuitBreaker {
         if self.consecutive_failures >= self.failure_threshold {
             self.state = CircuitState::Open;
             self.opened_at = Some(Instant::now());
+            self.probe_in_flight = false;
         }
     }
 
@@ -167,6 +183,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(60));
         assert!(cb.allow_request(), "should allow probe after cooldown");
         assert!(!cb.is_open(), "HalfOpen is not Open");
+        assert!(!cb.allow_request(), "only one half-open probe may run");
     }
 
     #[test]

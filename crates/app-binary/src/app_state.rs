@@ -152,7 +152,9 @@ impl AppState {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
                 loop {
                     ticker.tick().await;
-                    let _ = agent.run_memory_maintenance().await;
+                    if let Err(error) = agent.run_memory_maintenance().await {
+                        tracing::warn!("periodic memory maintenance failed: {}", error);
+                    }
                 }
             });
         }

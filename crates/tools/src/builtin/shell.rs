@@ -104,7 +104,7 @@ impl ShellTool {
         if params.background.unwrap_or(false) {
             let action_id = self
                 .actions
-                .spawn_shell(&cmd, &shell, max_chars, cwd)
+                .spawn_shell_for_session(&cmd, &shell, max_chars, cwd, params.session_id.as_deref())
                 .await?;
             let mut body = haven_common::tools::background_wait_object(
                 "Background action started. If you have no independent foreground work left, END YOUR TURN now with a brief status for the user — do not poll with actions/status. You will be auto-woken with this action's output when it finishes.",

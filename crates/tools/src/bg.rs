@@ -358,6 +358,10 @@ fn terminal_entry_stale(entry: &BackgroundAction, ttl: Duration) -> bool {
 /// result into the owning session's context without the model polling.
 pub struct BackgroundActions {
     actions: RwLock<HashMap<String, BackgroundAction>>,
+    /// Serializes spawn admission and durable registration. An action is not
+    /// visible to cancellation until its `running` row is durable, avoiding
+    /// orphaned DB rows or processes across the spawn failure window.
+    spawn_gate: tokio::sync::Mutex<()>,
     completion_tx: mpsc::UnboundedSender<BackgroundActionCompletion>,
     /// Receiver handed out exactly once to the consumer (the agent layer).
     completion_rx: Mutex<Option<mpsc::UnboundedReceiver<BackgroundActionCompletion>>>,
@@ -392,6 +396,7 @@ impl BackgroundActions {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             actions: RwLock::new(HashMap::new()),
+            spawn_gate: tokio::sync::Mutex::new(()),
             completion_tx: tx,
             completion_rx: Mutex::new(Some(rx)),
             max_actions: RwLock::new(64),
@@ -437,74 +442,88 @@ impl BackgroundActions {
         let Some(db) = self.db.read().await.clone() else {
             return 0;
         };
-        db.mark_interrupted_actions().unwrap_or_else(|e| {
-            tracing::warn!("restore_after_restart: failed to mark interrupted actions: {e}");
-            0
-        })
+        db.run_blocking(|db| db.mark_interrupted_actions())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("restore_after_restart: failed to mark interrupted actions: {e}");
+                0
+            })
     }
 
     /// Persist a terminal action row (its status payload + owning session) so the
     /// result survives the in-memory board's TTL and app restarts. No-op
     /// without a database. Must run outside the `actions` lock is not required
     /// (the DB is a separate lock); callers may hold either.
-    async fn persist_terminal(&self, action_id: &str, entry: &BackgroundAction) {
+    async fn persist_terminal(&self, action_id: &str, state: &BackgroundActionState) {
         let Some(db) = self.db.read().await.clone() else {
             return;
         };
-        let (status, output, error, error_reason, log_path, exit_code, finished_at) =
-            match &entry.state {
-                BackgroundActionState::Completed {
-                    output,
-                    exit_code,
-                    log_path,
-                    finished_at,
-                    ..
-                } => (
-                    "completed",
-                    Some(output.as_str()),
-                    None,
-                    None,
+        let (status, output, error, error_reason, log_path, exit_code, finished_at) = match state {
+            BackgroundActionState::Completed {
+                output,
+                exit_code,
+                log_path,
+                finished_at,
+                ..
+            } => (
+                "completed",
+                Some(output.as_str()),
+                None,
+                None,
+                log_path.as_deref(),
+                *exit_code,
+                finished_at.as_str(),
+            ),
+            BackgroundActionState::Failed {
+                error,
+                error_reason,
+                log_path,
+                exit_code,
+                finished_at,
+                ..
+            } => (
+                "failed",
+                None,
+                Some(error.as_str()),
+                Some(error_reason.as_str()),
+                log_path.as_deref(),
+                *exit_code,
+                finished_at.as_str(),
+            ),
+            BackgroundActionState::Cancelled { finished_at, .. } => (
+                "cancelled",
+                None,
+                None,
+                None,
+                None,
+                None,
+                finished_at.as_str(),
+            ),
+            BackgroundActionState::Running { .. } => return,
+        };
+        let action_id = action_id.to_string();
+        let status = status.to_string();
+        let output = output.map(str::to_string);
+        let error = error.map(str::to_string);
+        let error_reason = error_reason.map(str::to_string);
+        let log_path = log_path.map(str::to_string);
+        let finished_at = finished_at.to_string();
+        let action_id_for_db = action_id.clone();
+        if let Err(e) = db
+            .run_blocking(move |db| {
+                db.finish_action(
+                    &action_id_for_db,
+                    &status,
+                    output.as_deref(),
+                    error.as_deref(),
+                    error_reason.as_deref(),
                     log_path.as_deref(),
-                    *exit_code,
-                    finished_at.as_str(),
-                ),
-                BackgroundActionState::Failed {
-                    error,
-                    error_reason,
-                    log_path,
                     exit_code,
-                    finished_at,
-                    ..
-                } => (
-                    "failed",
-                    None,
-                    Some(error.as_str()),
-                    Some(error_reason.as_str()),
-                    log_path.as_deref(),
-                    *exit_code,
-                    finished_at.as_str(),
-                ),
-                BackgroundActionState::Cancelled { finished_at, .. } => (
-                    "cancelled",
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    finished_at.as_str(),
-                ),
-                BackgroundActionState::Running { .. } => return,
-            };
-        if let Err(e) = db.finish_action(
-            action_id,
-            status,
-            output,
-            error,
-            error_reason,
-            log_path,
-            exit_code,
-            finished_at,
-        ) {
+                    &finished_at,
+                )
+            })
+            .await
+        {
             tracing::warn!(action_id = %action_id, "failed to persist action result: {e}");
         }
     }
@@ -523,22 +542,27 @@ impl BackgroundActions {
     /// `mark_cancelled`, and `attach_session` (the latter to close the race where
     /// a action finishes before its session binding is recorded). Also persists the
     /// terminal row so the result survives restarts.
-    async fn notify_completion(&self, action_id: &str, entry: &BackgroundAction) {
-        if !entry.state.is_terminal() {
+    async fn notify_completion(
+        &self,
+        action_id: &str,
+        state: BackgroundActionState,
+        session_id: Option<String>,
+    ) {
+        if !state.is_terminal() {
             return;
         }
-        let status = match &entry.state {
+        let status = match &state {
             BackgroundActionState::Completed { .. } => "completed",
             BackgroundActionState::Failed { .. } => "failed",
             BackgroundActionState::Cancelled { .. } => "cancelled",
             BackgroundActionState::Running { .. } => return,
         };
-        self.persist_terminal(action_id, entry).await;
-        let status_json = render_status_json(action_id, &entry.state);
+        self.persist_terminal(action_id, &state).await;
+        let status_json = render_status_json(action_id, &state);
         self.emit("action:finished", status_json.clone());
         let _ = self.completion_tx.send(BackgroundActionCompletion {
             action_id: action_id.to_string(),
-            session_id: entry.session_id.clone(),
+            session_id,
             status: status.to_string(),
             status_json,
         });
@@ -601,6 +625,21 @@ impl BackgroundActions {
         max_chars: usize,
         cwd: Option<std::path::PathBuf>,
     ) -> anyhow::Result<String> {
+        self.spawn_shell_for_session(command, shell, max_chars, cwd, None)
+            .await
+    }
+
+    /// Spawn a background action with its owner bound before the process is
+    /// published. Agent calls should use this variant so session shutdown can
+    /// cancel a process even if it exits during the tool-result projection.
+    pub async fn spawn_shell_for_session(
+        self: &Arc<Self>,
+        command: &str,
+        shell: &str,
+        max_chars: usize,
+        cwd: Option<std::path::PathBuf>,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<String> {
         if command.trim().is_empty() {
             anyhow::bail!("command is required");
         }
@@ -613,6 +652,9 @@ impl BackgroundActions {
         let tail = Arc::new(Mutex::new(String::new()));
         let tail_max_chars = *self.job_tail_max_chars.read().await;
         let emit_interval = *self.job_output_emit_interval.read().await;
+        let terminal_ttl = *self.terminal_job_ttl.read().await;
+        let max_actions = *self.max_actions.read().await;
+        let _spawn_gate = self.spawn_gate.lock().await;
         {
             let mut actions = self.actions.write().await;
             // Reap terminal entries first: their results were already
@@ -622,32 +664,56 @@ impl BackgroundActions {
             // the configured terminal-action TTL are dropped the same way (the
             // UI panel and the persisted log files remain the record after
             // that).
-            let terminal_ttl = *self.terminal_job_ttl.read().await;
             actions.retain(|_, e| !terminal_entry_stale(e, terminal_ttl));
             let running = actions
                 .values()
                 .filter(|e| matches!(e.state, BackgroundActionState::Running { .. }))
                 .count();
-            if running >= *self.max_actions.read().await {
+            if running >= max_actions {
                 anyhow::bail!(
                     "too many running background actions (limit {})",
-                    *self.max_actions.read().await
+                    max_actions
                 );
             }
-            actions.insert(
-                id.clone(),
-                BackgroundAction {
-                    session_id: None,
-                    state: BackgroundActionState::Running {
-                        started_at: started_at.clone(),
-                    },
-                    kill: Some(kill_tx),
-                    tail: Some(tail.clone()),
-                    command: command.to_string(),
-                    shell: shell.to_string(),
-                },
-            );
         }
+
+        // Persist before publishing the action to the in-memory board or
+        // starting a process. A failed database write therefore cannot leave a
+        // process that restore_after_restart does not know how to clean up.
+        if let Some(db) = self.db.read().await.clone() {
+            let action_id = id.clone();
+            let command_for_db = command.to_string();
+            let started_at_for_db = started_at.clone();
+            let session_id_for_db = session_id.map(str::to_owned);
+            if let Err(error) = db
+                .run_blocking(move |db| {
+                    db.save_action(
+                        &action_id,
+                        session_id_for_db.as_deref(),
+                        &command_for_db,
+                        &started_at_for_db,
+                    )
+                })
+                .await
+            {
+                tracing::warn!(action_id = %id, "failed to persist action spawn: {error}");
+                return Err(error);
+            }
+        }
+
+        self.actions.write().await.insert(
+            id.clone(),
+            BackgroundAction {
+                session_id: session_id.map(str::to_owned),
+                state: BackgroundActionState::Running {
+                    started_at: started_at.clone(),
+                },
+                kill: Some(kill_tx),
+                tail: Some(tail.clone()),
+                command: command.to_string(),
+                shell: shell.to_string(),
+            },
+        );
 
         let mut std_cmd = build_shell_command(shell, command);
         if let Some(cwd) = cwd {
@@ -663,18 +729,18 @@ impl BackgroundActions {
                 // Spawn failed: remove the entry so the action is not left
                 // dangling as "running".
                 self.actions.write().await.remove(&id);
+                if let Some(db) = self.db.read().await.clone() {
+                    let action_id = id.clone();
+                    if let Err(error) = db
+                        .run_blocking(move |db| db.delete_action(&action_id))
+                        .await
+                    {
+                        tracing::warn!(action_id = %id, "failed to remove action row after spawn failure: {error}");
+                    }
+                }
                 return Err(e.into());
             }
         };
-
-        // Persist the spawn so action history survives restarts even when
-        // the process dies mid-run (`restore_after_restart` marks such rows
-        // failed). The session binding arrives later via `attach_session`.
-        if let Some(db) = self.db.read().await.clone()
-            && let Err(e) = db.save_action(&id, None, command, &started_at)
-        {
-            tracing::warn!(action_id = %id, "failed to persist action spawn: {e}");
-        }
 
         let me = self.clone();
         let action_id = id.clone();
@@ -786,6 +852,23 @@ impl BackgroundActions {
         let Some(entry) = actions.get(action_id) else {
             return json!({"action_id": action_id, "status": "not_found"});
         };
+        Self::render_action_status(action_id, entry)
+    }
+
+    /// Status lookup scoped to the owning session. Agent-facing callers must
+    /// never be able to enumerate another session's action by guessing its id.
+    pub async fn status_for_session(&self, action_id: &str, session_id: &str) -> Value {
+        let actions = self.actions.read().await;
+        let Some(entry) = actions.get(action_id) else {
+            return json!({"action_id": action_id, "status": "not_found"});
+        };
+        if entry.session_id.as_deref() != Some(session_id) {
+            return json!({"action_id": action_id, "status": "not_found"});
+        }
+        Self::render_action_status(action_id, entry)
+    }
+
+    fn render_action_status(action_id: &str, entry: &BackgroundAction) -> Value {
         match &entry.state {
             BackgroundActionState::Running { .. } => {
                 let body = running_status_json(action_id, entry);
@@ -815,26 +898,54 @@ impl BackgroundActions {
     /// the notification with the now-known session_id so the owning session still
     /// receives the result.
     pub async fn attach_session(&self, action_id: &str, session_id: &str) {
-        let mut actions = self.actions.write().await;
-        if let Some(entry) = actions.get_mut(action_id) {
+        let (terminal_state, session_id) = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(action_id) else {
+                return;
+            };
+            if let Some(existing) = entry.session_id.as_deref() {
+                if existing == session_id {
+                    return;
+                }
+                tracing::warn!(
+                    action_id,
+                    existing_session_id = existing,
+                    requested_session_id = session_id,
+                    "refusing to rebind background action to another session"
+                );
+                return;
+            }
             entry.session_id = Some(session_id.to_string());
-            self.emit(
-                "action:updated",
-                json!({
-                    "action_id": action_id,
-                    "session_id": session_id,
-                }),
-            );
-            // Record the owning session in the persisted row too, so terminal
-            // history keeps its owner (spawn rows start with session_id NULL).
-            if let Some(db) = self.db.read().await.clone()
-                && let Err(e) = db.update_action_session(action_id, session_id)
+            (
+                entry.state.is_terminal().then(|| entry.state.clone()),
+                session_id.to_string(),
+            )
+        };
+        self.emit(
+            "action:updated",
+            json!({
+                "action_id": action_id,
+                "session_id": session_id,
+            }),
+        );
+        // Record the owning session in the persisted row too, so terminal
+        // history keeps its owner (spawn rows start with session_id NULL).
+        if let Some(db) = self.db.read().await.clone() {
+            let action_id = action_id.to_string();
+            let action_id_for_db = action_id.clone();
+            let session_id_for_db = session_id.clone();
+            if let Err(e) = db
+                .run_blocking(move |db| {
+                    db.update_action_session(&action_id_for_db, &session_id_for_db)
+                })
+                .await
             {
                 tracing::warn!(action_id = %action_id, "failed to persist action session binding: {e}");
             }
-            if entry.state.is_terminal() {
-                self.notify_completion(action_id, entry).await;
-            }
+        }
+        if let Some(state) = terminal_state {
+            self.notify_completion(action_id, state, Some(session_id))
+                .await;
         }
     }
 
@@ -854,13 +965,30 @@ impl BackgroundActions {
         true
     }
 
+    /// Cancel a single action only when it belongs to `session_id`.
+    pub async fn cancel_for_session(&self, action_id: &str, session_id: &str) -> bool {
+        let mut actions = self.actions.write().await;
+        let Some(entry) = actions.get_mut(action_id) else {
+            return false;
+        };
+        if entry.session_id.as_deref() != Some(session_id)
+            || !matches!(entry.state, BackgroundActionState::Running { .. })
+        {
+            return false;
+        }
+        if let Some(tx) = entry.kill.take() {
+            let _ = tx.send(());
+        }
+        true
+    }
+
     /// Cancel and drop every action owned by `session_id`. Called when a session
     /// ends, is removed, or is rolled back.
     ///
     /// Running actions are killed, marked cancelled, persisted, and surfaced to
     /// the UI via `action:finished` before leaving the board — otherwise the
     /// titlebar panel keeps a ghost "running" row that cannot be stopped.
-    pub async fn cancel_for_session(&self, session_id: &str) {
+    pub async fn cancel_owned_by_session(&self, session_id: &str) {
         let ids: Vec<String> = {
             let actions = self.actions.read().await;
             actions
@@ -882,7 +1010,8 @@ impl BackgroundActions {
                     started_at: started_at.clone(),
                     finished_at: chrono::Utc::now().to_rfc3339(),
                 };
-                self.notify_completion(&id, &entry).await;
+                self.notify_completion(&id, entry.state.clone(), entry.session_id.clone())
+                    .await;
             } else if entry.state.is_terminal() {
                 // UI-only: the board is dropping a row whose agent completion
                 // already fired (or never needed one). Re-sending completion_tx
@@ -908,64 +1037,70 @@ impl BackgroundActions {
         exit_code: Option<i32>,
         truncated: bool,
     ) {
-        let mut actions = self.actions.write().await;
-        let Some(entry) = actions.get_mut(id) else {
-            return;
+        let (state, session_id) = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(id) else {
+                return;
+            };
+            entry.kill = None;
+            entry.tail = None;
+            let finished_at = chrono::Utc::now().to_rfc3339();
+            entry.state = if success {
+                BackgroundActionState::Completed {
+                    output: combined.clone(),
+                    exit_code,
+                    truncated,
+                    // When the collected output was capped, the log file keeps
+                    // the full transcript for inspection.
+                    log_path: truncated.then(|| {
+                        write_output_log("action-logs", id, &combined)
+                            .to_string_lossy()
+                            .into_owned()
+                    }),
+                    started_at: started_at.to_string(),
+                    finished_at,
+                }
+            } else {
+                // The failure payload must not drown the model (or the user) in
+                // progress-bar spam: `error` keeps the sanitized output for full
+                // inspection, `error_reason` carries a short tail of the most
+                // likely error lines plus a Windows-trap hint when one matches.
+                // The full output always lands in a log file so the root cause
+                // is recoverable even when the summary misses it.
+                let diagnosed = append_windows_diagnostics(shell, command, &combined);
+                BackgroundActionState::Failed {
+                    error: combined.clone(),
+                    error_reason: summarize_error(&diagnosed, 1200),
+                    log_path: Some(
+                        write_output_log("action-logs", id, &combined)
+                            .to_string_lossy()
+                            .into_owned(),
+                    ),
+                    exit_code,
+                    started_at: started_at.to_string(),
+                    finished_at,
+                }
+            };
+            (entry.state.clone(), entry.session_id.clone())
         };
-        entry.kill = None;
-        entry.tail = None;
-        let finished_at = chrono::Utc::now().to_rfc3339();
-        entry.state = if success {
-            BackgroundActionState::Completed {
-                output: combined.clone(),
-                exit_code,
-                truncated,
-                // When the collected output was capped, the log file keeps
-                // the full transcript for inspection.
-                log_path: truncated.then(|| {
-                    write_output_log("action-logs", id, &combined)
-                        .to_string_lossy()
-                        .into_owned()
-                }),
-                started_at: started_at.to_string(),
-                finished_at,
-            }
-        } else {
-            // The failure payload must not drown the model (or the user) in
-            // progress-bar spam: `error` keeps the sanitized output for full
-            // inspection, `error_reason` carries a short tail of the most
-            // likely error lines plus a Windows-trap hint when one matches.
-            // The full output always lands in a log file so the root cause
-            // is recoverable even when the summary misses it.
-            let diagnosed = append_windows_diagnostics(shell, command, &combined);
-            BackgroundActionState::Failed {
-                error: combined.clone(),
-                error_reason: summarize_error(&diagnosed, 1200),
-                log_path: Some(
-                    write_output_log("action-logs", id, &combined)
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                exit_code,
-                started_at: started_at.to_string(),
-                finished_at,
-            }
-        };
-        self.notify_completion(id, entry).await;
+        self.notify_completion(id, state, session_id).await;
     }
 
     async fn mark_cancelled(&self, id: &str, started_at: &str) {
-        let mut actions = self.actions.write().await;
-        let Some(entry) = actions.get_mut(id) else {
-            return;
+        let (state, session_id) = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(id) else {
+                return;
+            };
+            entry.kill = None;
+            entry.tail = None;
+            entry.state = BackgroundActionState::Cancelled {
+                started_at: started_at.to_string(),
+                finished_at: chrono::Utc::now().to_rfc3339(),
+            };
+            (entry.state.clone(), entry.session_id.clone())
         };
-        entry.kill = None;
-        entry.tail = None;
-        entry.state = BackgroundActionState::Cancelled {
-            started_at: started_at.to_string(),
-            finished_at: chrono::Utc::now().to_rfc3339(),
-        };
-        self.notify_completion(id, entry).await;
+        self.notify_completion(id, state, session_id).await;
     }
 }
 
@@ -1610,6 +1745,36 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn test_spawn_for_session_binds_owner_before_completion() {
+        let actions = Arc::new(BackgroundActions::new());
+        let mut rx = actions
+            .take_completion_receiver()
+            .expect("receiver available");
+        let id = actions
+            .spawn_shell_for_session("echo prebound", "cmd", 20_000, None, Some("ses-owner"))
+            .await
+            .unwrap();
+
+        let completion = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("completion received")
+            .expect("channel open");
+        assert_eq!(completion.action_id, id);
+        assert_eq!(completion.session_id.as_deref(), Some("ses-owner"));
+        assert_eq!(
+            actions.status_for_session(&id, "ses-owner").await["status"],
+            "completed"
+        );
+        actions.attach_session(&id, "ses-owner").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn test_action_result_persisted_to_db() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
@@ -1805,7 +1970,7 @@ mod tests {
             .unwrap();
         actions.attach_session(&id, "ses-1").await;
         assert_eq!(actions.status(&id).await["status"], "running");
-        actions.cancel_for_session("ses-1").await;
+        actions.cancel_owned_by_session("ses-1").await;
         assert_eq!(actions.status(&id).await["status"], "not_found");
         let evs = events.lock().unwrap();
         let finished = evs

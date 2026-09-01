@@ -225,11 +225,26 @@ pub fn is_sensitive_object(object: &str) -> bool {
         || o.starts_with("tvly-")
         || o.starts_with("ghp_")
         || o.starts_with("gho_")
+        || o.starts_with("ghs_")
+        || o.starts_with("github_pat_")
+        || o.starts_with("glpat-")
         || o.starts_with("xoxb-")
+        || o.starts_with("xoxp-")
+        || o.starts_with("xoxa-")
+        || o.starts_with("xoxr-")
+        || o.starts_with("xapp-")
+        || o.starts_with("npm_")
+        || o.starts_with("pypi-")
+        || o.starts_with("dop_v1_")
         || o.starts_with("aiza")
+        || o.starts_with("akia")
+        || o.starts_with("asia")
         || o.starts_with("bearer ")
+        || (o.starts_with("eyj") && o.matches('.').count() >= 2)
+        || (o.starts_with("-----begin") && o.contains("private key"))
         || o.contains("api_key=")
         || o.contains("apikey=")
+        || (o.contains("://") && o.contains('@'))
 }
 
 /// Free-text provenance / snippets: treat as sensitive when they look like
@@ -272,7 +287,9 @@ impl Database {
         confidence: f64,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
-        FactGraph::new(self).insert(subject, predicate, object, source, confidence, tags)
+        self.with_fact_write(|| {
+            FactGraph::new(self).insert(subject, predicate, object, source, confidence, tags)
+        })
     }
 
     /// Insert a fact with an optional message reference and durability rating.
@@ -289,9 +306,11 @@ impl Database {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<Fact> {
-        FactGraph::new(self).insert_with_source_ref(
-            subject, predicate, object, source, confidence, tags, source_ref, durability,
-        )
+        self.with_fact_write(|| {
+            FactGraph::new(self).insert_with_source_ref(
+                subject, predicate, object, source, confidence, tags, source_ref, durability,
+            )
+        })
     }
 
     /// Store a fact explicitly stated by the user. User-stated facts are
@@ -304,7 +323,7 @@ impl Database {
         object: &str,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
-        FactGraph::new(self).set_user(subject, predicate, object, tags)
+        self.with_fact_write(|| FactGraph::new(self).set_user(subject, predicate, object, tags))
     }
 
     /// Delete facts by (subject, predicate[, object]) — used by the
@@ -317,7 +336,7 @@ impl Database {
         predicate: &str,
         object: Option<&str>,
     ) -> anyhow::Result<u64> {
-        FactGraph::new(self).delete_by_triple(subject, predicate, object)
+        self.with_fact_write(|| FactGraph::new(self).delete_by_triple(subject, predicate, object))
     }
 
     /// Insert a fact only if the same (subject, predicate, object) triple
@@ -332,7 +351,9 @@ impl Database {
         confidence: f64,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
-        FactGraph::new(self).ensure(subject, predicate, object, source, confidence, tags)
+        self.with_fact_write(|| {
+            FactGraph::new(self).ensure(subject, predicate, object, source, confidence, tags)
+        })
     }
 
     /// Insert, reinforce, or correct a fact extracted from a conversation.
@@ -362,9 +383,11 @@ impl Database {
         tags: &[&str],
         source_ref: Option<&FactSourceRef>,
     ) -> anyhow::Result<UpsertOutcome> {
-        FactGraph::new(self).upsert(
-            subject, predicate, object, source, confidence, tags, source_ref, 1.0,
-        )
+        self.with_fact_write(|| {
+            FactGraph::new(self).upsert(
+                subject, predicate, object, source, confidence, tags, source_ref, 1.0,
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -379,13 +402,15 @@ impl Database {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<UpsertOutcome> {
-        FactGraph::new(self).upsert(
-            subject, predicate, object, source, confidence, tags, source_ref, durability,
-        )
+        self.with_fact_write(|| {
+            FactGraph::new(self).upsert(
+                subject, predicate, object, source, confidence, tags, source_ref, durability,
+            )
+        })
     }
 
     pub fn delete_fact(&self, id: &str) -> anyhow::Result<()> {
-        FactGraph::new(self).delete_by_id(id)
+        self.with_fact_write(|| FactGraph::new(self).delete_by_id(id))
     }
 
     /// Distinct predicates with row counts, highest count first (M6).
@@ -397,18 +422,18 @@ impl Database {
     /// duplicates. Used by maintenance LLM alias merge (M6). Returns rows
     /// updated before dedup.
     pub fn rewrite_predicate(&self, from: &str, to: &str) -> anyhow::Result<u64> {
-        FactMaintenance::new(self).rewrite_predicate(from, to)
+        self.with_fact_write(|| FactMaintenance::new(self).rewrite_predicate(from, to))
     }
 
     pub fn dedup_facts(&self) -> anyhow::Result<u64> {
-        FactMaintenance::new(self).dedup_facts()
+        self.with_fact_write(|| FactMaintenance::new(self).dedup_facts())
     }
 
     /// Remove facts whose predicate or object looks like a credential. Called
     /// during fact maintenance so secrets accidentally extracted in the past
     /// are purged from the database rather than merely hidden from prompts.
     pub fn delete_sensitive_facts(&self) -> anyhow::Result<u64> {
-        FactMaintenance::new(self).delete_sensitive_facts()
+        self.with_fact_write(|| FactMaintenance::new(self).delete_sensitive_facts())
     }
 
     /// Remove facts whose effective confidence (after recency decay) is below
@@ -424,14 +449,14 @@ impl Database {
     /// gives every persisted fact at least one full recall cycle; decay and
     /// durability still prune it from the second day on.
     pub fn flush_low_confidence(&self, threshold: f64) -> anyhow::Result<u64> {
-        FactMaintenance::new(self).flush_low_confidence(threshold)
+        self.with_fact_write(|| FactMaintenance::new(self).flush_low_confidence(threshold))
     }
 
     /// Normalize empty provenance_record_id strings. Item provenance is
     /// enforced by FK (`ON DELETE SET NULL`); opaque transcript record ids are
     /// intentional stable refs and are left alone (no messages-table scan).
     pub fn cleanup_orphan_source_refs(&self) -> anyhow::Result<u64> {
-        FactMaintenance::new(self).cleanup_orphan_source_refs()
+        self.with_fact_write(|| FactMaintenance::new(self).cleanup_orphan_source_refs())
     }
 
     /// Maintenance contradiction engine (X5): scan polarity and single-valued
@@ -446,7 +471,7 @@ impl Database {
     /// `flush_low_confidence` delete window. Older residuals still surface via
     /// [`Self::list_ambiguous_contradictions`] for optional LLM arbitration.
     pub fn resolve_contradictions(&self) -> anyhow::Result<u64> {
-        FactMaintenance::new(self).resolve_contradictions()
+        self.with_fact_write(|| FactMaintenance::new(self).resolve_contradictions())
     }
 
     /// Remaining live conflict groups for optional LLM arbitration (X5).
@@ -462,7 +487,7 @@ impl Database {
     /// the maintenance LLM arbitrator after gated proposals. Preserves SPO and
     /// provenance. Returns how many rows were updated.
     pub fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
-        FactMaintenance::new(self).demote_fact_ids(ids)
+        self.with_fact_write(|| FactMaintenance::new(self).demote_fact_ids(ids))
     }
 }
 
@@ -482,8 +507,8 @@ pub const CONTRADICTION_DEMOTE_FACTOR: f64 = 0.5;
 #[cfg(test)]
 mod tests {
     use super::{
-        FactSourceRef, UpsertOutcome, fact_effective_confidence, is_single_valued_predicate,
-        is_volatile_predicate,
+        FactSourceRef, UpsertOutcome, fact_effective_confidence, is_sensitive_object,
+        is_single_valued_predicate, is_volatile_predicate,
     };
     use crate::Database;
     use chrono::Utc;
@@ -1003,6 +1028,23 @@ mod tests {
                 .iter()
                 .all(|f| f.predicate != "tavily_api_key" && f.predicate != "secret_token")
         );
+    }
+
+    #[test]
+    fn test_sensitive_object_covers_common_credential_shapes() {
+        for value in [
+            "AKIAIOSFODNN7EXAMPLE",
+            "glpat-abc123",
+            "github_pat_abc123",
+            "xoxp-123",
+            "npm_abc123",
+            "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+            "-----BEGIN PRIVATE KEY-----",
+            "https://user:password@example.test/path",
+        ] {
+            assert!(is_sensitive_object(value), "not detected: {value}");
+        }
+        assert!(!is_sensitive_object("Rust programming language"));
     }
 
     #[test]

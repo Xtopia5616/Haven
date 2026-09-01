@@ -420,16 +420,29 @@ impl ToolResult {
         if char_count <= max_chars {
             return text;
         }
-        let cutoff = text
-            .char_indices()
-            .nth(max_chars)
-            .map(|(index, _)| index)
-            .unwrap_or(text.len());
-        format!(
-            "{}[... truncated {} chars omitted]",
-            &text[..cutoff],
-            char_count - text[..cutoff].chars().count()
-        )
+        if max_chars == 0 {
+            return String::new();
+        }
+
+        // The marker is part of the observation budget. Appending it after a
+        // `max_chars` prefix made every result exceed the configured cap and
+        // compounded context pressure across a tool batch.
+        let mut prefix_chars = max_chars.saturating_sub(32);
+        let mut marker = String::new();
+        for _ in 0..4 {
+            let omitted = char_count.saturating_sub(prefix_chars);
+            marker = format!("[... truncated {omitted} chars omitted]");
+            let next_prefix = max_chars.saturating_sub(marker.chars().count());
+            if next_prefix == prefix_chars {
+                break;
+            }
+            prefix_chars = next_prefix;
+        }
+        if marker.chars().count() > max_chars {
+            return text.chars().take(max_chars).collect();
+        }
+        let prefix: String = text.chars().take(prefix_chars).collect();
+        format!("{prefix}{marker}")
     }
 }
 
@@ -1372,7 +1385,8 @@ mod tests {
     fn observation_text_has_one_unicode_safe_budgeted_shape() {
         let result = ToolResult::ok(json!("你好世界"));
         let observation = result.observation_text(3);
-        assert_eq!(observation, "你好世[... truncated 1 chars omitted]");
+        assert_eq!(observation.chars().count(), 3);
+        assert!(observation.is_char_boundary(observation.len()));
     }
 
     #[test]

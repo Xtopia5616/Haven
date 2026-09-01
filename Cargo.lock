@@ -2265,6 +2265,7 @@ dependencies = [
  "haven-tools",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tiktoken-rs",
  "tokio",
