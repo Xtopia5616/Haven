@@ -270,6 +270,53 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 “保留”不代表禁止修复或整理；它表示不改变这两个边界的基本职责，不把它们列入本轮概念级推翻范围。
 
+### 保留边界下的改进方向
+
+#### 1. Provider adapter：保留协议适配，重做内部组织
+
+当前 [`crates/llm/src/adapters`](../crates/llm/src/adapters) 的方向是正确的，但 `openai.rs`、`openai_responses.rs`、`anthropic.rs` 等文件同时包含 wire DTO、请求构造、响应解析、流式事件、usage 转换、错误分类和大量协议测试，导致修改一个协议细节时很难判断影响范围。
+
+不推翻 provider adapter，但建议逐步改成以下内部结构：
+
+- `wire.rs` / `request.rs`：只负责 provider 请求 DTO 和序列化；
+- `response.rs` / `stream.rs`：只负责响应、SSE/JSONL 事件和 EOF flush；
+- `mapping.rs`：把 provider payload 转成统一 `LlmResponse`、tool call、usage 和 finish reason；
+- `features.rs`：集中声明 thinking、web search、cache、vision、audio 等能力及厂商差异；
+- `tests/fixtures`：用脱敏的 golden request/response/stream fixture 做协议回归。
+
+同时执行以下收敛：
+
+1. transport、SSE framing、重试、超时和错误分类只能由已有公共管线负责；adapter 不再复制第二套 retry/stream policy。
+2. `provider`、`api_style` 和 vendor 特判不再散落在各 adapter 的字符串判断中；adapter 对外声明 typed `ProviderCapabilities`，router 根据 capability/request policy 选择能力。
+3. usage、finish reason、tool call identity、reasoning block 顺序等统一映射规则保留单一实现；provider 只补真正的 wire 差异。
+4. 所有外部协议差异都必须有正向、空流、截断、错误、超时和未知字段测试；删除旧内部 alias 时不删除外部兼容行为。
+5. 日志和诊断只记录 provider、model、status、retry reason 等非敏感元数据，禁止把完整 request、API key、prompt 或 cache key 带出 adapter。
+
+这样做的收益是降低 provider 文件的修改半径、让新增能力可以复用统一接口，同时不承担一次性重写所有外部协议的风险。未来 `ModelRouter` 改成 capability/request policy 时，只需让 adapter 提供能力声明，不需要再次改写协议实现。
+
+#### 2. Tauri DTO/event bridge：保留集中适配，去除组合根中的业务副作用
+
+当前 [`crates/app-binary/src/events.rs`](../crates/app-binary/src/events.rs) 的集中映射点是正确的，但 `TauriEmitter` 除了 channel/DTO 转换，还承担标题缓存、secondary event、toast/Windows notification 和 chunk sequence 等行为。与此同时，前端的 live event 与 resume DTO 仍需在 [`ui/src/lib/resumeMessages.ts`](../ui/src/lib/resumeMessages.ts) 中手工合并。
+
+不拆散 bridge，但建议逐步改成以下结构：
+
+- `event_registry.rs`：唯一登记 event name、producer、consumer、顺序、幂等和敏感字段；
+- `agent_wire.rs` / `session_wire.rs` / `action_wire.rs` / `recording_wire.rs`：按领域定义 DTO 和映射；
+- `event_envelope.rs`：统一携带 `schema_version`、`sequence`、`session_id`、`run_id` 和必要的 correlation id；
+- `event_emitter.rs`：只负责序列化和向 Tauri emit，不负责业务状态更新；
+- `notification_projector.rs`：单独负责 toast、Windows 通知和安全的 display title。
+
+重点改进如下：
+
+1. 给 session 事件增加持久、单调的 `sequence`，让 UI 能从最后 sequence 继续接收，而不是依赖时间、内容或事件到达顺序猜测。
+2. 保留当前 typed DTO 和 snake_case/camelCase 边界，但稳定业务字段不再默认使用 `serde_json::Value`；动态工具参数和 provider 原始 payload 才保留 `Value`。
+3. 后端事件、数据库恢复事件和前端 `SessionReducer` 使用同一套语义；Tauri bridge 只做 transport adapter，不再让 `resumeMessages.ts` 继续承担第二套业务投影。
+4. 流式 chunk 可以继续是高频临时事件，但必须带明确的 `message_id`、`run_id`、chunk sequence 和 reset boundary；终态事件必须能独立重放和幂等处理。
+5. 将标题缓存、通知和 secondary event 从 DTO 映射函数中移出，避免 bridge 既改变 UI 状态又发送 UI 事件，造成不可测试的顺序依赖。
+6. 每个命令/事件补充 contract test：字段、版本、顺序、重复投递、断线重放、未知字段和敏感字段泄漏均要覆盖。
+
+这样做的收益是保留稳定的 Tauri 边界，同时让 bridge 变成可测试、无业务状态的适配层；未来引入 `SessionEventStore` 和前端 `SessionReducer` 时，不需要再推翻 Tauri 接入方式。
+
 ### 允许破坏性重构
 
 以下四项可以删除当前实现、重建新模型；每项必须独立写 ADR、先建立行为/负向测试，再迁移一条完整调用链，最后删除旧实现和旧测试入口。
