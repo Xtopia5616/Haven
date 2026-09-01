@@ -96,7 +96,7 @@ pub async fn resolve_confirmation(
         .map_err(|e| log_err("resolve_confirmation", e))?;
 
     let Some(resolution) = resolution else {
-        return Ok(());
+        return Err("Confirmation request is stale or already resolved".into());
     };
 
     let (perm_effect, perm_scope) = parse_permission_decision(
@@ -249,11 +249,14 @@ pub async fn delete_session(
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
+    // Quiesce and remove the in-memory session first. This cancels the loop,
+    // waits for its run gate, and prevents the dispatcher from starting a
+    // queued copy while the durable cascade runs.
+    state.executor.remove_session(&session_id).await;
     state
         .db
         .delete_session(&session_id)
         .map_err(|e| log_err("delete_session", e))?;
-    state.executor.remove_session(&session_id).await;
     // The session is gone, so no `session:updated` terminal transition will ever
     // fire for it; a dedicated `session:deleted` lets listeners (busy-session
     // tracking, per-session state) release the id immediately.
@@ -271,12 +274,15 @@ pub async fn clear_history(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<u64, String> {
+    // Stop all in-memory work before deleting the durable rows. Otherwise a
+    // handler that was already executing could outlive the history purge and
+    // publish stale tool/message writes after the command returns.
+    state.executor.clear_all_sessions().await;
     let count = state
         .db
         .clear_sessions()
         .map(|n| n as u64)
         .map_err(|e| log_err("clear_history", e))?;
-    state.executor.clear_all_sessions().await;
     // `session_id: null` signals "every session was removed" so listeners clear
     // per-session state (e.g. the busy set) in one shot instead of one event
     // per deleted session.

@@ -7,6 +7,7 @@
 
 use super::*;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
+use haven_tools::ToolExecutionOutcome;
 
 /// Failure classification used to shape the post-failure retry nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,16 @@ pub(crate) fn empty_inbox_output(result: &str) -> bool {
 /// True when this is an `agent` inbox poll (check tool_input.operation).
 pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Value) -> bool {
     tool_name == "agent" && tool_input.get("operation").and_then(|v| v.as_str()) == Some("inbox")
+}
+
+/// Only terminal failures with a known, completed outcome may produce an
+/// agent-level retry nudge. `Cancelled` and `TimedOutUnknown` are deliberately
+/// excluded because the external operation may still be in flight.
+pub(super) fn is_retryable_failure_outcome(outcome: ToolExecutionOutcome) -> bool {
+    matches!(
+        outcome,
+        ToolExecutionOutcome::Failed | ToolExecutionOutcome::TimedOutAndTerminated
+    )
 }
 
 impl ReActEngine {
@@ -157,5 +168,25 @@ impl ReActEngine {
             return FailureKind::Logic;
         }
         FailureKind::Unknown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_retryable_failure_outcome;
+    use haven_tools::ToolExecutionOutcome;
+
+    #[test]
+    fn unknown_and_cancelled_outcomes_never_request_retry() {
+        assert!(!is_retryable_failure_outcome(
+            ToolExecutionOutcome::Cancelled
+        ));
+        assert!(!is_retryable_failure_outcome(
+            ToolExecutionOutcome::TimedOutUnknown
+        ));
+        assert!(is_retryable_failure_outcome(ToolExecutionOutcome::Failed));
+        assert!(is_retryable_failure_outcome(
+            ToolExecutionOutcome::TimedOutAndTerminated
+        ));
     }
 }

@@ -242,13 +242,28 @@ impl SessionExecutor {
     /// This does NOT delete from DB —the caller handles that.
     /// Succeeds even if the session is not in memory (e.g. after restart).
     pub async fn remove_session(&self, session_id: &str) {
+        // Cancel the token before removing the working-set entry. The ReAct
+        // loop and the active tool hold clones of this token; merely dropping
+        // the map entry cannot interrupt either one.
+        let cancel = self
+            .session_cancellations
+            .lock()
+            .await
+            .entry(session_id.to_string())
+            .or_insert_with(CancellationToken::new)
+            .clone();
+        cancel.cancel();
+        self.dequeue_pending(session_id).await;
+        self.cancel_session_actions(session_id).await;
+        // Do not delete the durable row while the handler can still publish a
+        // tool result. The run gate is released only after the handler's
+        // cleanup path has finished.
+        self.await_run_finished(session_id).await;
         self.tools
             .safety_gateway
             .clear_session_trust(session_id)
             .await;
-        self.cancel_session_actions(session_id).await;
         self.sessions.lock().await.remove(session_id);
-        self.dequeue_pending(session_id).await;
         self.cleanup_session_maps(session_id).await;
         self.status_tx.lock().await.remove(session_id);
         self.action_completions.lock().await.remove(session_id);
@@ -279,6 +294,27 @@ impl SessionExecutor {
     /// Remove all sessions from memory and clean up running state.
     /// Used when the user clears history —the DB is already wiped.
     pub async fn clear_all_sessions(&self) {
+        let mut session_ids: HashSet<String> = self.sessions.lock().await.keys().cloned().collect();
+        session_ids.extend(self.running_sessions.lock().await.iter().cloned());
+        session_ids.extend(self.session_cancellations.lock().await.keys().cloned());
+        let session_ids: Vec<String> = session_ids.into_iter().collect();
+        let running_ids: Vec<String> = self.running_sessions.lock().await.iter().cloned().collect();
+        let cancellation_tokens: Vec<_> = self
+            .session_cancellations
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        for cancel in cancellation_tokens {
+            cancel.cancel();
+        }
+        for session_id in &session_ids {
+            self.cancel_session_actions(session_id).await;
+        }
+        for session_id in running_ids {
+            self.await_run_finished(&session_id).await;
+        }
         self.tools.safety_gateway.clear_all_trust().await;
         self.sessions.lock().await.clear();
         self.pending_queue.lock().await.clear();

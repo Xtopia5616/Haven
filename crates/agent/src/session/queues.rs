@@ -15,6 +15,50 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Weak;
+
+    #[tokio::test]
+    async fn confirm_pending_is_registered_before_event_callback_runs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db =
+            Arc::new(haven_memory::Database::open(&temp_dir.path().join("memory.db")).unwrap());
+        let executor = Arc::new(SessionExecutor::new(
+            db,
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let session = executor.create_session("confirm").await.unwrap();
+        let weak: Weak<SessionExecutor> = Arc::downgrade(&executor);
+        executor
+            .on_confirm_request
+            .set(Arc::new(move |_, session_id, _, _, _, _, _, _| {
+                let executor = weak.upgrade().expect("executor must stay alive");
+                let pending = executor.awaiting_confirm.try_lock().unwrap();
+                assert!(pending.contains_key(&session_id));
+            }));
+
+        let pending = crate::types::ConfirmPending {
+            step_number: 1,
+            tools: vec![crate::types::ConfirmPendingTool {
+                confirm_id: "conf-test".into(),
+                tool_name: "shell".into(),
+                tool_input: serde_json::json!({"command": "echo test"}),
+                tool_call_id: "call-test".into(),
+                step_id: "step-test".into(),
+                action_index: 0,
+                risk_level: haven_common::types::RiskLevel::High,
+                decision: None,
+            }],
+        };
+
+        executor.request_confirm_batch(&session.id, pending).await;
+        assert!(executor.get_awaiting_confirm(&session.id).await.is_some());
+    }
+}
+
 /// Context selected for the next model request.
 ///
 /// The field order documents the delivery policy: steering preempts
@@ -536,7 +580,23 @@ impl SessionExecutor {
         session_id: &str,
         pending: crate::types::ConfirmPending,
     ) {
-        for tool in &pending.tools {
+        // Establish the lifecycle state before exposing any confirm id to the
+        // UI. A callback can synchronously trigger an IPC resolve; that
+        // resolver must observe a real paused session and a registered gate.
+        if let Err(error) = self
+            .update_session_status(session_id, SessionStatus::PausedAwaitingConfirm)
+            .await
+        {
+            tracing::warn!(
+                "request_confirm_batch: failed to pause session {} before notification: {}",
+                session_id,
+                error
+            );
+        }
+        self.set_awaiting_confirm(session_id, Some(pending.clone()))
+            .await;
+
+        for tool in pending.tools.iter().filter(|tool| tool.decision.is_none()) {
             let confirm_id: haven_common::types::ConfirmId = tool.confirm_id.clone().into();
             if let Some(cb) = self.on_confirm_request.snap() {
                 cb(
@@ -551,6 +611,5 @@ impl SessionExecutor {
                 );
             }
         }
-        self.set_awaiting_confirm(session_id, Some(pending)).await;
     }
 }

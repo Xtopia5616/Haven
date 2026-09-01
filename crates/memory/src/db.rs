@@ -160,19 +160,24 @@ struct QueryCache {
     sessions: Option<CacheEntry<Vec<crate::repositories::sessions::Session>>>,
     facts: Option<CacheEntry<Vec<crate::repositories::facts::Fact>>>,
     embeddings: Option<CacheEntry<Vec<crate::embeddings::EmbeddedText>>>,
-    // Bumped on every cache_invalidate_* so a stale cache_put_* (whose DB
-    // query ran before an invalidation) can detect it was superseded and
-    // skip the write instead of overwriting fresh state with stale data.
-    generation: u64,
 }
 
 pub struct Database {
     pool: ConnectionPool,
     cache: Mutex<HashMap<String, QueryCache>>,
+    /// Global cache epoch. A per-key generation cannot protect a cache miss
+    /// whose key does not exist yet: the invalidation has nowhere to record
+    /// the generation. The global epoch closes that race for every cache
+    /// read, while invalidation still clears only the affected slots.
+    cache_epoch: AtomicU64,
     /// Monotonic in-process revision for all memory reads, including facts,
     /// episodes, and their embedding index. It is intentionally not persisted
     /// or part of the database schema; consumers use it only for cache keys.
     memory_revision: AtomicU64,
+    /// The requested model for an in-flight embedding batch, keyed by the
+    /// entity being embedded. Providers may return a canonical/aliased model
+    /// name; persistence must retain the configured index identity instead.
+    pending_embedding_models: Mutex<HashMap<(String, String), String>>,
 }
 
 impl Database {
@@ -201,7 +206,9 @@ impl Database {
         Ok(Self {
             pool,
             cache: Mutex::new(HashMap::new()),
+            cache_epoch: AtomicU64::new(0),
             memory_revision: AtomicU64::new(0),
+            pending_embedding_models: Mutex::new(HashMap::new()),
         })
     }
 
@@ -243,7 +250,9 @@ impl Database {
         Ok(Self {
             pool,
             cache: Mutex::new(HashMap::new()),
+            cache_epoch: AtomicU64::new(0),
             memory_revision: AtomicU64::new(0),
+            pending_embedding_models: Mutex::new(HashMap::new()),
         })
     }
 
@@ -283,16 +292,12 @@ impl Database {
     /// Returns the current cache generation for a key. Callers capture this
     /// before querying the DB and pass it to the corresponding `cache_put_*`
     /// to guard against stale-overwrite after a concurrent invalidation.
-    pub fn cache_generation(&self, key: &str) -> u64 {
-        self.cache
-            .lock()
-            .ok()
-            .and_then(|c| c.get(key).map(|qc| qc.generation))
-            .unwrap_or(0)
+    pub fn cache_generation(&self, _key: &str) -> u64 {
+        self.cache_epoch.load(Ordering::Acquire)
     }
 
     /// Shared write path for every `cache_put_*`: upsert the key's
-    /// `QueryCache` entry, skip the write if the generation moved (a
+    /// `QueryCache` entry, skip the write if the global epoch moved (a
     /// concurrent invalidation superseded this query's result), then store
     /// `data` into the slot chosen by `set`.
     fn cache_put<T: Clone + Send>(
@@ -304,14 +309,19 @@ impl Database {
         set: impl FnOnce(&mut QueryCache, CacheEntry<T>),
     ) {
         if let Ok(mut cache) = self.cache.lock() {
+            if self.cache_epoch.load(Ordering::Acquire) != expected_gen {
+                return;
+            }
             let qc = cache.entry(key).or_insert(QueryCache {
                 messages: None,
                 sessions: None,
                 facts: None,
                 embeddings: None,
-                generation: expected_gen,
             });
-            if qc.generation != expected_gen {
+            // The epoch is global, so an unrelated-key invalidation may have
+            // advanced it without touching this QueryCache entry. Only the
+            // epoch comparison above is authoritative for stale-write safety.
+            if self.cache_epoch.load(Ordering::Acquire) != expected_gen {
                 return;
             }
             set(
@@ -393,20 +403,33 @@ impl Database {
     }
 
     pub fn cache_invalidate_messages(&self, session_id: &str) {
+        self.bump_cache_epoch();
         if let Ok(mut cache) = self.cache.lock()
             && let Some(qc) = cache.get_mut(session_id)
         {
             qc.messages = None;
-            qc.generation = qc.generation.wrapping_add(1);
+        }
+    }
+
+    /// Invalidate every per-session message cache. Bulk session deletion and
+    /// retention cannot efficiently enumerate all cached session keys, so a
+    /// global sweep is the only way to prevent deleted transcripts from being
+    /// served by the read cache.
+    pub fn cache_invalidate_all_messages(&self) {
+        self.bump_cache_epoch();
+        if let Ok(mut cache) = self.cache.lock() {
+            for qc in cache.values_mut() {
+                qc.messages = None;
+            }
         }
     }
 
     pub fn cache_invalidate_sessions(&self) {
+        self.bump_cache_epoch();
         if let Ok(mut cache) = self.cache.lock()
             && let Some(qc) = cache.get_mut("_sessions")
         {
             qc.sessions = None;
-            qc.generation = qc.generation.wrapping_add(1);
         }
     }
 
@@ -441,18 +464,17 @@ impl Database {
 
     pub fn cache_invalidate_facts(&self, subject: &str) {
         self.bump_memory_revision();
+        self.bump_cache_epoch();
         if let Ok(mut cache) = self.cache.lock() {
             // The subject view...
             let key = format!("_facts_{}", subject);
             if let Some(qc) = cache.get_mut(&key) {
                 qc.facts = None;
-                qc.generation = qc.generation.wrapping_add(1);
             }
             // ...and the all-subjects list: a mutation to ANY subject makes
             // the global list stale too.
             if let Some(qc) = cache.get_mut("_facts_all") {
                 qc.facts = None;
-                qc.generation = qc.generation.wrapping_add(1);
             }
         }
     }
@@ -461,6 +483,7 @@ impl Database {
     /// bulk maintenance that may touch arbitrary subjects (P1-6).
     pub fn cache_invalidate_all_facts(&self) {
         self.bump_memory_revision();
+        self.bump_cache_epoch();
         if let Ok(mut cache) = self.cache.lock() {
             let keys: Vec<String> = cache
                 .keys()
@@ -470,7 +493,6 @@ impl Database {
             for key in keys {
                 if let Some(qc) = cache.get_mut(&key) {
                     qc.facts = None;
-                    qc.generation = qc.generation.wrapping_add(1);
                 }
             }
         }
@@ -518,11 +540,26 @@ impl Database {
     /// untouched, so invalidating would only thrash the cache.
     pub fn cache_invalidate_embeddings(&self, entity_type: &str) {
         self.bump_memory_revision();
+        self.bump_cache_epoch();
         if let Ok(mut cache) = self.cache.lock() {
             let key = format!("_embeddings_{}", entity_type);
             if let Some(qc) = cache.get_mut(&key) {
                 qc.embeddings = None;
-                qc.generation = qc.generation.wrapping_add(1);
+            }
+        }
+    }
+
+    /// Invalidate all memory-derived caches after a session deletion or
+    /// retention pass. Episodes are owned by sessions, so deleting a session
+    /// changes the readable memory set even though no fact row changed.
+    pub fn cache_invalidate_memory(&self) {
+        self.bump_memory_revision();
+        self.bump_cache_epoch();
+        if let Ok(mut cache) = self.cache.lock() {
+            for (key, qc) in cache.iter_mut() {
+                if key.starts_with("_embeddings_") {
+                    qc.embeddings = None;
+                }
             }
         }
     }
@@ -536,6 +573,66 @@ impl Database {
 
     fn bump_memory_revision(&self) {
         self.memory_revision.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn bump_cache_epoch(&self) {
+        self.cache_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn register_pending_embedding_model(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        model: &str,
+    ) {
+        if model.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.pending_embedding_models.lock() {
+            pending.insert(
+                (entity_type.to_string(), entity_id.to_string()),
+                model.to_string(),
+            );
+        }
+    }
+
+    pub(crate) fn pending_embedding_model(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> Option<String> {
+        self.pending_embedding_models
+            .lock()
+            .ok()
+            .and_then(|pending| {
+                pending
+                    .get(&(entity_type.to_string(), entity_id.to_string()))
+                    .cloned()
+            })
+    }
+
+    pub(crate) fn clear_pending_embedding_model(&self, entity_type: &str, entity_id: &str) {
+        if let Ok(mut pending) = self.pending_embedding_models.lock() {
+            pending.remove(&(entity_type.to_string(), entity_id.to_string()));
+        }
+    }
+
+    pub(crate) fn clear_pending_embedding_models(&self) {
+        if let Ok(mut pending) = self.pending_embedding_models.lock() {
+            pending.clear();
+        }
+    }
+
+    pub(crate) fn clear_pending_embedding_models_for_ids(
+        &self,
+        entity_type: &str,
+        entity_ids: &[String],
+    ) {
+        if let Ok(mut pending) = self.pending_embedding_models.lock() {
+            for entity_id in entity_ids {
+                pending.remove(&(entity_type.to_string(), entity_id.clone()));
+            }
+        }
     }
 }
 

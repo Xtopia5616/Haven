@@ -7,12 +7,14 @@
 use super::snapshot_io::PauseTurnInput;
 #[cfg(test)]
 use super::tool_batch_policy::FailureKind;
-use super::tool_batch_policy::{empty_inbox_output, is_agent_inbox_call};
+use super::tool_batch_policy::{
+    empty_inbox_output, is_agent_inbox_call, is_retryable_failure_outcome,
+};
 use super::*;
 use crate::types::Action;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_tools::{ToolConcurrency, is_silent_action};
+use haven_tools::{ToolConcurrency, ToolExecutionOutcome, is_silent_action};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
@@ -25,9 +27,9 @@ pub(super) const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
 
 #[derive(Default)]
 pub(super) struct ToolBatchState {
-    pub(super) any_tool_failure: bool,
+    pub(super) retryable_failure: bool,
     pub(super) failure_signals: Vec<(String, String)>,
-    pub(super) last_failed_tool_call_id: Option<String>,
+    pub(super) last_retryable_failed_tool_call_id: Option<String>,
     pub(super) asked_questions: Vec<String>,
     pub(super) ask_step_ids: Vec<String>,
 }
@@ -61,6 +63,7 @@ impl ToolBatchState {
             tool_name,
             step_result,
             is_error,
+            outcome,
             ask_question,
             ask_options,
             notify_title,
@@ -69,9 +72,9 @@ impl ToolBatchState {
             action_index,
         } = result;
 
-        if is_error {
-            self.any_tool_failure = true;
-            self.last_failed_tool_call_id = action.tool_call_id.clone();
+        if is_error && is_retryable_failure_outcome(outcome) {
+            self.retryable_failure = true;
+            self.last_retryable_failed_tool_call_id = action.tool_call_id.clone();
             if self.failure_signals.len() < 3 {
                 let cap: String = step_result.chars().take(600).collect();
                 self.failure_signals.push((tool_name.clone(), cap));
@@ -159,8 +162,24 @@ impl ToolBatchResults {
         self.slots.get(index).is_some_and(Option::is_some)
     }
 
-    pub(super) fn into_ordered(self) -> impl Iterator<Item = CompletedTool> {
-        self.slots.into_iter().flatten()
+    pub(super) fn is_complete(&self) -> bool {
+        self.slots.iter().all(Option::is_some)
+    }
+
+    #[cfg(test)]
+    pub(super) fn ready_prefix_len(&self) -> usize {
+        self.slots.iter().take_while(|slot| slot.is_some()).count()
+    }
+
+    pub(super) fn into_ordered(self) -> Vec<CompletedTool> {
+        assert!(
+            self.is_complete(),
+            "tool batch result slots must be complete before materialization"
+        );
+        self.slots
+            .into_iter()
+            .map(|slot| slot.expect("complete tool result slot"))
+            .collect()
     }
 }
 
@@ -180,6 +199,7 @@ pub(super) struct CompletedTool {
     tool_name: String,
     step_result: String,
     is_error: bool,
+    pub(super) outcome: ToolExecutionOutcome,
     ask_question: Option<String>,
     ask_options: Vec<String>,
     notify_title: Option<String>,
@@ -189,17 +209,19 @@ pub(super) struct CompletedTool {
 }
 
 impl CompletedTool {
-    pub(super) fn failed(
+    pub(super) fn from_observation(
         action: Action,
         step_id: String,
         action_index: u32,
         step_result: String,
+        outcome: ToolExecutionOutcome,
     ) -> Self {
         Self {
             tool_name: action.tool_name.clone(),
             action,
             step_result,
-            is_error: true,
+            is_error: !matches!(outcome, ToolExecutionOutcome::Succeeded),
+            outcome,
             ask_question: None,
             ask_options: Vec::new(),
             notify_title: None,
@@ -271,51 +293,61 @@ pub(super) async fn execute_tool_action(
             .await
     };
 
-    let (step_result, is_error, ask_question, ask_options, notify_title, notify_body) = match result
-    {
-        Ok(result) => {
-            let output_len = serde_json::to_string(&result.output)
-                .map(|text| text.len())
-                .unwrap_or(0);
-            tracing::debug!(
-                "tool '{}' at step {} completed: success={}, {} chars",
-                tool_name,
-                step_num,
-                result.success,
-                output_len
-            );
-            tracing::trace!(
-                "tool '{}' at step {} full output: {} chars",
-                tool_name,
-                step_num,
-                output_len
-            );
-            let step_result = executor.observation_text(&tool_name, &result).await;
-            (
-                step_result,
-                !result.success,
-                result.signals.ask_question,
-                result.signals.ask_options,
-                result.signals.notify_title,
-                result.signals.notify_body,
-            )
-        }
-        Err(error) => {
-            tracing::debug!(
-                "tool '{}' at step {} failed: {}",
-                tool_name,
-                step_num,
-                error
-            );
-            (error.to_string(), true, None, Vec::new(), None, None)
-        }
-    };
+    let (step_result, is_error, outcome, ask_question, ask_options, notify_title, notify_body) =
+        match result {
+            Ok(result) => {
+                let output_len = serde_json::to_string(&result.output)
+                    .map(|text| text.len())
+                    .unwrap_or(0);
+                tracing::debug!(
+                    "tool '{}' at step {} completed: success={}, {} chars",
+                    tool_name,
+                    step_num,
+                    result.success,
+                    output_len
+                );
+                tracing::trace!(
+                    "tool '{}' at step {} full output: {} chars",
+                    tool_name,
+                    step_num,
+                    output_len
+                );
+                let step_result = executor.observation_text(&tool_name, &result).await;
+                (
+                    step_result,
+                    !result.success,
+                    result.outcome,
+                    result.signals.ask_question,
+                    result.signals.ask_options,
+                    result.signals.notify_title,
+                    result.signals.notify_body,
+                )
+            }
+            Err(error) => {
+                tracing::debug!(
+                    "tool '{}' at step {} failed: {}",
+                    tool_name,
+                    step_num,
+                    error
+                );
+                (
+                    error.to_string(),
+                    true,
+                    ToolExecutionOutcome::Failed,
+                    None,
+                    Vec::new(),
+                    None,
+                    None,
+                )
+            }
+        };
 
     CompletedTool {
         action,
         tool_name,
         step_result,
         is_error,
+        outcome,
         ask_question,
         ask_options,
         notify_title,
@@ -618,7 +650,7 @@ mod tests {
         let mut results = ToolBatchResults::new(2);
         results.set(
             1,
-            CompletedTool::failed(
+            CompletedTool::from_observation(
                 Action {
                     tool_name: "second".into(),
                     tool_input: serde_json::json!({}),
@@ -628,11 +660,12 @@ mod tests {
                 "step-second".into(),
                 1,
                 "second completed first".into(),
+                haven_tools::ToolExecutionOutcome::Failed,
             ),
         );
         results.set(
             0,
-            CompletedTool::failed(
+            CompletedTool::from_observation(
                 Action {
                     tool_name: "first".into(),
                     tool_input: serde_json::json!({}),
@@ -642,14 +675,75 @@ mod tests {
                 "step-first".into(),
                 0,
                 "first completed second".into(),
+                haven_tools::ToolExecutionOutcome::Failed,
             ),
         );
 
         let ordered: Vec<_> = results
             .into_ordered()
+            .into_iter()
             .map(|result| result.action.tool_name)
             .collect();
         assert_eq!(ordered, ["first", "second"]);
+    }
+
+    #[test]
+    fn result_slots_stop_at_unresolved_confirmation_barrier() {
+        let mut results = ToolBatchResults::new(3);
+        results.set(
+            0,
+            CompletedTool::from_observation(
+                Action {
+                    tool_name: "first".into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some("call-first".into()),
+                },
+                "step-first".into(),
+                0,
+                "first".into(),
+                haven_tools::ToolExecutionOutcome::Succeeded,
+            ),
+        );
+        results.set(
+            2,
+            CompletedTool::from_observation(
+                Action {
+                    tool_name: "third".into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some("call-third".into()),
+                },
+                "step-third".into(),
+                2,
+                "third".into(),
+                haven_tools::ToolExecutionOutcome::Succeeded,
+            ),
+        );
+
+        assert_eq!(results.ready_prefix_len(), 1);
+        assert!(!results.is_complete());
+    }
+
+    #[test]
+    fn completed_tool_preserves_unknown_execution_outcome() {
+        let result = CompletedTool::from_observation(
+            Action {
+                tool_name: "send".into(),
+                tool_input: serde_json::json!({}),
+                is_final: false,
+                tool_call_id: Some("call-send".into()),
+            },
+            "step-send".into(),
+            0,
+            "timed out".into(),
+            haven_tools::ToolExecutionOutcome::TimedOutUnknown,
+        );
+
+        assert_eq!(
+            result.outcome,
+            haven_tools::ToolExecutionOutcome::TimedOutUnknown
+        );
     }
 
     #[test]

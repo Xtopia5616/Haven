@@ -8,7 +8,7 @@
 use crate::Database;
 use crate::embeddings::{EmbeddedText, entity_kind};
 use crate::repositories::facts::{
-    Fact, fact_effective_confidence, is_sensitive_object, is_sensitive_predicate,
+    Fact, fact_effective_confidence, is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -144,7 +144,9 @@ impl<'db> MemoryRetriever<'db> {
     /// recall, and vector recall. Stored credential-like rows are never
     /// returned to a model even if a legacy database contains them.
     pub fn visible_fact(fact: &Fact) -> bool {
-        !is_sensitive_predicate(&fact.predicate) && !is_sensitive_object(&fact.object)
+        !is_sensitive_text(&fact.subject)
+            && !is_sensitive_predicate(&fact.predicate)
+            && !is_sensitive_object(&fact.object)
     }
 
     pub fn filter_visible_facts(facts: impl IntoIterator<Item = Fact>) -> Vec<Fact> {
@@ -165,7 +167,7 @@ impl<'db> MemoryRetriever<'db> {
                 let term_refs = haven_common::text::memory_recall_term_sample(&terms, 6);
                 let facts = self
                     .db
-                    .search_facts_any(&term_refs, query.limit)?
+                    .search_facts_any(&term_refs, query.limit.saturating_mul(4))?
                     .into_iter()
                     .filter(|fact| {
                         query
@@ -174,7 +176,9 @@ impl<'db> MemoryRetriever<'db> {
                             .is_none_or(|subject| fact.subject == subject)
                     })
                     .collect::<Vec<_>>();
-                Self::filter_visible_facts(facts)
+                let mut facts = Self::filter_visible_facts(facts);
+                facts.truncate(query.limit);
+                facts
                     .into_iter()
                     .map(|fact| {
                         let score = fact_effective_confidence(&fact);
@@ -189,24 +193,25 @@ impl<'db> MemoryRetriever<'db> {
             }
             MemoryKind::Episode => self
                 .db
-                .search_episodes_by_keywords_excluding(
+                .search_episodes_by_keywords_typed(
                     &haven_common::text::memory_recall_term_sample(
                         &haven_common::text::memory_recall_terms(&query.text),
                         6,
                     ),
-                    query.limit,
+                    query.limit.saturating_mul(4),
                     query.exclude_session_id.as_deref(),
                 )?
                 .into_iter()
-                .filter(|text| Self::visible_text(text))
-                .map(|text| MemoryHit {
-                    entity_id: String::new(),
-                    text,
+                .filter(|hit| Self::visible_text(&hit.text))
+                .map(|hit| MemoryHit {
+                    entity_id: hit.entity_id,
+                    text: hit.text,
                     // Preserve the existing wire meaning for keyword episode
                     // hits: only vector recall exposes a similarity score.
                     score: 0.0,
                     model: String::new(),
                 })
+                .take(query.limit)
                 .collect(),
         };
         Ok(hits)
@@ -225,10 +230,11 @@ impl<'db> MemoryRetriever<'db> {
         if vector.is_empty() || model.trim().is_empty() {
             return Ok(Vec::new());
         }
+        let candidate_limit = query.limit.saturating_mul(4);
         let raw = self.db.search_embeddings_filtered(
             query.kind.entity_type(),
             vector,
-            query.limit,
+            candidate_limit,
             model,
             query.fact_subject.as_deref(),
             query.exclude_session_id.as_deref(),
@@ -270,6 +276,7 @@ impl<'db> MemoryRetriever<'db> {
                 .then_with(|| a.entity_id.cmp(&b.entity_id))
                 .then_with(|| a.text.cmp(&b.text))
         });
+        hits.truncate(query.limit);
         Ok(hits)
     }
 

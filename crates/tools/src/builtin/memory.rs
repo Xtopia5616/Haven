@@ -65,7 +65,8 @@ pub struct MemoryParams {
     /// Free-text query for search / recall.
     #[serde(default)]
     pub query: Option<String>,
-    /// Maximum number of results (default 10 for search/recall, 20 for list; recall capped at 20).
+    /// Maximum number of results (default 10 for search, 20 for list, 5 for
+    /// recall; recall is capped at 20).
     #[serde(default)]
     pub limit: Option<i64>,
     /// Short attribute key (required for remember and forget).
@@ -113,13 +114,12 @@ impl MemoryTool {
     /// Drop secrets before anything is shown to the model (defense in depth:
     /// the write path already purges them, this guards the read path too).
     fn visible_facts(
-        &self,
         facts: Vec<haven_memory::repositories::facts::Fact>,
     ) -> Vec<haven_memory::repositories::facts::Fact> {
         MemoryRetriever::filter_visible_facts(facts)
     }
 
-    fn to_output_rows(&self, facts: &[haven_memory::repositories::facts::Fact]) -> Value {
+    fn to_output_rows(facts: &[haven_memory::repositories::facts::Fact]) -> Value {
         let rows: Vec<Value> = facts
             .iter()
             .map(|f| {
@@ -145,7 +145,7 @@ impl MemoryTool {
         json!({ "facts": rows })
     }
 
-    fn execute_search(&self, params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    fn execute_search(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
         let query = params
             .query
             .as_deref()
@@ -153,28 +153,28 @@ impl MemoryTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("query is required for operation=search"))?;
         let limit = Self::parse_limit(params, 10);
-        let mut facts = self.visible_facts(db.search_facts(query)?);
+        let mut facts = Self::visible_facts(db.search_facts(query)?);
         facts.truncate(limit);
-        Ok(ToolResult::ok(self.to_output_rows(&facts)))
+        Ok(ToolResult::ok(Self::to_output_rows(&facts)))
     }
 
-    fn execute_list(&self, params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    fn execute_list(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
         let limit = Self::parse_limit(params, 20);
         let subject = params
             .subject
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let mut facts = self.visible_facts(match subject {
+        let mut facts = Self::visible_facts(match subject {
             Some(s) => db.get_facts(s)?,
             // Cross-subject recent N (already effective-confidence ordered).
             None => db.list_facts()?,
         });
         facts.truncate(limit);
-        Ok(ToolResult::ok(self.to_output_rows(&facts)))
+        Ok(ToolResult::ok(Self::to_output_rows(&facts)))
     }
 
-    fn execute_remember(&self, params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    fn execute_remember(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
         let predicate = params
             .predicate
             .as_deref()
@@ -211,7 +211,7 @@ impl MemoryTool {
         })))
     }
 
-    fn execute_forget(&self, params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    fn execute_forget(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
         let predicate = params
             .predicate
             .as_deref()
@@ -233,7 +233,8 @@ impl MemoryTool {
     async fn execute_recall(
         &self,
         params: &MemoryParams,
-        db: &Database,
+        db: Arc<Database>,
+        session_id: Option<&str>,
     ) -> anyhow::Result<ToolResult> {
         let query = params
             .query
@@ -252,7 +253,9 @@ impl MemoryTool {
             .limit
             .map(|l| l.clamp(1, MAX_RECALL_LIMIT as i64) as usize)
             .unwrap_or(5);
-        let query = MemoryQuery::new(query, kind, limit)?;
+        let query = MemoryQuery::new(query, kind, limit)?
+            .with_excluded_session(session_id)
+            .with_fact_subject(params.subject.as_deref());
 
         if let Some(recall) = self.recall.read().await.clone() {
             let recall = recall(query).await?;
@@ -263,7 +266,9 @@ impl MemoryTool {
             })));
         }
 
-        let recall = MemoryRetriever::new(db).retrieve(&query, None)?;
+        let recall = db
+            .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, None))
+            .await?;
 
         Ok(ToolResult::ok(json!({
             "kind": kind.entity_type(),
@@ -274,25 +279,49 @@ impl MemoryTool {
 
     /// Entry ①: structured native interface (internal code calls — zero
     /// serialization overhead). Entry ② deserializes JSON and delegates here.
-    pub async fn run(
+    async fn run_with_session(
         &self,
         params: MemoryParams,
+        session_id: Option<String>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let Some(db) = self.db.as_ref() else {
+        let Some(db) = self.db.as_ref().cloned() else {
             anyhow::bail!("memory database is not available");
         };
 
         match params.operation.unwrap_or(MemoryOperation::Search) {
-            MemoryOperation::Search => self.execute_search(&params, db),
-            MemoryOperation::List => self.execute_list(&params, db),
-            MemoryOperation::Remember => self.execute_remember(&params, db),
-            MemoryOperation::Forget => self.execute_forget(&params, db),
-            MemoryOperation::Recall => self.execute_recall(&params, db).await,
+            MemoryOperation::Search => {
+                db.run_blocking(move |db| Self::execute_search(&params, db))
+                    .await
+            }
+            MemoryOperation::List => {
+                db.run_blocking(move |db| Self::execute_list(&params, db))
+                    .await
+            }
+            MemoryOperation::Remember => {
+                db.run_blocking(move |db| Self::execute_remember(&params, db))
+                    .await
+            }
+            MemoryOperation::Forget => {
+                db.run_blocking(move |db| Self::execute_forget(&params, db))
+                    .await
+            }
+            MemoryOperation::Recall => {
+                self.execute_recall(&params, db, session_id.as_deref())
+                    .await
+            }
         }
+    }
+
+    pub async fn run(
+        &self,
+        params: MemoryParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.run_with_session(params, None, cancel).await
     }
 }
 
@@ -314,6 +343,10 @@ impl Tool for MemoryTool {
             Some("remember") | Some("forget") => RiskLevel::Medium,
             _ => RiskLevel::Safe,
         }
+    }
+
+    fn requires_session_id(&self) -> bool {
+        true
     }
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
@@ -373,8 +406,14 @@ impl Tool for MemoryTool {
     /// Entry ②: LLM JSON entry — convert/validate into `MemoryParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let session_id = input
+            .get("_session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
         let params = crate::tool::parse_tool_input::<MemoryParams>(&self.name(), input)?;
-        self.run(params, cancel).await
+        self.run_with_session(params, session_id, cancel).await
     }
 }
 
@@ -676,6 +715,8 @@ mod tests {
                 assert_eq!(query.kind, MemoryKind::Episode);
                 assert_eq!(query.text, "release notes");
                 assert_eq!(query.limit, 3);
+                assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
+                assert_eq!(query.fact_subject, None);
                 Ok(MemoryRecall {
                     hits: vec![MemoryHit {
                         entity_id: "msg-episode".into(),
@@ -694,7 +735,8 @@ mod tests {
                     "operation": "recall",
                     "query": "release notes",
                     "kind": "episode",
-                    "limit": 3
+                    "limit": 3,
+                    "_session_id": "ses-current"
                 }),
                 CancellationToken::new(),
             )
@@ -703,6 +745,33 @@ mod tests {
 
         assert_eq!(result.output["mode"], "hybrid");
         assert_eq!(result.output["hits"][0]["entity_id"], "msg-episode");
+    }
+
+    #[tokio::test]
+    async fn shared_recall_forwards_fact_subject_scope() {
+        let (tool, _db, _dir) = test_tool();
+        let slot = tool.recall.clone();
+        *slot.write().await = Some(Arc::new(|query| {
+            Box::pin(async move {
+                assert_eq!(query.kind, MemoryKind::Fact);
+                assert_eq!(query.fact_subject.as_deref(), Some("workspace"));
+                assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
+                Ok(MemoryRecall::default())
+            })
+        }));
+
+        tool.execute(
+            json!({
+                "operation": "recall",
+                "query": "path",
+                "kind": "fact",
+                "subject": "workspace",
+                "_session_id": "ses-current"
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

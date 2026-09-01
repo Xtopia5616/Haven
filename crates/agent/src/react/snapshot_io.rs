@@ -281,7 +281,18 @@ impl ReActEngine {
             } else {
                 PauseReason::TurnEnd
             };
-            set_status_and_emit(&self.executor, emitter, session_id, status).await?;
+            // `request_confirm_batch` establishes the paused state before it
+            // emits any confirmation id. Do not write PausedAwaitingConfirm
+            // over a concurrent final decision that already woke the session
+            // to Pending; doing so would strand an all-decided gate.
+            let confirm_status_owned = status.is_awaiting_confirm()
+                && matches!(
+                    self.executor.get_session_state(session_id).await,
+                    Some(SessionStatus::PausedAwaitingConfirm | SessionStatus::Pending)
+                );
+            if !confirm_status_owned {
+                set_status_and_emit(&self.executor, emitter, session_id, status).await?;
+            }
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
                 step_num: snapshot_step,
@@ -430,7 +441,36 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.save_snapshot_with_error_partials(session_id, state, step_number, None)
+        self.save_snapshot_with_error_partials(session_id, state, step_number, None, false)
+            .await
+    }
+
+    /// Checkpoint a completed tool batch before the loop makes another LLM
+    /// request. This closes the crash window where `session_steps` and chat
+    /// rows already contain tool results but the periodic snapshot still ends
+    /// at the assistant's unanswered tool call.
+    pub(super) async fn save_snapshot_after_tool_results(
+        &self,
+        session_id: &str,
+        state: &ReActState,
+        step_number: u32,
+    ) -> bool {
+        self.save_snapshot_with_error_partials(session_id, state, step_number, None, false)
+            .await
+    }
+
+    /// Same checkpoint as [`Self::save_snapshot_after_tool_results`], but the
+    /// completed confirmation batch must not remain resumable. Writing the
+    /// result events and clearing `awaiting_confirm` in one snapshot prevents
+    /// a crash between result projection and the in-memory gate cleanup from
+    /// replaying an already executed side effect.
+    pub(super) async fn save_snapshot_after_confirm_results(
+        &self,
+        session_id: &str,
+        state: &ReActState,
+        step_number: u32,
+    ) -> bool {
+        self.save_snapshot_with_error_partials(session_id, state, step_number, None, true)
             .await
     }
 
@@ -444,9 +484,14 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
         error_partial_message_ids: Option<&[String]>,
+        clear_awaiting_confirm: bool,
     ) -> bool {
         let awaiting = self.executor.get_awaiting_answer(session_id).await;
-        let awaiting_confirm = self.executor.get_awaiting_confirm(session_id).await;
+        let awaiting_confirm = if clear_awaiting_confirm {
+            None
+        } else {
+            self.executor.get_awaiting_confirm(session_id).await
+        };
         let run_budget = self.current_run_budget(session_id);
         let view = SnapshotView {
             events: &state.events,
@@ -577,6 +622,7 @@ impl ReActEngine {
             state,
             ctx.step_num,
             Some(&error_partial_message_ids),
+            false,
         )
         .await;
         // The stream text now lives in the message stream (persisted above),
@@ -690,5 +736,13 @@ mod tests {
         assert!(!store.should_write("b", 2, false));
         assert!(store.on_step_boundary("a", 4, false));
         assert!(!store.should_write("b", 3, false));
+    }
+
+    #[test]
+    fn tool_result_checkpoint_is_not_throttled_by_mid_run_interval() {
+        let mut store = SnapshotStore::default();
+        assert!(store.on_step_boundary("s", 1, false));
+        assert!(!store.should_write("s", 2, false));
+        assert!(store.should_write("s", 2, true));
     }
 }

@@ -228,16 +228,17 @@ CREATE INDEX IF NOT EXISTS idx_embedding_lsh_probe
     ON embedding_lsh(entity_type, model, bucket);
 ";
 
-/// Triggers that keep `memory_embeddings` in sync with `memory_edges`.
-/// Invalidate on DELETE, and on UPDATE only when SPO surface text changes
-/// (reinforcement of mention_count / confidence / provenance must not drop
-/// vectors).
+/// Triggers that keep `memory_embeddings` in sync with their owning memory
+/// rows. Invalidate on DELETE, and on UPDATE only when the embedded surface
+/// text changes (fact reinforcement must not drop vectors).
 fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "DROP TRIGGER IF EXISTS facts_embed_del;
          DROP TRIGGER IF EXISTS facts_embed_upd;
          DROP TRIGGER IF EXISTS memory_edges_embed_del;
          DROP TRIGGER IF EXISTS memory_edges_embed_upd;
+         DROP TRIGGER IF EXISTS memory_items_embed_del;
+         DROP TRIGGER IF EXISTS memory_items_embed_upd;
          CREATE TRIGGER memory_edges_embed_del AFTER DELETE ON memory_edges BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
              DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
@@ -247,7 +248,29 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
          BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
              DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
+         END;
+         CREATE TRIGGER memory_items_embed_del AFTER DELETE ON memory_items BEGIN
+             DELETE FROM memory_embeddings WHERE entity_type = 'episode' AND entity_id = old.id;
+             DELETE FROM embedding_lsh WHERE entity_type = 'episode' AND entity_id = old.id;
+         END;
+         CREATE TRIGGER memory_items_embed_upd
+         AFTER UPDATE OF content ON memory_items
+         BEGIN
+             DELETE FROM memory_embeddings WHERE entity_type = 'episode' AND entity_id = old.id;
+             DELETE FROM embedding_lsh WHERE entity_type = 'episode' AND entity_id = old.id;
          END;",
+    )?;
+    // The embedding table intentionally cannot have a polymorphic foreign key.
+    // Repair rows left by databases created before the owner triggers existed
+    // while opening the database, rather than waiting for periodic maintenance.
+    conn.execute_batch(
+        "DELETE FROM memory_embeddings
+          WHERE (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM memory_edges))
+             OR (entity_type = 'episode' AND entity_id NOT IN (SELECT id FROM memory_items));
+         DELETE FROM embedding_lsh
+          WHERE (entity_type, entity_id, model) NOT IN (
+              SELECT entity_type, entity_id, model FROM memory_embeddings
+          );",
     )?;
     Ok(())
 }
@@ -1431,7 +1454,12 @@ mod tests {
     fn fact_embedding_triggers_exist_after_init() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        for name in ["memory_edges_embed_del", "memory_edges_embed_upd"] {
+        for name in [
+            "memory_edges_embed_del",
+            "memory_edges_embed_upd",
+            "memory_items_embed_del",
+            "memory_items_embed_upd",
+        ] {
             let count: i32 = conn
                 .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1")
                 .unwrap()
@@ -1494,6 +1522,62 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0, "DELETE must invalidate the embedding");
+    }
+
+    #[test]
+    fn episode_embedding_triggers_follow_owner_delete_and_content_update() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, input_text, created_at, updated_at)
+             VALUES ('s1', '', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_items (id, session_id, kind, content, created_at)
+             VALUES ('e1', 's1', 'episode_summary', 'old', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
+             VALUES ('episode', 'e1', 'm', X'0102', 'old')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memory_items SET content = 'new' WHERE id = 'e1'",
+            [],
+        )
+        .unwrap();
+        let after_update: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_embeddings
+                 WHERE entity_type = 'episode' AND entity_id = 'e1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_update, 0);
+
+        conn.execute(
+            "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
+             VALUES ('episode', 'e1', 'm', X'0102', 'new')",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM sessions WHERE id = 's1'", [])
+            .unwrap();
+        let after_delete: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_embeddings
+                 WHERE entity_type = 'episode' AND entity_id = 'e1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_delete, 0);
     }
 
     #[test]

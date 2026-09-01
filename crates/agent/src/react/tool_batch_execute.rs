@@ -15,8 +15,9 @@ use super::tool_batch_plan::ToolBatchPlan;
 use super::*;
 use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
 use futures_util::StreamExt;
+use haven_common::types::RiskLevel;
 use haven_memory::repositories::session_steps::ActionStepOutcome;
-use haven_tools::ToolConcurrency;
+use haven_tools::{ToolConcurrency, ToolExecutionOutcome};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,15 +44,30 @@ fn rejection_observation(tool_name: &str) -> String {
     )
 }
 
+fn tool_execution_outcome(outcome: ActionStepOutcome) -> ToolExecutionOutcome {
+    match outcome {
+        ActionStepOutcome::Completed => ToolExecutionOutcome::Succeeded,
+        ActionStepOutcome::Failed => ToolExecutionOutcome::Failed,
+        ActionStepOutcome::Cancelled => ToolExecutionOutcome::Cancelled,
+        ActionStepOutcome::Unknown => ToolExecutionOutcome::TimedOutUnknown,
+    }
+}
+
 struct AdmittedTool {
     plan_index: usize,
     pre_confirmed: bool,
     concurrency: ToolConcurrency,
 }
 
+struct DeferredAdmissionFailure {
+    plan_index: usize,
+    error: String,
+}
+
 struct ToolBatchAdmission {
     runnable: Vec<AdmittedTool>,
     need_confirm: Vec<ConfirmPendingTool>,
+    failures: Vec<DeferredAdmissionFailure>,
     results: ToolBatchResults,
 }
 
@@ -75,6 +91,7 @@ impl ReActEngine {
         let mut admission = ToolBatchAdmission {
             runnable: Vec::new(),
             need_confirm: Vec::new(),
+            failures: Vec::new(),
             results: ToolBatchResults::new(plan.len()),
         };
 
@@ -83,22 +100,19 @@ impl ReActEngine {
                 let error = format!(
                     "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
                 );
-                admission.results.set(
-                    plan_index,
-                    self.failed_admission_tool(session_id, step_num, planned, error)
-                        .await,
-                );
+                admission
+                    .failures
+                    .push(DeferredAdmissionFailure { plan_index, error });
                 continue;
             }
             if let Some(failure) = validation_failures
                 .iter()
                 .find(|failure| failure.action_index == planned.action_index)
             {
-                admission.results.set(
+                admission.failures.push(DeferredAdmissionFailure {
                     plan_index,
-                    self.failed_admission_tool(session_id, step_num, planned, failure.render())
-                        .await,
-                );
+                    error: failure.render(),
+                });
                 continue;
             }
 
@@ -133,11 +147,9 @@ impl ReActEngine {
                     });
                 }
                 BeforeToolAction::Block { error } => {
-                    admission.results.set(
-                        plan_index,
-                        self.failed_admission_tool(session_id, step_num, planned, error)
-                            .await,
-                    );
+                    admission
+                        .failures
+                        .push(DeferredAdmissionFailure { plan_index, error });
                 }
                 BeforeToolAction::NeedConfirm { risk_level } => {
                     admission.need_confirm.push(ConfirmPendingTool {
@@ -152,6 +164,56 @@ impl ReActEngine {
                     });
                 }
             }
+        }
+
+        if admission.need_confirm.is_empty() {
+            for failure in admission.failures.drain(..) {
+                let planned = plan
+                    .get(failure.plan_index)
+                    .expect("admission failure must reference a plan entry");
+                admission.results.set(
+                    failure.plan_index,
+                    self.failed_admission_tool(session_id, step_num, planned, failure.error)
+                        .await,
+                );
+            }
+        } else {
+            // A confirmation is a barrier for the whole assistant batch. Do
+            // not execute any sibling before the user decides: otherwise a
+            // later result would need a second durable in-memory batch state
+            // to survive the pause. Every plan entry is carried in one
+            // pending record and resumed through the same ordered slots.
+            let gated_by_index: HashMap<u32, haven_common::types::RiskLevel> = admission
+                .need_confirm
+                .iter()
+                .map(|tool| (tool.action_index, tool.risk_level))
+                .collect();
+            admission.need_confirm = plan
+                .iter()
+                .map(|planned| {
+                    let risk_level = gated_by_index
+                        .get(&planned.action_index)
+                        .copied()
+                        .unwrap_or(haven_common::types::RiskLevel::Safe);
+                    ConfirmPendingTool {
+                        confirm_id: haven_common::types::new_id("conf"),
+                        tool_name: planned.action.tool_name.clone(),
+                        tool_input: planned.action.tool_input.clone(),
+                        tool_call_id: planned.action.tool_call_id.clone().unwrap_or_default(),
+                        step_id: planned.step_id.clone(),
+                        action_index: planned.action_index,
+                        risk_level,
+                        // Safe, blocked, invalid, and already trusted calls do
+                        // not need a user decision. They still wait behind
+                        // the same batch barrier and are revalidated on
+                        // resume.
+                        decision: (!gated_by_index.contains_key(&planned.action_index))
+                            .then_some(true),
+                    }
+                })
+                .collect();
+            admission.runnable.clear();
+            admission.failures.clear();
         }
 
         admission
@@ -176,11 +238,12 @@ impl ReActEngine {
                 &error,
             )
             .await;
-        CompletedTool::failed(
+        CompletedTool::from_observation(
             planned.action.clone(),
             planned.step_id.clone(),
             planned.action_index,
             error,
+            ToolExecutionOutcome::Failed,
         )
     }
 
@@ -292,11 +355,12 @@ impl ReActEngine {
                 .await;
             results.set(
                 plan_index,
-                CompletedTool::failed(
+                CompletedTool::from_observation(
                     planned.action.clone(),
                     planned.step_id.clone(),
                     planned.action_index,
                     interrupted_text,
+                    tool_execution_outcome(outcome),
                 ),
             );
         }
@@ -402,6 +466,7 @@ impl ReActEngine {
             runnable,
             need_confirm,
             results,
+            ..
         } = admission;
         let execution = self
             .execute_admitted_tools(session_id, step_num, &plan, runnable, results, cancel_res)
@@ -412,9 +477,11 @@ impl ReActEngine {
         // assistant call. The shared result buffer makes this true for both
         // size-one and parallel batches.
         let mut batch_state = ToolBatchState::default();
-        batch_state
-            .commit_ordered_results(self, &gate_ctx, execution.results, state)
-            .await;
+        if execution.cancelled || need_confirm.is_empty() {
+            batch_state
+                .commit_ordered_results(self, &gate_ctx, execution.results, state)
+                .await;
+        }
 
         if execution.cancelled {
             // A rollback that lands mid-batch must find the DB row at the
@@ -429,15 +496,33 @@ impl ReActEngine {
         // pause for confirm: it would be baked into the paused snapshot ahead
         // of the user's real answer / decision. Phase 7 / G5: append onto the
         // last failed tool observation — never a synthetic User message.
-        if batch_state.any_tool_failure
+        if batch_state.retryable_failure
             && batch_state.asked_questions.is_empty()
             && need_confirm.is_empty()
             && allow_tool_retry
         {
             let nudge = Self::build_failure_nudge(&batch_state.failure_signals);
-            if let Some(tool_call_id) = batch_state.last_failed_tool_call_id.clone() {
+            if let Some(tool_call_id) = batch_state.last_retryable_failed_tool_call_id.clone() {
                 state.stage_retry_nudge(tool_call_id, nudge);
             }
+        }
+
+        // A normal batch is checkpointed only after all state that belongs to
+        // the next model request (including a retry nudge) is staged. Ask and
+        // confirm batches intentionally defer this to their pause snapshot;
+        // otherwise a crash between this checkpoint and `pause_for_ask` could
+        // lose the explicit ask gate and resume as if the question were done.
+        if need_confirm.is_empty()
+            && batch_state.asked_questions.is_empty()
+            && !self
+                .save_snapshot_after_tool_results(session_id, state, step_num + 1)
+                .await
+        {
+            anyhow::bail!(
+                "failed to durably checkpoint tool results for session '{}' at step {}",
+                session_id,
+                step_num
+            );
         }
 
         // Phase 5 / E3: confirm before ask when both appear in one batch.
@@ -563,11 +648,41 @@ impl ReActEngine {
         };
         let mut runnable = Vec::new();
         let mut results = ToolBatchResults::new(plan.len());
+        let actions: Vec<Action> = plan.iter().map(|planned| planned.action.clone()).collect();
+        let validation_failures = self.validate_tool_inputs(session_id, &actions).await;
 
         for (plan_index, (planned, pending_tool)) in
             plan.iter().zip(pending.tools.iter()).enumerate()
         {
             let Some(decision) = pending_tool.decision else {
+                tracing::warn!(
+                    session_id,
+                    step_num,
+                    plan_index,
+                    "confirm batch resumed before every decision was recorded"
+                );
+                return Ok(ToolBatchOutcome::Continue);
+            };
+            if plan_index >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
+                let error = format!(
+                    "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
+                );
+                results.set(
+                    plan_index,
+                    self.failed_admission_tool(session_id, step_num, planned, error)
+                        .await,
+                );
+                continue;
+            }
+            if let Some(failure) = validation_failures
+                .iter()
+                .find(|failure| failure.action_index == planned.action_index)
+            {
+                results.set(
+                    plan_index,
+                    self.failed_admission_tool(session_id, step_num, planned, failure.render())
+                        .await,
+                );
                 continue;
             };
             if decision {
@@ -581,7 +696,12 @@ impl ReActEngine {
                     .await;
                 runnable.push(AdmittedTool {
                     plan_index,
-                    pre_confirmed: true,
+                    // Only calls that actually crossed the confirmation
+                    // gate may bypass it on resume. Siblings that were safe
+                    // at admission must be rechecked fail-closed after the
+                    // pause; a dynamic policy change must never become an
+                    // implicit approval.
+                    pre_confirmed: !matches!(pending_tool.risk_level, RiskLevel::Safe),
                     concurrency,
                 });
             } else {
@@ -601,11 +721,12 @@ impl ReActEngine {
                     .await;
                 results.set(
                     plan_index,
-                    CompletedTool::failed(
+                    CompletedTool::from_observation(
                         planned.action.clone(),
                         planned.step_id.clone(),
                         planned.action_index,
                         error,
+                        ToolExecutionOutcome::Cancelled,
                     ),
                 );
             }
@@ -619,15 +740,29 @@ impl ReActEngine {
         batch_state
             .commit_ordered_results(self, &proj_ctx, execution.results, state)
             .await;
-        self.executor
-            .clear_awaiting_confirm_persisted(session_id)
-            .await;
 
         if execution.cancelled {
+            self.executor
+                .clear_awaiting_confirm_persisted(session_id)
+                .await;
             return Ok(ToolBatchOutcome::Done(
                 self.exit_cancelled(session_id, state, step_num).await,
             ));
         }
+
+        if !self
+            .save_snapshot_after_confirm_results(session_id, state, step_num + 1)
+            .await
+        {
+            anyhow::bail!(
+                "failed to durably checkpoint confirmed tool results for session '{}' at step {}",
+                session_id,
+                step_num
+            );
+        }
+        self.executor
+            .clear_awaiting_confirm_persisted(session_id)
+            .await;
 
         let pending_ask = if !batch_state.asked_questions.is_empty() {
             Some(crate::types::AskPending {

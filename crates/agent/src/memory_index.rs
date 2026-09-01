@@ -64,22 +64,15 @@ impl MemoryEmbeddingIndex {
 
     /// True when persisted vectors belong to another model and cannot be
     /// compared safely with the configured endpoint.
-    async fn model_changed(&self, current: &str) -> bool {
+    async fn model_changed(&self, current: &str) -> anyhow::Result<bool> {
         if current.is_empty() {
-            return false;
+            return Ok(false);
         }
         let db = self.db.clone();
-        let stored = match db.run_blocking(move |db| db.list_embedding_models()).await {
-            Ok(models) => models,
-            Err(error) => {
-                tracing::warn!(
-                    "memory embedding model check failed; keeping existing index: {}",
-                    error
-                );
-                return false;
-            }
-        };
-        !stored.is_empty() && stored.iter().any(|model| model != current)
+        let stored = db
+            .run_blocking(move |db| db.list_embedding_models())
+            .await?;
+        Ok(!stored.is_empty() && stored.iter().any(|model| model != current))
     }
 
     /// Embed facts and episode summaries that are not indexed by the current
@@ -91,16 +84,26 @@ impl MemoryEmbeddingIndex {
             return;
         };
 
-        if self.model_changed(&model).await {
-            let db = self.db.clone();
-            match db.run_blocking(move |db| db.clear_embeddings()).await {
-                Ok(_) => tracing::info!(
-                    "memory embedding model changed: cleared vector index for rebuild"
-                ),
-                Err(error) => tracing::error!(
-                    "memory embedding model changed: failed to clear vector index: {}",
+        match self.model_changed(&model).await {
+            Ok(true) => {
+                let db = self.db.clone();
+                match db.run_blocking(move |db| db.clear_embeddings()).await {
+                    Ok(_) => tracing::info!(
+                        "memory embedding model changed: cleared vector index for rebuild"
+                    ),
+                    Err(error) => tracing::error!(
+                        "memory embedding model changed: failed to clear vector index: {}",
+                        error
+                    ),
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(
+                    "memory embedding model check failed; keeping existing index: {}",
                     error
-                ),
+                );
+                return;
             }
         }
 
@@ -134,7 +137,17 @@ impl MemoryEmbeddingIndex {
                     return;
                 }
             };
-            let stored_model = embedding.model.unwrap_or_else(|| model.clone());
+            if let Some(provider_model) = embedding.model.as_deref()
+                && provider_model != model
+            {
+                tracing::warn!(
+                    configured_model = %model,
+                    provider_model,
+                    "memory embedding provider returned a different model; refusing to persist vectors"
+                );
+                return;
+            }
+            let stored_model = model.clone();
             let rows: Vec<_> = chunk
                 .iter()
                 .zip(embedding.vectors)
@@ -201,21 +214,38 @@ impl MemoryEmbeddingIndex {
     /// Acquire a vector and resolve it through the shared memory read policy.
     /// The provider/index adapter never returns raw embedding rows: facts and
     /// episodes are filtered, scoped, and normalized by `MemoryRetriever`.
-    /// `None` means the caller should use its keyword fallback.
-    pub(crate) async fn search(&self, query: &MemoryQuery) -> Option<Vec<MemoryHit>> {
-        let model = self.configured_model().await?;
-        if self.model_changed(&model).await {
-            return None;
+    /// `Ok(None)` means the caller should use its keyword fallback because the
+    /// embedding provider is unavailable or not configured. Database and
+    /// retriever errors remain errors so callers cannot confuse an outage with
+    /// an empty memory result.
+    pub(crate) async fn search(
+        &self,
+        query: &MemoryQuery,
+    ) -> anyhow::Result<Option<Vec<MemoryHit>>> {
+        let Some(model) = self.configured_model().await else {
+            return Ok(None);
+        };
+        if self.model_changed(&model).await? {
+            return Ok(None);
         }
-        let vector = self.router.embed_text(&query.text).await.ok()?;
+        let vector = match self.router.embed_text(&query.text).await {
+            Ok(vector) => vector,
+            Err(error) => {
+                tracing::warn!(
+                    "memory vector recall unavailable; using keyword fallback: {}",
+                    error
+                );
+                return Ok(None);
+            }
+        };
         if vector.is_empty() {
-            return None;
+            return Ok(None);
         }
         let db = self.db.clone();
         let query = query.clone();
         db.run_blocking(move |db| MemoryRetriever::new(db).vector(&query, &vector, &model))
             .await
-            .ok()
+            .map(Some)
     }
 }
 
@@ -229,7 +259,15 @@ fn collect_pending_from_db(db: &Database, model: &str) -> anyhow::Result<Vec<Pen
                 _ => None,
             };
             if let Some(text) = text {
-                pending.push((entity_type.to_string(), id, text));
+                if MemoryRetriever::visible_text(&text) {
+                    pending.push((entity_type.to_string(), id, text));
+                } else {
+                    tracing::debug!(
+                        entity_type,
+                        entity_id = %id,
+                        "skipping sensitive memory from embedding provider"
+                    );
+                }
             }
         }
     }
@@ -282,5 +320,41 @@ mod tests {
                 .iter()
                 .any(|(kind, _, text)| { kind == entity_kind::EPISODE && text == "episode text" })
         );
+    }
+
+    #[test]
+    fn pending_collection_excludes_legacy_sensitive_memory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&temp_dir.path().join("memory.db")).unwrap();
+        let session = db.create_session("embedding-test", "").unwrap();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
+            .unwrap();
+        db.insert_fact("user", "api_key", "sk-secret", "inferred", 1.0, &[])
+            .unwrap();
+        db.add_episode(&session.id, "password is hunter2").unwrap();
+
+        let pending = collect_pending_from_db(&db, "test-model").unwrap();
+
+        assert!(pending.iter().any(|(_, _, text)| text.contains("Rust")));
+        assert!(
+            !pending
+                .iter()
+                .any(|(_, _, text)| text.contains("sk-secret"))
+        );
+        assert!(!pending.iter().any(|(_, _, text)| text.contains("hunter2")));
+    }
+
+    #[tokio::test]
+    async fn embedding_database_errors_are_not_treated_as_no_index() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
+        db.conn()
+            .execute("DROP TABLE memory_embeddings", [])
+            .unwrap();
+        let router = Arc::new(LlmRouter::new(haven_common::config::RouterConfig::default()));
+        let index = MemoryEmbeddingIndex::new(db, router, 1);
+
+        let error = index.model_changed("test-model").await.unwrap_err();
+        assert!(error.to_string().contains("memory_embeddings"));
     }
 }

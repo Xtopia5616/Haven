@@ -189,6 +189,19 @@ const CROSS_SEARCH_LIMIT: usize = 48;
 const MEMORY_BODY_CHAR_BUDGET: usize = 2800;
 /// Prefer shorter objects when packing under the budget.
 const FACT_OBJECT_MAX_CHARS: usize = 120;
+/// Hard cap for the complete session-specific context block, including the
+/// current-session description, additional context, and rendered memory.
+const SESSION_CONTEXT_CHAR_BUDGET: usize = 8000;
+/// The description is shown verbatim-ish to the model, but must not consume
+/// the whole context allocation or become an unbounded embedding query.
+const SESSION_DESCRIPTION_CHAR_BUDGET: usize = 1200;
+/// Bound the text used to retrieve memory and never send credential-like
+/// descriptions to the embedding provider.
+const MEMORY_QUERY_CHAR_BUDGET: usize = 2000;
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
 
 /// Cross-session messaging guidance, appended to the tool index only when the
 /// messaging tools are registered (i.e. not disabled via tool settings).
@@ -285,9 +298,14 @@ impl SystemPromptBuilder {
             context_section.push('\n');
         }
 
-        let dynamic_context = format!(
-            "{SESSION_CONTEXT_FENCE_START}Current session: {session_description}\n\n{context_section}{facts_section}"
-        );
+        let session_description =
+            truncate_chars(session_description.trim(), SESSION_DESCRIPTION_CHAR_BUDGET);
+        let prefix =
+            format!("{SESSION_CONTEXT_FENCE_START}Current session: {session_description}\n\n");
+        let fixed_chars = prefix.chars().count() + facts_section.chars().count();
+        let context_budget = SESSION_CONTEXT_CHAR_BUDGET.saturating_sub(fixed_chars);
+        context_section = truncate_chars(&context_section, context_budget);
+        let dynamic_context = format!("{prefix}{context_section}{facts_section}");
 
         render(
             MAIN_SYSTEM_PROMPT,
@@ -325,7 +343,7 @@ impl SystemPromptBuilder {
         session_description: &str,
         exclude_session_id: Option<&str>,
     ) -> MemorySections {
-        let query_text = session_description.trim().to_string();
+        let query_text = truncate_chars(session_description.trim(), MEMORY_QUERY_CHAR_BUDGET);
         let embedding_model = self.current_embedding_model().await;
         let cache_key = MemoryCacheKey {
             query: query_text.clone(),
@@ -347,7 +365,10 @@ impl SystemPromptBuilder {
         let mut episodes_section = String::new();
         let session_terms = haven_common::text::memory_recall_terms(&query_text);
 
-        let vector = if query_text.is_empty() || embedding_model.is_empty() {
+        let vector = if query_text.is_empty()
+            || embedding_model.is_empty()
+            || !MemoryRetriever::visible_text(&query_text)
+        {
             None
         } else if let Some(router) = &self.router {
             router
@@ -1137,6 +1158,32 @@ mod tests {
             closer < dynamic,
             "session context must follow static closer"
         );
+    }
+
+    #[tokio::test]
+    async fn session_context_has_a_total_budget() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_prompt_total_budget_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let tools = Arc::new(ToolsManager::new());
+        let builder = SystemPromptBuilder::new(tools, db);
+        let description = "D".repeat(20_000);
+        let history: Vec<String> = (0..20)
+            .map(|i| format!("H{i}: {}", "x".repeat(2_000)))
+            .collect();
+
+        let prompt = builder.build(&description, &history).await;
+        let start = prompt.find(SESSION_CONTEXT_FENCE_START).unwrap();
+        let context = &prompt[start..];
+
+        assert!(
+            context.chars().count() <= SESSION_CONTEXT_CHAR_BUDGET,
+            "session context exceeded total budget: {}",
+            context.chars().count()
+        );
+        assert!(context.contains("Current session:"));
     }
 
     #[test]

@@ -206,8 +206,14 @@ impl Database {
 
     pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
+        let episode_ids: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id FROM memory_items WHERE session_id = ?1")?;
+            let rows = stmt.query_map(rusqlite::params![id], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
         // messages, session_steps and partial_messages cascade on session delete
-        // (ON DELETE CASCADE), so a single statement keeps history consistent.
+        // (ON DELETE CASCADE). The memory-item trigger removes episode
+        // embeddings in the same database operation.
         let affected = conn.execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id])?;
         if affected == 0 {
             anyhow::bail!("session '{}' not found in database", id);
@@ -222,8 +228,13 @@ impl Database {
             ],
         )?;
         drop(conn);
+        self.clear_pending_embedding_models_for_ids(
+            crate::embeddings::entity_kind::EPISODE,
+            &episode_ids,
+        );
         self.cache_invalidate_sessions();
         self.cache_invalidate_messages(id);
+        self.cache_invalidate_memory();
         Ok(())
     }
 
@@ -248,7 +259,12 @@ impl Database {
             Ok(count) => {
                 conn.execute_batch("COMMIT")?;
                 drop(conn);
+                self.clear_pending_embedding_models();
                 self.cache_invalidate_sessions();
+                self.cache_invalidate_all_messages();
+                if count > 0 {
+                    self.cache_invalidate_memory();
+                }
                 Ok(count)
             }
             Err(e) => {
@@ -331,12 +347,28 @@ impl Database {
     pub fn delete_old_sessions(&self, retention_days: u32) -> anyhow::Result<usize> {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days as i64)).to_rfc3339();
         let conn = self.conn();
+        let episode_ids: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT i.id FROM memory_items i
+                 INNER JOIN sessions s ON s.id = i.session_id
+                 WHERE s.created_at < ?1",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![cutoff], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
         let count = conn.execute(
             "DELETE FROM sessions WHERE created_at < ?1",
             rusqlite::params![cutoff],
         )?;
+        drop(conn);
         if count > 0 {
             self.cache_invalidate_sessions();
+            self.cache_invalidate_all_messages();
+            self.clear_pending_embedding_models_for_ids(
+                crate::embeddings::entity_kind::EPISODE,
+                &episode_ids,
+            );
+            self.cache_invalidate_memory();
         }
         Ok(count)
     }

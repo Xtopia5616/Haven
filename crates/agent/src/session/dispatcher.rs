@@ -236,6 +236,19 @@ impl SessionExecutor {
                 // re-enqueued it if it became Pending again.
                 continue;
             }
+            // Deletion / history clearing marks the token cancelled before it
+            // removes the working-set entry. A queued id can already have
+            // been popped by this dispatcher, so check the tombstone here as
+            // well as removing it from the queue.
+            if self
+                .session_cancellations
+                .lock()
+                .await
+                .get(&session_id)
+                .is_some_and(CancellationToken::is_cancelled)
+            {
+                continue;
+            }
             // The `running_sessions` check prevents double-dispatch during the
             // claim→spawn window. Pause is exit-based (Phase 2 / C1): a paused
             // handler returns, `unmark_running` drops the set entry, and only

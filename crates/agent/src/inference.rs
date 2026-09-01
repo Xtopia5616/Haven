@@ -500,6 +500,13 @@ impl InferenceEngine {
                 return 0;
             }
         };
+        let groups: Vec<_> = groups
+            .into_iter()
+            .filter_map(|mut group| {
+                group.facts.retain(MemoryRetriever::visible_fact);
+                (!group.facts.is_empty()).then_some(group)
+            })
+            .collect();
         if groups.is_empty() {
             return 0;
         }
@@ -697,12 +704,17 @@ impl InferenceEngine {
     ) -> anyhow::Result<MemoryRecall> {
         let kind = MemoryKind::parse(kind)?;
         let query = MemoryQuery::new(query, kind, limit)?;
-        let vector_hits = self.embedding_index.search(&query).await;
+        self.recall_memory_query(query).await
+    }
+
+    /// Execute a fully-scoped typed recall request. Callers that already own
+    /// a `MemoryQuery` must use this entry point so session and subject scope
+    /// cannot be silently discarded at an adapter boundary.
+    pub async fn recall_memory_query(&self, query: MemoryQuery) -> anyhow::Result<MemoryRecall> {
+        let vector_hits = self.embedding_index.search(&query).await?;
         let db = self.db.clone();
-        Ok(db
-            .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, vector_hits))
+        db.run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, vector_hits))
             .await
-            .unwrap_or_default())
     }
 
     /// Persist a batch of LLM-extracted facts. `messages` is the extraction
@@ -932,7 +944,11 @@ impl InferenceEngine {
             }
         };
         let mut lines: Vec<String> = Vec::new();
-        for fact in facts.iter().take(self.max_known_facts) {
+        for fact in facts
+            .iter()
+            .filter(|fact| MemoryRetriever::visible_fact(fact))
+            .take(self.max_known_facts)
+        {
             let subject = if fact.subject == "user" {
                 String::new()
             } else {
@@ -1034,6 +1050,14 @@ impl InferenceEngine {
     ) -> SummaryExtractOutcome {
         let summary = summary.trim();
         if summary.len() < 24 {
+            return SummaryExtractOutcome::Done;
+        }
+        if !MemoryRetriever::visible_text(summary) {
+            tracing::debug!(
+                session_id,
+                episode_id,
+                "skipping sensitive compaction summary before LLM extraction"
+            );
             return SummaryExtractOutcome::Done;
         }
         let episode_cursor_key = format!("fact_extraction_episode.{}", session_id);
@@ -1414,6 +1438,21 @@ mod tests {
         assert_eq!(embedding_batch_size(64), 10);
         assert_eq!(embedding_batch_size(5), 5);
         assert_eq!(embedding_batch_size(0), 1);
+    }
+
+    #[tokio::test]
+    async fn known_fact_context_excludes_legacy_sensitive_rows() {
+        let db = temp_db();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "api_key", "hunter2", "inferred", 1.0, &[])
+            .unwrap();
+        let engine = make_engine(db);
+
+        let known = engine.load_known_facts().await;
+
+        assert!(known.contains("likes=Rust"));
+        assert!(!known.contains("hunter2"));
     }
 
     fn make_engine(db: Arc<Database>) -> InferenceEngine {

@@ -211,6 +211,16 @@ impl AgentLayer {
         self.inference.recall_memory(query, kind, limit).await
     }
 
+    /// Forward a fully-scoped memory query without reducing it to the legacy
+    /// text/kind/limit tuple. App adapters use this to preserve current-session
+    /// and subject scope through the agent boundary.
+    pub async fn recall_memory_query(
+        &self,
+        query: haven_memory::recall::MemoryQuery,
+    ) -> anyhow::Result<haven_memory::MemoryRecall> {
+        self.inference.recall_memory_query(query).await
+    }
+
     pub fn set_max_steps(&self, max_steps: u32) {
         self.react_engine.set_max_steps(max_steps);
     }
