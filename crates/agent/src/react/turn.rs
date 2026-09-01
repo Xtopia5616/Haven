@@ -5,7 +5,7 @@
 //! response, and either executes one tool batch or reaches a turn boundary.
 //! The outer run owns the step budget and lifecycle transitions.
 
-use super::retries::{AfterLlmAction, ResponsePolicyState};
+use super::response_cycle::{AcceptedResponse, ResponseCycleOutcome};
 use super::snapshot_io::PauseTurnInput;
 use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
@@ -19,7 +19,9 @@ pub(super) struct TurnInput<'a> {
     pub(super) ctx: StepCtx,
     pub(super) state: &'a mut ReActState,
     pub(super) cancel: tokio_util::sync::CancellationToken,
-    pub(super) max_steps: u32,
+    /// Whether this turn may stage a tool-failure retry for another turn.
+    /// Computed by the run driver from the absolute run end.
+    pub(super) allow_tool_retry: bool,
     pub(super) cut_off_retries: &'a mut u32,
 }
 
@@ -72,7 +74,7 @@ impl ReActEngine {
             ctx,
             state,
             cancel,
-            max_steps,
+            allow_tool_retry,
             cut_off_retries,
         } = input;
         let session_id = &ctx.session_id;
@@ -126,7 +128,7 @@ impl ReActEngine {
             &partial_thought,
             &partial_reasoning,
         );
-        let mut response = match stream
+        let response = match stream
             .run(state, &request_context, retry_nudge.as_ref())
             .instrument(tracing::info_span!("llm", session_id, step_num))
             .await
@@ -153,11 +155,46 @@ impl ReActEngine {
             ));
         }
 
-        // `StreamSession` may have compacted the shared canonical after a
-        // context-length error. Response-policy retries must use that newest
-        // projection while preserving the one-shot failure hint when the
-        // failed observation survived compaction.
-        let retry_context = RequestContext::from_state(state, retry_nudge.as_ref());
+        // Response-policy retries are isolated from transcript projection. A
+        // failed/empty candidate is only visible as streamed scratch output;
+        // the accepted response below is the first response that may become
+        // durable assistant state.
+        let request_context = RequestContext::from_state(state, retry_nudge.as_ref());
+        let (thought, actions) = Self::parse_default_model_response(&response, step_num);
+        let limits = self.limits();
+        let pending_ask = self
+            .executor
+            .get_awaiting_answer(session_id)
+            .await
+            .is_some()
+            || Self::canonical_has_pending_ask(&state.canonical);
+        let AcceptedResponse {
+            response,
+            thought,
+            mut actions,
+            empty_retries_remaining,
+        } = match self
+            .resolve_response_cycle(
+                &ctx,
+                state,
+                &mut stream,
+                &request_context,
+                response,
+                thought,
+                actions,
+                &cancel,
+                cut_off_retries,
+                pending_ask,
+            )
+            .await
+        {
+            ResponseCycleOutcome::Accepted(accepted) => *accepted,
+            ResponseCycleOutcome::Cancelled => {
+                return Ok(TurnOutcome::Done(
+                    self.exit_cancelled(session_id, state, step_num).await,
+                ));
+            }
+        };
 
         if let Some(reasoning) = response.reasoning.clone() {
             let reasoning_id = self.block_msg_id(session_id, step_num, ctx.run_id, "reasoning");
@@ -170,7 +207,7 @@ impl ReActEngine {
                 state,
             )
             .await;
-            // Reconcile streamed reasoning with the authoritative final text.
+            // Reconcile streamed reasoning with the final accepted response.
             ctx.emitter
                 .emit(crate::event::AgentEvent::ReasoningChunk {
                     session_id: session_id.clone(),
@@ -180,112 +217,6 @@ impl ReActEngine {
                     message_id: reasoning_id,
                 })
                 .await;
-        }
-
-        let (mut thought, mut actions) = Self::parse_default_model_response(&response, step_num);
-        let limits = self.limits();
-        let mut empty_retries_remaining = limits.empty_response_max_retries;
-        let pending_ask = self
-            .executor
-            .get_awaiting_answer(session_id)
-            .await
-            .is_some()
-            || Self::canonical_has_pending_ask(&state.canonical);
-
-        // Response policy is an explicit sub-loop. It can request another
-        // model call, but it cannot mutate the transcript or decide lifecycle.
-        loop {
-            let action = self
-                .hooks
-                .after_llm(
-                    self,
-                    &ctx,
-                    super::hooks::AfterLlmInput {
-                        thought: &thought,
-                        actions: &actions,
-                        response: &response,
-                        canonical: &state.canonical,
-                        state: ResponsePolicyState {
-                            empty_retries_remaining,
-                            empty_retry_delay_ms: limits.empty_response_retry_delay_ms,
-                            cut_off_retries_used: *cut_off_retries,
-                            cut_off_retries_max: limits.cut_off_retries,
-                            pending_ask,
-                        },
-                    },
-                )
-                .await;
-            match action {
-                AfterLlmAction::Accept => break,
-                AfterLlmAction::RetryEmpty { delay_ms } => {
-                    empty_retries_remaining = empty_retries_remaining.saturating_sub(1);
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => {
-                            return Ok(TurnOutcome::Done(
-                                self.exit_cancelled(session_id, state, step_num).await,
-                            ));
-                        }
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
-                    }
-                    let retry = stream.retry(&retry_context).await;
-                    match retry {
-                        Ok(retry_response) => {
-                            let (retry_thought, retry_actions) =
-                                Self::parse_default_model_response(&retry_response, step_num);
-                            if retry_thought.is_some() || !retry_actions.is_empty() {
-                                thought = retry_thought;
-                                actions = retry_actions;
-                                response = retry_response;
-                            }
-                        }
-                        Err(haven_llm::LlmError::Cancelled) => {
-                            return Ok(TurnOutcome::Done(
-                                self.exit_cancelled(session_id, state, step_num).await,
-                            ));
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                "ReAct empty-response retry failed: session={} step={} error={}",
-                                session_id,
-                                step_num,
-                                error
-                            );
-                        }
-                    }
-                }
-                AfterLlmAction::RetryCutOff { nudge } => {
-                    *cut_off_retries += 1;
-                    let cut_off_context = retry_context.with_user_instruction(nudge);
-                    match stream.retry(&cut_off_context).await {
-                        Ok(retry_response) => {
-                            let (retry_thought, retry_actions) =
-                                Self::parse_default_model_response(&retry_response, step_num);
-                            if retry_thought.is_some() || !retry_actions.is_empty() {
-                                thought = retry_thought;
-                                actions = retry_actions;
-                                response = retry_response;
-                            } else {
-                                break;
-                            }
-                        }
-                        Err(haven_llm::LlmError::Cancelled) => {
-                            return Ok(TurnOutcome::Done(
-                                self.exit_cancelled(session_id, state, step_num).await,
-                            ));
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                "ReAct cut-off retry failed: session={} step={} error={}",
-                                session_id,
-                                step_num,
-                                error
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
         }
 
         // An unresolved ask owns the turn. Do not let a synthetic final answer
@@ -420,7 +351,7 @@ impl ReActEngine {
                 &thought,
                 &response,
                 &cancel,
-                max_steps,
+                allow_tool_retry,
             )
             .instrument(tracing::info_span!("tools", session_id, step_num))
             .await?

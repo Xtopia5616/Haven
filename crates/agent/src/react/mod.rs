@@ -23,12 +23,16 @@ mod identity;
 mod inject;
 mod r#loop;
 mod request_context;
+mod response_cycle;
 mod retries;
 mod sidecars;
 mod snapshot_io;
 mod state;
 pub(crate) mod stream_step;
 mod tool_batch;
+mod tool_batch_execute;
+mod tool_batch_plan;
+mod tool_batch_policy;
 mod transcript;
 mod turn;
 mod turn_end;
@@ -45,11 +49,11 @@ use sidecars::{
     TokenEstimateCache, ToolDefCache, UsageTracker,
 };
 pub(crate) use state::{ReActState, RetryNudge};
-use transcript::{ActionCard, ObservationCard, TranscriptEvent};
+use transcript::{ObservationCard, TranscriptEvent};
 
 pub(crate) use snapshot_io::set_status_and_emit;
 #[cfg(test)]
-use tool_batch::FailureKind;
+use tool_batch_policy::FailureKind;
 
 /// Convert a stored message attachment into a content part for the LLM.
 /// Images become vision content parts (base64 payload); non-image file

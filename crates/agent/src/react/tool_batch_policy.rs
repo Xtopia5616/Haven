@@ -1,0 +1,161 @@
+//! Failure policy and observation helpers for ReAct tool batches.
+//!
+//! These functions classify tool failures and shape the provider-only retry
+//! hint. They do not execute tools or decide lifecycle transitions; keeping
+//! them separate makes the batch executor a mechanical admission/execute/
+//! commit pipeline.
+
+use super::*;
+use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
+
+/// Failure classification used to shape the post-failure retry nudge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailureKind {
+    /// The environment cannot run the approach: missing command, wrong shell,
+    /// network/proxy trouble, bad paths. The approach itself may be sound.
+    Environmental,
+    /// The approach/usage itself is flawed (bad params, parse failures).
+    Logic,
+    /// Cannot tell from the error text.
+    Unknown,
+}
+
+/// `agent` operation=inbox result is an empty poll (`count: 0`): nothing for
+/// the user to see, so the observation card is suppressed.
+pub(crate) fn empty_inbox_output(result: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(result)
+        .ok()
+        .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+        == Some(0)
+}
+
+/// True when this is an `agent` inbox poll (check tool_input.operation).
+pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Value) -> bool {
+    tool_name == "agent" && tool_input.get("operation").and_then(|v| v.as_str()) == Some("inbox")
+}
+
+impl ReActEngine {
+    /// Compose the retry nudge after a step where tool calls failed. The
+    /// failure evidence is classified first: environment-type failures
+    /// (missing command, wrong shell syntax, network/proxy, paths) must NOT
+    /// push the model to abandon its approach — the correct move is to
+    /// diagnose and fix the environment (different shell, different tool,
+    /// corrected path) and retry. Logic failures get a fix-and-retry nudge
+    /// with an explicit threshold before switching approach.
+    ///
+    /// The returned text is appended onto the last failed tool observation,
+    /// never pushed as a synthetic User message into canonical/DB.
+    pub(super) fn build_failure_nudge(failures: &[(String, String)]) -> String {
+        let has_env = failures
+            .iter()
+            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Environmental);
+        let has_logic = failures
+            .iter()
+            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Logic);
+        if has_env {
+            "The tool failures look ENVIRONMENTAL (missing command / wrong shell syntax / network / path), not logic errors. Do NOT abandon your approach. Diagnose the environment first: verify the command exists in the shell you chose (cmd vs PowerShell syntax differs; `&&` only works in cmd), check network/proxy/endpoints, fix paths and prerequisites. Switching tools (e.g. curl -> aria2) or shells is an environment fix, not a change of approach — keep the same approach and retry."
+                .into()
+        } else if has_logic {
+            "The previous approach failed with logic errors. Analyze the exact error, fix the specific mistake, and retry. Only consider a completely different approach if the same method fails again after you fixed it."
+                .into()
+        } else {
+            format!(
+                "The previous approach encountered errors. {}",
+                haven_common::prompts::TOOL_FAILURE_DIAGNOSIS
+            )
+        }
+    }
+
+    /// Append a failure-retry nudge onto the failed tool observation in a
+    /// provider request buffer. Requires `failed_tool_call_id` so a parallel
+    /// success cannot receive the nudge. Never invents a User row.
+    pub(super) fn attach_failure_nudge(
+        messages: &mut [CanonicalMessage],
+        nudge: &str,
+        failed_tool_call_id: Option<&str>,
+    ) {
+        let Some(id) = failed_tool_call_id else {
+            return;
+        };
+        let idx = messages
+            .iter()
+            .rev()
+            .position(|m| m.role == CanonicalRole::Tool && m.tool_call_id.as_deref() == Some(id))
+            .map(|rev_i| messages.len() - 1 - rev_i);
+        let Some(idx) = idx else {
+            return;
+        };
+        let msg = &mut messages[idx];
+        if let Some(ContentPart::Text(text)) = msg.content.last_mut() {
+            text.push_str("\n\n");
+            text.push_str(nudge);
+        } else {
+            msg.content.push(ContentPart::text(nudge));
+        }
+    }
+
+    /// Heuristic classification of a tool failure: environment problems vs
+    /// logic problems. The result only shapes the next provider request.
+    pub(super) fn classify_tool_failure(tool_name: &str, err: &str) -> FailureKind {
+        if tool_name == "files"
+            && (err.contains("MISSING REQUIRED FIELD")
+                || err.contains("old_string")
+                || err.contains("not found in file"))
+        {
+            return FailureKind::Logic;
+        }
+        let e = err.to_lowercase();
+        const ENV_MARKERS: &[&str] = &[
+            "not recognized",
+            "not recognized as an internal or external command",
+            "不是内部或外部命令",
+            "command not found",
+            "无法识别",
+            "not found",
+            "cannot be found",
+            "cannot find",
+            "找不到",
+            "no such file",
+            "no such directory",
+            "spawn",
+            "program not found",
+            "connection",
+            "timed out",
+            "timeout",
+            "refused",
+            "reset",
+            "proxy",
+            "unreachable",
+            "resolve",
+            "dns",
+            "ssl",
+            "tls",
+            "certificate",
+            "failed to connect",
+            "tunnel",
+            "network",
+            "path does not exist",
+            "路径不存在",
+            "access denied",
+            "拒绝访问",
+            "无法将",
+            "不是有效的",
+        ];
+        if ENV_MARKERS.iter().any(|m| e.contains(m)) {
+            return FailureKind::Environmental;
+        }
+        const LOGIC_MARKERS: &[&str] = &[
+            "validation failed",
+            "missing required",
+            "parse error",
+            "syntax error",
+            "unterminated",
+            "invalid json",
+            "is required for",
+        ];
+        if LOGIC_MARKERS.iter().any(|m| e.contains(m)) {
+            return FailureKind::Logic;
+        }
+        FailureKind::Unknown
+    }
+}

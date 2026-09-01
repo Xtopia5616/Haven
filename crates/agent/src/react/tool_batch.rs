@@ -1,63 +1,39 @@
-//! Tool-batch helpers (failure classify/nudge) and `execute_tool_batch`.
+//! Tool-batch state, safety admission, confirmation, and ordered materialization.
 //!
 //! Tool execution is concurrent, but transcript materialization is ordered by
 //! the assistant's tool-call list so the next model request is deterministic.
 
-use super::hooks::{BeforeToolAction, ToolCallIdentity};
 use super::snapshot_io::PauseTurnInput;
+#[cfg(test)]
+use super::tool_batch_policy::FailureKind;
+use super::tool_batch_policy::{empty_inbox_output, is_agent_inbox_call};
 use super::*;
-use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
-use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use crate::types::Action;
+#[cfg(test)]
+use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_memory::repositories::session_steps::ActionStepOutcome;
 use haven_tools::{ToolConcurrency, is_silent_action};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 /// Hard safety ceilings for one assistant response. The first bounds total
 /// work admitted to the runtime; the second bounds live futures/tasks. The
 /// provider-facing tool-definition limit is not a runtime execution limit.
 pub(crate) const MAX_RUNTIME_TOOL_CALLS_PER_BATCH: usize = 64;
-const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
-
-/// Failure classification used to shape the post-failure retry nudge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FailureKind {
-    /// The environment cannot run the approach: missing command, wrong shell,
-    /// network/proxy trouble, bad paths. The approach itself may be sound.
-    Environmental,
-    /// The approach/usage itself is flawed (bad params, parse failures).
-    Logic,
-    /// Cannot tell from the error text.
-    Unknown,
-}
-
-/// `agent` operation=inbox result is an empty poll (`count: 0`): nothing for
-/// the user to see, so the observation card is suppressed.
-pub(crate) fn empty_inbox_output(result: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(result)
-        .ok()
-        .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
-        == Some(0)
-}
-
-/// True when this is an `agent` inbox poll (check tool_input.operation).
-pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Value) -> bool {
-    tool_name == "agent" && tool_input.get("operation").and_then(|v| v.as_str()) == Some("inbox")
-}
+pub(super) const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
 
 #[derive(Default)]
-struct ToolBatchState {
-    any_tool_failure: bool,
-    failure_signals: Vec<(String, String)>,
-    last_failed_tool_call_id: Option<String>,
-    asked_questions: Vec<String>,
-    ask_step_ids: Vec<String>,
+pub(super) struct ToolBatchState {
+    pub(super) any_tool_failure: bool,
+    pub(super) failure_signals: Vec<(String, String)>,
+    pub(super) last_failed_tool_call_id: Option<String>,
+    pub(super) asked_questions: Vec<String>,
+    pub(super) ask_step_ids: Vec<String>,
 }
 
 impl ToolBatchState {
-    async fn commit_tool_result(
+    pub(super) async fn commit_tool_result(
         &mut self,
         engine: &ReActEngine,
         ctx: &StepCtx,
@@ -140,149 +116,6 @@ impl ToolBatchState {
     }
 }
 
-impl ReActEngine {
-    /// Compose the retry nudge after a step where tool calls failed. The
-    /// failure evidence is classified first: environment-type failures
-    /// (missing command, wrong shell syntax, network/proxy, paths) must NOT
-    /// push the model to abandon its approach — the correct move is to
-    /// diagnose and fix the environment (different shell, different tool,
-    /// corrected path) and retry. Logic failures get a fix-and-retry nudge
-    /// with an explicit threshold before switching approach. This replaces
-    /// the old unconditional "try a completely different approach" nudge,
-    /// which repeatedly sent users down wrong paths when the real cause was
-    /// environmental (Get-FileHash missing in the chosen shell, a broken
-    /// proxy, a different 7z path). The generic branch reuses the canonical
-    /// guidance from the system prompt (guideline 12) so the two cannot
-    /// drift.
-    ///
-    /// Phase 7 / G5: the returned text is appended onto the last failed
-    /// tool observation (see [`Self::attach_failure_nudge`]), never pushed
-    /// as a synthetic User message into canonical/DB.
-    pub(super) fn build_failure_nudge(failures: &[(String, String)]) -> String {
-        let has_env = failures
-            .iter()
-            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Environmental);
-        let has_logic = failures
-            .iter()
-            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Logic);
-        if has_env {
-            "The tool failures look ENVIRONMENTAL (missing command / wrong shell syntax / network / path), not logic errors. Do NOT abandon your approach. Diagnose the environment first: verify the command exists in the shell you chose (cmd vs PowerShell syntax differs; `&&` only works in cmd), check network/proxy/endpoints, fix paths and prerequisites. Switching tools (e.g. curl -> aria2) or shells is an environment fix, not a change of approach — keep the same approach and retry."
-                .into()
-        } else if has_logic {
-            "The previous approach failed with logic errors. Analyze the exact error, fix the specific mistake, and retry. Only consider a completely different approach if the same method fails again after you fixed it."
-                .into()
-        } else {
-            format!(
-                "The previous approach encountered errors. {}",
-                haven_common::prompts::TOOL_FAILURE_DIAGNOSIS
-            )
-        }
-    }
-
-    /// Append a failure-retry nudge onto the failed tool observation in a
-    /// provider request buffer (Phase 7 / G5). Requires
-    /// `failed_tool_call_id` so a parallel success that completes later cannot
-    /// receive the nudge. Never invents a User row — if the id is missing or
-    /// unmatched, the nudge is dropped rather than polluting the transcript.
-    pub(super) fn attach_failure_nudge(
-        messages: &mut [CanonicalMessage],
-        nudge: &str,
-        failed_tool_call_id: Option<&str>,
-    ) {
-        let Some(id) = failed_tool_call_id else {
-            return;
-        };
-        let idx = messages
-            .iter()
-            .rev()
-            .position(|m| m.role == CanonicalRole::Tool && m.tool_call_id.as_deref() == Some(id))
-            .map(|rev_i| messages.len() - 1 - rev_i);
-        let Some(idx) = idx else {
-            return;
-        };
-        let msg = &mut messages[idx];
-        if let Some(ContentPart::Text(text)) = msg.content.last_mut() {
-            text.push_str("\n\n");
-            text.push_str(nudge);
-        } else {
-            msg.content.push(ContentPart::text(nudge));
-        }
-    }
-
-    /// Heuristic classification of a tool failure: environment problems (the
-    /// user's tools/environment cannot run the approach) vs logic problems
-    /// (the approach itself is flawed). Used to shape the retry nudge so
-    /// environmental failures do not trigger an unnecessary method switch.
-    pub(super) fn classify_tool_failure(tool_name: &str, err: &str) -> FailureKind {
-        // Tool-usage mistakes by the model itself (missing params, invalid
-        // input) are logic errors: the schema/validation error names the fix.
-        if tool_name == "files"
-            && (err.contains("MISSING REQUIRED FIELD")
-                || err.contains("old_string")
-                || err.contains("not found in file"))
-        {
-            return FailureKind::Logic;
-        }
-        let e = err.to_lowercase();
-        const ENV_MARKERS: &[&str] = &[
-            // command / executable missing
-            "not recognized",
-            "not recognized as an internal or external command",
-            "不是内部或外部命令",
-            "command not found",
-            "无法识别",
-            "not found",
-            "cannot be found",
-            "cannot find",
-            "找不到",
-            "no such file",
-            "no such directory",
-            "spawn",
-            "program not found",
-            // network / proxy / transport
-            "connection",
-            "timed out",
-            "timeout",
-            "refused",
-            "reset",
-            "proxy",
-            "unreachable",
-            "resolve",
-            "dns",
-            "ssl",
-            "tls",
-            "certificate",
-            "failed to connect",
-            "tunnel",
-            "network",
-            // paths / permissions
-            "path does not exist",
-            "路径不存在",
-            "access denied",
-            "拒绝访问",
-            // PowerShell/7z style environment mismatches
-            "无法将",
-            "不是有效的",
-        ];
-        if ENV_MARKERS.iter().any(|m| e.contains(m)) {
-            return FailureKind::Environmental;
-        }
-        const LOGIC_MARKERS: &[&str] = &[
-            "validation failed",
-            "missing required",
-            "parse error",
-            "syntax error",
-            "unterminated",
-            "invalid json",
-            "is required for",
-        ];
-        if LOGIC_MARKERS.iter().any(|m| e.contains(m)) {
-            return FailureKind::Logic;
-        }
-        FailureKind::Unknown
-    }
-}
-
 /// Outcome of one tool batch: continue the step loop, or exit the run with
 /// an explicit [`LoopExit`] (Phase 2 / C2).
 pub(super) enum ToolBatchOutcome {
@@ -294,7 +127,7 @@ pub(super) enum ToolBatchOutcome {
 /// is materialized into the canonical transcript. Tool execution may finish
 /// in any order; the model must always receive tool observations in the same
 /// order as the assistant's tool-call list.
-struct CompletedTool {
+pub(super) struct CompletedTool {
     action: Action,
     tool_name: String,
     step_result: String,
@@ -308,7 +141,12 @@ struct CompletedTool {
 }
 
 impl CompletedTool {
-    fn failed(action: Action, step_id: String, action_index: u32, step_result: String) -> Self {
+    pub(super) fn failed(
+        action: Action,
+        step_id: String,
+        action_index: u32,
+        step_result: String,
+    ) -> Self {
         Self {
             tool_name: action.tool_name.clone(),
             action,
@@ -328,7 +166,7 @@ impl CompletedTool {
 /// batch representation. Both the normal batch and the post-confirm resume
 /// path use this helper so observation truncation and tool-owned signals
 /// cannot drift between the two paths.
-async fn execute_tool_action(
+pub(super) async fn execute_tool_action(
     executor: Arc<SessionExecutor>,
     session_id: String,
     action: Action,
@@ -440,13 +278,13 @@ async fn execute_tool_action(
     }
 }
 
-struct ToolBatchGate {
-    all: Arc<RwLock<()>>,
-    resources: AsyncMutex<HashMap<String, Arc<RwLock<()>>>>,
+pub(super) struct ToolBatchGate {
+    pub(super) all: Arc<RwLock<()>>,
+    pub(super) resources: AsyncMutex<HashMap<String, Arc<RwLock<()>>>>,
 }
 
 #[allow(dead_code)]
-enum ToolBatchPermit {
+pub(super) enum ToolBatchPermit {
     Read(OwnedRwLockReadGuard<()>),
     SharedResource(OwnedRwLockReadGuard<()>, OwnedRwLockReadGuard<()>),
     Resource(OwnedRwLockWriteGuard<()>, OwnedRwLockReadGuard<()>),
@@ -454,7 +292,7 @@ enum ToolBatchPermit {
 }
 
 impl ToolBatchGate {
-    async fn acquire(&self, policy: &ToolConcurrency) -> ToolBatchPermit {
+    pub(super) async fn acquire(&self, policy: &ToolConcurrency) -> ToolBatchPermit {
         match policy {
             ToolConcurrency::ReadOnly => ToolBatchPermit::Read(self.all.clone().read_owned().await),
             ToolConcurrency::SharedResource(key) | ToolConcurrency::Resource(key) => {
@@ -489,7 +327,7 @@ impl ReActEngine {
     /// explicit ask gate is persisted before pausing. Keeping this transition
     /// here makes normal execution and confirm-resume agree on queue and
     /// snapshot semantics.
-    async fn pause_for_ask(
+    pub(super) async fn pause_for_ask(
         &self,
         session_id: &str,
         state: &mut ReActState,
@@ -521,500 +359,6 @@ impl ReActEngine {
         Ok(ToolBatchOutcome::Done(LoopExit::Paused {
             reason: PauseReason::Ask,
         }))
-    }
-
-    /// Execute the non-final actions for one step: emit Action cards, run the
-    /// batch (parallel), drain observations, failure nudge, and ask pause.
-    /// Behavior-preserving extract from `run_react_loop` (Phase 1 / E2).
-    ///
-    /// Phase 7 / E5: tool-input validation runs at the tool-batch boundary
-    /// before Action cards are emitted — not in the thin loop. Invalid inputs
-    /// become failed observations and are never rewritten.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn execute_tool_batch(
-        &self,
-        session_id: &str,
-        state: &mut ReActState,
-        step_num: u32,
-        emitter: &Arc<dyn AgentEventEmitter>,
-        run_id: u64,
-        actions: &mut [Action],
-        thought: &Option<String>,
-        response: &haven_llm::LlmResponse,
-        cancel_res: &tokio_util::sync::CancellationToken,
-        max_steps: u32,
-    ) -> anyhow::Result<ToolBatchOutcome> {
-        let validation_failures = if !actions.is_empty() {
-            self.validate_tool_inputs(session_id, actions).await
-        } else {
-            Vec::new()
-        };
-        if !validation_failures.is_empty() {
-            tracing::warn!(
-                "ReAct step {} session {} rejected {} invalid tool call(s)",
-                step_num,
-                session_id,
-                validation_failures.len()
-            );
-        }
-        let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
-        // Mint one `step-*` id per action, shared by the Action event,
-        // the tool's step row (created inside execute_step) and the
-        // Observation event, so the live card and the resume badge (both
-        // keyed `step-<id>`) are one entity. The ids are indexed by the
-        // action's position in `non_final` (NOT by `tool_call_id`, which
-        // two actions of a malformed provider response could share —
-        // keying by it would collapse both onto one step id and the
-        // second step-row insert would fail the PRIMARY KEY).
-        let action_step_ids: Vec<String> = non_final
-            .iter()
-            .map(|_| haven_common::types::new_id("step"))
-            .collect();
-
-        if !non_final.is_empty() {
-            // The tool_calls echoed into the canonical assistant message
-            // must exactly match the tool results pushed below, or
-            // providers reject the request with a 400. They are built
-            // from the ACTIONS (not `response.tool_calls`) so that a
-            // retry-replaced response stays consistent: when the empty /
-            // cut-off retry produced the tool calls, the original
-            // `response.tool_calls` is empty and zipping it with the
-            // retried actions would emit an assistant message WITHOUT
-            // tool_calls followed by orphaned tool results (silently
-            // dropped by sanitize_canonical, losing the observations).
-            // The Action side already carries the synthesized UUID for
-            // empty provider ids, matching the tool-result side below.
-            let tool_calls: Vec<CanonicalToolCall> = non_final
-                .iter()
-                .map(|a| CanonicalToolCall {
-                    id: a.tool_call_id.clone().unwrap_or_default(),
-                    name: a.tool_name.clone(),
-                    arguments: a.tool_input.clone(),
-                })
-                .collect();
-            // Text matches Thought projection (trimmed) so review/resume
-            // share one id/content; a retry-replaced response must not echo
-            // the cut-off original text.
-            // `parse_default_model_response` intentionally drops leaked
-            // one-character tool-call fragments. Do not reintroduce the raw
-            // response text when projecting the assistant/tool-call record.
-            let push_text = thought.as_deref().unwrap_or("");
-            let suppress_streamed_thought = thought.is_none() && !response.text.trim().is_empty();
-            // A response mixing real tool calls with a web search round
-            // carries both: the `web_search_call` items round-trip in the
-            // same assistant message so the next request restores the
-            // search context alongside the function tool results.
-            // Phase 6.1 + X12: Action cards + pending rows + canonical via apply.
-            // Thought already projected the messages row — no persist_text_id.
-            let action_cards: Vec<ActionCard> = non_final
-                .iter()
-                .enumerate()
-                .map(|(idx, action)| ActionCard {
-                    tool_name: action.tool_name.clone(),
-                    tool_input: action.tool_input.clone(),
-                    tool_call_id: action.tool_call_id.clone(),
-                    step_id: action_step_ids[idx].clone(),
-                    action_index: idx as u32,
-                    suppress_streamed_thought,
-                })
-                .collect();
-            let step_ctx = StepCtx {
-                session_id: session_id.to_string(),
-                step_num,
-                run_id,
-                emitter: emitter.clone(),
-            };
-            self.apply_transcript(
-                &step_ctx,
-                TranscriptEvent::ToolCall {
-                    text: push_text.to_string(),
-                    tool_calls,
-                    reasoning: if response.thinking_blocks.is_empty() {
-                        response.reasoning.clone()
-                    } else {
-                        None
-                    },
-                    web_search_calls: response.web_search_calls.clone(),
-                    thinking_blocks: response.thinking_blocks.clone(),
-                    action_cards,
-                    persist_text_id: None,
-                },
-                state,
-            )
-            .await;
-        }
-
-        self.save_branch_point(session_id, state, step_num, false)
-            .await;
-
-        use futures_util::StreamExt;
-
-        // Phase 5 / E3: pre-check every non-final action before spawning.
-        // Proceed tools run in parallel; blocked calls become immediate
-        // results; NeedConfirm is collected and pauses after the drain.
-        let gate_ctx = StepCtx {
-            session_id: session_id.to_string(),
-            step_num,
-            run_id,
-            emitter: emitter.clone(),
-        };
-        let mut need_confirm: Vec<ConfirmPendingTool> = Vec::new();
-        let mut proceed: Vec<(usize, Action, Option<bool>, ToolConcurrency)> = Vec::new();
-        let mut completed_results: Vec<Option<CompletedTool>> =
-            (0..non_final.len()).map(|_| None).collect();
-        // Accumulates result-derived control signals while keeping the
-        // projection itself ordered by the assistant's tool-call list.
-        let mut batch_state = ToolBatchState::default();
-
-        for (idx, action) in non_final.iter().enumerate() {
-            if idx >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
-                let step_id = action_step_ids[idx].clone();
-                let error = format!(
-                    "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
-                );
-                self.executor
-                    .finish_step_with_outcome(
-                        session_id,
-                        &action.tool_name,
-                        &action.tool_input,
-                        step_num,
-                        idx as u32,
-                        action.tool_call_id.as_deref(),
-                        &step_id,
-                        &error,
-                        ActionStepOutcome::Failed,
-                    )
-                    .await;
-                completed_results[idx] = Some(CompletedTool::failed(
-                    (*action).clone(),
-                    step_id,
-                    idx as u32,
-                    error,
-                ));
-                continue;
-            }
-            if let Some(failure) = validation_failures
-                .iter()
-                .find(|failure| failure.action_index == idx as u32)
-            {
-                let error = failure.render();
-                let step_id = action_step_ids[idx].clone();
-                self.executor
-                    .finish_interrupted_step_with_identity(
-                        session_id,
-                        &action.tool_name,
-                        &action.tool_input,
-                        step_num,
-                        idx as u32,
-                        action.tool_call_id.as_deref(),
-                        &step_id,
-                        &error,
-                    )
-                    .await;
-                completed_results[idx] = Some(CompletedTool::failed(
-                    (*action).clone(),
-                    step_id,
-                    idx as u32,
-                    error,
-                ));
-                continue;
-            }
-            match self
-                .hooks
-                .before_tool(
-                    self,
-                    &gate_ctx,
-                    ToolCallIdentity {
-                        step_id: &action_step_ids[idx],
-                        action_index: idx as u32,
-                        tool_call_id: action.tool_call_id.as_deref(),
-                    },
-                    &action.tool_name,
-                    &action.tool_input,
-                )
-                .await
-            {
-                BeforeToolAction::Proceed { confirmed } => {
-                    let concurrency = self
-                        .executor
-                        .tool_concurrency(session_id, &action.tool_name, &action.tool_input)
-                        .await;
-                    proceed.push((idx, (*action).clone(), confirmed, concurrency));
-                }
-                BeforeToolAction::Block { error } => {
-                    let step_id = action_step_ids[idx].clone();
-                    self.executor
-                        .finish_interrupted_step_with_identity(
-                            session_id,
-                            &action.tool_name,
-                            &action.tool_input,
-                            step_num,
-                            idx as u32,
-                            action.tool_call_id.as_deref(),
-                            &step_id,
-                            &error,
-                        )
-                        .await;
-                    completed_results[idx] = Some(CompletedTool::failed(
-                        (*action).clone(),
-                        step_id,
-                        idx as u32,
-                        error,
-                    ));
-                }
-                BeforeToolAction::NeedConfirm { risk_level } => {
-                    need_confirm.push(ConfirmPendingTool {
-                        confirm_id: haven_common::types::new_id("conf"),
-                        tool_name: action.tool_name.clone(),
-                        tool_input: action.tool_input.clone(),
-                        tool_call_id: action.tool_call_id.clone().unwrap_or_default(),
-                        step_id: action_step_ids[idx].clone(),
-                        action_index: idx as u32,
-                        risk_level,
-                        decision: None,
-                    });
-                }
-            }
-        }
-
-        let gate = Arc::new(ToolBatchGate {
-            all: Arc::new(RwLock::new(())),
-            resources: AsyncMutex::new(HashMap::new()),
-        });
-        let started = Arc::new(
-            (0..non_final.len())
-                .map(|_| AtomicBool::new(false))
-                .collect::<Vec<_>>(),
-        );
-        let mut tool_futures = futures_util::stream::iter(proceed)
-            .map(|(idx, action, confirmed, concurrency)| {
-                let session_id = session_id.to_string();
-                let executor = self.executor.clone();
-                let gate = gate.clone();
-                let started = started.clone();
-                // The same step id minted at Action-emit time keys the step
-                // row execute_step creates, so the live card id, the DB badge
-                // id and this step id are identical everywhere.
-                let step_id = action_step_ids[idx].clone();
-                let pre_confirmed = confirmed == Some(true);
-                async move {
-                    let _permit = gate.acquire(&concurrency).await;
-                    // The call is considered in-flight only after its
-                    // resource permit is acquired. A future waiting behind a
-                    // conflicting write can therefore be cancelled as
-                    // `cancelled`, not conservatively misreported unknown.
-                    started[idx].store(true, Ordering::Release);
-                    let result = execute_tool_action(
-                        executor,
-                        session_id,
-                        action,
-                        step_num,
-                        idx as u32,
-                        step_id,
-                        pre_confirmed,
-                    )
-                    .await;
-                    (idx, result)
-                }
-            })
-            .buffer_unordered(MAX_CONCURRENT_TOOL_CALLS);
-
-        // Drain tool results while remaining responsive to cancellation.
-        // Without select!, a cancel arriving mid-batch would only be
-        // detected at the next step boundary —after all tools finish.
-        loop {
-            tokio::select! {
-                biased;
-                _ = cancel_res.cancelled() => {
-                    tracing::info!("ReAct loop cancelled during tool batch at step {}", step_num);
-                    // Tool calls still in flight were cut off, not skipped:
-                    // repair EACH one with an "Interrupted" result so the
-                    // model sees the tool was attempted (and may retry it),
-                    // and surface it in the UI as an interrupted
-                    // observation card rather than leaving a silent gap.
-                    for (idx, action) in non_final.iter().enumerate() {
-                        if completed_results[idx].is_some() {
-                            continue;
-                        }
-                        let was_started = started[idx].load(Ordering::Acquire);
-                        let interrupted_text = if was_started {
-                            crate::canonical::interrupted_result_text(
-                                &action.tool_name,
-                                &action.tool_input,
-                            )
-                        } else {
-                            "tool call cancelled before execution".to_string()
-                        };
-                        let outcome = if was_started {
-                            ActionStepOutcome::Unknown
-                        } else {
-                            ActionStepOutcome::Cancelled
-                        };
-                        let step_id = action_step_ids[idx].clone();
-                        self.executor
-                            .finish_step_with_outcome(
-                                session_id,
-                                &action.tool_name,
-                                &action.tool_input,
-                                step_num,
-                                idx as u32,
-                                action.tool_call_id.as_deref(),
-                                &step_id,
-                                &interrupted_text,
-                                outcome,
-                            )
-                            .await;
-                        completed_results[idx] = Some(CompletedTool::failed(
-                            (*action).clone(),
-                            step_id,
-                            idx as u32,
-                            interrupted_text,
-                        ));
-                    }
-                    for result in completed_results.into_iter().flatten() {
-                        batch_state
-                            .commit_tool_result(self, &gate_ctx, result, state)
-                            .await;
-                    }
-                    // A rollback that lands mid-batch must find the DB row
-                    // at the pre-batch branch point (the response and
-                    // partial tool results are discarded by the exit).
-                    return Ok(ToolBatchOutcome::Done(
-                        self.exit_cancelled(session_id, state, step_num)
-                        .await,
-                    ));
-                }
-                item = tool_futures.next() => {
-                    let Some((idx, result)) = item else {
-                        break;
-                    };
-                    completed_results[idx] = Some(result);
-                }
-            }
-        }
-
-        // Futures finish nondeterministically, but canonical tool messages are
-        // an ordered protocol: each observation follows the corresponding
-        // assistant call. Buffering only the projection keeps parallel tools
-        // fast without making the next provider request depend on completion
-        // order.
-        for result in completed_results.into_iter().flatten() {
-            batch_state
-                .commit_tool_result(self, &gate_ctx, result, state)
-                .await;
-        }
-
-        // Skip the retry nudge when the batch asked the user or is about to
-        // pause for confirm: it would be baked into the paused snapshot ahead
-        // of the user's real answer / decision. Phase 7 / G5: append onto the
-        // last failed tool observation — never a synthetic User message.
-        if batch_state.any_tool_failure
-            && batch_state.asked_questions.is_empty()
-            && need_confirm.is_empty()
-            && step_num < max_steps - 1
-        {
-            let nudge = Self::build_failure_nudge(&batch_state.failure_signals);
-            if let Some(tool_call_id) = batch_state.last_failed_tool_call_id.clone() {
-                state.stage_retry_nudge(tool_call_id, nudge);
-            }
-        }
-
-        // Phase 5 / E3: confirm before ask when both appear in one batch.
-        // Ask pause used to return first and drop NeedConfirm tools (Action
-        // cards + assistant tool_calls with no results → Interrupted repair).
-        // Prefer confirm pause; stash ask pending so finish_confirm_batch's
-        // next turn still surfaces the question.
-        if !need_confirm.is_empty() {
-            if !batch_state.asked_questions.is_empty() {
-                // Ask question rows were projected inside apply(ToolResult).
-                let question = batch_state.asked_questions.join("\n\n");
-                self.executor
-                    .set_awaiting_answer(
-                        session_id,
-                        Some(crate::types::AskPending {
-                            question,
-                            step_ids: batch_state.ask_step_ids.clone(),
-                        }),
-                    )
-                    .await;
-            }
-            let pending = ConfirmPending {
-                step_number: step_num,
-                tools: need_confirm,
-            };
-            self.executor
-                .request_confirm_batch(session_id, pending)
-                .await;
-            // UI-only waiting notice in `messages` (not an LLM event — must
-            // not enter `react_state.events` or resume would re-feed it).
-            let notice = "Waiting for confirmation…";
-            self.project_chat_message(session_id, "assistant", notice, Some("text"), None, None)
-                .await;
-            self.pause_turn(PauseTurnInput {
-                session_id,
-                state,
-                snapshot_step: step_num + 1,
-                emitter,
-                status: SessionStatus::PausedAwaitingConfirm,
-                final_text: notice,
-                branch_point_step: None,
-            })
-            .await?;
-            return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
-                reason: PauseReason::Confirm,
-            }));
-        }
-
-        // The agent asked the human a question: pause so the user can
-        // answer. Their reply arrives as a supplement and resumes the session
-        // (Paused —Pending —dispatcher re-enters the loop, injecting the
-        // answer as context at the top of the next step).
-        if !batch_state.asked_questions.is_empty() {
-            let question = batch_state.asked_questions.join("\n\n");
-            return self
-                .pause_for_ask(
-                    session_id,
-                    state,
-                    step_num,
-                    emitter,
-                    crate::types::AskPending {
-                        question,
-                        step_ids: batch_state.ask_step_ids.clone(),
-                    },
-                )
-                .await;
-        }
-
-        let session_state = self.executor.get_session_state(session_id).await;
-        match session_state {
-            Some(s) if s.is_paused() => {
-                return Ok(ToolBatchOutcome::Done(
-                    self.exit_external_pause(session_id, state, step_num, emitter, run_id)
-                        .await,
-                ));
-            }
-            Some(SessionStatus::Error) => {
-                return Ok(ToolBatchOutcome::Done(
-                    self.exit_with_snapshot(
-                        session_id,
-                        state,
-                        step_num,
-                        LoopExit::Error("session interrupted".into()),
-                    )
-                    .await,
-                ));
-            }
-            // Session gone (end_session/terminal cleanup) or completed: exit.
-            None | Some(SessionStatus::Completed) => {
-                return Ok(ToolBatchOutcome::Done(
-                    self.exit_with_snapshot(session_id, state, step_num, LoopExit::Completed)
-                        .await,
-                ));
-            }
-            _ => {}
-        }
-
-        Ok(ToolBatchOutcome::Continue)
     }
 
     /// Resume after a confirm pause: execute decided gated tools without

@@ -82,6 +82,10 @@ impl RunBudgetConfig {
             session_max_steps,
         }
     }
+
+    fn allows_tool_retry(&self, step_num: u32) -> bool {
+        step_num < self.effective_max
+    }
 }
 
 impl ReActEngine {
@@ -167,7 +171,10 @@ impl ReActEngine {
                     },
                     state,
                     cancel,
-                    max_steps: budget.max_steps,
+                    // The turn receives the policy result, not the budget
+                    // representation. This keeps tool execution independent
+                    // from run accounting and fixes resumed-run boundaries.
+                    allow_tool_retry: budget.allows_tool_retry(step_num),
                     cut_off_retries: &mut cut_off_retries,
                 })
                 .instrument(tracing::info_span!("turn", session_id, step_num))
@@ -245,5 +252,14 @@ mod tests {
         assert_eq!(budget.start_step, 7);
         assert_eq!(budget.max_steps, 4);
         assert_eq!(budget.effective_max, 9);
+    }
+
+    #[test]
+    fn resumed_run_allows_retry_until_its_absolute_end() {
+        let budget = RunBudgetConfig::new(4, Some(9), 7);
+
+        assert!(budget.allows_tool_retry(7));
+        assert!(budget.allows_tool_retry(8));
+        assert!(!budget.allows_tool_retry(9));
     }
 }

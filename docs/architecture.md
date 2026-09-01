@@ -158,7 +158,7 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `turn` / `stream_step` / `tool_batch` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责一次模型采样和响应策略，`tool_batch` 负责工具执行与按 assistant 调用顺序物化结果。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
+- `react/`：ReAct 循环（`loop` / `turn` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责阶段编排，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider failover 或 retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
 - **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；无快照恢复只读取步骤投影中的身份，旧行才按 `step-{row_id}` 生成确定性 fallback。
@@ -365,3 +365,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-31 | §2.5 Agent / 持久化：为 ReAct 工具调用保存 `step_id + action_index + tool_call_id` 稳定身份，确认恢复与无快照投影按身份关联；参数验证改为结构化失败，不再猜测 schema 值（ADR 0059） |
 | 2026-08-31 | §2.5 Tools：工具重试改由操作幂等性策略决定；取消/超时统一为结构化执行结果；Shell/Skill/MCP 的未知终止禁止自动重试；工具超时与重试配置只在显式设置时覆盖 intrinsic policy（ADR 0060） |
 | 2026-08-31 | §2.5 Agent/Tools/Memory：工具批次改为有界可取消调度，工具声明只读/资源/独占并发策略；统一 observation 截断与 step 生命周期终态（ADR 0061） |
+| 2026-09-01 | §2.5 Agent：将 Turn 响应策略与工具批次身份计划提升为独立边界；恢复运行使用绝对步数终点判断工具失败重试（ADR 0062） |
