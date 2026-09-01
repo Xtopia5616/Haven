@@ -88,6 +88,177 @@
 
 本节中的“删除”均默认测试版破坏性变更：删除前同步更新旧测试、文档和发布重置说明；不得只删生产分支而保留旧 fixture 继续掩盖兼容入口。
 
+## 2.3 战略级重构候选：哪些边界值得推翻（2026-09-01）
+
+本节不是当前文件拆分任务的直接授权，而是基于依赖、状态和功能实现的二次架构审查。结论比较激进：当前最大的风险不是某个文件过大，而是同一业务事实被多个运行时容器、事件形态和投影路径重复维护。若只继续机械拆分，可能得到更多更小的模块，但不会消除根本复杂度。
+
+测试版允许破坏性重构。以下候选应先各自写 ADR、定义重置范围和验收测试，再按领域独立迁移；不得把所有候选一次性合并成“全量重写”。
+
+### 总体判断
+
+建议把目标架构收敛为：
+
+```text
+Tauri / UI
+    │  typed commands + session event stream
+    ▼
+ApplicationRuntime（装配、生命周期、配置快照）
+    ▼
+SessionSupervisor（全局调度、并发、取消）
+    ▼
+SessionActor（单会话唯一状态所有者）
+    ▼
+RunEngine（纯 ReAct 状态机）
+    ├── ModelGateway（按请求能力路由）
+    ├── ToolRuntime（工具执行与授权）
+    └── SessionEventStore（append-only 事件）
+             ├── transcript / history projection
+             ├── action / usage / notification projection
+             ├── live subscription
+             └── memory / title 等后台消费者
+```
+
+目标不变量是：一个会话只有一个状态所有者；一个业务事实只有一个持久化权威；UI 的实时更新和恢复都消费同一条事件序列；后台任务和人工交互都有明确的持久状态机。SQLite、供应商 adapter 和 Windows 进程适配可以继续保留，它们不是本次要推翻的对象。
+
+### A. P0：推翻 `SessionExecutor` 的“大总管”模型
+
+当前 [`crates/agent/src/session/mod.rs`](../crates/agent/src/session/mod.rs) 的 `SessionExecutor` 同时拥有：session cache、FIFO dispatcher、运行集合、信号量、取消 token、状态 watch、pending queue、action completion、ask gate、confirm gate、scheduled confirm、partial store 和多组一次性 callback。`SessionInfo` 又把 follow-up/steering 队列放在另一层的 session mutex 里。这样会话的状态分散在多个 `HashMap + Mutex`，恢复、暂停、确认和结束都要跨多个 owner 协调。
+
+建议推翻为三层：
+
+1. `SessionSupervisor` 只负责全局排队、并发 permit、启动/停止 session actor。
+2. `SessionActor` 以 mailbox 串行拥有一个会话的 status、输入队列、interaction、run lifecycle、partial/checkpoint 和 action completion。
+3. `RunEngine` 不再反向调用 executor 的几十个方法，而是接收不可变 `RunContext`，输出 typed `RunEffect` / `SessionCommand`。
+
+迁移完成后应删除 session 级 `HashMap` 之间的交叉协调、`on_*` callback 网和把队列藏在 `SessionInfo` 里的运行时状态。对外仍可保留 `SessionHandle`，但它只能发送命令，不能暴露内部 mutex。
+
+这不是为了换一种并发风格，而是为了让“一个 session 的所有状态变更按顺序发生”成为代码结构保证，而不是靠锁顺序、回调注册顺序和测试覆盖保证。
+
+### B. P0：把 snapshot blob 权威改成数据库事件流，snapshot 降级为缓存
+
+当前 [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) 已经把 `ReActSnapshot.events` 定为 transcript 权威，但它仍作为整块压缩 blob 存储并频繁重写；同时 `messages`、`session_steps`、`AgentEvent` 和前端 resume builder 又分别承担投影或实时状态。恢复因此存在 snapshot authority、snapshot-less projector、DB projection merge 和 live event merge 多条语义路径。
+
+更彻底的目标是新增版本化的 `session_events` append-only 存储：每个事件有 `session_id`、单调 `sequence`、事件类型、payload、时间和 run/step identity。`ReActSnapshot` 只保留为定期 checkpoint/cache，不再是唯一持久化真源。`messages`、`session_steps`、usage、action 和 UI live stream 都从同一批已提交事件投影；实时订阅按 sequence 重放，断线后从最后 sequence 继续。
+
+这样可以直接消除或显著收窄：
+
+- 整块 snapshot 每步重写和长会话的 O(n) 持久化成本；
+- rollback 依赖 `last_msg_at` 与 event cursor 的双时钟；
+- snapshot 缺失时另起一套 projector；
+- UI 的 live/resume 内容匹配、旧 sentinel 和 optimistic bubble 补丁；
+- `AgentEvent` 与 durable transcript 之间需要人工保持一致的映射。
+
+这是本审查中最值得“重新定义数据模型”的一项，但必须先做事件 schema、顺序/幂等、事务提交和数据库重置 ADR。若暂时不做，应至少把当前 snapshot 方案当作明确的过渡架构，而不是继续向其中添加新的状态字段。
+
+### C. P0：统一 ask、confirm 和其他人工阻塞为 `InteractionRequest`
+
+当前 ask 与 confirm 在 [`crates/agent/src/types.rs`](../crates/agent/src/types.rs)、`SessionExecutor`、resume/rollback、Tauri command 和 UI 中都有各自的状态：`awaiting_answer`、`awaiting_confirm`、`scheduled_confirms`、`paused_awaiting_answer`、`paused_awaiting_confirm`，前端也分别有 ask controller 和 confirm queue。两者本质上都是“运行暂停，等待外部主体提交一个带 id 的决定”。
+
+建议统一为一个持久化 `InteractionRequest`：
+
+```text
+InteractionRequest {
+  id,
+  session_id,
+  kind: Ask { question, options } | Confirm { operation, risk, scope },
+  source_step,
+  status: Pending | Resolved | Expired | Cancelled,
+  response,
+}
+```
+
+普通用户回答、安全确认、定时任务确认和未来的权限/登录请求都走同一个 request/resolve/cancel 生命周期。UI 只需要一个 interaction store；后端只需要一个恢复、超时、回滚和幂等解析入口。`SessionStatus` 可以保留面向用户的显示状态，但不再为每一种等待原因复制一套 executor map 和 resume 分支。
+
+这项重构还应明确“回答是对哪个 request 的回复”，禁止再根据当前是否 paused、文本内容或 tool observation 猜测输入归属。
+
+### D. P1：把 background action 与 scheduled action 合并成真正的 `ActionService`
+
+数据库已经用 `actions.kind` 区分 `background` / `scheduled`，但运行时仍是 [`crates/tools/src/bg.rs`](../crates/tools/src/bg.rs) 的 `BackgroundActions` 加上 [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) 的 `ScheduledActionCenter` 两套状态机；它们再通过 `set_actions`、DB setter、事件 sink、agent consumer 和 fired/completion channel 互相接线。
+
+建议把 action 统一成一个持久化状态机：
+
+```text
+Action { id, owner/session, kind, spec, state, output, error, timestamps }
+Pending → Running → Succeeded | Failed | Cancelled | Expired
+                 └→ Waiting（timer / dependency / interaction）
+```
+
+shell 后台执行、定时触发、等待另一个 action、完成后唤醒会话都只是不同的 `ActionSpec` / worker，不再是两套 registry。`actions` 表成为状态权威，内存 worker 只是执行句柄和短期输出缓存。这样可以统一重启恢复、取消、权限、历史、通知和 UI action board，也能消除 `session_id=None`/`prompt` 回退等旧语义。
+
+### E. P1：收窄 `ToolsManager`，删除 callback service locator
+
+[`crates/tools/src/lib.rs`](../crates/tools/src/lib.rs) 的 `ToolsManager` 同时管理 registry、MCP、skills、shell defaults、context limits、safety gateway、background/scheduled action、audio pipeline、self tool、router，以及通过 setter 注入的 agent spawner 和 memory recall。`app_state.rs` 以 `Arc<dyn Fn>` 把 agent 反向接回 tools，虽然避免了 crate 循环，却把组合根的依赖隐藏成运行时 callback 网络。
+
+建议重划分为：
+
+- `tool-core`：Tool contract、typed result/signal、registry/catalog、授权接口；
+- `tool-runtime`：执行上下文、取消、超时、并发和 action/interaction port；
+- `tool-builtins`：shell/file/system/audio 等具体能力；
+- MCP/skills/agent/memory adapter：作为组合根注入的 capability implementation。
+
+不一定马上新增四个 crate；先用模块和 trait 建立边界，再决定是否把 `tool-core` 单独成 crate。目标是 `ToolsManager` 成为 catalog/composition 对象，不再成为整个应用的 service locator；模型启动子 agent、查询 memory、创建 action 应通过明确的 capability port，而不是可变 callback slot。
+
+### F. P1：重做 memory 与 prompt 的责任边界，并删除硬编码身份事实
+
+当前 [`crates/agent/src/prompt.rs`](../crates/agent/src/prompt.rs) 同时负责 prompt render、工具/技能/MCP index cache、数据库 memory recall、向量模型调用和 MEMORY fence patch；[`crates/agent/src/inference.rs`](../crates/agent/src/inference.rs) 又同时负责事实抽取 outbox、LLM 仲裁、事实维护、embedding catch-up 和 recall。建议拆成：
+
+1. `MemoryService`：只提供 typed query、memory proposal、commit、index status。
+2. `MemoryWorker`：消费已提交会话事件，异步抽取事实、生成 embedding、维护索引。
+3. `PromptContextProvider`：在 turn 边界取得一次有上限的上下文快照。
+4. `PromptRenderer`：纯函数，把上下文快照渲染成 system message，不直接碰 DB、router 或 cache。
+
+另外，[`crates/agent/src/layer.rs`](../crates/agent/src/layer.rs) 构造 `AgentLayer` 时会执行 `ensure_fact("user", "name", "Xtopia", ...)`。这不是合理的默认配置，而是产品身份数据与运行时初始化混在一起的明显 placeholder/功能错误。应删除；如果产品需要用户名称，应走首次设置/用户 profile，并明确来源、可修改性和是否允许进入 prompt。不能让每次启动隐式写入一条伪造的长期记忆。
+
+### G. P1：模型路由从固定角色改成 capability/request policy
+
+当前 [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) 和 [`crates/llm/src/router.rs`](../crates/llm/src/router.rs) 固定 six slots：small/default/balanced/image/audio/embedding，再用 `api_style`、provider hint、`stt_use_audio_model`、`vision_use_image_model` 和 balanced fallback 叠加语义。它能工作，但新增能力时会继续增加 slot、布尔开关和特判。
+
+更清晰的模型是：请求声明 `RequestKind` / `Capability`（chat、fast_chat、vision、transcription、embedding、image_generation、speech_synthesis），配置声明 provider capability 和有序 fallback policy，router 只执行 policy。`balanced` 不再是隐藏的全局逃生出口，而是一个显式 fallback chain；provider identity、wire protocol、model capability 也分别建模。
+
+此项不要求重写 provider adapter。adapter 仍保留为外部 wire compatibility；推翻的是 Haven 内部配置和路由语义，目标是让“能不能做、用哪个模型、失败后是否回退”成为可观察的策略，而不是六个字段和多个 bool 的组合。
+
+### H. P1：让前端也消费同一事件 reducer，而不是维护 live/resume 两个世界
+
+当前 [`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) 仍是聊天编排、事件订阅、确认队列、输入提交和展示状态的汇合点；[`ui/src/lib/resumeMessages.ts`](../ui/src/lib/resumeMessages.ts) 又独立把 messages + steps 组装成另一种消息世界。即便当前已经大量使用稳定 id，live-only、DB-only、streaming、ask legacy 和 optimistic bubble 仍需要复杂 merge 规则。
+
+目标应是一个 typed `SessionReducer`：
+
+- 初次打开：从 session event sequence replay；
+- 实时更新：追加同一种事件；
+- 断线恢复：从 last sequence 补 replay；
+- UI 组件：只渲染 reducer 产生的 `SessionView`。
+
+这会让 `+page.svelte` 退回路由编排层，ask/confirm 进入统一 interaction store，tool card 只按注册表渲染。后端事件流完成前，可以先把现有 Tauri event 与 resume DTO 适配到同一个 reducer，但不要继续增加第三套 UI merge 特例。
+
+### I. P2：应用启动改成有生命周期的 `ApplicationRuntime`
+
+[`crates/app-binary/src/app_state.rs`](../crates/app-binary/src/app_state.rs) 现在既是组合根，又启动 memory maintenance、retention、prewarm、bootstrap、MCP/skills discover、dispatcher 和多种后台 consumer；很多 `tokio::spawn` 任务没有统一的 owner、取消 token 或 shutdown join。建议抽出 `ApplicationRuntime`，集中持有服务句柄、后台任务和 shutdown token；`AppState` 只暴露 Tauri command 所需的稳定 handles，`lib.rs` 只负责宿主适配。
+
+这不是为了把启动代码分成更多文件，而是为了确保窗口关闭、配置热替换、数据库关闭和测试 teardown 时，所有后台任务都有明确的停止语义。启动失败也应返回阶段化的诊断，而不是部分服务已经 spawn 后继续运行。
+
+### J. 暂不推翻的边界
+
+以下内容当前看起来是合理的稳定边界，除非新的证据证明其实现有功能错误，不建议为了“彻底重构”而重写：
+
+- `haven-llm` provider adapter 的外部协议映射、SSE/JSONL framing、厂商差异和 failover；
+- `SafetyGateway` 的 deny-first 授权原则、路径/进程安全检查和负向测试矩阵；
+- `haven-input` 的 CPAL/VAD/录音生命周期与 `haven-llm` 的 provider 实现分离；
+- SQLite WAL、schema version/migration 和 Windows 编码/进程树终止等平台故障处理；
+- Tauri DTO 的单一事件映射点，以及已有的命名边界。
+
+### K. 激进路线的执行顺序
+
+如果决定按“允许破坏性重构”的路线走，建议顺序如下，每一步都独立提交：
+
+1. 写 ADR 并确定 reset boundary：session snapshot、actions、旧配置、UI local state 是否全部清空；先建立事件、interaction、action 的行为测试。
+2. 建立 `SessionEventStore` 和投影测试，先迁移一个完整的 session create → user input → one turn → tool result → resume 链路。
+3. 引入 `SessionActor` / `SessionSupervisor`，暂时把旧 ReAct 引擎包在 actor 内；新链路稳定后删除旧 executor maps/callbacks。
+4. 迁移 `InteractionRequest` 和 `ActionService`，删除 ask/confirm 双状态机与 background/scheduled 双 registry。
+5. 收窄 tools、memory、prompt 和 model routing 的 ports；删除 callback setter、prompt DB 访问和硬编码身份事实。
+6. 迁移 UI `SessionReducer` 与 `ApplicationRuntime`，最后删除 snapshot-less projector、内容匹配、旧 sentinel 和旧事件 merge 分支。
+
+在第 2 步之前，不应开始大规模 provider 或 UI 视觉重写；在第 6 步完成之前，不应宣布“事件统一”完成。上述战略候选与本文件第 3 节的机械拆分是两条不同路线：文件拆分可以先做，但一旦选定战略路线，相关模块拆分应服务于新边界，不能把临时 facade 固化成最终架构。
+
 ## 3. 执行顺序
 
 ### 阶段 A：先拆测试集中文件，低风险
