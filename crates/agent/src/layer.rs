@@ -207,7 +207,7 @@ impl AgentLayer {
         query: &str,
         kind: &str,
         limit: usize,
-    ) -> Vec<serde_json::Value> {
+    ) -> anyhow::Result<haven_memory::MemoryRecall> {
         self.inference.recall_memory(query, kind, limit).await
     }
 

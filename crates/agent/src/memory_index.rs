@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
-use haven_memory::embeddings::{EmbeddedText, entity_kind};
+use haven_memory::embeddings::entity_kind;
+use haven_memory::recall::{MemoryHit, MemoryQuery, MemoryRetriever};
 
 /// Maximum inputs accepted by one embedding request, regardless of the
 /// configured batch size. The provider contract is intentionally enforced at
@@ -197,25 +198,22 @@ impl MemoryEmbeddingIndex {
         }
     }
 
-    /// Try vector recall. `None` means the caller should use its keyword
-    /// fallback; an empty vector result is still a successful vector query.
-    pub(crate) async fn search(
-        &self,
-        entity_type: &str,
-        query: &str,
-        limit: usize,
-    ) -> Option<Vec<(EmbeddedText, f64)>> {
+    /// Acquire a vector and resolve it through the shared memory read policy.
+    /// The provider/index adapter never returns raw embedding rows: facts and
+    /// episodes are filtered, scoped, and normalized by `MemoryRetriever`.
+    /// `None` means the caller should use its keyword fallback.
+    pub(crate) async fn search(&self, query: &MemoryQuery) -> Option<Vec<MemoryHit>> {
         let model = self.configured_model().await?;
         if self.model_changed(&model).await {
             return None;
         }
-        let vector = self.router.embed_text(query).await.ok()?;
+        let vector = self.router.embed_text(&query.text).await.ok()?;
         if vector.is_empty() {
             return None;
         }
         let db = self.db.clone();
-        let entity_type = entity_type.to_string();
-        db.run_blocking(move |db| db.search_embeddings(&entity_type, &vector, limit, &model))
+        let query = query.clone();
+        db.run_blocking(move |db| MemoryRetriever::new(db).vector(&query, &vector, &model))
             .await
             .ok()
     }

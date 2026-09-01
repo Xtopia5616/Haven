@@ -83,7 +83,7 @@ impl ReActEngine {
         // Context is collected once at the turn boundary and projected by the
         // single transcript writer. Hooks may compact or refresh the context,
         // but they never own queue reads or persistence.
-        self.inject_pending_context(&ctx, state)
+        self.inject_turn_start_context(&ctx, state)
             .instrument(tracing::info_span!("inject", session_id, step_num))
             .await;
 
@@ -347,7 +347,7 @@ impl ReActEngine {
                 step_num,
                 &ctx.emitter,
                 ctx.run_id,
-                &mut actions,
+                &actions,
                 &thought,
                 &response,
                 &cancel,

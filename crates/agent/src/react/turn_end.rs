@@ -1,10 +1,10 @@
 //! Turn-end orchestration for the ReAct loop.
 //!
-//! Turn completion is intentionally separate from pending-context injection:
-//! the former owns the final transcript event, branch checkpoint and pause
-//! transition; the latter only drains context sources. Keeping this boundary
-//! explicit prevents a new queue or inbox path from silently changing the
-//! turn-end persistence contract.
+//! Turn completion is intentionally separate from turn-start context
+//! assembly: the former owns the final transcript event, branch checkpoint
+//! and pause transition; its late-input path only drains process-local queues.
+//! Keeping this boundary explicit prevents a second inbox claim from silently
+//! changing the turn-end persistence contract.
 
 use serde_json::Value;
 
@@ -27,8 +27,9 @@ pub(super) struct TurnEndInput<'a> {
 }
 
 impl ReActEngine {
-    /// Apply the final assistant content, deliver context that arrived while
-    /// the model was running, then either continue or persist a paused turn.
+    /// Apply the final assistant content, deliver local context that arrived
+    /// while the model was running, then either continue or persist a paused
+    /// turn. Cross-session inbox collection is turn-start-only.
     ///
     /// X12 remains authoritative here: final content is applied through
     /// [`ReActEngine::apply_transcript`], and `pause_turn` only records the
@@ -97,9 +98,10 @@ impl ReActEngine {
             .await;
         }
 
-        // Inject AFTER the final so canonical/events order is final → injects
-        // (replaces the old insert-before-injects dance).
-        if self.inject_pending_context(ctx, state).await {
+        // Inject AFTER the final so canonical/events order is final → injects.
+        // Only local queues are drained here; the inbox was claimed once by
+        // the turn-start assembly.
+        if self.inject_turn_end_context(ctx, state).await {
             self.save_branch_point(&ctx.session_id, state, ctx.step_num, false)
                 .await;
             return Ok(TurnEndOutcome::Continue);

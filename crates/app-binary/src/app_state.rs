@@ -131,9 +131,13 @@ impl AppState {
         {
             let agent_for_recall = agent.clone();
             tools
-                .set_memory_recall(std::sync::Arc::new(move |query, kind, limit| {
+                .set_memory_recall(std::sync::Arc::new(move |query| {
                     let agent = agent_for_recall.clone();
-                    Box::pin(async move { agent.recall_memory(&query, &kind, limit).await })
+                    Box::pin(async move {
+                        agent
+                            .recall_memory(&query.text, query.kind.entity_type(), query.limit)
+                            .await
+                    })
                 }))
                 .await;
         }

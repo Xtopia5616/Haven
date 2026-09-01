@@ -1,8 +1,9 @@
 //! Production [`LoopHooks`] policy.
 //!
 //! `hooks.rs` owns the stable extension contract and test double. This module
-//! owns the production composition of inbox polling, compaction, inference,
-//! response classification and the safety gate. Keeping the policy separate
+//! owns the production composition of compaction, inference, response
+//! classification and the safety gate. Turn-start context assembly owns inbox
+//! polling before these hooks run. Keeping the policy separate
 //! makes it possible to exercise the loop with a deliberately inert hook
 //! implementation without importing production side effects.
 
@@ -17,8 +18,8 @@ use super::hooks::{
 use super::retries::{AfterLlmAction, ResponsePolicy};
 use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_has_image};
 
-/// Production hooks: inbox poll, context compaction, interval + pause infer,
-/// throttled MEMORY fence refresh (M2), response policy, and confirm pre-check.
+/// Production hooks: context compaction, interval + pause infer, throttled
+/// MEMORY fence refresh (M2), response policy, and confirm pre-check.
 pub(crate) struct DefaultHooks {
     /// Optional session-scoped fact inference. `None` in unit tests that
     /// construct an engine without an [`crate::InferenceEngine`].
@@ -50,7 +51,6 @@ impl DefaultHooks {
 #[async_trait]
 impl LoopHooks for DefaultHooks {
     async fn before_step(&self, engine: &ReActEngine, ctx: &StepCtx, state: &mut ReActState) {
-        engine.maybe_poll_inbox(&ctx.session_id, ctx, state).await;
         // M2: after outbox fact writes, surgically refresh MEMORY fence
         // (throttled). It must run before compaction so the budget decision
         // sees the exact system prompt that will be sent to the provider.

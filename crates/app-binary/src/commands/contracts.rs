@@ -538,15 +538,25 @@ pub struct SkillExecutionResponse {
     pub error: Option<String>,
 }
 
-/// Stable memory-recall item. The memory engine deliberately returns a JSON
-/// list internally because it serves more than one caller, but the Tauri
-/// boundary exposes these four fixed fields only.
+/// Stable Tauri memory-recall item. It mirrors the typed `haven_memory` hit
+/// while keeping the existing wire shape and field names.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryRecallItem {
     pub entity_id: String,
     pub text: String,
     pub score: f64,
     pub model: String,
+}
+
+impl From<haven_memory::MemoryHit> for MemoryRecallItem {
+    fn from(hit: haven_memory::MemoryHit) -> Self {
+        Self {
+            entity_id: hit.entity_id,
+            text: hit.text,
+            score: hit.score,
+            model: hit.model,
+        }
+    }
 }
 
 /// The fixed part of a builtin tool listing. `input_schema` is intentionally

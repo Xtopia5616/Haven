@@ -2,6 +2,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -168,6 +169,10 @@ struct QueryCache {
 pub struct Database {
     pool: ConnectionPool,
     cache: Mutex<HashMap<String, QueryCache>>,
+    /// Monotonic in-process revision for all memory reads, including facts,
+    /// episodes, and their embedding index. It is intentionally not persisted
+    /// or part of the database schema; consumers use it only for cache keys.
+    memory_revision: AtomicU64,
 }
 
 impl Database {
@@ -196,6 +201,7 @@ impl Database {
         Ok(Self {
             pool,
             cache: Mutex::new(HashMap::new()),
+            memory_revision: AtomicU64::new(0),
         })
     }
 
@@ -237,6 +243,7 @@ impl Database {
         Ok(Self {
             pool,
             cache: Mutex::new(HashMap::new()),
+            memory_revision: AtomicU64::new(0),
         })
     }
 
@@ -433,6 +440,7 @@ impl Database {
     }
 
     pub fn cache_invalidate_facts(&self, subject: &str) {
+        self.bump_memory_revision();
         if let Ok(mut cache) = self.cache.lock() {
             // The subject view...
             let key = format!("_facts_{}", subject);
@@ -452,6 +460,7 @@ impl Database {
     /// Bump every facts cache entry (subject views + `_facts_all`). Used by
     /// bulk maintenance that may touch arbitrary subjects (P1-6).
     pub fn cache_invalidate_all_facts(&self) {
+        self.bump_memory_revision();
         if let Ok(mut cache) = self.cache.lock() {
             let keys: Vec<String> = cache
                 .keys()
@@ -508,6 +517,7 @@ impl Database {
     /// INSERTs — those fire no trigger and leave the embedding rows
     /// untouched, so invalidating would only thrash the cache.
     pub fn cache_invalidate_embeddings(&self, entity_type: &str) {
+        self.bump_memory_revision();
         if let Ok(mut cache) = self.cache.lock() {
             let key = format!("_embeddings_{}", entity_type);
             if let Some(qc) = cache.get_mut(&key) {
@@ -515,6 +525,17 @@ impl Database {
                 qc.generation = qc.generation.wrapping_add(1);
             }
         }
+    }
+
+    /// Current process-local revision of memory-readable state. Any fact,
+    /// episode, or embedding mutation advances it, allowing prompt recall
+    /// caches to remain valid across unrelated dirty notifications.
+    pub fn memory_revision(&self) -> u64 {
+        self.memory_revision.load(Ordering::Acquire)
+    }
+
+    fn bump_memory_revision(&self) {
+        self.memory_revision.fetch_add(1, Ordering::AcqRel);
     }
 }
 

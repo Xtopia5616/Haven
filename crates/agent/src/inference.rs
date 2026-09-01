@@ -9,7 +9,7 @@ use haven_common::prompts::{
 };
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
-use haven_memory::embeddings::entity_kind;
+use haven_memory::recall::{MemoryKind, MemoryQuery, MemoryRecall, MemoryRetriever};
 use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
@@ -684,71 +684,25 @@ impl InferenceEngine {
     }
 
     /// Retrieve the memory items most relevant to `query`. Uses the
-    /// `embedding_model` slot when configured (embed the query, then cosine
-    /// search over the stored vectors); otherwise falls back to keyword
-    /// search. `kind` is `"fact"` or `"episode"`. Returns a JSON-friendly
-    /// list of `{ entity_id, text, score, model }` objects.
+    /// `embedding_model` slot when configured (embed the query, then fuse
+    /// cosine candidates with keyword candidates); otherwise falls back to
+    /// keyword search. Retrieval and sensitive filtering are owned by
+    /// `haven_memory`; this method only acquires the optional provider vector
+    /// and moves the blocking read off the async runtime.
     pub async fn recall_memory(
         &self,
         query: &str,
         kind: &str,
         limit: usize,
-    ) -> Vec<serde_json::Value> {
-        let entity = if kind == entity_kind::EPISODE {
-            entity_kind::EPISODE
-        } else {
-            entity_kind::FACT
-        };
-        let limit = limit.clamp(1, 20);
-
-        // Vector path: embed the query and cosine-search the index. Skipped
-        // when the index still holds vectors from a previous model (they are
-        // dimension-incompatible; maintenance rebuilds the index).
-        if let Some(hits) = self.embedding_index.search(entity, query, limit).await {
-            return hits
-                .into_iter()
-                .map(|(e, score)| {
-                    serde_json::json!({
-                        "entity_id": e.entity_id,
-                        "text": e.text,
-                        "score": score,
-                        "model": e.model,
-                    })
-                })
-                .collect();
-        }
-
-        // Keyword fallback (CJK-aware terms for episodes; full query for FTS facts).
+    ) -> anyhow::Result<MemoryRecall> {
+        let kind = MemoryKind::parse(kind)?;
+        let query = MemoryQuery::new(query, kind, limit)?;
+        let vector_hits = self.embedding_index.search(&query).await;
         let db = self.db.clone();
-        let query_owned = query.to_string();
-        db.run_blocking(move |db| {
-            let hits: Vec<serde_json::Value> = if entity == entity_kind::EPISODE {
-                let terms = haven_common::text::memory_recall_terms(&query_owned);
-                let term_refs = haven_common::text::memory_recall_term_sample(&terms, 6);
-                db.search_episodes_by_keywords(&term_refs, limit)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|text| serde_json::json!({ "entity_id": "", "text": text, "score": 0.0, "model": "" }))
-                    .collect()
-            } else {
-                db.search_facts(&query_owned)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .take(limit)
-                    .map(|f| {
-                        serde_json::json!({
-                            "entity_id": f.id,
-                            "text": format!("{}={}", f.predicate, f.object),
-                            "score": f.confidence,
-                            "model": "",
-                        })
-                    })
-                    .collect()
-            };
-            Ok::<Vec<serde_json::Value>, anyhow::Error>(hits)
-        })
-        .await
-        .unwrap_or_default()
+        Ok(db
+            .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, vector_hits))
+            .await
+            .unwrap_or_default())
     }
 
     /// Persist a batch of LLM-extracted facts. `messages` is the extraction

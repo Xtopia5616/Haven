@@ -28,9 +28,14 @@ pub async fn recall_memory(
         .agent
         .recall_memory(&query, kind, limit)
         .await
-        .into_iter()
-        .map(|item| serde_json::from_value(item).map_err(|e| log_err("recall_memory", e)))
-        .collect()
+        .map(|recall| {
+            recall
+                .hits
+                .into_iter()
+                .map(MemoryRecallItem::from)
+                .collect()
+        })
+        .map_err(|e| log_err("recall_memory", e))
 }
 
 // M6-04: Fact management commands

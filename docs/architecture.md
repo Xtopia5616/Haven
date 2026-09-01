@@ -138,12 +138,13 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
 provider 协议和 UI 展示逻辑不得进入本 crate。
 
-Agent 的 `memory_index.rs` 是嵌入编排边界：它负责 embedding provider 调用、
-有界 catch-up、模型切换清理、向量召回和 LSH 重建；`InferenceEngine` 只编排事实
-抽取/维护并使用该组件，不把 provider 网络调用或跨 await 的 SQLite 连接下沉到
-Memory。事实维护的 SQL 清理与矛盾候选读取由 `fact_maintenance.rs` 负责；维护
-调度、LLM 仲裁、提案门禁与并发控制仍属于 Agent，二者通过既有 `Database` 外观
-连接（ADR 0022）。
+Agent 的 `memory_index.rs` 是 embedding 编排边界：它负责 embedding provider 调用、
+有界 catch-up、模型切换清理和 LSH 重建；向量行的 scope、敏感过滤、规范化与 keyword
+融合由 `haven_memory::recall::MemoryRetriever` 统一负责。`InferenceEngine` 只编排
+事实抽取/维护并使用这两个组件，不把 provider 网络调用下沉到 Memory；Memory 只
+接收已获取的向量并执行同步数据库读取。事实维护的 SQL 清理与矛盾候选读取由
+`fact_maintenance.rs` 负责；维护调度、LLM 仲裁、提案门禁与并发控制仍属于 Agent，
+二者通过既有 `Database` 外观连接（ADR 0022、0063）。
 
 ### 2.4 `haven-input` —— 输入采集与语音生命周期
 
@@ -166,7 +167,7 @@ provider（STT 客户端来自 `haven-llm`）。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 投影；`resume_support` 只提供确定性的候选合并、无快照投影和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
-- `inference.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
+- `inference.rs` / `memory_index.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_index` 只适配 embedding provider 与索引生命周期，`prompt` 通过 typed memory recall 组装 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
 - `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签/谓词规范化、prompt
   字段清洗和 JSON array 提取；`InferenceEngine` 负责调度与持久化（ADR 0029）。
 - 调用 `LlmRouter` 与 `MediaGateway`、执行 `haven-tools` 工具、写 `haven-memory`、
@@ -366,3 +367,5 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-31 | §2.5 Tools：工具重试改由操作幂等性策略决定；取消/超时统一为结构化执行结果；Shell/Skill/MCP 的未知终止禁止自动重试；工具超时与重试配置只在显式设置时覆盖 intrinsic policy（ADR 0060） |
 | 2026-08-31 | §2.5 Agent/Tools/Memory：工具批次改为有界可取消调度，工具声明只读/资源/独占并发策略；统一 observation 截断与 step 生命周期终态（ADR 0061） |
 | 2026-09-01 | §2.5 Agent：将 Turn 响应策略与工具批次身份计划提升为独立边界；恢复运行使用绝对步数终点判断工具失败重试（ADR 0062） |
+| 2026-09-01 | §2.4 Memory / Agent / Tools：以 `MemoryQuery` / `MemoryRecall` / `MemoryRetriever` 统一关键词、向量、敏感过滤与 prompt 记忆缓存，provider 只负责获取向量（ADR 0063） |
+| 2026-09-01 | §2.5 Agent：将 turn-start 上下文收集与投影分离，统一本地队列/inbox 优先级；单工具与并行工具共用 plan、取消修复和 ordered projection（ADR 0064） |

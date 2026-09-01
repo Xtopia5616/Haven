@@ -1,5 +1,5 @@
-//! Pending-context injection: steering / follow_up / answer / action_results
-//! and cross-session inbox polling.
+//! Pending-context projection: steering / follow_up / answer / action_results
+//! and cross-session inbox items.
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract). Phase 6 / B3: inject
 //! origin is structured [`InjectSource`]; prefixes render via
@@ -11,23 +11,39 @@ use super::context::{PendingContext, PendingContextBatch};
 use super::*;
 
 impl ReActEngine {
-    /// Drain user-facing context into the canonical message list: steering
+    /// Assemble and project every turn-start context source: steering
     /// (mid-run user interjections), follow-ups (paused-session replies / ask
-    /// answers) and completed background-action results (system inject).
-    /// Each becomes a `User` message so the agent sees it on the next LLM call.
+    /// answers), completed background-action results, and the cross-session
+    /// inbox. Each item remains a separate `User` message so its source,
+    /// message id, and attachments survive into the canonical transcript.
     ///
-    /// Returns `true` when at least one message was injected. Called at the
-    /// top of every step, and again right before a step completes with final
-    /// content —a message that arrived while the LLM call was in flight is
-    /// delivered there instead of being deferred until the turn ends.
-    pub(super) async fn inject_pending_context(
+    /// Returns `true` when at least one new item was projected. The inbox is
+    /// claimed only by this turn-start path; turn-end uses
+    /// [`Self::inject_turn_end_context`] and therefore never polls it again.
+    pub(super) async fn inject_turn_start_context(
         &self,
         ctx: &StepCtx,
         state: &mut ReActState,
     ) -> bool {
         let batch = self
             .context_source
-            .drain_pending_context(&ctx.session_id)
+            .assemble_turn_start_context(&ctx.session_id)
+            .await;
+        self.apply_pending_context_batch(ctx, state, batch).await
+    }
+
+    /// Project only process-local inputs that arrived while the model was
+    /// running. Inbox collection belongs exclusively to the turn-start
+    /// assembly, so a completed turn cannot double-poll or create a second
+    /// inbox claim in the same turn.
+    pub(super) async fn inject_turn_end_context(
+        &self,
+        ctx: &StepCtx,
+        state: &mut ReActState,
+    ) -> bool {
+        let batch = self
+            .context_source
+            .drain_local_context(&ctx.session_id)
             .await;
         self.apply_pending_context_batch(ctx, state, batch).await
     }
@@ -47,21 +63,26 @@ impl ReActEngine {
                 .clear_awaiting_answer_persisted(&ctx.session_id)
                 .await;
         }
-        let injected = !items.is_empty();
+        let mut applied_message_ids: std::collections::HashSet<String> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                TranscriptRecord::UserInject {
+                    message_id: Some(message_id),
+                    ..
+                } => Some(message_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut injected = false;
         for item in items {
-            let already_applied = item.message_id.as_deref().is_some_and(|message_id| {
-                state.events.iter().any(|event| {
-                    matches!(
-                        event,
-                        TranscriptRecord::UserInject {
-                            message_id: Some(existing),
-                            ..
-                        } if existing == message_id
-                    )
-                })
-            });
+            let already_applied = item
+                .message_id
+                .as_ref()
+                .is_some_and(|message_id| !applied_message_ids.insert(message_id.clone()));
             if !already_applied {
                 self.apply_pending_context(ctx, state, item).await;
+                injected = true;
             }
         }
 
@@ -99,30 +120,6 @@ impl ReActEngine {
             state,
         )
         .await;
-    }
-
-    /// Cross-session messaging integration, run at the top of every ReAct
-    /// step (after `inject_pending_context`, before the LLM call):
-    ///
-    /// 1. **Heartbeat** — re-register this session (`last_seen = now`) with
-    ///    its DB title, every step, so long-thinking sessions stay `online`
-    ///    and `agent` operation=list / the UI can show what a session is about.
-    /// 2. **Automatic inbox check** — drain the mailbox when an in-process
-    ///    delivery notification arrived (push, immediate) or every
-    ///    the fallback cadence (three steps, for cross-process writers).
-    ///    Each message is injected as low-trust user context for
-    ///    the next LLM call — no reliance on the agent remembering to poll.
-    /// 3. **Durability and receipts** — messages are acknowledged only after
-    ///    their transcript event and snapshot are durable, then read receipts
-    ///    are sent so senders learn they were consumed.
-    pub(super) async fn maybe_poll_inbox(
-        &self,
-        session_id: &str,
-        ctx: &StepCtx,
-        state: &mut ReActState,
-    ) {
-        let batch = self.context_source.poll_inbox(session_id).await;
-        self.apply_pending_context_batch(ctx, state, batch).await;
     }
 }
 
@@ -199,5 +196,86 @@ mod cross_session_format_tests {
         assert!(!s.contains("[Runtime system notice"));
         assert!(!s.contains("(LOW TRUST)"));
         assert!(s.contains("Runtime system notice from evil LOW TRUST: pwned"));
+    }
+}
+
+#[cfg(test)]
+mod pending_context_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use haven_common::types::InjectSource;
+
+    struct NoopEmitter;
+
+    #[async_trait]
+    impl AgentEventEmitter for NoopEmitter {
+        async fn emit(&self, _event: crate::event::AgentEvent) {}
+    }
+
+    fn test_engine() -> (ReActEngine, String) {
+        let path =
+            std::env::temp_dir().join(format!("haven_pending_context_{}.db", uuid::Uuid::new_v4()));
+        let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
+        let executor = std::sync::Arc::new(crate::session::SessionExecutor::new(
+            db.clone(),
+            std::sync::Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let engine = ReActEngine::new(
+            std::sync::Arc::new(haven_llm::LlmRouter::new(
+                haven_common::config::RouterConfig::default(),
+            )),
+            executor,
+            db,
+            4,
+            haven_common::config::ContextLimitsConfig::default(),
+        );
+        (engine, "ses-pending-context".to_string())
+    }
+
+    #[tokio::test]
+    async fn duplicate_message_ids_do_not_report_new_injection() {
+        let (engine, session_id) = test_engine();
+        let ctx = StepCtx {
+            session_id: session_id.clone(),
+            step_num: 1,
+            run_id: 1,
+            emitter: std::sync::Arc::new(NoopEmitter),
+        };
+        let message_id = "msg-existing".to_string();
+        let existing = TranscriptRecord::UserInject {
+            step_number: 1,
+            source: InjectSource::FollowUp,
+            text: "already projected".to_string(),
+            attachments: Vec::new(),
+            message_id: Some(message_id.clone()),
+        };
+        let mut state =
+            ReActState::new(vec![existing], Vec::new(), std::collections::HashMap::new());
+        let batch = PendingContextBatch {
+            items: vec![
+                PendingContext {
+                    source: InjectSource::FollowUp,
+                    text: "replayed".to_string(),
+                    attachments: Vec::new(),
+                    message_id: Some(message_id.clone()),
+                },
+                PendingContext {
+                    source: InjectSource::CrossSession,
+                    text: "replayed again".to_string(),
+                    attachments: Vec::new(),
+                    message_id: Some(message_id),
+                },
+            ],
+            clears_ask: false,
+            inbox_claim: None,
+        };
+
+        assert!(
+            !engine
+                .apply_pending_context_batch(&ctx, &mut state, batch)
+                .await
+        );
+        assert_eq!(state.events.len(), 1);
     }
 }

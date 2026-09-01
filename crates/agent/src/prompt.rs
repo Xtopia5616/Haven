@@ -9,7 +9,7 @@ use haven_common::tools::ToolDef;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
-use haven_memory::embeddings::entity_kind;
+use haven_memory::recall::{MemoryKind, MemoryQuery, MemoryRetriever};
 use haven_tools::ToolsManager;
 
 /// Builds the system prompt, including a **short** tools / skills / MCP index.
@@ -37,6 +37,10 @@ pub struct SystemPromptBuilder {
     /// `load_mcp` registrations do **not** bump this cache — those tools
     /// appear only in the API `tools[]` list (G7 freeze-per-run).
     schema_cache: RwLock<Option<SchemaCache>>,
+    /// Cached memory-only render keyed by the exact query scope, embedding
+    /// model, and database memory revision. Dirty notifications can therefore
+    /// refresh the fence without repeating retrieval when no memory changed.
+    memory_cache: RwLock<Option<MemoryCache>>,
 }
 
 #[derive(Clone)]
@@ -45,6 +49,114 @@ struct SchemaCache {
     built_in_section: String,
     skill_index_section: String,
     mcp_server_index_section: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct MemoryCacheKey {
+    query: String,
+    embedding_model: String,
+    memory_revision: u64,
+    exclude_session_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct MemoryCache {
+    key: MemoryCacheKey,
+    sections: MemorySections,
+}
+
+#[derive(Default)]
+struct MemoryCandidates {
+    vector_fact_hits: Vec<haven_memory::MemoryHit>,
+    vector_episode_hits: Vec<haven_memory::MemoryHit>,
+    keyword_episode_hits: Vec<haven_memory::MemoryHit>,
+    all_facts: Vec<haven_memory::repositories::facts::Fact>,
+}
+
+/// Collect all database-backed memory candidates in one blocking boundary.
+/// Prompt assembly is async because embedding acquisition is async, but SQLite
+/// reads and retrieval policy must not run on the Tokio worker thread.
+fn collect_memory_candidates(
+    db: &Database,
+    query_text: &str,
+    embedding_model: &str,
+    vector: Option<&[f32]>,
+    exclude_session_id: Option<&str>,
+) -> MemoryCandidates {
+    let retriever = MemoryRetriever::new(db);
+    let keyword_fact_hits = MemoryQuery::new(query_text, MemoryKind::Fact, CROSS_SEARCH_LIMIT)
+        .ok()
+        .and_then(|query| retriever.keyword(&query).ok())
+        .unwrap_or_default();
+
+    let vector_fact_hits = vector
+        .filter(|_| !embedding_model.is_empty())
+        .and_then(|vector| {
+            MemoryQuery::new(query_text, MemoryKind::Fact, 8)
+                .ok()
+                .and_then(|query| {
+                    retriever
+                        .vector(
+                            &query.with_fact_subject(Some("user")),
+                            vector,
+                            embedding_model,
+                        )
+                        .ok()
+                })
+        })
+        .unwrap_or_default();
+    let vector_episode_hits = vector
+        .filter(|_| !embedding_model.is_empty())
+        .and_then(|vector| {
+            MemoryQuery::new(query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)
+                .ok()
+                .and_then(|query| {
+                    retriever
+                        .vector(
+                            &query.with_excluded_session(exclude_session_id),
+                            vector,
+                            embedding_model,
+                        )
+                        .ok()
+                })
+        })
+        .unwrap_or_default();
+
+    let mut all_facts = MemoryRetriever::filter_visible_facts(
+        db.get_facts_limited("user", USER_FACTS_SEED_LIMIT)
+            .unwrap_or_default(),
+    );
+    let mut seen_ids: HashSet<String> = all_facts.iter().map(|fact| fact.id.clone()).collect();
+    let candidate_ids: Vec<String> = keyword_fact_hits
+        .iter()
+        .chain(vector_fact_hits.iter())
+        .map(|hit| hit.entity_id.clone())
+        .filter(|id| !id.is_empty() && !seen_ids.contains(id))
+        .collect();
+    if let Ok(found) = db.get_facts_by_ids(&candidate_ids) {
+        for fact in MemoryRetriever::filter_visible_facts(found) {
+            if seen_ids.insert(fact.id.clone()) {
+                all_facts.push(fact);
+            }
+        }
+    }
+
+    let keyword_episode_hits =
+        MemoryQuery::new(query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)
+            .ok()
+            .and_then(|query| {
+                retriever
+                    .keyword(&query.with_excluded_session(exclude_session_id))
+                    .ok()
+            })
+            .unwrap_or_default();
+
+    MemoryCandidates {
+        vector_fact_hits,
+        vector_episode_hits,
+        keyword_episode_hits,
+        all_facts,
+    }
 }
 
 /// Facts + episodes rendered for system-prompt injection (S3).
@@ -97,6 +209,7 @@ impl SystemPromptBuilder {
             db,
             router,
             schema_cache: RwLock::new(None),
+            memory_cache: RwLock::new(None),
         }
     }
 
@@ -192,6 +305,19 @@ impl SystemPromptBuilder {
         )
     }
 
+    async fn current_embedding_model(&self) -> String {
+        let Some(router) = &self.router else {
+            return String::new();
+        };
+        if !router
+            .is_role_configured(EndpointRole::EmbeddingModel)
+            .await
+        {
+            return String::new();
+        }
+        router.config().await.embedding_model.model_name.clone()
+    }
+
     /// Recall + render facts / episodes only. Does **not** touch `schema_cache`
     /// or tools / skills / MCP sections.
     pub async fn build_memory_sections(
@@ -199,164 +325,80 @@ impl SystemPromptBuilder {
         session_description: &str,
         exclude_session_id: Option<&str>,
     ) -> MemorySections {
+        let query_text = session_description.trim().to_string();
+        let embedding_model = self.current_embedding_model().await;
+        let cache_key = MemoryCacheKey {
+            query: query_text.clone(),
+            embedding_model: embedding_model.clone(),
+            memory_revision: self.db.memory_revision(),
+            exclude_session_id: exclude_session_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string),
+        };
+        if let Ok(cache) = self.memory_cache.read()
+            && let Some(entry) = cache.as_ref()
+            && entry.key == cache_key
+        {
+            return entry.sections.clone();
+        }
+
         let mut facts_section = String::new();
         let mut episodes_section = String::new();
+        let session_terms = haven_common::text::memory_recall_terms(&query_text);
 
-        // Session keywords used for both cross-subject fact recall and episodic
-        // recall below. Computed up front so episode recall works even when
-        // the user has no stored facts yet. CJK-aware (trigram windows) so
-        // Chinese sessions are not stuck as one giant alphanumeric term.
-        let session_terms: Vec<String> =
-            haven_common::text::memory_recall_terms(session_description);
-
-        // Semantic recall fusion: when an embedding model is configured (and
-        // the index is not stale from a model switch), embed the session and
-        // collect the top vector hits. Fact hits feed the facts section with a
-        // similarity bonus; episode hits surface context that shares no
-        // surface keywords. Every failure degrades silently to keyword-only
-        // recall — the sections below are unchanged when vectors are absent.
-        let mut vector_fact_ids: HashSet<String> = HashSet::new();
-        let mut vector_episodes: Vec<(String, f64)> = Vec::new();
-        if let Some(router) = &self.router
-            && router
-                .is_role_configured(EndpointRole::EmbeddingModel)
+        let vector = if query_text.is_empty() || embedding_model.is_empty() {
+            None
+        } else if let Some(router) = &self.router {
+            router
+                .embed_text(&query_text)
                 .await
-        {
-            let current = router.config().await.embedding_model.model_name.clone();
-            let index_fresh = {
-                let db = self.db.clone();
-                let stored = db
-                    .run_blocking(move |db| db.list_embedding_models())
-                    .await
-                    .unwrap_or_default();
-                stored.is_empty() || stored.iter().all(|m| m == &current)
-            };
-            if index_fresh && !current.is_empty() {
-                let query = if session_description.trim().is_empty() {
-                    session_terms.join(" ")
-                } else {
-                    session_description.to_string()
-                };
-                if !query.is_empty()
-                    && let Ok(vec) = router.embed_text(&query).await
-                    && !vec.is_empty()
-                {
-                    let fact_hits = {
-                        let db = self.db.clone();
-                        let query_vec = vec.clone();
-                        let model = current.clone();
-                        db.run_blocking(move |db| {
-                            // P1-4: subject-scoped + tighter top-k (was 12).
-                            // P2-13: always filter by current embedding model.
-                            db.search_embeddings_filtered(
-                                entity_kind::FACT,
-                                &query_vec,
-                                8,
-                                &model,
-                                Some("user"),
-                                None,
-                            )
-                        })
-                        .await
-                        .unwrap_or_default()
-                    };
-                    for (e, score) in fact_hits {
-                        if score > 0.25 {
-                            vector_fact_ids.insert(e.entity_id);
-                        }
-                    }
-                    let episode_hits = {
-                        let db = self.db.clone();
-                        let exclude = exclude_session_id.map(str::to_string);
-                        let model = current.clone();
-                        db.run_blocking(move |db| {
-                            // P1-4: exclude current session in SQL; tighter k.
-                            // P2-13: always filter by current embedding model.
-                            let hits = db.search_embeddings_filtered(
-                                entity_kind::EPISODE,
-                                &vec,
-                                8,
-                                &model,
-                                None,
-                                exclude.as_deref(),
-                            )?;
-                            let filtered: Vec<(String, f64)> =
-                                hits.into_iter().map(|(e, s)| (e.text, s)).take(5).collect();
-                            Ok::<_, anyhow::Error>(filtered)
-                        })
-                        .await
-                        .unwrap_or_default()
-                    };
-                    vector_episodes = episode_hits;
-                }
-            }
-        }
-
-        // P1-5: seed with SQL LIMIT (not full get_facts), then one multi-term
-        // FTS OR (+ LIMIT) for cross-subject keyword hits.
-        let mut all_facts: Vec<haven_memory::repositories::facts::Fact> = self
-            .db
-            .get_facts_limited("user", USER_FACTS_SEED_LIMIT)
-            .unwrap_or_default();
-        let mut seen_ids: HashSet<String> = all_facts.iter().map(|f| f.id.clone()).collect();
-        let search_terms = haven_common::text::memory_recall_term_sample(&session_terms, 6);
-        if !search_terms.is_empty()
-            && let Ok(matches) = self.db.search_facts_any(&search_terms, CROSS_SEARCH_LIMIT)
-        {
-            for m in matches {
-                if seen_ids.insert(m.id.clone()) {
-                    all_facts.push(m);
-                }
-            }
-        }
-        // Vector-recall hits (semantic matches with no shared keyword)
-        // join the candidate pool too, so related memory is not crowded
-        // out just because the wording differs. Resolved in ONE batched
-        // query — a per-id fetch would cost one SQLite round-trip per hit.
-        let pending: Vec<String> = vector_fact_ids
-            .iter()
-            .filter(|id| !seen_ids.contains(*id))
-            .cloned()
-            .collect();
-        if !pending.is_empty() {
-            let db = self.db.clone();
-            if let Ok(found) = db
-                .run_blocking(move |db| db.get_facts_by_ids(&pending))
-                .await
-            {
-                for f in found {
-                    if seen_ids.insert(f.id.clone()) {
-                        all_facts.push(f);
-                    }
-                }
-            }
-        }
-
-        use haven_memory::repositories::facts::{
-            fact_effective_confidence, is_sensitive_object, is_sensitive_predicate,
+                .ok()
+                .filter(|v| !v.is_empty())
+        } else {
+            None
         };
+        let db = self.db.clone();
+        let query_text_for_reads = query_text.clone();
+        let embedding_model_for_reads = embedding_model.clone();
+        let exclude_session_for_reads = cache_key.exclude_session_id.clone();
+        let candidates = db
+            .run_blocking(move |db| {
+                Ok::<_, anyhow::Error>(collect_memory_candidates(
+                    db,
+                    &query_text_for_reads,
+                    &embedding_model_for_reads,
+                    vector.as_deref(),
+                    exclude_session_for_reads.as_deref(),
+                ))
+            })
+            .await
+            .unwrap_or_default();
+        let MemoryCandidates {
+            vector_fact_hits,
+            vector_episode_hits,
+            keyword_episode_hits,
+            all_facts,
+        } = candidates;
+        let vector_fact_ids: HashSet<String> = vector_fact_hits
+            .iter()
+            .filter(|hit| hit.score > 0.25)
+            .map(|hit| hit.entity_id.clone())
+            .collect();
+
+        // Seed user facts by confidence, then union the typed keyword/vector
+        // candidates in one hydration query. The renderer below owns ranking
+        // and character-budget packing; this block only gathers candidates.
+        use haven_memory::repositories::facts::fact_effective_confidence;
         use std::collections::BTreeMap;
 
         // Cross-session episodic recall first so we only reserve budget when
-        // Past excerpts will actually render (L4 / P1-8).
-        let kw_hits = self
-            .db
-            .search_episodes_by_keywords_excluding(
-                &search_terms,
-                MAX_EPISODES_IN_PROMPT,
-                exclude_session_id,
-            )
-            .unwrap_or_default();
+        // excerpts will actually render (L4 / P1-8).
         let mut episode_texts: Vec<String> = Vec::new();
         let mut seen_episodes: HashSet<String> = HashSet::new();
-        for (text, _score) in vector_episodes {
-            if seen_episodes.insert(text.clone()) {
-                episode_texts.push(text);
-            }
-        }
-        for hit in kw_hits {
-            if seen_episodes.insert(hit.clone()) {
-                episode_texts.push(hit);
+        for hit in vector_episode_hits.into_iter().chain(keyword_episode_hits) {
+            if seen_episodes.insert(hit.text.clone()) {
+                episode_texts.push(hit.text);
             }
         }
         episode_texts.truncate(MAX_EPISODES_IN_PROMPT);
@@ -376,7 +418,7 @@ impl SystemPromptBuilder {
             // facts fall back to confidence-only ordering.
             let mut scored: Vec<(f64, &haven_memory::repositories::facts::Fact)> = Vec::new();
             for fact in all_facts.iter() {
-                if is_sensitive_predicate(&fact.predicate) || is_sensitive_object(&fact.object) {
+                if !MemoryRetriever::visible_fact(fact) {
                     continue;
                 }
                 let mut score = fact_effective_confidence(fact) * 10.0;
@@ -521,10 +563,17 @@ impl SystemPromptBuilder {
             }
         }
 
-        MemorySections {
+        let sections = MemorySections {
             facts: facts_section,
             episodes: episodes_section,
+        };
+        if let Ok(mut cache) = self.memory_cache.write() {
+            *cache = Some(MemoryCache {
+                key: cache_key,
+                sections: sections.clone(),
+            });
         }
+        sections
     }
 
     /// Wrap facts + episodes in the MEMORY fence used by fresh build and resume patch.
@@ -1043,6 +1092,28 @@ mod tests {
         assert!(
             !prompt.contains("CURRENT session only"),
             "same-session memory_items must not appear in Past excerpts; prompt={prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_sections_cache_invalidates_when_memory_revision_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_prompt_memory_cache_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let tools = Arc::new(ToolsManager::new());
+        let builder = SystemPromptBuilder::new(tools, db.clone());
+
+        let first = builder.build("cache marker", &[]).await;
+        assert!(!first.contains("cache-marker"));
+
+        db.insert_fact("user", "likes", "cache-marker", "user", 1.0, &[])
+            .unwrap();
+        let second = builder.build("cache marker", &[]).await;
+        assert!(
+            second.contains("cache-marker"),
+            "memory revision must invalidate prompt recall cache; prompt={second}"
         );
     }
 

@@ -7,7 +7,7 @@
 //! the executor from minting related ids in several branches.
 
 use super::transcript::ActionCard;
-use crate::types::Action;
+use crate::types::{Action, ConfirmPendingTool};
 use haven_common::types::CanonicalToolCall;
 
 /// One non-final call admitted by the turn coordinator.
@@ -39,16 +39,36 @@ impl ToolBatchPlan {
         Self { tools }
     }
 
+    /// Rebuild the plan for a confirmation resume without minting new
+    /// identities. The pending confirmation record is the durable carrier of
+    /// the original plan's step ids and protocol indexes; this constructor
+    /// restores them into the same plan type used by a live batch.
+    pub(super) fn from_confirm_pending(tools: &[ConfirmPendingTool]) -> Self {
+        let tools = tools
+            .iter()
+            .map(|pending| PlannedTool {
+                action: Action {
+                    tool_name: pending.tool_name.clone(),
+                    tool_input: pending.tool_input.clone(),
+                    is_final: false,
+                    tool_call_id: (!pending.tool_call_id.is_empty())
+                        .then(|| pending.tool_call_id.clone()),
+                },
+                step_id: pending.step_id.clone(),
+                action_index: pending.action_index,
+            })
+            .collect();
+        Self { tools }
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
 
-    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.tools.len()
     }
 
-    #[cfg(test)]
     pub(super) fn get(&self, index: usize) -> Option<&PlannedTool> {
         self.tools.get(index)
     }
@@ -120,5 +140,39 @@ mod tests {
         assert_eq!(card.step_id, planned.step_id);
         assert_eq!(card.action_index, planned.action_index);
         assert!(card.suppress_streamed_thought);
+    }
+
+    #[test]
+    fn single_tool_plan_is_the_complete_identity_source() {
+        let plan = ToolBatchPlan::from_actions(&[action("read", false)]);
+        let planned = plan.get(0).unwrap();
+        let call = &plan.canonical_calls()[0];
+        let card = &plan.action_cards(false)[0];
+
+        assert_eq!(plan.len(), 1);
+        assert_eq!(call.id, planned.action.tool_call_id.clone().unwrap());
+        assert_eq!(card.step_id, planned.step_id);
+        assert_eq!(card.action_index, planned.action_index);
+    }
+
+    #[test]
+    fn confirm_resume_reuses_pending_identity() {
+        let pending = ConfirmPendingTool {
+            confirm_id: "conf-1".into(),
+            tool_name: "write".into(),
+            tool_input: serde_json::json!({"path": "a.txt"}),
+            tool_call_id: "call-write".into(),
+            step_id: "step-existing".into(),
+            action_index: 3,
+            risk_level: haven_common::types::RiskLevel::High,
+            decision: Some(true),
+        };
+
+        let plan = ToolBatchPlan::from_confirm_pending(&[pending]);
+        let planned = plan.get(0).unwrap();
+
+        assert_eq!(planned.step_id, "step-existing");
+        assert_eq!(planned.action_index, 3);
+        assert_eq!(planned.action.tool_call_id.as_deref(), Some("call-write"));
     }
 }

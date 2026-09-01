@@ -2,18 +2,19 @@
 //!
 //! This module owns one deterministic batch boundary: validation, safety
 //! admission, bounded concurrent execution, cancellation repair, and ordered
-//! result commit. Reusable execution primitives and confirmation state live
-//! in `tool_batch.rs`; failure policy lives in `tool_batch_policy.rs`.
+//! result commit. Result slots and observation projection live in
+//! `tool_batch.rs`; failure policy lives in `tool_batch_policy.rs`.
 
 use super::hooks::{BeforeToolAction, ToolCallIdentity};
 use super::snapshot_io::PauseTurnInput;
 use super::tool_batch::{
     CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolBatchGate,
-    ToolBatchOutcome, ToolBatchState, execute_tool_action,
+    ToolBatchOutcome, ToolBatchResults, ToolBatchState, execute_tool_action,
 };
 use super::tool_batch_plan::ToolBatchPlan;
 use super::*;
 use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
+use futures_util::StreamExt;
 use haven_memory::repositories::session_steps::ActionStepOutcome;
 use haven_tools::ToolConcurrency;
 use std::collections::HashMap;
@@ -21,7 +22,286 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
+fn cancellation_observation(
+    planned: &super::tool_batch_plan::PlannedTool,
+    was_started: bool,
+) -> String {
+    if was_started {
+        crate::canonical::interrupted_result_text(
+            &planned.action.tool_name,
+            &planned.action.tool_input,
+        )
+    } else {
+        "tool call cancelled before execution".to_string()
+    }
+}
+
+fn rejection_observation(tool_name: &str) -> String {
+    format!(
+        "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+        tool_name
+    )
+}
+
+struct AdmittedTool {
+    plan_index: usize,
+    pre_confirmed: bool,
+    concurrency: ToolConcurrency,
+}
+
+struct ToolBatchAdmission {
+    runnable: Vec<AdmittedTool>,
+    need_confirm: Vec<ConfirmPendingTool>,
+    results: ToolBatchResults,
+}
+
+struct ToolBatchExecution {
+    results: ToolBatchResults,
+    cancelled: bool,
+}
+
 impl ReActEngine {
+    /// Perform all pre-execution decisions against one immutable plan. Failed
+    /// admission is normalized into the same observation type as a tool
+    /// failure; only approved calls reach the executor.
+    async fn admit_tool_batch(
+        &self,
+        session_id: &str,
+        step_num: u32,
+        gate_ctx: &StepCtx,
+        plan: &ToolBatchPlan,
+        validation_failures: &[ToolInputValidationFailure],
+    ) -> ToolBatchAdmission {
+        let mut admission = ToolBatchAdmission {
+            runnable: Vec::new(),
+            need_confirm: Vec::new(),
+            results: ToolBatchResults::new(plan.len()),
+        };
+
+        for (plan_index, planned) in plan.iter().enumerate() {
+            if plan_index >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
+                let error = format!(
+                    "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
+                );
+                admission.results.set(
+                    plan_index,
+                    self.failed_admission_tool(session_id, step_num, planned, error)
+                        .await,
+                );
+                continue;
+            }
+            if let Some(failure) = validation_failures
+                .iter()
+                .find(|failure| failure.action_index == planned.action_index)
+            {
+                admission.results.set(
+                    plan_index,
+                    self.failed_admission_tool(session_id, step_num, planned, failure.render())
+                        .await,
+                );
+                continue;
+            }
+
+            match self
+                .hooks
+                .before_tool(
+                    self,
+                    gate_ctx,
+                    ToolCallIdentity {
+                        step_id: &planned.step_id,
+                        action_index: planned.action_index,
+                        tool_call_id: planned.action.tool_call_id.as_deref(),
+                    },
+                    &planned.action.tool_name,
+                    &planned.action.tool_input,
+                )
+                .await
+            {
+                BeforeToolAction::Proceed { confirmed } => {
+                    let concurrency = self
+                        .executor
+                        .tool_concurrency(
+                            session_id,
+                            &planned.action.tool_name,
+                            &planned.action.tool_input,
+                        )
+                        .await;
+                    admission.runnable.push(AdmittedTool {
+                        plan_index,
+                        pre_confirmed: confirmed == Some(true),
+                        concurrency,
+                    });
+                }
+                BeforeToolAction::Block { error } => {
+                    admission.results.set(
+                        plan_index,
+                        self.failed_admission_tool(session_id, step_num, planned, error)
+                            .await,
+                    );
+                }
+                BeforeToolAction::NeedConfirm { risk_level } => {
+                    admission.need_confirm.push(ConfirmPendingTool {
+                        confirm_id: haven_common::types::new_id("conf"),
+                        tool_name: planned.action.tool_name.clone(),
+                        tool_input: planned.action.tool_input.clone(),
+                        tool_call_id: planned.action.tool_call_id.clone().unwrap_or_default(),
+                        step_id: planned.step_id.clone(),
+                        action_index: planned.action_index,
+                        risk_level,
+                        decision: None,
+                    });
+                }
+            }
+        }
+
+        admission
+    }
+
+    async fn failed_admission_tool(
+        &self,
+        session_id: &str,
+        step_num: u32,
+        planned: &super::tool_batch_plan::PlannedTool,
+        error: String,
+    ) -> CompletedTool {
+        self.executor
+            .finish_interrupted_step_with_identity(
+                session_id,
+                &planned.action.tool_name,
+                &planned.action.tool_input,
+                step_num,
+                planned.action_index,
+                planned.action.tool_call_id.as_deref(),
+                &planned.step_id,
+                &error,
+            )
+            .await;
+        CompletedTool::failed(
+            planned.action.clone(),
+            planned.step_id.clone(),
+            planned.action_index,
+            error,
+        )
+    }
+
+    /// Execute admitted calls concurrently while preserving the plan-indexed
+    /// result slots. Cancellation repairs every slot that did not produce a
+    /// normal result before returning to the shared ordered projector.
+    async fn execute_admitted_tools(
+        &self,
+        session_id: &str,
+        step_num: u32,
+        plan: &ToolBatchPlan,
+        runnable: Vec<AdmittedTool>,
+        mut results: ToolBatchResults,
+        cancel_res: &tokio_util::sync::CancellationToken,
+    ) -> ToolBatchExecution {
+        let gate = Arc::new(ToolBatchGate {
+            all: Arc::new(RwLock::new(())),
+            resources: AsyncMutex::new(HashMap::new()),
+        });
+        let started = Arc::new(
+            (0..plan.len())
+                .map(|_| AtomicBool::new(false))
+                .collect::<Vec<_>>(),
+        );
+        let mut tool_futures = futures_util::stream::iter(runnable)
+            .map(|admitted| {
+                let planned = plan
+                    .get(admitted.plan_index)
+                    .expect("admission must reference a plan entry");
+                let action = planned.action.clone();
+                let action_index = planned.action_index;
+                let step_id = planned.step_id.clone();
+                let session_id = session_id.to_string();
+                let executor = self.executor.clone();
+                let gate = gate.clone();
+                let started = started.clone();
+                async move {
+                    let _permit = gate.acquire(&admitted.concurrency).await;
+                    started[admitted.plan_index].store(true, Ordering::Release);
+                    let result = execute_tool_action(
+                        executor,
+                        session_id,
+                        action,
+                        step_num,
+                        action_index,
+                        step_id,
+                        admitted.pre_confirmed,
+                    )
+                    .await;
+                    (admitted.plan_index, result)
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_TOOL_CALLS);
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel_res.cancelled() => {
+                    tracing::info!("ReAct loop cancelled during tool batch at step {}", step_num);
+                    self.repair_cancelled_results(session_id, step_num, plan, &started, &mut results).await;
+                    return ToolBatchExecution { results, cancelled: true };
+                }
+                item = tool_futures.next() => {
+                    let Some((plan_index, result)) = item else {
+                        break;
+                    };
+                    results.set(plan_index, result);
+                }
+            }
+        }
+
+        ToolBatchExecution {
+            results,
+            cancelled: false,
+        }
+    }
+
+    async fn repair_cancelled_results(
+        &self,
+        session_id: &str,
+        step_num: u32,
+        plan: &ToolBatchPlan,
+        started: &[AtomicBool],
+        results: &mut ToolBatchResults,
+    ) {
+        for (plan_index, planned) in plan.iter().enumerate() {
+            if results.is_set(plan_index) {
+                continue;
+            }
+            let was_started = started[plan_index].load(Ordering::Acquire);
+            let interrupted_text = cancellation_observation(planned, was_started);
+            let outcome = if was_started {
+                ActionStepOutcome::Unknown
+            } else {
+                ActionStepOutcome::Cancelled
+            };
+            self.executor
+                .finish_step_with_outcome(
+                    session_id,
+                    &planned.action.tool_name,
+                    &planned.action.tool_input,
+                    step_num,
+                    planned.action_index,
+                    planned.action.tool_call_id.as_deref(),
+                    &planned.step_id,
+                    &interrupted_text,
+                    outcome,
+                )
+                .await;
+            results.set(
+                plan_index,
+                CompletedTool::failed(
+                    planned.action.clone(),
+                    planned.step_id.clone(),
+                    planned.action_index,
+                    interrupted_text,
+                ),
+            );
+        }
+    }
+
     /// Execute the non-final actions for one step: emit Action cards, run the
     /// batch (parallel), drain observations, failure nudge, and ask pause.
     /// Behavior-preserving extract from `run_react_loop` (Phase 1 / E2).
@@ -37,16 +317,20 @@ impl ReActEngine {
         step_num: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
-        actions: &mut [Action],
+        actions: &[Action],
         thought: &Option<String>,
         response: &haven_llm::LlmResponse,
         cancel_res: &tokio_util::sync::CancellationToken,
         allow_tool_retry: bool,
     ) -> anyhow::Result<ToolBatchOutcome> {
-        let validation_failures = if !actions.is_empty() {
-            self.validate_tool_inputs(session_id, actions).await
-        } else {
+        // Build the plan first. Every later identity/index lookup is derived
+        // from it; validation only reports tool-schema failures against the
+        // plan's action indexes and never mints a parallel identity map.
+        let plan = ToolBatchPlan::from_actions(actions);
+        let validation_failures = if plan.is_empty() {
             Vec::new()
+        } else {
+            self.validate_tool_inputs(session_id, actions).await
         };
         if !validation_failures.is_empty() {
             tracing::warn!(
@@ -56,14 +340,6 @@ impl ReActEngine {
                 validation_failures.len()
             );
         }
-        // The model's array is the protocol order. Build one immutable plan
-        // before safety gates or futures so canonical calls, UI cards, DB rows
-        // and ordered observations all share the same identities.
-        let plan = ToolBatchPlan::from_actions(actions);
-        let non_final: Vec<&Action> = plan.iter().map(|planned| &planned.action).collect();
-        let action_step_ids: Vec<String> =
-            plan.iter().map(|planned| planned.step_id.clone()).collect();
-
         if !plan.is_empty() {
             let tool_calls = plan.canonical_calls();
             // Text matches Thought projection (trimmed) so review/resume
@@ -110,261 +386,43 @@ impl ReActEngine {
         self.save_branch_point(session_id, state, step_num, false)
             .await;
 
-        use futures_util::StreamExt;
-
-        // Phase 5 / E3: pre-check every non-final action before spawning.
+        // Phase 5 / E3: pre-check every planned action before spawning.
         // Proceed tools run in parallel; blocked calls become immediate
-        // results; NeedConfirm is collected and pauses after the drain.
+        // observations; NeedConfirm is collected and pauses after the drain.
         let gate_ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num,
             run_id,
             emitter: emitter.clone(),
         };
-        let mut need_confirm: Vec<ConfirmPendingTool> = Vec::new();
-        let mut proceed: Vec<(usize, Action, Option<bool>, ToolConcurrency)> = Vec::new();
-        let mut completed_results: Vec<Option<CompletedTool>> =
-            (0..non_final.len()).map(|_| None).collect();
-        // Accumulates result-derived control signals while keeping the
-        // projection itself ordered by the assistant's tool-call list.
-        let mut batch_state = ToolBatchState::default();
-
-        for (idx, action) in non_final.iter().enumerate() {
-            if idx >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
-                let step_id = action_step_ids[idx].clone();
-                let error = format!(
-                    "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
-                );
-                self.executor
-                    .finish_step_with_outcome(
-                        session_id,
-                        &action.tool_name,
-                        &action.tool_input,
-                        step_num,
-                        idx as u32,
-                        action.tool_call_id.as_deref(),
-                        &step_id,
-                        &error,
-                        ActionStepOutcome::Failed,
-                    )
-                    .await;
-                completed_results[idx] = Some(CompletedTool::failed(
-                    (*action).clone(),
-                    step_id,
-                    idx as u32,
-                    error,
-                ));
-                continue;
-            }
-            if let Some(failure) = validation_failures
-                .iter()
-                .find(|failure| failure.action_index == idx as u32)
-            {
-                let error = failure.render();
-                let step_id = action_step_ids[idx].clone();
-                self.executor
-                    .finish_interrupted_step_with_identity(
-                        session_id,
-                        &action.tool_name,
-                        &action.tool_input,
-                        step_num,
-                        idx as u32,
-                        action.tool_call_id.as_deref(),
-                        &step_id,
-                        &error,
-                    )
-                    .await;
-                completed_results[idx] = Some(CompletedTool::failed(
-                    (*action).clone(),
-                    step_id,
-                    idx as u32,
-                    error,
-                ));
-                continue;
-            }
-            match self
-                .hooks
-                .before_tool(
-                    self,
-                    &gate_ctx,
-                    ToolCallIdentity {
-                        step_id: &action_step_ids[idx],
-                        action_index: idx as u32,
-                        tool_call_id: action.tool_call_id.as_deref(),
-                    },
-                    &action.tool_name,
-                    &action.tool_input,
-                )
-                .await
-            {
-                BeforeToolAction::Proceed { confirmed } => {
-                    let concurrency = self
-                        .executor
-                        .tool_concurrency(session_id, &action.tool_name, &action.tool_input)
-                        .await;
-                    proceed.push((idx, (*action).clone(), confirmed, concurrency));
-                }
-                BeforeToolAction::Block { error } => {
-                    let step_id = action_step_ids[idx].clone();
-                    self.executor
-                        .finish_interrupted_step_with_identity(
-                            session_id,
-                            &action.tool_name,
-                            &action.tool_input,
-                            step_num,
-                            idx as u32,
-                            action.tool_call_id.as_deref(),
-                            &step_id,
-                            &error,
-                        )
-                        .await;
-                    completed_results[idx] = Some(CompletedTool::failed(
-                        (*action).clone(),
-                        step_id,
-                        idx as u32,
-                        error,
-                    ));
-                }
-                BeforeToolAction::NeedConfirm { risk_level } => {
-                    need_confirm.push(ConfirmPendingTool {
-                        confirm_id: haven_common::types::new_id("conf"),
-                        tool_name: action.tool_name.clone(),
-                        tool_input: action.tool_input.clone(),
-                        tool_call_id: action.tool_call_id.clone().unwrap_or_default(),
-                        step_id: action_step_ids[idx].clone(),
-                        action_index: idx as u32,
-                        risk_level,
-                        decision: None,
-                    });
-                }
-            }
-        }
-
-        let gate = Arc::new(ToolBatchGate {
-            all: Arc::new(RwLock::new(())),
-            resources: AsyncMutex::new(HashMap::new()),
-        });
-        let started = Arc::new(
-            (0..non_final.len())
-                .map(|_| AtomicBool::new(false))
-                .collect::<Vec<_>>(),
-        );
-        let mut tool_futures = futures_util::stream::iter(proceed)
-            .map(|(idx, action, confirmed, concurrency)| {
-                let session_id = session_id.to_string();
-                let executor = self.executor.clone();
-                let gate = gate.clone();
-                let started = started.clone();
-                // The same step id minted at Action-emit time keys the step
-                // row execute_step creates, so the live card id, the DB badge
-                // id and this step id are identical everywhere.
-                let step_id = action_step_ids[idx].clone();
-                let pre_confirmed = confirmed == Some(true);
-                async move {
-                    let _permit = gate.acquire(&concurrency).await;
-                    // The call is considered in-flight only after its
-                    // resource permit is acquired. A future waiting behind a
-                    // conflicting write can therefore be cancelled as
-                    // `cancelled`, not conservatively misreported unknown.
-                    started[idx].store(true, Ordering::Release);
-                    let result = execute_tool_action(
-                        executor,
-                        session_id,
-                        action,
-                        step_num,
-                        idx as u32,
-                        step_id,
-                        pre_confirmed,
-                    )
-                    .await;
-                    (idx, result)
-                }
-            })
-            .buffer_unordered(MAX_CONCURRENT_TOOL_CALLS);
-
-        // Drain tool results while remaining responsive to cancellation.
-        // Without select!, a cancel arriving mid-batch would only be
-        // detected at the next step boundary —after all tools finish.
-        loop {
-            tokio::select! {
-                biased;
-                _ = cancel_res.cancelled() => {
-                    tracing::info!("ReAct loop cancelled during tool batch at step {}", step_num);
-                    // Tool calls still in flight were cut off, not skipped:
-                    // repair EACH one with an "Interrupted" result so the
-                    // model sees the tool was attempted (and may retry it),
-                    // and surface it in the UI as an interrupted
-                    // observation card rather than leaving a silent gap.
-                    for (idx, action) in non_final.iter().enumerate() {
-                        if completed_results[idx].is_some() {
-                            continue;
-                        }
-                        let was_started = started[idx].load(Ordering::Acquire);
-                        let interrupted_text = if was_started {
-                            crate::canonical::interrupted_result_text(
-                                &action.tool_name,
-                                &action.tool_input,
-                            )
-                        } else {
-                            "tool call cancelled before execution".to_string()
-                        };
-                        let outcome = if was_started {
-                            ActionStepOutcome::Unknown
-                        } else {
-                            ActionStepOutcome::Cancelled
-                        };
-                        let step_id = action_step_ids[idx].clone();
-                        self.executor
-                            .finish_step_with_outcome(
-                                session_id,
-                                &action.tool_name,
-                                &action.tool_input,
-                                step_num,
-                                idx as u32,
-                                action.tool_call_id.as_deref(),
-                                &step_id,
-                                &interrupted_text,
-                                outcome,
-                            )
-                            .await;
-                        completed_results[idx] = Some(CompletedTool::failed(
-                            (*action).clone(),
-                            step_id,
-                            idx as u32,
-                            interrupted_text,
-                        ));
-                    }
-                    for result in completed_results.into_iter().flatten() {
-                        batch_state
-                            .commit_tool_result(self, &gate_ctx, result, state)
-                            .await;
-                    }
-                    // A rollback that lands mid-batch must find the DB row
-                    // at the pre-batch branch point (the response and
-                    // partial tool results are discarded by the exit).
-                    return Ok(ToolBatchOutcome::Done(
-                        self.exit_cancelled(session_id, state, step_num)
-                        .await,
-                    ));
-                }
-                item = tool_futures.next() => {
-                    let Some((idx, result)) = item else {
-                        break;
-                    };
-                    completed_results[idx] = Some(result);
-                }
-            }
-        }
+        let admission = self
+            .admit_tool_batch(session_id, step_num, &gate_ctx, &plan, &validation_failures)
+            .await;
+        let ToolBatchAdmission {
+            runnable,
+            need_confirm,
+            results,
+        } = admission;
+        let execution = self
+            .execute_admitted_tools(session_id, step_num, &plan, runnable, results, cancel_res)
+            .await;
 
         // Futures finish nondeterministically, but canonical tool messages are
         // an ordered protocol: each observation follows the corresponding
-        // assistant call. Buffering only the projection keeps parallel tools
-        // fast without making the next provider request depend on completion
-        // order.
-        for result in completed_results.into_iter().flatten() {
-            batch_state
-                .commit_tool_result(self, &gate_ctx, result, state)
-                .await;
+        // assistant call. The shared result buffer makes this true for both
+        // size-one and parallel batches.
+        let mut batch_state = ToolBatchState::default();
+        batch_state
+            .commit_ordered_results(self, &gate_ctx, execution.results, state)
+            .await;
+
+        if execution.cancelled {
+            // A rollback that lands mid-batch must find the DB row at the
+            // pre-batch branch point (the response and partial tool results
+            // are discarded by the exit).
+            return Ok(ToolBatchOutcome::Done(
+                self.exit_cancelled(session_id, state, step_num).await,
+            ));
         }
 
         // Skip the retry nudge when the batch asked the user or is about to
@@ -478,5 +536,152 @@ impl ReActEngine {
         }
 
         Ok(ToolBatchOutcome::Continue)
+    }
+
+    /// Resume a confirmation batch using the original plan identities. The
+    /// already advertised Action cards are not emitted again; approved calls
+    /// use the same admission/execution/result-slot pipeline as a live batch,
+    /// while declined calls occupy their plan slot as cancelled observations.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn finish_confirm_batch(
+        &self,
+        session_id: &str,
+        state: &mut ReActState,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        run_id: u64,
+    ) -> anyhow::Result<ToolBatchOutcome> {
+        let Some(pending) = self.executor.get_awaiting_confirm(session_id).await else {
+            return Ok(ToolBatchOutcome::Continue);
+        };
+        let step_num = pending.step_number;
+        let plan = ToolBatchPlan::from_confirm_pending(&pending.tools);
+        let proj_ctx = StepCtx {
+            session_id: session_id.to_string(),
+            step_num,
+            run_id,
+            emitter: emitter.clone(),
+        };
+        let mut runnable = Vec::new();
+        let mut results = ToolBatchResults::new(plan.len());
+
+        for (plan_index, (planned, pending_tool)) in
+            plan.iter().zip(pending.tools.iter()).enumerate()
+        {
+            let Some(decision) = pending_tool.decision else {
+                continue;
+            };
+            if decision {
+                let concurrency = self
+                    .executor
+                    .tool_concurrency(
+                        session_id,
+                        &planned.action.tool_name,
+                        &planned.action.tool_input,
+                    )
+                    .await;
+                runnable.push(AdmittedTool {
+                    plan_index,
+                    pre_confirmed: true,
+                    concurrency,
+                });
+            } else {
+                let error = rejection_observation(&planned.action.tool_name);
+                self.executor
+                    .finish_step_with_outcome(
+                        session_id,
+                        &planned.action.tool_name,
+                        &planned.action.tool_input,
+                        step_num,
+                        planned.action_index,
+                        planned.action.tool_call_id.as_deref(),
+                        &planned.step_id,
+                        &error,
+                        ActionStepOutcome::Cancelled,
+                    )
+                    .await;
+                results.set(
+                    plan_index,
+                    CompletedTool::failed(
+                        planned.action.clone(),
+                        planned.step_id.clone(),
+                        planned.action_index,
+                        error,
+                    ),
+                );
+            }
+        }
+
+        let cancel = self.executor.cancellation_token(session_id).await;
+        let execution = self
+            .execute_admitted_tools(session_id, step_num, &plan, runnable, results, &cancel)
+            .await;
+        let mut batch_state = ToolBatchState::default();
+        batch_state
+            .commit_ordered_results(self, &proj_ctx, execution.results, state)
+            .await;
+        self.executor
+            .clear_awaiting_confirm_persisted(session_id)
+            .await;
+
+        if execution.cancelled {
+            return Ok(ToolBatchOutcome::Done(
+                self.exit_cancelled(session_id, state, step_num).await,
+            ));
+        }
+
+        let pending_ask = if !batch_state.asked_questions.is_empty() {
+            Some(crate::types::AskPending {
+                question: batch_state.asked_questions.join("\n\n"),
+                step_ids: batch_state.ask_step_ids.clone(),
+            })
+        } else {
+            // Same-batch ask was stashed while confirm paused first: surface
+            // it now.
+            self.executor.get_awaiting_answer(session_id).await
+        };
+        if let Some(pending) = pending_ask {
+            return self
+                .pause_for_ask(session_id, state, step_num, emitter, pending)
+                .await;
+        }
+
+        Ok(ToolBatchOutcome::Continue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn planned_tool() -> super::super::tool_batch_plan::PlannedTool {
+        super::super::tool_batch_plan::PlannedTool {
+            action: Action {
+                tool_name: "write".into(),
+                tool_input: serde_json::json!({"path": "a.txt"}),
+                is_final: false,
+                tool_call_id: Some("call-write".into()),
+            },
+            step_id: "step-write".into(),
+            action_index: 4,
+        }
+    }
+
+    #[test]
+    fn cancellation_observation_distinguishes_attempted_and_queued_calls() {
+        let planned = planned_tool();
+        let attempted = cancellation_observation(&planned, true);
+        let queued = cancellation_observation(&planned, false);
+
+        assert!(attempted.starts_with("Interrupted:"));
+        assert!(attempted.contains("write"));
+        assert_eq!(queued, "tool call cancelled before execution");
+    }
+
+    #[test]
+    fn confirmation_rejection_is_non_retryable() {
+        let error = rejection_observation("shell");
+
+        assert!(error.contains("shell"));
+        assert!(error.contains("Do NOT retry it"));
     }
 }

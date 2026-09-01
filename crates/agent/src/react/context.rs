@@ -74,12 +74,35 @@ impl InboxClaim {
     }
 }
 
-/// All queue-owned context collected at one step boundary.
+/// Context collected at one turn boundary.
+///
+/// Item order is part of the loop contract: steering and answers/follow-ups
+/// arrive before background action results, and cross-session messages arrive
+/// last. The order is assembled here, before projection, so every turn has a
+/// single deterministic source ordering.
 #[derive(Debug, Default)]
 pub(super) struct PendingContextBatch {
     pub(super) items: Vec<PendingContext>,
     pub(super) clears_ask: bool,
     pub(super) inbox_claim: Option<InboxClaim>,
+}
+
+impl PendingContextBatch {
+    /// Append a later-priority source batch without changing item identity or
+    /// attachment ownership. At most one batch in an assembly owns an inbox
+    /// claim; keeping the assertion here makes accidental second polling
+    /// visible during development.
+    fn append(&mut self, mut other: Self) {
+        self.items.append(&mut other.items);
+        self.clears_ask |= other.clears_ask;
+        if other.inbox_claim.is_some() {
+            debug_assert!(
+                self.inbox_claim.is_none(),
+                "a turn-start assembly must claim the inbox at most once"
+            );
+            self.inbox_claim = other.inbox_claim;
+        }
+    }
 }
 
 /// Reads pending session context and cross-session messages.
@@ -98,10 +121,26 @@ impl ContextSource {
         }
     }
 
-    /// Drain the next model context. Steering is delivered first; follow-ups
-    /// are held back until steering is empty. Only source queues are touched
-    /// here; the caller decides how to project each item.
-    pub(super) async fn drain_pending_context(&self, session_id: &str) -> PendingContextBatch {
+    /// Assemble all context sources for the start of one model turn.
+    ///
+    /// Local queues and the cross-session inbox are collected exactly once at
+    /// this boundary. The source batches are appended in their stable
+    /// priority order; projection remains in `inject.rs` so the whole batch
+    /// still crosses the X12 transcript writer as one operation.
+    pub(super) async fn assemble_turn_start_context(
+        &self,
+        session_id: &str,
+    ) -> PendingContextBatch {
+        let mut batch = self.drain_local_context(session_id).await;
+        batch.append(self.poll_inbox(session_id).await);
+        batch
+    }
+
+    /// Drain only process-local queues. This is intentionally separate from
+    /// [`Self::assemble_turn_start_context`]: turn-end delivery must catch
+    /// inputs that arrived during sampling without polling the inbox a second
+    /// time in the same turn.
+    pub(super) async fn drain_local_context(&self, session_id: &str) -> PendingContextBatch {
         let ReactContextBatch {
             steering,
             follow_ups,
@@ -156,7 +195,7 @@ impl ContextSource {
     /// coalesced by [`MessagingPoller`]. Each envelope stays a separate
     /// context item: joining peer messages into one string destroyed message
     /// boundaries and made receipts/replies impossible to reason about.
-    pub(super) async fn poll_inbox(&self, session_id: &str) -> PendingContextBatch {
+    async fn poll_inbox(&self, session_id: &str) -> PendingContextBatch {
         let cached_title = {
             let state = self.messaging.lock();
             state.title_cache.get(session_id).cloned()
@@ -353,5 +392,93 @@ mod format_tests {
         let formatted = format_cross_session_inject(&env);
         assert!(!formatted.contains('\n'));
         assert!(!formatted.contains("(LOW TRUST)"));
+    }
+}
+
+#[cfg(test)]
+mod assembly_tests {
+    use super::*;
+
+    fn item(source: InjectSource, message_id: Option<&str>, text: &str) -> PendingContext {
+        PendingContext {
+            source,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            message_id: message_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn turn_start_assembly_preserves_source_priority_and_item_identity() {
+        let attachment = MessageAttachment::new("image/png", "base64");
+        let mut batch = PendingContextBatch {
+            items: vec![item(InjectSource::Steering, Some("msg-steer"), "steer")],
+            clears_ask: false,
+            inbox_claim: None,
+        };
+        batch.items[0].attachments.push(attachment.clone());
+        batch.append(PendingContextBatch {
+            items: vec![item(InjectSource::FollowUp, Some("msg-follow"), "follow")],
+            clears_ask: true,
+            inbox_claim: None,
+        });
+        batch.append(PendingContextBatch {
+            items: vec![item(InjectSource::ActionResult, None, "action")],
+            clears_ask: false,
+            inbox_claim: None,
+        });
+        batch.append(PendingContextBatch {
+            items: vec![item(InjectSource::CrossSession, Some("msg-peer"), "peer")],
+            clears_ask: false,
+            inbox_claim: None,
+        });
+
+        assert_eq!(
+            batch
+                .items
+                .iter()
+                .map(|item| item.source)
+                .collect::<Vec<_>>(),
+            vec![
+                InjectSource::Steering,
+                InjectSource::FollowUp,
+                InjectSource::ActionResult,
+                InjectSource::CrossSession,
+            ]
+        );
+        assert_eq!(batch.items[0].message_id.as_deref(), Some("msg-steer"));
+        assert_eq!(batch.items[1].message_id.as_deref(), Some("msg-follow"));
+        assert_eq!(batch.items[3].message_id.as_deref(), Some("msg-peer"));
+        assert_eq!(batch.items[0].attachments, vec![attachment]);
+        assert!(batch.clears_ask);
+    }
+
+    #[tokio::test]
+    async fn inbox_claim_is_redeliverable_until_ack() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = InboxBus::new(dir.path());
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let envelope = Envelope::new("ses-a", "ses-b", "durable");
+        bus.deliver("ses-b", &envelope).unwrap();
+
+        let claimed = bus.claim_and_archive("ses-b").unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(
+            bus.claim_and_archive("ses-b").unwrap()[0].id,
+            envelope.id,
+            "a claim must survive until transcript projection is durable"
+        );
+
+        let claim = InboxClaim {
+            bus: bus.clone(),
+            recipient: "ses-b".to_string(),
+            envelopes: claimed,
+        };
+        assert!(claim.complete().await);
+        assert!(
+            bus.claim_and_archive("ses-b").unwrap().is_empty(),
+            "acknowledged envelopes must not be delivered again"
+        );
     }
 }

@@ -1,7 +1,8 @@
-//! Tool-batch state, safety admission, confirmation, and ordered materialization.
+//! Tool-batch result state, observation normalization, and ordered materialization.
 //!
-//! Tool execution is concurrent, but transcript materialization is ordered by
-//! the assistant's tool-call list so the next model request is deterministic.
+//! Admission/execution lives in `tool_batch_execute`; transcript materialization
+//! remains ordered by the assistant's tool-call list so the next model request
+//! is deterministic.
 
 use super::snapshot_io::PauseTurnInput;
 #[cfg(test)]
@@ -11,7 +12,6 @@ use super::*;
 use crate::types::Action;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_memory::repositories::session_steps::ActionStepOutcome;
 use haven_tools::{ToolConcurrency, is_silent_action};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +33,22 @@ pub(super) struct ToolBatchState {
 }
 
 impl ToolBatchState {
+    /// Commit observations in plan order, regardless of the order in which
+    /// the executor completed them. The result slots are indexed by the
+    /// `ToolBatchPlan`, so callers cannot accidentally make provider history
+    /// depend on runtime completion order.
+    pub(super) async fn commit_ordered_results(
+        &mut self,
+        engine: &ReActEngine,
+        ctx: &StepCtx,
+        results: ToolBatchResults,
+        state: &mut ReActState,
+    ) {
+        for result in results.into_ordered() {
+            self.commit_tool_result(engine, ctx, result, state).await;
+        }
+    }
+
     pub(super) async fn commit_tool_result(
         &mut self,
         engine: &ReActEngine,
@@ -113,6 +129,38 @@ impl ToolBatchState {
                 state,
             )
             .await;
+    }
+}
+
+/// Completion slots for one `ToolBatchPlan`. Execution writes by plan index;
+/// projection consumes from index zero upward. This keeps the single-tool
+/// path on the exact same semantic pipeline as larger batches without
+/// allocating a second action/step-id index map.
+pub(super) struct ToolBatchResults {
+    slots: Vec<Option<CompletedTool>>,
+}
+
+impl ToolBatchResults {
+    pub(super) fn new(len: usize) -> Self {
+        Self {
+            slots: (0..len).map(|_| None).collect(),
+        }
+    }
+
+    pub(super) fn set(&mut self, index: usize, result: CompletedTool) {
+        debug_assert!(index < self.slots.len(), "tool result index out of bounds");
+        if let Some(slot) = self.slots.get_mut(index) {
+            debug_assert!(slot.is_none(), "tool result slot completed twice");
+            *slot = Some(result);
+        }
+    }
+
+    pub(super) fn is_set(&self, index: usize) -> bool {
+        self.slots.get(index).is_some_and(Option::is_some)
+    }
+
+    pub(super) fn into_ordered(self) -> impl Iterator<Item = CompletedTool> {
+        self.slots.into_iter().flatten()
     }
 }
 
@@ -226,22 +274,21 @@ pub(super) async fn execute_tool_action(
     let (step_result, is_error, ask_question, ask_options, notify_title, notify_body) = match result
     {
         Ok(result) => {
+            let output_len = serde_json::to_string(&result.output)
+                .map(|text| text.len())
+                .unwrap_or(0);
             tracing::debug!(
                 "tool '{}' at step {} completed: success={}, {} chars",
                 tool_name,
                 step_num,
                 result.success,
-                serde_json::to_string(&result.output)
-                    .map(|text| text.len())
-                    .unwrap_or(0)
+                output_len
             );
             tracing::trace!(
                 "tool '{}' at step {} full output: {} chars",
                 tool_name,
                 step_num,
-                serde_json::to_string(&result.output)
-                    .map(|text| text.len())
-                    .unwrap_or(0)
+                output_len
             );
             let step_result = executor.observation_text(&tool_name, &result).await;
             (
@@ -359,100 +406,6 @@ impl ReActEngine {
         Ok(ToolBatchOutcome::Done(LoopExit::Paused {
             reason: PauseReason::Ask,
         }))
-    }
-
-    /// Resume after a confirm pause: execute decided gated tools without
-    /// re-emitting Action cards (those were already shown when the batch
-    /// paused). Appends observations / history / canonical for each tool.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn finish_confirm_batch(
-        &self,
-        session_id: &str,
-        state: &mut ReActState,
-        emitter: &Arc<dyn AgentEventEmitter>,
-        run_id: u64,
-    ) -> anyhow::Result<ToolBatchOutcome> {
-        let Some(pending) = self.executor.get_awaiting_confirm(session_id).await else {
-            return Ok(ToolBatchOutcome::Continue);
-        };
-        let step_num = pending.step_number;
-        let proj_ctx = StepCtx {
-            session_id: session_id.to_string(),
-            step_num,
-            run_id,
-            emitter: emitter.clone(),
-        };
-        let mut batch_state = ToolBatchState::default();
-
-        for tool in pending.tools {
-            let Some(decision) = tool.decision else {
-                continue;
-            };
-            let tool_call_id = (!tool.tool_call_id.is_empty()).then(|| tool.tool_call_id.clone());
-            let action = Action {
-                tool_name: tool.tool_name.clone(),
-                tool_input: tool.tool_input.clone(),
-                is_final: false,
-                tool_call_id: tool_call_id.clone(),
-            };
-
-            let result = if decision {
-                execute_tool_action(
-                    self.executor.clone(),
-                    session_id.to_string(),
-                    action,
-                    step_num,
-                    tool.action_index,
-                    tool.step_id,
-                    true,
-                )
-                .await
-            } else {
-                let error = format!(
-                    "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
-                    tool.tool_name
-                );
-                self.executor
-                    .finish_step_with_outcome(
-                        session_id,
-                        &tool.tool_name,
-                        &tool.tool_input,
-                        step_num,
-                        tool.action_index,
-                        tool_call_id.as_deref(),
-                        &tool.step_id,
-                        &error,
-                        ActionStepOutcome::Cancelled,
-                    )
-                    .await;
-                CompletedTool::failed(action, tool.step_id, tool.action_index, error)
-            };
-            batch_state
-                .commit_tool_result(self, &proj_ctx, result, state)
-                .await;
-        }
-
-        self.executor
-            .clear_awaiting_confirm_persisted(session_id)
-            .await;
-
-        let pending_ask = if !batch_state.asked_questions.is_empty() {
-            Some(crate::types::AskPending {
-                question: batch_state.asked_questions.join("\n\n"),
-                step_ids: batch_state.ask_step_ids.clone(),
-            })
-        } else {
-            // Same-batch ask was stashed while confirm paused first: surface
-            // it now.
-            self.executor.get_awaiting_answer(session_id).await
-        };
-        if let Some(pending) = pending_ask {
-            return self
-                .pause_for_ask(session_id, state, step_num, emitter, pending)
-                .await;
-        }
-
-        Ok(ToolBatchOutcome::Continue)
     }
 }
 
@@ -658,6 +611,45 @@ mod tests {
 
         let read_only = gate.acquire(&ToolConcurrency::ReadOnly).await;
         drop(read_only);
+    }
+
+    #[test]
+    fn result_slots_commit_in_plan_order_after_out_of_order_completion() {
+        let mut results = ToolBatchResults::new(2);
+        results.set(
+            1,
+            CompletedTool::failed(
+                Action {
+                    tool_name: "second".into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some("call-second".into()),
+                },
+                "step-second".into(),
+                1,
+                "second completed first".into(),
+            ),
+        );
+        results.set(
+            0,
+            CompletedTool::failed(
+                Action {
+                    tool_name: "first".into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some("call-first".into()),
+                },
+                "step-first".into(),
+                0,
+                "first completed second".into(),
+            ),
+        );
+
+        let ordered: Vec<_> = results
+            .into_ordered()
+            .map(|result| result.action.tool_name)
+            .collect();
+        assert_eq!(ordered, ["first", "second"]);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
-use haven_memory::repositories::facts::{
-    is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
+use haven_memory::recall::{
+    MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall, MemoryRetriever,
 };
+use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
@@ -14,9 +15,11 @@ use tokio_util::sync::CancellationToken;
 use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// Desktop-wired recall callback (History `recall_memory` / InferenceEngine).
-/// Args: `(query, kind, limit)` → hit rows `{entity_id,text,score,model}`.
+/// The callback receives and returns the shared typed memory contract.
 pub type MemoryRecallFn = Arc<
-    dyn Fn(String, String, usize) -> Pin<Box<dyn Future<Output = Vec<Value>> + Send>> + Send + Sync,
+    dyn Fn(MemoryQuery) -> Pin<Box<dyn Future<Output = anyhow::Result<MemoryRecall>> + Send>>
+        + Send
+        + Sync,
 >;
 
 /// Shared slot so catalog rebuilds keep the same callback.
@@ -89,17 +92,6 @@ impl MemoryTool {
         Self { db, recall }
     }
 
-    fn filter_recall_hits(hits: Vec<Value>) -> Vec<Value> {
-        hits.into_iter()
-            .filter(|h| {
-                h.get("text")
-                    .and_then(|t| t.as_str())
-                    .map(|t| !is_sensitive_text(t))
-                    .unwrap_or(true)
-            })
-            .collect()
-    }
-
     fn parse_limit(params: &MemoryParams, default: usize) -> usize {
         params
             .limit
@@ -124,10 +116,7 @@ impl MemoryTool {
         &self,
         facts: Vec<haven_memory::repositories::facts::Fact>,
     ) -> Vec<haven_memory::repositories::facts::Fact> {
-        facts
-            .into_iter()
-            .filter(|f| !is_sensitive_predicate(&f.predicate) && !is_sensitive_object(&f.object))
-            .collect()
+        MemoryRetriever::filter_visible_facts(facts)
     }
 
     fn to_output_rows(&self, facts: &[haven_memory::repositories::facts::Fact]) -> Value {
@@ -146,7 +135,7 @@ impl MemoryTool {
                     .source_ref
                     .as_ref()
                     .map(|r| r.snippet.trim())
-                    .filter(|s| !s.is_empty() && !is_sensitive_text(s))
+                    .filter(|s| !s.is_empty() && MemoryRetriever::visible_text(s))
                 {
                     row["source_snippet"] = json!(snippet);
                 }
@@ -258,61 +247,28 @@ impl MemoryTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("fact");
-        let entity = if kind_raw == "episode" || kind_raw == "episodes" {
-            haven_memory::embeddings::entity_kind::EPISODE
-        } else if kind_raw == "fact" || kind_raw == "facts" {
-            haven_memory::embeddings::entity_kind::FACT
-        } else {
-            anyhow::bail!("kind must be fact or episode");
-        };
-        let limit = params.limit.map(|l| l.clamp(1, 20) as usize).unwrap_or(5);
+        let kind = MemoryKind::parse(kind_raw)?;
+        let limit = params
+            .limit
+            .map(|l| l.clamp(1, MAX_RECALL_LIMIT as i64) as usize)
+            .unwrap_or(5);
+        let query = MemoryQuery::new(query, kind, limit)?;
 
         if let Some(recall) = self.recall.read().await.clone() {
-            let hits = recall(query.to_string(), entity.to_string(), limit).await;
-            let hits = Self::filter_recall_hits(hits);
+            let recall = recall(query).await?;
             return Ok(ToolResult::ok(json!({
-                "kind": entity,
-                "hits": hits,
-                "mode": "shared",
+                "kind": kind.entity_type(),
+                "hits": recall.hits,
+                "mode": recall.mode,
             })));
         }
 
-        let hits: Vec<Value> = if entity == haven_memory::embeddings::entity_kind::EPISODE {
-            let terms = haven_common::text::memory_recall_terms(query);
-            let term_refs = haven_common::text::memory_recall_term_sample(&terms, 6);
-            Self::filter_recall_hits(
-                db.search_episodes_by_keywords(&term_refs, limit)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|text| {
-                        json!({
-                            "entity_id": "",
-                            "text": text,
-                            "score": 0.0,
-                            "model": "",
-                        })
-                    })
-                    .collect(),
-            )
-        } else {
-            self.visible_facts(db.search_facts(query)?)
-                .into_iter()
-                .take(limit)
-                .map(|f| {
-                    json!({
-                        "entity_id": f.id,
-                        "text": format!("{}={}", f.predicate, f.object),
-                        "score": haven_memory::repositories::facts::fact_effective_confidence(&f),
-                        "model": "",
-                    })
-                })
-                .collect()
-        };
+        let recall = MemoryRetriever::new(db).retrieve(&query, None)?;
 
         Ok(ToolResult::ok(json!({
-            "kind": entity,
-            "hits": hits,
-            "mode": "keyword",
+            "kind": kind.entity_type(),
+            "hits": recall.hits,
+            "mode": recall.mode,
         })))
     }
 
@@ -426,6 +382,7 @@ impl Tool for MemoryTool {
 mod tests {
     use super::*;
     use crate::Tool;
+    use haven_memory::MemoryHit;
 
     fn test_tool() -> (MemoryTool, Arc<Database>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -708,6 +665,44 @@ mod tests {
             .execute(json!({"operation": "list"}), CancellationToken::new())
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn shared_recall_preserves_typed_mode_and_hits() {
+        let (tool, _db, _dir) = test_tool();
+        let slot = tool.recall.clone();
+        *slot.write().await = Some(Arc::new(|query| {
+            Box::pin(async move {
+                assert_eq!(query.kind, MemoryKind::Episode);
+                assert_eq!(query.text, "release notes");
+                assert_eq!(query.limit, 3);
+                Ok(MemoryRecall {
+                    hits: vec![MemoryHit {
+                        entity_id: "msg-episode".into(),
+                        text: "release notes summary".into(),
+                        score: 0.9,
+                        model: "model-a".into(),
+                    }],
+                    mode: haven_memory::MemoryRecallMode::Hybrid,
+                })
+            })
+        }));
+
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "recall",
+                    "query": "release notes",
+                    "kind": "episode",
+                    "limit": 3
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["mode"], "hybrid");
+        assert_eq!(result.output["hits"][0]["entity_id"], "msg-episode");
     }
 
     #[tokio::test]
