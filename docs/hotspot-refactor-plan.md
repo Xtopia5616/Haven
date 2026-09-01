@@ -352,6 +352,139 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 其中 store 任务会影响会话、Memory、action 和 UI resume，必须先定义事件及事务契约；media 可以相对独立推进；process 任务必须与 action state machine 一起验收。provider adapter 和 Tauri bridge 只作为稳定适配边界被新实现调用，不纳入上述四项的整体替换。
 
+## 2.5 反向审计补充：不能只按文件拆分的四项（2026-09-02）
+
+在上述候选之外，进一步检查配置更新、跨 session 通信、模型可见管理工具和 builtin tool contract 后，又发现四项不应被遗漏的重构方向。它们不是“还有几个大文件要拆”的重复清单，而是当前实现中仍然存在的跨域状态、过宽权限面和弱类型契约问题。前三项可以独立立项；第四项与第 2.3 节 E 的 `ToolsManager` 重构强相关，但仍应作为可单独验收的子任务记录。
+
+这四项同样遵循本测试版本的破坏性重构原则：先写 ADR 和行为/负向测试，再迁移完整调用链，最后删除旧路径；不为保留旧内部调用方式而长期留下第二套语义。
+
+### L. P1：把配置更新重做为 `ConfigService` 与版本化运行时快照
+
+当前 [`crates/common/src/config/loader.rs`](../crates/common/src/config/loader.rs) 的 `ConfigLoader` 同时承担配置模型、TOML 读写、密钥保留和设置合并；而 [`crates/app-binary/src/commands/settings.rs`](../crates/app-binary/src/commands/settings.rs) 的 `update_settings` 保存后，又分别更新 LLM router、STT/media、Tools、Agent、MCP、SafetyGateway、日志和 hotkey。`hot_swap_router` 还在 [`crates/app-binary/src/commands/mod.rs`](../crates/app-binary/src/commands/mod.rs) 中单独重建 router 相关运行时。
+
+当前代码已经需要在保存前重新从磁盘加载 MCP、skills 和 tool settings，以防 settings form 的不完整 payload 覆盖专用命令刚写入的内容。这些保护测试是必要的，但也说明配置权威和运行时应用逻辑已经分散：一次变更可能出现磁盘已写入、部分服务已替换、后续服务应用失败的半完成状态。
+
+建议重做为单一的配置应用服务：
+
+```text
+ConfigService
+ ├── versioned RuntimeConfig snapshot
+ ├── typed ConfigPatch / validation
+ ├── atomic persistence
+ ├── derived RuntimeApplyPlan
+ ├── apply / rollback / restart-required result
+ └── ConfigChanged(version, diff)
+```
+
+目标和边界：
+
+- `ConfigService` 是配置快照、版本和持久化的唯一权威；其他服务只消费不可变快照或明确的 typed patch，不再各自读写 `ConfigLoader`。
+- 将“配置修改”和“运行时应用”建模成一个可观测的事务或阶段化计划：先校验和写入，再按依赖顺序应用；失败时返回具体阶段、回滚结果或 `restart_required`，不能只留下半更新的运行时。
+- 用 typed patch 替代稳定配置路径上的任意 dotted JSON `set_value_at`；动态扩展点仍可保留 `serde_json::Value`，但必须有明确的 allowlist、版本和校验器。
+- 通过 `ConfigChanged { version, diff }` 通知 router、MCP、skills、Tools、media、日志和 hotkey；每个消费者声明是否支持热应用、是否需要重建以及失败后的降级语义。
+- 配置文件损坏、并发写入、密钥脱敏、专用管理命令与 settings form 并发修改必须有正向、冲突和恢复测试。
+
+收益是把“配置已保存但运行时状态不一致”从约定变成结构上不可忽略的状态；同时也为第 2.3 节 I 的 `ApplicationRuntime` 提供唯一的运行时重配置入口。若暂时不做，至少不要继续向多个 command 和 `self` tool 增加新的配置 setter。
+
+### M. P1：把 inbox 和多 Agent 协作重做为 `MessagingService`
+
+当前 [`crates/tools/src/inbox.rs`](../crates/tools/src/inbox.rs) 是一个文件型 JSONL 消息总线，里面同时处理 agent 注册、mailbox、archive、锁、过期锁、processing 状态和读取语义；`read_and_archive` 还是旧的同步消费路径，`claim_and_archive` / `ack_claimed` 则是 ReAct 路径。[`crates/tools/src/builtin/messaging.rs`](../crates/tools/src/builtin/messaging.rs) 又把 list/send/inbox/reply/profile/request/spawn 等操作集中在一个多操作工具中，并通过 callback 把 agent spawn 反向接回 app/agent 层。
+
+这使消息的投递、认领、确认、重试、重复消费和 Agent 生命周期分散在文件锁、工具 dispatcher、callback 和 session 逻辑中。它已经不只是“把 inbox.rs 拆成几个模块”的问题，而是 crash recovery、幂等和请求生命周期没有一个权威模型。
+
+建议建立：
+
+```text
+MessagingService
+ ├── typed Envelope
+ ├── durable message identity
+ ├── claim / ack / retry / expiry
+ ├── request / reply / receipt lifecycle
+ ├── in-process SessionActor mailbox
+ └── file transport adapter（仅在确需跨进程时保留）
+```
+
+目标和边界：
+
+- 统一 `send → claim → process → ack` 语义；删除旧的同步 `read_and_archive` 与 ReAct 专用消费路径之间的双轨行为。
+- 每条消息有稳定的 message identity、sender、recipient、session、correlation、attempt 和 delivery state，重复投递必须可检测且不会重复执行不可幂等副作用。
+- session 内部通信优先走 `SessionActor` mailbox；如果仍需跨进程或外部工具互操作，可以保留 JSONL 作为 transport adapter，但不能让 wire format 同时承担内部状态机。
+- `spawn`、request、reply、receipt 统一走请求生命周期和 supervisor/actor port，不再通过可变 callback slot 隐藏 agent 依赖。
+- 锁超时、进程崩溃、服务重启、收件箱积压、目标 session 消失和低信任上下文注入必须有恢复、重试和负向测试。
+
+收益是让跨 session 协作从“文件队列加若干工具操作”变成可恢复的领域服务，能与第 2.3 节 A 的 `SessionActor`、第 2.3 节 D 的 `ActionService` 形成清晰的命令和事件边界。若应用最终只在单进程运行，可以减少文件总线；若确实需要跨进程，则只保留文件传输适配，不保留重复的内部消费模型。
+
+### N. P1：拆掉 `self` 超级管理工具，重建受限的 Admin Surface
+
+当前 [`crates/tools/src/builtin/self_tool.rs`](../crates/tools/src/builtin/self_tool.rs) 同时提供状态、config get/set、skills、tools、MCP、logs、sessions/errors 等管理能力。`SelfToolContext` 还直接持有 config loader、数据库、router、日志回调和弱引用的 `ToolsManager`，因此模型可见的一个 `self` 工具实际覆盖了多个服务的读写入口。
+
+其中通用 `config_set(path, value)` 尤其容易把稳定配置契约退化为字符串路径和任意 JSON；MCP/skills/tool/log 操作又各自拥有持久化和 live apply 逻辑。即便把 handler 机械拆到多个文件，权限面和副作用边界仍然没有改善。
+
+建议重建为窄而明确的管理面：
+
+```text
+DiagnosticsService   （只读状态、日志摘要、错误和 session 诊断）
+ConfigAdmin          （typed patch，统一经过 ConfigService）
+SkillAdmin           （技能生命周期和 allowlist）
+McpAdmin             （MCP 配置、连接和健康状态）
+SessionDiagnostics   （只读历史/运行信息）
+```
+
+目标和边界：
+
+- 读操作和写操作分离；默认模型工具目录只暴露必要的窄工具，不能让一个 dispatcher 获得整个应用的管理权限。
+- 删除普通模型路径上的任意 `config_set`，改成 allowlisted typed admin commands；高风险变更统一经过 `SafetyGateway` 和 `ConfigService`。
+- 将 MCP、skills、日志和 session 诊断的持久化/运行时变更交还给各自 domain service，admin surface 只负责鉴权、调用和结果整形。
+- 每个管理操作必须声明 capability、风险等级、是否可在 session 内执行、是否需要用户确认和是否允许重试。
+- 保留诊断能力，但敏感配置、API key、完整 prompt、完整命令输出和隐私内容不得进入工具结果或普通日志。
+
+收益是把“模型管理应用自身”的能力从一个高耦合、高权限工具变成可审计的 capability surface；也能让第 2.3 节 E 的 ToolsManager 收回 service locator 职责，并让第 2.4 节的 `SafetyGateway` 成为所有管理副作用的统一入口。机械拆分 `self_tool.rs` 可以作为过渡，但最终完成标准不是“dispatcher 还在，只是 handler 分文件”，而是旧超级工具和任意配置写入口被删除。
+
+### O. P1/P2：把多操作工具改成 typed `ToolOperation` 契约
+
+当前 files、memory、system、audio、messaging、self 等 builtin 大量采用：
+
+```text
+Tool + operation: String + serde_json::Value
+```
+
+这种形式短期内方便把多个操作挂在一个模型工具名下，但会把参数校验、权限判断、风险等级、幂等性、错误语义、UI tool card 和测试都变成 `operation` 字符串分支。结果是工具表面看似稳定，内部却仍然有许多未类型化的隐式契约。
+
+建议把运行时内部契约改成：
+
+```text
+TypedToolOperation
+ ├── typed args
+ ├── typed output
+ ├── capability / scope
+ ├── risk level
+ ├── idempotency policy
+ └── cancellation / timeout policy
+```
+
+目标和边界：
+
+- 每一个能力操作都拥有明确的 args、output、错误类型和 metadata；dispatcher 负责选择 operation，不负责解释一大串 JSON 分支。
+- `ToolRegistry` 可以继续按领域把多个 operation 分组成少量 LLM-facing tools，避免模型工具数量失控；但授权、执行、重试和 UI contract 必须解析 typed operation，而不是裸字符串。
+- `serde_json::Value` 只保留在 provider 原始载荷、真正动态的 MCP 扩展点或明确声明的扩展边界；稳定业务参数默认使用 Rust 类型。
+- capability、risk、idempotency 和 side-effect scope 与 operation 一起注册，使 `SafetyGateway`、ActionService、审计日志和 UI 能复用同一份 metadata。
+- 每个 operation 都要有成功、缺参、错误类型、取消、超时、重复调用、越权和未知字段测试；删除旧 operation alias 和旧 dispatcher 分支后才算完成。
+
+这项不是要求把每一个 operation 都暴露成独立的 provider tool，而是要求“模型分组”和“运行时契约”分层。它应作为第 2.3 节 E `ToolsManager/tool-core` 重构的独立子任务；收益是让工具授权和行为契约按 capability 组织，而不是继续按字符串和调用方约定组织。
+
+### 补充四项的任务拆分建议
+
+本节四项不要和原来的四项合并为一个大重写；建议分别建立以下任务：
+
+1. `refactor(config)`: `ConfigService`、版本化 runtime snapshot、typed patch 和 apply plan；
+2. `refactor(messaging)`: `MessagingService`、Envelope、claim/ack/retry 和 SessionActor mailbox；
+3. `refactor(self-admin)`: Diagnostics/Config/Skill/MCP admin surface，删除超级 `self` dispatcher；
+4. `refactor(tool-contract)`: typed `ToolOperation`、capability metadata 和 operation contract tests。
+
+建议依赖顺序为：先定义 `ConfigService` 和 `ToolOperation` 的边界，再接入 `SafetyGateway`；`MessagingService` 在 `SessionActor`/`SessionSupervisor` 的 mailbox 方向确定后迁移；`self-admin` 最后迁移，因为它同时依赖配置、工具注册、MCP、skills、诊断和安全授权。`tool-contract` 可以与 `ToolsManager` 并行设计，但必须在 `self-admin` 完成前提供新的管理操作注册方式。
+
+这四项与第 2.3 节已有候选的关系如下：`ConfigService` 为 `ApplicationRuntime` 提供运行时配置入口；`MessagingService` 接入 `SessionActor`；`self-admin` 收窄 `ToolsManager` 的管理面；`ToolOperation` 是 `ToolsManager`/`SafetyGateway` 的 typed 执行契约。它们不是重复计数，而是补齐原有目标架构中配置、通信、管理和工具协议四个横切边界。
+
 ## 3. 执行顺序
 
 ### 阶段 A：先拆测试集中文件，低风险
@@ -502,7 +635,8 @@ corepack pnpm --dir ui run build
 
 - 规模：约 2,787 行，其中约 1,420 行是生产代码。
 - `SelfOperation` 同时覆盖 config、skills、tools、MCP、logs、sessions/errors。
-- 后续可按 config/skills、MCP、diagnostics/history 拆 handler 模块；保留一个 dispatcher。
+- 如果只是执行本阶段的低风险文件拆分，可以先按 config/skills、MCP、diagnostics/history 拆 handler 模块；但保留 dispatcher 仅是过渡，不能作为最终架构。
+- 真正的目标和删除条件见第 2.5 节 N：迁移到受限 admin surface 后删除超级 `self` dispatcher 和任意配置写入口。
 - 这是高风险目标，必须先补齐每个 operation 的正向、错误和持久化测试，不要作为第一轮拆分。
 
 ## 4. 暂时不要做的事情
@@ -510,8 +644,8 @@ corepack pnpm --dir ui run build
 - 不把 `haven-agent`、`haven-tools`、`haven-llm` 直接拆成多个 crate。
 - 不因为 `openai.rs`、`openai_responses.rs`、`anthropic.rs` 各约 2.5k 行就立即拆 provider crate；每个文件约一半是协议测试，先考虑把测试按 provider 移到独立测试模块。
 - 不拆 `memory/src/repositories/facts.rs` 的生产 facade；它总计约 2,080 行，但生产代码约 507 行，图谱写入、查询和维护已经分别位于其他模块。
-- 不修改 ReAct X12 写路径、`ReActSnapshot.events` 恢复权威、消息/步骤投影、rollback 双时钟或任何数据库 schema。
-- 不借拆分机会修改 provider wire payload、工具重试、安全确认、IPC event shape 或 UI 交互。
+- 机械拆分阶段不修改 ReAct X12 写路径、`ReActSnapshot.events` 恢复权威、消息/步骤投影、rollback 双时钟或任何数据库 schema；进入第 2.3/2.4/2.5 的明确重构任务后，按对应 ADR 处理这些边界。
+- 机械拆分阶段不借机修改 provider wire payload、工具重试、安全确认、IPC event shape 或 UI 交互；provider adapter、SafetyGateway、Tauri bridge、ConfigService 和 ToolOperation 的概念级调整必须在各自任务中单独验收。
 
 ## 5. 可选的 crate 级后续方向
 
