@@ -259,6 +259,52 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 在第 2 步之前，不应开始大规模 provider 或 UI 视觉重写；在第 6 步完成之前，不应宣布“事件统一”完成。上述战略候选与本文件第 3 节的机械拆分是两条不同路线：文件拆分可以先做，但一旦选定战略路线，相关模块拆分应服务于新边界，不能把临时 facade 固化成最终架构。
 
+## 2.4 用户决策：允许重写的范围（2026-09-02）
+
+用户明确决定：上一节“暂不推翻”的六类内容中，保留第一个和最后一个的核心边界；中间四类可以按破坏性重构处理，后续拆成多个独立任务逐步实现。
+
+### 保留核心边界
+
+1. **Provider adapter**：保留 `haven-llm` 作为唯一 provider 协议实现层，保留外部 wire compatibility。可以拆文件、抽共享 transport/stream/retry、重做内部 capability 描述，但不做一次性 provider 协议重写。
+2. **Tauri DTO/event bridge**：保留 `haven-app-binary` 集中做 Rust 内部事件到 Tauri DTO 的适配和 snake_case/camelCase 边界转换。可以逐步接入带 sequence 的事件流和前端 reducer，但不把映射职责分散回 agent/tools/UI。
+
+“保留”不代表禁止修复或整理；它表示不改变这两个边界的基本职责，不把它们列入本轮概念级推翻范围。
+
+### 允许破坏性重构
+
+以下四项可以删除当前实现、重建新模型；每项必须独立写 ADR、先建立行为/负向测试，再迁移一条完整调用链，最后删除旧实现和旧测试入口。
+
+1. **安全授权：`SafetyGateway`**
+   - 目标：用 typed `AuthorizationRequest` / `AuthorizationDecision` / capability scope 取代分散的字符串 permission key、旧 confirmation 字段和多入口猜测。
+   - 必须保留：deny-first、永久/会话授权、路径和进程安全检查、TOCTOU 防护、scheduled/MCP/skill/Tauri 统一过闸。
+   - 完成标志：所有副作用入口只有一个授权决策入口，前端不能通过 `confirmed` 或旧字段绕过它。
+
+2. **输入与媒体：`InputPipeline` / `MediaGateway`**
+   - 目标：将硬件采集、录音生命周期、转写、OCR/ASR、附件分析和媒体生成重划分为明确的 `MediaService` / capability job；输入层只拥有采集，provider 选择和 fallback 由媒体服务统一处理。
+   - 可以删除：`provider == "llm"` 的双路径特判、重复 STT 路由、隐式 eager preprocessing 和不透明的媒体 fallback 组合。
+   - 必须保留：录音取消/VAD 语义、原始附件可用性、低置信度降级、能力不可用时的可观察错误和 headless 测试能力。
+
+3. **持久化与 Memory：`Database` facade / session projections / memory orchestration**
+   - 目标：允许重做当前数据库 API、session event storage、投影事务和 Memory/Prompt/Inference 分层；优先目标是 `SessionEventStore` + domain stores，而不是继续扩大一个全能 `Database` facade。
+   - SQLite 可以继续作为底层 adapter，但不再把 SQLite connection、cache invalidation 和 SQL repository 细节暴露给 agent/tools；如果未来替换数据库，也只替换 store adapter。
+   - 必须保留：数据版本边界、可验证 migration/reset、事务一致性、敏感记忆过滤、embedding 生命周期和用户可见数据删除语义。
+
+4. **Windows shell/process：`bg.rs` 与后台进程生命周期**
+   - 目标：可以重做 command plan、process handle、输出流、取消/终止、超时和 action 状态机，最终与统一 `ActionService` 对接；不把“后台 shell”继续当成一套特殊的内存 registry。
+   - 可以删除：当前 `BackgroundActions` 的内部状态组织、事件 sink/channel 交叉接线和与 scheduled action 分离的运行时模型。
+   - 必须保留：`CREATE_NO_WINDOW`、PowerShell 编码、GBK/CLIXML 解码、输出上限、进程树终止、取消竞态、超时未知终态和 Windows 负向测试。
+
+### 后续任务拆分建议
+
+不要把四项放在一个“大重写”任务中。建议拆成以下独立任务，并在每项结束时删除旧链路：
+
+1. `refactor(security)`: `SafetyGateway` typed authorization model；
+2. `refactor(store)`: `SessionEventStore` / domain store / Memory boundaries；
+3. `refactor(media)`: `MediaService` / input artifact / capability jobs；
+4. `refactor(process)`: Windows process runtime / output pipeline / `ActionService` integration。
+
+其中 store 任务会影响会话、Memory、action 和 UI resume，必须先定义事件及事务契约；media 可以相对独立推进；process 任务必须与 action state machine 一起验收。provider adapter 和 Tauri bridge 只作为稳定适配边界被新实现调用，不纳入上述四项的整体替换。
+
 ## 3. 执行顺序
 
 ### 阶段 A：先拆测试集中文件，低风险
