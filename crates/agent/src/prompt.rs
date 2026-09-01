@@ -214,6 +214,9 @@ const FACT_OBJECT_MAX_CHARS: usize = 120;
 /// Hard cap for the complete session-specific context block, including the
 /// current-session description, additional context, and rendered memory.
 const SESSION_CONTEXT_CHAR_BUDGET: usize = 8000;
+/// Prevent one verbose historical entry from crowding every other recent
+/// entry out of the bounded Additional context section.
+const RECENT_CONTEXT_ITEM_MAX_CHARS: usize = 1200;
 /// The description is shown verbatim-ish to the model, but must not consume
 /// the whole context allocation or become an unbounded embedding query.
 const SESSION_DESCRIPTION_CHAR_BUDGET: usize = 1200;
@@ -246,7 +249,10 @@ fn render_recent_context(history: &[String], max_chars: usize) -> String {
         // History is user/model-produced data, not prompt instructions. Keep
         // each entry on one physical line so it cannot forge the surrounding
         // prompt structure or the resume parser's markers.
-        let safe_message = haven_common::text::sanitize_prompt_field(message, max_chars);
+        let safe_message = haven_common::text::sanitize_prompt_field(
+            message,
+            RECENT_CONTEXT_ITEM_MAX_CHARS.min(max_chars),
+        );
         let line = format!("  {safe_message}\n");
         let line_chars = line.chars().count();
         if used.saturating_add(line_chars) > max_chars {
@@ -1285,6 +1291,25 @@ mod tests {
             closer < dynamic,
             "session context must follow static closer"
         );
+    }
+
+    #[test]
+    fn recent_context_keeps_multiple_entries_when_one_entry_is_verbose() {
+        let history = vec![
+            "old context".to_string(),
+            format!("verbose context {}", "x".repeat(5_000)),
+            "newer context".to_string(),
+        ];
+
+        let rendered = render_recent_context(&history, 2_000);
+
+        assert!(rendered.contains("verbose context"));
+        assert!(rendered.contains("newer context"));
+        assert!(
+            rendered.contains("old context"),
+            "a verbose entry should not crowd every other bounded history item out"
+        );
+        assert!(rendered.chars().count() <= 2_000);
     }
 
     #[tokio::test]

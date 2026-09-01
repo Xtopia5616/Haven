@@ -71,3 +71,4 @@
 - [0064：ReAct 上下文组装与统一工具调度边界](0064-react-context-and-tool-dispatch-boundaries.md)
 - [0065：上下文、工具与记忆边界的失败安全收紧](0065-context-tool-memory-boundaries.md)
 - [0066：有界缓存与上下文一致性](0066-bounded-cache-and-context-consistency.md)
+- [0067：Token-aware 上下文拼接与压缩](0067-token-aware-context-composition.md)

@@ -14,38 +14,132 @@ pub fn estimate_tokens(text: &str) -> u32 {
     TOKENIZER.encode_with_special_tokens(text).len() as u32
 }
 
-/// Estimate tokens in a list of canonical messages by summing the content text.
-pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
+/// Estimate the provider-visible token cost of one canonical message.
+///
+/// The estimator intentionally stays provider-neutral. It covers the content
+/// and the extra fields that can be echoed into a request; protocol framing is
+/// accounted for by the provider adapters and the small safety reserve in the
+/// compactor.
+fn estimate_message_token_cost(msg: &CanonicalMessage) -> u32 {
     let mut total = 0u32;
-    for msg in messages {
-        for part in &msg.content {
-            match part {
-                ContentPart::Text(t) => total += estimate_tokens(t),
-                ContentPart::Image { .. } => total += 200, // rough image token cost
-                ContentPart::Audio { .. } => total += 500, // rough audio token cost
-            }
-        }
-        // Reasoning (thinking-mode) is echoed back to the provider on every
-        // request and can dwarf the message text itself (a single turn's
-        // reasoning routinely reaches 10k chars). It must count toward the
-        // context budget or compaction never triggers on reasoning-heavy
-        // conversations, the request body explodes, and providers stall.
-        if let Some(r) = &msg.reasoning {
-            total += estimate_tokens(r);
-        }
-        // Anthropic thinking text is carried as raw `thinking_blocks` when the
-        // redundant `reasoning` copy is dropped; count it either way so
-        // reasoning-heavy conversations still trigger compaction.
-        for block in &msg.thinking_blocks {
-            if let Some(t) = block.get("thinking").and_then(serde_json::Value::as_str) {
-                total += estimate_tokens(t);
-            }
-        }
-        if msg.tool_calls.is_some() {
-            total += 50;
+    for part in &msg.content {
+        match part {
+            ContentPart::Text(t) => total = total.saturating_add(estimate_tokens(t)),
+            ContentPart::Image { .. } => total = total.saturating_add(200), // rough image token cost
+            ContentPart::Audio { .. } => total = total.saturating_add(500), // rough audio token cost
         }
     }
+    // Reasoning (thinking-mode) is echoed back to the provider on every
+    // request and can dwarf the message text itself (a single turn's
+    // reasoning routinely reaches 10k chars). It must count toward the
+    // context budget or compaction never triggers on reasoning-heavy
+    // conversations, the request body explodes, and providers stall.
+    if let Some(r) = &msg.reasoning {
+        total = total.saturating_add(estimate_tokens(r));
+    }
+    // Anthropic thinking text is carried as raw `thinking_blocks` when the
+    // redundant `reasoning` copy is dropped; count it either way so
+    // reasoning-heavy conversations still trigger compaction.
+    for block in &msg.thinking_blocks {
+        if let Some(t) = block.get("thinking").and_then(serde_json::Value::as_str) {
+            total = total.saturating_add(estimate_tokens(t));
+        }
+    }
+    if msg.tool_calls.is_some() {
+        total = total.saturating_add(50);
+    }
     total
+}
+
+/// Estimate tokens in a list of canonical messages by summing each message's
+/// provider-visible cost.
+pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
+    messages
+        .iter()
+        .map(estimate_message_token_cost)
+        .fold(0, u32::saturating_add)
+}
+
+/// Prefix sums let the compaction planner compare many candidate boundaries
+/// without re-tokenizing the same messages for every candidate.
+fn message_token_prefixes(messages: &[CanonicalMessage]) -> Vec<u32> {
+    let mut prefixes: Vec<u32> = Vec::with_capacity(messages.len() + 1);
+    prefixes.push(0);
+    for message in messages {
+        let next = prefixes
+            .last()
+            .copied()
+            .unwrap_or_default()
+            .saturating_add(estimate_message_token_cost(message));
+        prefixes.push(next);
+    }
+    prefixes
+}
+
+fn range_token_cost(prefixes: &[u32], start: usize, end: usize) -> u32 {
+    prefixes
+        .get(end)
+        .copied()
+        .unwrap_or_default()
+        .saturating_sub(prefixes.get(start).copied().unwrap_or_default())
+}
+
+/// Keep summary requests bounded even when a long-running session has a very
+/// large middle region. The planner may summarize more messages than fit in
+/// this input window; this renderer keeps both edges and explicitly marks the
+/// omitted middle so the summary model sees the shape of the missing region.
+const SUMMARY_INPUT_TOKEN_BUDGET: u32 = 16_000;
+/// The summary message is deliberately smaller than the input budget. A
+/// little framing overhead is reserved by the range planner below.
+const SUMMARY_TEXT_TOKEN_BUDGET: u32 = 768;
+const SUMMARY_MESSAGE_TOKEN_BUDGET: u32 = 1_024;
+
+fn truncate_to_token_budget(text: &str, max_tokens: u32) -> String {
+    if max_tokens == 0 {
+        return String::new();
+    }
+    if estimate_tokens(text) <= max_tokens {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        let candidate: String = chars[..middle].iter().collect();
+        if estimate_tokens(&candidate) <= max_tokens {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    chars[..low].iter().collect()
+}
+
+fn truncate_from_end_to_token_budget(text: &str, max_tokens: u32) -> String {
+    if max_tokens == 0 {
+        return String::new();
+    }
+    if estimate_tokens(text) <= max_tokens {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    while low < high {
+        let take = (low + high).div_ceil(2);
+        let start = chars.len().saturating_sub(take);
+        let candidate: String = chars[start..].iter().collect();
+        if estimate_tokens(&candidate) <= max_tokens {
+            low = take;
+        } else {
+            high = take - 1;
+        }
+    }
+    let start = chars.len().saturating_sub(low);
+    chars[start..].iter().collect()
 }
 
 #[derive(Debug, Clone)]
@@ -135,25 +229,73 @@ impl ContextCompactor {
         estimate_message_tokens(messages) > self.threshold_tokens()
     }
 
-    /// Build a summarization prompt from the oldest messages (up to `max_summary_messages`).
-    fn build_summary_prompt(prefix: &[CanonicalMessage]) -> String {
+    /// Build a bounded prompt from the messages being removed. The source
+    /// renderer keeps both edges when the middle is larger than the summary
+    /// model's input budget.
+    fn build_summary_prompt(messages: &[CanonicalMessage]) -> String {
         use std::fmt::Write as _;
-        let mut text = String::with_capacity(prefix.len() * 64 + CONVERSATION_SUMMARY_PROMPT.len());
-        text.push_str(CONVERSATION_SUMMARY_PROMPT);
-        for msg in prefix {
+        let mut lines = Vec::with_capacity(messages.len());
+        for msg in messages {
             let role = match msg.role {
                 haven_common::types::CanonicalRole::System => "system",
                 haven_common::types::CanonicalRole::User => "user",
                 haven_common::types::CanonicalRole::Assistant => "assistant",
                 haven_common::types::CanonicalRole::Tool => "tool",
             };
+            let mut line = String::new();
             for part in &msg.content {
                 if let ContentPart::Text(t) = part {
-                    let _ = writeln!(text, "[{}] {}", role, t);
+                    let _ = writeln!(line, "[{}] {}", role, t);
                 }
             }
+            if let Some(calls) = &msg.tool_calls {
+                for call in calls {
+                    let _ = writeln!(
+                        line,
+                        "[assistant tool_call id={} name={} arguments={}]",
+                        call.id, call.name, call.arguments
+                    );
+                }
+            }
+            if line.is_empty()
+                && let Some(tool_call_id) = &msg.tool_call_id
+            {
+                let _ = writeln!(line, "[tool result for {}]", tool_call_id);
+            }
+            if !line.is_empty() {
+                lines.push(line);
+            }
         }
-        text.push_str("\n---\nSummary:");
+
+        let marker = format!(
+            "\n[... {} transcript entries omitted from this summary input ...]\n",
+            lines.len().saturating_sub(2)
+        );
+        let suffix = "\n---\nSummary:";
+        let fixed_tokens =
+            estimate_tokens(CONVERSATION_SUMMARY_PROMPT).saturating_add(estimate_tokens(suffix));
+        let available = SUMMARY_INPUT_TOKEN_BUDGET
+            .saturating_sub(fixed_tokens)
+            .max(1);
+        let full_body = lines.concat();
+        let body = if estimate_tokens(&full_body) <= available {
+            full_body
+        } else {
+            let marker_tokens = estimate_tokens(&marker);
+            let body_budget = available.saturating_sub(marker_tokens);
+            let head_budget = body_budget / 2;
+            let tail_budget = body_budget.saturating_sub(head_budget);
+            let split = lines.len().div_ceil(2);
+            let head = truncate_to_token_budget(&lines[..split].concat(), head_budget);
+            let tail = truncate_from_end_to_token_budget(&lines[split..].concat(), tail_budget);
+            truncate_to_token_budget(&format!("{head}{marker}{tail}"), available)
+        };
+
+        let mut text =
+            String::with_capacity(CONVERSATION_SUMMARY_PROMPT.len() + body.len() + suffix.len());
+        text.push_str(CONVERSATION_SUMMARY_PROMPT);
+        text.push_str(&body);
+        text.push_str(suffix);
         text
     }
 
@@ -205,9 +347,14 @@ impl ContextCompactor {
     /// Choose `[start, end)` of the middle region to summarize.
     ///
     /// Layout: `[system*][sticky…][middle…)[suffix…]`. Sticky is a small
-    /// head of the conversation (prompt-cache friendly); middle is ~half the
-    /// compactable turns; suffix is the recent tail.
-    fn compaction_range(messages: &[CanonicalMessage]) -> Option<(usize, usize, usize)> {
+    /// head of the conversation (prompt-cache friendly); middle is selected by
+    /// token cost; suffix is the largest recent tail that fits the post-
+    /// compaction target.
+    fn compaction_range(
+        &self,
+        messages: &[CanonicalMessage],
+        token_prefixes: &[u32],
+    ) -> Option<(usize, usize, usize)> {
         let system_count = messages
             .iter()
             .take_while(|m| matches!(m.role, haven_common::types::CanonicalRole::System))
@@ -229,9 +376,29 @@ impl ContextCompactor {
         let sticky_target = Self::STICKY_PREFIX_MESSAGES.min(compactable.saturating_sub(2));
         let start_idx = Self::safe_start_idx(messages, system_count + sticky_target);
 
-        let summarize_count = (compactable / 2).max(2);
-        let desired_end = (start_idx + summarize_count).min(messages.len());
-        let end_idx = Self::safe_end_idx(messages, desired_end);
+        // Compact to roughly half of the trigger threshold. This gives the
+        // next few turns room to append without immediately rebuilding the
+        // prompt again, while the sticky prefix keeps the provider cacheable
+        // prefix intact.
+        let target_tokens = self.threshold_tokens().saturating_mul(2) / 3;
+        let fixed_tokens = token_prefixes
+            .get(start_idx)
+            .copied()
+            .unwrap_or_default()
+            .saturating_add(SUMMARY_MESSAGE_TOKEN_BUDGET);
+        let mut end_idx = None;
+        for desired_end in (start_idx + 2)..=messages.len() {
+            let candidate = Self::safe_end_idx(messages, desired_end);
+            if candidate <= start_idx {
+                continue;
+            }
+            let suffix_tokens = range_token_cost(token_prefixes, candidate, messages.len());
+            if fixed_tokens.saturating_add(suffix_tokens) <= target_tokens {
+                end_idx = Some(candidate);
+                break;
+            }
+        }
+        let end_idx = end_idx.unwrap_or(messages.len());
 
         // A summary may legitimately replace the whole trailing tool round:
         // it is then the new clean tail. Otherwise a suffix must remain.
@@ -243,7 +410,8 @@ impl ContextCompactor {
     }
 
     /// Compress the message list: keep a sticky early prefix, summarize the
-    /// middle half, and retain the recent suffix (prompt-cache aware).
+    /// token-selected middle, and retain the largest recent suffix that fits
+    /// the post-compaction target (prompt-cache aware).
     ///
     /// Returns `None` when compaction fails (e.g. LLM call fails) or there is
     /// no complete turn/tool round to compact (fewer than 3 messages).
@@ -258,12 +426,14 @@ impl ContextCompactor {
             return None;
         }
 
-        let (system_count, start_idx, end_idx) = Self::compaction_range(messages)?;
+        let token_prefixes = message_token_prefixes(messages);
+        let (system_count, start_idx, end_idx) =
+            self.compaction_range(messages, &token_prefixes)?;
         let middle = &messages[start_idx..end_idx];
         let suffix = &messages[end_idx..];
         let summarized_count = end_idx - start_idx;
 
-        let tokens_before = estimate_message_tokens(messages);
+        let tokens_before = token_prefixes.last().copied().unwrap_or_default();
 
         let prompt = Self::build_summary_prompt(middle);
 
@@ -272,7 +442,8 @@ impl ContextCompactor {
             .await
         {
             Ok(response) => {
-                let summary = response.text.trim().to_string();
+                let summary =
+                    truncate_to_token_budget(response.text.trim(), SUMMARY_TEXT_TOKEN_BUDGET);
                 if summary.is_empty() {
                     return None;
                 }
@@ -529,7 +700,9 @@ mod tests {
         for i in 0..8 {
             msgs.push(make_msg(CanonicalRole::User, &format!("u{i}")));
         }
-        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
+        let compactor = ContextCompactor::new(10_000, 1_000);
+        let prefixes = message_token_prefixes(&msgs);
+        let (system_count, start, end) = compactor.compaction_range(&msgs, &prefixes).unwrap();
         assert_eq!(system_count, 1);
         assert!(start > system_count, "sticky prefix must be kept");
         assert!(end < msgs.len(), "recent suffix must remain");
@@ -546,7 +719,9 @@ mod tests {
             make_msg(CanonicalRole::Assistant, "b"),
             make_msg(CanonicalRole::User, "c"),
         ];
-        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
+        let compactor = ContextCompactor::new(10_000, 1_000);
+        let prefixes = message_token_prefixes(&msgs);
+        let (system_count, start, end) = compactor.compaction_range(&msgs, &prefixes).unwrap();
         assert_eq!(system_count, 1);
         assert_eq!((start, end), (2, 4));
         assert!(matches!(
@@ -572,8 +747,77 @@ mod tests {
             tool,
         ];
 
-        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
+        let compactor = ContextCompactor::new(10_000, 1_000);
+        let prefixes = message_token_prefixes(&msgs);
+        let (system_count, start, end) = compactor.compaction_range(&msgs, &prefixes).unwrap();
         assert_eq!(system_count, 1);
         assert_eq!((start, end), (2, 4));
+    }
+
+    #[test]
+    fn compaction_range_uses_token_budget_for_recent_tail() {
+        let compactor = ContextCompactor::with_ratio(5_000, 500, 0.75);
+        let mut msgs = vec![
+            make_msg(CanonicalRole::System, "stable system"),
+            make_msg(CanonicalRole::User, "first intent"),
+            make_msg(CanonicalRole::Assistant, "first answer"),
+        ];
+        msgs.extend((0..40).map(|index| {
+            make_msg(
+                CanonicalRole::User,
+                &format!("recent-{index} {}", "detail ".repeat(80)),
+            )
+        }));
+
+        let prefixes = message_token_prefixes(&msgs);
+        let (_, start, end) = compactor.compaction_range(&msgs, &prefixes).unwrap();
+        let target = compactor.threshold_tokens() * 2 / 3;
+        let fixed = prefixes[start] + SUMMARY_MESSAGE_TOKEN_BUDGET;
+        let suffix = range_token_cost(&prefixes, end, msgs.len());
+
+        assert!(
+            end > start + 2,
+            "large recent tail needs token-based trimming"
+        );
+        assert!(
+            fixed + suffix <= target,
+            "retained context must fit the post-compaction target"
+        );
+        assert!(
+            end < msgs.len(),
+            "the planner should retain a recent suffix when the target allows it"
+        );
+    }
+
+    #[test]
+    fn summary_prompt_is_bounded_and_keeps_both_edges() {
+        let messages: Vec<_> = (0..400)
+            .map(|index| {
+                make_msg(
+                    CanonicalRole::User,
+                    &format!("entry-{index} {}", "long detail ".repeat(80)),
+                )
+            })
+            .collect();
+
+        let prompt = ContextCompactor::build_summary_prompt(&messages);
+
+        assert!(
+            estimate_tokens(&prompt) <= SUMMARY_INPUT_TOKEN_BUDGET,
+            "summary input must stay bounded, got {} tokens",
+            estimate_tokens(&prompt)
+        );
+        assert!(prompt.contains("entry-0"));
+        assert!(prompt.contains("entry-399"));
+        assert!(prompt.contains("omitted from this summary input"));
+    }
+
+    #[test]
+    fn summary_output_truncation_is_token_bounded() {
+        let text = "摘要内容 ".repeat(2_000);
+        let truncated = truncate_to_token_budget(&text, SUMMARY_TEXT_TOKEN_BUDGET);
+
+        assert!(!truncated.is_empty());
+        assert!(estimate_tokens(&truncated) <= SUMMARY_TEXT_TOKEN_BUDGET);
     }
 }

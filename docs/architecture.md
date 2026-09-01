@@ -371,3 +371,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-01 | §2.5 Agent：将 turn-start 上下文收集与投影分离，统一本地队列/inbox 优先级；单工具与并行工具共用 plan、取消修复和 ordered projection（ADR 0064） |
 | 2026-09-01 | §2.5 Agent/Tools/Memory：收紧上下文、工具与记忆路径的失败安全边界，避免数据库/向量/action 故障被静默伪装（ADR 0065） |
 | 2026-09-01 | §2.3 Memory / §2.5 Agent/Tools：将查询、prompt memory、工具定义与 token estimate 缓存分别提取为有界/版本化结构，按 key/domain 失效并用内容指纹守住上下文一致性（ADR 0066） |
+| 2026-09-01 | §2.5 Agent：上下文 Additional context 改为单项有界拼接，compaction 改为 token-aware 规划，摘要输入/输出有界并保留工具轮次与稳定前缀（ADR 0067） |

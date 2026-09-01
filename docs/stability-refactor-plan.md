@@ -121,6 +121,7 @@
 - 2026-09-01：P2 Memory 召回边界收口：`MemoryQuery` / `MemoryRecall` / `MemoryRetriever` 统一关键词、向量、敏感过滤与 prompt cache，embedding provider 只负责获取向量（ADR 0063）。
 - 2026-09-01：P2 Agent/Tools/Memory 失败安全边界收口：数据库读取、向量身份、事实写入、action durability 与未知副作用结果不再被静默降级或错误重试（ADR 0065）。
 - 2026-09-01：P2 Agent/Tools/Memory 缓存边界重构：查询缓存抽离为有界 LRU，prompt memory 支持多项复用，工具定义按全局/会话版本隔离，token estimate 以内容指纹保证等长替换一致（ADR 0066）。
+- 2026-09-01：P2 Agent 上下文边界优化：Additional context 限制单项大小，compaction 按 token 规划最近尾部，摘要输入/输出有界并保留工具轮次结构（ADR 0067）。
 
 ## 完成标准
 
