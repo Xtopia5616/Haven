@@ -683,6 +683,21 @@ corepack pnpm --dir ui run test:run
 corepack pnpm --dir ui run build
 ```
 
+2026-09-03 已完成阶段 F：`SettingsView.svelte` 收窄为 settings tab、唯一的
+snapshot/dirty/save/leave 状态边界和日志对话框；General 与 Limits 展示分别迁移到
+`SettingsGeneral.svelte`、`SettingsLimits.svelte`。`ModelSettings.svelte` 保留
+provider/model role、模型发现和 provider 编辑，STT/OCR/TTS/文生图及媒体 key 对话框
+迁移到 `MediaSettings.svelte`。`MemoryView.svelte` 保留 session/fact/recall 的 IPC、
+事件监听、resume、消息/用量 store 与 tab 编排，三个 tab 的展示分别迁移到
+`SessionHistory.svelte`、`LongTermFacts.svelte`、`MemoryRecall.svelte`。
+
+拆分没有新增 Tauri 命令、事件监听或 wire shape；子组件通过共享的 `$props()` 对象和
+显式回调编辑状态，保存 payload 仍只从 `SettingsView` 生成，记忆数据仍只由
+`MemoryView` 写入 store。旧的大视图分支已删除。剩余边界是 `ModelSettings` 仍同时承载
+provider discovery 与 provider CRUD（两者共享同一模型缓存和引用迁移，后续如继续拆
+应先补组件测试），以及 settings 的持久化状态仍集中在父视图，这是为保持离开保存守卫
+单一来源而有意保留的边界。
+
 ### 阶段 G：低优先级复杂操作文件
 
 目标：[crates/tools/src/builtin/self_tool.rs](../crates/tools/src/builtin/self_tool.rs)

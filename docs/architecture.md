@@ -415,3 +415,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-02 | §3 阶段 B：将 `haven-mcp` 的 protocol、transport、client、manager 与测试从单一 `lib.rs` 拆出，保持 MCP 外部契约不变 |
 | 2026-09-02 | §3 阶段 C：将 `haven-tools` 的 shell runtime、background actions、output/process helpers 从 `bg.rs` 拆出；旧 `bg` 路径仅暂留薄 facade |
 | 2026-09-02 | §3 阶段 E：将 `haven-app-binary` 的事件桥、宿主 handler 与 Tauri 启动编排从 `lib.rs` 拆至 `event_bridge.rs`、`handlers.rs`、`bootstrap.rs`，保持启动与 IPC 契约不变 |
+| 2026-09-03 | §3 阶段 F：将 Settings/Model/Memory 三个 UI 大视图按 tab 与职责拆至 `SettingsGeneral`、`SettingsLimits`、`MediaSettings`、`SessionHistory`、`LongTermFacts`、`MemoryRecall`，父视图保留唯一状态、IPC、事件与保存边界 |
