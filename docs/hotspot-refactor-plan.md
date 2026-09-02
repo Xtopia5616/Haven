@@ -526,6 +526,11 @@ TypedToolAdapter 退化成新的万能 dispatcher。
 cargo test --locked -p haven-agent
 ```
 
+2026-09-02 已完成阶段 A：`integration_tests.rs` 保留测试入口，83 个集成测试按
+生命周期、resume/rollback、canonical、工具参数验证、ReAct、工具批次拆入独立模块，
+共享 mock、emitter、数据库夹具和测试工具集中在 `integration_tests/support.rs`。
+这次只改变测试文件布局，不新增 ADR，也不改变生产行为或测试覆盖范围。
+
 ### 阶段 B：拆 MCP 单文件实现
 
 目标：[crates/mcp/src/lib.rs](../crates/mcp/src/lib.rs)
