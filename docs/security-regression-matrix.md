@@ -27,7 +27,12 @@
 | `load_skill` | 加载元数据 = safe | 被加载 skill 的工具另行 high gate | `load_skill` | skill root 由 engine 固定 | 失败不留下半注册工具 |
 | `load_mcp` | 加载元数据 = safe | 被加载 MCP 工具统一按 high gate | `load_mcp` | MCP 配置/env 不进入普通错误或 UI | 连接取消必须关闭 client |
 | `memory` | search/list/recall = safe | remember/forget = medium | `memory`, `memory:<operation>` | 事实写入拒绝 credential-like 值 | maintenance/embedding 操作支持取消或有界执行 |
-| `haven` | status、只读诊断 = low | 配置、权限、MCP/skill/tool 变更 = medium/high | `haven`, `haven:<operation>` | 自身配置路径由 loader 管理 | 配置保存失败不得留下半更新状态 |
+| `haven_diagnostics` | status、logs_tail = low | 无 | `haven_diagnostics`, `haven_diagnostics:<operation>` | 日志只返回脱敏、截断内容 | 诊断失败不得暴露原始日志 |
+| `haven_config` | config_get = low | logs_level = medium | `haven_config`, `haven_config:<operation>` | 配置读取递归脱敏；写入只接受 typed patch | 保存失败不得留下半更新状态 |
+| `haven_skills` | skills_list = low | enable/disable = medium；create = high | `haven_skills`, `haven_skills:<operation>` | 技能 root 由 engine 固定，脚本大小受限 | 创建或保存失败必须回滚可见状态 |
+| `haven_tools` | 无 | enable/disable = medium | `haven_tools`, `haven_tools:<operation>` | 只改变 allowlisted builtin tool 设置 | 保存后重建 catalog，失败不产生半更新 |
+| `haven_mcp` | mcp_list = low | connect/disconnect/reload = medium；add/update/toggle/remove = high | `haven_mcp`, `haven_mcp:<operation>` | MCP env 值不返回；外部连接错误净化 | 配置与 client 状态保持一致，失败回滚 |
+| `haven_session_diagnostics` | sessions/errors = low | 无 | `haven_session_diagnostics`, `haven_session_diagnostics:<operation>` | 只返回 session 元数据和字符数 | 不返回 input/transcript 正文 |
 
 ### 入口一致性
 
@@ -38,7 +43,7 @@
 | MCP 适配器 | `mcp__server__tool` 使用 adapter 的 high 风险和同一授权 key | UI 预览与 Agent 调用共享 permanent grant；session grant 不泄漏到无 session 入口 |
 | skill 适配器 | `skill__name` 使用 adapter 的 high 风险和同一授权 key | skill 脚本不能由 `confirmed` 参数绕过 deny/path gate |
 | UI MCP/skill 命令 | `mcp_tool_call` / `execute_skill` 先检查 gateway | 被拒绝时不创建 client call/runner call |
-| 自身设置入口 | Tauri 设置命令复用 `self` 工具操作 | UI 与 LLM 使用同一写路径、同一权限语义 |
+| 自身设置入口 | Tauri 设置命令复用 native admin surface | UI 与模型 capability 使用同一 typed 写路径；native façade 为临时迁移边界 |
 
 ## 负向回归矩阵
 

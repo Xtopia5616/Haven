@@ -56,23 +56,23 @@ pub struct SessionListResponse {
 /// Re-export: command error logging lives in `crate::logging` (conventions §1).
 pub(crate) use crate::logging::log_err;
 
-/// Run one `self` tool operation through its native entry (entry ① of the
+/// Run one native admin operation through the structured entry (entry ① of the
 /// builtin two-entry contract). Settings-modifying Tauri commands route
-/// through here so the config mutation lives in ONE implementation (the
-/// `self` tool) shared with the LLM's JSON `execute` path (entry ②). Errors
+/// through here so the config mutation lives in ONE implementation shared by
+/// native commands and the capability-scoped model adapters. Errors
 /// surface as the tool's `error` message (or the operation error directly).
-pub(crate) async fn run_self_op(
+pub(crate) async fn run_admin_op(
     state: &AppState,
     ctx: &str,
     params: haven_tools::builtin::SelfParams,
 ) -> Result<haven_tools::ToolResult, String> {
-    let self_tool = state
+    let admin_surface = state
         .tools
-        .self_tool()
+        .admin_surface()
         .await
-        .ok_or_else(|| format!("{ctx}: self tool is not wired"))?;
+        .ok_or_else(|| format!("{ctx}: admin surface is not wired"))?;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let result = self_tool
+    let result = admin_surface
         .run(params, cancel)
         .await
         .map_err(|e| log_err(ctx, e))?;

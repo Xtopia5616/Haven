@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod admin;
 pub mod ask;
 pub mod audio;
 pub mod clipboard;
@@ -32,6 +33,7 @@ use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
 
+pub use admin::{AdminCapability, AdminCapabilityTool, AdminOperationMetadata};
 pub use memory::{MemoryRecallFn, MemoryRecallSlot, MemoryTool, new_memory_recall_slot};
 pub use messaging::{
     AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot, new_agent_spawner_slot,
@@ -182,7 +184,15 @@ pub async fn register_builtin_tools(
             limits.self_tool_max_script_bytes,
         ));
         self_tool_arc = Some(tool.clone());
-        tools.push(tool);
+        // The broad native surface is retained only for app commands. The
+        // model receives capability-scoped adapters, each with its own
+        // schema and SafetyGateway permission key.
+        for capability in admin::AdminCapability::ALL {
+            tools.push(Arc::new(admin::AdminCapabilityTool::new(
+                tool.clone(),
+                capability,
+            )));
+        }
     }
     self_tool_arc
 }

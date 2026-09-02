@@ -31,8 +31,9 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use builtin::{
-    AgentSpawnRequest, AgentSpawnResult, AgentSpawner, ScheduleMode, SelfOperation, SelfParams,
-    SelfTool, SelfToolContext,
+    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentSpawnRequest,
+    AgentSpawnResult, AgentSpawner, ScheduleMode, SelfOperation, SelfParams, SelfTool,
+    SelfToolContext,
 };
 pub use circuit::ToolCircuitRegistry;
 pub use haven_mcp::{
@@ -61,7 +62,7 @@ pub struct StartupWiring {
     pub security_permissions: Vec<haven_common::config::StoredPermission>,
     pub router: Arc<LlmRouter>,
     pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
-    pub self_ctx: builtin::SelfToolContext,
+    pub admin_context: builtin::SelfToolContext,
 }
 
 /// Convert a qualified tool name (`mcp::server::tool`, `skill::name`) into a
@@ -136,15 +137,13 @@ pub struct ToolsManager {
     /// channel is consumed by the agent layer, which notifies, runs the
     /// scheduled tool, or resumes the scheduling session (see `ScheduleMode`).
     pub scheduled_actions: Arc<builtin::scheduled_action::ScheduledActionCenter>,
-    /// App-level context for the `self` management tool (config loader, DB,
-    /// router, log file). Wired in by the desktop shell; `None` in headless
-    /// tests so the tool is simply not registered.
+    /// App-level dependencies for the native admin surface (config loader,
+    /// DB, router, log file). Wired in by the desktop shell; `None` in
+    /// headless tests so the admin capabilities are not registered.
     self_context: RwLock<Option<builtin::SelfToolContext>>,
-    /// The registered `self` tool instance (the same Arc pushed into the
-    /// catalog). Typed handle so app commands can call its native `run`
-    /// entry for settings modifications instead of duplicating the mutation
-    /// logic. `None` in headless builds.
-    self_tool: RwLock<Option<Arc<builtin::SelfTool>>>,
+    /// Native admin surface used by app commands. Capability-scoped adapters,
+    /// not this broad native dispatcher, are registered in the model catalog.
+    admin_surface: RwLock<Option<Arc<builtin::SelfTool>>>,
     /// Shared clipboard history for the `clipboard` tool. Lives on the
     /// manager (not the tool) so it survives catalog rebuilds.
     pub clipboard_history: Arc<builtin::clipboard::ClipboardHistory>,
@@ -200,7 +199,7 @@ impl ToolsManager {
             live_outputs,
             scheduled_actions,
             self_context: RwLock::new(None),
-            self_tool: RwLock::new(None),
+            admin_surface: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
             catalog_version: Arc::new(AtomicU64::new(0)),
@@ -280,7 +279,7 @@ impl ToolsManager {
     /// Apply cold-start wiring in one pass and rebuild the catalog once.
     /// Avoids the N sequential rebuilds that used to block window creation
     /// (`set_tool_settings` + `set_default_shell` + `set_context_limits` +
-    /// `set_router` + audio_pipeline + `set_self_context`).
+    /// `set_router` + audio_pipeline + admin context).
     pub async fn wire_startup(&self, wiring: StartupWiring) {
         let StartupWiring {
             tool_settings,
@@ -291,7 +290,7 @@ impl ToolsManager {
             security_permissions,
             router,
             audio_pipeline,
-            self_ctx,
+            admin_context,
         } = wiring;
         *self.tool_settings.write().await = tool_settings.clone();
         *self.default_shell.write().await = default_shell;
@@ -307,18 +306,22 @@ impl ToolsManager {
         self.safety_gateway.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
         *self.audio_pipeline.write().await = audio_pipeline;
-        self.scheduled_actions.set_db(self_ctx.db.clone()).await;
-        self.background_actions.set_db(self_ctx.db.clone()).await;
-        *self.self_context.write().await = Some(self_ctx);
+        self.scheduled_actions
+            .set_db(admin_context.db.clone())
+            .await;
+        self.background_actions
+            .set_db(admin_context.db.clone())
+            .await;
+        *self.self_context.write().await = Some(admin_context);
         self.rebuild_catalog().await;
     }
 
-    /// Wire the app-level context for the `self` management tool and register
-    /// the tool. Called by the desktop shell after the config loader exists;
-    /// later catalog rebuilds keep the tool registered. Also hands the DB to
+    /// Wire the app-level context for the native admin surface. Called by the
+    /// desktop shell after the config loader exists; later catalog rebuilds
+    /// keep the capability-scoped adapters registered. Also hands the DB to
     /// the scheduled-action registry and the background-action registry so scheduled_actions and
     /// action results persist across restarts.
-    pub async fn set_self_context(&self, ctx: builtin::SelfToolContext) {
+    pub async fn set_admin_context(&self, ctx: builtin::SelfToolContext) {
         self.scheduled_actions.set_db(ctx.db.clone()).await;
         self.background_actions.set_db(ctx.db.clone()).await;
         *self.self_context.write().await = Some(ctx);
@@ -331,12 +334,11 @@ impl ToolsManager {
         self.rebuild_catalog().await;
     }
 
-    /// The registered `self` tool instance, when the desktop shell wired the
-    /// app context. App commands call its native `run(SelfParams)` entry for
-    /// settings modifications so config mutation lives in one place (the
-    /// `self` tool), with the JSON `execute` path serving the LLM.
-    pub async fn self_tool(&self) -> Option<Arc<builtin::SelfTool>> {
-        self.self_tool.read().await.clone()
+    /// The native admin surface, when the desktop shell wired the app
+    /// context. App commands use its structured entry; the model sees only
+    /// capability-scoped adapters.
+    pub async fn admin_surface(&self) -> Option<Arc<builtin::SelfTool>> {
+        self.admin_surface.read().await.clone()
     }
 
     /// Flip the `enabled` flag for one builtin tool in the in-memory
@@ -444,7 +446,7 @@ impl ToolsManager {
             self.memory_recall.clone(),
         )
         .await;
-        *self.self_tool.write().await = self_tool_arc;
+        *self.admin_surface.write().await = self_tool_arc;
 
         // Keep the full list (enabled + disabled) for the UI, and exclude
         // disabled tools from the registry the agent sees.

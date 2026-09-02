@@ -47,8 +47,9 @@ media、日志和快捷键。
   `AppConfig::apply_settings` 和 typed patch 测试保护。
 - 运行时尚未支持热替换的 `SkillsExec` 与 Memory maintenance 会在 apply plan 中报告
   `restart_required`，不能静默假装已应用。
-- 后续 Self/Admin 重写完成后，应删除 `ReplaceAppConfig`、`edit_loader` 和 `SelfTool` 的
-  任意 dotted `config_set` 适配。
+- Self/Admin 的第一条迁移已删除 `SelfTool` 的任意 dotted `config_set`；后续 typed
+  `ToolOperation` 完成后，应继续删除 `ReplaceAppConfig`、`edit_loader` 和 native
+  `SelfTool` 兼容入口。
 
 重点验证：
 

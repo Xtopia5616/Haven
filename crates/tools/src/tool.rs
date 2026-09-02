@@ -203,14 +203,34 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
         risk_level: RiskLevel::Medium,
     },
     LocalToolSecurityCase {
-        tool_name: "haven",
+        tool_name: "haven_diagnostics",
         operation: "status",
         risk_level: RiskLevel::Low,
     },
     LocalToolSecurityCase {
-        tool_name: "haven",
-        operation: "config_set",
+        tool_name: "haven_config",
+        operation: "logs_level",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "haven_skills",
+        operation: "skill_create",
         risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "haven_tools",
+        operation: "tool_disable",
+        risk_level: RiskLevel::Medium,
+    },
+    LocalToolSecurityCase {
+        tool_name: "haven_mcp",
+        operation: "mcp_remove",
+        risk_level: RiskLevel::High,
+    },
+    LocalToolSecurityCase {
+        tool_name: "haven_session_diagnostics",
+        operation: "errors",
+        risk_level: RiskLevel::Low,
     },
 ];
 
@@ -2054,7 +2074,12 @@ mod tests {
             "load_skill",
             "load_mcp",
             "memory",
-            "haven",
+            "haven_diagnostics",
+            "haven_config",
+            "haven_skills",
+            "haven_tools",
+            "haven_mcp",
+            "haven_session_diagnostics",
         ] {
             assert!(
                 names.contains(expected),

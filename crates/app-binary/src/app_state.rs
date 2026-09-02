@@ -299,7 +299,7 @@ impl AppState {
                 });
             }
         }) as Arc<dyn Fn(String) + Send + Sync>);
-        let self_ctx = haven_tools::SelfToolContext {
+        let admin_context = haven_tools::SelfToolContext {
             config_service: Some(config_service.clone()),
             db: Some(db.clone()),
             router: Some(router.clone()),
@@ -323,7 +323,7 @@ impl AppState {
                 security_permissions: cfg.security.permissions.clone(),
                 router: router.clone(),
                 audio_pipeline: Some(pipeline.clone()),
-                self_ctx,
+                admin_context,
             })
             .await;
 

@@ -45,11 +45,11 @@ pub async fn set_skill_enabled(
     name: String,
     enabled: bool,
 ) -> Result<(), String> {
-    // Route through the `self` tool's native entry: one implementation for
+    // Route through the native admin surface: one implementation for
     // the UI toggle and the LLM's skill_enable / skill_disable ops. The op
     // flips the engine filter and persists `skills.enabled` to config.toml
-    // via the shared loader.
-    crate::commands::run_self_op(
+    // via ConfigService.
+    crate::commands::run_admin_op(
         &state,
         "set_skill_enabled",
         haven_tools::SelfParams {
@@ -76,12 +76,12 @@ pub async fn set_tool_enabled(
     name: String,
     enabled: bool,
 ) -> Result<(), String> {
-    // Route through the `self` tool's native entry: one implementation for
+    // Route through the native admin surface: one implementation for
     // the UI switch and the LLM's tool_enable / tool_disable ops. The op
     // persists `tool_settings.<name>.enabled` to config.toml AND applies the
     // runtime change (in-memory tool_settings + catalog rebuild) through the
     // ToolsManager, so the toggle takes effect in the Reasoner immediately.
-    crate::commands::run_self_op(
+    crate::commands::run_admin_op(
         &state,
         "set_tool_enabled",
         haven_tools::SelfParams {

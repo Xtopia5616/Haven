@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use haven_common::config::{ConfigLoader, ConfigService, LogConfig, LogLevel, McpServerConfig};
+use haven_common::config::{
+    ConfigLoader, ConfigPatch, ConfigService, LogConfig, LogLevel, McpServerConfig,
+};
 use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::EndpointRole;
 use haven_llm::LlmRouter;
@@ -15,8 +17,10 @@ use crate::{Tool, ToolConcurrency, ToolRegistry, ToolResult};
 use haven_mcp::{McpClientStatus, McpManager};
 use haven_skills::SkillsEngine;
 
-/// App-level dependencies for the `self` tool, wired in by the desktop shell.
-/// Everything is optional so headless/test builds work without the full app.
+/// App-level dependencies for the native admin surface, wired in by the
+/// desktop shell. Everything is optional so headless/test builds work without
+/// the full app; write operations fail closed when the config service is
+/// absent.
 #[derive(Clone)]
 pub struct SelfToolContext {
     /// Shared versioned config service (persists to `config.toml`). Falls back
@@ -40,7 +44,6 @@ pub struct SelfToolContext {
 const OPERATIONS: &[&str] = &[
     "status",
     "config_get",
-    "config_set",
     "skills_list",
     "skill_enable",
     "skill_disable",
@@ -75,16 +78,9 @@ const READ_ONLY_OPS: &[&str] = &[
 /// Operations that only affect the running session (no config persistence).
 const SESSION_MUTATING_OPS: &[&str] = &["mcp_connect", "mcp_disconnect", "mcp_reload"];
 
-/// Keys under `config_set` that are applied live (the rest need a restart).
-fn live_appliable(path: &str) -> bool {
-    path.starts_with("skills.enabled")
-        || path.starts_with("log.level")
-        || path.starts_with("mcp_servers")
-}
-
-/// The `self` management tool: lets the assistant inspect and update Haven's
-/// own configuration, skills, MCP servers, logs, and session state, and diagnose
-/// its own errors.
+/// Native admin surface shared by Tauri commands and capability-scoped model
+/// adapters. The surface itself is intentionally not registered in the model
+/// catalog; see `builtin::admin::AdminCapabilityTool`.
 pub struct SelfTool {
     context: SelfToolContext,
     skills_engine: SkillsEngine,
@@ -126,21 +122,11 @@ impl SelfTool {
         }
     }
 
-    /// Mutate and persist the config through the shared loader (or a fresh
-    /// load when absent), always saving afterwards.
-    fn mutate_config<R>(
-        &self,
-        f: impl FnOnce(&mut ConfigLoader) -> anyhow::Result<R>,
-    ) -> anyhow::Result<R> {
-        match &self.context.config_service {
-            Some(service) => Ok(service.edit_loader(f)?.value),
-            None => {
-                let mut loader = ConfigLoader::load()?;
-                let r = f(&mut loader)?;
-                loader.save()?;
-                Ok(r)
-            }
-        }
+    fn config_service(&self) -> anyhow::Result<&ConfigService> {
+        self.context
+            .config_service
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))
     }
 }
 
@@ -151,7 +137,6 @@ pub enum SelfOperation {
     #[default]
     Status,
     ConfigGet,
-    ConfigSet,
     SkillsList,
     SkillEnable,
     SkillDisable,
@@ -178,12 +163,9 @@ pub enum SelfOperation {
 pub struct SelfParams {
     /// What to do.
     pub operation: SelfOperation,
-    /// Dotted config path, e.g. session.max_concurrent or llm.roles.
+    /// Allowlisted read-only config path, e.g. session.max_concurrent or llm.roles.
     #[serde(default)]
     pub path: Option<String>,
-    /// New JSON value for config_set.
-    #[serde(default)]
-    pub value: Option<Value>,
     /// Skill or MCP server name.
     #[serde(default)]
     pub name: Option<String>,
@@ -248,7 +230,6 @@ impl SelfTool {
         let output = match params.operation {
             SelfOperation::Status => self.op_status().await?,
             SelfOperation::ConfigGet => self.op_config_get(&params).await?,
-            SelfOperation::ConfigSet => self.op_config_set(&params).await?,
             SelfOperation::SkillsList => self.op_skills_list().await?,
             SelfOperation::SkillEnable => self.op_skill_set(&params, true).await?,
             SelfOperation::SkillDisable => self.op_skill_set(&params, false).await?,
@@ -278,10 +259,12 @@ impl SelfTool {
         match self.read_config() {
             Ok(loader) => {
                 out["config_path"] = loader.path().to_string_lossy().to_string().into();
-                out["settings"] = serde_json::to_value(loader.settings()).unwrap_or_default();
+                let mut settings = serde_json::to_value(loader.settings()).unwrap_or_default();
+                mask_sensitive_config(&mut settings);
+                out["settings"] = settings;
             }
             Err(e) => {
-                out["config_error"] = e.to_string().into();
+                out["config_error"] = sanitize_diagnostic(&e.to_string()).into();
             }
         }
 
@@ -295,7 +278,7 @@ impl SelfTool {
                 } else {
                     match router.health_check(*role).await {
                         Ok(()) => "ok".to_string(),
-                        Err(e) => format!("error: {e}"),
+                        Err(e) => format!("error: {}", sanitize_diagnostic(&e.to_string())),
                     }
                 };
                 health.insert(
@@ -369,81 +352,16 @@ impl SelfTool {
         let loader = self.read_config()?;
         let Some(path) = params.path.as_deref().filter(|p| !p.is_empty()) else {
             // Full view with API keys masked.
-            return Ok(serde_json::to_value(loader.settings()).unwrap_or_default());
+            let mut settings = serde_json::to_value(loader.settings()).unwrap_or_default();
+            mask_sensitive_config(&mut settings);
+            return Ok(settings);
         };
-        let root = serde_json::to_value(loader.config())?;
-        let mut value = value_at(&root, path)
+        let mut root = serde_json::to_value(loader.config())?;
+        mask_sensitive_config(&mut root);
+        let value = value_at(&root, path)
             .ok_or_else(|| anyhow::anyhow!("config key '{}' not found", path))?
             .clone();
-        // Mask every api_key inside the result: an exact api_key path returns
-        // a scalar, but a parent path (e.g. `llm.default_model` or `llm`)
-        // would otherwise leak the secret embedded in the object.
-        mask_api_keys(&mut value);
-        if path.ends_with("api_key") {
-            return Ok(serde_json::json!("[masked]"));
-        }
         Ok(value)
-    }
-
-    async fn op_config_set(&self, params: &SelfParams) -> anyhow::Result<Value> {
-        let path = params
-            .path
-            .as_deref()
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("path is required for config_set"))?;
-        let value = params
-            .value
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("value is required for config_set"))?;
-
-        self.mutate_config(|loader| {
-            let mut root = serde_json::to_value(loader.config())?;
-            set_value_at(&mut root, path, value.clone())?;
-            let updated: haven_common::config::AppConfig = serde_json::from_value(root)
-                .map_err(|e| anyhow::anyhow!("invalid value for '{}': {}", path, e))?;
-            *loader.config_mut() = updated;
-            Ok(())
-        })?;
-
-        // Apply supported keys live.
-        let mut live_applied: Vec<String> = Vec::new();
-        if path.starts_with("skills.") {
-            let cfg = self.read_config()?;
-            let root = cfg.config().skills.root.clone();
-            let enabled = cfg.config().skills.enabled.clone();
-            match self.skills_engine.set_config(root, enabled).await {
-                Ok(()) => live_applied.push("skills".into()),
-                Err(e) => live_applied.push(format!("skills (failed: {e})")),
-            }
-        }
-        if path.starts_with("log.level") {
-            let cfg = self.read_config()?;
-            let level = cfg.config().log.level.as_str().to_string();
-            if let Some(f) = &self.context.set_log_level {
-                f(level);
-                live_applied.push("log.level".into());
-            }
-        }
-        if path.starts_with("mcp_servers") {
-            let cfg = self.read_config()?;
-            let servers = cfg.config().mcp_servers.clone();
-            let mut map = self.server_configs.write().await;
-            map.clear();
-            for s in &servers {
-                map.insert(s.name.clone(), s.clone());
-            }
-            drop(map);
-            live_applied
-                .push("mcp_servers (index updated; reconnect via mcp_connect or restart)".into());
-        }
-
-        Ok(serde_json::json!({
-            "path": path,
-            "set": value,
-            "saved": true,
-            "live_applied": live_applied,
-            "needs_restart": !live_appliable(path),
-        }))
     }
 
     async fn op_skills_list(&self) -> anyhow::Result<Value> {
@@ -475,15 +393,29 @@ impl SelfTool {
                     if enabled { "en" } else { "dis" }
                 )
             })?;
+        let config_service = Arc::clone(
+            self.context
+                .config_service
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))?,
+        );
         if self.skills_engine.get_skill(name).await.is_none() {
             anyhow::bail!("skill '{}' not found", name);
         }
         self.skills_engine.set_enabled(name, enabled).await?;
         let filter = self.skills_engine.enabled_filter().await;
-        self.mutate_config(|loader| {
-            loader.config_mut().skills.enabled = filter;
-            Ok(())
-        })?;
+        let snapshot = config_service.snapshot()?;
+        let mut skills = snapshot.config.skills;
+        skills.enabled = filter;
+        if let Err(error) = config_service.apply_patch(ConfigPatch::Skills {
+            config: skills,
+            exec: snapshot.config.skills_exec,
+        }) {
+            // `set_enabled` is in-memory; restore it when durable config
+            // persistence fails so the two views cannot diverge.
+            let _ = self.skills_engine.set_enabled(name, !enabled).await;
+            return Err(error);
+        }
         Ok(serde_json::json!({
             "name": name,
             "enabled": enabled,
@@ -492,11 +424,11 @@ impl SelfTool {
         }))
     }
 
-    /// Enable/disable a builtin tool. Persists `tool_settings.<name>.enabled`
+    /// Enable/disable a builtin tool. Persists the typed tool-settings patch
     /// to config.toml and applies the change at runtime through the
     /// `ToolsManager` (in-memory `tool_settings` + catalog rebuild), so the
     /// toggle takes effect on the agent's next step. `tool_enable` /
-    /// `tool_disable` are the `self` tool twin of the UI's tool switches.
+    /// `tool_disable` are also used by the UI's tool switches.
     async fn op_tool_set(&self, params: &SelfParams, enabled: bool) -> anyhow::Result<Value> {
         let name = params
             .name
@@ -508,15 +440,10 @@ impl SelfTool {
                     if enabled { "en" } else { "dis" }
                 )
             })?;
-        self.mutate_config(|loader| {
-            loader
-                .config_mut()
-                .tool_settings
-                .entry(name.to_string())
-                .or_default()
-                .enabled = enabled;
-            Ok(())
-        })?;
+        let mut settings = self.config_service()?.snapshot()?.config.tool_settings;
+        settings.entry(name.to_string()).or_default().enabled = enabled;
+        self.config_service()?
+            .apply_patch(ConfigPatch::Tools(settings))?;
         // Runtime apply: in-memory tool_settings + catalog rebuild. Skipped
         // (config still persisted) in headless/test builds without a manager.
         if let Some(tools) = self.context.tools_weak.as_ref().and_then(|w| w.upgrade()) {
@@ -536,6 +463,12 @@ impl SelfTool {
             .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the new skill name)"))?;
+        let config_service = Arc::clone(
+            self.context
+                .config_service
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))?,
+        );
         validate_skill_name(name)?;
         let description = params
             .description
@@ -611,10 +544,26 @@ impl SelfTool {
         // (all enabled), adds it to the allowlist otherwise.
         self.skills_engine.set_enabled(name, true).await?;
         let filter = self.skills_engine.enabled_filter().await;
-        self.mutate_config(|loader| {
-            loader.config_mut().skills.enabled = filter;
-            Ok(())
-        })?;
+        let snapshot = config_service.snapshot()?;
+        let mut skills = snapshot.config.skills;
+        skills.enabled = filter;
+        if let Err(error) = config_service.apply_patch(ConfigPatch::Skills {
+            config: skills,
+            exec: snapshot.config.skills_exec,
+        }) {
+            // The directory was created by this operation. Best-effort
+            // rollback keeps a failed durable config write from leaving a
+            // skill that will unexpectedly appear after restart.
+            if let Err(rollback) = tokio::fs::remove_dir_all(&skill_dir).await {
+                tracing::warn!(
+                    path = %skill_dir.display(),
+                    error = %rollback,
+                    "skill creation rollback failed after config persistence error"
+                );
+            }
+            let _ = self.skills_engine.refresh_from_disk().await;
+            return Err(error);
+        }
 
         Ok(serde_json::json!({
             "name": name,
@@ -657,8 +606,8 @@ impl SelfTool {
                     (
                         is_connected,
                         c.tools_cache().await.len(),
-                        error,
-                        c.diagnostic().await,
+                        sanitize_diagnostic(&error),
+                        c.diagnostic().await.map(|text| sanitize_diagnostic(&text)),
                     )
                 }
                 None => (false, 0, String::new(), None),
@@ -699,7 +648,7 @@ impl SelfTool {
         // reconnect from the current config. Enabled servers are
         // auto-connected at startup, so a plain `mcp_connect` would otherwise
         // fail with "already loaded"; reconnecting also picks up config
-        // changes made via `config_set mcp_servers.*`.
+        // changes made through the typed MCP admin operations.
         self.mcp_manager.remove_client(name).await;
         self.mcp_manager.connect_server(&config).await?;
         Ok(serde_json::json!({ "name": name, "connected": true }))
@@ -784,10 +733,10 @@ impl SelfTool {
                 .await;
         }
 
-        self.mutate_config(|loader| {
-            loader.config_mut().mcp_servers.push(config.clone());
-            Ok(())
-        })?;
+        let mut servers = self.config_service()?.snapshot()?.config.mcp_servers;
+        servers.push(config.clone());
+        self.config_service()?
+            .apply_patch(ConfigPatch::McpServers(servers))?;
         // Keep the in-memory index in sync so `mcp_connect` / `load_mcp` see it.
         self.server_configs
             .write()
@@ -804,7 +753,11 @@ impl SelfTool {
                 Ok(()) => result["connected"] = serde_json::json!(true),
                 Err(e) => {
                     result["connected"] = serde_json::json!(false);
-                    result["warning"] = format!("config saved but connect failed: {e}").into();
+                    result["warning"] = format!(
+                        "config saved but connect failed: {}",
+                        sanitize_diagnostic(&e.to_string())
+                    )
+                    .into();
                 }
             }
         } else {
@@ -895,15 +848,14 @@ impl SelfTool {
             .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to remove)"))?;
-        self.mutate_config(|loader| {
-            let servers = &mut loader.config_mut().mcp_servers;
-            let before = servers.len();
-            servers.retain(|s| s.name != name);
-            if servers.len() == before {
-                anyhow::bail!("MCP server '{}' not found in config", name);
-            }
-            Ok(())
-        })?;
+        let mut servers = self.config_service()?.snapshot()?.config.mcp_servers;
+        let before = servers.len();
+        servers.retain(|s| s.name != name);
+        if servers.len() == before {
+            anyhow::bail!("MCP server '{}' not found in config", name);
+        }
+        self.config_service()?
+            .apply_patch(ConfigPatch::McpServers(servers))?;
         self.mcp_manager.remove_client(name).await;
         self.server_configs.write().await.remove(name);
         Ok(serde_json::json!({
@@ -945,7 +897,7 @@ impl SelfTool {
                     connected.push(serde_json::json!({
                         "name": s.name,
                         "connected": false,
-                        "error": e.to_string(),
+                        "error": sanitize_diagnostic(&e.to_string()),
                     }));
                 }
             }
@@ -1002,14 +954,16 @@ impl SelfTool {
             self.mcp_manager.remove_client(&name).await;
         }
 
-        let persist_result = self.mutate_config(|loader| {
-            let servers = &mut loader.config_mut().mcp_servers;
+        let persist_result = (|| {
+            let mut servers = self.config_service()?.snapshot()?.config.mcp_servers;
             let Some(existing) = servers.iter_mut().find(|s| s.name == name) else {
                 anyhow::bail!("MCP server '{}' not found in config", name);
             };
             *existing = new_config.clone();
+            self.config_service()?
+                .apply_patch(ConfigPatch::McpServers(servers))?;
             Ok(())
-        });
+        })();
         if let Err(e) = persist_result {
             // Save failed after a successful connect: roll the live client
             // back so it keeps matching the unchanged config.
@@ -1052,11 +1006,16 @@ impl SelfTool {
             }
         };
         let lines: Vec<&str> = content.lines().collect();
+        let total_lines = lines.len();
         let start = lines.len().saturating_sub(limit);
+        let lines: Vec<String> = lines[start..]
+            .iter()
+            .map(|line| sanitize_log_line(line))
+            .collect();
         Ok(serde_json::json!({
             "path": path.to_string_lossy(),
-            "total_lines": lines.len(),
-            "lines": lines[start..].to_vec(),
+            "total_lines": total_lines,
+            "lines": lines,
         }))
     }
 
@@ -1076,13 +1035,11 @@ impl SelfTool {
             "error" => LogLevel::Error,
             _ => LogLevel::Info,
         };
+        self.config_service()?
+            .apply_patch(ConfigPatch::LogLevel(parsed))?;
         if let Some(f) = &self.context.set_log_level {
             f(level.clone());
         }
-        self.mutate_config(|loader| {
-            loader.config_mut().log.level = parsed;
-            Ok(())
-        })?;
         Ok(serde_json::json!({ "level": level, "saved": true }))
     }
 
@@ -1100,16 +1057,6 @@ impl SelfTool {
         Ok(Some((limit, sessions)))
     }
 
-    /// Truncate a session's input text to 200 chars for display.
-    fn session_input_preview(input_text: &str) -> String {
-        if input_text.chars().count() > 200 {
-            let cut = input_text.floor_char_boundary(200);
-            format!("{}…", &input_text[..cut])
-        } else {
-            input_text.to_string()
-        }
-    }
-
     async fn op_sessions(&self, params: &SelfParams) -> anyhow::Result<Value> {
         let Some((_limit, sessions)) = self.list_actions_for_op(params)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
@@ -1121,7 +1068,7 @@ impl SelfTool {
                     "id": t.id,
                     "status": t.status,
                     "title": t.title,
-                    "input": Self::session_input_preview(&t.input_text),
+                    "input_chars": t.input_text.chars().count(),
                     "created_at": t.created_at,
                     "updated_at": t.updated_at,
                 })
@@ -1138,26 +1085,12 @@ impl SelfTool {
             .into_iter()
             .filter(|t| t.status == "error")
             .map(|t| {
-                let transcript: String = t
-                    .transcript
-                    .chars()
-                    .rev()
-                    .take(600)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect();
-                let transcript = if transcript.chars().count() >= 600 {
-                    format!("…{}", transcript)
-                } else {
-                    transcript
-                };
                 serde_json::json!({
                     "id": t.id,
                     "title": t.title,
-                    "input": Self::session_input_preview(&t.input_text),
+                    "input_chars": t.input_text.chars().count(),
                     "created_at": t.created_at,
-                    "transcript_tail": transcript,
+                    "transcript_chars": t.transcript.chars().count(),
                 })
             })
             .collect();
@@ -1175,26 +1108,87 @@ impl LogConfigDefaultPath {
     }
 }
 
-/// Recursively replace every `*_api_key` string with `[masked]`, so parent
-/// config paths never leak secrets embedded in nested objects.
-fn mask_api_keys(value: &mut Value) {
+/// Recursively remove credentials from model-visible config projections.
+/// `Settings` already blanks LLM/OCR API keys, but MCP environment entries are
+/// intentionally opaque `KEY=VALUE` strings and therefore need a second pass.
+fn mask_sensitive_config(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (k, v) in map.iter_mut() {
-                if k.ends_with("api_key") && v.is_string() {
+                let key = k.to_ascii_lowercase();
+                if (key.ends_with("api_key")
+                    || key.ends_with("api_secret")
+                    || key.ends_with("password")
+                    || key.ends_with("access_token"))
+                    && v.as_str().is_some_and(|secret| !secret.is_empty())
+                {
                     *v = Value::String("[masked]".into());
+                } else if key == "env" {
+                    if let Value::Array(entries) = v {
+                        for entry in entries {
+                            if let Some(entry_text) = entry.as_str() {
+                                let name = entry_text
+                                    .split_once('=')
+                                    .map(|(name, _)| name.trim())
+                                    .filter(|name| !name.is_empty())
+                                    .unwrap_or("value");
+                                *entry = Value::String(format!("{name}=[masked]"));
+                            } else {
+                                *entry = Value::String("[masked]".into());
+                            }
+                        }
+                    }
                 } else {
-                    mask_api_keys(v);
+                    mask_sensitive_config(v);
                 }
             }
         }
         Value::Array(arr) => {
             for v in arr.iter_mut() {
-                mask_api_keys(v);
+                mask_sensitive_config(v);
             }
         }
         _ => {}
     }
+}
+
+/// Keep diagnostics useful without turning a model-visible log tail into a
+/// prompt, command-output, or credential exfiltration channel. Structured
+/// logs remain available to the desktop log viewer; this surface is only a
+/// bounded health summary.
+fn sanitize_log_line(line: &str) -> String {
+    const SENSITIVE_MARKERS: &[&str] = &[
+        "api_key",
+        "access_token",
+        "authorization",
+        "password",
+        "secret",
+        "prompt",
+        "transcript",
+        "message",
+        "content",
+        "command",
+        "stdout",
+        "stderr",
+    ];
+    let lower = line.to_ascii_lowercase();
+    if SENSITIVE_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return "[redacted diagnostic line]".into();
+    }
+    let mut bounded = line.to_string();
+    if bounded.chars().count() > 512 {
+        let cut = bounded.floor_char_boundary(512);
+        bounded.truncate(cut);
+        bounded.push('…');
+    }
+    bounded
+}
+
+pub(crate) fn sanitize_diagnostic(text: &str) -> String {
+    sanitize_log_line(text)
 }
 
 /// Resolve a dotted path inside a JSON tree, descending through object keys
@@ -1209,58 +1203,6 @@ fn value_at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
         }
     }
     Some(cur)
-}
-
-/// Set a value at a dotted path inside a JSON tree, creating intermediate
-/// objects (or arrays for numeric segments) as needed.
-fn set_value_at(root: &mut Value, path: &str, value: Value) -> anyhow::Result<()> {
-    let segs: Vec<&str> = path.split('.').collect();
-    if segs.is_empty() || segs.iter().any(|s| s.is_empty()) {
-        anyhow::bail!("invalid config path: '{}'", path);
-    }
-    let mut cur = root;
-    for (i, seg) in segs.iter().enumerate() {
-        if i == segs.len() - 1 {
-            match (cur, seg.parse::<usize>()) {
-                (Value::Array(arr), Ok(idx)) => {
-                    if idx >= arr.len() {
-                        anyhow::bail!("array index {} out of range at '{}'", idx, path);
-                    }
-                    arr[idx] = value;
-                }
-                (Value::Object(map), _) => {
-                    map.insert(seg.to_string(), value);
-                }
-                _ => anyhow::bail!("cannot set value at '{}'", path),
-            }
-            return Ok(());
-        }
-        let next_is_index = segs[i + 1].parse::<usize>().is_ok();
-        match cur {
-            Value::Object(map) => {
-                if !map.contains_key(*seg) {
-                    let empty = if next_is_index {
-                        Value::Array(Vec::new())
-                    } else {
-                        Value::Object(serde_json::Map::new())
-                    };
-                    map.insert(seg.to_string(), empty);
-                }
-                cur = map.get_mut(*seg).expect("just inserted");
-            }
-            Value::Array(arr) => {
-                let idx = seg
-                    .parse::<usize>()
-                    .map_err(|_| anyhow::anyhow!("cannot descend into array with key '{}'", seg))?;
-                if idx >= arr.len() {
-                    anyhow::bail!("array index {} out of range at '{}'", idx, path);
-                }
-                cur = &mut arr[idx];
-            }
-            _ => anyhow::bail!("cannot descend into '{}'", seg),
-        }
-    }
-    Ok(())
 }
 
 /// Validate a skill name for safe use as a directory and as the
@@ -1328,9 +1270,6 @@ impl Tool for SelfTool {
                 "path": {
                     "type": "string",
                     "description": "Dotted config path, e.g. session.max_concurrent or llm.roles (provider/role assignments)"
-                },
-                "value": {
-                    "description": "New JSON value for config_set"
                 },
                 "name": {
                     "type": "string",
@@ -1416,11 +1355,23 @@ impl Tool for SelfTool {
 mod tests {
     use super::*;
     use crate::ToolsManager;
-    use haven_common::config::McpServerConfig;
+    use haven_common::config::{AppConfig, McpServerConfig};
     use serde_json::json;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+
+    fn edit_config(
+        tool: &SelfTool,
+        edit: impl FnOnce(&mut AppConfig) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        tool.context
+            .config_service
+            .as_ref()
+            .expect("test tool has config service")
+            .edit(edit)
+            .map(|update| update.value)
+    }
 
     fn make_tool() -> (SelfTool, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -1454,7 +1405,7 @@ mod tests {
             .as_array()
             .unwrap();
         assert!(ops.iter().any(|o| o == "status"));
-        assert!(ops.iter().any(|o| o == "config_set"));
+        assert!(!ops.iter().any(|o| o == "config_set"));
         assert_eq!(schema["required"][0], "operation");
     }
 
@@ -1464,10 +1415,6 @@ mod tests {
         assert_eq!(
             tool.risk_level(&json!({"operation": "status"})),
             RiskLevel::Low
-        );
-        assert_eq!(
-            tool.risk_level(&json!({"operation": "config_set"})),
-            RiskLevel::High
         );
         assert_eq!(
             tool.risk_level(&json!({"operation": "skill_disable"})),
@@ -1495,8 +1442,8 @@ mod tests {
     #[tokio::test]
     async fn test_config_get_full_masks_api_keys() {
         let (tool, _dir) = make_tool();
-        tool.mutate_config(|l| {
-            l.config_mut()
+        edit_config(&tool, |config| {
+            config
                 .llm
                 .providers
                 .push(haven_common::config::ProviderConfig {
@@ -1504,6 +1451,11 @@ mod tests {
                     api_key: "super-secret".into(),
                     ..Default::default()
                 });
+            config.mcp_servers.push(McpServerConfig {
+                name: "private-mcp".into(),
+                env: vec!["API_TOKEN=super-secret".into(), "MODE=test".into()],
+                ..Default::default()
+            });
             Ok(())
         })
         .unwrap();
@@ -1513,15 +1465,20 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["llm"]["providers"][0]["api_key"], "");
+        assert_eq!(
+            result.output["mcp_servers"][0]["env"],
+            json!(["API_TOKEN=[masked]", "MODE=[masked]"])
+        );
+        assert!(!result.output.to_string().contains("super-secret"));
         assert_eq!(result.output["session"]["max_concurrent"], 3);
     }
 
     #[tokio::test]
     async fn test_config_get_by_path_and_masking() {
         let (tool, _dir) = make_tool();
-        tool.mutate_config(|l| {
-            l.config_mut().session.max_concurrent = 7;
-            l.config_mut()
+        edit_config(&tool, |config| {
+            config.session.max_concurrent = 7;
+            config
                 .llm
                 .providers
                 .push(haven_common::config::ProviderConfig {
@@ -1566,8 +1523,8 @@ mod tests {
     #[tokio::test]
     async fn test_config_get_parent_paths_mask_nested_api_keys() {
         let (tool, _dir) = make_tool();
-        tool.mutate_config(|l| {
-            l.config_mut()
+        edit_config(&tool, |config| {
+            config
                 .llm
                 .providers
                 .push(haven_common::config::ProviderConfig {
@@ -1602,36 +1559,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_config_set_persists_and_restart_flag() {
+    async fn test_config_get_mcp_environment_is_masked_by_path() {
         let (tool, _dir) = make_tool();
+        edit_config(&tool, |config| {
+            config.mcp_servers.push(McpServerConfig {
+                name: "private-mcp".into(),
+                env: vec!["API_TOKEN=super-secret".into()],
+                ..Default::default()
+            });
+            Ok(())
+        })
+        .unwrap();
+
         let result = tool
+            .execute(
+                json!({"operation": "config_get", "path": "mcp_servers.0.env"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output, json!(["API_TOKEN=[masked]"]));
+        assert!(!result.output.to_string().contains("super-secret"));
+    }
+
+    #[tokio::test]
+    async fn test_arbitrary_config_set_is_rejected() {
+        let (tool, _dir) = make_tool();
+        let err = tool
             .execute(
                 json!({"operation": "config_set", "path": "session.max_concurrent", "value": 7}),
                 CancellationToken::new(),
             )
             .await
-            .unwrap();
-        assert!(result.output["saved"].as_bool().unwrap());
-        assert_eq!(result.output["needs_restart"], json!(true));
-        assert!(result.output["live_applied"].as_array().unwrap().is_empty());
-
-        // Reloaded from disk.
-        let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().session.max_concurrent, 7);
-    }
-
-    #[tokio::test]
-    async fn test_config_set_invalid_type_rejected() {
-        let (tool, _dir) = make_tool();
-        let err = tool
-            .execute(
-                json!({"operation": "config_set", "path": "session.max_concurrent", "value": "lots"}),
-                CancellationToken::new(),
-            )
-            .await
             .unwrap_err();
-        assert!(err.to_string().contains("invalid value"));
-        // Config unchanged.
+        assert!(err.to_string().contains("unknown variant `config_set`"));
         let loader = tool.read_config().unwrap();
         assert_eq!(loader.config().session.max_concurrent, 3);
     }
@@ -1745,8 +1706,8 @@ mod tests {
         let (tool, _dir) = make_tool();
         // Persisted config has servers, but the in-memory index is empty
         // (simulates cold startup before any config mutation).
-        tool.mutate_config(|l| {
-            l.config_mut().mcp_servers.push(McpServerConfig {
+        edit_config(&tool, |config| {
+            config.mcp_servers.push(McpServerConfig {
                 name: "cold-srv".into(),
                 command: "python".into(),
                 args: vec!["-m".to_string(), "demo".into()],
@@ -1830,8 +1791,8 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_add_same_name_upserts() {
         let (tool, _dir) = make_tool();
-        tool.mutate_config(|l| {
-            l.config_mut().mcp_servers.push(McpServerConfig {
+        edit_config(&tool, |config| {
+            config.mcp_servers.push(McpServerConfig {
                 name: "dup".into(),
                 command: "python".into(),
                 args: vec!["old".into()],
@@ -2643,6 +2604,17 @@ mod tests {
         assert_eq!(lines[2], "line 100");
     }
 
+    #[test]
+    fn diagnostic_log_sanitization_redacts_sensitive_lines_and_bounds_text() {
+        assert_eq!(
+            sanitize_log_line("provider request api_key=super-secret"),
+            "[redacted diagnostic line]"
+        );
+        let bounded = sanitize_log_line(&"safe ".repeat(200));
+        assert_eq!(bounded.chars().count(), 513);
+        assert!(bounded.ends_with('…'));
+    }
+
     #[tokio::test]
     async fn test_logs_level_invalid_rejected() {
         let (tool, _dir) = make_tool();
@@ -2714,17 +2686,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_value_at_helpers() {
-        let mut root = json!({"a": {"b": [1, 2]}});
-        set_value_at(&mut root, "a.b.1", json!(99)).unwrap();
-        assert_eq!(root["a"]["b"][1], json!(99));
-        set_value_at(&mut root, "c.d", json!(true)).unwrap();
-        assert_eq!(root["c"]["d"], json!(true));
-        assert_eq!(value_at(&root, "a.b.1"), Some(&json!(99)));
-        assert!(value_at(&root, "a.b.9").is_none());
-    }
-
-    #[tokio::test]
     async fn test_tool_disable_applies_runtime_and_persists() {
         let mgr = Arc::new(ToolsManager::new());
         let dir = TempDir::new().unwrap();
@@ -2739,10 +2700,12 @@ mod tests {
             set_log_level: None,
             tools_weak: Some(Arc::downgrade(&mgr)),
         };
-        mgr.set_self_context(ctx).await;
+        mgr.set_admin_context(ctx).await;
         assert!(mgr.get_tool("shell").await.is_some());
+        assert!(mgr.get_tool("haven_diagnostics").await.is_some());
+        assert!(mgr.get_tool("haven").await.is_none());
 
-        let tool = mgr.self_tool().await.expect("self tool wired");
+        let tool = mgr.admin_surface().await.expect("admin surface wired");
         let result = tool
             .run(
                 SelfParams {

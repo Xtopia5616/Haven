@@ -257,6 +257,19 @@ Temp（全局约束）。
 
 确认 UI：拒绝 / 仅本次 / 本对话允许 / 始终允许；拒绝菜单含本对话拒绝、始终拒绝。永久授权写入 `config.toml`，设置页可撤销。
 
+### 2.5.4 Admin Surface
+
+模型不再看到跨域的 `haven` 超级 dispatcher，而看到按 capability 分组的
+`haven_diagnostics`、`haven_config`、`haven_skills`、`haven_tools`、`haven_mcp`
+和 `haven_session_diagnostics`。每个工具只接受自己的 operation allowlist，因此
+SafetyGateway 的 permission key 与风险等级不会因为一个通用入口而混在一起。
+
+配置写入使用 `ConfigService::apply_patch` 的 typed patch；普通模型路径没有任意
+`config_set(path, value)`。诊断结果只提供脱敏、截断后的日志和 session 元数据，不能
+返回 API key、完整 prompt、完整命令输出或会话正文。原 `SelfTool` 仅作为 native
+Tauri command 的迁移期 structured surface，未注册进模型目录；后续
+`TypedToolOperation` 完成后删除它。
+
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
 - `app_state.rs`：装配 `AppState`（db / router / tools / executor / agent / pipeline / shell /
@@ -380,3 +393,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-01 | §2.3 Memory / §2.5 Agent/Tools：将查询、prompt memory、工具定义与 token estimate 缓存分别提取为有界/版本化结构，按 key/domain 失效并用内容指纹守住上下文一致性（ADR 0066） |
 | 2026-09-01 | §2.5 Agent：上下文 Additional context 改为单项有界拼接，compaction 改为 token-aware 规划，摘要输入/输出有界并保留工具轮次与稳定前缀（ADR 0067） |
 | 2026-09-02 | §2.5 Agent/Tools：以 `MessagingService` 统一 Envelope identity、claim/complete/retry/expiry 与 request/reply/receipt；InboxBus 收窄为 JSONL transport adapter（ADR 0069） |
+| 2026-09-02 | §2.5 Tools：将模型可见的 `haven` 管理入口收窄为六个 capability-scoped admin tools；删除任意 dotted `config_set`，诊断结果增加脱敏与内容边界（ADR 0070） |

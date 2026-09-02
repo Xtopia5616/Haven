@@ -284,7 +284,7 @@ pub async fn mcp_tool_call(
     })
 }
 
-/// Spawn the health monitor for a live MCP client. The `self` tool's
+/// Spawn the health monitor for a live MCP client. The native admin surface's
 /// mcp_add/update/toggle ops connect clients without a monitor (the LLM path
 /// does not need one), so the app commands re-attach it after routing through
 /// the tool — same wiring as `reconnect_mcp`.
@@ -317,11 +317,11 @@ pub async fn add_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Route the config mutation through the `self` tool's native entry
+    // Route the config mutation through the native admin surface
     // (mcp_add): one implementation for the UI dialog and the LLM. The op
-    // persists to the shared loader, keeps the in-memory index in sync, and
+    // persists through ConfigService, keeps the in-memory index in sync, and
     // connects when enabled (UI always adds enabled servers).
-    crate::commands::run_self_op(
+    crate::commands::run_admin_op(
         &state,
         "add_mcp_server",
         haven_tools::SelfParams {
@@ -370,11 +370,11 @@ pub async fn update_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Route through the `self` tool's native entry (mcp_update). The op
+    // Route through the native admin surface (mcp_update). The op
     // reconnects before persisting when the connection profile changed and
     // rolls the config back on a failed connect (stricter than the old
     // persist-then-connect order).
-    crate::commands::run_self_op(
+    crate::commands::run_admin_op(
         &state,
         "update_mcp_server",
         haven_tools::SelfParams {
@@ -416,10 +416,10 @@ pub async fn remove_mcp_server(
     name: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Route through the `self` tool's native entry (mcp_remove): removes the
-    // server from config via the shared loader, shuts down the live client,
+    // Route through the native admin surface (mcp_remove): removes the
+    // server from config via ConfigService, shuts down the live client,
     // and drops it from the in-memory index.
-    crate::commands::run_self_op(
+    crate::commands::run_admin_op(
         &state,
         "remove_mcp_server",
         haven_tools::SelfParams {
@@ -450,10 +450,10 @@ pub async fn toggle_mcp_server(
     enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Route through the `self` tool's native entry (mcp_toggle). The op
+    // Route through the native admin surface (mcp_toggle). The op
     // connects before persisting when enabling (rolling the config back on a
     // failed connect) and shuts the live client down when disabling.
-    crate::commands::run_self_op(
+    crate::commands::run_admin_op(
         &state,
         "toggle_mcp_server",
         haven_tools::SelfParams {

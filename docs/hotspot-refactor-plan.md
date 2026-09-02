@@ -446,6 +446,12 @@ SessionDiagnostics   （只读历史/运行信息）
 
 收益是把“模型管理应用自身”的能力从一个高耦合、高权限工具变成可审计的 capability surface；也能让第 2.3 节 E 的 ToolsManager 收回 service locator 职责，并让第 2.4 节的 `SafetyGateway` 成为所有管理副作用的统一入口。机械拆分 `self_tool.rs` 可以作为过渡，但最终完成标准不是“dispatcher 还在，只是 handler 分文件”，而是旧超级工具和任意配置写入口被删除。
 
+2026-09-02 已完成第一条受限 surface 切片：模型目录改为六个 capability-scoped
+工具，旧 broad `haven` 不再注册；任意 dotted `config_set` 已删除，skills/tool/MCP/log
+配置写入统一使用 `ConfigService::apply_patch`。日志行和 session/error 诊断已增加
+脱敏与内容边界。native `SelfTool` structured entry 仍暂时供 Tauri commands 共用，
+明确作为迁移期边界，待 `TypedToolOperation` 与 domain admin service 完成后删除。
+
 ### O. P1/P2：把多操作工具改成 typed `ToolOperation` 契约
 
 当前 files、memory、system、audio、messaging、self 等 builtin 大量采用：
