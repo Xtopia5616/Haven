@@ -1290,7 +1290,7 @@ impl Tool for SelfTool {
     /// Entry ②: LLM JSON entry — convert/validate into `SelfParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<SelfParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<SelfParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }

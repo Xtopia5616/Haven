@@ -1,21 +1,20 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::registry::SessionCatalog;
 use crate::skill_runner::SkillRunner;
-use crate::{SkillToolAdapter, Tool, ToolBox, ToolRegistry, ToolResult, ToolsManager};
+use crate::{SkillToolAdapter, Tool, ToolRegistry, ToolResult};
 use haven_skills::SkillsEngine;
 
 pub struct LoadSkillTool {
     pub skills_engine: SkillsEngine,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub registry: ToolRegistry,
-    pub session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
-    pub session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
+    pub session_catalog: SessionCatalog,
     pub max_tools_per_request: usize,
 }
 
@@ -109,11 +108,17 @@ impl LoadSkillTool {
         let global_count = self.registry.list().await.len();
         let name = adapter.name();
         let skill_def = adapter.tool_def().json();
-        let mut map = self.session_registrations.write().await;
+        let registrations = self.session_catalog.registrations();
+        let mut map = registrations.write().await;
         let entry = map.entry(session_id.to_string()).or_default();
         let session_count = entry.len();
         let net_new = if entry.contains_key(&name) { 0 } else { 1 };
-        if ToolsManager::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+        if crate::registry::SessionCatalog::tool_budget_would_exceed(
+            max,
+            global_count,
+            session_count,
+            net_new,
+        ) {
             return Ok(SkillActivateOutcome::BudgetExceeded {
                 tool_name: name,
                 max,
@@ -123,13 +128,7 @@ impl LoadSkillTool {
         }
         entry.insert(name, Arc::new(adapter));
         drop(map);
-        let mut versions = self.session_catalog_versions.write().await;
-        let next = versions
-            .get(session_id)
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(1);
-        versions.insert(session_id.to_string(), next);
+        self.session_catalog.bump_session_version(session_id).await;
         Ok(SkillActivateOutcome::Loaded(skill_def))
     }
 }
@@ -174,13 +173,14 @@ impl Tool for LoadSkillTool {
     /// Entry ②: LLM JSON entry — convert/validate into `LoadSkillParams`,
     /// then land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<LoadSkillParams>(&self.name(), input)?;
+        let params =
+            crate::tool_contract::parse_tool_input::<LoadSkillParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 
     /// Registration is performed atomically inside `run` before success is
     /// returned. Resume restores from history via `register_skill_for_session`.
-    fn registrations(&self, _output: &Value) -> Vec<crate::tool::ToolRegistration> {
+    fn registrations(&self, _output: &Value) -> Vec<crate::tool_contract::ToolRegistration> {
         Vec::new()
     }
 }
@@ -189,6 +189,7 @@ impl Tool for LoadSkillTool {
 mod tests {
     use super::*;
     use crate::Tool;
+    use crate::ToolBox;
     use haven_common::config::SkillsExecConfig;
     use haven_skills::VenvManager;
     use serde_json::json;
@@ -238,8 +239,7 @@ mod tests {
             skills_engine: engine,
             skill_runner: runner,
             registry: ToolRegistry::new(),
-            session_registrations: Arc::new(RwLock::new(HashMap::new())),
-            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
+            session_catalog: SessionCatalog::new(),
             max_tools_per_request: max_tools,
         }
     }
@@ -290,7 +290,8 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["skill"]["name"], "skill__echo");
-        let regs = tool.session_registrations.read().await;
+        let registrations = tool.session_catalog.registrations();
+        let regs = registrations.read().await;
         assert!(regs.get("ses-x").unwrap().contains_key("skill__echo"));
     }
 
@@ -353,7 +354,8 @@ mod tests {
         let tool = wrap(engine, runner, 1);
         // Fill session to capacity first (max=1).
         {
-            let mut map = tool.session_registrations.write().await;
+            let registrations = tool.session_catalog.registrations();
+            let mut map = registrations.write().await;
             map.entry("ses-x".into()).or_default().insert(
                 "pad".into(),
                 Arc::new(crate::builtin::notify::NotifyTool) as ToolBox,
@@ -374,7 +376,8 @@ mod tests {
             "should explain the budget: {reason}"
         );
         // Nothing new registered.
-        let map = tool.session_registrations.read().await;
+        let registrations = tool.session_catalog.registrations();
+        let map = registrations.read().await;
         assert_eq!(map.get("ses-x").map(|m| m.len()), Some(1));
     }
 }

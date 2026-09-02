@@ -587,7 +587,9 @@ cargo clippy --workspace --locked -- -D warnings
 
 ### 阶段 D：拆 Tool contract、registry 和安全网关
 
-目标：[crates/tools/src/tool.rs](../crates/tools/src/tool.rs)
+目标：[`crates/tools/src/tool_contract.rs`](../crates/tools/src/tool_contract.rs)、
+[`crates/tools/src/registry.rs`](../crates/tools/src/registry.rs)、
+[`crates/tools/src/security.rs`](../crates/tools/src/security.rs)
 
 - 规模：约 2,237 行，其中约 1,287 行是生产代码。
 - 当前混合了：
@@ -598,6 +600,15 @@ cargo clippy --workspace --locked -- -D warnings
 - 安全模块拆分时必须先建立目标接口，再迁移完整调用链；不能把安全检查复制到各 builtin。
 - 不改变 deny 优先级、权限继承、路径规范化、UNC/device path 拒绝、超时未知终态和操作幂等性语义。
 - `LOCAL_TOOL_SECURITY_MATRIX` 应继续只有一个权威来源，并保留安全回归测试。
+
+2026-09-02 已完成阶段 D：`tool_contract.rs` 收口 Tool/ToolResult、typed
+`ToolOperation`、重试/并发/取消/超时契约和注册声明；`registry.rs` 收口全局注册表、
+`SessionCatalog`、版本快照和 `RegistryProbe`；`security.rs` 收口 `SafetyGateway`、权限继承、disabled
+operation、路径沙箱及 UNC/device/reparse-point fail-closed 检查。workspace 调用点已
+直接迁移到新模块，删除旧 `tool.rs`，不保留内部路径 facade；`LOCAL_TOOL_SECURITY_MATRIX`
+仍只有 `security.rs` 一个权威来源。原有 contract、registry、安全拒绝/权限继承、路径
+安全/TOCTOU、timeout unknown/idempotency 和 typed metadata 测试全部按模块迁移，测试数量
+保持不变。
 
 验收：
 

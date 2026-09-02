@@ -59,7 +59,7 @@ impl EnvTool {
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::Succeeded,
                         attempts: 1,
-                        signals: crate::tool::ToolSignals::default(),
+                        signals: crate::tool_contract::ToolSignals::default(),
                     }),
                     Err(e) => anyhow::bail!("failed to read env var '{}': {}", name, e),
                 }

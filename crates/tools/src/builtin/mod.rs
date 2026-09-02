@@ -30,6 +30,7 @@ use tokio::sync::RwLock;
 use crate::BackgroundActions;
 use crate::ToolBox;
 use crate::ToolRegistry;
+use crate::registry::SessionCatalog;
 use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
@@ -83,8 +84,7 @@ pub async fn register_builtin_tools(
     limits: &haven_common::config::ContextLimitsConfig,
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
-    session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
-    session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
+    session_catalog: SessionCatalog,
     agent_spawner: messaging::AgentSpawnerSlot,
     memory_recall: memory::MemoryRecallSlot,
 ) -> Option<Arc<self_tool::SelfTool>> {
@@ -160,16 +160,14 @@ pub async fn register_builtin_tools(
         skills_engine: skills_engine.clone(),
         skill_runner: skill_runner.clone(),
         registry: registry.clone(),
-        session_registrations: session_registrations.clone(),
-        session_catalog_versions: session_catalog_versions.clone(),
+        session_catalog: session_catalog.clone(),
         max_tools_per_request: max_tools,
     }));
     tools.push(Arc::new(load_mcp::LoadMcpTool {
         mcp_manager: mcp_manager.clone(),
         server_configs: server_configs.clone(),
         registry: registry.clone(),
-        session_registrations,
-        session_catalog_versions,
+        session_catalog,
         max_tools_per_request: max_tools,
     }));
     if let Some(ctx) = self_context {

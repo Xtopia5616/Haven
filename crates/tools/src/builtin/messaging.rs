@@ -720,7 +720,7 @@ impl AgentTool {
                     truncated: false,
                     outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                     attempts: 1,
-                    signals: crate::tool::ToolSignals::default(),
+                    signals: crate::tool_contract::ToolSignals::default(),
                 });
             }
             let wait = (deadline - now).min(REQUEST_WAIT_FALLBACK);
@@ -907,7 +907,7 @@ impl Tool for AgentTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params: AgentParams = crate::tool::parse_tool_input(&self.name(), input)?;
+        let params: AgentParams = crate::tool_contract::parse_tool_input(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }

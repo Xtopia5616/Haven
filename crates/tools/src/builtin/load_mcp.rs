@@ -8,7 +8,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::{McpToolAdapter, Tool, ToolBox, ToolRegistry, ToolResult, ToolsManager};
+use crate::registry::SessionCatalog;
+use crate::{McpToolAdapter, Tool, ToolRegistry, ToolResult};
 use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
@@ -17,8 +18,7 @@ pub struct LoadMcpTool {
     /// Global registry (builtins) — used with session overlays for the
     /// per-request tool budget check.
     pub registry: ToolRegistry,
-    pub session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
-    pub session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
+    pub session_catalog: SessionCatalog,
     /// Snapshot of `context_limits.max_tools_per_request` at catalog rebuild.
     pub max_tools_per_request: usize,
 }
@@ -103,7 +103,8 @@ impl LoadMcpTool {
             let max = self.max_tools_per_request.max(1);
             let global_count = self.registry.list().await.len();
             let (session_count, net_new) = {
-                let reg = self.session_registrations.read().await;
+                let registrations = self.session_catalog.registrations();
+                let reg = registrations.read().await;
                 let entry = reg.get(&session_id);
                 let session_count = entry.map(|m| m.len()).unwrap_or(0);
                 let net_new = selected
@@ -115,7 +116,12 @@ impl LoadMcpTool {
                     .count();
                 (session_count, net_new)
             };
-            if ToolsManager::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+            if crate::registry::SessionCatalog::tool_budget_would_exceed(
+                max,
+                global_count,
+                session_count,
+                net_new,
+            ) {
                 let current = global_count.saturating_add(session_count);
                 let remaining = max.saturating_sub(current);
                 return Ok(ToolResult::ok(serde_json::json!({
@@ -223,7 +229,8 @@ impl LoadMcpTool {
     ) -> anyhow::Result<ActivateOutcome> {
         let max = self.max_tools_per_request.max(1);
         let global_count = self.registry.list().await.len();
-        let mut map = self.session_registrations.write().await;
+        let registrations = self.session_catalog.registrations();
+        let mut map = registrations.write().await;
         let entry = map.entry(session_id.to_string()).or_default();
         let session_count = entry.len();
         let net_new = tools
@@ -233,7 +240,12 @@ impl LoadMcpTool {
                 !entry.contains_key(&name)
             })
             .count();
-        if ToolsManager::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+        if crate::registry::SessionCatalog::tool_budget_would_exceed(
+            max,
+            global_count,
+            session_count,
+            net_new,
+        ) {
             return Ok(ActivateOutcome::BudgetExceeded {
                 net_new,
                 max,
@@ -249,13 +261,7 @@ impl LoadMcpTool {
             entry.insert(adapter.name(), Arc::new(adapter));
         }
         drop(map);
-        let mut versions = self.session_catalog_versions.write().await;
-        let next = versions
-            .get(session_id)
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(1);
-        versions.insert(session_id.to_string(), next);
+        self.session_catalog.bump_session_version(session_id).await;
         Ok(ActivateOutcome::Loaded(tool_schemas))
     }
 }
@@ -376,7 +382,7 @@ impl Tool for LoadMcpTool {
     /// Entry ②: LLM JSON entry — convert/validate into `LoadMcpParams`,
     /// then land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<LoadMcpParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<LoadMcpParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 
@@ -384,7 +390,7 @@ impl Tool for LoadMcpTool {
     /// returned, so the executor must not re-apply `McpServer` (that would
     /// race parallel loads and re-wait the tools cache). Resume restores
     /// from history via `register_mcp_for_session` directly.
-    fn registrations(&self, _output: &Value) -> Vec<crate::tool::ToolRegistration> {
+    fn registrations(&self, _output: &Value) -> Vec<crate::tool_contract::ToolRegistration> {
         Vec::new()
     }
 }
@@ -393,6 +399,7 @@ impl Tool for LoadMcpTool {
 mod tests {
     use super::*;
     use crate::Tool;
+    use crate::ToolBox;
     use haven_common::config::McpServerConfig;
 
     fn tool_for_tests() -> LoadMcpTool {
@@ -400,8 +407,7 @@ mod tests {
             mcp_manager: Arc::new(McpManager::new()),
             server_configs: Arc::new(RwLock::new(HashMap::new())),
             registry: ToolRegistry::new(),
-            session_registrations: Arc::new(RwLock::new(HashMap::new())),
-            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
+            session_catalog: SessionCatalog::new(),
             max_tools_per_request: 128,
         }
     }
@@ -503,8 +509,7 @@ mod tests {
             mcp_manager: Arc::new(McpManager::new()),
             server_configs: configs,
             registry: ToolRegistry::new(),
-            session_registrations: Arc::new(RwLock::new(HashMap::new())),
-            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
+            session_catalog: SessionCatalog::new(),
             max_tools_per_request: 128,
         };
         let result = tool
@@ -550,10 +555,10 @@ mod tests {
     #[tokio::test]
     async fn test_activate_refuses_oversized_add() {
         let registry = ToolRegistry::new();
-        let session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let session_catalog = SessionCatalog::new();
+        let registrations = session_catalog.registrations();
         {
-            let mut map = session_registrations.write().await;
+            let mut map = registrations.write().await;
             let entry = map.entry("ses-x".into()).or_default();
             for i in 0..5 {
                 entry.insert(
@@ -566,40 +571,43 @@ mod tests {
             mcp_manager: Arc::new(McpManager::new()),
             server_configs: Arc::new(RwLock::new(HashMap::new())),
             registry,
-            session_registrations: session_registrations.clone(),
-            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
+            session_catalog: session_catalog.clone(),
             max_tools_per_request: 6,
         };
-        assert!(ToolsManager::tool_budget_would_exceed(6, 0, 5, 3));
-        assert!(!ToolsManager::tool_budget_would_exceed(6, 0, 5, 0));
+        assert!(crate::registry::SessionCatalog::tool_budget_would_exceed(
+            6, 0, 5, 3
+        ));
+        assert!(!crate::registry::SessionCatalog::tool_budget_would_exceed(
+            6, 0, 5, 0
+        ));
         let _ = tool;
-        let map = session_registrations.read().await;
+        let map = registrations.read().await;
         assert_eq!(map.get("ses-x").map(|m| m.len()), Some(5));
     }
 
     #[tokio::test]
     async fn test_activate_server_tools_registers_under_budget() {
-        let session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let session_catalog_versions = Arc::new(RwLock::new(HashMap::new()));
+        let session_catalog = SessionCatalog::new();
+        let registrations = session_catalog.registrations();
         let tool = LoadMcpTool {
             mcp_manager: Arc::new(McpManager::new()),
             server_configs: Arc::new(RwLock::new(HashMap::new())),
             registry: ToolRegistry::new(),
-            session_registrations: session_registrations.clone(),
-            session_catalog_versions: session_catalog_versions.clone(),
+            session_catalog: session_catalog.clone(),
             max_tools_per_request: 10,
         };
         let name = McpToolAdapter::qualified_name_of("srv", "only");
         {
-            let mut map = session_registrations.write().await;
+            let mut map = registrations.write().await;
             map.entry("ses-x".into()).or_default().insert(
                 name.clone(),
                 Arc::new(crate::builtin::notify::NotifyTool) as ToolBox,
             );
         }
-        assert!(!ToolsManager::tool_budget_would_exceed(1, 0, 1, 0));
-        assert!(session_catalog_versions.read().await.is_empty());
+        assert!(!crate::registry::SessionCatalog::tool_budget_would_exceed(
+            1, 0, 1, 0
+        ));
+        assert!(session_catalog.versions().read().await.is_empty());
         let _ = tool;
         let _ = name;
     }

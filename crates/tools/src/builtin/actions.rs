@@ -120,7 +120,7 @@ impl Tool for ActionsTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<ActionsParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<ActionsParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }

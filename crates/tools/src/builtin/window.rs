@@ -259,7 +259,7 @@ impl WindowTool {
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::Failed,
                         attempts: 1,
-                        signals: crate::tool::ToolSignals::default(),
+                        signals: crate::tool_contract::ToolSignals::default(),
                     });
                 }
                 Err(_) => {
@@ -274,7 +274,7 @@ impl WindowTool {
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                         attempts: 1,
-                        signals: crate::tool::ToolSignals::default(),
+                        signals: crate::tool_contract::ToolSignals::default(),
                     });
                 }
             };
@@ -437,7 +437,7 @@ impl Tool for WindowTool {
     /// Entry ②: LLM JSON entry — convert/validate into `WindowParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<WindowParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<WindowParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }

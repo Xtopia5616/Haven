@@ -59,6 +59,12 @@
 限流、重连与健康监控）和 `manager.rs`（多服务器 reconcile 与 LLM caller 适配）；
 `lib.rs` 只保留模块声明和公共导出，`sse.rs` 保留为 SSE parser。
 
+`haven-tools` 的工具核心按稳定边界分为 `tool_contract.rs`（Tool、ToolResult、typed
+operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog、版本快照与 probe）和
+`security.rs`（SafetyGateway、权限继承、disabled operation、路径沙箱与本机安全矩阵）；
+`lib.rs` 只从这些模块重新导出 crate 公共 API，builtin 直接依赖对应模块。安全矩阵只有
+`security.rs` 一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。
+
 CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖方向检查；新增或调整
 跨 crate 依赖时，必须先更新本表与该检查，并记录 ADR。
 
@@ -343,6 +349,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 SafetyGateway 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |
 | 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |

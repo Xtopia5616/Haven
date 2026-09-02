@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::tool::RegistryProbe;
+use crate::registry::RegistryProbe;
 use crate::{BackgroundActions, EventSink, EventSinkState};
 use crate::{Tool, ToolConcurrency, ToolResult};
 
@@ -1061,7 +1061,8 @@ impl Tool for ScheduledActionTool {
     /// `ScheduledActionParams`, then land in the same implementation as
     /// entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<ScheduledActionParams>(&self.name(), input)?;
+        let params =
+            crate::tool_contract::parse_tool_input::<ScheduledActionParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }

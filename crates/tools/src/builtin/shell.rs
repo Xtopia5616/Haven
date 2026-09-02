@@ -277,7 +277,7 @@ impl ShellTool {
                 truncated,
                 outcome: ToolExecutionOutcome::Failed,
                 attempts: 1,
-                signals: crate::tool::ToolSignals::default(),
+                signals: crate::tool_contract::ToolSignals::default(),
             })
         }
     }
@@ -331,14 +331,14 @@ impl Tool for ShellTool {
     /// Entry ②: LLM JSON entry — convert/validate into `ShellParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<ShellParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<ShellParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 
     /// Declare the background-action binding for `background: true` invocations
     /// so the executor attaches the
     /// action to this session without name-matching "shell".
-    fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
+    fn registrations(&self, output: &Value) -> Vec<crate::tool_contract::ToolRegistration> {
         if output.get("background").and_then(|v| v.as_bool()) != Some(true) {
             return Vec::new();
         }
@@ -346,7 +346,11 @@ impl Tool for ShellTool {
             .get("action_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(|action_id| vec![crate::tool::ToolRegistration::Action(action_id.to_string())])
+            .map(|action_id| {
+                vec![crate::tool_contract::ToolRegistration::Action(
+                    action_id.to_string(),
+                )]
+            })
             .unwrap_or_default()
     }
 }

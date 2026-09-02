@@ -92,15 +92,15 @@ impl Tool for NotifyTool {
     /// Entry ②: LLM JSON entry — convert/validate into `NotifyParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<NotifyParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<NotifyParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 
     /// Declare the toast signal so the loop emits the Notification event
     /// without name-matching "notify" or re-parsing the output.
-    fn signals(&self, output: &Value) -> crate::tool::ToolSignals {
+    fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
         let (title, body) = crate::extract_notify_signal(output);
-        crate::tool::ToolSignals {
+        crate::tool_contract::ToolSignals {
             notify_title: title,
             notify_body: body,
             ..Default::default()

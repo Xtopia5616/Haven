@@ -82,7 +82,7 @@ impl Tool for McpToolAdapter {
                 crate::ToolExecutionOutcome::Failed
             },
             attempts: 1,
-            signals: crate::tool::ToolSignals::default(),
+            signals: crate::tool_contract::ToolSignals::default(),
         })
     }
 }

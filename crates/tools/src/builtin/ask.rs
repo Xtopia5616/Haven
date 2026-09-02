@@ -104,15 +104,15 @@ impl Tool for AskTool {
     /// Entry ②: LLM JSON entry — convert/validate into `AskParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<AskParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<AskParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 
     /// Declare the question signal so the ReAct loop pauses the session without
     /// name-matching "ask" or re-parsing the output.
-    fn signals(&self, output: &Value) -> crate::tool::ToolSignals {
+    fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
         let (question, options) = crate::extract_ask_signal(output);
-        crate::tool::ToolSignals {
+        crate::tool_contract::ToolSignals {
             ask_question: question,
             ask_options: options,
             ..Default::default()

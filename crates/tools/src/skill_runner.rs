@@ -1,4 +1,4 @@
-use crate::tool::ToolResult;
+use crate::tool_contract::ToolResult;
 use haven_common::config::SkillsExecConfig;
 use haven_common::encoding;
 use haven_skills::{Skill, VenvManager};

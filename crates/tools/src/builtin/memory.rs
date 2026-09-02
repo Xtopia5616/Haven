@@ -426,7 +426,7 @@ impl Tool for MemoryTool {
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(str::to_string);
-        let params = crate::tool::parse_tool_input::<MemoryParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<MemoryParams>(&self.name(), input)?;
         self.run_with_session(params, session_id, cancel).await
     }
 }

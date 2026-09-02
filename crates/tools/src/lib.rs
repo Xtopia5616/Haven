@@ -8,10 +8,12 @@ pub mod live_output;
 pub mod messaging_service;
 mod output;
 mod process;
+pub(crate) mod registry;
+pub(crate) mod security;
 mod shell_runtime;
 pub mod simulate;
 pub mod skill_runner;
-pub mod tool;
+pub(crate) mod tool_contract;
 pub mod util;
 
 use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
@@ -20,7 +22,6 @@ use haven_llm::LlmRouter;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -53,6 +54,11 @@ pub use output::{
     append_windows_diagnostics, is_progress_clixml, sanitize_shell_output, summarize_error,
 };
 pub(crate) use process::{read_stream_capped, take_tail_if_changed};
+pub use registry::{RegistryProbe, SessionCatalog, ToolRegistry};
+pub use security::{
+    ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, SafetyGateway,
+    is_safe_local_path,
+};
 #[cfg(windows)]
 pub use shell_runtime::CREATE_NO_WINDOW;
 pub use shell_runtime::{
@@ -60,12 +66,11 @@ pub use shell_runtime::{
     proxy_env_vars, write_output_log,
 };
 pub use skill_runner::SkillRunner;
-pub use tool::{
-    ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, OperationIdempotency,
-    SafetyGateway, Tool, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef,
-    ToolExecutionOutcome, ToolOperationMetadata, ToolOperationScope, ToolRegistration,
-    ToolRegistry, ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation,
-    extract_ask_signal, extract_notify_signal, is_safe_local_path, is_silent_action,
+pub use tool_contract::{
+    OperationIdempotency, Tool, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef,
+    ToolExecutionOutcome, ToolOperationMetadata, ToolOperationScope, ToolRegistration, ToolResult,
+    ToolSignals, TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
+    is_silent_action, parse_tool_input,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.
@@ -137,9 +142,8 @@ pub struct ToolsManager {
     /// re-enable disabled tools even though they are excluded from the
     /// registry snapshot used by the agent.
     all_builtin_tools: RwLock<Vec<ToolBox>>,
-    /// Per-session skill/MCP overlays. Shared as `Arc` so `load_mcp` can
-    /// budget-check against the live map before declaring success.
-    session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
+    /// Per-session skill/MCP overlays and their catalog version clocks.
+    session_catalog: SessionCatalog,
     tool_circuits: ToolCircuitRegistry,
     /// Shared LlmRouter. Tools that need a model (currently the file `summary`
     /// and image-understanding operations) call `router.chat(...)` — text
@@ -169,14 +173,6 @@ pub struct ToolsManager {
     /// Wired in by the desktop shell; `None` in headless tests so the tool
     /// reports recording as unavailable.
     audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
-    /// Monotonic catalog version, bumped whenever the global registry or any
-    /// global catalog input changes. Per-session registrations use the
-    /// separate session version map below so loading a skill in session A does
-    /// not invalidate the tool-definition cache for every other session.
-    catalog_version: Arc<AtomicU64>,
-    /// Version of each session's skill/MCP overlay. Shared with the two
-    /// progressive-loading meta-tools, which mutate the overlay directly.
-    session_catalog_versions: Arc<RwLock<HashMap<String, u64>>>,
     /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
     agent_spawner: builtin::AgentSpawnerSlot,
     /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
@@ -210,7 +206,7 @@ impl ToolsManager {
             context_limits: RwLock::new(ContextLimitsConfig::default()),
             default_shell: RwLock::new(ShellChoice::default()),
             all_builtin_tools: RwLock::new(Vec::new()),
-            session_registrations: Arc::new(RwLock::new(HashMap::new())),
+            session_catalog: SessionCatalog::new(),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
             background_actions,
@@ -220,8 +216,6 @@ impl ToolsManager {
             admin_surface: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
-            catalog_version: Arc::new(AtomicU64::new(0)),
-            session_catalog_versions: Arc::new(RwLock::new(HashMap::new())),
             agent_spawner: builtin::new_agent_spawner_slot(),
             memory_recall: builtin::new_memory_recall_slot(),
         }
@@ -242,49 +236,16 @@ impl ToolsManager {
     /// derived views (e.g. per-step LLM tool definitions) keyed by this
     /// value and rebuild only when it changes.
     pub fn catalog_version(&self) -> u64 {
-        self.catalog_version.load(Ordering::Relaxed)
+        self.session_catalog.global_version()
     }
 
     /// Version pair for a session's complete tool-definition view. The first
     /// component covers global registry changes; the second covers only that
     /// session's progressive skill/MCP overlay.
     pub async fn catalog_version_for_session(&self, session_id: &str) -> (u64, u64) {
-        let session = self
-            .session_catalog_versions
-            .read()
+        self.session_catalog
+            .catalog_version_for_session(session_id)
             .await
-            .get(session_id)
-            .copied()
-            .unwrap_or(0);
-        (self.catalog_version(), session)
-    }
-
-    async fn bump_session_catalog_version(&self, session_id: &str) {
-        let mut versions = self.session_catalog_versions.write().await;
-        let next = versions
-            .get(session_id)
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(1);
-        versions.insert(session_id.to_string(), next);
-    }
-
-    /// Whether adding `net_new` unique session tools would exceed the
-    /// per-request provider ceiling. Shared by `load_mcp` / `load_skill`
-    /// refuse paths and resume registration.
-    pub fn tool_budget_would_exceed(
-        max: usize,
-        global_count: usize,
-        session_count: usize,
-        net_new: usize,
-    ) -> bool {
-        if net_new == 0 {
-            return false;
-        }
-        global_count
-            .saturating_add(session_count)
-            .saturating_add(net_new)
-            > max.max(1)
     }
 
     /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
@@ -458,8 +419,7 @@ impl ToolsManager {
             &limits,
             *self.default_shell.read().await,
             audio_pipeline,
-            self.session_registrations.clone(),
-            self.session_catalog_versions.clone(),
+            self.session_catalog.clone(),
             self.agent_spawner.clone(),
             self.memory_recall.clone(),
         )
@@ -477,26 +437,18 @@ impl ToolsManager {
 
         *self.all_builtin_tools.write().await = all_tools;
         self.registry.rebuild(enabled_tools).await;
-        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        self.session_catalog.bump_global_version();
     }
 
     /// Register a tool for a specific session (per-session skill overlay).
     /// Does NOT modify the global registry.
     pub async fn register_for_session(&self, session_id: &str, tool: ToolBox) {
-        let name = tool.name();
-        self.session_registrations
-            .write()
-            .await
-            .entry(session_id.to_string())
-            .or_default()
-            .insert(name, tool);
-        self.bump_session_catalog_version(session_id).await;
+        self.session_catalog.register(session_id, tool).await;
     }
 
     /// Remove all per-session tool registrations for a given session.
     pub async fn unregister_session(&self, session_id: &str) {
-        self.session_registrations.write().await.remove(session_id);
-        self.bump_session_catalog_version(session_id).await;
+        self.session_catalog.unregister(session_id).await;
     }
 
     /// Register tools from an MCP server as per-session adapters.
@@ -546,7 +498,8 @@ impl ToolsManager {
             .max_tools_per_request
             .max(1);
         let global_count = self.registry.list().await.len();
-        let mut reg = self.session_registrations.write().await;
+        let registrations = self.session_catalog.registrations();
+        let mut reg = registrations.write().await;
         let entry = reg.entry(session_id.to_string()).or_default();
         let session_count = entry.len();
         let net_new = tools
@@ -556,7 +509,7 @@ impl ToolsManager {
                 !entry.contains_key(&name)
             })
             .count();
-        if Self::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+        if SessionCatalog::tool_budget_would_exceed(max, global_count, session_count, net_new) {
             tracing::warn!(
                 session_id,
                 server_name,
@@ -573,7 +526,7 @@ impl ToolsManager {
             entry.insert(adapter.name(), Arc::new(adapter));
         }
         drop(reg);
-        self.bump_session_catalog_version(session_id).await;
+        self.session_catalog.bump_session_version(session_id).await;
         true
     }
 
@@ -597,11 +550,12 @@ impl ToolsManager {
             .max_tools_per_request
             .max(1);
         let global_count = self.registry.list().await.len();
-        let mut reg = self.session_registrations.write().await;
+        let registrations = self.session_catalog.registrations();
+        let mut reg = registrations.write().await;
         let entry = reg.entry(session_id.to_string()).or_default();
         let already = entry.contains_key(&name);
         let net_new = if already { 0 } else { 1 };
-        if Self::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
+        if SessionCatalog::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
             tracing::warn!(
                 session_id,
                 skill_name,
@@ -612,7 +566,7 @@ impl ToolsManager {
         }
         entry.insert(name, Arc::new(adapter));
         drop(reg);
-        self.bump_session_catalog_version(session_id).await;
+        self.session_catalog.bump_session_version(session_id).await;
         true
     }
 
@@ -623,11 +577,9 @@ impl ToolsManager {
         name: &str,
     ) -> Option<ToolBox> {
         if let Some(tid) = session_id
-            && let reg = self.session_registrations.read().await
-            && let Some(tools) = reg.get(tid)
-            && let Some(tool) = tools.get(name)
+            && let Some(tool) = self.session_catalog.get(tid, name).await
         {
-            return Some(tool.clone());
+            return Some(tool);
         }
         self.registry.get(name).await
     }
@@ -717,12 +669,7 @@ impl ToolsManager {
             .max(1);
         let mut defs = self.registry.list_defs().await;
         let global_len = defs.len();
-        let reg = self.session_registrations.read().await;
-        if let Some(tools) = reg.get(session_id) {
-            let mut session_defs: Vec<ToolDef> = tools.values().map(|t| t.tool_def()).collect();
-            session_defs.sort_by(|a, b| a.name.cmp(&b.name));
-            defs.extend(session_defs);
-        }
+        defs.extend(self.session_catalog.list_defs(session_id).await);
         if defs.len() > max {
             tracing::warn!(
                 session_id,

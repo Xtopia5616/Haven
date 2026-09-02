@@ -612,7 +612,7 @@ impl Tool for AdminCapabilityTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<SelfParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<SelfParams>(&self.name(), input)?;
         if !self.capability.accepts(params.operation) {
             anyhow::bail!(
                 "operation {:?} is not available through {}",

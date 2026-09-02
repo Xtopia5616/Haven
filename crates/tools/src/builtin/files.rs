@@ -162,7 +162,7 @@ async fn understand_image(
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::Failed,
                 attempts: 1,
-                signals: crate::tool::ToolSignals::default(),
+                signals: crate::tool_contract::ToolSignals::default(),
             });
         }
         Err(_) => {
@@ -176,7 +176,7 @@ async fn understand_image(
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                 attempts: 1,
-                signals: crate::tool::ToolSignals::default(),
+                signals: crate::tool_contract::ToolSignals::default(),
             });
         }
     };
@@ -756,7 +756,7 @@ impl FilesTool {
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::Succeeded,
                         attempts: 1,
-                        signals: crate::tool::ToolSignals::default(),
+                        signals: crate::tool_contract::ToolSignals::default(),
                     });
                 }
                 let result = content.replace(old, &new);
@@ -924,7 +924,7 @@ impl Tool for FilesTool {
     /// Entry ②: LLM JSON entry — convert/validate into `FilesParams`, then
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<FilesParams>(&self.name(), input)?;
+        let params = crate::tool_contract::parse_tool_input::<FilesParams>(&self.name(), input)?;
         self.run(params, cancel).await
     }
 }
@@ -1028,7 +1028,7 @@ async fn summarize(
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::Failed,
                 attempts: 1,
-                signals: crate::tool::ToolSignals::default(),
+                signals: crate::tool_contract::ToolSignals::default(),
             });
         }
         Err(_) => {
@@ -1042,7 +1042,7 @@ async fn summarize(
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                 attempts: 1,
-                signals: crate::tool::ToolSignals::default(),
+                signals: crate::tool_contract::ToolSignals::default(),
             });
         }
     };

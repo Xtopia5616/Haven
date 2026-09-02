@@ -2,7 +2,7 @@
 
 本矩阵覆盖 `haven-tools` 的 builtin 工具、MCP/skill 适配器和所有进入
 `SafetyGateway` 的执行路径。风险级别的可执行代表行位于
-`crates/tools/src/tool.rs` 的 `LOCAL_TOOL_SECURITY_MATRIX`；这里补充每个工具的
+`crates/tools/src/security.rs` 的 `LOCAL_TOOL_SECURITY_MATRIX`；这里补充每个工具的
 操作面、路径字段、授权继承、取消与竞态要求。矩阵中的“拒绝”是 fail-closed，
 不得降级为确认或依赖前端传入的 `confirmed`。
 
