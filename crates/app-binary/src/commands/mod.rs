@@ -105,10 +105,11 @@ pub(crate) fn confirmation_error(
 /// runtime. Shared by `switch_model` and `set_reasoning_effort`, which both
 /// follow the same "save config → rebuild router → swap live" sequence.
 pub(crate) async fn rebuild_router(state: &AppState, ctx: &str) -> Result<(), String> {
-    let config = {
-        let guard = state.config_loader.lock().map_err(|e| log_err(ctx, e))?;
-        guard.config().clone()
-    };
+    let config = state
+        .config_service
+        .snapshot()
+        .map_err(|e| log_err(ctx, e))?
+        .config;
     let new_router = Arc::new(LlmRouter::with_default_context_window(
         config.llm.materialize(
             Some(config.context_limits.max_response_tokens),
@@ -130,14 +131,13 @@ pub(crate) async fn hot_swap_router(
     state.agent.replace_router(new_router.clone());
     state.tools.set_router(new_router.clone()).await;
 
-    let (stt_config, providers) = {
-        let cfg = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("hot_swap_router", e))?;
-        let c = cfg.config();
-        (c.media.stt.clone(), c.llm.providers.clone())
-    };
+    let config = state
+        .config_service
+        .snapshot()
+        .map_err(|e| log_err("hot_swap_router", e))?
+        .config;
+    let stt_config = config.media.stt.clone();
+    let providers = config.llm.providers.clone();
     let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.tools.mcp_manager.clone());
     let stt_client: Option<Arc<dyn haven_llm::SttClient>> = match build_stt_client(
         new_router.clone(),
@@ -165,14 +165,13 @@ pub(crate) async fn hot_swap_router(
     // calls (low confidence / failed dedicated provider) keep routing to the
     // freshly-switched model endpoints.
     {
-        let (media, providers) = {
-            let guard = state
-                .config_loader
-                .lock()
-                .map_err(|e| log_err("hot_swap_router", e))?;
-            let cfg = guard.config();
-            (cfg.media.clone(), cfg.llm.providers.clone())
-        };
+        let config = state
+            .config_service
+            .snapshot()
+            .map_err(|e| log_err("hot_swap_router", e))?
+            .config;
+        let media = config.media;
+        let providers = config.llm.providers;
         let ocr: Option<Arc<dyn haven_llm::OcrClient>> =
             match haven_llm::build_ocr_client(&media.ocr) {
                 Ok(c) => c.map(std::sync::Arc::from),
@@ -222,10 +221,10 @@ pub(crate) async fn connect_and_monitor(
     ctx: &str,
 ) -> Result<Arc<haven_tools::McpClient>, String> {
     let limits = state
-        .config_loader
-        .lock()
+        .config_service
+        .snapshot()
         .map_err(|e| log_err(ctx, e))?
-        .config()
+        .config
         .context_limits
         .clone();
     let client = Arc::new(haven_tools::McpClient::new(

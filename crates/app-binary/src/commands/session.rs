@@ -196,22 +196,20 @@ async fn persist_permanent_permission(
     effect: haven_common::types::PermissionEffect,
 ) -> Result<(), String> {
     use haven_common::config::StoredPermission;
-    let mut loader = state
-        .config_loader
-        .lock()
-        .map_err(|e| log_err("persist_permanent_permission", e))?;
-    let mut permissions = loader.config().security.permissions.clone();
-    if let Some(existing) = permissions.iter_mut().find(|p| p.key == key) {
-        existing.effect = effect;
-    } else {
-        permissions.push(StoredPermission {
-            key: key.to_string(),
-            effect,
-        });
-    }
-    loader.config_mut().security.permissions = permissions;
-    loader
-        .save()
+    state
+        .config_service
+        .edit(|config| {
+            let permissions = &mut config.security.permissions;
+            if let Some(existing) = permissions.iter_mut().find(|p| p.key == key) {
+                existing.effect = effect;
+            } else {
+                permissions.push(StoredPermission {
+                    key: key.to_string(),
+                    effect,
+                });
+            }
+            Ok(())
+        })
         .map_err(|e| log_err("persist_permanent_permission", e))?;
     Ok(())
 }

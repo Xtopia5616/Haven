@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use haven_common::config::{ConfigLoader, LogConfig, LogLevel, McpServerConfig};
+use haven_common::config::{ConfigLoader, ConfigService, LogConfig, LogLevel, McpServerConfig};
 use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::EndpointRole;
 use haven_llm::LlmRouter;
@@ -19,9 +19,9 @@ use haven_skills::SkillsEngine;
 /// Everything is optional so headless/test builds work without the full app.
 #[derive(Clone)]
 pub struct SelfToolContext {
-    /// Shared config loader (persists to `config.toml`). Falls back to a
-    /// fresh `ConfigLoader::load()` when absent.
-    pub config_loader: Option<Arc<std::sync::Mutex<ConfigLoader>>>,
+    /// Shared versioned config service (persists to `config.toml`). Falls back
+    /// to a fresh `ConfigLoader::load()` when absent for headless adapters.
+    pub config_service: Option<Arc<ConfigService>>,
     /// Database handle for session/session introspection.
     pub db: Option<Arc<Database>>,
     /// LLM router for endpoint health checks.
@@ -120,8 +120,8 @@ impl SelfTool {
 
     /// Read the current config, preferring the shared loader when present.
     fn read_config(&self) -> anyhow::Result<ConfigLoader> {
-        match &self.context.config_loader {
-            Some(loader) => Ok(loader.lock().unwrap().clone()),
+        match &self.context.config_service {
+            Some(service) => service.loader(),
             None => ConfigLoader::load(),
         }
     }
@@ -132,13 +132,8 @@ impl SelfTool {
         &self,
         f: impl FnOnce(&mut ConfigLoader) -> anyhow::Result<R>,
     ) -> anyhow::Result<R> {
-        match &self.context.config_loader {
-            Some(loader) => {
-                let mut guard = loader.lock().unwrap();
-                let r = f(&mut guard)?;
-                guard.save()?;
-                Ok(r)
-            }
+        match &self.context.config_service {
+            Some(service) => Ok(service.edit_loader(f)?.value),
             None => {
                 let mut loader = ConfigLoader::load()?;
                 let r = f(&mut loader)?;
@@ -1431,7 +1426,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let ctx = SelfToolContext {
-            config_loader: Some(Arc::new(std::sync::Mutex::new(loader))),
+            config_service: Some(Arc::new(ConfigService::new(loader))),
             db: None,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
@@ -2733,11 +2728,11 @@ mod tests {
     async fn test_tool_disable_applies_runtime_and_persists() {
         let mgr = Arc::new(ToolsManager::new());
         let dir = TempDir::new().unwrap();
-        let loader = Arc::new(std::sync::Mutex::new(
+        let loader = Arc::new(ConfigService::new(
             ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap(),
         ));
         let ctx = SelfToolContext {
-            config_loader: Some(loader.clone()),
+            config_service: Some(loader.clone()),
             db: None,
             router: None,
             log_path: None,
@@ -2766,7 +2761,7 @@ mod tests {
             "disabled tool must leave the registry"
         );
         // Persisted: config.toml carries the flag through the shared loader.
-        let persisted = loader.lock().unwrap().config().tool_settings["shell"].enabled;
+        let persisted = loader.snapshot().unwrap().config.tool_settings["shell"].enabled;
         assert!(!persisted);
     }
 

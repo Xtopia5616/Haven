@@ -199,13 +199,11 @@ fn api_key_status(cfg: &AppConfig) -> ApiKeyStatus {
 #[tauri::command]
 pub async fn get_api_key_status(app: tauri::AppHandle) -> Result<ApiKeyStatus, String> {
     let state = app.state::<Arc<AppState>>();
-    let cfg = {
-        let guard = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("get_api_key_status", e))?;
-        guard.config().clone()
-    };
+    let cfg = state
+        .config_service
+        .snapshot()
+        .map_err(|e| log_err("get_api_key_status", e))?
+        .config;
     Ok(api_key_status(&cfg))
 }
 
@@ -257,13 +255,11 @@ pub async fn discover_models(
         return Err("base_url must be an http(s) URL".to_string());
     }
     let state = app.state::<Arc<AppState>>();
-    let cfg = {
-        let guard = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("discover_models", e))?;
-        guard.config().clone()
-    };
+    let cfg = state
+        .config_service
+        .snapshot()
+        .map_err(|e| log_err("discover_models", e))?
+        .config;
 
     // STT-only providers (Deepgram / AssemblyAI) have no `/models` endpoint;
     // return the static catalog so the role picker can still assign a model.
@@ -355,13 +351,11 @@ pub async fn discover_all_models(
     app: tauri::AppHandle,
 ) -> Result<BTreeMap<String, Vec<ModelInfo>>, String> {
     let state = app.state::<Arc<AppState>>();
-    let cfg = {
-        let guard = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("discover_all_models", e))?;
-        guard.config().clone()
-    };
+    let cfg = state
+        .config_service
+        .snapshot()
+        .map_err(|e| log_err("discover_all_models", e))?
+        .config;
     let providers = cfg.llm.providers.clone();
     let mut handles = Vec::new();
     let mut results = BTreeMap::new();
@@ -411,23 +405,23 @@ pub async fn discover_all_models(
 /// §2.7: Switch a model endpoint role to a different model.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
-/// Apply a mutation to a role slot via the shared config loader and
-/// hot-swap the LlmRouter at runtime. Holds the loader lock across
-/// mutate + save so concurrent config writes (settings saves, MCP/skill
-/// toggles) can never clobber each other with a stale copy.
+/// Apply a mutation to a role slot through the versioned config service and
+/// hot-swap the LlmRouter at runtime. The service serializes the mutation and
+/// persists the complete snapshot before the runtime rebuild begins.
 async fn update_role_field(
     state: &AppState,
     ctx: &str,
     role: &str,
     mutate: impl FnOnce(&mut RoleConfig) -> Result<(), String>,
 ) -> Result<(), String> {
-    {
-        let mut loader = state.config_loader.lock().map_err(|e| log_err(ctx, e))?;
-        let slot = role_slot(&mut loader.config_mut().llm, role)
-            .ok_or_else(|| format!("unknown or unconfigured role: {}", role))?;
-        mutate(slot)?;
-        loader.save().map_err(|e| log_err(ctx, e))?;
-    }
+    state
+        .config_service
+        .edit(|config| {
+            let slot = role_slot(&mut config.llm, role)
+                .ok_or_else(|| anyhow::anyhow!("unknown or unconfigured role: {}", role))?;
+            mutate(slot).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| log_err(ctx, e))?;
     rebuild_router(state, ctx).await
 }
 
@@ -501,15 +495,15 @@ pub async fn set_web_search(
     }
 
     // Capability gate: only `off` (or clear) is allowed on styles without a
-    // provider built-in search tool. Resolve style under the loader lock, then
-    // drop it before `update_role_field` re-acquires the same mutex.
+    // provider built-in search tool. Resolve style from one immutable snapshot
+    // before `update_role_field` applies the typed mutation.
     if !matches!(normalized.as_deref(), Some("off") | None) {
         let style = {
             let loader = state
-                .config_loader
-                .lock()
+                .config_service
+                .snapshot()
                 .map_err(|e| log_err("set_web_search", e))?;
-            let llm = &loader.config().llm;
+            let llm = &loader.config.llm;
             let slot = llm
                 .roles
                 .iter()

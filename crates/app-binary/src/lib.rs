@@ -1,6 +1,7 @@
 mod app_state;
 mod autostart;
 mod commands;
+mod config_runtime;
 mod desktop;
 mod events;
 mod logging;
@@ -888,9 +889,9 @@ pub fn run() {
                 },
             ));
 
-            let cfg = state.config_loader.lock().unwrap();
-            let is_hold = cfg.config().hotkey.mode == haven_common::types::HotkeyMode::Hold;
-            let key_binding = cfg.config().hotkey.key_binding.clone();
+            let cfg = state.config_service.snapshot().unwrap().config;
+            let is_hold = cfg.hotkey.mode == haven_common::types::HotkeyMode::Hold;
+            let key_binding = cfg.hotkey.key_binding.clone();
 
             // The global-shortcut and tray callbacks run on plugin/main
             // threads that are outside the tokio runtime, where

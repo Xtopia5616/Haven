@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::hot_swap_router;
 use crate::commands::log_err;
+use crate::config_runtime::{RuntimeConfigApplyPlan, RuntimeConfigTarget};
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use haven_llm::LlmRouter;
 use std::sync::Arc;
@@ -12,12 +13,10 @@ use tracing_subscriber::filter::EnvFilter;
 #[tauri::command]
 pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
     let state = app.state::<Arc<AppState>>();
-    let cfg = state
-        .config_loader
-        .lock()
-        .map_err(|e| log_err("get_settings", e))?;
-    let settings = cfg.settings();
-    Ok(settings)
+    state
+        .config_service
+        .settings()
+        .map_err(|e| log_err("get_settings", e))
 }
 
 /// Cold-start progress for the titlebar status chip (`loading` | `ready`).
@@ -42,141 +41,154 @@ pub async fn update_settings(
         last = now;
     };
     let state = app.state::<Arc<AppState>>();
-    let old_hotkey = {
-        let cfg = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("update_settings", e))?;
-        cfg.config().hotkey.key_binding.clone()
+    let old_hotkey = state
+        .config_service
+        .snapshot()
+        .map_err(|e| log_err("update_settings", e))?
+        .config
+        .hotkey
+        .key_binding
+        .clone();
+    let update = state
+        .config_service
+        .apply_patch(haven_common::config::ConfigPatch::Settings(settings))
+        .map_err(|e| log_err("update_settings", e))?;
+    let Some(change) = update.change else {
+        return Ok(());
     };
-
-    {
-        let mut loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("update_settings", e))?;
-        loader.apply_settings(&settings);
-        // The settings form does not manage MCP servers / skills / tool
-        // settings: those are mutated by dedicated commands (add/update/
-        // remove/toggle MCP, skill ops) that write config.toml directly via a
-        // fresh `ConfigLoader::load()`, leaving the shared in-memory loader
-        // stale. Restore the authoritative on-disk copies before saving so a
-        // settings save can never wipe configured servers/skills.
-        let disk = haven_common::config::ConfigLoader::load()
-            .map_err(|e| log_err("update_settings", e))?;
-        let cfg = loader.config_mut();
-        cfg.mcp_servers = disk.config().mcp_servers.clone();
-        cfg.mcp_discovery = disk.config().mcp_discovery.clone();
-        cfg.skills = disk.config().skills.clone();
-        cfg.skills_exec = disk.config().skills_exec.clone();
-        cfg.tool_settings = disk.config().tool_settings.clone();
-        loader.save().map_err(|e| log_err("update_settings", e))?;
+    let config = update.snapshot.config;
+    let plan = RuntimeConfigApplyPlan::from_change(&change);
+    tracing::debug!(
+        version = change.version,
+        domains = ?change.domains,
+        live = ?plan.live,
+        restart_required = ?plan.restart_required,
+        "configuration snapshot updated"
+    );
+    if !plan.restart_required.is_empty() {
+        tracing::warn!(
+            version = plan.version,
+            targets = ?plan.restart_required,
+            "configuration change requires a restart for some consumers"
+        );
     }
-    tick("config save");
+    tick("config apply");
 
     // Propagate audio config to running pipeline
-    state
-        .pipeline
-        .update_config(settings.media.audio.clone())
-        .await;
-    tick("pipeline.update_config");
+    if plan.contains(RuntimeConfigTarget::InputPipeline) {
+        state
+            .pipeline
+            .update_config(config.media.audio.clone())
+            .await;
+        tick("pipeline.update_config");
+    }
 
     // Propagate the default shell choice to the shell tool so the running
     // agent executes new commands in the selected shell.
-    state.tools.set_default_shell(settings.default_shell).await;
-    tick("set_default_shell");
+    if plan.contains(RuntimeConfigTarget::Shell) {
+        state.tools.set_default_shell(config.default_shell).await;
+        tick("set_default_shell");
+    }
 
     // Propagate context limits (incl. max_tools_per_request / default
     // context window) so tools + agent pick up Settings changes without a
     // process restart.
-    state
-        .tools
-        .set_context_limits(settings.context_limits.clone())
-        .await;
-    state
-        .agent
-        .set_context_limits(settings.context_limits.clone());
-    tick("set_context_limits");
+    if plan.contains(RuntimeConfigTarget::ContextLimits) {
+        state
+            .tools
+            .set_context_limits(config.context_limits.clone())
+            .await;
+        state
+            .agent
+            .set_context_limits(config.context_limits.clone());
+        tick("set_context_limits");
+    }
 
     // Reload MCP servers from config
-    let (
-        mcp_servers,
-        mcp_discovery,
-        per_run_max_steps,
-        session_lifetime_max_steps,
-        session_max_concurrent,
-        llm_config,
-        max_response_tokens,
-        reasoning_echo_max_chars,
-        confirmation_mode,
-        min_risk_level,
-        security_permissions,
-        tool_settings,
-    ) = {
-        let cfg = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("update_settings", e))?;
-        let config = cfg.config();
-        (
-            config.mcp_servers.clone(),
-            config.mcp_discovery.clone(),
-            config.session.max_steps,
-            config.session.session_max_steps,
-            config.session.max_concurrent,
-            config.llm.clone(),
-            config.context_limits.max_response_tokens,
-            config.context_limits.reasoning_echo_max_chars,
-            config.security.confirmation_mode,
-            config.security.min_risk_level,
-            config.security.permissions.clone(),
-            config.tool_settings.clone(),
-        )
-    };
-    state.tools.load_mcp_from_config(&mcp_servers).await;
-    tick("load_mcp_from_config");
-    state.tools.mcp_manager.start_monitors(&mcp_discovery).await;
-    tick("mcp_manager.start_monitors");
-    let new_router = Arc::new(LlmRouter::with_default_context_window(
-        llm_config.materialize(Some(max_response_tokens), Some(reasoning_echo_max_chars)),
-        settings.context_limits.default_context_window,
-    ));
-    tick("LlmRouter::new");
-    hot_swap_router(&state, new_router).await?;
-    tick("hot_swap_router");
-    crate::commands::emit_llm_config_changed(&app);
-    state.agent.set_max_steps(per_run_max_steps);
-    state
-        .agent
-        .set_session_max_steps(session_lifetime_max_steps);
-    state.executor.set_max_concurrent(session_max_concurrent);
-    state
-        .tools
-        .safety_gateway
-        .apply_security(confirmation_mode, min_risk_level, &security_permissions)
-        .await;
-    state
-        .tools
-        .safety_gateway
-        .set_tool_settings(tool_settings)
-        .await;
+    if plan.contains(RuntimeConfigTarget::Mcp) {
+        state.tools.load_mcp_from_config(&config.mcp_servers).await;
+        tick("load_mcp_from_config");
+        state
+            .tools
+            .mcp_manager
+            .start_monitors(&config.mcp_discovery)
+            .await;
+        tick("mcp_manager.start_monitors");
+    }
+
+    if plan.contains(RuntimeConfigTarget::LlmRouter) {
+        let new_router = Arc::new(LlmRouter::with_default_context_window(
+            config.llm.materialize(
+                Some(config.context_limits.max_response_tokens),
+                Some(config.context_limits.reasoning_echo_max_chars),
+            ),
+            config.context_limits.default_context_window,
+        ));
+        tick("LlmRouter::new");
+        hot_swap_router(&state, new_router).await?;
+        tick("hot_swap_router");
+        crate::commands::emit_llm_config_changed(&app);
+    }
+
+    if plan.contains(RuntimeConfigTarget::SessionRuntime) {
+        state.agent.set_max_steps(config.session.max_steps);
+        state
+            .agent
+            .set_session_max_steps(config.session.session_max_steps);
+        state
+            .executor
+            .set_max_concurrent(config.session.max_concurrent);
+    }
+
+    if plan.contains(RuntimeConfigTarget::Security) {
+        state
+            .tools
+            .safety_gateway
+            .apply_security(
+                config.security.confirmation_mode,
+                config.security.min_risk_level,
+                &config.security.permissions,
+            )
+            .await;
+    }
+    if plan.contains(RuntimeConfigTarget::ToolSettings) {
+        state
+            .tools
+            .safety_gateway
+            .set_tool_settings(config.tool_settings.clone())
+            .await;
+    }
+
+    if plan.contains(RuntimeConfigTarget::Skills)
+        && let Err(error) = state
+            .tools
+            .skills_engine
+            .set_config(config.skills.root.clone(), config.skills.enabled.clone())
+            .await
+    {
+        tracing::warn!("failed to apply skills config: {error}");
+    }
 
     // Propagate log level to tracing subscriber (console + file)
-    let level = settings.log.level.as_str();
-    for handle in &state.log_filter_handles {
-        let _ = handle.modify(|filter| {
-            *filter = EnvFilter::new(format!("haven={}", level));
-        });
+    if plan.contains(RuntimeConfigTarget::Logging) {
+        let level = config.log.level.as_str();
+        for handle in &state.log_filter_handles {
+            let _ = handle.modify(|filter| {
+                *filter = EnvFilter::new(format!("haven={}", level));
+            });
+        }
     }
 
     // Propagate hotkey mode change (always)
     use haven_common::types::HotkeyMode;
-    state
-        .shell
-        .set_hold_mode(settings.hotkey.mode == HotkeyMode::Hold)
-        .await;
+    if plan.contains(RuntimeConfigTarget::Hotkey) {
+        state
+            .shell
+            .set_hold_mode(config.hotkey.mode == HotkeyMode::Hold)
+            .await;
+    }
 
-    if settings.hotkey.key_binding != old_hotkey {
+    if plan.contains(RuntimeConfigTarget::Hotkey) && config.hotkey.key_binding != old_hotkey {
         use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
         if let Some(old_shortcut) = haven_input::hotkey::KeyCombo::parse(&old_hotkey)
@@ -186,9 +198,8 @@ pub async fn update_settings(
             tracing::warn!("failed to unregister old hotkey {}: {}", old_hotkey, e);
         }
 
-        if let Some(new_shortcut) =
-            haven_input::hotkey::KeyCombo::parse(&settings.hotkey.key_binding)
-                .and_then(|c| crate::to_tauri_shortcut(&c))
+        if let Some(new_shortcut) = haven_input::hotkey::KeyCombo::parse(&config.hotkey.key_binding)
+            .and_then(|c| crate::to_tauri_shortcut(&c))
         {
             let result =
                 app.global_shortcut()
@@ -220,13 +231,13 @@ pub async fn update_settings(
                     tracing::info!(
                         "Hotkey rebound: {} -> {}",
                         old_hotkey,
-                        settings.hotkey.key_binding,
+                        config.hotkey.key_binding,
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
                         "Hotkey rebind conflict: {} - {}",
-                        settings.hotkey.key_binding,
+                        config.hotkey.key_binding,
                         e,
                     );
                 }
@@ -237,7 +248,7 @@ pub async fn update_settings(
             HOTKEY_REBIND_EVENT,
             HotkeyRebindEvent {
                 old_binding: old_hotkey,
-                new_binding: settings.hotkey.key_binding,
+                new_binding: config.hotkey.key_binding,
             },
         );
     }
@@ -263,13 +274,16 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
         return Err("permission key cannot be empty".into());
     }
     state.tools.safety_gateway.revoke_permanent(&key).await;
-    let mut loader = state
-        .config_loader
-        .lock()
+    state
+        .config_service
+        .edit(|config| {
+            config
+                .security
+                .permissions
+                .retain(|permission| permission.key != key);
+            Ok(())
+        })
         .map_err(|e| log_err("revoke_permission", e))?;
-    let perms = &mut loader.config_mut().security.permissions;
-    perms.retain(|p| p.key != key);
-    loader.save().map_err(|e| log_err("revoke_permission", e))?;
     Ok(())
 }
 

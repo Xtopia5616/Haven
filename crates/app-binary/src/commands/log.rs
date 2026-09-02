@@ -94,10 +94,10 @@ pub struct LogInfo {
 #[tauri::command]
 pub fn get_log_info(state: State<'_, Arc<AppState>>) -> Result<LogInfo, String> {
     let cfg = state
-        .config_loader
-        .lock()
+        .config_service
+        .snapshot()
         .map_err(|e| log_err("get_log_info", e))?;
-    let log_cfg = &cfg.config().log;
+    let log_cfg = &cfg.config.log;
     let log_path = log_cfg
         .file_path
         .clone()
@@ -118,10 +118,10 @@ pub fn read_log_tail(
     max_lines: Option<usize>,
 ) -> Result<LogTail, String> {
     let cfg = state
-        .config_loader
-        .lock()
+        .config_service
+        .snapshot()
         .map_err(|e| log_err("read_log_tail", e))?;
-    let log_cfg = &cfg.config().log;
+    let log_cfg = &cfg.config.log;
     if !log_cfg.file_enabled {
         return Err(log_err("read_log_tail", "file logging is disabled"));
     }

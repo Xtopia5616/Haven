@@ -84,9 +84,11 @@ pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Res
         .map_err(|e| log_err("reconnect_mcp", e))?;
     // Restart health monitor for this client
     if let Some(client) = state.tools.mcp_manager.get_client(&name).await {
-        let config = haven_common::config::ConfigLoader::load()
+        let config = state
+            .config_service
+            .snapshot()
             .map_err(|e| log_err("reconnect_mcp", e))?
-            .config()
+            .config
             .mcp_discovery
             .clone();
         let health_interval = std::time::Duration::from_secs(config.health_interval_secs);
@@ -136,16 +138,13 @@ pub async fn refresh_mcp_servers(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<McpRefreshResult, String> {
-    let (servers, discovery) = {
-        let loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("refresh_mcp_servers", e))?;
-        (
-            loader.config().mcp_servers.clone(),
-            loader.config().mcp_discovery.clone(),
-        )
-    };
+    let config = state
+        .config_service
+        .snapshot()
+        .map_err(|e| log_err("refresh_mcp_servers", e))?
+        .config;
+    let servers = config.mcp_servers;
+    let discovery = config.mcp_discovery;
 
     // Re-sync the in-memory server config index with the persisted config so
     // the UI snapshot and the MCP server index never diverge after an
@@ -294,9 +293,9 @@ async fn spawn_monitor_if_client(state: &AppState, name: &str) {
         return;
     };
     let discovery = state
-        .config_loader
-        .lock()
-        .map(|l| l.config().mcp_discovery.clone())
+        .config_service
+        .snapshot()
+        .map(|snapshot| snapshot.config.mcp_discovery)
         .unwrap_or_default();
     let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
     let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);

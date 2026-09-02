@@ -41,9 +41,9 @@ impl DesktopNotifications {
     ) -> bool {
         self.handle
             .state::<Arc<AppState>>()
-            .config_loader
-            .lock()
-            .map(|c| pick(&c.config().notification))
+            .config_service
+            .snapshot()
+            .map(|snapshot| pick(&snapshot.config.notification))
             .unwrap_or(default)
     }
 

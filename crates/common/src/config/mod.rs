@@ -16,8 +16,10 @@ mod endpoint;
 mod loader;
 mod media;
 mod misc;
+mod service;
 
 pub use endpoint::*;
 pub use loader::*;
 pub use media::*;
 pub use misc::*;
+pub use service::*;

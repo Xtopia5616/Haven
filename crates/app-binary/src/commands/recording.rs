@@ -297,10 +297,10 @@ pub async fn process_transcript(
     voice: Option<bool>,
 ) -> Result<haven_agent::ProcessResult, String> {
     let limits = state
-        .config_loader
-        .lock()
+        .config_service
+        .snapshot()
         .map_err(|e| log_err("process_transcript", e))?
-        .config()
+        .config
         .context_limits
         .clone();
     let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)?;

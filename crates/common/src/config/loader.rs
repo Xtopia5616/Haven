@@ -261,9 +261,26 @@ impl ConfigLoader {
     /// from concurrent save() calls or process crashes from corrupting the file.
     pub fn save(&self) -> anyhow::Result<()> {
         let toml_str = toml::to_string_pretty(&self.config)?;
-        let tmp_path = self.path.with_extension("tmp");
-        std::fs::write(&tmp_path, &toml_str)?;
-        std::fs::rename(&tmp_path, &self.path)?;
+        static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.toml");
+        let serial = SAVE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = self.path.with_file_name(format!(
+            ".{file_name}.tmp.{}.{}",
+            std::process::id(),
+            serial
+        ));
+        if let Err(error) = std::fs::write(&tmp_path, &toml_str) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(error.into());
+        }
+        if let Err(error) = std::fs::rename(&tmp_path, &self.path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -282,10 +299,22 @@ impl ConfigLoader {
     /// Apply a frontend `Settings` update, preserving stored api keys when the
     /// incoming value is empty.
     pub fn apply_settings(&mut self, settings: &Settings) {
+        self.config.apply_settings(settings);
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AppConfig {
+    /// Apply a frontend `Settings` update, preserving stored api keys when the
+    /// incoming value is empty.
+    pub fn apply_settings(&mut self, settings: &Settings) {
         // Preserve existing keys if the frontend sends empty strings (masked).
         // `Settings::from` blanks every api key, so the incoming `llm` carries
         // no secrets; the previous live config is the only key source.
-        let prev_llm = self.config.llm.clone();
+        let prev_llm = self.llm.clone();
 
         // Replace the whole `llm` section wholesale instead of copying fields
         // by hand: a new field added to `LlmConfig` is then applied here
@@ -305,31 +334,31 @@ impl ConfigLoader {
         // Drop unassigned role slots (empty provider) so the on-disk config
         // stays lean; `#[serde(default)]` refills any missing slot on load.
         llm.roles.retain(|r| r.is_assigned());
-        self.config.llm = llm;
+        self.llm = llm;
 
-        self.config.default_shell = settings.default_shell;
-        self.config.hotkey = settings.hotkey.clone();
-        self.config.session = settings.session.clone();
+        self.default_shell = settings.default_shell;
+        self.hotkey = settings.hotkey.clone();
+        self.session = settings.session.clone();
         // The settings form sends the full `context_limits` object (the
         // frontend keeps the loaded copy intact and only edits exposed
         // fields), so applying it here cannot wipe fields the UI does not
         // render. `#[serde(default)]` fills any genuinely missing field with
         // its default, which is the expected upgrade behavior for new keys.
-        self.config.context_limits = settings.context_limits.clone();
-        self.config.memory = settings.memory.clone();
+        self.context_limits = settings.context_limits.clone();
+        self.memory = settings.memory.clone();
         // Permanent permissions are mutated by resolve_confirmation /
         // revoke_permission, not the settings form. The form may hold a stale
         // snapshot (Always grant while Settings was open) — overwriting would
         // wipe live grants. Keep on-disk permissions; apply mode/threshold.
-        let prev_permissions = self.config.security.permissions.clone();
-        let prev_encrypt = self.config.security.encrypt_sensitive;
-        self.config.security = settings.security.clone();
-        self.config.security.permissions = prev_permissions;
+        let prev_permissions = self.security.permissions.clone();
+        let prev_encrypt = self.security.encrypt_sensitive;
+        self.security = settings.security.clone();
+        self.security.permissions = prev_permissions;
         // encrypt_sensitive has no UI yet; don't let the form force `true`.
-        self.config.security.encrypt_sensitive = prev_encrypt;
-        self.config.media = {
+        self.security.encrypt_sensitive = prev_encrypt;
+        self.media = {
             let mut media = settings.media.clone();
-            let prev = &self.config.media;
+            let prev = &self.media;
             // OCR remains a dedicated provider with its own credentials; keep
             // masked values when the settings form sends empty strings.
             if media.ocr.api_key.is_empty() {
@@ -346,14 +375,11 @@ impl ConfigLoader {
         // `#[serde(default)]` they deserialize to empty/default values here;
         // overwriting the live config with them would wipe every configured
         // MCP server / skill / tool setting on each settings save. Keep the
-        // current values; `update_settings` restores the authoritative on-disk
-        // copies (written directly by those commands) before saving.
-        self.config.log = settings.log.clone();
-        self.config.notification = settings.notification.clone();
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
+        // current values; specialized typed patches can update these sections
+        // through `ConfigService` without allowing the settings form to wipe
+        // them.
+        self.log = settings.log.clone();
+        self.notification = settings.notification.clone();
     }
 }
 

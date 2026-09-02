@@ -63,7 +63,8 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 
 ### 2.1 `haven-common` —— 共享叶子（数据与工具，无任何内部依赖）
 
-- `config/`：TOML 配置 schema（`AppConfig` / `Settings` / 各子配置）+ `ConfigLoader`。
+- `config/`：TOML 配置 schema（`AppConfig` / `Settings` / 各子配置）+ `ConfigLoader` 文件边界；
+  `ConfigService` 持有版本化 live snapshot、串行 typed patch、原子持久化和无密钥变更通知。
 - `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / newtype）、`CanonicalMessage` /
   `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`Supplement`、`RiskLevel`、
   `HotkeyMode` / `ShellChoice` 等。
@@ -255,7 +256,9 @@ Parent session                    Child session(s)
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
 - `app_state.rs`：装配 `AppState`（db / router / tools / executor / agent / pipeline / shell /
-  config_loader / gateway / stt_client）。
+  `config_service` / gateway / stt_client）。
+- `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
+  `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
 - `lib.rs`：`AgentEvent` → 前端 channel 映射（`TauriEmitter`）、`ShellHandler` /
   `InputHandler` 钩子接线、托盘 / 全局快捷键 / 单实例 / 通知 / 自启 / 日志初始化。
 - `commands/*`：全部 Tauri IPC 命令（recording / session / action / history·memory / model / mcp /

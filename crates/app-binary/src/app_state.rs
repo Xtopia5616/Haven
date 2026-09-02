@@ -2,7 +2,7 @@ use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
 use haven_agent::AgentLayer;
 use haven_agent::SessionExecutor;
-use haven_common::config::ConfigLoader;
+use haven_common::config::{ConfigLoader, ConfigService};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
@@ -41,7 +41,7 @@ pub struct AppState {
     pub pipeline: Arc<InputPipeline>,
     pub shell: Arc<DesktopShell>,
     pub log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
-    pub config_loader: Arc<std::sync::Mutex<ConfigLoader>>,
+    pub config_service: Arc<ConfigService>,
     /// The `rec-{uuid}` id of the in-flight voice recording. Set when a
     /// recording starts (button or hotkey), consumed by
     /// `finalize_transcription`, and shared by every event of the same
@@ -83,7 +83,8 @@ impl AppState {
             }
         });
 
-        let cfg = config_loader.config().clone();
+        let config_service = Arc::new(ConfigService::new(config_loader));
+        let cfg = config_service.snapshot()?.config;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
         let llm_config = cfg.llm.materialize(
@@ -281,8 +282,6 @@ impl AppState {
             t0.elapsed().as_millis()
         );
 
-        let config_loader_arc = Arc::new(std::sync::Mutex::new(config_loader));
-
         // Wire the `self` management tool: the assistant can read its own
         // status, change config, toggle skills/MCP servers, tail logs, and
         // switch the runtime log level (via the tracing reload handles).
@@ -301,7 +300,7 @@ impl AppState {
             }
         }) as Arc<dyn Fn(String) + Send + Sync>);
         let self_ctx = haven_tools::SelfToolContext {
-            config_loader: Some(config_loader_arc.clone()),
+            config_service: Some(config_service.clone()),
             db: Some(db.clone()),
             router: Some(router.clone()),
             log_path,
@@ -341,7 +340,7 @@ impl AppState {
             pipeline,
             shell,
             log_filter_handles: filter_handles,
-            config_loader: config_loader_arc,
+            config_service,
             recording_session: Arc::new(std::sync::Mutex::new(None)),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
         })
@@ -367,7 +366,13 @@ impl AppState {
         let pipeline = self.pipeline.clone();
         let agent = self.agent.clone();
         let bootstrap_ready = self.bootstrap_ready.clone();
-        let cfg = self.config_loader.lock().unwrap().config().clone();
+        let cfg = match self.config_service.snapshot() {
+            Ok(snapshot) => snapshot.config,
+            Err(error) => {
+                tracing::error!("cannot read config for background init: {error}");
+                return;
+            }
+        };
         let mcp_servers = cfg.mcp_servers.clone();
         let mcp_discovery = cfg.mcp_discovery.clone();
         let skills_cfg_root = cfg.skills.root.clone();
@@ -450,7 +455,7 @@ mod tests {
         assert!(state.tools.get_tool("shell").await.is_some());
 
         // The default config is loaded and accessible via the mutex.
-        let cfg = state.config_loader.lock().unwrap().config().clone();
+        let cfg = state.config_service.snapshot().unwrap().config;
         assert!(cfg.session.max_steps > 0);
         assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
@@ -463,24 +468,22 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let loader = ConfigLoader::load_from(&cfg_path).unwrap();
         let state = AppState::new(&db_path, vec![], loader).await.unwrap();
+        let mut config = state.config_service.snapshot().unwrap().config;
+        config.session.max_steps = 42;
         state
-            .config_loader
-            .lock()
-            .unwrap()
-            .config_mut()
-            .session
-            .max_steps = 42;
-        state.config_loader.lock().unwrap().save().unwrap();
+            .config_service
+            .apply_patch(haven_common::config::ConfigPatch::ReplaceAppConfig(config))
+            .unwrap();
         drop(state);
 
         let loader2 = ConfigLoader::load_from(&cfg_path).unwrap();
         let state2 = AppState::new(&db_path, vec![], loader2).await.unwrap();
         assert_eq!(
             state2
-                .config_loader
-                .lock()
+                .config_service
+                .snapshot()
                 .unwrap()
-                .config()
+                .config
                 .session
                 .max_steps,
             42
