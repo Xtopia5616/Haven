@@ -1,6 +1,6 @@
 //! Cross-session messaging / peer-collab: single builtin tool `agent` with
 //! `operation` ∈ list | send | inbox | reply | profile | request | spawn.
-//! Thin tool layer over [`crate::inbox`]'s shared file bus.
+//! Thin tool layer over [`crate::MessagingService`].
 //!
 //! The agent name is the owning session id (injected privately as
 //! `_session_id`, never visible to the LLM). Every call lazily registers the
@@ -29,7 +29,10 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::inbox::{Envelope, InboxBus, MessageType, validate_agent_name};
+#[cfg(test)]
+use crate::inbox::InboxBus;
+use crate::inbox::{AgentStatus, Envelope, MessageType, SendOutcome, validate_agent_name};
+use crate::messaging_service::MessagingService;
 use crate::{OperationIdempotency, Tool, ToolResult};
 
 /// Max envelope field sizes (defensive caps; the bus is append-only JSONL).
@@ -98,16 +101,16 @@ pub fn new_agent_spawner_slot() -> AgentSpawnerSlot {
     Arc::new(RwLock::new(None))
 }
 
-/// Run a blocking bus operation on the blocking pool so lock waits and file
-/// I/O never stall the async executor.
+/// Run a blocking messaging-service operation on the blocking pool so lock
+/// waits and file I/O never stall the async executor.
 async fn blocking<T>(
-    bus: Arc<InboxBus>,
-    f: impl FnOnce(&InboxBus) -> anyhow::Result<T> + Send + 'static,
+    service: Arc<MessagingService>,
+    f: impl FnOnce(&MessagingService) -> anyhow::Result<T> + Send + 'static,
 ) -> anyhow::Result<T>
 where
     T: Send + 'static,
 {
-    let handle: JoinHandle<anyhow::Result<T>> = tokio::task::spawn_blocking(move || f(&bus));
+    let handle: JoinHandle<anyhow::Result<T>> = tokio::task::spawn_blocking(move || f(&service));
     handle.await?
 }
 
@@ -294,7 +297,7 @@ fn check_explicit_type(t: Option<String>) -> anyhow::Result<Option<MessageType>>
     }
 }
 
-fn send_output(outcome: &crate::inbox::SendOutcome, message_id: &str) -> ToolResult {
+fn send_output(outcome: &SendOutcome, message_id: &str) -> ToolResult {
     ToolResult::ok(json!({
         "ok": true,
         "message_id": message_id,
@@ -306,12 +309,12 @@ fn send_output(outcome: &crate::inbox::SendOutcome, message_id: &str) -> ToolRes
 
 /// Shared helpers for messaging ops.
 struct MessagingToolset {
-    bus: Arc<InboxBus>,
+    service: Arc<MessagingService>,
 }
 
 impl MessagingToolset {
-    fn new(bus: Arc<InboxBus>) -> Self {
-        Self { bus }
+    fn new(service: Arc<MessagingService>) -> Self {
+        Self { service }
     }
 
     /// Lazy register (also acts as heartbeat) + check cancellation.
@@ -319,9 +322,9 @@ impl MessagingToolset {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let bus = self.bus.clone();
+        let service = self.service.clone();
         let name = name.to_string();
-        blocking(bus, move |bus| bus.register(&name, &[])).await
+        blocking(service, move |service| service.register(&name, &[])).await
     }
 }
 
@@ -386,9 +389,9 @@ pub struct AgentTool {
 }
 
 impl AgentTool {
-    pub fn new(bus: Arc<InboxBus>, spawner: AgentSpawnerSlot) -> Self {
+    pub fn new(service: Arc<MessagingService>, spawner: AgentSpawnerSlot) -> Self {
         Self {
-            inner: MessagingToolset::new(bus),
+            inner: MessagingToolset::new(service),
             spawner,
         }
     }
@@ -418,8 +421,8 @@ impl AgentTool {
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id)?;
         self.inner.register(&sid, &cancel).await?;
-        let bus = self.inner.bus.clone();
-        let agents = blocking(bus, |bus| bus.list_agents()).await?;
+        let service = self.inner.service.clone();
+        let agents = blocking(service, |service| service.list_agents()).await?;
         Ok(ToolResult::ok(json!({
             "agents": agents,
         })))
@@ -446,15 +449,15 @@ impl AgentTool {
         let expires_at = check_expires_at(params.expires_at)?;
         let explicit_type = check_explicit_type(params.msg_type)?;
 
-        let bus = self.inner.bus.clone();
+        let service = self.inner.service.clone();
 
         // Broadcast: write one envelope per online agent (excluding self).
         if to == "*" {
-            let recipients = blocking(bus.clone(), move |bus| {
-                let agents = bus.list_agents()?;
+            let recipients = blocking(service.clone(), move |service| {
+                let agents = service.list_agents()?;
                 let online: Vec<String> = agents
                     .into_iter()
-                    .filter(|a| a.status == crate::inbox::AgentStatus::Online && a.name != sid)
+                    .filter(|a| a.status == AgentStatus::Online && a.name != sid)
                     .map(|a| a.name)
                     .collect();
                 if online.is_empty() {
@@ -467,7 +470,7 @@ impl AgentTool {
                     env.subject = subject.clone();
                     env.payload = payload.clone();
                     env.expires_at = expires_at.clone();
-                    match bus.deliver(r, &env) {
+                    match service.deliver(r, &env) {
                         Ok(o) => outcomes.push(o),
                         Err(e) => tracing::warn!("broadcast to '{r}' failed: {e}"),
                     }
@@ -491,7 +494,7 @@ impl AgentTool {
         env.payload = payload;
         env.expires_at = expires_at;
         let message_id = env.id.clone();
-        let outcome = blocking(bus, move |bus| bus.deliver(&to, &env)).await?;
+        let outcome = blocking(service, move |service| service.deliver(&to, &env)).await?;
         Ok(send_output(&outcome, &message_id))
     }
 
@@ -502,13 +505,14 @@ impl AgentTool {
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id)?;
         self.inner.register(&sid, &cancel).await?;
-        let bus = self.inner.bus.clone();
-        let (messages, _receipts) = blocking(bus.clone(), move |bus| {
-            let read = bus.read_and_archive(&sid)?;
-            // Auto-ack what we just read so senders learn their message was
-            // consumed (receipts are never acked themselves, no loops).
-            let receipts = bus.send_receipts(&sid, &read);
-            Ok((read, receipts))
+        let service = self.inner.service.clone();
+        let messages = blocking(service, move |service| {
+            let claim = service.claim(&sid)?;
+            let messages = claim.envelopes().to_vec();
+            // Complete the same durable claim before exposing the messages to
+            // the tool caller. A failed claim completion remains retryable.
+            claim.complete()?;
+            Ok(messages)
         })
         .await?;
         let messages: Vec<Value> = messages
@@ -534,9 +538,9 @@ impl AgentTool {
         let payload = check_payload(params.payload)?;
         let expires_at = check_expires_at(params.expires_at)?;
 
-        let bus = self.inner.bus.clone();
+        let service = self.inner.service.clone();
         let sid_for_lookup = sid.clone();
-        let (to, in_reply_to) = blocking(bus.clone(), move |bus| {
+        let (to, in_reply_to) = blocking(service.clone(), move |service| {
             let target = match &params.to {
                 Some(t) if !t.trim().is_empty() => {
                     let t = t.trim().to_string();
@@ -546,7 +550,7 @@ impl AgentTool {
                     // (which key on in_reply_to) still complete.
                     let in_reply_to = match params.in_reply_to.clone() {
                         Some(id) if !id.trim().is_empty() => Some(id),
-                        _ => bus
+                        _ => service
                             .last_received(&sid_for_lookup)?
                             .filter(|env| env.from == t || env.reply_target() == t)
                             .map(|env| env.id),
@@ -557,12 +561,12 @@ impl AgentTool {
                     // Resolve from message history: prefer the explicitly
                     // referenced message, else the most recent received one.
                     if let Some(id) = params.in_reply_to.clone() {
-                        let env = bus.find_message(&sid_for_lookup, &id)?.ok_or_else(|| {
+                        let env = service.find_message(&sid_for_lookup, &id)?.ok_or_else(|| {
                             anyhow::anyhow!("message '{id}' not found in this session's history")
                         })?;
                         (env.reply_target().to_string(), Some(id))
                     } else {
-                        let env = bus.last_received(&sid_for_lookup)?.ok_or_else(|| {
+                        let env = service.last_received(&sid_for_lookup)?.ok_or_else(|| {
                             anyhow::anyhow!(
                                 "no 'to' given and no prior message received — cannot reply"
                             )
@@ -583,7 +587,7 @@ impl AgentTool {
         env.payload = payload;
         env.expires_at = expires_at;
         let message_id = env.id.clone();
-        let outcome = blocking(bus, move |bus| bus.deliver(&to, &env)).await?;
+        let outcome = blocking(service, move |service| service.deliver(&to, &env)).await?;
         Ok(send_output(&outcome, &message_id))
     }
 
@@ -602,13 +606,19 @@ impl AgentTool {
         if role.is_none() && title.is_none() && capabilities.is_empty() {
             anyhow::bail!("provide at least one of role, title, or capabilities");
         }
-        let bus = self.inner.bus.clone();
+        let service = self.inner.service.clone();
         let sid_c = sid.clone();
         let role_c = role.clone();
         let title_c = title.clone();
         let caps_c = capabilities.clone();
-        blocking(bus, move |bus| {
-            bus.register_with_profile(&sid_c, &caps_c, title_c.as_deref(), role_c.as_deref(), None)
+        blocking(service, move |service| {
+            service.register_with_profile(
+                &sid_c,
+                &caps_c,
+                title_c.as_deref(),
+                role_c.as_deref(),
+                None,
+            )
         })
         .await?;
         Ok(ToolResult::ok(json!({
@@ -653,14 +663,14 @@ impl AgentTool {
         env.payload = payload;
         env.expires_at = expires_at;
         let request_id = env.id.clone();
-        let bus = self.inner.bus.clone();
-        let outcome = blocking(bus.clone(), {
+        let service = self.inner.service.clone();
+        let outcome = blocking(service.clone(), {
             let to = to.clone();
-            move |bus| bus.deliver(&to, &env)
+            move |service| service.deliver(&to, &env)
         })
         .await?;
 
-        let mut rx = self.inner.bus.subscribe();
+        let mut rx = self.inner.service.subscribe();
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         let expected_from = to.clone();
         // Scan once immediately (reply may already be present), then wait on
@@ -668,12 +678,12 @@ impl AgentTool {
         // 200ms lock-poll that stampedes under concurrent spawn waits.
         loop {
             let found = {
-                let bus = self.inner.bus.clone();
+                let service = self.inner.service.clone();
                 let sid = sid.clone();
                 let request_id = request_id.clone();
                 let expected_from = expected_from.clone();
-                blocking(bus, move |bus| {
-                    bus.take_matching_replies(&sid, &request_id, &expected_from)
+                blocking(service, move |service| {
+                    service.take_matching_replies(&sid, &request_id, &expected_from)
                 })
                 .await?
             };
@@ -736,10 +746,10 @@ impl AgentTool {
         let role = check_role(params.role)?;
         let capabilities = check_capabilities(params.capabilities)?;
 
-        let bus = self.inner.bus.clone();
+        let service = self.inner.service.clone();
         let parent = sid.clone();
-        let child_count = blocking(bus, move |bus| {
-            Ok::<_, anyhow::Error>(bus.list_children(&parent)?.len())
+        let child_count = blocking(service, move |service| {
+            Ok::<_, anyhow::Error>(service.list_children(&parent)?.len())
         })
         .await?;
         if child_count >= MAX_CHILDREN_PER_PARENT {
@@ -911,7 +921,8 @@ mod tests {
     fn test_tools() -> (tempfile::TempDir, Arc<InboxBus>, AgentTool) {
         let dir = tempfile::tempdir().unwrap();
         let bus = Arc::new(InboxBus::new(dir.path()));
-        let tool = AgentTool::new(bus.clone(), new_agent_spawner_slot());
+        let service = Arc::new(MessagingService::new(bus.clone()));
+        let tool = AgentTool::new(service, new_agent_spawner_slot());
         (dir, bus, tool)
     }
 
@@ -1324,7 +1335,10 @@ mod tests {
 
     #[tokio::test]
     async fn send_requires_operation_in_schema() {
-        let tool = AgentTool::new(Arc::new(InboxBus::default_root()), new_agent_spawner_slot());
+        let tool = AgentTool::new(
+            Arc::new(MessagingService::default_root()),
+            new_agent_spawner_slot(),
+        );
         let err = tool.validate_input(&json!({})).unwrap_err().to_string();
         assert!(err.contains("operation"), "{err}");
         // The schema must not leak the private _session_id field.
@@ -1590,7 +1604,7 @@ mod tests {
                 })
             })
         }));
-        let spawn = AgentTool::new(bus.clone(), slot);
+        let spawn = AgentTool::new(Arc::new(MessagingService::new(bus.clone())), slot);
         let result = spawn
             .execute(
                 with_sid(

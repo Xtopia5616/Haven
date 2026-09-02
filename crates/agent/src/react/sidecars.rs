@@ -13,7 +13,7 @@ use std::sync::MutexGuard;
 
 use haven_common::types::CanonicalMessage;
 use haven_llm::{EndpointRole, ToolDefinition};
-use haven_tools::inbox::InboxBus;
+use haven_tools::MessagingService;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
@@ -24,7 +24,7 @@ use crate::compactor::estimate_message_tokens;
 /// inbox notifier is a shared wake-up signal, but consuming session A's signal
 /// must never postpone session B's delivery.
 pub(super) struct MessagingState {
-    pub(super) bus: InboxBus,
+    pub(super) service: Arc<MessagingService>,
     pub(super) receivers: HashMap<String, watch::Receiver<u64>>,
     pub(super) steps_since_poll: HashMap<String, u32>,
     pub(super) title_cache: HashMap<String, Option<String>>,
@@ -32,9 +32,9 @@ pub(super) struct MessagingState {
 
 impl MessagingState {
     pub(super) fn new() -> Self {
-        let bus = InboxBus::default_root();
+        let service = Arc::new(MessagingService::default_root());
         Self {
-            bus,
+            service,
             receivers: HashMap::new(),
             steps_since_poll: HashMap::new(),
             title_cache: HashMap::new(),

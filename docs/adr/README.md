@@ -73,3 +73,4 @@
 - [0066：有界缓存与上下文一致性](0066-bounded-cache-and-context-consistency.md)
 - [0067：Token-aware 上下文拼接与压缩](0067-token-aware-context-composition.md)
 - [0068：版本化配置服务与运行时应用计划](0068-versioned-config-service.md)
+- [0069：跨 session MessagingService 与统一消息生命周期](0069-messaging-service.md)

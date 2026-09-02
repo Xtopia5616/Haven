@@ -197,16 +197,20 @@ Parent session                    Child session(s)
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`，`operation=` list / send / inbox / reply / profile / request / spawn |
-| 总线 | `haven-tools` `inbox.rs` | `%APPDATA%/haven/inbox`：`agents.json` + 每 agent JSONL 邮箱 / archive；进程内 `InboxNotifier` |
+| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`，`operation=` list / send / inbox / reply / profile / request / spawn；通过 `MessagingService` 调用 |
+| 服务 | `haven-tools` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait 与 receipt 生命周期 |
+| 传输 | `haven-tools` `inbox.rs` | JSONL file transport adapter：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；不向应用暴露同步 drain 语义 |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
 | 接线 | `haven-app-binary` `app_state` | 安装 `AgentSpawner` 回调（tools 不依赖 agent） |
-| 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步 poll inbox；每个 envelope 保留为独立上下文项并在来源边界完成低信任格式化，`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
+| 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
 | 生命周期 | `session/status.rs` | 终端态/`end_session` → BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
 | 信任 / 记忆 | `inference.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
 | UI | 对话页 tool card | `agent` 结构化卡片；自动同伴邮件以 `agent`/`inbox`/`auto` 卡片展示；kickoff 左侧「低信任委托」 |
 
-协议约定：同伴消息 ≠ 用户指令；`in_reply_to` 对齐 request id；子会话默认工作目录仍为 Temp（全局约束）。
+协议约定：同伴消息 ≠ 用户指令；`id` 是稳定的 `msg-{uuid32}`，`in_reply_to` 对齐 request id，
+`delivery_attempt` 记录 at-least-once 重投次数；批量消息必须走 `send → claim → process → ack`。
+当前跨进程仍使用 JSONL adapter，未来可替换为 SessionActor mailbox；子会话默认工作目录仍为
+Temp（全局约束）。
 
 ### 2.5.2 内置 `system` 工具（机器信息与系统控制）
 
@@ -375,3 +379,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-01 | §2.5 Agent/Tools/Memory：收紧上下文、工具与记忆路径的失败安全边界，避免数据库/向量/action 故障被静默伪装（ADR 0065） |
 | 2026-09-01 | §2.3 Memory / §2.5 Agent/Tools：将查询、prompt memory、工具定义与 token estimate 缓存分别提取为有界/版本化结构，按 key/domain 失效并用内容指纹守住上下文一致性（ADR 0066） |
 | 2026-09-01 | §2.5 Agent：上下文 Additional context 改为单项有界拼接，compaction 改为 token-aware 规划，摘要输入/输出有界并保留工具轮次与稳定前缀（ADR 0067） |
+| 2026-09-02 | §2.5 Agent/Tools：以 `MessagingService` 统一 Envelope identity、claim/complete/retry/expiry 与 request/reply/receipt；InboxBus 收窄为 JSONL transport adapter（ADR 0069） |

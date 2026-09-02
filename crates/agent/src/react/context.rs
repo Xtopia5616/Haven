@@ -10,7 +10,8 @@ use crate::react::sidecars::MessagingPoller;
 use crate::session::{ReactContextBatch, SessionExecutor};
 use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::Database;
-use haven_tools::inbox::{Envelope, InboxBus, MessageType};
+use haven_tools::MessageClaim;
+use haven_tools::inbox::{Envelope, MessageType};
 
 /// Fallback interval (in ReAct steps) for the automatic cross-session inbox
 /// check. Delivery notifications drive the check in-process (immediate), and
@@ -37,28 +38,13 @@ pub(super) struct PendingContext {
 /// file in place so a later poll can redeliver the envelope.
 #[derive(Debug)]
 pub(super) struct InboxClaim {
-    bus: InboxBus,
-    recipient: String,
-    envelopes: Vec<Envelope>,
+    claim: MessageClaim,
 }
 
 impl InboxClaim {
     pub(super) async fn complete(self) -> bool {
-        let InboxClaim {
-            bus,
-            recipient,
-            envelopes,
-        } = self;
-        let ids: Vec<String> = envelopes
-            .iter()
-            .map(|envelope| envelope.id.clone())
-            .collect();
-        let result = tokio::task::spawn_blocking(move || {
-            bus.ack_claimed(&recipient, &ids)?;
-            let _receipts = bus.send_receipts(&recipient, &envelopes);
-            Ok::<(), anyhow::Error>(())
-        })
-        .await;
+        let claim = self.claim;
+        let result = tokio::task::spawn_blocking(move || claim.complete().map(|_| ())).await;
 
         match result {
             Ok(Ok(())) => true,
@@ -230,9 +216,9 @@ impl ContextSource {
             }
         };
 
-        let (bus, due) = {
+        let (service, due) = {
             let mut state = self.messaging.lock();
-            let bus = state.bus.clone();
+            let service = state.service.clone();
             let steps = {
                 let steps_since_poll = state
                     .steps_since_poll
@@ -244,7 +230,7 @@ impl ContextSource {
             let rx = state
                 .receivers
                 .entry(session_id.to_string())
-                .or_insert_with(|| bus.subscribe());
+                .or_insert_with(|| service.subscribe());
             let notified = rx.has_changed().unwrap_or(false);
             if notified {
                 let _ = rx.borrow_and_update();
@@ -253,16 +239,16 @@ impl ContextSource {
             if due {
                 state.steps_since_poll.insert(session_id.to_string(), 0);
             }
-            (bus, due)
+            (service, due)
         };
 
         let session_id_owned = session_id.to_string();
         if let Some(inflight) = self.messaging.try_begin_heartbeat(session_id) {
             let heartbeat_session_id = session_id_owned.clone();
             let heartbeat_title = title.clone();
-            let heartbeat_bus = bus.clone();
+            let heartbeat_service = service.clone();
             tokio::task::spawn_blocking(move || {
-                let _ = heartbeat_bus.register_with_title(
+                let _ = heartbeat_service.register_with_title(
                     &heartbeat_session_id,
                     &[],
                     heartbeat_title.as_deref(),
@@ -276,23 +262,20 @@ impl ContextSource {
         }
 
         let poll_session_id = session_id_owned.clone();
-        let read_bus = bus.clone();
-        let messages = match tokio::task::spawn_blocking(move || {
-            let read = read_bus.claim_and_archive(&poll_session_id)?;
-            Ok::<_, anyhow::Error>(read)
-        })
-        .await
-        {
-            Ok(Ok(messages)) => messages,
-            Ok(Err(error)) => {
-                tracing::debug!("messaging inbox poll failed for {session_id}: {error}");
-                return PendingContextBatch::default();
-            }
-            Err(error) => {
-                tracing::debug!("messaging inbox poll join failed: {error}");
-                return PendingContextBatch::default();
-            }
-        };
+        let read_service = service.clone();
+        let claim =
+            match tokio::task::spawn_blocking(move || read_service.claim(&poll_session_id)).await {
+                Ok(Ok(claim)) => claim,
+                Ok(Err(error)) => {
+                    tracing::debug!("messaging inbox poll failed for {session_id}: {error}");
+                    return PendingContextBatch::default();
+                }
+                Err(error) => {
+                    tracing::debug!("messaging inbox poll join failed: {error}");
+                    return PendingContextBatch::default();
+                }
+            };
+        let messages = claim.envelopes().to_vec();
         if messages.is_empty() {
             return PendingContextBatch::default();
         }
@@ -308,11 +291,7 @@ impl ContextSource {
                 })
                 .collect(),
             clears_ask: false,
-            inbox_claim: Some(InboxClaim {
-                bus,
-                recipient: session_id_owned,
-                envelopes: messages,
-            }),
+            inbox_claim: Some(InboxClaim { claim }),
         }
     }
 
@@ -417,6 +396,8 @@ mod format_tests {
 #[cfg(test)]
 mod assembly_tests {
     use super::*;
+    use haven_tools::MessagingService;
+    use haven_tools::inbox::InboxBus;
 
     fn item(source: InjectSource, message_id: Option<&str>, text: &str) -> PendingContext {
         PendingContext {
@@ -476,27 +457,24 @@ mod assembly_tests {
     async fn inbox_claim_is_redeliverable_until_ack() {
         let dir = tempfile::tempdir().unwrap();
         let bus = InboxBus::new(dir.path());
+        let service = MessagingService::new(Arc::new(bus.clone()));
         bus.register("ses-a", &[]).unwrap();
         bus.register("ses-b", &[]).unwrap();
         let envelope = Envelope::new("ses-a", "ses-b", "durable");
         bus.deliver("ses-b", &envelope).unwrap();
 
-        let claimed = bus.claim_and_archive("ses-b").unwrap();
-        assert_eq!(claimed.len(), 1);
+        let claimed = service.claim("ses-b").unwrap();
+        assert_eq!(claimed.envelopes().len(), 1);
         assert_eq!(
-            bus.claim_and_archive("ses-b").unwrap()[0].id,
+            service.claim("ses-b").unwrap().envelopes()[0].id,
             envelope.id,
             "a claim must survive until transcript projection is durable"
         );
 
-        let claim = InboxClaim {
-            bus: bus.clone(),
-            recipient: "ses-b".to_string(),
-            envelopes: claimed,
-        };
+        let claim = InboxClaim { claim: claimed };
         assert!(claim.complete().await);
         assert!(
-            bus.claim_and_archive("ses-b").unwrap().is_empty(),
+            service.claim("ses-b").unwrap().is_empty(),
             "acknowledged envelopes must not be delivered again"
         );
     }

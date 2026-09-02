@@ -143,9 +143,9 @@ pub async fn register_builtin_tools(
     // Cross-session messaging / peer collab: single `agent` tool over the
     // shared file bus. Agents lazily register on first call; spawn needs the
     // desktop-wired spawner slot (None in headless → tool errors clearly).
-    let messaging_bus = Arc::new(crate::inbox::InboxBus::default_root());
+    let messaging_service = Arc::new(crate::messaging_service::MessagingService::default_root());
     tools.push(Arc::new(messaging::AgentTool::new(
-        messaging_bus,
+        messaging_service,
         agent_spawner,
     )));
     let max_tools = limits.max_tools_per_request.max(1);

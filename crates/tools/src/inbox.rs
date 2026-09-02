@@ -11,15 +11,16 @@
 //! - `<name>.archive.jsonl` — read messages kept for audit
 //! - `.lock` — cross-process file mutex (Windows-safe)
 //!
-//! Concurrency model: every mutation (append, read-and-archive, registry
+//! Concurrency model: every mutation (append, claim/ack, registry
 //! update) runs under the `.lock` mutex; registry updates additionally write a
 //! temp file and atomically rename it. Inbox reads are "read then move": the
 //! mailbox is renamed to `.processing` under the lock, so a concurrent append
 //! can never tear a read. ReAct's claim/ack path intentionally keeps that
 //! `.processing` file until transcript projection and its snapshot are durable;
 //! a crash therefore causes at-least-once redelivery, which the agent
-//! de-duplicates by envelope id. The legacy read-and-archive path still drains
-//! the file immediately for synchronous tool calls.
+//! de-duplicates by envelope id. Application callers use
+//! `haven_tools::MessagingService`; transport lifecycle primitives remain
+//! crate-internal so wire storage cannot become a second application protocol.
 //!
 //! Envelopes are single-line JSON per the interop format; ids are canonical
 //! `msg-{uuid32}` ([`haven_common::types::new_id`]). Agent names double as
@@ -182,8 +183,13 @@ pub struct Envelope {
     /// RFC3339 creation time.
     pub created_at: String,
     /// Optional RFC3339 expiry: expired messages are not returned by
-    /// [`InboxBus::read_and_archive`] (still archived for audit).
+    /// [`crate::MessagingService::claim`] (still archived for audit).
     pub expires_at: Option<String>,
+    /// Number of durable delivery attempts for this message. The id remains
+    /// stable across retries; this field is transport delivery state, not a
+    /// new message identity.
+    #[serde(default)]
+    pub delivery_attempt: u32,
 }
 
 impl Envelope {
@@ -201,6 +207,7 @@ impl Envelope {
             payload: None,
             created_at: now_rfc3339(),
             expires_at: None,
+            delivery_attempt: 0,
         }
     }
 
@@ -566,17 +573,14 @@ impl InboxBus {
         })
     }
 
-    /// Read-and-archive: atomically drain this agent's mailbox, append the
-    /// messages to its archive (deduplicated against the archive tail), and
-    /// return the fresh messages. Expired envelopes are archived but not
-    /// returned, and envelopes already archived by a crashed earlier attempt
-    /// are neither re-archived nor returned. Never returns the same message
-    /// twice — even after a crash, because a leftover `.processing` file is
-    /// drained first.
+    /// Test-only regression helper for the removed synchronous drain semantic.
+    /// Application code must use `MessagingService::claim` and complete the
+    /// returned lease after processing.
     ///
     /// After draining, the empty mailbox is recreated so future sends keep
     /// working (an existing mailbox is what `deliver` treats as "agent
     /// registered").
+    #[cfg(test)]
     pub fn read_and_archive(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
@@ -632,12 +636,13 @@ impl InboxBus {
     /// Claim mailbox messages for a durable consumer without acknowledging
     /// them yet.
     ///
-    /// Unlike [`Self::read_and_archive`], this leaves the claimed envelopes in
-    /// `<name>.jsonl.processing`. The consumer must call [`Self::ack_claimed`]
+    /// This leaves the claimed envelopes in `<name>.jsonl.processing`. The
+    /// service must call the acknowledgement primitive
+    /// [`Self::ack_claimed`]
     /// after it has durably projected the batch. A crash between claim and ack
     /// therefore produces at-least-once delivery instead of silently losing a
     /// message after it was archived.
-    pub fn claim_and_archive(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
+    pub(crate) fn claim_and_archive(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
@@ -711,12 +716,16 @@ impl InboxBus {
 
         // Remove expired/corrupt entries from the durable claim and de-dupe
         // repeated envelope ids before returning. Expired messages are still
-        // archived, matching read-and-archive semantics, but must not pin the
-        // processing file forever.
+        // archived, matching the service expiry/archive contract, but must
+        // not pin the processing file forever.
         let mut seen = HashSet::new();
         let active: Vec<Envelope> = envs
             .into_iter()
             .filter(|env| !is_expired(env) && seen.insert(env.id.clone()))
+            .map(|mut env| {
+                env.delivery_attempt = env.delivery_attempt.saturating_add(1);
+                env
+            })
             .collect();
         self.write_processing_unlocked(name, &active)?;
         Ok(active)
@@ -725,7 +734,7 @@ impl InboxBus {
     /// Acknowledge a previously claimed batch. Only matching ids are removed;
     /// messages that arrived after the claim remain in the mailbox and are
     /// merged by the next claim.
-    pub fn ack_claimed(&self, name: &str, ids: &[String]) -> anyhow::Result<()> {
+    pub(crate) fn ack_claimed(&self, name: &str, ids: &[String]) -> anyhow::Result<()> {
         validate_agent_name(name)?;
         if ids.is_empty() {
             return Ok(());
@@ -751,7 +760,8 @@ impl InboxBus {
     }
 
     /// The most recent message this agent received (unread mailbox first,
-    /// then archive tail). Used by `message_reply` to resolve a missing `to`.
+    /// then archive tail). Used by the service to resolve a missing reply
+    /// target.
     pub fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>> {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
@@ -763,7 +773,7 @@ impl InboxBus {
     }
 
     /// Find one envelope by id in this agent's mailbox or archive. Used by
-    /// `message_reply` to resolve the target of a `in_reply_to` reference.
+    /// the service to resolve the target of an `in_reply_to` reference.
     /// The archive is scanned from the tail first (recent replies dominate),
     /// falling back to a full scan when the id is old.
     pub fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
@@ -790,15 +800,15 @@ impl InboxBus {
     }
 
     /// Selectively drain mailbox envelopes that reply to `in_reply_to` from
-    /// `expected_from`, leaving unrelated messages in place. Used by
-    /// `message_request` wait so a blocked RPC does not steal peer mail meant
+    /// `expected_from`, leaving unrelated messages in place. Used by the
+    /// service request wait so a blocked RPC does not steal peer mail meant
     /// for the ReAct auto-inject path, and so a third agent cannot satisfy the
     /// wait by forging `in_reply_to`.
     ///
     /// Matching rule: `in_reply_to` equals the request id, `from` equals the
     /// original recipient, and type is `reply` or `message` (not `receipt`).
     /// Expired matches are archived but not returned.
-    pub fn take_matching_replies(
+    pub(crate) fn take_matching_replies(
         &self,
         name: &str,
         in_reply_to: &str,
@@ -869,9 +879,9 @@ impl InboxBus {
     /// envelope back to its reply target, so the sender learns the message
     /// was actually read. Receipts are never acked themselves, and messages
     /// from ourself get no ack. Best-effort: a failed delivery (recipient
-    /// unregistered) is logged and skipped. Shared by the `message_inbox`
-    /// tool and the ReAct loop's automatic inbox check.
-    pub fn send_receipts(&self, name: &str, read: &[Envelope]) -> Vec<SendOutcome> {
+    /// unregistered) is logged and skipped. Called by
+    /// [`crate::MessageClaim::complete`].
+    pub(crate) fn send_receipts(&self, name: &str, read: &[Envelope]) -> Vec<SendOutcome> {
         let mut outcomes = Vec::new();
         for env in read {
             if env.r#type == MessageType::Receipt || env.from == name {

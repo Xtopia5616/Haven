@@ -414,6 +414,12 @@ MessagingService
 
 收益是让跨 session 协作从“文件队列加若干工具操作”变成可恢复的领域服务，能与第 2.3 节 A 的 `SessionActor`、第 2.3 节 D 的 `ActionService` 形成清晰的命令和事件边界。若应用最终只在单进程运行，可以减少文件总线；若确实需要跨进程，则只保留文件传输适配，不保留重复的内部消费模型。
 
+2026-09-02 已完成第一条迁移切片：`MessagingService` / `MessageTransport` 成为应用层入口，
+`InboxBus` 收窄为 JSONL transport adapter；`agent` 工具、ReAct inbox、peer lifecycle 均使用
+`send → claim → process → complete`，并记录稳定 message id 与 `delivery_attempt`。完整
+`SessionActor` mailbox、supervisor port 以及 spawn callback 的删除仍留在后续阶段；本切片不保留
+运行时 `read_and_archive` 兼容路径。
+
 ### N. P1：拆掉 `self` 超级管理工具，重建受限的 Admin Surface
 
 当前 [`crates/tools/src/builtin/self_tool.rs`](../crates/tools/src/builtin/self_tool.rs) 同时提供状态、config get/set、skills、tools、MCP、logs、sessions/errors 等管理能力。`SelfToolContext` 还直接持有 config loader、数据库、router、日志回调和弱引用的 `ToolsManager`，因此模型可见的一个 `self` 工具实际覆盖了多个服务的读写入口。

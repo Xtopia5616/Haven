@@ -902,14 +902,14 @@ impl AgentLayer {
                 session.title = Some(fallback);
             }
         }
-        let bus = haven_tools::inbox::InboxBus::default_root();
+        let messaging = haven_tools::MessagingService::default_root();
         let child_id = session.id.clone();
         let title = session.title.clone();
         let role = req.role.clone();
         let caps = req.capabilities.clone();
         let parent = req.parent_session_id.clone();
         let register_result = tokio::task::spawn_blocking(move || {
-            bus.register_with_profile(
+            messaging.register_with_profile(
                 &child_id,
                 &caps,
                 title.as_deref(),

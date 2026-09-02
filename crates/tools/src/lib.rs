@@ -4,6 +4,7 @@ pub mod builtin;
 pub mod circuit;
 pub mod inbox;
 pub mod live_output;
+pub mod messaging_service;
 pub mod simulate;
 pub mod skill_runner;
 pub mod tool;
@@ -39,6 +40,7 @@ pub use haven_mcp::{
 };
 pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
 pub use live_output::LiveOutputHub;
+pub use messaging_service::{MessageClaim, MessageTransport, MessagingService};
 pub use skill_runner::SkillRunner;
 pub use tool::{
     ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, OperationIdempotency,

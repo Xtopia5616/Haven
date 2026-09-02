@@ -40,8 +40,10 @@ impl SessionExecutor {
         let sid = session_id.to_string();
         let sid_err = sid.clone();
         tokio::spawn(async move {
-            let bus = haven_tools::inbox::InboxBus::default_root();
-            if let Ok(Err(e)) = tokio::task::spawn_blocking(move || bus.unregister(&sid)).await {
+            let messaging = haven_tools::MessagingService::default_root();
+            if let Ok(Err(e)) =
+                tokio::task::spawn_blocking(move || messaging.unregister(&sid)).await
+            {
                 tracing::debug!("messaging unregister failed for {sid_err}: {e}");
             }
         });
@@ -198,10 +200,10 @@ impl SessionExecutor {
         let descendants = match tokio::task::spawn_blocking({
             let parent = parent.clone();
             move || {
-                let bus = haven_tools::inbox::InboxBus::default_root();
-                let kids = bus.list_descendants(&parent).unwrap_or_default();
+                let messaging = haven_tools::MessagingService::default_root();
+                let kids = messaging.list_descendants(&parent).unwrap_or_default();
                 for child in &kids {
-                    let _ = bus.deliver_system_notice(
+                    let _ = messaging.deliver_system_notice(
                         &parent,
                         child,
                         "Parent session ended; stop work and finish this delegated task.",
