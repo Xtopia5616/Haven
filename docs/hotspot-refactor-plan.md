@@ -552,6 +552,12 @@ cargo test --locked -p haven-mcp
 cargo test --locked -p haven-tools --test mcp_integration
 ```
 
+2026-09-02 已完成阶段 B：`haven-mcp/src/lib.rs` 收窄为模块声明和公共导出，
+协议/内容归一化、stdio/HTTP/SSE transport、单服务器 client、限流/重连/健康监控、
+多服务器 manager/caller 及测试分别迁入 `protocol.rs`、`transport.rs`、`client.rs`、
+`manager.rs`、`tests.rs`；保留既有 `sse.rs`。MCP wire shape、session header、进程回收、
+取消/超时和 payload 上限未变，无临时 facade。
+
 ### 阶段 C：拆后台任务与 shell 辅助模块
 
 目标：[crates/tools/src/bg.rs](../crates/tools/src/bg.rs)
