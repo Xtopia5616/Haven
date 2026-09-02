@@ -5,8 +5,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg::{self, BackgroundActions};
 use crate::live_output::LiveOutputHub;
+use crate::{
+    BackgroundActions, append_windows_diagnostics, build_shell_command_silent, collect_byte_cap,
+    is_progress_clixml, read_stream_capped, sanitize_shell_output, summarize_error,
+    write_output_log,
+};
 use crate::{Tool, ToolExecutionOutcome, ToolResult};
 
 pub struct ShellTool {
@@ -116,7 +120,7 @@ impl ShellTool {
             return Ok(ToolResult::ok(serde_json::Value::Object(body)));
         }
 
-        let mut std_cmd = bg::build_shell_command_silent(&shell, &cmd);
+        let mut std_cmd = build_shell_command_silent(&shell, &cmd);
         if let Some(cwd) = cwd {
             std_cmd.current_dir(cwd);
         }
@@ -126,7 +130,7 @@ impl ShellTool {
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                std_cmd.creation_flags(bg::CREATE_NO_WINDOW);
+                std_cmd.creation_flags(crate::CREATE_NO_WINDOW);
             }
         }
 
@@ -145,7 +149,7 @@ impl ShellTool {
         // gets fully buffered (OOM protection). Mirrors network tool behavior.
         // Live tail: while the command runs, push a bounded preview to the
         // tool card via `agent:tool_output` (skipped when silent or no step id).
-        let max_collect = bg::collect_byte_cap(max_chars);
+        let max_collect = collect_byte_cap(max_chars);
         let step_id = params.step_id.clone().unwrap_or_default();
         let session_id = params.session_id.clone().unwrap_or_default();
         let live = !silent && !step_id.is_empty();
@@ -165,13 +169,13 @@ impl ShellTool {
         } else {
             (None, None, 0)
         };
-        let stdout_fut = bg::read_stream_capped(
+        let stdout_fut = read_stream_capped(
             child.stdout.take(),
             max_collect,
             tail.as_ref().map(Arc::clone),
             tail_max,
         );
-        let stderr_fut = bg::read_stream_capped(
+        let stderr_fut = read_stream_capped(
             child.stderr.take(),
             max_collect,
             tail.as_ref().map(Arc::clone),
@@ -213,7 +217,7 @@ impl ShellTool {
         }
         // Strip PowerShell's NativeCommandError / CLIXML formatting noise so
         // the reported text carries the real output, not the wrapper.
-        let combined = bg::sanitize_shell_output(&raw_combined, &shell);
+        let combined = sanitize_shell_output(&raw_combined, &shell);
 
         let (text, _) = haven_common::encoding::truncate_output(&combined, max_chars);
         let truncated = stdout_overflow || stderr_overflow;
@@ -235,23 +239,23 @@ impl ShellTool {
             // capture so the root cause stays recoverable. Error text is
             // condensed (progress bars dropped, tail kept) and a Windows-trap
             // hint is appended when it matches a common pitfall.
-            let sanitized_stderr = bg::sanitize_shell_output(&stderr, &shell);
+            let sanitized_stderr = sanitize_shell_output(&stderr, &shell);
             let err_source = if !sanitized_stderr.trim().is_empty() {
                 sanitized_stderr.as_str()
             } else if !text.trim().is_empty() {
                 text.as_str()
-            } else if bg::is_progress_clixml(&stderr) {
+            } else if is_progress_clixml(&stderr) {
                 // Progress-only CLIXML already sanitized to empty — do not
                 // reintroduce the noise via the raw stderr fallback.
                 ""
             } else {
                 stderr.as_str()
             };
-            let mut err_text = bg::summarize_error(err_source, 2000);
+            let mut err_text = summarize_error(err_source, 2000);
             let code_str = exit_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "unknown".into());
-            let log_path = bg::write_output_log(
+            let log_path = write_output_log(
                 "shell-logs",
                 &format!(
                     "shell-{}",
@@ -264,7 +268,7 @@ impl ShellTool {
             );
             let log_path = log_path.to_string_lossy().into_owned();
             output["log_path"] = serde_json::Value::String(log_path.clone());
-            err_text = bg::append_windows_diagnostics(&shell, &cmd, &err_text);
+            err_text = append_windows_diagnostics(&shell, &cmd, &err_text);
             err_text = format!("{}\n[full output: {}]", err_text.trim_end(), log_path);
             Ok(ToolResult {
                 success: false,

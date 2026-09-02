@@ -580,6 +580,11 @@ cargo test --locked -p haven-tools
 cargo clippy --workspace --locked -- -D warnings
 ```
 
+2026-09-02 已完成阶段 C：shell runtime、background actions、output 清洗和进程/流处理
+分别迁入 `shell_runtime.rs`、`background_actions.rs`、`output.rs`、`process.rs`，原有
+测试按职责拆分且数量保持不变。workspace 内调用点已全部离开 `crate::bg`；`bg.rs`
+仅保留旧公共路径的薄 re-export facade，待下游消费者迁移后删除，不再新增调用。
+
 ### 阶段 D：拆 Tool contract、registry 和安全网关
 
 目标：[crates/tools/src/tool.rs](../crates/tools/src/tool.rs)

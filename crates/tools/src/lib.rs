@@ -1,10 +1,14 @@
 pub mod adapters;
+mod background_actions;
 pub mod bg;
 pub mod builtin;
 pub mod circuit;
 pub mod inbox;
 pub mod live_output;
 pub mod messaging_service;
+mod output;
+mod process;
+mod shell_runtime;
 pub mod simulate;
 pub mod skill_runner;
 pub mod tool;
@@ -30,6 +34,8 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 }
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
+pub(crate) use background_actions::EventSinkState;
+pub use background_actions::{BackgroundActionCompletion, BackgroundActions, EventSink};
 pub use builtin::{
     AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentSpawnRequest,
     AgentSpawnResult, AgentSpawner, ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool,
@@ -43,6 +49,16 @@ pub use haven_mcp::{
 pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
 pub use live_output::LiveOutputHub;
 pub use messaging_service::{MessageClaim, MessageTransport, MessagingService};
+pub use output::{
+    append_windows_diagnostics, is_progress_clixml, sanitize_shell_output, summarize_error,
+};
+pub(crate) use process::{read_stream_capped, take_tail_if_changed};
+#[cfg(windows)]
+pub use shell_runtime::CREATE_NO_WINDOW;
+pub use shell_runtime::{
+    build_shell_command, build_shell_command_silent, collect_byte_cap, output_log_dir,
+    proxy_env_vars, write_output_log,
+};
 pub use skill_runner::SkillRunner;
 pub use tool::{
     ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, OperationIdempotency,
@@ -132,7 +148,7 @@ pub struct ToolsManager {
     /// fallback.
     router: RwLock<Option<Arc<LlmRouter>>>,
     /// Registry of background actions (shell with background: true).
-    pub background_actions: Arc<bg::BackgroundActions>,
+    pub background_actions: Arc<BackgroundActions>,
     /// Live stdout/stderr previews for foreground tools (shell).
     pub live_outputs: Arc<live_output::LiveOutputHub>,
     /// Registry of in-process scheduled actions (the `schedule` tool). The fired
@@ -174,7 +190,7 @@ impl ToolsManager {
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
         let registry = ToolRegistry::new();
-        let background_actions = Arc::new(bg::BackgroundActions::new());
+        let background_actions = Arc::new(BackgroundActions::new());
         let live_outputs = Arc::new(live_output::LiveOutputHub::new());
         let scheduled_actions = Arc::new(builtin::scheduled_action::ScheduledActionCenter::new());
         // Wire the background-action registry into the scheduled_action center so

@@ -5,8 +5,7 @@
 //! so the chat tool card can expand and show progress. Final observation
 //! remains the LLM/canonical authority; these events are UI-only.
 
-use crate::bg::EventSink;
-use crate::bg::EventSinkState;
+use crate::{EventSink, EventSinkState};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -99,7 +98,7 @@ impl LiveOutputHub {
                 if !running.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
-                if crate::bg::take_tail_if_changed(&tail, &mut last_output) {
+                if crate::take_tail_if_changed(&tail, &mut last_output) {
                     hub.emit_output(&session_id, &step_id, &last_output);
                 }
             }

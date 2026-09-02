@@ -27,9 +27,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::BackgroundActions;
 use crate::ToolBox;
 use crate::ToolRegistry;
-use crate::bg::BackgroundActions;
 use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;

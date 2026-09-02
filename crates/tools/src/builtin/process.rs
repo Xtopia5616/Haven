@@ -113,7 +113,7 @@ impl ProcessTool {
                 }
                 // Route launched commands through a locally detected proxy
                 // (same detection as the shell tool).
-                for (key, val) in crate::bg::proxy_env_vars() {
+                for (key, val) in crate::proxy_env_vars() {
                     if std::env::var_os(&key).is_none() {
                         child.env(key, val);
                     }
@@ -121,7 +121,7 @@ impl ProcessTool {
                 // Hide the console window when spawning GUI-less commands.
                 #[cfg(windows)]
                 {
-                    child.creation_flags(crate::bg::CREATE_NO_WINDOW);
+                    child.creation_flags(crate::CREATE_NO_WINDOW);
                 }
                 child.spawn()?;
                 Ok(ToolResult::ok(serde_json::json!({"launched": cmd})))

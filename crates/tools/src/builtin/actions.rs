@@ -4,8 +4,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg::BackgroundActions;
-use crate::{Tool, ToolConcurrency, ToolResult};
+use crate::{BackgroundActions, Tool, ToolConcurrency, ToolResult};
 
 /// Background-action board for the current session.
 ///

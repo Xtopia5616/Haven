@@ -8,8 +8,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg::{BackgroundActions, EventSink, EventSinkState};
 use crate::tool::RegistryProbe;
+use crate::{BackgroundActions, EventSink, EventSinkState};
 use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// What happens when a scheduled_action fires.
@@ -1357,7 +1357,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_watch_action_fires_with_result_when_action_finishes() {
-        use crate::bg::BackgroundActions;
+        use crate::BackgroundActions;
         let actions = Arc::new(BackgroundActions::new());
         let center = Arc::new(ScheduledActionCenter::new());
         center.set_actions(Some(actions.clone()));
@@ -1407,7 +1407,7 @@ mod tests {
     #[tokio::test]
     async fn test_watch_action_not_persisted_to_db() {
         let (db, _dir) = test_db();
-        let actions = Arc::new(crate::bg::BackgroundActions::new());
+        let actions = Arc::new(crate::BackgroundActions::new());
         let center = Arc::new(ScheduledActionCenter::new());
         center.set_db(Some(db.clone())).await;
         center.set_actions(Some(actions));

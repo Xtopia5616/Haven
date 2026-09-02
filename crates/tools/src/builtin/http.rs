@@ -190,7 +190,7 @@ async fn execute_once(
     // when the user runs one (e.g. 127.0.0.1:10808) — same detection as the
     // shell tool's spawned commands. User-set env vars already short-circuit
     // the probe (reqwest also honors them natively).
-    for (key, val) in crate::bg::proxy_env_vars() {
+    for (key, val) in crate::proxy_env_vars() {
         if key == "HTTP_PROXY" || key == "http_proxy" {
             builder = builder.proxy(reqwest::Proxy::http(&val)?);
         } else if key == "HTTPS_PROXY" || key == "https_proxy" {
