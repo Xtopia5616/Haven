@@ -17,6 +17,8 @@ use crate::{Tool, ToolConcurrency, ToolRegistry, ToolResult};
 use haven_mcp::{McpClientStatus, McpManager};
 use haven_skills::SkillsEngine;
 
+use super::admin_support::{mask_sensitive_config, value_at};
+
 /// App-level dependencies for the native admin surface, wired in by the
 /// desktop shell. Everything is optional so headless/test builds work without
 /// the full app; write operations fail closed when the config service is
@@ -1108,50 +1110,6 @@ impl LogConfigDefaultPath {
     }
 }
 
-/// Recursively remove credentials from model-visible config projections.
-/// `Settings` already blanks LLM/OCR API keys, but MCP environment entries are
-/// intentionally opaque `KEY=VALUE` strings and therefore need a second pass.
-fn mask_sensitive_config(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (k, v) in map.iter_mut() {
-                let key = k.to_ascii_lowercase();
-                if (key.ends_with("api_key")
-                    || key.ends_with("api_secret")
-                    || key.ends_with("password")
-                    || key.ends_with("access_token"))
-                    && v.as_str().is_some_and(|secret| !secret.is_empty())
-                {
-                    *v = Value::String("[masked]".into());
-                } else if key == "env" {
-                    if let Value::Array(entries) = v {
-                        for entry in entries {
-                            if let Some(entry_text) = entry.as_str() {
-                                let name = entry_text
-                                    .split_once('=')
-                                    .map(|(name, _)| name.trim())
-                                    .filter(|name| !name.is_empty())
-                                    .unwrap_or("value");
-                                *entry = Value::String(format!("{name}=[masked]"));
-                            } else {
-                                *entry = Value::String("[masked]".into());
-                            }
-                        }
-                    }
-                } else {
-                    mask_sensitive_config(v);
-                }
-            }
-        }
-        Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                mask_sensitive_config(v);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Keep diagnostics useful without turning a model-visible log tail into a
 /// prompt, command-output, or credential exfiltration channel. Structured
 /// logs remain available to the desktop log viewer; this surface is only a
@@ -1189,20 +1147,6 @@ fn sanitize_log_line(line: &str) -> String {
 
 pub(crate) fn sanitize_diagnostic(text: &str) -> String {
     sanitize_log_line(text)
-}
-
-/// Resolve a dotted path inside a JSON tree, descending through object keys
-/// and numeric array indices (e.g. `mcp_servers.0.name`).
-fn value_at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut cur = root;
-    for seg in path.split('.') {
-        match (cur, seg.parse::<usize>()) {
-            (Value::Array(arr), Ok(idx)) => cur = arr.get(idx)?,
-            (Value::Object(map), _) => cur = map.get(seg)?,
-            _ => return None,
-        }
-    }
-    Some(cur)
 }
 
 /// Validate a skill name for safe use as a directory and as the

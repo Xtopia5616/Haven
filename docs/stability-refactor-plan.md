@@ -124,6 +124,8 @@
 - 2026-09-01：P2 Agent 上下文边界优化：Additional context 限制单项大小，compaction 按 token 规划最近尾部，摘要输入/输出有界并保留工具轮次结构（ADR 0067）。
 - 2026-09-02：P1 Tools 管理面收口：模型目录拆为六个 capability-scoped admin tools，删除任意 dotted `config_set`，配置写入使用 typed `ConfigService` patch，诊断结果脱敏并限制隐私字段；native `SelfTool` 仅暂时保留给 Tauri structured calls（ADR 0070）。
 
+- 2026-09-02：P1 Tools 契约首条迁移：haven_config 使用 TypedToolOperation，由 typed operation 统一提供 args/output/error 与风险、幂等、取消/超时和并发 metadata；其余 admin domain 仍列为后续切片（ADR 0071）。
+
 ## 完成标准
 
 - 固定工具链下：格式化、检查、Clippy、后端测试、前端检查、前端测试、前端生产构建全部通过。

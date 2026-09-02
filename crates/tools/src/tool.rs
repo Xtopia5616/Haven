@@ -321,6 +321,65 @@ pub enum ToolConcurrency {
     Exclusive,
 }
 
+/// The scope in which a typed operation is allowed to observe or mutate
+/// state. This is deliberately separate from the LLM-facing tool name: one
+/// grouped tool can contain both global and session-scoped operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOperationScope {
+    Global,
+    Session,
+}
+
+/// How an operation responds to cancellation and the outer timeout. The
+/// execution wrapper still owns the actual token; this metadata tells the
+/// safety, retry, and audit layers what can be concluded after cancellation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCancellationPolicy {
+    Cooperative,
+    Terminating,
+    Unknown,
+}
+
+/// Complete runtime policy for one typed operation.
+///
+/// `Tool` remains the provider-facing object-safe boundary and therefore
+/// accepts JSON at its edge. Implementations behind that boundary use
+/// [`TypedToolOperation`] and expose this metadata from the same typed
+/// operation that parses and executes the arguments. This prevents risk,
+/// retry, concurrency, and timeout decisions from drifting into unrelated
+/// string matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOperationMetadata {
+    pub capability: &'static str,
+    pub operation: &'static str,
+    pub scope: ToolOperationScope,
+    pub risk_level: RiskLevel,
+    pub idempotency: OperationIdempotency,
+    pub cancellation: ToolCancellationPolicy,
+    pub timeout_secs: u64,
+    pub concurrency: ToolConcurrency,
+}
+
+/// A typed runtime operation. The only JSON conversion is performed by
+/// [`TypedToolAdapter`] at the provider boundary; the operation itself sees
+/// typed arguments, returns a typed output, and reports a typed error.
+#[async_trait::async_trait]
+pub trait TypedToolOperation: Send + Sync {
+    type Args: serde::de::DeserializeOwned + Send;
+    type Output: serde::Serialize + Send;
+    type Error: std::fmt::Display + Send + Sync + 'static;
+
+    fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata;
+    fn default_metadata(&self) -> ToolOperationMetadata;
+    fn input_schema(&self) -> Value;
+
+    async fn execute_typed(
+        &self,
+        args: Self::Args,
+        cancel: CancellationToken,
+    ) -> Result<Self::Output, Self::Error>;
+}
+
 /// Per-session side effects a tool declares through its result. The session
 /// executor applies them (registering skill/MCP adapters, attaching
 /// background actions) without hard-coding tool names, so a new tool that needs
@@ -699,6 +758,110 @@ pub trait Tool: Send + Sync {
                 ))
             }
         }
+    }
+}
+
+/// Object-safe provider adapter for one typed operation group. It performs
+/// JSON parsing only at the LLM/provider edge and delegates all policy and
+/// execution decisions to the typed operation.
+pub struct TypedToolAdapter<O> {
+    name: String,
+    description: String,
+    operation: O,
+}
+
+impl<O> TypedToolAdapter<O> {
+    pub fn new(name: impl Into<String>, description: impl Into<String>, operation: O) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            operation,
+        }
+    }
+
+    pub fn operation(&self) -> &O {
+        &self.operation
+    }
+}
+
+#[async_trait::async_trait]
+impl<O> Tool for TypedToolAdapter<O>
+where
+    O: TypedToolOperation,
+{
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    fn risk_level(&self, input: &Value) -> RiskLevel {
+        serde_json::from_value::<O::Args>(input.clone())
+            .ok()
+            .map(|args| self.operation.metadata(&args).risk_level)
+            .unwrap_or(RiskLevel::Critical)
+    }
+
+    fn idempotency(&self, input: &Value) -> OperationIdempotency {
+        serde_json::from_value::<O::Args>(input.clone())
+            .ok()
+            .map(|args| self.operation.metadata(&args).idempotency)
+            .unwrap_or(OperationIdempotency::Unknown)
+    }
+
+    fn timeout_outcome(&self) -> ToolExecutionOutcome {
+        match self.operation.default_metadata().cancellation {
+            ToolCancellationPolicy::Terminating => ToolExecutionOutcome::TimedOutAndTerminated,
+            ToolCancellationPolicy::Cooperative | ToolCancellationPolicy::Unknown => {
+                ToolExecutionOutcome::TimedOutUnknown
+            }
+        }
+    }
+
+    fn input_schema(&self) -> Value {
+        self.operation.input_schema()
+    }
+
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        serde_json::from_value::<O::Args>(input.clone())
+            .ok()
+            .map(|args| self.operation.metadata(&args).concurrency)
+            .unwrap_or(ToolConcurrency::Exclusive)
+    }
+
+    fn default_timeout_secs(&self) -> u64 {
+        self.operation.default_metadata().timeout_secs
+    }
+
+    fn timeout_secs_for(&self, input: &Value) -> u64 {
+        serde_json::from_value::<O::Args>(input.clone())
+            .ok()
+            .map(|args| self.operation.metadata(&args).timeout_secs)
+            .unwrap_or_else(|| self.default_timeout_secs())
+    }
+
+    fn tool_def(&self) -> ToolDef {
+        let metadata = self.operation.default_metadata();
+        ToolDef::new(
+            self.name(),
+            self.description(),
+            self.input_schema(),
+            metadata.risk_level,
+        )
+    }
+
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let args = parse_tool_input::<O::Args>(&self.name(), input)?;
+        let output = self
+            .operation
+            .execute_typed(args, cancel)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let output = serde_json::to_value(output)
+            .map_err(|error| anyhow::anyhow!("serialize typed tool output: {error}"))?;
+        Ok(ToolResult::ok(output))
     }
 }
 

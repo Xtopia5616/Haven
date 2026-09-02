@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod admin;
+mod admin_support;
 pub mod ask;
 pub mod audio;
 pub mod clipboard;
@@ -33,7 +34,11 @@ use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
 
-pub use admin::{AdminCapability, AdminCapabilityTool, AdminOperationMetadata};
+pub use admin::{
+    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, ConfigAdminContext,
+    ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs, ConfigOperationError,
+    ConfigOperationOutput, ConfigViewOutput, LogLevelOutput,
+};
 pub use memory::{MemoryRecallFn, MemoryRecallSlot, MemoryTool, new_memory_recall_slot};
 pub use messaging::{
     AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot, new_agent_spawner_slot,
@@ -168,6 +173,10 @@ pub async fn register_builtin_tools(
         max_tools_per_request: max_tools,
     }));
     if let Some(ctx) = self_context {
+        let config_admin = Arc::new(admin::new_config_admin_tool(admin::ConfigAdminContext {
+            config_service: ctx.config_service.clone(),
+            set_log_level: ctx.set_log_level.clone(),
+        }));
         // Facts memory needs the DB; like SelfTool it only registers once the
         // desktop shell wires the app context (headless builds skip it).
         tools.push(Arc::new(memory::MemoryTool::new(
@@ -188,10 +197,14 @@ pub async fn register_builtin_tools(
         // model receives capability-scoped adapters, each with its own
         // schema and SafetyGateway permission key.
         for capability in admin::AdminCapability::ALL {
-            tools.push(Arc::new(admin::AdminCapabilityTool::new(
-                tool.clone(),
-                capability,
-            )));
+            if capability == admin::AdminCapability::Config {
+                tools.push(config_admin.clone());
+            } else {
+                tools.push(Arc::new(admin::AdminCapabilityTool::new(
+                    tool.clone(),
+                    capability,
+                )));
+            }
         }
     }
     self_tool_arc

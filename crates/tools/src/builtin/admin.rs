@@ -6,9 +6,14 @@
 //! one capability and an allowlisted operation schema, so the safety gateway
 //! sees a stable tool/capability key before any side effect can run.
 
+use super::admin_support::{mask_sensitive_config, value_at};
 use super::self_tool::{SelfOperation, SelfParams, SelfTool, sanitize_diagnostic};
-use crate::{OperationIdempotency, Tool, ToolConcurrency, ToolDef, ToolResult};
+use crate::{
+    OperationIdempotency, Tool, ToolCancellationPolicy, ToolConcurrency, ToolDef,
+    ToolOperationMetadata, ToolOperationScope, ToolResult, TypedToolAdapter, TypedToolOperation,
+};
 use async_trait::async_trait;
+use haven_common::config::{ConfigPatch, ConfigService, LogLevel};
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::sync::Arc;
@@ -202,6 +207,233 @@ pub struct AdminOperationMetadata {
     pub risk_level: RiskLevel,
     pub session_scoped: bool,
     pub retryable: bool,
+}
+
+/// Native dependencies needed by the typed configuration operation. Keeping
+/// this context smaller than `SelfToolContext` is intentional: the config
+/// contract must not acquire MCP, skills, database, or registry dependencies.
+#[derive(Clone)]
+pub struct ConfigAdminContext {
+    pub config_service: Option<Arc<ConfigService>>,
+    pub set_log_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
+}
+
+/// Typed arguments for the `haven_config` grouped tool. The serde tag is the
+/// sole provider-boundary operation selector; every variant carries only the
+/// fields that its operation can consume.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConfigOperationArgs {
+    ConfigGet {
+        #[serde(default)]
+        path: Option<String>,
+    },
+    LogsLevel {
+        level: LogLevel,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConfigViewOutput {
+    /// A deliberately bounded/masked projection. The dynamic value is kept
+    /// at this read-only inspection boundary because config sections evolve
+    /// independently from the operation contract.
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LogLevelOutput {
+    pub level: LogLevel,
+    pub saved: bool,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ConfigOperationOutput {
+    Config(ConfigViewOutput),
+    LogsLevel(LogLevelOutput),
+}
+
+impl serde::Serialize for ConfigOperationOutput {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            // Preserve the existing model-facing config_get shape while the
+            // internal result remains a typed variant.
+            Self::Config(output) => output.value.serialize(serializer),
+            Self::LogsLevel(output) => output.serialize(serializer),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ConfigOperationError {
+    Cancelled,
+    Unavailable,
+    PathNotFound { path: String },
+    Failed,
+}
+
+impl std::fmt::Display for ConfigOperationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("configuration operation cancelled"),
+            Self::Unavailable => formatter.write_str("configuration administration is unavailable"),
+            Self::PathNotFound { path } => write!(formatter, "config key '{path}' not found"),
+            Self::Failed => formatter.write_str("configuration operation failed"),
+        }
+    }
+}
+
+/// Typed implementation of the `haven_config` capability. It owns the
+/// operation-specific metadata and execution, while `TypedToolAdapter` is
+/// responsible only for converting provider JSON at the edge.
+pub struct ConfigAdminOperation {
+    context: ConfigAdminContext,
+}
+
+impl ConfigAdminOperation {
+    pub fn new(context: ConfigAdminContext) -> Self {
+        Self { context }
+    }
+
+    fn metadata_for(args: &ConfigOperationArgs) -> ToolOperationMetadata {
+        match args {
+            ConfigOperationArgs::ConfigGet { .. } => ToolOperationMetadata {
+                capability: "haven_config",
+                operation: "config_get",
+                scope: ToolOperationScope::Global,
+                risk_level: RiskLevel::Low,
+                idempotency: OperationIdempotency::Idempotent,
+                cancellation: ToolCancellationPolicy::Terminating,
+                timeout_secs: 10,
+                concurrency: ToolConcurrency::SharedResource("config".into()),
+            },
+            ConfigOperationArgs::LogsLevel { .. } => ToolOperationMetadata {
+                capability: "haven_config",
+                operation: "logs_level",
+                scope: ToolOperationScope::Global,
+                risk_level: RiskLevel::Medium,
+                idempotency: OperationIdempotency::Idempotent,
+                cancellation: ToolCancellationPolicy::Terminating,
+                timeout_secs: 10,
+                concurrency: ToolConcurrency::Resource("config".into()),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl TypedToolOperation for ConfigAdminOperation {
+    type Args = ConfigOperationArgs;
+    type Output = ConfigOperationOutput;
+    type Error = ConfigOperationError;
+
+    fn metadata(&self, args: &Self::Args) -> ToolOperationMetadata {
+        Self::metadata_for(args)
+    }
+
+    fn default_metadata(&self) -> ToolOperationMetadata {
+        // The grouped ToolDef advertises the most conservative operation.
+        Self::metadata_for(&ConfigOperationArgs::LogsLevel {
+            level: LogLevel::Info,
+        })
+    }
+
+    fn input_schema(&self) -> Value {
+        serde_json::json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "config_get" },
+                        "path": { "type": "string", "description": "Optional masked config path" }
+                    },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "logs_level" },
+                        "level": { "type": "string", "enum": ["trace", "debug", "info", "warn", "error"] }
+                    },
+                    "required": ["operation", "level"]
+                }
+            ]
+        })
+    }
+
+    async fn execute_typed(
+        &self,
+        args: Self::Args,
+        cancel: CancellationToken,
+    ) -> Result<Self::Output, Self::Error> {
+        if cancel.is_cancelled() {
+            return Err(ConfigOperationError::Cancelled);
+        }
+        let service = self
+            .context
+            .config_service
+            .as_ref()
+            .ok_or(ConfigOperationError::Unavailable)?;
+
+        match args {
+            ConfigOperationArgs::ConfigGet { path } => {
+                let snapshot = service
+                    .snapshot()
+                    .map_err(|_| ConfigOperationError::Failed)?;
+                let mut root = if path.as_deref().is_none_or(str::is_empty) {
+                    serde_json::to_value(
+                        service
+                            .settings()
+                            .map_err(|_| ConfigOperationError::Failed)?,
+                    )
+                    .map_err(|_| ConfigOperationError::Failed)?
+                } else {
+                    serde_json::to_value(&snapshot.config)
+                        .map_err(|_| ConfigOperationError::Failed)?
+                };
+                mask_sensitive_config(&mut root);
+                let value = match path.as_deref().filter(|path| !path.is_empty()) {
+                    Some(path) => value_at(&root, path)
+                        .ok_or_else(|| ConfigOperationError::PathNotFound {
+                            path: path.to_string(),
+                        })?
+                        .clone(),
+                    None => root,
+                };
+                Ok(ConfigOperationOutput::Config(ConfigViewOutput { value }))
+            }
+            ConfigOperationArgs::LogsLevel { level } => {
+                let update = service
+                    .apply_patch(ConfigPatch::LogLevel(level.clone()))
+                    .map_err(|_| ConfigOperationError::Failed)?;
+                if let Some(set_log_level) = &self.context.set_log_level {
+                    set_log_level(level.as_str().to_string());
+                }
+                Ok(ConfigOperationOutput::LogsLevel(LogLevelOutput {
+                    level,
+                    saved: true,
+                    version: update.snapshot.version,
+                }))
+            }
+        }
+    }
+}
+
+/// The provider-facing adapter for the typed config operation.
+pub type ConfigAdminTool = TypedToolAdapter<ConfigAdminOperation>;
+
+pub fn new_config_admin_tool(context: ConfigAdminContext) -> ConfigAdminTool {
+    TypedToolAdapter::new(
+        "haven_config",
+        "Read masked configuration or change the typed runtime log level.",
+        ConfigAdminOperation::new(context),
+    )
 }
 
 impl SelfOperation {
@@ -480,5 +712,156 @@ mod tests {
                 .to_string()
                 .contains("not available through haven_diagnostics")
         );
+    }
+
+    fn config_tool() -> (ConfigAdminTool, Arc<ConfigService>, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let service = Arc::new(ConfigService::new(loader));
+        let tool = new_config_admin_tool(ConfigAdminContext {
+            config_service: Some(service.clone()),
+            set_log_level: None,
+        });
+        (tool, service, dir)
+    }
+
+    #[test]
+    fn typed_config_metadata_carries_operation_policy() {
+        let (tool, _service, _dir) = config_tool();
+        let get = serde_json::json!({
+            "operation": "config_get",
+            "path": "log.level"
+        });
+        assert_eq!(tool.risk_level(&get), RiskLevel::Low);
+        assert_eq!(tool.idempotency(&get), OperationIdempotency::Idempotent);
+        assert_eq!(
+            tool.concurrency(&get),
+            ToolConcurrency::SharedResource("config".into())
+        );
+        assert_eq!(tool.timeout_secs_for(&get), 10);
+
+        let set = serde_json::json!({
+            "operation": "logs_level",
+            "level": "debug"
+        });
+        assert_eq!(tool.risk_level(&set), RiskLevel::Medium);
+        assert_eq!(tool.idempotency(&set), OperationIdempotency::Idempotent);
+        assert_eq!(
+            tool.concurrency(&set),
+            ToolConcurrency::Resource("config".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_config_operation_returns_typed_outputs_and_persists_level() {
+        let (tool, service, _dir) = config_tool();
+        let view = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "config_get",
+                    "path": "log.level"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(view.output, serde_json::json!("info"));
+
+        let changed = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "logs_level",
+                    "level": "debug"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.output["level"], serde_json::json!("debug"));
+        assert_eq!(changed.output["saved"], serde_json::json!(true));
+        assert_eq!(changed.output["version"], serde_json::json!(1));
+        assert_eq!(
+            service.snapshot().unwrap().config.log.level,
+            LogLevel::Debug
+        );
+
+        let repeated = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "logs_level",
+                    "level": "debug"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(repeated.output["version"], serde_json::json!(1));
+        assert_eq!(service.snapshot().unwrap().version, 1);
+    }
+
+    #[tokio::test]
+    async fn typed_config_contract_rejects_unknown_or_missing_fields() {
+        let (tool, _service, _dir) = config_tool();
+        let unknown = serde_json::json!({
+            "operation": "config_get",
+            "path": "log.level",
+            "level": "debug"
+        });
+        assert!(tool.validate_input(&unknown).is_err());
+        assert!(
+            tool.execute(unknown, CancellationToken::new())
+                .await
+                .is_err()
+        );
+
+        let missing = serde_json::json!({ "operation": "logs_level" });
+        assert!(tool.validate_input(&missing).is_err());
+        let error = tool
+            .execute(missing, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("missing field `level`"));
+
+        let removed = serde_json::json!({
+            "operation": "config_set",
+            "path": "session.max_concurrent",
+            "value": 99
+        });
+        assert!(tool.validate_input(&removed).is_err());
+        assert!(
+            tool.execute(removed, CancellationToken::new())
+                .await
+                .is_err()
+        );
+
+        let missing_path = serde_json::json!({
+            "operation": "config_get",
+            "path": "not.a.real.config.key"
+        });
+        let error = tool
+            .execute(missing_path, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not.a.real.config.key"));
+    }
+
+    #[tokio::test]
+    async fn typed_config_operation_is_cancelled_before_side_effect() {
+        let (tool, service, _dir) = config_tool();
+        let before = service.snapshot().unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "logs_level",
+                    "level": "debug"
+                }),
+                cancel,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(service.snapshot().unwrap(), before);
     }
 }

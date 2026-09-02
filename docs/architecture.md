@@ -338,6 +338,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |
 | 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
 | 2026-08-20 | 曾增加 memory / react 改进文档（后续合并为已归档的 backlog） |

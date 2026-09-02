@@ -484,6 +484,13 @@ TypedToolOperation
 
 这项不是要求把每一个 operation 都暴露成独立的 provider tool，而是要求“模型分组”和“运行时契约”分层。它应作为第 2.3 节 E `ToolsManager/tool-core` 重构的独立子任务；收益是让工具授权和行为契约按 capability 组织，而不是继续按字符串和调用方约定组织。
 
+2026-09-02 已完成第一条端到端 typed 切片：haven_config 的
+config_get/logs_level 使用 TypedToolOperation，其 args/output/error、
+capability/scope/risk/idempotency/cancellation/timeout/concurrency metadata
+来自同一 operation；provider JSON 只在 adapter 边界转换。剩余 admin capability
+仍通过临时 SelfTool facade，必须在后续 domain 切片中迁移并删除，不能把
+TypedToolAdapter 退化成新的万能 dispatcher。
+
 ### 补充四项的任务拆分建议
 
 本节四项不要和原来的四项合并为一个大重写；建议分别建立以下任务：

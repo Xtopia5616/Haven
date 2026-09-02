@@ -32,8 +32,9 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use builtin::{
     AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentSpawnRequest,
-    AgentSpawnResult, AgentSpawner, ScheduleMode, SelfOperation, SelfParams, SelfTool,
-    SelfToolContext,
+    AgentSpawnResult, AgentSpawner, ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool,
+    ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput, ConfigViewOutput,
+    LogLevelOutput, ScheduleMode, SelfOperation, SelfParams, SelfTool, SelfToolContext,
 };
 pub use circuit::ToolCircuitRegistry;
 pub use haven_mcp::{
@@ -45,9 +46,10 @@ pub use messaging_service::{MessageClaim, MessageTransport, MessagingService};
 pub use skill_runner::SkillRunner;
 pub use tool::{
     ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, OperationIdempotency,
-    SafetyGateway, Tool, ToolBox, ToolConcurrency, ToolDef, ToolExecutionOutcome, ToolRegistration,
-    ToolRegistry, ToolResult, ToolSignals, extract_ask_signal, extract_notify_signal,
-    is_safe_local_path, is_silent_action,
+    SafetyGateway, Tool, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef,
+    ToolExecutionOutcome, ToolOperationMetadata, ToolOperationScope, ToolRegistration,
+    ToolRegistry, ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation,
+    extract_ask_signal, extract_notify_signal, is_safe_local_path, is_silent_action,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.
