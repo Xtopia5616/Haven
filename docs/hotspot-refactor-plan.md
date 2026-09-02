@@ -639,6 +639,14 @@ cargo test --locked -p haven-app-binary
 cargo check --workspace --locked
 ```
 
+2026-09-02 已完成阶段 E：`haven-app-binary/src/lib.rs` 收窄为模块声明、移动端
+入口和必要导出；`event_bridge.rs` 收口 `TauriEmitter`、AgentEvent 到 Tauri
+wire payload/channel 的唯一映射及 action 生命周期投影，`handlers.rs` 收口
+`HavenShellHandler`、`HavenInputHandler` 与托盘图标适配，`bootstrap.rs` 收口
+Tauri 启动、后台初始化、托盘、全局快捷键、单实例和退出编排。快捷键转换仍
+通过 `lib.rs` 的必要 crate 内导出供 settings command 使用，未新增兼容 facade；
+原有启动顺序、事件 shape、通知双通道和 105 个 app-binary 测试保持不变。
+
 ### 阶段 F：UI 视图拆分
 
 这些目标应在 Rust 热点完成并稳定后处理。

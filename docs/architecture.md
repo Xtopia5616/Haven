@@ -287,8 +287,13 @@ Tauri command 的迁移期 structured surface，未注册进模型目录；后�
   `config_service` / gateway / stt_client）。
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
   `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
-- `lib.rs`：`AgentEvent` → 前端 channel 映射（`TauriEmitter`）、`ShellHandler` /
-  `InputHandler` 钩子接线、托盘 / 全局快捷键 / 单实例 / 通知 / 自启 / 日志初始化。
+- `event_bridge.rs`：`AgentEvent` → 前端 channel 和显式 wire DTO 映射，包含 action
+  生命周期投影与通知副通道。
+- `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配，包含
+  录音生命周期、VAD、自动停止和托盘图标更新。
+- `bootstrap.rs`：Tauri 启动、后台初始化、托盘、全局快捷键、单实例、自启、日志和退出
+  编排；不承载领域逻辑。
+- `lib.rs`：模块声明、移动端 `run()` 入口和必要的 crate 内导出。
 - `commands/*`：全部 Tauri IPC 命令（recording / session / action / history·memory / model / mcp /
   skills / memory / settings / log）。
 - `desktop.rs` / `events.rs` / `autostart.rs`。
@@ -409,3 +414,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-02 | §2.5 Tools：将模型可见的 `haven` 管理入口收窄为六个 capability-scoped admin tools；删除任意 dotted `config_set`，诊断结果增加脱敏与内容边界（ADR 0070） |
 | 2026-09-02 | §3 阶段 B：将 `haven-mcp` 的 protocol、transport、client、manager 与测试从单一 `lib.rs` 拆出，保持 MCP 外部契约不变 |
 | 2026-09-02 | §3 阶段 C：将 `haven-tools` 的 shell runtime、background actions、output/process helpers 从 `bg.rs` 拆出；旧 `bg` 路径仅暂留薄 facade |
+| 2026-09-02 | §3 阶段 E：将 `haven-app-binary` 的事件桥、宿主 handler 与 Tauri 启动编排从 `lib.rs` 拆至 `event_bridge.rs`、`handlers.rs`、`bootstrap.rs`，保持启动与 IPC 契约不变 |
