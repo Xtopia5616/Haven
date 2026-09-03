@@ -1019,8 +1019,10 @@
 		color: var(--md-sys-color-success);
 	}
 	.save-btn.md-btn[data-state='error'] {
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
+		background: transparent !important;
+		color: var(--md-sys-color-error);
+		border-color: transparent;
+		box-shadow: none;
 	}
 	.save-actions {
 		display: flex;
