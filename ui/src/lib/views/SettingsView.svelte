@@ -1026,7 +1026,7 @@
 		min-width: 96px;
 	}
 	:global(.save-btn--clean) {
-		--_btn-bg: transparent;
+		--_btn-bg: var(--md-sys-color-surface-container-high);
 		--_btn-fg: var(--md-sys-color-on-surface-variant);
 		--_btn-state: var(--md-sys-color-on-surface-variant);
 		box-shadow: none;
