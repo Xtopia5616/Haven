@@ -8,6 +8,8 @@
 	/** @type {ToggleItem[]} */
 	let builtinTools = $state([]);
 	let activeTab = $state('builtin');
+	let searchQuery = $state('');
+	let enabledFilter = $state('all');
 	let mcpDialogOpen = $state(false);
 	let mcpEditServer = /** @type {Record<string, any> | null} */ ($state(null));
 
@@ -28,6 +30,30 @@
 	let unlistenMcp;
 	/** @type {ReturnType<typeof setTimeout> | null} */
 	let mcpRefreshTimer = null;
+
+	/** @param {Record<string, any>} item */
+	function matchesResource(item) {
+		const query = searchQuery.trim().toLocaleLowerCase();
+		if (enabledFilter === 'enabled' && item.enabled === false) return false;
+		if (enabledFilter === 'disabled' && item.enabled !== false) return false;
+		if (!query) return true;
+		const text = [item.name, item.desc, item.description, item.url, item.transport]
+			.filter(Boolean)
+			.join(' ')
+			.toLocaleLowerCase();
+		return text.includes(query);
+	}
+
+	const visibleBuiltinTools = $derived(builtinTools.filter(matchesResource));
+	const visibleMcpServers = $derived(mcpServers.filter(matchesResource));
+	const visibleSkills = $derived(skills.filter(matchesResource));
+	const activeResourceCount = $derived(
+		activeTab === 'builtin'
+			? visibleBuiltinTools.length
+			: activeTab === 'mcp'
+				? visibleMcpServers.length
+				: visibleSkills.length,
+	);
 
 	function scheduleMcpRefresh() {
 		// Cold start emits Connecting+Connected per server; coalesce into one
@@ -330,6 +356,22 @@
 		{/each}
 	</div>
 
+	<div class="resource-toolbar" role="search" aria-label="筛选工具资源">
+		<label class="resource-search">
+			<span class="sr-only">搜索工具资源</span>
+			<input class="md-input" type="search" bind:value={searchQuery} placeholder="搜索名称、描述或地址" />
+		</label>
+		<label class="resource-filter">
+			<span class="sr-only">启用状态</span>
+			<select class="md-select" bind:value={enabledFilter}>
+				<option value="all">全部状态</option>
+				<option value="enabled">仅启用</option>
+				<option value="disabled">仅禁用</option>
+			</select>
+		</label>
+		<span class="resource-count" aria-live="polite">{activeResourceCount} 项</span>
+	</div>
+
 	{#if activeTab === 'builtin'}
 		<div class="section">
 			<div class="toolbar">
@@ -344,9 +386,11 @@
 				<div class="empty-state">
 					<p>暂无可用的内置工具</p>
 				</div>
+			{:else if visibleBuiltinTools.length === 0}
+				<div class="empty-state"><p>没有匹配的内置工具</p><p class="hint">换一个关键词或清除状态筛选。</p></div>
 			{:else}
 				<div class="server-list">
-					{#each builtinTools as tool (tool.name)}
+					{#each visibleBuiltinTools as tool (tool.name)}
 						<BuiltinToolCard {tool} onToggle={handleToolToggle} />
 					{/each}
 				</div>
@@ -374,9 +418,11 @@
 						>添加 MCP 服务器</button
 					>
 				</div>
+			{:else if visibleMcpServers.length === 0}
+				<div class="empty-state"><p>没有匹配的 MCP 服务器</p><p class="hint">换一个关键词或清除状态筛选。</p></div>
 			{:else}
 				<div class="server-list">
-					{#each mcpServers as server (server.name)}
+					{#each visibleMcpServers as server (server.name)}
 						<McpServerCard
 							{server}
 							onEdit={openEditDialog}
@@ -405,9 +451,11 @@
 						>打开技能文件夹</button
 					>
 				</div>
+			{:else if visibleSkills.length === 0}
+				<div class="empty-state"><p>没有匹配的技能</p><p class="hint">换一个关键词或清除状态筛选。</p></div>
 			{:else}
 				<div class="server-list">
-					{#each skills as skill (skill.name)}
+					{#each visibleSkills as skill (skill.name)}
 						<SkillCard {skill} onToggle={handleToggle} />
 					{/each}
 				</div>
@@ -438,6 +486,20 @@
 	}
 	.md-tabs {
 		margin-bottom: var(--md-sys-space-2xl);
+	}
+	.resource-toolbar {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		margin-bottom: var(--md-sys-space-lg);
+	}
+	.resource-search { flex: 1 1 280px; min-width: 0; }
+	.resource-filter { width: min(180px, 30%); }
+	.resource-count {
+		flex: 0 0 auto;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 12px;
+		font-variant-numeric: tabular-nums;
 	}
 	.section {
 		background: var(--md-sys-color-surface-container-low);
@@ -496,5 +558,21 @@
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;
 		max-width: 320px;
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+	@media (max-width: 455px) {
+		.resource-toolbar { align-items: stretch; flex-direction: column; }
+		.resource-filter { width: 100%; }
+		.resource-count { align-self: flex-start; }
 	}
 </style>
