@@ -680,7 +680,7 @@
 		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-bottom: 0;
-		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) 0 0;
+		border-radius: 0;
 		box-shadow: var(--md-sys-elevation-1);
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-sm);
 		display: flex;
