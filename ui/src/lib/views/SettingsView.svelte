@@ -946,7 +946,7 @@
 	</div>
 	<div class="save-bar md-toolbar" aria-live="polite">
 		<div class="save-status" data-state={saveState}>
-			{#if saveState === 'saving'}保存中…{:else if saveState === 'error'}{saveError || '保存失败'}{:else if settingsDirty}当前有未保存的更改{:else if saveState === 'saved'}已保存{:else}修改会应用到所有设置分组{/if}
+			{#if saveState === 'saving'}保存中…{:else if saveState === 'error'}{saveError || '保存失败'}{:else if settingsDirty}当前有未保存的更改{:else if saveState === 'saved'}已保存{:else}没有待保存的更改{/if}
 		</div>
 		<div class="save-actions">
 			{#if settingsDirty}<button class="md-btn md-btn--text" type="button" onclick={discardAndReset} disabled={saveState === 'saving'}>放弃更改</button>{/if}
@@ -1085,6 +1085,13 @@
 	.save-btn {
 		border-radius: var(--md-comp-button-radius);
 		box-shadow: var(--md-sys-elevation-3);
+	}
+	.save-btn.md-btn:disabled {
+		opacity: 1;
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-on-surface-variant);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		box-shadow: none;
 	}
 	.save-status {
 		min-width: 0;
