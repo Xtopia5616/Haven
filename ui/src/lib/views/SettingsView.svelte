@@ -307,70 +307,6 @@
 	}
 	const settingsDirty = $derived.by(() => isDirty());
 
-	/** @param {string} id @param {any} source */
-	function sectionValue(id, source) {
-		if (id === 'general') {
-			return {
-				default_shell: source.default_shell,
-				hotkey: source.hotkey,
-				session: source.session,
-				memory: source.memory,
-				security: source.security,
-				notification: source.notification,
-				log: source.log,
-				autostart_enabled: source.autostart_enabled,
-				llm_max_concurrent_requests: source.llm?.max_concurrent_requests,
-			};
-		}
-		if (id === 'models') {
-			const {
-				max_concurrent_requests: _maxConcurrent,
-				stt_use_audio_model: _audioModel,
-				vision_use_image_model: _imageModel,
-				...modelLlm
-			} = source.llm || {};
-			return {
-				llm: modelLlm,
-				key_configured: source.key_configured,
-				key_configured_providers: source.key_configured_providers,
-			};
-		}
-		if (id === 'media') {
-			return {
-				media: source.media,
-				llm: {
-					stt_use_audio_model: source.llm?.stt_use_audio_model,
-					vision_use_image_model: source.llm?.vision_use_image_model,
-				},
-			};
-		}
-		return { context_limits: source.context_limits };
-	}
-
-	/** @param {string} id */
-	function sectionDirty(id) {
-		if (!settingsLoaded || !savedSnapshot) return false;
-		const current = buildPersistableSettings();
-		const snapshot = JSON.parse(savedSnapshot);
-		return JSON.stringify(sectionValue(id, current)) !== JSON.stringify(sectionValue(id, snapshot));
-	}
-
-	/** @param {string} id */
-	function sectionState(id) {
-		if (!settingsLoaded) return 'loading';
-		if (sectionDirty(id)) return 'dirty';
-		if (id === 'models' && llmConfig.providers.length === 0) return 'unconfigured';
-		if (saveState === 'saving') return 'saving';
-		if (saveState === 'error') return 'error';
-		if (saveState === 'saved') return 'saved';
-		return 'ready';
-	}
-
-	/** @param {string} state */
-	function sectionStateLabel(state) {
-		return { loading: '加载中', dirty: '未保存', saving: '保存中', saved: '已保存', error: '保存失败', unconfigured: '未配置', ready: '就绪' }[state] || state;
-	}
-
 	function discardAndReset() {
 		discardChanges();
 		saveState = 'idle';
@@ -896,7 +832,6 @@
 				onclick={() => changeSettingsTab(tab.id)}>
 				<span>{tab.label}</span>
 					<small>{tab.hint}</small>
-					<span class="settings-tab-state" data-state={sectionState(tab.id)}>{sectionStateLabel(sectionState(tab.id))}</span>
 			</button
 			>{/each}
 	</div>
@@ -1028,21 +963,8 @@
 		font-weight: 400;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	.settings-tab-state {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.settings-tab-state[data-state='dirty'],
 	.save-status[data-state='error'] {
 		color: var(--md-sys-color-error);
-	}
-	.settings-tab-state[data-state='unconfigured'] {
-		color: var(--md-sys-color-tertiary);
-	}
-	.settings-tab-state[data-state='saved'] {
-		color: var(--md-sys-color-success);
 	}
 	.settings-callout {
 		display: flex;
@@ -1088,7 +1010,7 @@
 	}
 	.save-btn.md-btn:disabled {
 		opacity: 1;
-		background: var(--md-sys-color-surface-container-highest);
+		background: transparent;
 		color: var(--md-sys-color-on-surface-variant);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		box-shadow: none;
