@@ -4,7 +4,7 @@
 	 * IPC; this component only presents task lifecycle and emits user intent.
 	 */
 	import AsyncState from '$lib/AsyncState.svelte';
-	import { actionIntentLabel } from '$lib/toolIntent.ts';
+	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
 
 	let {
 		runningSessions = [],
@@ -31,7 +31,7 @@
 			id: session.id,
 			kind: 'foreground',
 			title: session.title || session.input || '当前会话',
-			subtitle: session.status === 'paused' ? '已暂停，可继续' : '前台会话',
+			subtitle: session.status === 'paused' ? '已暂停，可继续' : taskKindLabel('foreground'),
 			status: session.status,
 			sessionId: session.id,
 			value: session,
@@ -39,7 +39,7 @@
 		...runningBackgroundActions.map((action) => ({
 			id: action.id,
 			kind: 'background',
-			title: actionIntentLabel(action),
+			title: taskTitle(action),
 			subtitle: sessionTitleFor(action) || '后台任务',
 			status: action.status,
 			sessionId: action.sessionId,
@@ -48,8 +48,8 @@
 		...pendingScheduledActions.map((action) => ({
 			id: action.id,
 			kind: 'scheduled',
-			title: action.title || action.body || '定时任务',
-			subtitle: action.mode === 'continue' ? '续接会话' : '执行工具',
+			title: taskTitle(action),
+			subtitle: scheduleModeLabel(action.mode),
 			status: 'scheduled',
 			sessionId: action.sessionId,
 			value: action,
@@ -57,7 +57,7 @@
 		...completedActions.map((action) => ({
 			id: action.id,
 			kind: action.kind || 'background',
-			title: actionIntentLabel(action),
+			title: taskTitle(action),
 			subtitle: action.kind === 'scheduled' ? '已执行' : actionStatusLabel(action.status),
 			status: action.status || 'completed',
 			sessionId: action.sessionId,
@@ -88,13 +88,13 @@
 	/** @param {any} row */
 	function rowStatus(row) {
 		if (row.kind === 'foreground') return row.status === 'running' ? '运行中' : row.subtitle;
-		if (row.kind === 'scheduled') return '待执行';
+		if (row.kind === 'scheduled') return row.status === 'scheduled' ? '待执行' : '已执行';
 		return actionStatusLabel(row.status);
 	}
 
 	/** @param {any} row */
 	function rowTone(row) {
-		if (row.kind === 'scheduled') return 'scheduled';
+		if (row.kind === 'scheduled') return row.status === 'scheduled' ? 'scheduled' : 'success';
 		if (row.status === 'failed') return 'error';
 		if (row.status === 'completed') return 'success';
 		return row.status === 'running' ? 'running' : 'neutral';
@@ -110,7 +110,7 @@
 	<header class="page-heading task-heading">
 		<div>
 			<h1 id="task-center-title">任务中心</h1>
-			<p>统一查看前台会话、后台任务、定时任务和已完成记录。</p>
+			<p>统一查看会话、后台任务、定时任务和已完成记录。</p>
 		</div>
 		<button class="md-btn md-btn--outlined" type="button" onclick={() => onNewSession?.()}
 			>新建会话</button
@@ -126,7 +126,7 @@
 			<span class="sr-only">任务类型</span>
 			<select class="md-select" bind:value={filter}>
 				<option value="all">全部类型</option>
-				<option value="foreground">前台会话</option>
+				<option value="foreground">会话</option>
 				<option value="background">后台任务</option>
 				<option value="scheduled">定时任务</option>
 			</select>
@@ -182,10 +182,10 @@
 						<div>
 							<span class="task-kicker"
 								>{selectedRow.kind === 'foreground'
-									? '前台会话'
+									? taskKindLabel('foreground')
 									: selectedRow.kind === 'background'
-										? '后台任务'
-										: '定时任务'}</span
+										? taskKindLabel('background')
+										: taskKindLabel('scheduled')}</span
 							>
 							<h2 id="task-detail-title">{selectedRow.title}</h2>
 						</div>
@@ -200,7 +200,7 @@
 								{selectedRow.sessionId
 									? sessionTitleFor({ sessionId: selectedRow.sessionId }) ||
 										selectedRow.sessionId
-									: '独立任务'}
+									: '无关联会话'}
 							</dd>
 						</div>
 						<div>

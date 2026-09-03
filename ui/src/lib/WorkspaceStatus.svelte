@@ -1,6 +1,7 @@
 <script>
 	import MaterialButton from './MaterialButton.svelte';
 	import StatusDot from './StatusDot.svelte';
+	import { taskKindLabel } from '$lib/taskTerminology.ts';
 
 	let {
 		overlay = {},
@@ -22,8 +23,8 @@
 		if (modelState === 'balanced_model') return '备用模型';
 		if (modelState === 'stalled' || modelState === 'waiting') return '等待响应';
 		if (busySessions.size > 0) return `${busySessions.size} 个会话运行中`;
-		if (awaitingBackgroundActive) return '等待后台';
-		if (runningActionCount > 0) return '后台任务';
+		if (awaitingBackgroundActive) return `等待${taskKindLabel('background')}`;
+		if (runningActionCount > 0) return taskKindLabel('background');
 		if (!bootstrapReady) return '加载中';
 		if (llmConnected === 'unconfigured') return '未配置';
 		if (llmConnected === 'disconnected') return '已断开';
@@ -46,11 +47,16 @@
 		return 'outline';
 	});
 
-	const statusTitle = $derived(
-		runningActionCount > 0 || pendingScheduledActions.length > 0
-			? `任务${runningActionCount > 0 ? `（${runningActionCount} 个后台任务运行中）` : ''}${pendingScheduledActions.length > 0 ? `· 定时任务（${pendingScheduledActions.length} 条）` : ''}`
-			: '打开任务中心查看任务状态',
-	);
+	const statusTitle = $derived.by(() => {
+		const parts = [];
+		if (runningActionCount > 0) {
+			parts.push(`${runningActionCount} 个${taskKindLabel('background')}运行中`);
+		}
+		if (pendingScheduledActions.length > 0) {
+			parts.push(`${pendingScheduledActions.length} 条${taskKindLabel('scheduled')}`);
+		}
+		return parts.length > 0 ? `任务中心：${parts.join('，')}` : '打开任务中心查看任务状态';
+	});
 </script>
 
 <div class="status-switch">

@@ -183,7 +183,7 @@ addNotification(e?.message || '操作失败', 'error', 4000);
 ### 2.4 后端事件与桌面通知
 
 - **事件命名**：`domain:action`（`session:created`、`agent:thought`、`recording:error`、`notification:show` …）。`AgentEvent` → channel 的唯一事实来源是 `TauriEmitter::channel`；新增变体必须登记并补单测。
-- **任务（action）事件**：后台任务与定时任务共用 `action:created` / `action:updated` / `action:output` / `action:finished`。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ActionEvent { id, kind, ... }` 后再 emit；前端 `actionStore` 只消费 contracts 层的 camelCase DTO。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。
+- **工作单元（action）事件**：后台任务与定时任务共用 `action:created` / `action:updated` / `action:output` / `action:finished`。`haven_tools` 只产生内部状态，app shell 在唯一投影点转换为 `ActionEvent { id, kind, ... }` 后再 emit；前端 `actionStore` 只消费 contracts 层的 camelCase DTO。完整字段、顺序与敏感字段限制见 `docs/ipc-contracts.md`。用户文案按 `kind` 显示“后台任务”或“定时任务”，不直接显示 `action`。
 - **wire 载荷**：统一 snake_case JSON；前端边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
 - **桌面通知**：统一走 `DesktopNotifications::maybe_show_toast`（`notification.rs`，由 `TauriEmitter` 委托）。文案与应用内 toast 对齐（中文）：
 
@@ -277,7 +277,7 @@ try {
 | `hotkey:conflict` | error toast：`热键冲突: …`（5s） |
 | `agent:balanced_model` | warning toast + 状态芯片（仅当前会话） |
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
-| `action:finished`（后台，非当前会话） | success/error：`后台任务完成/失败: {action_id}`（4s） |
+| `action:finished`（后台任务，非当前会话） | success/error：`后台任务完成/失败: {action_id}`（4s） |
 | 命令 invoke 失败 | error toast（`e.message` 或兜底，4s） |
 
 ### 4.3 只更新状态、不弹 toast

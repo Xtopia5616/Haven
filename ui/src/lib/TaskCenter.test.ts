@@ -49,4 +49,15 @@ describe('TaskCenter', () => {
 		await fireEvent.click(screen.getByRole('button', { name: '停止任务' }));
 		expect(onCancel).toHaveBeenCalledWith('act-1', 'background');
 	});
+
+	it('distinguishes pending scheduled tasks from fired history', () => {
+		render(TaskCenter, {
+			...commonProps,
+			pendingScheduledActions: [{ id: 'act-pending', kind: 'scheduled', body: '稍后继续' }],
+			completedActions: [{ id: 'act-fired', kind: 'scheduled', body: '已经触发' }],
+		});
+
+		expect(screen.getAllByText('待执行').length).toBeGreaterThan(0);
+		expect(screen.getAllByText('已执行').length).toBeGreaterThan(0);
+	});
 });

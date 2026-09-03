@@ -411,10 +411,10 @@ impl AgentLayer {
                     }
                     // Active push so the user never has to poll for status:
                     // a toast (in-app + Windows) announces the transition.
-                    let (title, status_label) = if comp.status == "completed" {
-                        ("后台任务已完成".to_string(), "已完成".to_string())
-                    } else {
-                        ("后台任务失败".to_string(), "失败".to_string())
+                    let (title, status_label) = match comp.status.as_str() {
+                        "completed" => ("后台任务已完成".to_string(), "已完成".to_string()),
+                        "cancelled" => ("后台任务已取消".to_string(), "已取消".to_string()),
+                        _ => ("后台任务失败".to_string(), "失败".to_string()),
                     };
                     let summary =
                         truncate_notification(&reason, agent.limits().notification_summary_chars);
@@ -460,7 +460,7 @@ impl AgentLayer {
                                     .events
                                     .emit_notification(
                                         &fired.title,
-                                        "Scheduled tool was NOT executed: its session is no longer active.",
+                                        "定时任务未执行：关联会话已结束或不存在。",
                                     )
                                     .await;
                                 continue;
@@ -494,8 +494,7 @@ impl AgentLayer {
                                         .emit_notification(
                                             &fired.title,
                                             &format!(
-                                                "Scheduled tool '{tool_name}' was NOT executed: \
-                                                 blocked by the security policy ({reason})."
+                                                    "定时任务未执行：工具“{tool_name}”被安全策略拦截（{reason}）。"
                                             ),
                                         )
                                         .await;
@@ -520,8 +519,7 @@ impl AgentLayer {
                                             .emit_notification(
                                                 &fired.title,
                                                 &format!(
-                                                    "Scheduled tool '{tool_name}' was NOT executed: \
-                                                     confirmation was declined or timed out."
+                                                    "定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"
                                                 ),
                                             )
                                             .await;
@@ -549,8 +547,7 @@ impl AgentLayer {
                                                 .emit_notification(
                                                     &fired.title,
                                                     &format!(
-                                                        "Scheduled tool '{tool_name}' was NOT executed: \
-                                                         confirmation was declined or timed out."
+                                                        "定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"
                                                     ),
                                                 )
                                                 .await;
@@ -565,7 +562,7 @@ impl AgentLayer {
                                                 .emit_notification(
                                                     &fired.title,
                                                     &format!(
-                                                        "schedule tool '{tool_name}':\n{summary}"
+                                                        "定时任务调用工具“{tool_name}”的结果：\n{summary}"
                                                     ),
                                                 )
                                                 .await;
@@ -576,7 +573,7 @@ impl AgentLayer {
                                                 .emit_notification(
                                                     &fired.title,
                                                     &format!(
-                                                        "schedule tool '{tool_name}' failed: {e}"
+                                                        "定时任务调用工具“{tool_name}”失败：{e}"
                                                     ),
                                                 )
                                                 .await;
@@ -592,9 +589,7 @@ impl AgentLayer {
                                 .or_else(|| Some(fired.body.clone()))
                                 .map(|s| s.trim().to_string())
                                 .filter(|s| !s.is_empty())
-                                .unwrap_or_else(|| {
-                                    "ScheduledAction fired: continue the session.".into()
-                                });
+                                .unwrap_or_else(|| "定时任务已触发，请继续当前会话。".into());
                             // A continue-mode action requires the session it
                             // continues; without one it cannot run (there is
                             // no fallback to a brand-new session).

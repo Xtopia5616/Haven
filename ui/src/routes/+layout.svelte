@@ -38,6 +38,7 @@
 	import { syncStore } from '$lib/syncStore.ts';
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
+	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
 	import WorkspaceStatus from '$lib/WorkspaceStatus.svelte';
@@ -387,11 +388,11 @@
 			.sort((a, b) => String(a.dueAt || '').localeCompare(String(b.dueAt || ''))),
 	);
 	const runningBackgroundActions = $derived(
-		backgroundActionEntries.filter((j) => j.status === 'running'),
+		backgroundActionEntries.filter((action) => action.status === 'running'),
 	);
 	const runningActionCount = $derived(runningBackgroundActions.length);
 	// Active chat is plain-paused while its own background action(s) still run
-	// — titlebar should say "等待后台" so it does not look idle/ready.
+	// — titlebar should say "等待后台任务" so it does not look idle/ready.
 	let activeSessionId = $state(/** @type {string | null} */ (null));
 	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
 	const awaitingBackgroundActive = $derived.by(() => {
@@ -424,7 +425,7 @@
 	let sessions = /** @type {Array<any>} */ ($state([]));
 	$effect(() => syncStore(sessionStore, (v) => (sessions = v)));
 
-	// Foreground running tasks: active (non-terminal) conversations.
+	// Foreground running sessions: active (non-terminal) conversations.
 	const runningSessions = $derived(
 		sessions.filter((t) => isBusyStatus(t.status) || isPausedStatus(t.status)),
 	);
@@ -445,22 +446,6 @@
 			addNotification('已删除历史记录', 'success', 2000);
 		} catch (e) {
 			addNotification(`删除历史记录失败: ${formatError(e)}`, 'error', 3000);
-		}
-	}
-
-	/** @param {string} status */
-	function actionStatusLabel(status) {
-		switch (status) {
-			case 'running':
-				return '运行中';
-			case 'completed':
-				return '已完成';
-			case 'failed':
-				return '失败';
-			case 'cancelled':
-				return '已取消';
-			default:
-				return status || '';
 		}
 	}
 

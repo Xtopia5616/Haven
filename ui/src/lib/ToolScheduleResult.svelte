@@ -1,4 +1,6 @@
 <script>
+	import { scheduleModeLabel, taskTitle } from '$lib/taskTerminology.ts';
+
 	let { data = {} } = $props();
 </script>
 
@@ -6,11 +8,11 @@
 	<div class="tool-card-count">{data.scheduled_actions.length} 条定时任务</div>
 	{#if data.scheduled_actions.length > 0}
 		<div class="tool-card-list">
-			{#each data.scheduled_actions as reminder (reminder.id)}
+			{#each data.scheduled_actions as action (action.id)}
 				<div class="scheduled-row">
-					<span class="scheduled-title">{reminder.title || reminder.body}</span>
-					{#if reminder.mode}<span class="scheduled-mode">{reminder.mode}</span>{/if}
-					{#if reminder.fires_at}<span class="scheduled-time">{reminder.fires_at}</span>{/if}
+					<span class="scheduled-title">{taskTitle({ kind: 'scheduled', title: action.title, body: action.body })}</span>
+					<span class="scheduled-mode">{scheduleModeLabel(action.mode)}</span>
+					{#if action.fires_at}<span class="scheduled-time">{action.fires_at}</span>{/if}
 				</div>
 			{/each}
 		</div>
@@ -20,7 +22,7 @@
 {:else}
 	<div class="action-row">
 		<span class="action-id">#{data.id}</span>
-		<span class="scheduled-mode">{data.mode}</span>
+		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>
 	</div>
 	{#if data.fires_at}
 		<div class="tool-card-meta">触发时间 {data.fires_at}</div>

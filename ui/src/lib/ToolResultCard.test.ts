@@ -550,7 +550,7 @@ describe('ToolResultCard actions', () => {
 			content: JSON.stringify({ action_id: 'act-1', status: 'completed', exit_code: 0 }),
 		});
 		expect(screen.getByText('act-1')).toBeTruthy();
-		expect(screen.getByText('completed')).toBeTruthy();
+		expect(screen.getByText('已完成')).toBeTruthy();
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 	});
 });
@@ -593,7 +593,7 @@ describe('ToolResultCard http', () => {
 		});
 		expect(container.querySelector('.status-failed')).toBeTruthy();
 	});
-	it('renders a single reminder set result with id, mode and fires_at', () => {
+	it('renders a single scheduled action result with id, mode and fires_at', () => {
 		render(ToolResultCard, {
 			toolName: 'schedule',
 			content: JSON.stringify({
@@ -604,7 +604,7 @@ describe('ToolResultCard http', () => {
 			}),
 		});
 		expect(screen.getByText('#r42')).toBeTruthy();
-		expect(screen.getByText('tool')).toBeTruthy();
+		expect(screen.getByText('调用工具')).toBeTruthy();
 		expect(screen.getByText('触发时间 2026-08-05T09:00:00+08:00')).toBeTruthy();
 	});
 });

@@ -1198,10 +1198,10 @@
 					}
 				}
 			}
-			// Session lifecycle changes may have reaped background jobs (a session
-			// ending cancels its jobs without terminal events): re-sync the
+			// Session lifecycle changes may have reaped background actions (a session
+			// ending cancels its actions without terminal events): re-sync the
 			// action board so the panel drops entries that no longer exist.
-			// Same for reminders: fired ones are gone from the pending list.
+			// Same for scheduled actions: fired ones are gone from the pending list.
 			refreshActions();
 		})().catch((e) => {
 			addNotification(`加载会话列表失败: ${formatError(e)}`, 'error', 3000);
@@ -1403,7 +1403,7 @@
 					action.sessionId === session.id,
 			)
 		)
-			return '等待后台';
+			return '等待后台任务';
 		return isPausedStatus(session.status) ? '已暂停' : '等待中';
 	}
 

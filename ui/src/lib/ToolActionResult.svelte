@@ -1,15 +1,17 @@
 <script>
+	import { actionStatusLabel } from '$lib/taskTerminology.ts';
+
 	let { data = {} } = $props();
 </script>
 
 {#if data.operation === 'result_injected'}
 	<div class="tool-card-count">
-		后台结果已回灌，正在继续{#if data.action_id} · {data.action_id}{/if}
+		后台任务结果已回灌，正在继续{#if data.action_id} · {data.action_id}{/if}
 	</div>
 	{#if data.status}
 		<div class="action-row">
 			<span class="action-id">{data.action_id || '—'}</span>
-			<span class="status-badge status-{data.status}">{data.status}</span>
+			<span class="status-badge status-{data.status}">{actionStatusLabel(data.status)}</span>
 		</div>
 	{/if}
 {:else if Array.isArray(data.actions)}
@@ -19,7 +21,7 @@
 			{#each data.actions as action (action.action_id ?? action.job_id)}
 				<div class="action-row">
 					<span class="action-id">{action.action_id ?? action.job_id}</span>
-					<span class="status-badge status-{action.status}">{action.status}</span>
+					<span class="status-badge status-{action.status}">{actionStatusLabel(action.status)}</span>
 				</div>
 			{/each}
 		</div>
@@ -29,7 +31,7 @@
 {:else}
 	<div class="action-row">
 		<span class="action-id">{data.action_id ?? data.job_id}</span>
-		<span class="status-badge status-{data.status}">{data.status}</span>
+		<span class="status-badge status-{data.status}">{actionStatusLabel(data.status)}</span>
 	</div>
 	{#if data.exit_code != null}
 		<div class="tool-card-meta">退出码 {data.exit_code}</div>
