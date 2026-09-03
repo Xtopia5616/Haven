@@ -23,6 +23,7 @@
 	import McpServerCard from '$lib/McpServerCard.svelte';
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
+	import AsyncState from '$lib/AsyncState.svelte';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -383,11 +384,9 @@
 				</div>
 			</div>
 			{#if builtinTools.length === 0}
-				<div class="empty-state">
-					<p>暂无可用的内置工具</p>
-				</div>
+				<AsyncState title="暂无可用的内置工具" message="工具列表加载后，可在此查看详情与启用状态。" />
 			{:else if visibleBuiltinTools.length === 0}
-				<div class="empty-state"><p>没有匹配的内置工具</p><p class="hint">换一个关键词或清除状态筛选。</p></div>
+				<AsyncState title="没有匹配的内置工具" message="换一个关键词或清除状态筛选。" />
 			{:else}
 				<div class="server-list">
 					{#each visibleBuiltinTools as tool (tool.name)}
@@ -411,15 +410,9 @@
 				</div>
 			</div>
 			{#if mcpServers.length === 0}
-				<div class="empty-state">
-					<p>尚未配置 MCP 服务器</p>
-					<p class="hint">添加 MCP 服务器，为 Agent 扩展外部工具与资源。</p>
-					<button class="md-btn md-btn--filled" onclick={openAddDialog}
-						>添加 MCP 服务器</button
-					>
-				</div>
+				<AsyncState title="尚未配置 MCP 服务器" message="添加 MCP 服务器，为 Agent 扩展外部工具与资源。" actionLabel="添加 MCP 服务器" onAction={openAddDialog} />
 			{:else if visibleMcpServers.length === 0}
-				<div class="empty-state"><p>没有匹配的 MCP 服务器</p><p class="hint">换一个关键词或清除状态筛选。</p></div>
+				<AsyncState title="没有匹配的 MCP 服务器" message="换一个关键词或清除状态筛选。" />
 			{:else}
 				<div class="server-list">
 					{#each visibleMcpServers as server (server.name)}
@@ -444,15 +437,9 @@
 				</div>
 			</div>
 			{#if skills.length === 0}
-				<div class="empty-state">
-					<p>暂无技能</p>
-					<p class="hint">将 SKILL.md 文件放入技能文件夹，然后点击刷新。</p>
-					<button class="md-btn md-btn--filled" onclick={openFolder}
-						>打开技能文件夹</button
-					>
-				</div>
+				<AsyncState title="暂无技能" message="将 SKILL.md 文件放入技能文件夹，然后点击刷新。" actionLabel="打开技能文件夹" onAction={openFolder} />
 			{:else if visibleSkills.length === 0}
-				<div class="empty-state"><p>没有匹配的技能</p><p class="hint">换一个关键词或清除状态筛选。</p></div>
+				<AsyncState title="没有匹配的技能" message="换一个关键词或清除状态筛选。" />
 			{:else}
 				<div class="server-list">
 					{#each visibleSkills as skill (skill.name)}
@@ -519,21 +506,6 @@
 		letter-spacing: 0.1px;
 		margin-bottom: var(--md-sys-space-md);
 	}
-	.empty-state {
-		text-align: center;
-		padding: var(--md-sys-space-4xl) var(--md-sys-space-xl);
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		color: var(--md-sys-color-on-surface-variant);
-		border: 1px dashed var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container);
-	}
-	.empty-state p {
-		margin: 0;
-	}
 	.server-list {
 		display: flex;
 		flex-direction: column;
@@ -552,12 +524,6 @@
 	.toolbar-actions {
 		display: flex;
 		gap: var(--md-sys-space-sm);
-	}
-	.hint {
-		font-size: 12px;
-		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.7;
-		max-width: 320px;
 	}
 	.sr-only {
 		position: absolute;

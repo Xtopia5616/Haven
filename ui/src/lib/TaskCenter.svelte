@@ -3,6 +3,8 @@
 	 * Unified task list/detail view. The route owns loading, event merging and
 	 * IPC; this component only presents task lifecycle and emits user intent.
 	 */
+	import AsyncState from '$lib/AsyncState.svelte';
+
 	let {
 		runningSessions = [],
 		runningBackgroundActions = [],
@@ -134,11 +136,12 @@
 			<button class="md-btn md-btn--filled" type="button" onclick={() => onNewSession?.()}>开始新会话</button>
 		</div>
 	{:else if filteredRows.length === 0}
-		<div class="task-empty md-card" data-state="empty">
-			<h2>没有匹配的任务</h2>
-			<p>换一个关键词或清除筛选条件。</p>
-			<button class="md-btn md-btn--text" type="button" onclick={() => { query = ''; filter = 'all'; }}>清除筛选</button>
-		</div>
+		<AsyncState
+			title="没有匹配的任务"
+			message="换一个关键词或清除筛选条件。"
+			actionLabel="清除筛选"
+			onAction={() => { query = ''; filter = 'all'; }}
+		/>
 	{:else}
 		<div class="task-layout">
 			<div class="task-list" aria-label="任务列表">
