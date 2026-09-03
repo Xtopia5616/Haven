@@ -59,6 +59,7 @@
 		coalesceTokenTotal,
 	} from '$lib/sessionUsage.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
+	import { dragScroll } from '$lib/dragScroll.ts';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
@@ -1460,7 +1461,7 @@
 	/>
 
 	<div class="messages-wrap">
-		<div class="messages-area" bind:this={messagesEl} onscroll={onScroll}>
+		<div class="messages-area" bind:this={messagesEl} onscroll={onScroll} use:dragScroll={{ axis: 'y' }}>
 			<ConversationTimeline
 				{messages}
 				{hotkeyBinding}
@@ -1581,7 +1582,14 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
+		overflow-x: clip;
+		overscroll-behavior-x: none;
+		touch-action: pan-y;
 		padding: var(--md-sys-space-lg) var(--md-sys-space-md);
+	}
+	:global(.messages-area.drag-scroll--active) {
+		cursor: grabbing;
+		user-select: none;
 	}
 	:global(.jump-bottom) {
 		position: absolute;

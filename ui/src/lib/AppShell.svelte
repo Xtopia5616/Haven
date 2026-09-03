@@ -4,6 +4,7 @@
 	import NotificationToast from './NotificationToast.svelte';
 	import WorkspaceNav from './WorkspaceNav.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import { dragScroll } from '$lib/dragScroll.ts';
 
 	/**
 	 * The shell owns chrome and layout only. Domain state stays in the route and
@@ -54,7 +55,7 @@
 
 	<WorkspaceNav {tabs} {activeTab} onNavigate={onNavigate} />
 
-	<main class="content" class:content--chat={activeTab === 'chat'}>
+	<main class="content" class:content--chat={activeTab === 'chat'} use:dragScroll={{ axis: 'y' }}>
 		{@render content?.()}
 	</main>
 
@@ -113,6 +114,9 @@
 		min-width: 0;
 		min-height: 0;
 		overflow-y: auto;
+		overflow-x: clip;
+		overscroll-behavior-x: none;
+		touch-action: pan-y;
 		padding: var(--md-sys-content-gutter);
 		background: var(--md-sys-color-surface);
 		background-image: linear-gradient(
@@ -123,9 +127,14 @@
 	}
 	.content--chat {
 		overflow: hidden;
+		overflow-x: clip;
 		padding: 0;
 		display: flex;
 		flex-direction: column;
+	}
+	:global(.content.drag-scroll--active) {
+		cursor: grabbing;
+		user-select: none;
 	}
 	:global(.page-shell) {
 		width: 100%;

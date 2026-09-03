@@ -5,6 +5,7 @@
 	import { imageDataUrl } from '$lib/stores.ts';
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
+	import { createDragScrollController } from '$lib/dragScroll.ts';
 	import { PEER_KICKOFF_PREFIX } from '$lib/peerKickoff.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
@@ -203,6 +204,13 @@
 	/** @param {HTMLElement} node */
 	function mdContent(node) {
 		let hintRaf = 0;
+		const dragController = createDragScrollController(node, {
+			axis: 'x',
+			resolveTarget(target) {
+				const element = target instanceof Element ? target.closest('pre, table') : null;
+				return element instanceof HTMLElement ? element : null;
+			},
+		});
 		function scheduleRefresh() {
 			// Skip edge-fade updates while streaming: content mutates every
 			// frame and toggling --sh-l/--sh-r causes visible edge flicker.
@@ -232,6 +240,7 @@
 				node.removeEventListener('contextmenu', handleMdContentContextMenu);
 				node.removeEventListener('wheel', handleMdWheel);
 				node.removeEventListener('scroll', handleMdScrollCapture, true);
+				dragController.destroy();
 				mo.disconnect();
 				ro?.disconnect();
 				if (hintRaf) cancelAnimationFrame(hintRaf);
@@ -615,6 +624,8 @@
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);
 		overflow-x: auto;
+		cursor: grab;
+		touch-action: pan-x;
 		margin: 0 0 0.75em;
 		scrollbar-width: thin;
 		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
@@ -792,6 +803,8 @@
 		border-collapse: collapse;
 		display: block;
 		overflow-x: auto;
+		cursor: grab;
+		touch-action: pan-x;
 		width: 100%;
 		margin: 0 0 0.75em;
 		font-size: var(--md-sys-typescale-label-medium-size);
@@ -827,6 +840,11 @@
 	.md-content :global(table)::-webkit-scrollbar-thumb {
 		background: var(--md-sys-color-outline-variant);
 		border-radius: 2px;
+	}
+	.md-content :global(pre.drag-scroll--active),
+	.md-content :global(table.drag-scroll--active) {
+		cursor: grabbing;
+		user-select: none;
 	}
 	.md-content :global(.md-code-wrap)::before,
 	.md-content :global(.md-code-wrap)::after,
