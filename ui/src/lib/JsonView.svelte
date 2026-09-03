@@ -70,7 +70,7 @@
 
 <div class="jv-view" class:jv-root-view={depth === 0}>
 	{#if depth === 0 && copyable}
-		<div class="jv-toolbar">
+		<div class="jv-toolbar md-toolbar">
 			<span class="jv-root-kind">
 				{#if isArray}
 					数组 · {count}

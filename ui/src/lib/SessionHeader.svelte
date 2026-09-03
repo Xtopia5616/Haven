@@ -1,4 +1,6 @@
 <script>
+	import MaterialButton from './MaterialButton.svelte';
+
 	/**
 	 * SessionHeader — keeps the active conversation identity and lifecycle
 	 * state visible above the message timeline.
@@ -19,9 +21,14 @@
 		<span class="md-badge session-header__status" data-variant={running ? 'success' : 'neutral'}>{status}</span>
 	</div>
 	<div class="session-header__actions">
-		<button class="md-btn md-btn--outlined" type="button" onclick={() => onNew?.()}>新建会话</button>
+		<MaterialButton variant="outlined" onclick={() => onNew?.()}>新建会话</MaterialButton>
 		{#if hasSession}
-			<button class="md-btn md-btn--text session-header__end" type="button" onclick={() => onEnd?.()} aria-label="结束会话">结束</button>
+			<MaterialButton
+				variant="text"
+				className="session-header__end"
+				onclick={() => onEnd?.()}
+				ariaLabel="结束会话"
+			>结束</MaterialButton>
 		{/if}
 	</div>
 </header>
@@ -69,7 +76,7 @@
 		flex-shrink: 0;
 		flex-wrap: wrap;
 	}
-	.session-header__end {
+	:global(.session-header__end) {
 		color: var(--md-sys-color-error);
 	}
 	@media (max-width: 640px) {
@@ -82,11 +89,11 @@
 			flex-direction: column;
 			gap: var(--md-sys-space-xs);
 		}
-		.session-header__actions .md-btn--outlined {
+		.session-header__actions :global(.md-btn--outlined) {
 			font-size: 0;
 			min-width: var(--md-comp-button-touch-height);
 		}
-		.session-header__actions .md-btn--outlined::after {
+		.session-header__actions :global(.md-btn--outlined)::after {
 			content: '+';
 			font-size: 18px;
 		}

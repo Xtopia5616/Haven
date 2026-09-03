@@ -25,7 +25,7 @@
 </script>
 
 <div class="app-shell">
-	<header class="titlebar">
+	<header class="titlebar md-toolbar">
 		<div class="titlebar-left">
 			<Logo size={22} withText={true} />
 		</div>
@@ -33,6 +33,7 @@
 			{@render status?.()}
 			<MaterialIconButton
 				size="toolbar"
+				variant="ghost"
 				onclick={() => onToggleTheme?.()}
 				label="切换主题"
 				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
@@ -68,7 +69,7 @@
 	/>
 	<NotificationToast />
 
-	<footer class="statusbar">
+	<footer class="statusbar md-toolbar">
 		<span class="hotkey-hint">{hotkeyBinding} 开始录音</span>
 		{#if overlay.isRecording}
 			<span class="recording-label">录音中</span>

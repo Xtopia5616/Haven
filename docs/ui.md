@@ -56,8 +56,8 @@
 | Token | 值 | 适用场景 |
 |---|---|---|
 | `--md-sys-shape-extra-small` | 4px | 复选框、微小组件 |
-| `--md-sys-shape-small` | 8px | 按钮、输入框、卡片、chip |
-| `--md-sys-shape-medium` | 12px | 历史卡片 |
+| `--md-sys-shape-small` | 8px | 微小按钮、菜单项、chip |
+| `--md-sys-shape-medium` | 12px | Tab、统一按钮和控制条 |
 | `--md-sys-shape-large` | 16px | Section 容器 |
 | `--md-sys-shape-extra-large` | 28px | Dialog |
 | `--md-sys-shape-full` | 9999px | 全圆角 |
@@ -104,6 +104,7 @@
 |---|---|---|
 | `.md-btn` | 按钮 | `--filled`, `--tonal`, `--elevated`, `--outlined`, `--text`, `--danger`, `--xs` |
 | `.md-icon-btn` | 图标按钮 | `data-variant`、`data-size` |
+| `.md-toolbar` | 统一工具栏的对齐与间距 | — |
 | `.md-input` | 文本输入框 | - |
 | `.md-textarea` | 多行输入 | - |
 | `.md-card` | 卡片容器 | `--elevated`, `--outlined` |
@@ -426,6 +427,7 @@ ui/src/
 │   ├── ConfirmationDialog.svelte
 │   ├── Logo.svelte
 │   ├── MaterialBadge.svelte
+│   ├── MaterialButton.svelte
 │   ├── MaterialCard.svelte
 │   ├── MaterialDialog.svelte
 │   ├── MaterialIconButton.svelte
@@ -457,10 +459,11 @@ ui/src/
 
 | 组件 | 文件名 | 类名 | 变体属性 |
 |---|---|---|---|
-| 按钮 | — | `.md-btn` | `--filled`, `--outlined` 等 class 修饰 |
+| 按钮 | `MaterialButton.svelte` | `.md-btn` | `--filled`, `--outlined` 等 class 修饰 |
 | 卡片 | `MaterialCard.svelte` | `.md-card` | `data-variant` |
 | 徽章 | `MaterialBadge.svelte` | `.md-badge` | `data-variant` |
 | 图标按钮 | `MaterialIconButton.svelte` | `.md-icon-btn` | `data-variant` |
+| 工具栏 | — | `.md-toolbar` | 统一对齐与间距 |
 | 对话框 | `MaterialDialog.svelte` | `.md-dialog` | — |
 | 切换开关 | `MaterialSwitch.svelte` | `.md-switch-track` | `:checked` 伪类 |
 | 数字输入 | `MaterialNumberField.svelte` | `.md-number-field` | — |

@@ -542,7 +542,7 @@
 			class="md-input chat-input"
 			autocomplete="off"></textarea>
 	</div>
-	<div class="toolbar-row">
+	<div class="toolbar-row md-toolbar">
 		<div class="toolbar-left">
 			{@render toolbarLeft?.()}
 		</div>
@@ -828,7 +828,7 @@
 		display: flex;
 		align-items: center;
 		flex-wrap: wrap;
-		gap: var(--md-sys-space-sm);
+		gap: var(--md-comp-toolbar-gap);
 		padding-inline: 0;
 		padding-top: var(--md-sys-space-xs);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
@@ -839,18 +839,18 @@
 		flex-wrap: wrap;
 		display: flex;
 		align-items: center;
-		gap: var(--md-sys-space-sm);
+		gap: var(--md-comp-toolbar-gap);
 	}
 	.toolbar-right {
 		flex: 0 0 auto;
 		min-width: 0;
 		display: flex;
 		align-items: center;
-		gap: var(--md-sys-space-sm);
+		gap: var(--md-comp-toolbar-gap);
 		margin-left: auto;
 	}
 	.toolbar-row :global(.md-btn) {
-		height: 40px;
+		height: var(--md-comp-toolbar-height);
 		padding: 0 var(--md-sys-space-md);
 		font-size: 13px;
 	}

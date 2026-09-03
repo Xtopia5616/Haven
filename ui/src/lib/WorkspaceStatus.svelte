@@ -1,4 +1,5 @@
 <script>
+	import MaterialButton from './MaterialButton.svelte';
 	import StatusDot from './StatusDot.svelte';
 
 	let {
@@ -53,12 +54,12 @@
 </script>
 
 <div class="status-switch">
-	<button
-		class="md-btn status-chip"
+	<MaterialButton
+		variant="outlined"
+		className="status-chip"
 		onclick={() => onOpenTasks?.()}
 		title={statusTitle}
-		aria-label={`应用状态：${statusLabel}，打开任务中心`}
-		type="button"
+		ariaLabel={`应用状态：${statusLabel}，打开任务中心`}
 	>
 		<StatusDot
 			color={statusColor}
@@ -68,7 +69,7 @@
 		{#if runningActionCount > 0 || pendingScheduledActions.length > 0}
 			<span class="status-badge">{runningActionCount + pendingScheduledActions.length}</span>
 		{/if}
-	</button>
+	</MaterialButton>
 </div>
 
 <style>
@@ -76,14 +77,14 @@
 		position: relative;
 		-webkit-app-region: no-drag;
 	}
-	.status-chip {
+	:global(.status-chip) {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		height: var(--md-comp-button-small-height);
 		padding: 0 var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
+		border-radius: var(--md-comp-button-radius);
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 12px;
@@ -93,7 +94,7 @@
 		transition: background var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
-	.status-chip:hover {
+	:global(.status-chip:hover) {
 		background: var(--md-sys-color-surface-container-highest);
 	}
 	.status-badge {

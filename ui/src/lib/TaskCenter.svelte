@@ -112,7 +112,7 @@
 		<button class="md-btn md-btn--outlined" type="button" onclick={() => onNewSession?.()}>新建会话</button>
 	</header>
 
-	<div class="task-toolbar" role="search">
+	<div class="task-toolbar md-toolbar" role="search">
 		<label class="task-search">
 			<span class="sr-only">搜索任务</span>
 			<input class="md-input" type="search" placeholder="搜索任务或会话" bind:value={query} />

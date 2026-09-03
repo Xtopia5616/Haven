@@ -944,7 +944,7 @@
 		<SettingsLimits {contextLimits} />
 	{/if}
 	</div>
-	<div class="save-bar" aria-live="polite">
+	<div class="save-bar md-toolbar" aria-live="polite">
 		<div class="save-status" data-state={saveState}>
 			{#if saveState === 'saving'}保存中…{:else if saveState === 'error'}{saveError || '保存失败'}{:else if settingsDirty}当前有未保存的更改{:else if saveState === 'saved'}已保存{:else}修改会应用到所有设置分组{/if}
 		</div>
@@ -1079,7 +1079,7 @@
 		z-index: 1;
 	}
 	.save-btn {
-		border-radius: var(--md-sys-shape-full);
+		border-radius: var(--md-comp-button-radius);
 		box-shadow: var(--md-sys-elevation-3);
 	}
 	.save-status {

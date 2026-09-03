@@ -357,7 +357,7 @@
 		{/each}
 	</div>
 
-	<div class="resource-toolbar" role="search" aria-label="筛选工具资源">
+	<div class="resource-toolbar md-toolbar" role="search" aria-label="筛选工具资源">
 		<label class="resource-search">
 			<span class="sr-only">搜索工具资源</span>
 			<input class="md-input" type="search" bind:value={searchQuery} placeholder="搜索名称、描述或地址" />
@@ -375,7 +375,7 @@
 
 	{#if activeTab === 'builtin'}
 		<div class="section">
-			<div class="toolbar">
+			<div class="toolbar md-toolbar">
 				<h2>内置工具</h2>
 				<div class="toolbar-actions">
 					<button class="md-btn md-btn--outlined" onclick={resetToolCircuits}>
@@ -397,7 +397,7 @@
 		</div>
 	{:else if activeTab === 'mcp'}
 		<div class="section">
-			<div class="toolbar">
+			<div class="toolbar md-toolbar">
 				<h2>MCP 服务器</h2>
 				<div class="toolbar-actions">
 					<button class="md-btn md-btn--outlined" onclick={refreshMcpList}>刷新</button>
@@ -429,7 +429,7 @@
 		</div>
 	{:else}
 		<div class="section">
-			<div class="toolbar">
+			<div class="toolbar md-toolbar">
 				<h2>技能</h2>
 				<div class="toolbar-actions">
 					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>刷新</button>

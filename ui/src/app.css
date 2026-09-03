@@ -179,7 +179,10 @@
 	--md-comp-button-small-height: 40px;
 	--md-comp-button-touch-height: 48px;
 	--md-comp-button-hpadding: 16px;
-	--md-comp-button-pressed-radius: 8px;
+	--md-comp-button-radius: var(--md-sys-shape-medium);
+	--md-comp-button-pressed-radius: var(--md-sys-shape-medium);
+	--md-comp-toolbar-height: var(--md-comp-button-small-height);
+	--md-comp-toolbar-gap: var(--md-sys-space-sm);
 	--md-comp-textfield-container-height: 40px;
 	--md-comp-textfield-corner: 8px;
 	--md-comp-tab-container-height: 56px;
@@ -505,7 +508,7 @@ samp {
 	letter-spacing: 0.1px;
 	line-height: 1;
 	border: var(--_btn-border);
-	border-radius: var(--md-sys-shape-small);
+	border-radius: var(--md-comp-button-radius);
 	background: var(--_btn-bg);
 	color: var(--_btn-fg);
 	cursor: pointer;
@@ -517,13 +520,21 @@ samp {
 		border-radius var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized),
 		transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 }
+
+/* Shared flex geometry for title, status, input, and route action bars. */
+.md-toolbar {
+	display: flex;
+	align-items: center;
+	gap: var(--md-comp-toolbar-gap);
+}
+
 .md-btn svg {
 	width: var(--md-sys-icon-size);
 	height: var(--md-sys-icon-size);
 }
-/* M3 expressive: shape morph to square-ish on press. */
+/* Keep the same control geometry while expressing press through scale/state. */
 .md-btn:active {
-	border-radius: var(--md-sys-shape-small);
+	border-radius: var(--md-comp-button-pressed-radius);
 	transform: scale(0.97);
 }
 .md-btn:disabled {

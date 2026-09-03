@@ -2,7 +2,7 @@
 	/**
 	 * Material Icon Button — reusable icon button with compact and toolbar sizes.
 	 * @prop {string} label — aria-label
-	 * @prop {'default'|'danger'|'danger-outline'|'primary'|'tonal'} variant
+	 * @prop {'default'|'ghost'|'danger'|'danger-outline'|'primary'|'tonal'} variant
 	 * @prop {'default'|'toolbar'} size — visual size used by the surrounding layout
 	 * @prop {function} onclick
 	 * @prop {boolean} disabled
@@ -45,7 +45,7 @@
 		color: var(--md-sys-color-on-surface-variant);
 		width: var(--md-comp-icon-button-compact-size);
 		height: var(--md-comp-icon-button-compact-size);
-		border-radius: var(--md-sys-shape-small);
+		border-radius: var(--md-comp-button-radius);
 		cursor: pointer;
 		font-size: 14px;
 		display: inline-flex;
@@ -62,7 +62,7 @@
 		height: var(--md-comp-icon-button-size);
 		min-width: var(--md-comp-icon-button-size);
 		min-height: var(--md-comp-icon-button-size);
-		border-radius: var(--md-sys-shape-small);
+		border-radius: var(--md-comp-button-radius);
 	}
 	.md-icon-btn[data-size='toolbar']::after {
 		content: '';
@@ -89,6 +89,15 @@
 	}
 	.md-icon-btn:hover {
 		background: var(--md-sys-color-surface-container-highest);
+	}
+	.md-icon-btn[data-variant='ghost'] {
+		background: transparent;
+		border-color: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.md-icon-btn[data-variant='ghost']:hover {
+		background: var(--md-sys-color-surface-container-highest);
+		border-color: transparent;
 	}
 	.md-icon-btn[data-variant='primary'] {
 		background: var(--md-sys-color-primary);

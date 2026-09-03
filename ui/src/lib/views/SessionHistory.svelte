@@ -42,7 +42,7 @@
 </script>
 
 <div class="history-view">
-	<div class="filter-bar">
+	<div class="filter-bar md-toolbar">
 		<input
 			class="md-input"
 			type="text"
@@ -69,7 +69,7 @@
 	</div>
 
 	{#if selectMode && sessions.length > 0}
-		<div class="select-bar">
+		<div class="select-bar md-toolbar">
 			<button class="select-all-row" onclick={() => onToggleSelectAll()}
 				><div
 					class="md-checkbox-static"

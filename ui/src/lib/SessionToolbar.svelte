@@ -1,4 +1,5 @@
 <script>
+	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 
 	let {
@@ -26,11 +27,11 @@
 </script>
 
 <div class="session-switch">
-	<button
-		class="md-btn md-btn--outlined session-switch-btn"
+	<MaterialButton
+		variant="outlined"
+		className="session-switch-btn"
 		onclick={() => onToggleSessionMenu()}
 		title={showSessionMenu ? '切换并行会话或开始新会话' : '开始一个新会话'}
-		type="button"
 	>
 		<svg
 			width="20"
@@ -59,7 +60,7 @@
 		{#if parallelSessions.length > 0}
 			<span class="session-switch-badge">{parallelSessions.length}</span>
 		{/if}
-	</button>
+	</MaterialButton>
 	{#if sessionMenuOpen}
 		<div class="session-menu">
 			<div class="session-menu-title">正在执行的会话</div>
@@ -202,7 +203,7 @@
 		position: relative;
 		flex-shrink: 0;
 	}
-	.session-switch-btn {
+	:global(.session-switch-btn) {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
@@ -312,9 +313,9 @@
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		min-width: 84px;
-		height: 40px;
+		height: var(--md-comp-toolbar-height);
 		padding: 0 var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-corner-medium, 8px);
+		border-radius: var(--md-comp-button-radius);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		background: var(--md-sys-color-surface-container, transparent);
 		color: var(--md-sys-color-on-surface-variant);

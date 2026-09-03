@@ -426,7 +426,7 @@
 </script>
 
 <div class="limits-view">
-	<div class="limits-toolbar">
+	<div class="limits-toolbar md-toolbar">
 		<p class="limits-legend">
 			红色边框为<b>危险项</b>：调大会扩大内存 / 成本 / 攻击面，默认排在每组底部，可折叠。
 		</p>
