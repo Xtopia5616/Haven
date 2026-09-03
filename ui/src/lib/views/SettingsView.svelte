@@ -307,46 +307,52 @@
 	}
 	const settingsDirty = $derived.by(() => isDirty());
 
+	/** @param {string} id @param {any} source */
+	function sectionValue(id, source) {
+		if (id === 'general') {
+			return {
+				default_shell: source.default_shell,
+				hotkey: source.hotkey,
+				session: source.session,
+				memory: source.memory,
+				security: source.security,
+				notification: source.notification,
+				log: source.log,
+				autostart_enabled: source.autostart_enabled,
+				llm_max_concurrent_requests: source.llm?.max_concurrent_requests,
+			};
+		}
+		if (id === 'models') {
+			const {
+				max_concurrent_requests: _maxConcurrent,
+				stt_use_audio_model: _audioModel,
+				vision_use_image_model: _imageModel,
+				...modelLlm
+			} = source.llm || {};
+			return {
+				llm: modelLlm,
+				key_configured: source.key_configured,
+				key_configured_providers: source.key_configured_providers,
+			};
+		}
+		if (id === 'media') {
+			return {
+				media: source.media,
+				llm: {
+					stt_use_audio_model: source.llm?.stt_use_audio_model,
+					vision_use_image_model: source.llm?.vision_use_image_model,
+				},
+			};
+		}
+		return { context_limits: source.context_limits };
+	}
+
 	/** @param {string} id */
 	function sectionDirty(id) {
 		if (!settingsLoaded || !savedSnapshot) return false;
 		const current = buildPersistableSettings();
-		const section =
-			id === 'general'
-				? {
-					default_shell: current.default_shell,
-					hotkey: current.hotkey,
-					session: current.session,
-					memory: current.memory,
-					security: current.security,
-					notification: current.notification,
-					log: current.log,
-					autostart_enabled: current.autostart_enabled,
-				}
-				: id === 'models'
-					? { llm: current.llm, key_configured: current.key_configured, key_configured_providers: current.key_configured_providers }
-					: id === 'media'
-						? { media: current.media }
-						: { context_limits: current.context_limits };
 		const snapshot = JSON.parse(savedSnapshot);
-		const savedSection =
-			id === 'general'
-				? {
-					default_shell: snapshot.default_shell,
-					hotkey: snapshot.hotkey,
-					session: snapshot.session,
-					memory: snapshot.memory,
-					security: snapshot.security,
-					notification: snapshot.notification,
-					log: snapshot.log,
-					autostart_enabled: snapshot.autostart_enabled,
-				}
-				: id === 'models'
-					? { llm: snapshot.llm, key_configured: snapshot.key_configured, key_configured_providers: snapshot.key_configured_providers }
-					: id === 'media'
-						? { media: snapshot.media }
-						: { context_limits: snapshot.context_limits };
-		return JSON.stringify(section) !== JSON.stringify(savedSection);
+		return JSON.stringify(sectionValue(id, current)) !== JSON.stringify(sectionValue(id, snapshot));
 	}
 
 	/** @param {string} id */
