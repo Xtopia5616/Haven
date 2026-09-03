@@ -59,13 +59,14 @@
 		coalesceTokenTotal,
 	} from '$lib/sessionUsage.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
-	import ChatMessageTimeline from '$lib/ChatMessageTimeline.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
-	import InputRouter from '$lib/InputRouter.svelte';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
+	import SessionHeader from '$lib/SessionHeader.svelte';
+	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
+	import Composer from '$lib/Composer.svelte';
 
 	let inputRouterRef = /** @type {any} */ ($state(null));
 
@@ -1403,6 +1404,16 @@
 			return '等待后台';
 		return isPausedStatus(session.status) ? '已暂停' : '等待中';
 	}
+
+	const activeSession = $derived(
+		activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null,
+	);
+	const sessionHeaderTitle = $derived(
+		activeSession?.title || activeSession?.input || '新会话',
+	);
+	const sessionHeaderStatus = $derived(
+		activeSession ? sessionStatusLabel(activeSession) : '准备开始',
+	);
 </script>
 
 <div class="chat-page">
@@ -1438,9 +1449,18 @@
 		onClose={closeCtxMenu}
 	/>
 
+	<SessionHeader
+		title={sessionHeaderTitle}
+		status={sessionHeaderStatus}
+		running={isGenerating || sessionRunning}
+		hasSession={!!activeSessionId}
+		onNew={newSession}
+		onEnd={endSession}
+	/>
+
 	<div class="messages-wrap">
 		<div class="messages-area" bind:this={messagesEl} onscroll={onScroll}>
-			<ChatMessageTimeline
+			<ConversationTimeline
 				{messages}
 				{hotkeyBinding}
 				{awaitingBackground}
@@ -1477,7 +1497,7 @@
 		{/if}
 	</div>
 
-	<InputRouter
+	<Composer
 		bind:this={inputRouterRef}
 		{activeSessionId}
 		{hotkeyBinding}
@@ -1530,7 +1550,7 @@
 				onWebSearchSelect={handleWebSearchSelect}
 			/>
 		{/snippet}
-	</InputRouter>
+	</Composer>
 </div>
 
 <style>
