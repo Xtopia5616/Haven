@@ -41,6 +41,7 @@
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
+	import LoadingState from '$lib/LoadingState.svelte';
 	import WorkspaceStatus from '$lib/WorkspaceStatus.svelte';
 
 	let { children } = $props();
@@ -287,11 +288,11 @@
 					? 'tools'
 					: String(path) === '/tasks'
 						? 'tasks'
-					: path === '/memory' || path === '/history'
-						? 'memory'
-						: path === '/settings'
-							? 'settings'
-							: 'chat';
+						: path === '/memory' || path === '/history'
+							? 'memory'
+							: path === '/settings'
+								? 'settings'
+								: 'chat';
 			goto('/?tab=' + t, { replaceState: true });
 			return;
 		}
@@ -977,13 +978,14 @@
 							{:else if lazyViewStates.tools === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>工具页面暂时无法加载</span>
-									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('tools')}>重试</button>
+									<button
+										class="md-btn md-btn--outlined"
+										type="button"
+										onclick={() => retryTabView('tools')}>重试</button
+									>
 								</div>
 							{:else}
-								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
-									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
-									<span>正在加载工具…</span>
-								</div>
+								<LoadingState label="正在加载工具…" detail="正在准备工具列表" />
 							{/if}
 						</div>
 					{:else if tab.id === 'tasks'}
@@ -1007,13 +1009,14 @@
 							{:else if lazyViewStates.tasks === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>任务中心暂时无法加载</span>
-									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('tasks')}>重试</button>
+									<button
+										class="md-btn md-btn--outlined"
+										type="button"
+										onclick={() => retryTabView('tasks')}>重试</button
+									>
 								</div>
 							{:else}
-								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
-									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
-									<span>正在加载任务中心…</span>
-								</div>
+								<LoadingState label="正在加载任务中心…" detail="正在准备任务列表" />
 							{/if}
 						</div>
 					{:else if tab.id === 'memory'}
@@ -1023,13 +1026,14 @@
 							{:else if lazyViewStates.memory === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>记忆页面暂时无法加载</span>
-									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('memory')}>重试</button>
+									<button
+										class="md-btn md-btn--outlined"
+										type="button"
+										onclick={() => retryTabView('memory')}>重试</button
+									>
 								</div>
 							{:else}
-								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
-									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
-									<span>正在加载记忆…</span>
-								</div>
+								<LoadingState label="正在加载记忆…" detail="正在准备记忆中心" />
 							{/if}
 						</div>
 					{:else if tab.id === 'settings'}
@@ -1039,13 +1043,14 @@
 							{:else if lazyViewStates.settings === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>设置页面暂时无法加载</span>
-									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('settings')}>重试</button>
+									<button
+										class="md-btn md-btn--outlined"
+										type="button"
+										onclick={() => retryTabView('settings')}>重试</button
+									>
 								</div>
 							{:else}
-								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
-									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
-									<span>正在加载设置…</span>
-								</div>
+								<LoadingState label="正在加载设置…" detail="正在准备设置页面" />
 							{/if}
 						</div>
 					{/if}
@@ -1054,42 +1059,3 @@
 		{/each}
 	{/snippet}
 </AppShell>
-
-<style>
-	.lazy-view-placeholder {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: var(--md-sys-space-sm);
-		min-height: calc(var(--md-sys-space-4xl) * 5);
-		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
-		border: 1px dashed var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-low);
-		color: var(--md-sys-color-on-surface-variant);
-		text-align: center;
-	}
-	.lazy-view-placeholder__dot {
-		width: var(--md-sys-space-sm);
-		height: var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-primary);
-		animation: lazy-view-pulse 1.2s var(--md-sys-motion-easing-emphasized) infinite;
-	}
-	@keyframes lazy-view-pulse {
-		0%,
-		100% {
-			opacity: 1;
-			transform: scale(1);
-		}
-		50% {
-			opacity: 0.35;
-			transform: scale(0.85);
-		}
-	}
-	@media (max-width: 455px) {
-		.lazy-view-placeholder {
-			padding-inline: var(--md-sys-space-lg);
-		}
-	}
-</style>

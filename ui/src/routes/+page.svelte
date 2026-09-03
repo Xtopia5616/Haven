@@ -12,10 +12,7 @@
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
-	import {
-		buildTokenUsageTooltip,
-		stepUsageFor,
-	} from '$lib/sessionUsagePresentation.ts';
+	import { buildTokenUsageTooltip, stepUsageFor } from '$lib/sessionUsagePresentation.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
@@ -84,28 +81,41 @@
 		maxFileBytes: 20 * 1024 * 1024,
 	});
 	let messages = /** @type {Array<any>} */ ($state([]));
+	let initialLoading = $state(true);
 	let sessions = /** @type {Array<any>} */ ($state([]));
 	// Pending security confirmations not yet shown, in arrival order. A
 	// batched ReAct step can fire several gated tool calls at once; each one
 	// must wait for its own user answer, so they are queued and displayed one
 	// at a time instead of auto-rejecting the visible dialog.
-	let confirmQueue = /** @type {Array<import('$lib/chatConfirmationEventHandlers.ts').ConfirmationQueueEntry>} */ ($state([]));
+	let confirmQueue =
+		/** @type {Array<import('$lib/chatConfirmationEventHandlers.ts').ConfirmationQueueEntry>} */ (
+			$state([])
+		);
 	// Interactive countdown for the visible dialog. Starts when the dialog is
 	// shown (not when the request arrived) so queued confirms are not starved.
 	// Backend uses a longer absolute fail-closed ceiling for closed UI.
 	const CONFIRM_TIMEOUT_MS = 120_000;
-	let confirmDialog = /** @type {{ stepId: string | null, toolName: string, sessionId: string, sessionTitle: string, riskLevel: string, params: unknown, permissionKey: string, deadlineAt: number | null }} */ ($state({
-		stepId: null,
-		toolName: '',
-		sessionId: '',
-		sessionTitle: '',
-		riskLevel: 'medium',
-		params: null,
-		permissionKey: '',
-		deadlineAt: null,
-	}));
+	let confirmDialog =
+		/** @type {{ stepId: string | null, toolName: string, sessionId: string, sessionTitle: string, riskLevel: string, params: unknown, permissionKey: string, deadlineAt: number | null }} */ (
+			$state({
+				stepId: null,
+				toolName: '',
+				sessionId: '',
+				sessionTitle: '',
+				riskLevel: 'medium',
+				params: null,
+				permissionKey: '',
+				deadlineAt: null,
+			})
+		);
 	let activeSessionId = $state(get(activeSessionIdStore));
-	let rollbackDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
+	let rollbackDialog = $state({
+		open: false,
+		stepNumber: null,
+		role: '',
+		content: '',
+		msgId: '',
+	});
 	let rollbackLoading = $state(false);
 
 	// Model switcher state: the registry catalog plus the current default
@@ -135,12 +145,12 @@
 	 * @property {number} promptTokens
 	 * @property {number} completionTokens
 	 * @property {number} totalTokens
- 	 * @property {number} [cachedTokens]
+	 * @property {number} [cachedTokens]
 	 * @property {number} [cacheCreationTokens]
 	 * @property {number} [cacheMissTokens]
- 	 * @property {number} [contextTokens]
- 	 * @property {boolean} [cacheExclusive]
- 	 * @property {number} cumulativePromptTokens
+	 * @property {number} [contextTokens]
+	 * @property {boolean} [cacheExclusive]
+	 * @property {number} cumulativePromptTokens
 	 * @property {number} cumulativeCompletionTokens
 	 * @property {number} cumulativeTotalTokens
 	 * @property {number} [cumulativeCachedTokens]
@@ -182,7 +192,7 @@
 	let llmUsage = $state([]);
 	$effect(() =>
 		syncStore(sessionLlmUsageStore, (m) => {
-			llmUsage = activeSessionId ? (m[activeSessionId] || []) : [];
+			llmUsage = activeSessionId ? m[activeSessionId] || [] : [];
 			stepUsageCache.clear();
 		}),
 	);
@@ -258,9 +268,7 @@
 	let actionsById = $state(/** @type {Record<string, any>} */ ({}));
 	$effect(() => syncStore(actionStore, (v) => (actionsById = v || {})));
 	const activeSessionStatus = $derived(
-		activeSessionId
-			? sessions.find((t) => t.id === activeSessionId)?.status
-			: undefined,
+		activeSessionId ? sessions.find((t) => t.id === activeSessionId)?.status : undefined,
 	);
 	/** Plain paused (not ask/confirm) with still-running background actions for this session. */
 	const awaitingBackground = $derived.by(() => {
@@ -283,7 +291,6 @@
 				a.sessionId === activeSessionId,
 		).length;
 	});
-
 
 	const effortOptions = [
 		{ value: '', label: '默认' },
@@ -458,14 +465,24 @@
 		if (modelMenuOpen) {
 			const menu = document.querySelector('.model-menu');
 			const btn = document.querySelector('.model-switch-btn');
-			if (menu && btn && !menu.contains(/** @type {Node} */ (e.target)) && !btn.contains(/** @type {Node} */ (e.target))) {
+			if (
+				menu &&
+				btn &&
+				!menu.contains(/** @type {Node} */ (e.target)) &&
+				!btn.contains(/** @type {Node} */ (e.target))
+			) {
 				modelMenuOpen = false;
 			}
 		}
 		if (sessionMenuOpen) {
 			const menu = document.querySelector('.session-menu');
 			const btn = document.querySelector('.session-switch-btn');
-			if (menu && btn && !menu.contains(/** @type {Node} */ (e.target)) && !btn.contains(/** @type {Node} */ (e.target))) {
+			if (
+				menu &&
+				btn &&
+				!menu.contains(/** @type {Node} */ (e.target)) &&
+				!btn.contains(/** @type {Node} */ (e.target))
+			) {
 				sessionMenuOpen = false;
 			}
 		}
@@ -579,7 +596,10 @@
 			// STILL STREAMING (the re-run's in-flight output); everything
 			// finalized is replaced by the authoritative DB copy.
 			updateSessionMessages(sessionId, (existing) =>
-				mergeLiveStreaming(dbMessages, existing.filter((m) => m.streaming)),
+				mergeLiveStreaming(
+					dbMessages,
+					existing.filter((m) => m.streaming),
+				),
 			);
 			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
 			restoreSessionLlmUsage(sessionId, result.llm_usage);
@@ -762,7 +782,9 @@
 
 	// Tauri event listener handle (registered in onMount, disposed in
 	// onDestroy). See eventRegistrations below.
-	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (null);
+	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (
+		null
+	);
 	let messagesEl = /** @type {HTMLElement | null | undefined} */ (undefined);
 	let autoFollow = $state(true);
 	let scrollRafPending = false;
@@ -906,7 +928,6 @@
 		if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 	}
 
-
 	const streamEvents = createStreamEventAggregator({
 		getActiveSessionId: () => activeSessionId,
 		onActiveStream: () => updateModelState('streaming'),
@@ -1042,22 +1063,22 @@
 					}),
 				),
 				...appEventListeners({
-				'hotkey:rebind': (event) => {
-					const data = event.payload;
-					if (data.newBinding) {
-						hotkeyBinding = data.newBinding;
-					}
-				},
-				// Settings save / model switch rebuilds the router. Keep-alive
-				// leaves this page mounted, so re-pull the default_model role
-				// instead of leaving the toolbar on a stale selection.
-				'llm:config_changed': () => {
-					if (skipNextDefaultModelRefresh) {
-						skipNextDefaultModelRefresh = false;
-						return;
-					}
-					refreshDefaultModelFromBackend();
-				},
+					'hotkey:rebind': (event) => {
+						const data = event.payload;
+						if (data.newBinding) {
+							hotkeyBinding = data.newBinding;
+						}
+					},
+					// Settings save / model switch rebuilds the router. Keep-alive
+					// leaves this page mounted, so re-pull the default_model role
+					// instead of leaving the toolbar on a stale selection.
+					'llm:config_changed': () => {
+						if (skipNextDefaultModelRefresh) {
+							skipNextDefaultModelRefresh = false;
+							return;
+						}
+						refreshDefaultModelFromBackend();
+					},
 				}),
 				...agentEventListeners(
 					createChatAgentEventHandlers({
@@ -1078,7 +1099,8 @@
 				...appEventListeners(
 					createChatConfirmationEventHandlers({
 						getSessionTitle: (sessionId) =>
-							sessions.find((session) => session.id === sessionId)?.title || sessionId,
+							sessions.find((session) => session.id === sessionId)?.title ||
+							sessionId,
 						enqueueConfirmation: (entry) => {
 							confirmQueue = [...confirmQueue, entry];
 						},
@@ -1130,7 +1152,11 @@
 		const sessionsP = loadSessions();
 		const restoreP = restoreLastConversation(initialResumeTarget);
 
-		await Promise.all([sessionsP, restoreP, readyP]);
+		try {
+			await Promise.all([sessionsP, restoreP, readyP]);
+		} finally {
+			initialLoading = false;
+		}
 
 		// Conversation just opened (history resume or auto-restore): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to
@@ -1375,8 +1401,7 @@
 		showNextConfirm();
 		if (!resolvedStep) return;
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
-		const resolvedScope =
-			scope || (trustSession ? 'session' : 'once');
+		const resolvedScope = scope || (trustSession ? 'session' : 'once');
 		try {
 			await invoke('resolve_confirmation', {
 				stepId: resolvedStep,
@@ -1410,9 +1435,7 @@
 	const activeSession = $derived(
 		activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null,
 	);
-	const sessionHeaderTitle = $derived(
-		activeSession?.title || activeSession?.input || '新会话',
-	);
+	const sessionHeaderTitle = $derived(activeSession?.title || activeSession?.input || '新会话');
 	const sessionHeaderStatus = $derived(
 		activeSession ? sessionStatusLabel(activeSession) : '准备开始',
 	);
@@ -1439,7 +1462,13 @@
 		onConfirm={confirmRollbackAction}
 		onClose={() => {
 			if (!rollbackLoading)
-				rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
+				rollbackDialog = {
+					open: false,
+					stepNumber: null,
+					role: '',
+					content: '',
+					msgId: '',
+				};
 		}}
 	/>
 
@@ -1461,9 +1490,15 @@
 	/>
 
 	<div class="messages-wrap">
-		<div class="messages-area" bind:this={messagesEl} onscroll={onScroll} use:dragScroll={{ axis: 'y' }}>
+		<div
+			class="messages-area"
+			bind:this={messagesEl}
+			onscroll={onScroll}
+			use:dragScroll={{ axis: 'y' }}
+		>
 			<ConversationTimeline
 				{messages}
+				loading={initialLoading}
 				{hotkeyBinding}
 				{awaitingBackground}
 				{awaitingBackgroundCount}

@@ -1,4 +1,6 @@
 <script>
+	import LoadingState from './LoadingState.svelte';
+
 	let {
 		state = 'empty',
 		title = '',
@@ -11,12 +13,24 @@
 	const icons = { loading: '…', empty: '✓', error: '!', unconfigured: '!' };
 </script>
 
-<section class="async-state md-card" data-state={state} aria-live={state === 'error' ? 'assertive' : 'polite'}>
-	<span class="async-state__icon" aria-hidden="true">{icons[state] || '•'}</span>
-	<h2>{title}</h2>
-	{#if message}<p>{message}</p>{/if}
-	{#if actionLabel}<button class="md-btn md-btn--filled" type="button" onclick={() => onAction?.()}>{actionLabel}</button>{/if}
-</section>
+{#if state === 'loading'}
+	<LoadingState label={title || '正在加载…'} detail={message} />
+{:else}
+	<section
+		class="async-state md-card"
+		data-state={state}
+		aria-live={state === 'error' ? 'assertive' : 'polite'}
+	>
+		<span class="async-state__icon" aria-hidden="true">{icons[state] || '•'}</span>
+		<h2>{title}</h2>
+		{#if message}<p>{message}</p>{/if}
+		{#if actionLabel}<button
+				class="md-btn md-btn--filled"
+				type="button"
+				onclick={() => onAction?.()}>{actionLabel}</button
+			>{/if}
+	</section>
+{/if}
 
 <style>
 	.async-state {
@@ -46,8 +60,13 @@
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
 	}
-	.async-state[data-state='loading'] .async-state__icon { animation: pulse 1.2s ease-in-out infinite; }
-	.async-state p { max-width: 420px; color: var(--md-sys-color-on-surface-variant); }
-	@keyframes pulse { 50% { opacity: 0.45; } }
-	@media (max-width: 455px) { .async-state { padding-inline: var(--md-sys-space-lg); } }
+	.async-state p {
+		max-width: 420px;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	@media (max-width: 455px) {
+		.async-state {
+			padding-inline: var(--md-sys-space-lg);
+		}
+	}
 </style>
