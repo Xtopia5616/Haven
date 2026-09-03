@@ -182,10 +182,11 @@
 	--md-comp-button-pressed-radius: 8px;
 	--md-comp-textfield-container-height: 40px;
 	--md-comp-textfield-corner: 8px;
-	--md-comp-tab-container-height: 48px;
+	--md-comp-tab-container-height: 56px;
+	--md-comp-tab-padding-block: 6px;
 	--md-comp-tab-indicator-height: 3px;
 	--md-comp-tab-indicator-min-width: 24px;
-	--md-comp-tab-indicator-inset: 2px;
+	--md-comp-tab-indicator-bottom: 3px;
 	--md-comp-icon-button-size: 40px;
 	--md-comp-icon-button-touch: 48px;
 	--md-sys-icon-size: 20px;
@@ -478,7 +479,8 @@ samp {
  * Spec references:
  *   - Buttons  : m3.material.io/components/buttons (round default, pressed morph, 40dp small)
  *   - Outlined text field : m3.material.io/components/text-fields (transparent container, 4dp corner, 2dp focused outline)
- *   - Primary tabs : m3.material.io/components/tabs (48dp container, active indicator 3dp full-rounded inset 2dp min 24dp)
+ *   - Tabs         : shared 56dp container, rounded items, active indicator
+ *                    3dp full-rounded and 24dp wide
  *   - Icon buttons : 40dp visual, 48dp touch target
  * ========================================================================== */
 
@@ -838,19 +840,21 @@ select.md-select {
 	border: none;
 }
 
-/* ---------- Primary tab row (Material 3 specs) ----------
-   Container height 48dp, full-width, divided into equal sections.
-   Active indicator: 3dp, inset 2dp per side, full-rounded, min 24dp,
-   centered horizontally, colored `primary`.
-   Inactive label: `on-surface-variant`; hover/focus add 8% state layer.
+/* ---------- Shared tab row ----------
+   First- and second-level tabs use one geometry: a 56dp row with padded,
+   rounded tab items and a short centered indicator. Color follows the
+   second-level treatment: inactive labels use `on-surface-variant`, while
+   the active label and indicator use `primary` without a filled background.
 */
 .md-tabs {
 	display: flex;
 	align-items: stretch;
+	flex-shrink: 0;
 	height: var(--md-comp-tab-container-height);
+	padding: var(--md-comp-tab-padding-block) var(--md-sys-space-xl);
 	background: var(--md-sys-color-surface);
 	border-bottom: 1px solid var(--md-sys-color-outline-variant);
-	gap: 0;
+	gap: var(--md-sys-space-xs);
 }
 .md-tab {
 	position: relative;
@@ -858,18 +862,20 @@ select.md-select {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	gap: var(--md-sys-space-sm);
 	padding: 0 var(--md-sys-space-lg);
 	min-width: 0;
 	border: none;
 	background: transparent;
 	color: var(--md-sys-color-on-surface-variant);
 	font-family: inherit;
-	font-size: 14px;
+	font-size: 13px;
 	font-weight: 600;
 	letter-spacing: 0.1px;
 	text-decoration: none;
 	cursor: pointer;
 	user-select: none;
+	border-radius: var(--md-sys-shape-medium);
 	overflow: hidden;
 	transition: color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 }
@@ -877,8 +883,8 @@ select.md-select {
 	/* hover/focus/pressed state layer */
 	content: '';
 	position: absolute;
-	inset: var(--md-sys-space-xs);
-	border-radius: 0;
+	inset: 0;
+	border-radius: var(--md-sys-shape-medium);
 	background: var(--md-sys-color-on-surface-variant);
 	opacity: 0;
 	pointer-events: none;
@@ -892,25 +898,44 @@ select.md-select {
 }
 .md-tab.active {
 	color: var(--md-sys-color-primary);
+	background: transparent;
 }
 .md-tab.active::before {
-	/* Active indicator bar: rectangular */
+	/* Short centered active indicator shared by both tab levels. */
 	content: '';
 	position: absolute;
-	left: 0;
-	bottom: 0;
-	transform: none;
+	left: 50%;
+	bottom: var(--md-comp-tab-indicator-bottom);
+	transform: translateX(-50%);
 	height: var(--md-comp-tab-indicator-height);
-	width: 100%;
-	max-width: none;
-	border-radius: 0;
+	width: var(--md-comp-tab-indicator-min-width);
+	max-width: var(--md-comp-tab-indicator-min-width);
+	border-radius: var(--md-sys-shape-full);
 	background: var(--md-sys-color-primary);
 	pointer-events: none;
 }
-.md-tab .md-tab__icon {
-	width: var(--md-sys-icon-size);
-	height: var(--md-sys-icon-size);
-	margin-right: var(--md-sys-space-sm);
+.md-tab__icon {
+	display: inline-flex;
+	width: 17px;
+	height: 17px;
+	flex-shrink: 0;
+}
+.md-tab__icon svg {
+	width: 100%;
+	height: 100%;
+}
+
+@media (max-width: 640px) {
+	.md-tabs {
+		padding-inline: var(--md-sys-space-md);
+	}
+	.md-tab {
+		padding-inline: var(--md-sys-space-sm);
+	}
+	.md-tab__icon {
+		width: 16px;
+		height: 16px;
+	}
 }
 
 /*---------- Toggle / Switch (M3) ---------- */
