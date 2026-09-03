@@ -679,7 +679,7 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-lg) var(--md-sys-space-sm);
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-xs);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
