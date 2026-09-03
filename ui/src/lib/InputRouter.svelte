@@ -882,7 +882,9 @@
 			width: 100%;
 		}
 		.toolbar-right {
-			justify-content: space-between;
+			/* Keep the four action buttons as one compact cluster on narrow
+			 * windows instead of stretching them across the whole row. */
+			justify-content: flex-end;
 		}
 	}
 </style>
