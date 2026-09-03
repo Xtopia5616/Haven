@@ -10,12 +10,9 @@ import {
 	webSearchCardContent,
 	webSearchId,
 } from './streaming';
-import {
-	clearToolOutputPreview,
-	setToolOutputPreview,
-	updateModelState,
-} from './stores';
+import { clearToolOutputPreview, setToolOutputPreview, updateModelState } from './stores';
 import { pruneSeq, updateSessionMessages } from './sessionMessages.ts';
+import { hasToolPreambleInBlock } from './toolIntent.ts';
 
 export interface ChatAgentEventContext {
 	getActiveSessionId: () => string | null;
@@ -73,11 +70,7 @@ export function createChatAgentEventHandlers({
 			pruneSeq(data.thoughtMessageId);
 			pruneSeq(data.reasoningMessageId);
 			updateSessionMessages(data.sessionId, (messages) =>
-				resetStreamBlocks(
-					messages,
-					data.reasoningMessageId,
-					data.thoughtMessageId,
-				),
+				resetStreamBlocks(messages, data.reasoningMessageId, data.thoughtMessageId),
 			);
 		},
 		'agent:web_search': (event) => {
@@ -91,18 +84,15 @@ export function createChatAgentEventHandlers({
 			if (!callId) return;
 			const searchId = webSearchId(sessionId, data.stepNumber, data.runId, callId);
 			const placeholderId = webSearchId(sessionId, data.stepNumber, data.runId, null);
-			const { reasoningId, thoughtId } = blockIdsOf(
-				sessionId,
-				data.stepNumber,
-				data.runId,
-			);
+			const { reasoningId, thoughtId } = blockIdsOf(sessionId, data.stepNumber, data.runId);
 			updateSessionMessages(sessionId, (messages) => {
 				let next = messages;
 				let existing = next.find((message) => message.id === searchId);
 				// Upgrade a legacy null-id placeholder when the real call id arrives.
 				if (!existing) {
 					const placeholderIndex = next.findIndex(
-						(message) => message.id === placeholderId && message.toolName === 'web_search',
+						(message) =>
+							message.id === placeholderId && message.toolName === 'web_search',
 					);
 					if (placeholderIndex >= 0) {
 						next = next.map((message, index) =>
@@ -134,12 +124,16 @@ export function createChatAgentEventHandlers({
 						);
 					}
 					return next.map((message) =>
-						message.id === searchId ? { ...message, streaming: false, content } : message,
+						message.id === searchId
+							? { ...message, streaming: false, content }
+							: message,
 					);
 				}
 				if (existing) {
 					return next.map((message) =>
-						message.id === searchId ? { ...message, content, streaming: true } : message,
+						message.id === searchId
+							? { ...message, content, streaming: true }
+							: message,
 					);
 				}
 				return insertAgentMessage(
@@ -239,17 +233,15 @@ export function createChatAgentEventHandlers({
 			flushChunksNow();
 			updateModelState('tool');
 			const toolMessageId = data.stepId;
-			const { reasoningId, thoughtId } = blockIdsOf(
-				sessionId,
-				data.stepNumber,
-				data.runId,
-			);
+			const { reasoningId, thoughtId } = blockIdsOf(sessionId, data.stepNumber, data.runId);
 			if (reasoningId) pruneSeq(reasoningId);
 			if (thoughtId) pruneSeq(thoughtId);
 			if (data.silent) {
 				updateSessionMessages(sessionId, (messages) =>
 					finalizeStreamBlocks(
-						data.suppressStreamedThought ? dropStreamedThought(messages, thoughtId) : messages,
+						data.suppressStreamedThought
+							? dropStreamedThought(messages, thoughtId)
+							: messages,
 						reasoningId,
 						thoughtId,
 					),
@@ -258,11 +250,14 @@ export function createChatAgentEventHandlers({
 			}
 			updateSessionMessages(sessionId, (messages) => {
 				const fixed = finalizeStreamBlocks(
-					data.suppressStreamedThought ? dropStreamedThought(messages, thoughtId) : messages,
+					data.suppressStreamedThought
+						? dropStreamedThought(messages, thoughtId)
+						: messages,
 					reasoningId,
 					thoughtId,
 				);
 				if (fixed.some((message) => message.id === toolMessageId)) return fixed;
+				const showFallbackIntent = !hasToolPreambleInBlock(fixed, thoughtId);
 				return insertAgentMessage(
 					fixed,
 					newToolMessage({
@@ -272,6 +267,7 @@ export function createChatAgentEventHandlers({
 						time: new Date().toLocaleTimeString(),
 						streaming: true,
 						toolArgs: data.input ?? null,
+						showFallbackIntent,
 					}),
 				);
 			});
@@ -287,6 +283,7 @@ export function createChatAgentEventHandlers({
 			const data = event.payload;
 			const sessionId = data.sessionId;
 			const toolMessageId = data.stepId;
+			const { thoughtId } = blockIdsOf(sessionId, data.stepNumber, data.runId);
 			if (data.silent) {
 				clearToolOutputPreview(toolMessageId);
 				if (toolMessageId) {
@@ -302,6 +299,7 @@ export function createChatAgentEventHandlers({
 			const actionId = actionIdFromObservation(data.observation);
 			updateSessionMessages(sessionId, (messages) => {
 				const index = messages.findIndex((message) => message.id === toolMessageId);
+				const showFallbackIntent = !hasToolPreambleInBlock(messages, thoughtId);
 				const message = newToolMessage({
 					id: toolMessageId,
 					stepNumber: data.stepNumber,
@@ -309,6 +307,7 @@ export function createChatAgentEventHandlers({
 					content: data.observation,
 					askOptions: data.askOptions || [],
 					actionId,
+					showFallbackIntent,
 				});
 				if (index >= 0) {
 					const next = [...messages];

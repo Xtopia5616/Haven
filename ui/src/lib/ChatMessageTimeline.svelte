@@ -2,6 +2,7 @@
 	import { fly } from 'svelte/transition';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Logo from '$lib/Logo.svelte';
+	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 
 	let {
 		messages = [],
@@ -27,7 +28,10 @@
 	</div>
 {:else}
 	<div class="message-list">
-		{#each messages as msg (msg.id)}
+		{#each messages as msg, index (msg.id)}
+			{@const showFallbackIntent =
+				msg.type === 'tool' &&
+				(msg.showFallbackIntent ?? !hasToolPreambleBefore(messages, index))}
 			<ChatBubble
 				role={msg.role}
 				content={msg.content}
@@ -41,6 +45,7 @@
 				usage={msg.type === 'tool' ? stepUsage(msg.stepNumber) : null}
 				toolArgs={msg.toolArgs ?? null}
 				attachments={msg.attachments}
+				{showFallbackIntent}
 				options={msg.options ?? []}
 				awaiting={msg.awaiting ?? false}
 				received={msg.received ?? false}

@@ -106,17 +106,18 @@ General:\n\
 3. When the session is complete, respond with a concise summary of what was done, in the same language the user is using.\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
+6. Before every visible tool call (except `ask`, whose question is already user-facing), emit one short preamble in the user's language explaining what you are about to do and why. Put it in normal assistant text, not reasoning/thinking output. Keep it to one sentence; do not expose chain-of-thought, raw JSON, secrets, or the full shell command.\n\
 Shell & background actions:\n\
-  6. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll. Prefer background:true for long-running work (install, build, clone, download) when later steps depend on the result. When foreground work is done and you are only waiting on still-running background action(s): boldly end your turn with a brief status for the user — do not poll with `actions`, do not invent filler work. You will be auto-woken with the action output and continue then. Use `actions` only for a one-shot board check when you need awareness, never as a wait loop. The user also gets a push notification when a background action finishes.\n\
-7. shell(silent: true) hides the command output from the user, but you still see it.\n\
+  7. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll. Prefer background:true for long-running work (install, build, clone, download) when later steps depend on the result. When foreground work is done and you are only waiting on still-running background action(s): boldly end your turn with a brief status for the user — do not poll with `actions`, do not invent filler work. You will be auto-woken with the action output and continue then. Use `actions` only for a one-shot board check when you need awareness, never as a wait loop. The user also gets a push notification when a background action finishes.\n\
+  8. shell(silent: true) hides the command output from the user, but you still see it.\n\
 Interaction & notifications:\n\
-8. Calling ask pauses the session until the user replies; their answer is injected as context for the next step. Ask exactly one question per call — never pack multiple questions or mixed option sets into a single ask; if you need several decisions, call ask once per question.\n\
-9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the session. Use it to alert them about background progress or something they should check.\n\
+9. Calling ask pauses the session until the user replies; their answer is injected as context for the next step. Ask exactly one question per call — never pack multiple questions or mixed option sets into a single ask; if you need several decisions, call ask once per question.\n\
+10. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the session. Use it to alert them about background progress or something they should check.\n\
 Tool selection:\n\
-10. Simple, quick sessions: use built-in tools — they are fast, lightweight, and always available.\n\
-  11. Complex, comprehensive sessions: prefer MCP servers and Skills — if the session matches a server or a skill in the lists below, call `load_mcp` with that server name (add `tool_names` when the server is large or returns `needs_selection`) or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
+11. Simple, quick sessions: use built-in tools — they are fast, lightweight, and always available.\n\
+  12. Complex, comprehensive sessions: prefer MCP servers and Skills — if the session matches a server or a skill in the lists below, call `load_mcp` with that server name (add `tool_names` when the server is large or returns `needs_selection`) or call `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
 Failure handling:\n\
-12. {failure_diagnosis}\n\
+13. {failure_diagnosis}\n\
 \n\
 {tool_notes}\n\
 \n\
@@ -128,7 +129,7 @@ What is your next step?\n\
 {dynamic_context}";
 
 /// Canonical tool-failure diagnosis guidance, shared by the main system
-/// prompt (guideline 12, injected via the `{failure_diagnosis}` placeholder)
+/// prompt (guideline 13, injected via the `{failure_diagnosis}` placeholder)
 /// and the per-step retry nudge in the ReAct loop, so the model-visible
 /// advice cannot drift between the two.
 pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose the cause: is it an environment problem (missing command, wrong shell syntax, network/proxy, wrong path) or a logic problem? Fix the cause and retry the same approach, switching tools (e.g. curl -> aria2) if the environment requires it. Only switch to a completely different approach when the method itself is wrong.";
@@ -270,6 +271,7 @@ mod tests {
         assert!(out.contains("You have access to the following built-in tools:"));
         assert!(out.contains("- read_file: read a file"));
         assert!(out.contains("Tool usage notes:"));
+        assert!(out.contains("Before every visible tool call"));
         assert!(out.contains("frozen for the current run"));
         assert!(out.contains("refreshed when the session resumes"));
         assert!(!out.contains("Steps so far:"));

@@ -18,6 +18,7 @@
 		toolDisplayName,
 		toolSourceLabel,
 	} from '$lib/toolIdentity.ts';
+	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
 
 	let {
 		type = 'tool',
@@ -34,6 +35,7 @@
 		actionId = null,
 		usage = null,
 		toolArgs = null,
+		showFallbackIntent = false,
 	} = $props();
 
 	let toolSource = $derived(classifyToolSource(toolName));
@@ -78,7 +80,9 @@
 
 	// Foreground live tail (side-channel; not written into the message list).
 	let livePreview = $derived(
-		messageId ? /** @type {string|undefined} */ ($toolOutputPreviewStore[messageId]) : undefined,
+		messageId
+			? /** @type {string|undefined} */ ($toolOutputPreviewStore[messageId])
+			: undefined,
 	);
 	// Background actions keep streaming via actionStore after the tool call
 	// itself returns `{ background: true, action_id }`. Parent clears actionId
@@ -115,9 +119,7 @@
 				action_id: actionId,
 				status: boundAction.status,
 				...(boundAction.exit_code != null ? { exit_code: boundAction.exit_code } : {}),
-				...(boundAction.error && !boundAction.output
-					? { error: boundAction.error }
-					: {}),
+				...(boundAction.error && !boundAction.output ? { error: boundAction.error } : {}),
 			});
 		}
 		if (livePreview != null && livePreview !== '') {
@@ -126,9 +128,7 @@
 		return content;
 	});
 
-	let parsed = $derived(
-		type === 'tool' ? parseToolResult(toolName, displayContent) : null,
-	);
+	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, displayContent) : null);
 
 	// Collapsible body: expands while the tool streams so live output is
 	// visible and auto-collapses once the observation is final (constraint
@@ -183,7 +183,9 @@
 		if (kind === 'shell') return shellText || '';
 		if (kind === 'raw') return rawText || '';
 		if (kind === 'notify') {
-			return [notifyParts.title, notifyParts.body].filter(Boolean).join('\n') || content || '';
+			return (
+				[notifyParts.title, notifyParts.body].filter(Boolean).join('\n') || content || ''
+			);
 		}
 		if (parsed?.data != null) {
 			try {
@@ -312,275 +314,282 @@
 	<div class="tool-card" role="status" oncontextmenu={handleContextMenu}>
 		<MaterialCollapsible bind:open={cardOpen}>
 			{#snippet header()}
-			<span class="tool-card-icon" aria-hidden="true">
-				{#if kind === 'shell'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><polyline points="4 17 10 11 4 5" /><line
-							x1="12"
-							y1="19"
-							x2="20"
-							y2="19"
-						/></svg
-					>
-				{:else if kind === 'notify'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path
-							d="M13.73 21a2 2 0 0 1-3.46 0"
-						/></svg
-					>
-				{:else if kind === 'generic'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path
-							d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-						/></svg
-					>
-				{:else if kind === 'raw'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
-					>
-				{:else if toolName === 'file_search' || toolName === 'files'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						><circle cx="11" cy="11" r="7" /><line
-							x1="21"
-							y1="21"
-							x2="16.65"
-							y2="16.65"
-						/></svg
-					>
-				{:else if toolName === 'system'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><rect x="4" y="4" width="16" height="16" rx="2" /><rect
-							x="9"
-							y="9"
-							width="6"
-							height="6"
-						/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3" /></svg
-					>
-				{:else if toolName === 'process'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg
-					>
-				{:else if toolName === 'window'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><rect x="2" y="3" width="20" height="14" rx="2" /><path
-							d="M8 21h8M12 17v4"
-						/></svg
-					>
-				{:else if toolName === 'actions'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><circle cx="12" cy="12" r="9" /><polyline
-							points="12 7 12 12 15.5 13.5"
-						/></svg
-					>
-				{:else if toolName === 'schedule'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path
-							d="M13.73 21a2 2 0 0 1-3.46 0"
-						/></svg
-					>
-		{:else if toolName === 'file' || (toolName === 'files' && !Array.isArray(data.results))}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path
-							d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-						/><polyline points="14 2 14 8 20 8" /></svg
-					>
-				{:else if toolName === 'http'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><circle cx="12" cy="12" r="10" /><path
-							d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
-						/></svg
-					>
-				{:else if toolName === 'clipboard'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path
-							d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
-						/><rect x="8" y="2" width="8" height="4" rx="1" /></svg
-					>
-				{:else if toolName === 'web_search'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><circle cx="12" cy="12" r="10" /><path
-							d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
-						/></svg
-					>
-				{:else if toolName === 'agent'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle
-							cx="9"
-							cy="7"
-							r="4"
-						/><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path
-							d="M16 3.13a4 4 0 0 1 0 7.75"
-						/></svg
-					>
-				{/if}
-			</span>
-			<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
-			<span class="tool-card-label" title={toolName}>{displayName}</span>
-			{#if usage}
-				<span
-					class="usage-chip"
-					title={[
-						usage.model ? `模型 ${usage.model}` : null,
-						`上传 ${usage.prompt} → 生成 ${usage.completion} tokens`,
-						usage.durationMs > 0 ? `耗时 ${(usage.durationMs / 1000).toFixed(1)}s` : null,
-						usage.hasCost ? `费用 ${usage.cost.toFixed(6)} USD` : null,
-						usage.cacheMiss > 0 ? `缓存未命中 ${formatTokenCount(usage.cacheMiss)}` : null,
-						usage.cacheDiagnostics
-							? `缓存策略 ${usage.cacheDiagnostics.mode || 'off'} / ${usage.cacheDiagnostics.outcome || 'unknown'}${usage.cacheDiagnostics.downgraded ? '（已兼容降级）' : ''}`
-							: null,
-						usage.calls > 1 ? `${usage.calls} 次调用合并` : null,
-					]
-						.filter(Boolean)
-						.join('\n')}
-				>
-					{formatTokenCount(usage.total)} tokens
+				<span class="tool-card-icon" aria-hidden="true">
+					{#if kind === 'shell'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><polyline points="4 17 10 11 4 5" /><line
+								x1="12"
+								y1="19"
+								x2="20"
+								y2="19"
+							/></svg
+						>
+					{:else if kind === 'notify'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path
+								d="M13.73 21a2 2 0 0 1-3.46 0"
+							/></svg
+						>
+					{:else if kind === 'generic'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path
+								d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+							/></svg
+						>
+					{:else if kind === 'raw'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
+						>
+					{:else if toolName === 'file_search' || toolName === 'files'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							><circle cx="11" cy="11" r="7" /><line
+								x1="21"
+								y1="21"
+								x2="16.65"
+								y2="16.65"
+							/></svg
+						>
+					{:else if toolName === 'system'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><rect x="4" y="4" width="16" height="16" rx="2" /><rect
+								x="9"
+								y="9"
+								width="6"
+								height="6"
+							/><path
+								d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"
+							/></svg
+						>
+					{:else if toolName === 'process'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg
+						>
+					{:else if toolName === 'window'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><rect x="2" y="3" width="20" height="14" rx="2" /><path
+								d="M8 21h8M12 17v4"
+							/></svg
+						>
+					{:else if toolName === 'actions'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><circle cx="12" cy="12" r="9" /><polyline
+								points="12 7 12 12 15.5 13.5"
+							/></svg
+						>
+					{:else if toolName === 'schedule'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path
+								d="M13.73 21a2 2 0 0 1-3.46 0"
+							/></svg
+						>
+					{:else if toolName === 'file' || (toolName === 'files' && !Array.isArray(data.results))}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path
+								d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+							/><polyline points="14 2 14 8 20 8" /></svg
+						>
+					{:else if toolName === 'http'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><circle cx="12" cy="12" r="10" /><path
+								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+							/></svg
+						>
+					{:else if toolName === 'clipboard'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path
+								d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
+							/><rect x="8" y="2" width="8" height="4" rx="1" /></svg
+						>
+					{:else if toolName === 'web_search'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><circle cx="12" cy="12" r="10" /><path
+								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+							/></svg
+						>
+					{:else if toolName === 'agent'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle
+								cx="9"
+								cy="7"
+								r="4"
+							/><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path
+								d="M16 3.13a4 4 0 0 1 0 7.75"
+							/></svg
+						>
+					{/if}
 				</span>
-			{/if}
+				<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
+				{#if showFallbackIntent}<span class="tool-intent">{TOOL_INTENT_FALLBACK}</span>{/if}
+				<span class="tool-card-label" title={toolName}>{displayName}</span>
+				{#if usage}
+					<span
+						class="usage-chip"
+						title={[
+							usage.model ? `模型 ${usage.model}` : null,
+							`上传 ${usage.prompt} → 生成 ${usage.completion} tokens`,
+							usage.durationMs > 0
+								? `耗时 ${(usage.durationMs / 1000).toFixed(1)}s`
+								: null,
+							usage.hasCost ? `费用 ${usage.cost.toFixed(6)} USD` : null,
+							usage.cacheMiss > 0
+								? `缓存未命中 ${formatTokenCount(usage.cacheMiss)}`
+								: null,
+							usage.cacheDiagnostics
+								? `缓存策略 ${usage.cacheDiagnostics.mode || 'off'} / ${usage.cacheDiagnostics.outcome || 'unknown'}${usage.cacheDiagnostics.downgraded ? '（已兼容降级）' : ''}`
+								: null,
+							usage.calls > 1 ? `${usage.calls} 次调用合并` : null,
+						]
+							.filter(Boolean)
+							.join('\n')}
+					>
+						{formatTokenCount(usage.total)} tokens
+					</span>
+				{/if}
 			{/snippet}
 
-		{#if cardOpen && hasToolArgs}
-			{@const argsValue = parseToolArgs(toolArgs)}
-			{#if argsValue != null}
-				<div class="tool-args">
-					<div class="tool-args-label">调用参数</div>
-					<JsonView value={argsValue} defaultDepth={0} />
-				</div>
+			{#if cardOpen && hasToolArgs}
+				{@const argsValue = parseToolArgs(toolArgs)}
+				{#if argsValue != null}
+					<div class="tool-args">
+						<div class="tool-args-label">调用参数</div>
+						<JsonView value={argsValue} defaultDepth={0} />
+					</div>
+				{/if}
 			{/if}
-		{/if}
 
-		{#if BodyRenderer}
-			<BodyRenderer
-				kind={kind ?? undefined}
-				data={data}
-				shellText={shellText}
-				liveStreaming={liveStreaming}
-				rawText={rawText}
-				parts={notifyParts}
-			/>
-		{:else if liveStreaming}
-			<p class="tool-card-empty">等待输出…</p>
-		{/if}
-		{#if data.hint}
-			<div class="tool-card-hint">{data.hint}</div>
-		{/if}
+			{#if BodyRenderer}
+				<BodyRenderer
+					kind={kind ?? undefined}
+					{data}
+					{shellText}
+					{liveStreaming}
+					{rawText}
+					parts={notifyParts}
+				/>
+			{:else if liveStreaming}
+				<p class="tool-card-empty">等待输出…</p>
+			{/if}
+			{#if data.hint}
+				<div class="tool-card-hint">{data.hint}</div>
+			{/if}
 		</MaterialCollapsible>
 	</div>
 {/if}
@@ -636,6 +645,13 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.tool-intent {
+		flex: none;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.tool-source {
 		flex: none;

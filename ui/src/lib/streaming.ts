@@ -27,6 +27,8 @@ export interface StreamMessage {
 	runId?: number | null;
 	time?: string;
 	streaming?: boolean;
+	/** Render the deterministic tool-intent label when no preamble was emitted. */
+	showFallbackIntent?: boolean;
 	url?: string;
 	awaiting?: boolean;
 	options?: string[];
@@ -42,9 +44,7 @@ export interface StreamMessage {
  * would push tools/thoughts below an optimistic steer and jump the pending
  * user bubble around as the in-flight turn keeps producing UI.
  */
-export function agentInsertIndex(
-	messages: Array<{ role?: string; steering?: boolean }>,
-): number {
+export function agentInsertIndex(messages: Array<{ role?: string; steering?: boolean }>): number {
 	let i = messages.length;
 	while (i > 0 && messages[i - 1].role === 'user' && messages[i - 1].steering) {
 		i--;
@@ -70,11 +70,13 @@ export const webSearchId = (
 	stepNumber: number,
 	runId: number | null | undefined,
 	callId: string | null | undefined = null,
-) =>
-	`tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search${callId ? `-${callId}` : ''}`;
+) => `tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search${callId ? `-${callId}` : ''}`;
 
 /** Live label for a built-in web_search card, keyed by phase + action. */
-export function webSearchLabel(phase: string | null | undefined, action: string | null | undefined): string {
+export function webSearchLabel(
+	phase: string | null | undefined,
+	action: string | null | undefined,
+): string {
 	const a = action || 'search';
 	if (phase === 'completed') {
 		if (a === 'open_page') return '已打开网页';
@@ -125,7 +127,7 @@ export function finalizeStreamBlocks(
 	return messages.map((x) =>
 		isStreamSegment(x.id, reasoningId) || isStreamSegment(x.id, thoughtId)
 			? { ...x, streaming: false }
-			: x
+			: x,
 	);
 }
 
@@ -173,6 +175,7 @@ export function newToolMessage({
 	askOptions = null,
 	actionId = null,
 	toolArgs = undefined,
+	showFallbackIntent = undefined,
 }: {
 	id: string;
 	stepNumber: number;
@@ -185,6 +188,7 @@ export function newToolMessage({
 	/** Live Action.input or resume action_input; omitted on observation fills
 	 * so the placeholder's args are preserved via object spread. */
 	toolArgs?: unknown;
+	showFallbackIntent?: boolean | undefined;
 }) {
 	const isAsk = toolName === 'ask';
 	return {
@@ -197,6 +201,7 @@ export function newToolMessage({
 		stepNumber,
 		...(time ? { time } : {}),
 		streaming,
+		...(showFallbackIntent !== undefined ? { showFallbackIntent } : {}),
 		...(actionId ? { actionId } : {}),
 		...(toolArgs !== undefined ? { toolArgs } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),
@@ -208,7 +213,12 @@ export function actionIdFromObservation(observation: string | undefined | null):
 	if (!observation) return null;
 	try {
 		const j = JSON.parse(observation);
-		if (j && typeof j === 'object' && j.background === true && typeof j.action_id === 'string') {
+		if (
+			j &&
+			typeof j === 'object' &&
+			j.background === true &&
+			typeof j.action_id === 'string'
+		) {
 			return j.action_id;
 		}
 	} catch {
@@ -307,7 +317,14 @@ function nextSegmentId(messages: StreamMessage[], messageId: string): string {
  *  local tool boundary). */
 function appendAfterFinalized(
 	messages: StreamMessage[],
-	opts: { messageId: string; delta: string; msgType: string | undefined; stepNumber: number; runId: number; time: string },
+	opts: {
+		messageId: string;
+		delta: string;
+		msgType: string | undefined;
+		stepNumber: number;
+		runId: number;
+		time: string;
+	},
 ): StreamMessage[] {
 	const { messageId, delta, msgType, stepNumber, runId, time } = opts;
 	const prefix = messageId + '-';
@@ -352,7 +369,17 @@ function contentBeforeIndex(messages: StreamMessage[], messageId: string, liveId
 	return out;
 }
 
-export function accumulateStreamChunk(messages: StreamMessage[], opts: { messageId: string; delta: string; msgType: string | undefined; stepNumber: number; runId: number; time: string }): StreamMessage[] {
+export function accumulateStreamChunk(
+	messages: StreamMessage[],
+	opts: {
+		messageId: string;
+		delta: string;
+		msgType: string | undefined;
+		stepNumber: number;
+		runId: number;
+		time: string;
+	},
+): StreamMessage[] {
 	const { messageId, delta, msgType, stepNumber, runId, time } = opts;
 	if (!delta) return messages;
 
@@ -459,7 +486,14 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
 			x.stepNumber === stepNumber &&
 			x.runId === runId,
 	);
-	const newMsg = newStreamMessage({ id: messageId, content: delta, msgType, stepNumber, runId, time });
+	const newMsg = newStreamMessage({
+		id: messageId,
+		content: delta,
+		msgType,
+		stepNumber,
+		runId,
+		time,
+	});
 	if (insertAt < 0) return insertAgentMessage(messages, newMsg);
 	const next = [...messages];
 	next.splice(insertAt, 0, newMsg);
@@ -501,14 +535,27 @@ function shouldRelocateReasoning(
 	return true;
 }
 
-function finalizeReasoningInPlace(messages: StreamMessage[], reasoningId: string | undefined): StreamMessage[] {
+function finalizeReasoningInPlace(
+	messages: StreamMessage[],
+	reasoningId: string | undefined,
+): StreamMessage[] {
 	if (!reasoningId) return messages;
 	return messages.map((x) =>
 		isStreamSegment(x.id, reasoningId) ? { ...x, streaming: false } : x,
 	);
 }
 
-export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: string; reasoningId?: string; thought: string; stepNumber: number; runId: number; time: string }): StreamMessage[] {
+export function applyThoughtSnap(
+	messages: StreamMessage[],
+	opts: {
+		messageId: string;
+		reasoningId?: string;
+		thought: string;
+		stepNumber: number;
+		runId: number;
+		time: string;
+	},
+): StreamMessage[] {
 	const { messageId, reasoningId, thought, stepNumber, runId, time } = opts;
 	const segPrefix = messageId + '-';
 	const segmentIdxs = messages
@@ -557,7 +604,7 @@ export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: s
 				stepNumber,
 				runId,
 				time,
-		  });
+			});
 	if (firstSegIdx < 0) {
 		return insertAgentMessage(finalizeReasoningInPlace(messages, reasoningId), merged);
 	}

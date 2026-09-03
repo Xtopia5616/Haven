@@ -352,6 +352,16 @@ describe('ToolResultCard source + args', () => {
 });
 
 describe('ToolResultCard empty in-progress', () => {
+	it('shows the deterministic intent fallback when the model emitted no preamble', () => {
+		render(ToolResultCard, {
+			toolName: 'shell',
+			content: '',
+			streaming: true,
+			showFallbackIntent: true,
+		});
+		expect(screen.getByText('调用工具')).toBeTruthy();
+	});
+
 	it('renders a collapsed card for an empty completed call', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',

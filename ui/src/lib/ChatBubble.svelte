@@ -28,6 +28,7 @@
 		received = false,
 		resolved = null,
 		actionId = null,
+		showFallbackIntent = false,
 		onContextMenu = null,
 		onAskSelectionChange = null,
 		onIgnore = null,
@@ -168,7 +169,10 @@
 	/** @param {HTMLElement} el */
 	function hintTarget(el) {
 		const wrap = el.parentElement;
-		if (wrap && (wrap.classList.contains('md-code-wrap') || wrap.classList.contains('md-table-wrap'))) {
+		if (
+			wrap &&
+			(wrap.classList.contains('md-code-wrap') || wrap.classList.contains('md-table-wrap'))
+		) {
 			return wrap;
 		}
 		return el;
@@ -230,8 +234,14 @@
 		const mo = new MutationObserver(scheduleRefresh);
 		// Watch class too: when `.streaming` is removed, recompute edge fades
 		// once for the final layout (content may not mutate again).
-		mo.observe(node, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-		const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleRefresh) : null;
+		mo.observe(node, {
+			childList: true,
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['class'],
+		});
+		const ro =
+			typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleRefresh) : null;
 		ro?.observe(node);
 		scheduleRefresh();
 		return {
@@ -317,10 +327,9 @@
 		mdHtml = text ? renderMarkdown(text, !!streaming) : '';
 		lastMdRender = performance.now();
 	}
-
 </script>
 
-	<div
+<div
 	class="bubble"
 	class:user={role === 'user' && !isPeerKickoff}
 	class:assistant={role === 'assistant' || isPeerKickoff}
@@ -341,7 +350,9 @@
 				Haven
 			{/if}
 			{#if voice}<span class="mic-icon" title="Voice input">&#127908;</span>{/if}
-			{#if role === 'user' && !isPeerKickoff && received}<span class="received-tag" title="Agent 已收到">✓</span
+			{#if role === 'user' && !isPeerKickoff && received}<span
+					class="received-tag"
+					title="Agent 已收到">✓</span
 				>{/if}
 		</span>
 		{#if time}
@@ -366,7 +377,8 @@
 					{/snippet}
 					<div class="reasoning-content">
 						<span
-							>{content}{#if streaming && content}<span class="caret"></span>{/if}</span
+							>{content}{#if streaming && content}<span class="caret"
+								></span>{/if}</span
 						>
 					</div>
 				</MaterialCollapsible>
@@ -379,7 +391,8 @@
 				{actionId}
 				{usage}
 				{toolArgs}
-				messageId={messageId}
+				{showFallbackIntent}
+				{messageId}
 			/>
 		{:else if msgType === 'ask'}
 			<ToolResultCard
@@ -417,16 +430,36 @@
 								loading="lazy"
 							/>
 						{:else if (att.media_type || '').startsWith('audio/') && att.data}
-							<audio class="attachment-audio" controls preload="none" src={imageDataUrl(att)} title={att.filename || '语音'}>
+							<audio
+								class="attachment-audio"
+								controls
+								preload="none"
+								src={imageDataUrl(att)}
+								title={att.filename || '语音'}
+							>
 								你的浏览器不支持音频播放
 							</audio>
 						{:else}
 							<div class="attachment-file" title={att.path || att.filename || '附件'}>
-								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-									<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+								<svg
+									width="14"
+									height="14"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									aria-hidden="true"
+								>
+									<path
+										d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+									/>
 									<polyline points="14 2 14 8 20 8" />
 								</svg>
-								<span class="attachment-file-name">{att.filename || att.path || '附件'}</span>
+								<span class="attachment-file-name"
+									>{att.filename || att.path || '附件'}</span
+								>
 							</div>
 						{/if}
 					{/each}
@@ -811,7 +844,8 @@
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		scrollbar-width: thin;
 		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
-	}	.md-content :global(th),
+	}
+	.md-content :global(th),
 	.md-content :global(td) {
 		border: 1px solid var(--md-sys-color-outline-variant);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
@@ -874,20 +908,32 @@
 	.md-content :global(.md-table-wrap)::before {
 		left: 0;
 		opacity: var(--sh-l, 0);
-		background: linear-gradient(to right, var(--md-sys-color-surface-container-high), transparent);
+		background: linear-gradient(
+			to right,
+			var(--md-sys-color-surface-container-high),
+			transparent
+		);
 		border-radius: var(--md-sys-shape-small) 0 var(--md-sys-shape-small) 0;
 	}
 	.md-content :global(.md-code-wrap)::after,
 	.md-content :global(.md-table-wrap)::after {
 		right: 0;
 		opacity: var(--sh-r, 0);
-		background: linear-gradient(to left, var(--md-sys-color-surface-container-high), transparent);
+		background: linear-gradient(
+			to left,
+			var(--md-sys-color-surface-container-high),
+			transparent
+		);
 		border-radius: 0 var(--md-sys-shape-small) 0 var(--md-sys-shape-small);
 	}
 	.md-content :global(.md-table-wrap)::before {
 		background: linear-gradient(
 			to right,
-			color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface)),
+			color-mix(
+				in srgb,
+				var(--md-sys-color-primary-container) 20%,
+				var(--md-sys-color-surface)
+			),
 			transparent
 		);
 		border-radius: 0;
@@ -895,7 +941,11 @@
 	.md-content :global(.md-table-wrap)::after {
 		background: linear-gradient(
 			to left,
-			color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface)),
+			color-mix(
+				in srgb,
+				var(--md-sys-color-primary-container) 20%,
+				var(--md-sys-color-surface)
+			),
 			transparent
 		);
 		border-radius: 0;
