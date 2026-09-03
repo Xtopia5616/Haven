@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
   <title id="title">Haven</title>
-  <desc id="desc">A rounded conversation bubble with three voice bars on a blue tile.</desc>
-  <rect x="2" y="2" width="60" height="60" rx="18" fill="#2C5090"/>
+  <desc id="desc">A rounded conversation bubble with three voice bars on a transparent background.</desc>
   <path
     d="M18 15h28c5.523 0 10 4.477 10 10v11c0 5.523-4.477 10-10 10H32L21 54v-8h-3c-5.523 0-10-4.477-10-10V25c0-5.523 4.477-10 10-10Z"
     fill="#D7E3FF"

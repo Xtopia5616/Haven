@@ -154,15 +154,17 @@ pub(crate) fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static>
         for x in 0..32 {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
-            let outer = rounded_rect_contains(px, py, 2.0, 2.0, 30.0, 30.0, 8.0);
-            if !outer {
+            // These coordinates are the 64x64 SVG geometry scaled to the
+            // 32x32 tray canvas.
+            let outer_body = rounded_rect_contains(px, py, 3.5, 6.5, 28.5, 24.0, 5.5);
+            let outer_tail = triangle_contains(px, py, (10.0, 21.5), (10.0, 28.5), (17.0, 23.5));
+            if !outer_body && !outer_tail {
                 continue;
             }
 
-            let inner = rounded_rect_contains(px, py, 4.0, 4.0, 28.0, 28.0, 6.0);
-            let color = if !inner { status_color } else { BLUE };
-            set_rgba_pixel(&mut rgba, x, y, color);
-
+            // The semantic status color is an outline around the transparent
+            // app mark; the mark itself keeps its fixed brand colors.
+            set_rgba_pixel(&mut rgba, x, y, status_color);
             let bubble_body = rounded_rect_contains(px, py, 4.0, 7.5, 28.0, 23.0, 5.0);
             let bubble_tail = triangle_contains(px, py, (10.5, 21.5), (10.5, 27.0), (16.0, 23.0));
             if bubble_body || bubble_tail {

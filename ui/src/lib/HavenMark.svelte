@@ -2,9 +2,8 @@
 	/**
 	 * Shared Haven mark. The shape and fixed brand colors match
 	 * assets/branding/haven-mark.svg and the generated app icons.
-	 * statusColor adds the same semantic perimeter used by the tray icon.
 	 */
-	let { size = 24, statusColor = 'transparent' } = $props();
+	let { size = 24 } = $props();
 </script>
 
 <svg
@@ -13,20 +12,8 @@
 	width={size}
 	height={size}
 	fill="none"
-	style="--haven-mark-status: {statusColor};"
 	aria-hidden="true"
 >
-	<rect x="2" y="2" width="60" height="60" rx="18" fill="var(--haven-mark-background)" />
-	<rect
-		x="2"
-		y="2"
-		width="60"
-		height="60"
-		rx="18"
-		fill="none"
-		stroke="var(--haven-mark-status)"
-		stroke-width="4"
-	/>
 	<path
 		d="M18 15h28c5.523 0 10 4.477 10 10v11c0 5.523-4.477 10-10 10H32L21 54v-8h-3c-5.523 0-10-4.477-10-10V25c0-5.523 4.477-10 10-10Z"
 		fill="var(--haven-mark-bubble)"

@@ -58,7 +58,6 @@
 			 * No external CSS; must paint before Svelte hydrates.
 			 */
 			:root, [data-theme='light'] {
-				--boot-mark-background: #2C5090;
 				--boot-mark-bubble: #D7E3FF;
 				--boot-mark-ink: #2C5090;
 				--boot-bg: #faf8ff;
@@ -146,16 +145,13 @@
 				-webkit-app-region: no-drag;
 			}
 			#haven-boot .boot-dot {
-				display: inline-flex;
-				width: 16px;
-				height: 16px;
+				display: inline-block;
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+				background: var(--boot-outline-dot);
 				flex-shrink: 0;
 				animation: haven-boot-pulse 1.2s cubic-bezier(0.2, 0, 0, 1) infinite;
-			}
-			#haven-boot .boot-dot svg {
-				display: block;
-				width: 16px;
-				height: 16px;
 			}
 			#haven-boot .boot-main {
 				flex: 1;
@@ -176,7 +172,6 @@
 				<span class="boot-brand">
 					<span class="boot-glyph" aria-hidden="true">
 						<svg viewBox="0 0 64 64" width="22" height="22" fill="none">
-							<rect x="2" y="2" width="60" height="60" rx="18" fill="var(--boot-mark-background)" />
 							<path
 								d="M18 15h28c5.523 0 10 4.477 10 10v11c0 5.523-4.477 10-10 10H32L21 54v-8h-3c-5.523 0-10-4.477-10-10V25c0-5.523 4.477-10 10-10Z"
 								fill="var(--boot-mark-bubble)"
@@ -191,30 +186,7 @@
 					<span class="boot-wordmark">Haven</span>
 				</span>
 				<span class="boot-chip">
-					<span class="boot-dot" aria-hidden="true">
-						<svg viewBox="0 0 64 64" width="16" height="16" fill="none">
-							<rect x="2" y="2" width="60" height="60" rx="18" fill="var(--boot-mark-background)" />
-							<rect
-								x="2"
-								y="2"
-								width="60"
-								height="60"
-								rx="18"
-								fill="none"
-								stroke="var(--boot-outline-dot)"
-								stroke-width="4"
-							/>
-							<path
-								d="M18 15h28c5.523 0 10 4.477 10 10v11c0 5.523-4.477 10-10 10H32L21 54v-8h-3c-5.523 0-10-4.477-10-10V25c0-5.523 4.477-10 10-10Z"
-								fill="var(--boot-mark-bubble)"
-							/>
-							<g fill="var(--boot-mark-ink)">
-								<rect x="24" y="24.5" width="5" height="12" rx="2.5" />
-								<rect x="29.5" y="21.5" width="5" height="18" rx="2.5" />
-								<rect x="35" y="24.5" width="5" height="12" rx="2.5" />
-							</g>
-						</svg>
-					</span>
+					<span class="boot-dot" aria-hidden="true"></span>
 					加载中
 				</span>
 			</div>

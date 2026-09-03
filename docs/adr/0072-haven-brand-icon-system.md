@@ -9,16 +9,16 @@ Haven 的根图标、Tauri bundle 图标、favicon、应用内 Logo、启动占�
 
 ## 决定
 
-1. 使用 `assets/branding/haven-mark.svg` 作为唯一权威视觉源：蓝色 M3 主色
-   圆角 tile、浅蓝对话气泡和三段厚声波，避免文字、细线和复杂渐变。
+1. 使用 `assets/branding/haven-mark.svg` 作为唯一权威视觉源：透明画布上的
+   浅蓝对话气泡和三段厚声波，避免文字、底板、细线和复杂渐变。
 2. 由 `scripts/generate-icons.py` 确定性生成根图标、favicon、Tauri 的 PNG、
    Windows ICO、macOS ICNS 以及 Windows Store 尺寸；提交生成后的发布资产，
    以便没有生成工具的打包环境也能直接构建。
-3. `HavenMark.svelte` 作为 UI 内部的单一标记组件，由 `Logo.svelte` 和
-   `StatusDot.svelte` 复用；启动占位页复用相同的 64×64 几何。标记固定使用
-   SVG 中的蓝色品牌色，避免深色主题把 UI Logo 反相成与 EXE 不同的图形，
-   状态色只作为状态栏/托盘外框。托盘保持现有状态事件和 tooltip 契约，保留
-   normal/recording/muted/busy 语义并保持透明角落。
+3. `HavenMark.svelte` 作为 UI 内部的应用 Logo，使用透明画布；`StatusDot.svelte`
+   保持 8×8 圆点原语，状态颜色只表达语义：未配置使用灰色 outline，录音、
+   等待、生成和就绪分别沿用 error/warning/primary/success。启动占位页也保持
+   灰色状态点。托盘保持现有状态事件和 tooltip 契约，保留
+   normal/recording/muted/busy 语义，并将状态色作为透明 Logo 外圈。
 
 ## 替代方案
 

@@ -22,19 +22,13 @@ UI_DIR = ROOT / "ui" / "static"
 
 BLUE = "#2C5090"
 BUBBLE = "#D7E3FF"
-STATUS = {
-    "normal": "#BBD2FF",
-    "recording": "#F04438",
-    "muted": "#A9AAB2",
-    "busy": "#FFB74D",
-}
 
 
 def scaled(value: float, scale: float) -> int:
     return round(value * scale)
 
 
-def draw_mark(size: int, status: str | None = None) -> Image.Image:
+def draw_mark(size: int) -> Image.Image:
     """Render the SVG's flat geometry with supersampling for small sizes."""
 
     supersample = 4
@@ -45,19 +39,6 @@ def draw_mark(size: int, status: str | None = None) -> Image.Image:
 
     def box(values: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
         return tuple(scaled(value, pixel_scale) for value in values)  # type: ignore[return-value]
-
-    # SVG: rect x=2 y=2 width=60 height=60 rx=18.
-    draw.rounded_rectangle(box((2, 2, 62, 62)), radius=scaled(18, pixel_scale), fill=BLUE)
-
-    if status is not None:
-        # The coloured perimeter is intentionally separate from the mark so
-        # the normal/recording/muted/busy semantics remain visible at 16 px.
-        draw.rounded_rectangle(
-            box((2, 2, 62, 62)),
-            radius=scaled(18, pixel_scale),
-            outline=STATUS[status],
-            width=scaled(2, pixel_scale),
-        )
 
     # SVG speech bubble path, represented as the same rounded body plus tail.
     draw.rounded_rectangle(box((8, 15, 56, 46)), radius=scaled(10, pixel_scale), fill=BUBBLE)
