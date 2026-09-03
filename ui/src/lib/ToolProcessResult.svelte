@@ -134,8 +134,9 @@
 
 <style>
 	.tool-card-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
@@ -151,7 +152,8 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
 		color: var(--md-sys-color-on-surface);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		padding: 4px var(--md-sys-space-sm);
 		margin-bottom: var(--md-sys-space-xs);
 		outline: none;
@@ -162,7 +164,8 @@
 	.proc-table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.proc-table th {
 		position: sticky;
@@ -176,7 +179,8 @@
 		font-weight: 600;
 		color: var(--md-sys-color-on-surface-variant);
 		padding: 2px var(--md-sys-space-2xs);
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.proc-table td {
 		padding: 2px var(--md-sys-space-2xs);
@@ -218,8 +222,9 @@
 	}
 	.status-badge {
 		flex: none;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-transform: uppercase;
 		padding: 1px 8px;
 		border-radius: var(--md-sys-shape-full);
@@ -246,8 +251,9 @@
 		border: 1px dashed var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
 		color: var(--md-sys-color-primary);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		padding: 4px;
 		cursor: pointer;
 	}

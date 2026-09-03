@@ -240,11 +240,12 @@
 	}
 	.dialog-content label > span:first-child,
 	.dialog-content .field > span:first-child {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		color: var(--md-sys-color-on-surface-variant);
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.5px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.dialog-content input[type="text"],
 	.dialog-content textarea {
@@ -253,7 +254,8 @@
 		border-radius: var(--md-sys-shape-small);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		color: var(--md-sys-color-on-surface);
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-body-large-size);
+		line-height: var(--md-sys-typescale-body-large-line-height);
 		font-family: inherit;
 		transition: border-color var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
@@ -270,10 +272,12 @@
 	.dialog-content textarea {
 		resize: vertical;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 	}
 	.field-error {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-error);
 	}
 </style>

@@ -183,13 +183,15 @@
 	}
 	h3 {
 		color: var(--md-sys-color-error);
-		font-size: 18px;
+		font-size: var(--md-sys-typescale-title-large-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-title-large-line-height);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.detail {
 		margin-bottom: var(--md-sys-space-md);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		display: flex;
 		flex-direction: column;
@@ -198,7 +200,8 @@
 	.detail strong { color: var(--md-sys-color-on-surface); }
 	.detail code {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 	}
 	.params {
 		margin: 0 0 var(--md-sys-space-lg);
@@ -209,8 +212,8 @@
 		background: var(--md-sys-color-surface-container-lowest, rgba(0, 0, 0, 0.04));
 		color: var(--md-sys-color-on-surface);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
-		line-height: 1.45;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		white-space: pre-wrap;
 		word-break: break-word;
 	}
@@ -224,7 +227,8 @@
 		border-radius: var(--md-sys-shape-extra-small);
 		background: var(--md-sys-color-surface-variant, rgba(0, 0, 0, 0.06));
 		overflow: hidden;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		display: flex;
 		align-items: center;
@@ -290,7 +294,8 @@
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-extra-small);
 		font: inherit;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
 	}
@@ -303,8 +308,9 @@
 		border: none;
 		border-radius: var(--md-sys-shape-small);
 		font-family: inherit;
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-label-large-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-large-line-height);
 		cursor: pointer;
 		transition: background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),

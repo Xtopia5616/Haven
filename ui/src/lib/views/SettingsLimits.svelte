@@ -523,8 +523,9 @@
 		margin-bottom: var(--md-sys-space-md);
 	}
 	.format-card h3 {
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-large-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-primary);
 		margin-bottom: var(--md-sys-space-sm);
 	}
@@ -544,12 +545,13 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: var(--md-sys-space-md);
+		gap: var(--md-comp-toolbar-gap);
 		flex-wrap: wrap;
 		margin-bottom: var(--md-sys-space-md);
 	}
 	.limits-legend {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin: 0;
 	}
@@ -591,7 +593,8 @@
 		transform: rotate(-90deg);
 	}
 	.limit-danger-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-left: auto;
 	}
@@ -600,21 +603,24 @@
 		min-width: 0;
 	}
 	.limit-label label {
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 500;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.limit-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		margin: 2px 0 0;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.danger-badge {
 		display: inline-block;
 		margin-left: 6px;
 		padding: 1px 6px;
 		border-radius: 999px;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: #fff;
 		background: var(--md-sys-color-error, #ba1a1a);
 		vertical-align: 1px;
@@ -625,15 +631,17 @@
 		gap: 6px;
 	}
 	.limit-unit {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		min-width: 42px;
 	}
 	.model-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-top: calc(-1 * var(--md-sys-space-sm));
+		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.form-row {
 		display: flex;

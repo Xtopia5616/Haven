@@ -176,21 +176,23 @@
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.jv-root-kind {
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		font-family: var(--md-sys-typescale-mono);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 		padding: 0 4px;
 	}
 	.jv-copy {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		font-family: var(--md-sys-typescale-body);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		background: transparent;
 		border: 1px solid transparent;
@@ -211,8 +213,8 @@
 	}
 	.jv-body {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
-		line-height: 1.7;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.jv-root-body {
@@ -302,9 +304,9 @@
 	}
 	.jv-summary {
 		font-style: normal;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
-		line-height: 1.4;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		padding: 0 6px;
 		border-radius: var(--md-sys-shape-full);
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);

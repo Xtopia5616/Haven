@@ -174,6 +174,38 @@
 		'Microsoft YaHei UI', 'Microsoft YaHei', 'Microsoft JhengHei UI', 'Microsoft JhengHei',
 		'PingFang SC', 'PingFang TC', 'Hiragino Sans GB', 'Noto Sans SC', 'Noto Sans TC',
 		'Noto Sans CJK SC', sans-serif;
+	/* ---------- Typography scale ----------
+	 * Keep sizes semantic so Chinese labels and Latin UI text share one
+	 * predictable rhythm. Unitless line heights are inherited by descendants,
+	 * preventing compact metadata from collapsing into adjacent lines. */
+	--md-sys-typescale-display-size: 30px;
+	--md-sys-typescale-display-line-height: 1.2;
+	--md-sys-typescale-headline-large-size: 28px;
+	--md-sys-typescale-headline-large-line-height: 1.25;
+	--md-sys-typescale-headline-medium-size: 20px;
+	--md-sys-typescale-headline-medium-line-height: 1.3;
+	--md-sys-typescale-title-large-size: 18px;
+	--md-sys-typescale-title-large-line-height: 1.35;
+	--md-sys-typescale-title-medium-size: 16px;
+	--md-sys-typescale-title-medium-line-height: 1.4;
+	--md-sys-typescale-body-large-size: 15px;
+	--md-sys-typescale-body-large-line-height: 1.55;
+	--md-sys-typescale-body-medium-size: 14px;
+	--md-sys-typescale-body-medium-line-height: 1.55;
+	--md-sys-typescale-body-small-size: 13px;
+	--md-sys-typescale-body-small-line-height: 1.5;
+	--md-sys-typescale-label-large-size: 14px;
+	--md-sys-typescale-label-large-line-height: 1.4;
+	--md-sys-typescale-label-medium-size: 12px;
+	--md-sys-typescale-label-medium-line-height: 1.45;
+	--md-sys-typescale-label-small-size: 11px;
+	--md-sys-typescale-label-small-line-height: 1.4;
+	--md-sys-typescale-code-size: 12px;
+	--md-sys-typescale-code-line-height: 1.55;
+	--md-sys-typescale-body-size: var(--md-sys-typescale-body-medium-size);
+	--md-sys-typescale-body-line-height: var(--md-sys-typescale-body-medium-line-height);
+	--md-sys-typescale-label-letter-spacing: 0.1px;
+	--md-sys-typescale-overline-letter-spacing: 0.4px;
 	/* ---------- Shape scale (M3 expressive, large rounded) ---------- */
 	--md-sys-shape-extra-small: 4px;
 	--md-sys-shape-small: 8px;
@@ -425,10 +457,11 @@ body {
 
 body {
 	font-family: var(--md-sys-typescale-body);
+	font-size: var(--md-sys-typescale-body-size);
 	background: var(--md-sys-color-background);
 	color: var(--md-sys-color-on-surface);
 	overflow: hidden;
-	line-height: 1.4;
+	line-height: var(--md-sys-typescale-body-line-height);
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
 	transition:
@@ -441,6 +474,30 @@ input,
 textarea,
 select {
 	font: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+	margin: 0;
+	line-height: var(--md-sys-typescale-title-medium-line-height);
+	text-wrap: balance;
+	overflow-wrap: anywhere;
+}
+
+p,
+li,
+dt,
+dd {
+	line-height: var(--md-sys-typescale-body-medium-line-height);
+}
+
+small {
+	font-size: var(--md-sys-typescale-label-small-size);
+	line-height: var(--md-sys-typescale-label-small-line-height);
 }
 
 button:focus-visible,
@@ -510,10 +567,10 @@ samp {
 	min-width: var(--md-comp-button-touch-height);
 	padding: 0 var(--md-comp-button-hpadding);
 	font-family: inherit;
-	font-size: 14px;
+	font-size: var(--md-sys-typescale-label-large-size);
 	font-weight: 600;
-	letter-spacing: 0.1px;
-	line-height: 1;
+	letter-spacing: var(--md-sys-typescale-label-letter-spacing);
+	line-height: var(--md-sys-typescale-label-large-line-height);
 	border: var(--_btn-border);
 	border-radius: var(--md-comp-button-radius);
 	background: var(--_btn-bg);
@@ -638,7 +695,8 @@ samp {
 	height: 32px;
 	min-width: 32px;
 	padding: 0 var(--md-sys-space-sm);
-	font-size: 13px;
+	font-size: var(--md-sys-typescale-label-medium-size);
+	line-height: var(--md-sys-typescale-label-medium-line-height);
 }
 
 /* ---------- Outlined text fields ---------- */
@@ -650,7 +708,7 @@ select.md-select,
 textarea.md-textarea {
 	width: 100%;
 	font-family: inherit;
-	font-size: 15px;
+	font-size: var(--md-sys-typescale-body-large-size);
 	padding: 0 var(--md-sys-space-lg);
 	height: var(--md-comp-textfield-container-height);
 	background: transparent;
@@ -667,7 +725,7 @@ textarea.md-textarea {
 	min-height: 96px;
 	padding: var(--md-sys-space-md) var(--md-sys-space-lg);
 	resize: vertical;
-	line-height: 1.45;
+	line-height: var(--md-sys-typescale-body-medium-line-height);
 }
 select.md-select {
 	appearance: none;
@@ -683,14 +741,15 @@ select.md-select {
 .md-select option {
 	background: var(--md-sys-color-surface-container);
 	color: var(--md-sys-color-on-surface);
-	font-size: 14px;
+	font-size: var(--md-sys-typescale-body-medium-size);
 	padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 }
 .md-select optgroup {
 	background: var(--md-sys-color-surface-container);
 	color: var(--md-sys-color-on-surface-variant);
-	font-size: 12px;
+	font-size: var(--md-sys-typescale-label-medium-size);
 	font-weight: 600;
+	line-height: var(--md-sys-typescale-label-medium-line-height);
 }
 .md-select:disabled {
 	color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
@@ -751,14 +810,15 @@ select.md-select {
 }
 .page-heading h1 {
 	font-family: var(--md-ref-typeface-brand);
-	font-size: 28px;
+	font-size: var(--md-sys-typescale-headline-large-size);
 	font-weight: 700;
-	letter-spacing: -0.35px;
-	line-height: 1.15;
+	letter-spacing: 0;
+	line-height: var(--md-sys-typescale-headline-large-line-height);
 }
 .page-heading p {
 	color: var(--md-sys-color-on-surface-variant);
-	font-size: 13px;
+	font-size: var(--md-sys-typescale-body-small-size);
+	line-height: var(--md-sys-typescale-body-small-line-height);
 }
 
 /* ---------- Chips ---------- */
@@ -768,9 +828,10 @@ select.md-select {
 	gap: var(--md-sys-space-xs);
 	padding: 0 var(--md-sys-space-md);
 	height: 32px;
-	font-size: 12px;
+	font-size: var(--md-sys-typescale-label-medium-size);
 	font-weight: 600;
 	font-family: inherit;
+	line-height: var(--md-sys-typescale-label-medium-line-height);
 	border-radius: var(--md-sys-shape-small);
 	border: 1px solid var(--md-sys-color-outline);
 	background: transparent;
@@ -814,9 +875,10 @@ select.md-select {
 	background: transparent;
 	color: var(--md-sys-color-on-surface-variant);
 	font-family: inherit;
-	font-size: 13px;
+	font-size: var(--md-sys-typescale-body-small-size);
 	font-weight: 600;
-	letter-spacing: 0.1px;
+	letter-spacing: var(--md-sys-typescale-label-letter-spacing);
+	line-height: var(--md-sys-typescale-label-large-line-height);
 	text-decoration: none;
 	cursor: pointer;
 	user-select: none;
@@ -931,7 +993,8 @@ select.md-select {
 	color: var(--md-sys-color-inverse-on-surface);
 	border-radius: var(--md-sys-shape-extra-small);
 	padding: var(--md-sys-space-md) var(--md-sys-space-lg);
-	font-size: 14px;
+	font-size: var(--md-sys-typescale-body-medium-size);
+	line-height: var(--md-sys-typescale-body-medium-line-height);
 	box-shadow: var(--md-sys-elevation-3);
 }
 

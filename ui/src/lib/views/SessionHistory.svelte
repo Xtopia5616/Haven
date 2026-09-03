@@ -221,7 +221,7 @@
 		display: flex;
 		align-items: center;
 		min-width: 0;
-		gap: var(--md-sys-space-md);
+		gap: var(--md-comp-toolbar-gap);
 		margin-bottom: var(--md-sys-space-lg);
 		padding: var(--md-sys-space-sm);
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -256,7 +256,8 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		background: none;
 		border: none;
@@ -312,8 +313,9 @@
 		min-width: 0;
 	}
 	.session-title {
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
 		display: inline-flex;
@@ -335,14 +337,16 @@
 		transition: opacity 0.15s;
 	}
 	.title-input {
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		padding: 2px 6px;
 		width: 280px;
 	}
 	.session-message {
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		color: var(--md-sys-color-on-surface-variant);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		background: var(--md-sys-color-surface-container);
 		border-radius: var(--md-sys-shape-small);
@@ -354,13 +358,15 @@
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-md);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		opacity: 0.75;
 	}
 	.meta-date {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.delete-btn-meta {
 		margin-left: auto;

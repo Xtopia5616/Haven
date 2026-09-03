@@ -1003,9 +1003,10 @@
 	}
 	.settings-page h1 {
 		font-family: var(--md-ref-typeface-brand);
-		font-size: 28px;
+		font-size: var(--md-sys-typescale-headline-large-size);
 		font-weight: 700;
-		letter-spacing: -0.35px;
+		letter-spacing: 0;
+		line-height: var(--md-sys-typescale-headline-large-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 	.settings-tabs {
@@ -1023,14 +1024,15 @@
 	.settings-tabs .md-tab small {
 		max-width: 180px;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 400;
-		line-height: 1.35;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.settings-tab-state {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.settings-tab-state[data-state='dirty'],
 	.save-status[data-state='error'] {
@@ -1057,13 +1059,15 @@
 	.settings-callout p {
 		margin-top: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-tertiary-container);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.model-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-top: calc(-1 * var(--md-sys-space-sm));
+		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.save-bar {
 		position: sticky;
@@ -1071,7 +1075,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: var(--md-sys-space-lg);
+		gap: var(--md-comp-toolbar-gap);
 		margin-top: var(--md-sys-space-xl);
 		padding: var(--md-sys-space-sm) 0;
 		background: var(--md-sys-color-surface);
@@ -1085,7 +1089,8 @@
 	.save-status {
 		min-width: 0;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		overflow-wrap: anywhere;
 	}
 	.save-status[data-state='saving'] {
@@ -1104,7 +1109,8 @@
 		width: min(760px, 92vw);
 	}
 	.log-path {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin: 0 0 var(--md-sys-space-sm);
 		word-break: break-all;
@@ -1116,8 +1122,8 @@
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 12px;
-		line-height: 1.5;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		padding: var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-small);
 		border: 1px solid var(--md-sys-color-outline-variant);

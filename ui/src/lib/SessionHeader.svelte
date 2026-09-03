@@ -52,8 +52,9 @@
 	}
 	.session-header__eyebrow {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		white-space: nowrap;
 	}
 	.session-header h1 {
@@ -62,9 +63,10 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 18px;
+		font-size: var(--md-sys-typescale-title-large-size);
 		font-weight: 700;
-		letter-spacing: -0.15px;
+		letter-spacing: 0;
+		line-height: var(--md-sys-typescale-title-large-line-height);
 	}
 	.session-header__status {
 		flex-shrink: 0;
@@ -95,7 +97,8 @@
 		}
 		.session-header__actions :global(.md-btn--outlined)::after {
 			content: '+';
-			font-size: 18px;
+			font-size: var(--md-sys-typescale-title-large-size);
+			line-height: var(--md-sys-typescale-title-large-line-height);
 		}
 	}
 </style>

@@ -47,8 +47,8 @@
 <style>
 	.dialog-hint {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 14px;
-		line-height: 1.5;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 </style>

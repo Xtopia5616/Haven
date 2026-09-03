@@ -218,7 +218,7 @@
 		border-radius: 999px;
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
 		line-height: 18px;
 		text-align: center;
@@ -240,9 +240,10 @@
 		box-shadow: var(--md-sys-elevation-2);
 	}
 	.session-menu-title {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
-		letter-spacing: 0.4px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-transform: uppercase;
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
@@ -257,7 +258,8 @@
 		border: none;
 		background: transparent;
 		color: var(--md-sys-color-on-surface);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		font-family: inherit;
 		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
@@ -285,13 +287,15 @@
 		white-space: nowrap;
 	}
 	.session-menu-item-id {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		font-family: var(--md-sys-typescale-body-small-font-family, inherit);
 	}
 	.session-menu-item-status {
 		flex-shrink: 0;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.session-menu-item-status.running {
@@ -319,8 +323,8 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		background: var(--md-sys-color-surface-container, transparent);
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
-		line-height: 1;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		flex-shrink: 0;
 		transition: border-color var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
@@ -345,7 +349,8 @@
 	}
 	.token-unit {
 		opacity: 0.6;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.token-idle {
 		opacity: 0.5;

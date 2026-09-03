@@ -162,8 +162,9 @@
 		border: none;
 		background: transparent;
 		color: var(--md-sys-color-on-surface);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-family: inherit;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
 		transition:

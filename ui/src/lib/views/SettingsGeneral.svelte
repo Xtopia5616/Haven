@@ -437,26 +437,29 @@
 		margin-bottom: var(--md-sys-space-xl);
 	}
 	.section h2 {
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-title-medium-size);
 		font-weight: 700;
 		color: var(--md-sys-color-on-surface);
-		letter-spacing: 0.1px;
+		letter-spacing: 0;
+		line-height: var(--md-sys-typescale-title-medium-line-height);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.model-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-top: calc(-1 * var(--md-sys-space-sm));
+		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.model-group-heading {
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 600;
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-lg);
 		margin-bottom: var(--md-sys-space-sm);
 		text-transform: uppercase;
-		letter-spacing: 0.5px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.form-row {
 		display: flex;
@@ -468,7 +471,8 @@
 	.form-row .form-label {
 		width: 168px;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		flex-shrink: 0;
 	}
 	.switch-row,
@@ -481,7 +485,8 @@
 	.switch-label,
 	.autostart-label {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.shell-warning {
 		margin-top: var(--md-sys-space-sm);
@@ -490,7 +495,8 @@
 		border-radius: var(--md-sys-shape-medium);
 		background: color-mix(in srgb, var(--md-sys-color-error) 10%, transparent);
 		color: var(--md-sys-color-on-surface);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.shell-warning p {
 		margin: 0 0 var(--md-sys-space-xs);
@@ -510,7 +516,8 @@
 		gap: var(--md-sys-space-xs);
 	}
 	.perm-list-title {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		font-weight: 700;
 		color: var(--md-sys-color-on-surface);
 		margin-bottom: var(--md-sys-space-xs);
@@ -525,14 +532,16 @@
 	}
 	.perm-key {
 		flex: 1;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.perm-effect {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-primary);
 		text-transform: capitalize;
 	}
@@ -544,7 +553,8 @@
 		background: transparent;
 		color: var(--md-sys-color-on-surface-variant);
 		font: inherit;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		cursor: pointer;
 		padding: 2px 6px;
 	}
@@ -566,7 +576,8 @@
 	}
 	.notify-grid-header .switch-label {
 		font-weight: 600;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.llm-head {
@@ -581,7 +592,8 @@
 	}
 	.recall-hint {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.theme-toggle-row,
 	.accent-picker {
@@ -597,7 +609,8 @@
 	.custom-hex-input {
 		width: 84px;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		background: transparent;
 		border: none;
 		outline: none;

@@ -104,7 +104,8 @@
 		height: var(--md-comp-textfield-container-height);
 		padding: 0 var(--md-sys-space-lg);
 		font-family: inherit;
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-body-large-size);
+		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-on-surface);
 		background: transparent;
 		border: 1px solid var(--md-sys-color-outline);
@@ -154,9 +155,10 @@
 	}
 	.md-select-group {
 		padding: 10px var(--md-sys-space-lg) 4px;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		letter-spacing: 0.06em;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-transform: uppercase;
 		color: var(--md-sys-color-on-surface-variant);
 		user-select: none;
@@ -168,7 +170,8 @@
 		padding: 0 var(--md-sys-space-lg);
 		height: 40px;
 		font-family: inherit;
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		background: transparent;
 		border: none;

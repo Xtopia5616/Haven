@@ -438,8 +438,8 @@
 		width: fit-content;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-large);
-		font-size: 13px;
-		line-height: 1.5;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	.bubble.thinking {
 		width: 72%;
@@ -474,8 +474,9 @@
 		margin-bottom: var(--md-sys-space-2xs);
 	}
 	.bubble-role {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
@@ -485,12 +486,13 @@
 		filter: grayscale(0.3);
 	}
 	.received-tag {
-		font-size: 11px;
-		line-height: 1;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: color-mix(in srgb, var(--md-sys-color-on-primary) 80%, var(--md-sys-color-primary));
 	}
 	.bubble-time {
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.bubble.user .bubble-time {
 		color: color-mix(in srgb, var(--md-sys-color-on-primary) 95%, var(--md-sys-color-primary));
@@ -501,7 +503,8 @@
 	}
 	.thought {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.caret {
 		display: inline-block;
@@ -522,8 +525,9 @@
 		color: var(--md-sys-color-on-warning-container);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-small);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		display: inline-block;
 	}
 	.peer-kickoff-badge {
@@ -536,18 +540,19 @@
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
 	.peer-kickoff-label {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-tertiary-container);
-		letter-spacing: 0.02em;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 	}
 	.peer-kickoff-body {
 		margin: 0;
 		white-space: pre-wrap;
 		word-break: break-word;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
-		line-height: 1.45;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		max-height: 12em;
 		overflow: auto;
@@ -585,7 +590,8 @@
 		border-radius: var(--md-sys-shape-small);
 		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
 		background: color-mix(in srgb, var(--md-sys-color-on-primary) 8%, transparent);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 	.attachment-file-name {
@@ -596,6 +602,7 @@
 	.md-content :global(p) {
 		margin: 0 0 0.75em;
 		overflow-wrap: anywhere;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	.md-content :global(p:last-child) {
 		margin-bottom: 0;
@@ -605,7 +612,8 @@
 		background: var(--md-sys-color-surface-container-high);
 		padding: var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-small);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		overflow-x: auto;
 		margin: 0 0 0.75em;
 		scrollbar-width: thin;
@@ -613,7 +621,8 @@
 	}
 	.md-content :global(code) {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 		padding: 1px 4px;
 		border-radius: 3px;
@@ -621,7 +630,7 @@
 	.md-content :global(pre code) {
 		background: none;
 		padding: 0;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-code-size);
 	}
 	.md-content :global(pre.md-code-streaming) {
 		white-space: pre-wrap;
@@ -659,18 +668,21 @@
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.md-content :global(.md-code-lang) {
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		font-family: var(--md-sys-typescale-mono);
 		color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 	}
 	.md-content :global(.md-code-copy) {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		background: transparent;
 		border: 1px solid transparent;
@@ -756,9 +768,11 @@
 	.md-content :global(ol) {
 		padding-left: 1.5em;
 		margin: 0 0 0.75em;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	.md-content :global(li) {
 		margin-bottom: 0.25em;
+		line-height: inherit;
 	}
 	.md-content :global(blockquote) {
 		border-left: 3px solid var(--md-sys-color-primary);
@@ -780,7 +794,8 @@
 		overflow-x: auto;
 		width: 100%;
 		margin: 0 0 0.75em;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		scrollbar-width: thin;
 		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 	}	.md-content :global(th),
@@ -894,28 +909,35 @@
 	.md-content :global(h3),
 	.md-content :global(h4) {
 		font-weight: 600;
-		margin: 0 0 0.5em;
+		margin: 0 0 0.6em;
 		color: var(--md-sys-color-on-surface);
+		line-height: var(--md-sys-typescale-title-medium-line-height);
+		overflow-wrap: anywhere;
 	}
 	.md-content :global(h1) {
-		font-size: 17px;
+		font-size: var(--md-sys-typescale-title-large-size);
 	}
 	.md-content :global(h2) {
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-title-medium-size);
 	}
 	.md-content :global(h3) {
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-large-size);
+	}
+	.md-content :global(h4) {
+		font-size: var(--md-sys-typescale-body-medium-size);
 	}
 	.reasoning-block {
 		background: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
 		border-radius: var(--md-sys-shape-small);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.reasoning-summary {
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.reasoning-content {
 		margin-top: var(--md-sys-space-xs);

@@ -157,7 +157,8 @@
 
 	.api-key-mask {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		letter-spacing: 0.12em;
 		color: var(--md-sys-color-on-surface);
 		user-select: none;
@@ -179,7 +180,8 @@
 		background: transparent;
 		padding: 0 var(--md-sys-space-lg);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		letter-spacing: 0.04em;
 		color: var(--md-sys-color-on-surface);
 	}
@@ -198,8 +200,9 @@
 		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-primary);
 		font-family: inherit;
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-label-large-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-large-line-height);
 		cursor: pointer;
 		transition: background-color var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
@@ -240,8 +243,8 @@
 		border-radius: 999px;
 		border: 1px solid var(--md-sys-color-outline-variant);
 		background: var(--md-sys-color-surface-container);
-		font-size: 11px;
-		line-height: 1;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		max-width: 100%;
 	}

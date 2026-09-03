@@ -29,8 +29,9 @@
 
 <style>
 	.tool-card-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
@@ -41,14 +42,16 @@
 	}
 	.tool-card-empty,
 	.tool-card-meta {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.tool-card-empty {
 		margin: 0;
 	}
 	.tool-card-meta {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		margin-top: var(--md-sys-space-2xs);
 	}
 	.scheduled-row {
@@ -57,7 +60,8 @@
 		gap: var(--md-sys-space-xs);
 		padding: 3px var(--md-sys-space-2xs);
 		border-radius: 4px;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.scheduled-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
@@ -66,15 +70,17 @@
 		flex: 1;
 		min-width: 0;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.scheduled-mode {
 		flex: none;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		padding: 1px 6px;
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-secondary-container);
@@ -82,18 +88,21 @@
 	}
 	.scheduled-time {
 		flex: none;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.action-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.action-id {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 </style>

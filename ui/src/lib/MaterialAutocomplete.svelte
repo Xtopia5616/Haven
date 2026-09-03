@@ -154,7 +154,8 @@
 		padding: 0 var(--md-sys-space-lg);
 		height: 40px;
 		font-family: inherit;
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		background: transparent;
 		border: none;
@@ -181,12 +182,14 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		opacity: 0.7;
 	}
 	.ma-empty {
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>

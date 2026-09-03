@@ -186,19 +186,22 @@
 
 <style>
 	.tool-card-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
 	.tool-card-meta {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-2xs);
 	}
 	.tool-card-empty {
 		margin: 0;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.tool-card-list {
@@ -213,13 +216,15 @@
 		margin-bottom: var(--md-sys-space-sm);
 	}
 	.sys-os-name {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 	.sys-os-host {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
 		font-family: var(--md-sys-typescale-mono);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.meter-row {
@@ -230,14 +235,16 @@
 		margin-bottom: var(--md-sys-space-xs);
 	}
 	.meter-label {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 	.meter-value {
 		grid-column: 2;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
 		font-family: var(--md-sys-typescale-mono);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.meter-track {
@@ -256,7 +263,8 @@
 	}
 	.meter-sub {
 		grid-column: 2;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.window-row,
@@ -266,7 +274,8 @@
 		gap: var(--md-sys-space-xs);
 		padding: 3px var(--md-sys-space-2xs);
 		border-radius: 4px;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.window-row:nth-child(odd),
 	.env-row:nth-child(odd) {
@@ -276,7 +285,8 @@
 	.env-name,
 	.env-value {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -288,7 +298,8 @@
 	}
 	.window-pid {
 		flex: none;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.env-name {
@@ -308,7 +319,8 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
 		color: var(--md-sys-color-on-surface);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		padding: 4px var(--md-sys-space-sm);
 		margin-bottom: var(--md-sys-space-xs);
 		outline: none;
@@ -321,8 +333,8 @@
 		border: none;
 		background: transparent;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
-		line-height: 1;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		padding: 2px 4px;
 		border-radius: 4px;
 		cursor: pointer;

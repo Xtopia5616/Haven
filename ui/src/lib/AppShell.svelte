@@ -167,13 +167,14 @@
 		justify-content: space-between;
 		padding: 0 var(--md-sys-space-lg);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		flex-shrink: 0;
 	}
 	.hotkey-hint {
 		font-weight: 600;
-		letter-spacing: 0.2px;
+		letter-spacing: var(--md-sys-typescale-label-letter-spacing);
 	}
 	.recording-label {
 		color: var(--md-sys-color-error);

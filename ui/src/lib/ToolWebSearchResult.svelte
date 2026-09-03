@@ -30,13 +30,15 @@
 
 <style>
 	.tool-card-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
 	.tool-card-meta {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-2xs);
 	}
@@ -47,7 +49,8 @@
 	}
 	.tool-card-empty {
 		margin: 0;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.search-row {
@@ -56,7 +59,8 @@
 		gap: var(--md-sys-space-xs);
 		padding: 3px var(--md-sys-space-2xs);
 		border-radius: 4px;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.search-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
@@ -65,7 +69,8 @@
 		flex: 1;
 		min-width: 0;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-primary);
 		text-decoration: underline;
 		text-underline-offset: 2px;
@@ -83,7 +88,8 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>

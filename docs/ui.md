@@ -51,7 +51,22 @@
 - 不允许使用 `color-mix()` 之外的颜色函数直接操作颜色值
 - 组件变体使用 `data-variant` 属性驱动主题切换
 
-### 1.2 形状系统
+### 1.2 字体与行高
+
+字号、字重和行高使用语义 token，禁止页面随意组合字号与 `line-height`。正文默认使用 14px / 1.55；小号正文使用 13px / 1.5；按钮和标签使用 14px / 1.4 或 12px / 1.45；标题按层级使用 18px、20px、28px 和 30px，并保持至少 1.2 的行高。
+
+| Token | 值 | 适用场景 |
+|---|---:|---|
+| `--md-sys-typescale-display-size` / `-line-height` | 30px / 1.2 | 欢迎页主标题 |
+| `--md-sys-typescale-headline-large-size` / `-line-height` | 28px / 1.25 | 页面主标题 |
+| `--md-sys-typescale-headline-medium-size` / `-line-height` | 20px / 1.3 | 区块标题 |
+| `--md-sys-typescale-title-large-size` / `-line-height` | 18px / 1.35 | 会话标题 |
+| `--md-sys-typescale-body-medium-size` / `-line-height` | 14px / 1.55 | 正文、聊天内容 |
+| `--md-sys-typescale-body-small-size` / `-line-height` | 13px / 1.5 | 辅助正文 |
+| `--md-sys-typescale-label-medium-size` / `-line-height` | 12px / 1.45 | 状态、菜单、次要标签 |
+| `--md-sys-typescale-label-small-size` / `-line-height` | 11px / 1.4 | 极少量元数据 |
+
+### 1.3 形状系统
 
 | Token | 值 | 适用场景 |
 |---|---|---|
@@ -62,7 +77,7 @@
 | `--md-sys-shape-extra-large` | 28px | Dialog |
 | `--md-sys-shape-full` | 9999px | 全圆角 |
 
-### 1.3 间距系统
+### 1.4 间距系统
 
 | Token | 值 |
 |---|---|
@@ -75,7 +90,7 @@
 | `--md-sys-space-3xl` | 32px |
 | `--md-sys-space-4xl` | 48px |
 
-### 1.4 动效系统
+### 1.5 动效系统
 
 | Token | 值 | 适用场景 |
 |---|---|---|
@@ -85,7 +100,7 @@
 | `--md-sys-motion-duration-short` | 200ms | 通用过渡 |
 | `--md-sys-motion-duration-medium` | 300ms | 布局变化 |
 
-### 1.5 阴影层级
+### 1.6 阴影层级
 
 | Token | 适用场景 |
 |---|---|
@@ -96,7 +111,7 @@
 | `--md-sys-elevation-4` | Dialog |
 | `--md-sys-elevation-5` | 最高层级 |
 
-### 1.6 组件原始类
+### 1.7 组件原始类
 
 定义在 `app.css` 中的全局组件类：
 

@@ -107,21 +107,24 @@
 	}
 	.welcome h2 {
 		font-family: var(--md-ref-typeface-brand);
-		font-size: 30px;
+		font-size: var(--md-sys-typescale-display-size);
 		font-weight: 700;
-		letter-spacing: 0.5px;
+		letter-spacing: 0;
+		line-height: var(--md-sys-typescale-display-line-height);
 		color: var(--md-sys-color-primary);
 	}
 	.welcome-kicker {
-		margin-top: calc(-1 * var(--md-sys-space-sm));
-		font-size: 12px;
+		margin-top: 0;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 700;
-		letter-spacing: 0.8px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.welcome p {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-size, 14px);
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		max-width: 420px;
 	}
 	.message-list {
@@ -142,7 +145,8 @@
 	}
 	.continue-btn {
 		gap: var(--md-sys-space-xs);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-label-large-size);
+		line-height: var(--md-sys-typescale-label-large-line-height);
 	}
 
 	.awaiting-bg-banner {
@@ -154,7 +158,8 @@
 		margin: var(--md-sys-space-sm) auto 0;
 		width: 100%;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.awaiting-bg-dot {
 		width: 8px;
@@ -165,7 +170,7 @@
 		animation: awaiting-bg-pulse 1.2s ease-in-out infinite;
 	}
 	.awaiting-bg-text {
-		line-height: 1.4;
+		line-height: inherit;
 	}
 	@keyframes awaiting-bg-pulse {
 		0%,

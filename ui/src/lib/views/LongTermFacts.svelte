@@ -123,13 +123,13 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: var(--md-sys-space-md);
+		gap: var(--md-comp-toolbar-gap);
 		min-height: var(--md-comp-button-small-height);
 	}
 	.toolbar h2 {
 		margin: 0;
-		line-height: var(--md-comp-button-small-height);
-		font-size: 18px;
+		line-height: var(--md-sys-typescale-title-large-line-height);
+		font-size: var(--md-sys-typescale-title-large-size);
 		font-weight: 600;
 		color: var(--md-sys-color-on-surface);
 	}
@@ -143,10 +143,11 @@
 		width: 140px;
 	}
 	.model-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-top: calc(-1 * var(--md-sys-space-sm));
+		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.add-fact-actions {
 		display: flex;
@@ -178,14 +179,16 @@
 	}
 	.fact-key {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 500;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		min-width: 140px;
 		flex-shrink: 0;
 	}
 	.fact-value {
 		color: var(--md-sys-color-on-surface);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		flex: 1;
 		display: flex;
 		align-items: center;
@@ -198,10 +201,11 @@
 		height: 20px;
 		padding: 0 6px;
 		border-radius: var(--md-sys-shape-small);
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.5px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		flex-shrink: 0;
 	}
 	.fact-tag--user {
@@ -226,11 +230,13 @@
 	}
 	.fact-detail-kicker {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.fact-detail h3 {
 		margin-top: var(--md-sys-space-xs);
-		font-size: 18px;
+		font-size: var(--md-sys-typescale-title-large-size);
+		line-height: var(--md-sys-typescale-title-large-line-height);
 	}
 	.fact-details {
 		display: grid;
@@ -244,17 +250,20 @@
 	}
 	.fact-details dt {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.fact-details dd {
 		margin: 0;
 		color: var(--md-sys-color-on-surface);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		overflow-wrap: anywhere;
 	}
 	.fact-id {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px !important;
+		font-size: var(--md-sys-typescale-label-small-size) !important;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	@media (max-width: 455px) {
 		.toolbar {

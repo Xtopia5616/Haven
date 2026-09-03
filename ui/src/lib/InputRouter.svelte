@@ -334,7 +334,7 @@
 	// (matching the placeholder); multi-line content uses a fixed padding.
 	const CHAT_INPUT_MIN_H = 48;
 	const CHAT_INPUT_BASE_PAD = 10;
-	const CHAT_INPUT_LINE_H = 20.3; // 14px font-size × 1.45 line-height
+	const CHAT_INPUT_LINE_H = 21.7; // 14px font-size × 1.55 line-height
 	function autoGrowInput() {
 		const el = transcriptTextarea;
 		if (!el) return;
@@ -758,7 +758,8 @@
 		flex-direction: column;
 	}
 	.file-preview-name {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -766,7 +767,8 @@
 		max-width: 170px;
 	}
 	.file-preview-size {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.file-preview-remove {
@@ -807,13 +809,13 @@
 		padding: var(--chat-pad) var(--md-sys-space-sm);
 		resize: none;
 		overflow-y: auto;
-		line-height: 1.45;
-		font-size: 14px;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
+		font-size: var(--md-sys-typescale-body-medium-size);
 	}
 	.chat-input::placeholder {
 		/* Placeholder line-height tracks the balanced padding so it stays
 		   vertically centered exactly like the (balanced) input text. */
-		line-height: calc(48px - 2 * var(--chat-pad) - 2px);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	.chat-input:focus {
 		border: none;
@@ -852,7 +854,8 @@
 	.toolbar-row :global(.md-btn) {
 		height: var(--md-comp-toolbar-height);
 		padding: 0 var(--md-sys-space-md);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-label-large-size);
+		line-height: var(--md-sys-typescale-label-large-line-height);
 	}
 
 	@media (max-width: 700px) {

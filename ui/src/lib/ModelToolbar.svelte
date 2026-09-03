@@ -117,15 +117,17 @@
 		box-shadow: var(--md-sys-elevation-2);
 	}
 	.model-menu-title {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
-		letter-spacing: 0.4px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-transform: uppercase;
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
 	.model-menu-hint {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
 		opacity: 0.85;
@@ -140,7 +142,8 @@
 		border: none;
 		background: transparent;
 		color: var(--md-sys-color-on-surface);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		font-family: inherit;
 		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
@@ -155,7 +158,8 @@
 		font-weight: 600;
 	}
 	.model-item-provider {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.model-menu-divider {
@@ -175,8 +179,9 @@
 		border-radius: var(--md-sys-shape-small);
 		background: transparent;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		font-family: inherit;
 		cursor: pointer;
 		transition:

@@ -245,8 +245,9 @@
 	.state-label {
 		flex-shrink: 0;
 		white-space: nowrap;
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 500;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 	.overlay.processing .state-label {
@@ -256,8 +257,9 @@
 		flex-shrink: 0;
 		white-space: nowrap;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-error);
 	}
 	.overlay.processing .timer {
@@ -267,7 +269,8 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;
 	}

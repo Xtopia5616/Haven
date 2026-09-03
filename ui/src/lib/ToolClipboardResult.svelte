@@ -31,14 +31,16 @@
 	}
 	.tool-card-empty,
 	.tool-card-meta {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.tool-card-empty {
 		margin: 0;
 	}
 	.tool-card-meta {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		margin-top: var(--md-sys-space-2xs);
 	}
 	.search-row {
@@ -47,7 +49,8 @@
 		gap: var(--md-sys-space-xs);
 		padding: 3px var(--md-sys-space-2xs);
 		border-radius: 4px;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.search-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
@@ -58,7 +61,8 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.content-preview {
@@ -67,7 +71,8 @@
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		white-space: pre-wrap;
 		word-break: break-word;
 		max-height: 180px;

@@ -76,7 +76,8 @@
 		cursor: pointer;
 		text-align: left;
 		font-family: var(--md-sys-typescale-mono, monospace);
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;

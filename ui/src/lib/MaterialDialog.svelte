@@ -85,14 +85,16 @@
 	}
 	.md-dialog-header h3 {
 		margin: 0;
-		font-size: 16px;
+		font-size: var(--md-sys-typescale-title-medium-size);
+		line-height: var(--md-sys-typescale-title-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 	.md-dialog-close {
 		background: none;
 		border: none;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 18px;
+		font-size: var(--md-sys-typescale-title-large-size);
+		line-height: var(--md-sys-typescale-title-large-line-height);
 		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
 		width: 32px;

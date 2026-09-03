@@ -25,14 +25,16 @@
 
 <style>
 	.tool-card-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
 	.tool-card-empty {
 		margin: 0;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.content-preview {
@@ -41,7 +43,8 @@
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		white-space: pre-wrap;
 		word-break: break-word;
 		max-height: 180px;

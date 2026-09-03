@@ -17,7 +17,8 @@
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		white-space: pre-wrap;
 		word-break: break-word;
 		max-height: 180px;

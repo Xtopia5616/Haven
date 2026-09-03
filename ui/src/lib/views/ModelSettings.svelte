@@ -640,10 +640,11 @@
 		margin-bottom: var(--md-sys-space-xl);
 	}
 	.section h2 {
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-title-medium-size);
 		font-weight: 700;
 		color: var(--md-sys-color-on-surface);
-		letter-spacing: 0.1px;
+		letter-spacing: 0;
+		line-height: var(--md-sys-typescale-title-medium-line-height);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.card-list {
@@ -678,10 +679,11 @@
 		margin-top: var(--md-sys-space-lg);
 	}
 	.model-group {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 1px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-primary);
 		margin: var(--md-sys-space-md) 0 var(--md-sys-space-xs);
 	}
@@ -721,19 +723,22 @@
 		flex-wrap: wrap;
 	}
 	.provider-name {
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 	.provider-desc {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 	.provider-models {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-primary);
 	}
 	.lib-form {
@@ -773,33 +778,35 @@
 		width: 100%;
 	}
 	.field-label {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.5px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		white-space: nowrap;
 	}
 	.model-role .field-label {
 		color: var(--md-sys-color-primary);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.role-hint,
 	.provider-note {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: 2px;
-		line-height: 1.4;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.provider-note {
 		font-style: italic;
 	}
 	.model-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-top: calc(-1 * var(--md-sys-space-sm));
+		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
-		line-height: 1.45;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.model-hint code {
 		background: var(--md-sys-color-surface-container-highest);
@@ -811,10 +818,11 @@
 		text-decoration: none;
 	}
 	.cost-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-md);
 		margin-bottom: 0;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	@media (max-width: 700px) {
 		.llm-head {

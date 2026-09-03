@@ -18,8 +18,9 @@
 
 <style>
 	.tool-card-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
@@ -30,7 +31,8 @@
 	}
 	.tool-card-empty {
 		margin: 0;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.window-row {
@@ -39,7 +41,8 @@
 		gap: var(--md-sys-space-xs);
 		padding: 3px var(--md-sys-space-2xs);
 		border-radius: 4px;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.window-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
@@ -48,7 +51,8 @@
 		flex: 1;
 		min-width: 0;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -56,7 +60,8 @@
 	}
 	.window-pid {
 		flex: none;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>

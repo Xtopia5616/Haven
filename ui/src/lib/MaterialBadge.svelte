@@ -17,9 +17,10 @@
 		align-items: center;
 		padding: 2px var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
-		letter-spacing: 0.4px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-transform: uppercase;
 		white-space: nowrap;
 	}

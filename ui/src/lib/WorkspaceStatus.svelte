@@ -87,8 +87,9 @@
 		border-radius: var(--md-comp-button-radius);
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		cursor: pointer;
 		font-family: inherit;
 		transition: background var(--md-sys-motion-duration-fast)
@@ -104,7 +105,7 @@
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-tertiary);
 		color: var(--md-sys-color-on-tertiary);
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
 		line-height: 16px;
 		text-align: center;

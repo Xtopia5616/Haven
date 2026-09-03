@@ -38,8 +38,9 @@
 
 <style>
 	.tool-card-count {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
@@ -50,25 +51,29 @@
 	}
 	.tool-card-empty,
 	.tool-card-meta {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.tool-card-empty {
 		margin: 0;
 	}
 	.tool-card-meta {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		margin-top: var(--md-sys-space-2xs);
 	}
 	.action-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.action-id {
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface);
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -76,8 +81,9 @@
 	}
 	.status-badge {
 		flex: none;
-		font-size: 10px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-transform: uppercase;
 		padding: 1px 8px;
 		border-radius: var(--md-sys-shape-full);

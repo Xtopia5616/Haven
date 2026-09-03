@@ -233,8 +233,9 @@
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-body-large-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-on-surface);
 		margin-bottom: var(--md-sys-space-xs);
 	}
@@ -247,7 +248,8 @@
 		display: flex;
 		gap: var(--md-sys-space-sm);
 		align-items: center;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		flex-wrap: wrap;
 	}
 	.transport-badge {
@@ -260,12 +262,15 @@
 	.endpoint {
 		color: var(--md-sys-color-primary);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 	}
 	.status-badge {
 		padding: 2px var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
 		font-weight: 700;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 	}
@@ -299,8 +304,9 @@
 		color: var(--md-sys-color-on-surface-variant);
 		padding: 1px var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		white-space: nowrap;
 	}
 	.last-seen {
@@ -309,7 +315,8 @@
 	}
 	.error-msg {
 		margin-top: var(--md-sys-space-xs);
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-error);
 	}
 	.card-actions {
@@ -322,10 +329,11 @@
 		border-top: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.card-body h4 {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase;
-		letter-spacing: 1px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		margin: var(--md-sys-space-md) 0 var(--md-sys-space-sm);
 		font-weight: 700;
 	}
@@ -341,18 +349,21 @@
 		padding: var(--md-sys-space-md);
 	}
 	.tool-item-name {
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-primary);
 		margin-bottom: var(--md-sys-space-2xs);
 	}
 	.tool-item-desc {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.schema-details {
 		margin-top: var(--md-sys-space-sm);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.schema-label {
 		color: var(--md-sys-color-on-surface-variant);
@@ -363,7 +374,8 @@
 		background: var(--md-sys-color-surface-container-highest);
 		border-radius: var(--md-sys-shape-small);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		overflow-x: auto;
 		max-height: 200px;
@@ -371,13 +383,14 @@
 	.no-tools {
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		padding: var(--md-sys-space-sm) 0;
 	}
 	.diag-msg {
 		color: var(--md-sys-color-warning, #b58900);
-		font-size: 12px;
-		line-height: 1.45;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		background: var(--md-sys-color-surface-container-high, rgba(0, 0, 0, 0.06));
 		border-radius: var(--md-sys-shape-small);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);

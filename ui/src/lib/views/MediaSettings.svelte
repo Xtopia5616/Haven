@@ -678,11 +678,12 @@
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.section h2 {
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase;
-		letter-spacing: 1px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.media-section {
@@ -709,22 +710,23 @@
 		margin-bottom: var(--md-sys-space-sm);
 	}
 	.card-title {
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-primary);
 	}
 	.card-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		margin: 0;
-		line-height: 1.4;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.model-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-top: calc(-1 * var(--md-sys-space-sm));
+		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
-		line-height: 1.45;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.form-row {
 		display: flex;
@@ -735,7 +737,8 @@
 	.form-row label {
 		width: 120px;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		flex-shrink: 0;
 	}
 	.switch-row {
@@ -746,7 +749,8 @@
 	}
 	.switch-label {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.capability-block {
 		margin-top: var(--md-sys-space-md);
@@ -759,8 +763,9 @@
 		border-top: none;
 	}
 	.capability-block h4 {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-primary);
 		margin-bottom: var(--md-sys-space-xs);
 	}
@@ -785,10 +790,11 @@
 		width: 100%;
 	}
 	.field-label {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.5px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		white-space: nowrap;
 	}
@@ -847,7 +853,8 @@
 		min-width: 44px;
 		padding: 0 var(--md-sys-space-sm);
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	@media (max-width: 700px) {
 		.form-row {

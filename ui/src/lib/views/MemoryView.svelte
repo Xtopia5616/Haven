@@ -638,9 +638,10 @@
 	}
 	h1 {
 		font-family: var(--md-ref-typeface-brand);
-		font-size: 28px;
+		font-size: var(--md-sys-typescale-headline-large-size);
 		font-weight: 700;
-		letter-spacing: -0.35px;
+		letter-spacing: 0;
+		line-height: var(--md-sys-typescale-headline-large-line-height);
 		color: var(--md-sys-color-on-surface);
 		margin: 0;
 	}
@@ -651,7 +652,8 @@
 		margin-left: auto;
 	}
 	.count-badge {
-		font-size: 12px;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-surface-container);
@@ -677,17 +679,18 @@
 		border-radius: var(--md-sys-shape-medium);
 	}
 	.date-range-label {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase;
-		letter-spacing: 0.5px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 		font-weight: 500;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.date-range-value {
-		font-size: 20px;
+		font-size: var(--md-sys-typescale-headline-medium-size);
 		font-weight: 500;
 		color: var(--md-sys-color-on-surface);
-		line-height: 1.3;
+		line-height: var(--md-sys-typescale-headline-medium-line-height);
 	}
 	.date-input-row {
 		display: flex;
@@ -700,15 +703,16 @@
 		gap: var(--md-sys-space-xs);
 	}
 	.date-filter-label {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		font-weight: 500;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		padding-left: var(--md-sys-space-xs);
 	}
 	.dialog-text {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 14px;
-		line-height: 1.5;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	@media (max-width: 700px) {
 		.header-row {

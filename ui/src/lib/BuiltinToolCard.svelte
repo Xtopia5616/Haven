@@ -123,8 +123,9 @@
 		min-width: 0;
 	}
 	.card-name {
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-body-large-size);
 		font-weight: 700;
+		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-primary);
 		margin-bottom: var(--md-sys-space-xs);
 		overflow: hidden;
@@ -135,7 +136,8 @@
 		display: flex;
 		gap: var(--md-sys-space-sm);
 		align-items: center;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		flex-wrap: wrap;
 	}
 	.risk-badge,
@@ -188,18 +190,19 @@
 		border-top: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.card-body h4 {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase;
-		letter-spacing: 1px;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		margin: var(--md-sys-space-md) 0 var(--md-sys-space-sm);
 		font-weight: 700;
 	}
 	.desc {
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		margin: var(--md-sys-space-md) 0;
-		line-height: 1.45;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.card-body pre {
 		margin-top: var(--md-sys-space-xs);
@@ -207,7 +210,8 @@
 		background: var(--md-sys-color-surface-container-highest);
 		border-radius: var(--md-sys-shape-small);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		overflow-x: auto;
 		max-height: 200px;

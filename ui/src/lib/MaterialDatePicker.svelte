@@ -358,7 +358,8 @@
 		height: var(--md-comp-textfield-container-height);
 		padding: 0 var(--md-sys-space-lg);
 		font-family: inherit;
-		font-size: 15px;
+		font-size: var(--md-sys-typescale-body-large-size);
+		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-on-surface);
 		background: transparent;
 		border: 1px solid var(--md-sys-color-outline);
@@ -420,12 +421,13 @@
 		background: var(--md-sys-color-surface-container-low);
 	}
 	.md-datepicker-header-label {
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		font-weight: 500;
 	}
 	.md-datepicker-header-year {
-		font-size: 36px;
+		font-size: var(--md-sys-typescale-display-size);
 		font-weight: 400;
 		color: var(--md-sys-color-on-surface);
 		font-family: inherit;
@@ -434,7 +436,7 @@
 		padding: 0;
 		cursor: pointer;
 		text-align: left;
-		line-height: 1.1;
+		line-height: var(--md-sys-typescale-display-line-height);
 		transition: color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.md-datepicker-header-year:hover {
@@ -449,8 +451,9 @@
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
 	.md-datepicker-nav-label {
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
 		font-weight: 500;
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
 		background: none;
@@ -490,8 +493,9 @@
 	}
 	.md-datepicker-weekday {
 		text-align: center;
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 500;
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		height: 32px;
 		display: flex;
@@ -514,7 +518,8 @@
 		background: none;
 		border-radius: var(--md-sys-shape-full);
 		font-family: inherit;
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
 		transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
@@ -566,7 +571,8 @@
 		background: none;
 		border-radius: var(--md-sys-shape-medium);
 		font-family: inherit;
-		font-size: 14px;
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
 		transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
