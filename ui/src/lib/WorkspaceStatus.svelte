@@ -81,10 +81,11 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		height: var(--md-comp-button-small-height);
-		padding: 0 var(--md-sys-space-md);
+		height: var(--md-comp-status-height);
+		min-width: var(--md-comp-button-touch-height);
+		padding: 0 var(--md-comp-status-padding-inline);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-comp-button-radius);
+		border-radius: var(--md-comp-status-radius);
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-medium-size);

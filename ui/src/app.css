@@ -222,6 +222,10 @@
 	--md-comp-button-pressed-radius: var(--md-sys-shape-medium);
 	--md-comp-toolbar-height: var(--md-comp-button-small-height);
 	--md-comp-toolbar-gap: var(--md-sys-space-sm);
+	--md-comp-titlebar-height: 56px;
+	--md-comp-status-height: var(--md-comp-button-small-height);
+	--md-comp-status-padding-inline: var(--md-sys-space-md);
+	--md-comp-status-radius: var(--md-sys-shape-medium);
 	--md-comp-textfield-container-height: 40px;
 	--md-comp-textfield-corner: 8px;
 	--md-comp-tab-container-height: 56px;
@@ -397,22 +401,22 @@
 	--md-sys-color-warning-container: #5d4100;
 	--md-sys-color-on-warning-container: #ffddb0;
 
-	--md-sys-color-background: #0d0f14;
+	--md-sys-color-background: #181b24;
 	--md-sys-color-on-background: #e3e2e9;
-	--md-sys-color-surface: #0d0f14;
+	--md-sys-color-surface: #181b24;
 	--md-sys-color-on-surface: #e3e2e9;
-	--md-sys-color-surface-variant: #46464f;
+	--md-sys-color-surface-variant: #4c5160;
 	--md-sys-color-on-surface-variant: #c7c5d0;
-	--md-sys-color-surface-dim: #121318;
-	--md-sys-color-surface-bright: #38393f;
-	--md-sys-color-surface-container-lowest: #0a0c10;
-	--md-sys-color-surface-container-low: #14171e;
-	--md-sys-color-surface-container: #1a1d26;
-	--md-sys-color-surface-container-high: #232732;
-	--md-sys-color-surface-container-highest: #2d323f;
+	--md-sys-color-surface-dim: #14171f;
+	--md-sys-color-surface-bright: #3f4451;
+	--md-sys-color-surface-container-lowest: #11141b;
+	--md-sys-color-surface-container-low: #1d2029;
+	--md-sys-color-surface-container: #222631;
+	--md-sys-color-surface-container-high: #292e3b;
+	--md-sys-color-surface-container-highest: #303646;
 
-	--md-sys-color-outline: #90909a;
-	--md-sys-color-outline-variant: #353a47;
+	--md-sys-color-outline: #9b9ba6;
+	--md-sys-color-outline-variant: #414754;
 
 	--md-sys-color-scrim: #000000;
 	--md-sys-color-shadow: rgba(0, 0, 0, 0.4);

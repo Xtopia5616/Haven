@@ -21,16 +21,22 @@
 		/>
 		<title>Haven</title>
 		<script>
-			(function() {
+			(function () {
 				// The theme / accent persist in localStorage (frontend-only), so
 				// they can be applied synchronously on this blocking script and
 				// the first paint is always correct — no wait for get_settings.
 				function read(k) {
-					try { return window.localStorage.getItem(k); } catch (e) { return null; }
+					try {
+						return window.localStorage.getItem(k);
+					} catch (e) {
+						return null;
+					}
 				}
 				var theme = read('haven.theme');
 				if (theme !== 'light' && theme !== 'dark') {
-					theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+					theme = window.matchMedia('(prefers-color-scheme: dark)').matches
+						? 'dark'
+						: 'light';
 				}
 				document.documentElement.setAttribute('data-theme', theme);
 				var accent = read('haven.accent');
@@ -48,7 +54,7 @@
 				// Match app.css surface tokens so the boot shell and hydrated
 				// chrome share one background (also matches tauri.conf dark).
 				document.documentElement.style.background =
-					theme === 'light' ? '#faf8ff' : '#121318';
+					theme === 'light' ? '#f7f8fc' : '#181b24';
 			})();
 		</script>
 		<style>
@@ -57,31 +63,49 @@
 			 * app.css / Logo.svelte / StatusDot so the swap on mount is quiet.
 			 * No external CSS; must paint before Svelte hydrates.
 			 */
-			:root, [data-theme='light'] {
-				--boot-mark-bubble: #D7E3FF;
-				--boot-mark-ink: #2C5090;
-				--boot-bg: #faf8ff;
-				--boot-on: #1a1b22;
-				--boot-on-variant: #46464f;
-				--boot-titlebar: #eeecf3;
-				--boot-chip: #e8e7ee;
-				--boot-primary: var(--md-accent-hex, #2C5090);
-				--boot-outline-dot: #777680;
+			:root,
+			[data-theme='light'] {
+				--haven-mark-bubble: #d7e3ff;
+				--haven-mark-ink: #2c5090;
+				--md-sys-color-background: #f7f8fc;
+				--md-sys-color-on-surface: #1a1b22;
+				--md-sys-color-on-surface-variant: #46464f;
+				--md-sys-color-surface-container: #e9edf4;
+				--md-sys-color-surface-container-high: #e1e6ef;
+				--md-sys-color-primary: var(--md-accent-hex, #2c5090);
+				--md-sys-color-outline: #777680;
+				--md-sys-color-outline-variant: #c3c9d5;
 			}
 			[data-theme='dark'] {
-				--boot-bg: #121318;
-				--boot-on: #e3e2e9;
-				--boot-on-variant: #c7c5d0;
-				--boot-titlebar: #1e1f26;
-				--boot-chip: #292a31;
-				--boot-primary: color-mix(in srgb, var(--md-accent-hex, #2C5090) 55%, #ffffff);
-				--boot-outline-dot: #90909a;
+				--haven-mark-bubble: #d7e3ff;
+				--haven-mark-ink: #2c5090;
+				--md-sys-color-background: #181b24;
+				--md-sys-color-on-surface: #e3e2e9;
+				--md-sys-color-on-surface-variant: #c7c5d0;
+				--md-sys-color-surface-container: #222631;
+				--md-sys-color-surface-container-high: #292e3b;
+				--md-sys-color-primary: color-mix(
+					in srgb,
+					var(--md-accent-hex, #2c5090) 55%,
+					#ffffff
+				);
+				--md-sys-color-outline: #9b9ba6;
+				--md-sys-color-outline-variant: #414754;
 			}
-			html, body {
+			:root,
+			[data-theme='light'],
+			[data-theme='dark'] {
+				--md-comp-titlebar-height: 56px;
+				--md-comp-status-height: 40px;
+				--md-comp-status-padding-inline: 12px;
+				--md-comp-status-radius: 12px;
+			}
+			html,
+			body {
 				margin: 0;
 				height: 100%;
-				background: var(--boot-bg);
-				color: var(--boot-on);
+				background: var(--md-sys-color-background);
+				color: var(--md-sys-color-on-surface);
 			}
 			#haven-boot {
 				position: fixed;
@@ -89,22 +113,31 @@
 				z-index: 9999;
 				display: flex;
 				flex-direction: column;
-				background: var(--boot-bg);
-				color: var(--boot-on);
-				font-family: 'Roboto', 'Segoe UI', 'Segoe UI Variable Text',
-					'Segoe UI Variable', 'Microsoft YaHei UI', 'Microsoft YaHei',
-					'Microsoft JhengHei UI', 'Microsoft JhengHei', 'PingFang SC',
-					'PingFang TC', 'Hiragino Sans GB', 'Noto Sans SC',
-					'Noto Sans TC', 'Helvetica Neue', Arial, sans-serif;
+				background: var(--md-sys-color-background);
+				color: var(--md-sys-color-on-surface);
+				font-family:
+					'Roboto', 'Segoe UI', 'Segoe UI Variable Text', 'Segoe UI Variable',
+					'Microsoft YaHei UI', 'Microsoft YaHei', 'Microsoft JhengHei UI',
+					'Microsoft JhengHei', 'PingFang SC', 'PingFang TC', 'Hiragino Sans GB',
+					'Noto Sans SC', 'Noto Sans TC', 'Helvetica Neue', Arial, sans-serif;
 				-webkit-font-smoothing: antialiased;
 			}
+			#haven-boot,
+			#haven-boot * {
+				box-sizing: border-box;
+			}
 			#haven-boot .boot-bar {
-				height: 52px;
+				height: var(--md-comp-titlebar-height);
 				display: flex;
 				align-items: center;
 				justify-content: space-between;
-				padding: 0 16px;
-				background: var(--boot-titlebar);
+				padding: 0 20px;
+				background: color-mix(
+					in srgb,
+					var(--md-sys-color-surface-container) 92%,
+					var(--md-sys-color-primary) 8%
+				);
+				border-bottom: 1px solid var(--md-sys-color-outline-variant);
 				flex-shrink: 0;
 				-webkit-app-region: drag;
 			}
@@ -120,46 +153,89 @@
 				height: 22px;
 			}
 			#haven-boot .boot-wordmark {
-				font-family: 'Roboto', 'Segoe UI Display',
-					'Segoe UI Variable Display', 'Segoe UI Variable',
-					'Microsoft YaHei UI', 'Microsoft YaHei',
-					'Microsoft JhengHei UI', 'Microsoft JhengHei', 'PingFang SC',
-					'PingFang TC', sans-serif;
+				font-family:
+					'Roboto', 'Segoe UI Display', 'Segoe UI Variable Display', 'Segoe UI Variable',
+					'Microsoft YaHei UI', 'Microsoft YaHei', 'Microsoft JhengHei UI',
+					'Microsoft JhengHei', 'PingFang SC', 'PingFang TC', sans-serif;
 				font-size: 16px;
 				font-weight: 700;
 				letter-spacing: 0.4px;
-				color: var(--boot-primary);
+				color: var(--md-sys-color-primary);
 			}
 			#haven-boot .boot-chip {
 				display: inline-flex;
 				align-items: center;
 				gap: 8px;
-				height: 32px;
-				padding: 0 12px;
-				border-radius: 8px;
-				background: var(--boot-chip);
-				color: var(--boot-on-variant);
+				height: var(--md-comp-status-height);
+				min-width: 48px;
+				padding: 0 var(--md-comp-status-padding-inline);
+				border-radius: var(--md-comp-status-radius);
+				background: var(--md-sys-color-surface-container-high);
+				color: var(--md-sys-color-on-surface-variant);
 				font-size: 12px;
 				font-weight: 600;
-				border: none;
+				letter-spacing: 0.1px;
+				line-height: 1.45;
+				border: 1px solid var(--md-sys-color-outline-variant);
 				-webkit-app-region: no-drag;
+			}
+			#haven-boot .boot-actions {
+				display: inline-flex;
+				align-items: center;
+				gap: 8px;
+				-webkit-app-region: no-drag;
+			}
+			#haven-boot .boot-theme {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 40px;
+				height: 40px;
+				border-radius: var(--md-comp-status-radius);
+				color: var(--md-sys-color-on-surface-variant);
+			}
+			#haven-boot .boot-theme svg {
+				display: block;
+				width: 18px;
+				height: 18px;
+			}
+			#haven-boot .boot-theme-icon--sun {
+				display: none;
+			}
+			[data-theme='dark'] #haven-boot .boot-theme-icon--sun {
+				display: block;
+			}
+			[data-theme='dark'] #haven-boot .boot-theme-icon--moon {
+				display: none;
 			}
 			#haven-boot .boot-dot {
 				display: inline-block;
 				width: 8px;
 				height: 8px;
 				border-radius: 50%;
-				background: var(--boot-outline-dot);
+				background: var(--md-sys-color-outline);
 				flex-shrink: 0;
 				animation: haven-boot-pulse 1.2s cubic-bezier(0.2, 0, 0, 1) infinite;
 			}
 			#haven-boot .boot-main {
 				flex: 1;
-				background: var(--boot-bg);
+				background: var(--md-sys-color-background);
+			}
+			@media (max-width: 640px) {
+				#haven-boot .boot-bar {
+					padding-inline: 12px;
+				}
 			}
 			@keyframes haven-boot-pulse {
-				0%, 100% { opacity: 1; transform: scale(1); }
-				50% { opacity: 0.35; transform: scale(0.85); }
+				0%,
+				100% {
+					opacity: 1;
+					transform: scale(1);
+				}
+				50% {
+					opacity: 0.35;
+					transform: scale(0.85);
+				}
 			}
 		</style>
 		%sveltekit.head%
@@ -174,9 +250,9 @@
 						<svg viewBox="0 0 64 64" width="22" height="22" fill="none">
 							<path
 								d="M18 15h28c5.523 0 10 4.477 10 10v11c0 5.523-4.477 10-10 10H32L21 54v-8h-3c-5.523 0-10-4.477-10-10V25c0-5.523 4.477-10 10-10Z"
-								fill="var(--boot-mark-bubble)"
+								fill="var(--haven-mark-bubble)"
 							/>
-							<g fill="var(--boot-mark-ink)">
+							<g fill="var(--haven-mark-ink)">
 								<rect x="24" y="24.5" width="5" height="12" rx="2.5" />
 								<rect x="29.5" y="21.5" width="5" height="18" rx="2.5" />
 								<rect x="35" y="24.5" width="5" height="12" rx="2.5" />
@@ -185,9 +261,21 @@
 					</span>
 					<span class="boot-wordmark">Haven</span>
 				</span>
-				<span class="boot-chip">
-					<span class="boot-dot" aria-hidden="true"></span>
-					加载中
+				<span class="boot-actions">
+					<span class="boot-chip">
+						<span class="boot-dot" aria-hidden="true"></span>
+						加载中
+					</span>
+					<span class="boot-theme" aria-hidden="true">
+						<svg class="boot-theme-icon--moon" viewBox="0 0 24 24" fill="currentColor">
+							<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />
+						</svg>
+						<svg class="boot-theme-icon--sun" viewBox="0 0 24 24" fill="currentColor">
+							<path
+								d="M12 7a5 5 0 100 10 5 5 0 000-10zm0-5a1 1 0 011 1v2a1 1 0 11-2 0V3a1 1 0 011-1zm0 17a1 1 0 011 1v2a1 1 0 11-2 0v-2a1 1 0 011-1zM4.2 4.2a1 1 0 011.4 0l1.5 1.5A1 1 0 015.7 7.1L4.2 5.6a1 1 0 010-1.4zm12.7 12.7a1 1 0 011.4 0l1.5 1.5a1 1 0 11-1.4 1.4l-1.5-1.5a1 1 0 010-1.4zM2 12a1 1 0 011-1h2a1 1 0 110 2H3a1 1 0 01-1-1zm17 0a1 1 0 011-1h2a1 1 0 110 2h-2a1 1 0 01-1-1zM4.2 19.8a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0zm12.7-12.7a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0z"
+							/>
+						</svg>
+					</span>
 				</span>
 			</div>
 			<div class="boot-main"></div>

@@ -81,7 +81,7 @@
 		color: var(--md-sys-color-on-surface);
 	}
 	.titlebar {
-		height: 56px;
+		height: var(--md-comp-titlebar-height);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-surface-container) 92%,

@@ -39,14 +39,49 @@
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 
-	import ToolsView from '$lib/views/ToolsView.svelte';
-	import MemoryView from '$lib/views/MemoryView.svelte';
-	import SettingsView from '$lib/views/SettingsView.svelte';
 	import AppShell from '$lib/AppShell.svelte';
 	import WorkspaceStatus from '$lib/WorkspaceStatus.svelte';
-	import TaskCenter from '$lib/TaskCenter.svelte';
 
 	let { children } = $props();
+
+	// Secondary workspaces are intentionally loaded after the chat shell is
+	// interactive. Their views contain the largest forms, lists and tool cards;
+	// keeping them out of the initial module graph makes the first conversation
+	// paint independent of settings/tools/memory/task-center code.
+	/** @type {Record<string, () => Promise<{ default: any }>>} */
+	const LAZY_VIEW_LOADERS = {
+		tasks: () => import('$lib/TaskCenter.svelte'),
+		tools: () => import('$lib/views/ToolsView.svelte'),
+		memory: () => import('$lib/views/MemoryView.svelte'),
+		settings: () => import('$lib/views/SettingsView.svelte'),
+	};
+	/** @type {Record<string, any>} */
+	let lazyViewComponents = $state({});
+	/** @type {Record<string, 'loading'|'ready'|'error'|undefined>} */
+	let lazyViewStates = $state({});
+
+	/** @param {string} id */
+	function loadTabView(id) {
+		if (id === 'chat' || lazyViewComponents[id] || lazyViewStates[id] === 'loading') return;
+		const loader = LAZY_VIEW_LOADERS[id];
+		if (!loader) return;
+		lazyViewStates[id] = 'loading';
+		void loader()
+			.then((module) => {
+				lazyViewComponents[id] = module.default;
+				lazyViewStates[id] = 'ready';
+			})
+			.catch((/** @type {unknown} */ error) => {
+				lazyViewStates[id] = 'error';
+				logger.warn('+layout', `load ${id} view error`, error);
+			});
+	}
+
+	/** @param {string} id */
+	function retryTabView(id) {
+		lazyViewStates[id] = undefined;
+		loadTabView(id);
+	}
 
 	// Top-level tab state. Views stay MOUNTED once first activated (keep-alive)
 	// instead of being destroyed/re-created on every switch, so switching is
@@ -94,6 +129,7 @@
 		applyingTab = true;
 		activeTab = id;
 		visited[id] = true;
+		loadTabView(id);
 		void goto('/?tab=' + id, { replaceState: true }).finally(() => {
 			applyingTab = false;
 		});
@@ -263,6 +299,7 @@
 		const t = TAB_IDS.includes(tabParam || '') ? tabParam || 'chat' : 'chat';
 		if (t === activeTab) {
 			visited[t] = true;
+			loadTabView(t);
 			return;
 		}
 		if (leaveSettingsPending || applyingTab) return;
@@ -282,6 +319,7 @@
 		}
 		activeTab = t;
 		visited[t] = true;
+		loadTabView(t);
 	});
 
 	/** @param {object} patch */
@@ -512,6 +550,7 @@
 		} catch {
 			/* ignore */
 		}
+		loadTabView(activeTab);
 
 		// Load notify config in background — don't block
 		// listener registration. Skip outside Tauri (browser / SSR preview).
@@ -938,39 +977,88 @@
 				aria-hidden={activeTab !== tab.id}
 			>
 				{#if visited[tab.id]}
+					{@const TabComponent = lazyViewComponents[tab.id]}
 					{#if tab.id === 'chat'}
 						<div class="page-shell">
 							{@render children()}
 						</div>
 					{:else if tab.id === 'tools'}
 						<div class="page-shell">
-							<ToolsView />
+							{#if lazyViewComponents.tools}
+								<TabComponent />
+							{:else if lazyViewStates.tools === 'error'}
+								<div class="lazy-view-placeholder" role="alert">
+									<span>工具页面暂时无法加载</span>
+									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('tools')}>重试</button>
+								</div>
+							{:else}
+								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
+									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
+									<span>正在加载工具…</span>
+								</div>
+							{/if}
 						</div>
 					{:else if tab.id === 'tasks'}
 						<div class="page-shell">
-							<TaskCenter
-								{runningSessions}
-								{runningBackgroundActions}
-								{pendingScheduledActions}
-								{completedActions}
-								{actionStatusLabel}
-								{sessionTitleFor}
-								{actionDuration}
-								{scheduledActionCountdown}
-								{formatHistoryTime}
-								onOpenSession={openTaskSession}
-								onCancel={handleCancelAction}
-								onDeleteHistory={handleDeleteHistory}
-								onNewSession={startNewSessionFromTasks}
-							/>
+							{#if lazyViewComponents.tasks}
+								<TabComponent
+									{runningSessions}
+									{runningBackgroundActions}
+									{pendingScheduledActions}
+									{completedActions}
+									{actionStatusLabel}
+									{sessionTitleFor}
+									{actionDuration}
+									{scheduledActionCountdown}
+									{formatHistoryTime}
+									onOpenSession={openTaskSession}
+									onCancel={handleCancelAction}
+									onDeleteHistory={handleDeleteHistory}
+									onNewSession={startNewSessionFromTasks}
+								/>
+							{:else if lazyViewStates.tasks === 'error'}
+								<div class="lazy-view-placeholder" role="alert">
+									<span>任务中心暂时无法加载</span>
+									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('tasks')}>重试</button>
+								</div>
+							{:else}
+								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
+									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
+									<span>正在加载任务中心…</span>
+								</div>
+							{/if}
 						</div>
 					{:else if tab.id === 'memory'}
 						<div class="page-shell">
-							<MemoryView />
+							{#if lazyViewComponents.memory}
+								<TabComponent />
+							{:else if lazyViewStates.memory === 'error'}
+								<div class="lazy-view-placeholder" role="alert">
+									<span>记忆页面暂时无法加载</span>
+									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('memory')}>重试</button>
+								</div>
+							{:else}
+								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
+									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
+									<span>正在加载记忆…</span>
+								</div>
+							{/if}
 						</div>
 					{:else if tab.id === 'settings'}
 						<div class="page-shell">
-							<SettingsView />
+							{#if lazyViewComponents.settings}
+								<TabComponent />
+							{:else if lazyViewStates.settings === 'error'}
+								<div class="lazy-view-placeholder" role="alert">
+									<span>设置页面暂时无法加载</span>
+									<button class="md-btn md-btn--outlined" type="button" onclick={() => retryTabView('settings')}>重试</button>
+								</div>
+							{:else}
+								<div class="lazy-view-placeholder" role="status" aria-live="polite" aria-busy="true">
+									<span class="lazy-view-placeholder__dot" aria-hidden="true"></span>
+									<span>正在加载设置…</span>
+								</div>
+							{/if}
 						</div>
 					{/if}
 				{/if}
@@ -978,3 +1066,42 @@
 		{/each}
 	{/snippet}
 </AppShell>
+
+<style>
+	.lazy-view-placeholder {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--md-sys-space-sm);
+		min-height: calc(var(--md-sys-space-4xl) * 5);
+		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
+		border: 1px dashed var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-low);
+		color: var(--md-sys-color-on-surface-variant);
+		text-align: center;
+	}
+	.lazy-view-placeholder__dot {
+		width: var(--md-sys-space-sm);
+		height: var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-primary);
+		animation: lazy-view-pulse 1.2s var(--md-sys-motion-easing-emphasized) infinite;
+	}
+	@keyframes lazy-view-pulse {
+		0%,
+		100% {
+			opacity: 1;
+			transform: scale(1);
+		}
+		50% {
+			opacity: 0.35;
+			transform: scale(0.85);
+		}
+	}
+	@media (max-width: 455px) {
+		.lazy-view-placeholder {
+			padding-inline: var(--md-sys-space-lg);
+		}
+	}
+</style>
