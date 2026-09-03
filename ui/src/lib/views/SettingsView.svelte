@@ -148,21 +148,23 @@
 
 	let settingsTab = $state('general');
 	const settingsTabs = [
-		{ id: 'general', label: '常规' },
-		{ id: 'models', label: '模型' },
-		{ id: 'media', label: '媒体' },
-		{ id: 'limits', label: '限制' },
+		{ id: 'general', label: '常规', hint: '快捷键、会话、记忆与外观' },
+		{ id: 'models', label: '模型', hint: 'Provider、角色与 API Key' },
+		{ id: 'media', label: '媒体', hint: '语音、图片、朗读与生成' },
+		{ id: 'limits', label: '限制', hint: '上下文、文件与安全边界' },
 	];
 	/** @type {string[]} */
 	let mcpServerNames = $state([]);
 	let settingsLoaded = $state(false);
 	let logView = $state({ open: false, path: '', content: '', loading: false });
 	let logPreEl = /** @type {HTMLPreElement | null} */ ($state(null));
-	let savedSnapshot = '';
+	let savedSnapshot = $state('');
 	let leaveDialogOpen = $state(false);
 	/** @type {((ok: boolean) => void) | null} */
 	let leaveDialogResolve = null;
 	let leaveSaving = $state(false);
+	let saveState = $state('idle');
+	let saveError = $state('');
 	let mounted = true;
 	/** @type {{ ready: Promise<void>, dispose: () => void } | null} */
 	let eventRegistrations = null;
@@ -302,6 +304,78 @@
 			!!savedSnapshot &&
 			JSON.stringify(buildPersistableSettings()) !== savedSnapshot
 		);
+	}
+	const settingsDirty = $derived.by(() => isDirty());
+
+	/** @param {string} id */
+	function sectionDirty(id) {
+		if (!settingsLoaded || !savedSnapshot) return false;
+		const current = buildPersistableSettings();
+		const section =
+			id === 'general'
+				? {
+					default_shell: current.default_shell,
+					hotkey: current.hotkey,
+					session: current.session,
+					memory: current.memory,
+					security: current.security,
+					notification: current.notification,
+					log: current.log,
+					autostart_enabled: current.autostart_enabled,
+				}
+				: id === 'models'
+					? { llm: current.llm, key_configured: current.key_configured, key_configured_providers: current.key_configured_providers }
+					: id === 'media'
+						? { media: current.media }
+						: { context_limits: current.context_limits };
+		const snapshot = JSON.parse(savedSnapshot);
+		const savedSection =
+			id === 'general'
+				? {
+					default_shell: snapshot.default_shell,
+					hotkey: snapshot.hotkey,
+					session: snapshot.session,
+					memory: snapshot.memory,
+					security: snapshot.security,
+					notification: snapshot.notification,
+					log: snapshot.log,
+					autostart_enabled: snapshot.autostart_enabled,
+				}
+				: id === 'models'
+					? { llm: snapshot.llm, key_configured: snapshot.key_configured, key_configured_providers: snapshot.key_configured_providers }
+					: id === 'media'
+						? { media: snapshot.media }
+						: { context_limits: snapshot.context_limits };
+		return JSON.stringify(section) !== JSON.stringify(savedSection);
+	}
+
+	/** @param {string} id */
+	function sectionState(id) {
+		if (!settingsLoaded) return 'loading';
+		if (sectionDirty(id)) return 'dirty';
+		if (id === 'models' && llmConfig.providers.length === 0) return 'unconfigured';
+		if (saveState === 'saving') return 'saving';
+		if (saveState === 'error') return 'error';
+		if (saveState === 'saved') return 'saved';
+		return 'ready';
+	}
+
+	/** @param {string} state */
+	function sectionStateLabel(state) {
+		return { loading: '加载中', dirty: '未保存', saving: '保存中', saved: '已保存', error: '保存失败', unconfigured: '未配置', ready: '就绪' }[state] || state;
+	}
+
+	function discardAndReset() {
+		discardChanges();
+		saveState = 'idle';
+		saveError = '';
+	}
+
+	/** @param {string} id */
+	async function changeSettingsTab(id) {
+		if (id === settingsTab) return;
+		if (isDirty() && !(await confirmLeave())) return;
+		settingsTab = id;
 	}
 
 	/** @param {any[]} fills */
@@ -674,6 +748,9 @@
 
 	/** @returns {Promise<boolean>} */
 	async function saveSettings() {
+		if (saveState === 'saving') return false;
+		saveState = 'saving';
+		saveError = '';
 		try {
 			await reconcileDefaultModelBeforeSave();
 			skipNextDefaultModelSync = true;
@@ -771,10 +848,13 @@
 				addNotification(`自动启动：${formatError(e)}`, 'warning');
 			}
 			if (mounted) captureSnapshot();
+			saveState = 'saved';
 			return true;
 		} catch (e) {
 			skipNextDefaultModelSync = false;
-			addNotification(`保存设置失败: ${formatError(e)}`, 'error', 5000);
+			saveState = 'error';
+			saveError = formatError(e);
+			addNotification(`保存设置失败: ${saveError}`, 'error', 5000);
 			return false;
 		}
 	}
@@ -787,15 +867,30 @@
 			<p>调整 Haven 的模型、语音、性能与安全行为。</p>
 		</div>
 	</div>
+	{#if settingsLoaded && settingsTab !== 'models' && llmConfig.providers.length === 0}
+		<div class="settings-callout" data-state="unconfigured" role="status">
+			<div>
+				<strong>模型尚未配置</strong>
+				<p>添加 Provider 后，Haven 才能生成回复。你可以先完成模型配置，再回来调整其他选项。</p>
+			</div>
+			<button class="md-btn md-btn--outlined" type="button" onclick={() => changeSettingsTab('models')}>去配置模型</button>
+		</div>
+	{/if}
 	<div class="md-tabs settings-tabs" role="tablist">
 		{#each settingsTabs as tab}<button
 				class="md-tab"
 				class:active={settingsTab === tab.id}
 				role="tab"
+				aria-controls="settings-panel"
 				aria-selected={settingsTab === tab.id}
-				onclick={() => (settingsTab = tab.id)}>{tab.label}</button
+				onclick={() => changeSettingsTab(tab.id)}>
+				<span>{tab.label}</span>
+					<small>{tab.hint}</small>
+					<span class="settings-tab-state" data-state={sectionState(tab.id)}>{sectionStateLabel(sectionState(tab.id))}</span>
+			</button
 			>{/each}
 	</div>
+	<div id="settings-panel" role="tabpanel" aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}>
 	{#if settingsTab === 'general'}
 		<SettingsGeneral
 			{hotkeyMode}
@@ -838,8 +933,15 @@
 	{:else}
 		<SettingsLimits {contextLimits} />
 	{/if}
-	<div class="save-bar">
-		<button class="md-btn md-btn--filled save-btn" onclick={saveSettings}>保存设置</button>
+	</div>
+	<div class="save-bar" aria-live="polite">
+		<div class="save-status" data-state={saveState}>
+			{#if saveState === 'saving'}保存中…{:else if saveState === 'error'}{saveError || '保存失败'}{:else if settingsDirty}当前有未保存的更改{:else if saveState === 'saved'}已保存{:else}修改会应用到所有设置分组{/if}
+		</div>
+		<div class="save-actions">
+			{#if settingsDirty}<button class="md-btn md-btn--text" type="button" onclick={discardAndReset} disabled={saveState === 'saving'}>放弃更改</button>{/if}
+			<button class="md-btn md-btn--filled save-btn" type="button" onclick={saveSettings} disabled={!settingsLoaded || saveState === 'saving' || !settingsDirty}>{saveState === 'saving' ? '保存中…' : '保存设置'}</button>
+		</div>
 	</div>
 </div>
 
@@ -896,6 +998,54 @@
 	.settings-tabs {
 		margin-bottom: var(--md-sys-space-2xl);
 	}
+	.settings-tabs .md-tab {
+		display: grid;
+		justify-items: start;
+		gap: var(--md-sys-space-xs);
+		min-width: 132px;
+		min-height: var(--md-comp-button-height);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
+		text-align: left;
+	}
+	.settings-tabs .md-tab small {
+		max-width: 180px;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 11px;
+		font-weight: 400;
+		line-height: 1.35;
+	}
+	.settings-tab-state {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 10px;
+		font-weight: 600;
+	}
+	.settings-tab-state[data-state='dirty'],
+	.save-status[data-state='error'] {
+		color: var(--md-sys-color-error);
+	}
+	.settings-tab-state[data-state='unconfigured'] {
+		color: var(--md-sys-color-tertiary);
+	}
+	.settings-tab-state[data-state='saved'] {
+		color: var(--md-sys-color-success);
+	}
+	.settings-callout {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-lg);
+		margin-bottom: var(--md-sys-space-xl);
+		padding: var(--md-sys-space-lg);
+		border: 1px solid var(--md-sys-color-tertiary);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-tertiary-container);
+		color: var(--md-sys-color-on-tertiary-container);
+	}
+	.settings-callout p {
+		margin-top: var(--md-sys-space-xs);
+		color: var(--md-sys-color-on-tertiary-container);
+		font-size: 12px;
+	}
 	.model-hint {
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
@@ -906,7 +1056,9 @@
 		position: sticky;
 		bottom: 0;
 		display: flex;
-		justify-content: center;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-lg);
 		margin-top: var(--md-sys-space-xl);
 		padding: var(--md-sys-space-sm) 0;
 		background: var(--md-sys-color-surface);
@@ -916,6 +1068,24 @@
 	.save-btn {
 		border-radius: var(--md-sys-shape-full);
 		box-shadow: var(--md-sys-elevation-3);
+	}
+	.save-status {
+		min-width: 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 12px;
+		overflow-wrap: anywhere;
+	}
+	.save-status[data-state='saving'] {
+		color: var(--md-sys-color-primary);
+	}
+	.save-status[data-state='saved'] {
+		color: var(--md-sys-color-success);
+	}
+	.save-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		flex: 0 0 auto;
 	}
 	:global(.md-dialog--wide) {
 		width: min(760px, 92vw);
@@ -940,5 +1110,28 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		margin: 0;
 		white-space: pre;
+	}
+	@media (max-width: 640px) {
+		.settings-tabs .md-tab {
+			min-width: 0;
+			flex: 1 1 50%;
+			padding-inline: var(--md-sys-space-md);
+		}
+		.settings-tabs .md-tab small {
+			display: none;
+		}
+		.settings-callout,
+		.save-bar {
+			align-items: stretch;
+			flex-direction: column;
+		}
+		.settings-callout .md-btn,
+		.save-actions,
+		.save-actions .md-btn {
+			width: 100%;
+		}
+		.save-actions {
+			align-items: stretch;
+		}
 	}
 </style>
