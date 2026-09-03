@@ -1022,7 +1022,8 @@
 		z-index: 1;
 	}
 	:global(.save-btn) {
-		min-width: 112px;
+		width: 96px;
+		min-width: 96px;
 	}
 	:global(.save-btn--clean) {
 		--_btn-bg: transparent;
