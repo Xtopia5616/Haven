@@ -285,6 +285,11 @@
 [data-theme='light'] {
 	/* Primary — overridable via --md-accent-hex (set by themeStore.ts) */
 	--md-sys-color-primary: var(--md-accent-hex, #3378d6);
+	--md-sys-color-titlebar: color-mix(
+		in srgb,
+		var(--md-sys-color-surface-container-low) 92%,
+		var(--md-sys-color-primary) 8%
+	);
 	--md-sys-color-on-primary: #ffffff;
 	--md-sys-color-primary-container: color-mix(
 		in srgb,
@@ -364,6 +369,11 @@
  * ========================================================================== */
 [data-theme='dark'] {
 	--md-sys-color-primary: color-mix(in srgb, var(--md-accent-hex, #a5c8ff) 55%, #ffffff);
+	--md-sys-color-titlebar: color-mix(
+		in srgb,
+		var(--md-sys-color-surface-container-high) 92%,
+		var(--md-sys-color-primary) 8%
+	);
 	--md-sys-color-on-primary: color-mix(in srgb, var(--md-accent-hex, #003062) 80%, #000000);
 	--md-sys-color-primary-container: color-mix(
 		in srgb,

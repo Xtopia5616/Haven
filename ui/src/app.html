@@ -68,11 +68,20 @@
 				--haven-mark-bubble: #d7e3ff;
 				--haven-mark-ink: #2c5090;
 				--md-sys-color-background: #f7f8fc;
+				--md-sys-color-surface: #f7f8fc;
 				--md-sys-color-on-surface: #1a1b22;
 				--md-sys-color-on-surface-variant: #46464f;
+				--md-sys-color-surface-container-low: #f1f3f8;
 				--md-sys-color-surface-container: #e9edf4;
 				--md-sys-color-surface-container-high: #e1e6ef;
+				--md-sys-color-surface-container-highest: #d9dfe9;
 				--md-sys-color-primary: var(--md-accent-hex, #2c5090);
+				--md-sys-color-on-primary: #ffffff;
+				--md-sys-color-titlebar: color-mix(
+					in srgb,
+					var(--md-sys-color-surface-container-low) 92%,
+					var(--md-sys-color-primary) 8%
+				);
 				--md-sys-color-outline: #777680;
 				--md-sys-color-outline-variant: #c3c9d5;
 			}
@@ -80,14 +89,23 @@
 				--haven-mark-bubble: #d7e3ff;
 				--haven-mark-ink: #2c5090;
 				--md-sys-color-background: #181b24;
+				--md-sys-color-surface: #181b24;
 				--md-sys-color-on-surface: #e3e2e9;
 				--md-sys-color-on-surface-variant: #c7c5d0;
+				--md-sys-color-surface-container-low: #1d2029;
 				--md-sys-color-surface-container: #222631;
 				--md-sys-color-surface-container-high: #292e3b;
+				--md-sys-color-surface-container-highest: #303646;
 				--md-sys-color-primary: color-mix(
 					in srgb,
 					var(--md-accent-hex, #2c5090) 55%,
 					#ffffff
+				);
+				--md-sys-color-on-primary: #1a1b22;
+				--md-sys-color-titlebar: color-mix(
+					in srgb,
+					var(--md-sys-color-surface-container-high) 92%,
+					var(--md-sys-color-primary) 8%
 				);
 				--md-sys-color-outline: #9b9ba6;
 				--md-sys-color-outline-variant: #414754;
@@ -132,11 +150,7 @@
 				align-items: center;
 				justify-content: space-between;
 				padding: 0 20px;
-				background: color-mix(
-					in srgb,
-					var(--md-sys-color-surface-container) 92%,
-					var(--md-sys-color-primary) 8%
-				);
+				background: var(--md-sys-color-titlebar);
 				border-bottom: 1px solid var(--md-sys-color-outline-variant);
 				flex-shrink: 0;
 				-webkit-app-region: drag;
@@ -219,11 +233,298 @@
 			}
 			#haven-boot .boot-main {
 				flex: 1;
+				display: flex;
+				flex-direction: column;
+				min-height: 0;
 				background: var(--md-sys-color-background);
+			}
+			#haven-boot .boot-nav {
+				display: grid;
+				grid-template-columns: repeat(5, minmax(0, 1fr));
+				align-items: stretch;
+				height: 56px;
+				padding: 6px 20px;
+				gap: 4px;
+				background: var(--md-sys-color-surface);
+				border-bottom: 1px solid var(--md-sys-color-outline-variant);
+				flex-shrink: 0;
+			}
+			#haven-boot .boot-tab {
+				position: relative;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				gap: 8px;
+				min-width: 0;
+				border-radius: 12px;
+				color: var(--md-sys-color-on-surface-variant);
+				font-size: 13px;
+				font-weight: 600;
+				line-height: 1.5;
+			}
+			#haven-boot .boot-tab svg {
+				display: block;
+				width: 17px;
+				height: 17px;
+				flex-shrink: 0;
+			}
+			#haven-boot .boot-tab--active {
+				color: var(--md-sys-color-primary);
+			}
+			#haven-boot .boot-tab--active::after {
+				content: '';
+				position: absolute;
+				left: 50%;
+				bottom: -6px;
+				width: 24px;
+				height: 3px;
+				transform: translateX(-50%);
+				border-radius: 999px;
+				background: var(--md-sys-color-primary);
+			}
+			#haven-boot .boot-session {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 16px;
+				min-height: 72px;
+				padding: 12px 24px;
+				background: color-mix(
+					in srgb,
+					var(--md-sys-color-surface-container-low) 92%,
+					var(--md-sys-color-primary) 8%
+				);
+				border-bottom: 1px solid var(--md-sys-color-outline-variant);
+				flex-shrink: 0;
+			}
+			#haven-boot .boot-session-identity {
+				display: flex;
+				flex-direction: column;
+				align-items: flex-start;
+				gap: 4px;
+				min-width: 0;
+			}
+			#haven-boot .boot-eyebrow {
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+				color: var(--md-sys-color-on-surface-variant);
+				font-size: 11px;
+				font-weight: 600;
+				line-height: 1.4;
+			}
+			#haven-boot .boot-eyebrow::before {
+				content: '';
+				width: 6px;
+				height: 6px;
+				border-radius: 999px;
+				background: var(--md-sys-color-primary);
+			}
+			#haven-boot .boot-session-title-row {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+				min-width: 0;
+			}
+			#haven-boot .boot-session-title {
+				color: var(--md-sys-color-on-surface);
+				font-size: 18px;
+				font-weight: 700;
+				line-height: 1.35;
+			}
+			#haven-boot .boot-session-status {
+				padding: 0;
+				border: 0;
+				color: var(--md-sys-color-on-surface-variant);
+				font-size: 11px;
+				line-height: 1.4;
+				white-space: nowrap;
+			}
+			#haven-boot .boot-session-new {
+				display: grid;
+				place-items: center;
+				width: 40px;
+				height: 40px;
+				border: 1px solid var(--md-sys-color-outline-variant);
+				border-radius: 12px;
+				color: var(--md-sys-color-on-surface-variant);
+				font-size: 26px;
+				font-weight: 300;
+				line-height: 1;
+			}
+			#haven-boot .boot-chat {
+				display: flex;
+				flex: 1;
+				flex-direction: column;
+				min-height: 0;
+				background: var(--md-sys-color-surface);
+				background-image: linear-gradient(
+					180deg,
+					color-mix(in srgb, var(--md-sys-color-primary) 3%, transparent),
+					transparent 240px
+				);
+			}
+			#haven-boot .boot-messages {
+				display: flex;
+				flex: 1;
+				align-items: center;
+				justify-content: center;
+				min-height: 0;
+				padding: 24px 16px;
+			}
+			#haven-boot .boot-welcome {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 12px;
+				text-align: center;
+				color: var(--md-sys-color-on-surface-variant);
+			}
+			#haven-boot .boot-welcome-mark {
+				display: grid;
+				place-items: center;
+				width: 64px;
+				height: 64px;
+			}
+			#haven-boot .boot-welcome-mark svg {
+				display: block;
+				width: 48px;
+				height: 48px;
+			}
+			#haven-boot .boot-welcome-title {
+				margin: 0;
+				color: var(--md-sys-color-primary);
+				font-size: 30px;
+				font-weight: 700;
+				line-height: 1.2;
+			}
+			#haven-boot .boot-welcome-kicker {
+				font-size: 12px;
+				font-weight: 700;
+				line-height: 1.45;
+			}
+			#haven-boot .boot-welcome-copy {
+				margin: 0;
+				font-size: 14px;
+				line-height: 1.55;
+			}
+			#haven-boot .boot-composer {
+				display: flex;
+				flex-shrink: 0;
+				flex-direction: column;
+				gap: 4px;
+				width: min(800px, calc(100% - 32px));
+				min-height: 116px;
+				margin: 0 auto 12px;
+				padding: 8px 16px;
+				border: 1px solid var(--md-sys-color-outline-variant);
+				border-radius: 16px;
+				background: var(--md-sys-color-surface-container-low);
+				box-shadow: 0 1px 3px var(--md-sys-color-shadow, rgba(0, 0, 0, 0.18));
+			}
+			#haven-boot .boot-input-row {
+				display: flex;
+				align-items: center;
+				min-height: 48px;
+				padding: 0 8px;
+				color: var(--md-sys-color-on-surface-variant);
+				font-size: 14px;
+				line-height: 1.55;
+			}
+			#haven-boot .boot-toolbar {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 8px;
+				padding-top: 4px;
+				border-top: 1px solid var(--md-sys-color-outline-variant);
+			}
+			#haven-boot .boot-toolbar-group {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			#haven-boot .boot-control,
+			#haven-boot .boot-token {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 40px;
+				height: 40px;
+				border: 1px solid var(--md-sys-color-outline-variant);
+				border-radius: 12px;
+				color: var(--md-sys-color-on-surface-variant);
+				font-size: 20px;
+				line-height: 1;
+			}
+			#haven-boot .boot-token {
+				width: 84px;
+				justify-content: flex-start;
+				padding: 0 12px;
+				font-size: 13px;
+			}
+			#haven-boot .boot-send {
+				background: var(--md-sys-color-primary);
+				border-color: var(--md-sys-color-primary);
+				color: var(--md-sys-color-on-primary);
+			}
+			#haven-boot .boot-send::before {
+				content: '↑';
+			}
+			#haven-boot .boot-control--plus::before {
+				content: '+';
+			}
+			#haven-boot .boot-control--attach::before {
+				content: '⌕';
+				transform: rotate(-35deg);
+			}
+			#haven-boot .boot-control--mic::before {
+				content: '♩';
+			}
+			#haven-boot .boot-control--model::before {
+				content: '▣';
+				font-size: 14px;
 			}
 			@media (max-width: 640px) {
 				#haven-boot .boot-bar {
 					padding-inline: 12px;
+				}
+				#haven-boot .boot-session {
+					align-items: flex-start;
+					min-height: 95px;
+					padding: 12px 16px;
+				}
+				#haven-boot .boot-session-title-row {
+					align-items: flex-start;
+					flex-direction: column;
+					gap: 4px;
+				}
+				#haven-boot .boot-nav {
+					padding-inline: 12px;
+				}
+				#haven-boot .boot-tab {
+					gap: 4px;
+					font-size: 12px;
+				}
+				#haven-boot .boot-tab svg {
+					width: 16px;
+					height: 16px;
+				}
+				#haven-boot .boot-composer {
+					min-height: 164px;
+				}
+			}
+			@media (max-width: 455px) {
+				#haven-boot .boot-toolbar {
+					align-items: flex-start;
+					flex-wrap: wrap;
+				}
+				#haven-boot .boot-toolbar-group {
+					flex: 1 1 auto;
+				}
+				#haven-boot .boot-toolbar-group:last-child {
+					justify-content: flex-end;
+					width: 100%;
 				}
 			}
 			@keyframes haven-boot-pulse {
@@ -278,7 +579,91 @@
 					</span>
 				</span>
 			</div>
-			<div class="boot-main"></div>
+			<div class="boot-main">
+				<div class="boot-nav" aria-hidden="true">
+					<span class="boot-tab boot-tab--active">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M5.5 4.5h10A3.5 3.5 0 0 1 19 8v4.25a3.5 3.5 0 0 1-3.5 3.5H11l-5.5 4v-4.04a3.5 3.5 0 0 1-3.5-3.46V8a3.5 3.5 0 0 1 3.5-3.5Z" />
+							<path d="M7 9h7M7 12h4" />
+						</svg>
+						对话
+					</span>
+					<span class="boot-tab">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+							<rect x="4" y="3.5" width="16" height="17" rx="3" />
+							<path d="M8 8h.01M11.5 8H16M8 12h.01M11.5 12H16M8 16h.01M11.5 16H14" />
+						</svg>
+						任务
+					</span>
+					<span class="boot-tab">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M4 9h16v10.5H4zM8 9V6.75A1.75 1.75 0 0 1 9.75 5h4.5A1.75 1.75 0 0 1 16 6.75V9M4 13h16M10 13v2h4v-2" />
+						</svg>
+						工具
+					</span>
+					<span class="boot-tab">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M9.5 4.5a3 3 0 0 0-5.2 2A3.25 3.25 0 0 0 3 12a3.25 3.25 0 0 0 1.3 2.6A3 3 0 0 0 9.5 19M14.5 4.5a3 3 0 0 1 5.2 2A3.25 3.25 0 0 1 21 12a3.25 3.25 0 0 1-1.3 2.6A3 3 0 0 1 14.5 19" />
+							<path d="M9.5 4.5v15M14.5 4.5v15M5.5 8.5h4M14.5 8.5h4M5 13h4.5M14.5 13H19" />
+						</svg>
+						记忆
+					</span>
+					<span class="boot-tab">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M9.5 3.5A2.5 2.5 0 0 1 12 1a2.5 2.5 0 0 1 2.5 2.5v.18a2 2 0 0 0 1 1.73l.43.25a2 2 0 0 0 2 0l.15-.08a2.5 2.5 0 0 1 3.41.91l.22.38a2.5 2.5 0 0 1-.91 3.41l-.15.09a2 2 0 0 1-1 1.74v.5a2 2 0 0 1 1 1.74l.15.09a2.5 2.5 0 0 1 .91 3.41l-.22.38a2.5 2.5 0 0 1-3.41.91l-.15-.08a2 2 0 0 1-2 0l-.43.25a2 2 0 0 0-1 1.73v.18A2.5 2.5 0 0 1 12 23a2.5 2.5 0 0 1-2.5-2.5v-.18a2 2 0 0 0-1-1.73l-.43-.25a2 2 0 0 1-2 0l-.15.08a2.5 2.5 0 0 1-3.41-.91l-.22-.38a2.5 2.5 0 0 1 .91-3.41l.15-.09a2 2 0 0 0 1-1.74v-.5a2 2 0 0 0-1-1.74L3.2 9.55a2.5 2.5 0 0 1-.91-3.41l.22-.38a2.5 2.5 0 0 1 3.41-.91l.15.08a2 2 0 0 0 2 0l.43-.25a2 2 0 0 0 1-1.73Z" />
+							<circle cx="12" cy="12" r="3.25" />
+						</svg>
+						设置
+					</span>
+				</div>
+				<div class="boot-session">
+					<div class="boot-session-identity">
+						<span class="boot-eyebrow">当前会话</span>
+						<div class="boot-session-title-row">
+							<span class="boot-session-title">新会话</span>
+							<span class="boot-session-status">准备开始</span>
+						</div>
+					</div>
+					<span class="boot-session-new" aria-hidden="true">+</span>
+				</div>
+				<div class="boot-chat">
+					<div class="boot-messages">
+						<div class="boot-welcome">
+							<div class="boot-welcome-mark" aria-hidden="true">
+								<svg viewBox="0 0 64 64" fill="none">
+									<path
+										d="M18 15h28c5.523 0 10 4.477 10 10v11c0 5.523-4.477 10-10 10H32L21 54v-8h-3c-5.523 0-10-4.477-10-10V25c0-5.523 4.477-10 10-10Z"
+										fill="var(--haven-mark-bubble)"
+									/>
+									<g fill="var(--haven-mark-ink)">
+										<rect x="24" y="24.5" width="5" height="12" rx="2.5" />
+										<rect x="29.5" y="21.5" width="5" height="18" rx="2.5" />
+										<rect x="35" y="24.5" width="5" height="12" rx="2.5" />
+									</g>
+								</svg>
+							</div>
+							<h1 class="boot-welcome-title">Haven</h1>
+							<span class="boot-welcome-kicker">本地 AI 助手</span>
+							<p class="boot-welcome-copy">按 Ctrl+Shift+Space 开始录音，或直接输入指令</p>
+						</div>
+					</div>
+					<div class="boot-composer" aria-hidden="true">
+						<div class="boot-input-row">输入指令，Enter 发送，或按 Ctrl+Shift+Space 录音</div>
+						<div class="boot-toolbar">
+							<div class="boot-toolbar-group">
+								<span class="boot-control boot-control--plus"></span>
+								<span class="boot-token">☰ —</span>
+							</div>
+							<div class="boot-toolbar-group">
+								<span class="boot-control boot-control--attach"></span>
+								<span class="boot-control boot-control--mic"></span>
+								<span class="boot-control boot-control--model"></span>
+								<span class="boot-control boot-send"></span>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
 		</div>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>

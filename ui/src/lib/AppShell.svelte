@@ -82,11 +82,7 @@
 	}
 	.titlebar {
 		height: var(--md-comp-titlebar-height);
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-surface-container) 92%,
-			var(--md-sys-color-primary)
-		);
+		background: var(--md-sys-color-titlebar);
 		display: flex;
 		align-items: center;
 		justify-content: space-between;

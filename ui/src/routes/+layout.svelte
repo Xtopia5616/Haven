@@ -529,11 +529,14 @@
 	);
 
 	onMount(async () => {
-		// Drop the static app.html boot shell now that the real layout is live.
-		try {
-			document.getElementById('haven-boot')?.remove();
-		} catch {
-			/* ignore */
+		// Keep the static shell above the live DOM until it has had a paint pass.
+		// This avoids exposing a partially hydrated layout for one frame, while
+		// the shell's structure and tokens keep the visual handoff quiet.
+		const bootShell = document.getElementById('haven-boot');
+		if (bootShell) {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => bootShell.remove());
+			});
 		}
 		loadTabView(activeTab);
 
