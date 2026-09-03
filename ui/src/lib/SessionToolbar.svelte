@@ -1,5 +1,4 @@
 <script>
-	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 
 	let {
@@ -27,9 +26,10 @@
 </script>
 
 <div class="session-switch">
-	<MaterialButton
-		variant="outlined"
+	<MaterialIconButton
+		size="toolbar"
 		className="session-switch-btn"
+		label="新建会话"
 		onclick={() => onToggleSessionMenu()}
 		title={showSessionMenu ? '切换并行会话或开始新会话' : '开始一个新会话'}
 	>
@@ -60,7 +60,7 @@
 		{#if parallelSessions.length > 0}
 			<span class="session-switch-badge">{parallelSessions.length}</span>
 		{/if}
-	</MaterialButton>
+	</MaterialIconButton>
 	{#if sessionMenuOpen}
 		<div class="session-menu">
 			<div class="session-menu-title">正在执行的会话</div>
@@ -207,6 +207,9 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
+		width: auto;
+		min-width: var(--md-comp-icon-button-size);
+		padding-inline: var(--md-sys-space-xs);
 	}
 	.session-switch-caret {
 		flex-shrink: 0;

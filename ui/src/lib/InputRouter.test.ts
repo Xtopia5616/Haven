@@ -23,6 +23,15 @@ describe('InputRouter context menu', () => {
 		);
 	});
 
+	it('uses the same shared toolbar control for stopping an active session', () => {
+		render(InputRouter, { isGenerating: true, onstop: vi.fn() });
+
+		const button = screen.getByRole('button', { name: '停止会话' });
+		expect(button.classList.contains('md-icon-btn')).toBe(true);
+		expect(button.getAttribute('data-size')).toBe('toolbar');
+		expect(button.getAttribute('data-variant')).toBe('danger');
+	});
+
 	it('opens a copy menu on the input and copies the draft', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', {
