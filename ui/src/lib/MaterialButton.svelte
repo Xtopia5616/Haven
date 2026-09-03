@@ -17,7 +17,7 @@
 		title = '',
 		ariaLabel = '',
 		className = '',
-		children,
+		children = undefined,
 	} = $props();
 </script>
 

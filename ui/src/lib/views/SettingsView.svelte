@@ -3,9 +3,11 @@
 	import { invoke } from '$lib/tauri.ts';
 	import { registerListeners } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
+	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
 	import { ensureRoleSlots } from '$lib/modelRoles.ts';
 	import {
 		parseApiKeyStatus,
@@ -804,6 +806,19 @@
 			return false;
 		}
 	}
+
+	async function handleSaveClick() {
+		const action = resolveSettingsSaveAction(settingsLoaded, settingsDirty);
+		if (action === 'loading') {
+			addNotification('设置仍在加载，请稍候', 'info', 2500);
+			return;
+		}
+		if (action === 'empty') {
+			addNotification('没有需要保存的设置', 'info', 2500);
+			return;
+		}
+		await saveSettings();
+	}
 </script>
 
 <div class="settings-page">
@@ -882,7 +897,15 @@
 	<div class="save-bar md-toolbar">
 		<div class="save-actions">
 			{#if settingsDirty}<button class="md-btn md-btn--text" type="button" onclick={discardAndReset} disabled={saveState === 'saving'}>放弃更改</button>{/if}
-			<button class="md-btn md-btn--filled save-btn" type="button" data-state={saveState} aria-live="polite" aria-busy={saveState === 'saving'} onclick={saveSettings} disabled={!settingsLoaded || saveState === 'saving' || !settingsDirty}>{saveState === 'saving' ? '保存中…' : '保存设置'}</button>
+			<div class="save-button-status" aria-live="polite" aria-busy={saveState === 'saving'}>
+				<MaterialButton
+					variant={settingsDirty ? 'filled' : 'elevated'}
+					className={settingsDirty ? 'save-btn save-btn--dirty' : 'save-btn save-btn--clean'}
+					label={saveState === 'saving' ? '保存中…' : '保存设置'}
+					onclick={handleSaveClick}
+					disabled={saveState === 'saving'}
+				/>
+			</div>
 		</div>
 	</div>
 </div>
@@ -994,35 +1017,24 @@
 		gap: var(--md-comp-toolbar-gap);
 		margin-top: var(--md-sys-space-xl);
 		padding: var(--md-sys-space-sm) 0;
-		background: var(--md-sys-color-surface);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
+		background: transparent;
+		border-top: none;
 		z-index: 1;
 	}
-	.save-btn {
-		border-radius: var(--md-comp-button-radius);
-		box-shadow: var(--md-sys-elevation-3);
+	:global(.save-btn) {
+		min-width: 112px;
 	}
-	.save-btn.md-btn:disabled {
-		opacity: 1;
-		background: transparent !important;
-		color: var(--md-sys-color-on-surface-variant);
-		border-color: transparent;
+	:global(.save-btn--clean) {
+		--_btn-bg: transparent;
+		--_btn-fg: var(--md-sys-color-on-surface-variant);
+		--_btn-state: var(--md-sys-color-on-surface-variant);
 		box-shadow: none;
 	}
-	.save-btn.md-btn:disabled::after {
-		opacity: 0;
+	:global(.save-btn--dirty) {
+		box-shadow: var(--md-sys-elevation-2);
 	}
-	.save-btn.md-btn:disabled[data-state='saving'] {
-		color: var(--md-sys-color-primary);
-	}
-	.save-btn.md-btn:disabled[data-state='saved'] {
-		color: var(--md-sys-color-success);
-	}
-	.save-btn.md-btn[data-state='error'] {
-		background: transparent !important;
-		color: var(--md-sys-color-error);
-		border-color: transparent;
-		box-shadow: none;
+	.save-button-status {
+		display: inline-flex;
 	}
 	.save-actions {
 		display: flex;
@@ -1071,7 +1083,8 @@
 		}
 		.settings-callout .md-btn,
 		.save-actions,
-		.save-actions .md-btn {
+		.save-actions :global(.md-btn),
+		.save-button-status {
 			width: 100%;
 		}
 		.save-actions {
