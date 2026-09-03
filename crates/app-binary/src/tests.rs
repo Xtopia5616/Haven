@@ -4,7 +4,7 @@ use crate::bootstrap::to_tauri_shortcut;
 use crate::desktop::TrayStatus;
 use crate::event_bridge::{TauriEmitter, project_action_event};
 use crate::events::*;
-use crate::handlers::make_tray_icon;
+use crate::handlers::{TRAY_ICON_SIZE, make_tray_icon};
 use haven_agent::{AgentEvent, SessionInfo, SessionStatus};
 use serde_json::json;
 
@@ -484,8 +484,8 @@ fn test_parse_shortcut_letter_keys() {
 #[test]
 fn test_make_tray_icon_creates_valid_image() {
     let img = make_tray_icon(TrayStatus::Normal);
-    assert_eq!(img.width(), 32);
-    assert_eq!(img.height(), 32);
+    assert_eq!(img.width(), TRAY_ICON_SIZE);
+    assert_eq!(img.height(), TRAY_ICON_SIZE);
 }
 
 #[test]
@@ -497,8 +497,8 @@ fn test_make_tray_icon_all_statuses_have_correct_size() {
         TrayStatus::Busy,
     ] {
         let img = make_tray_icon(*status);
-        assert_eq!(img.width(), 32, "failed for {:?}", status);
-        assert_eq!(img.height(), 32, "failed for {:?}", status);
+        assert_eq!(img.width(), TRAY_ICON_SIZE, "failed for {:?}", status);
+        assert_eq!(img.height(), TRAY_ICON_SIZE, "failed for {:?}", status);
     }
 }
 
@@ -512,16 +512,20 @@ fn test_make_tray_icon_uses_opaque_background_and_status_colors() {
     ];
     let images = statuses.map(make_tray_icon);
 
-    assert_eq!(images[0].rgba().len(), 32 * 32 * 4);
+    assert_eq!(
+        images[0].rgba().len(),
+        (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize
+    );
     assert_eq!(
         images[0].rgba()[3],
         255,
         "desktop tray icon should use an opaque brand tile"
     );
     assert!(images[0].rgba().chunks_exact(4).any(|pixel| pixel[3] > 0));
-    let expected_border_red = [187, 240, 169, 255];
+    let expected_border_red = [44, 240, 169, 255];
+    let border_offset = ((TRAY_ICON_SIZE / 16) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) * 4;
     for (index, image) in images.iter().enumerate() {
-        let border_pixel = &image.rgba()[(2 * 32 + 16) * 4..(2 * 32 + 16) * 4 + 4];
+        let border_pixel = &image.rgba()[border_offset as usize..border_offset as usize + 4];
         assert_eq!(
             border_pixel[0], expected_border_red[index],
             "status {index} should keep its status-coloured perimeter"

@@ -139,11 +139,14 @@ impl haven_input::InputHandler for HavenInputHandler {
     }
 }
 
+pub(crate) const TRAY_ICON_SIZE: u32 = 256;
+
 pub(crate) fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static> {
     const BLUE: [u8; 4] = [44, 80, 144, 255];
     const BUBBLE: [u8; 4] = [215, 227, 255, 255];
     let status_color = match status {
-        TrayStatus::Normal => [187, 210, 255, 255],
+        // The normal tray icon is the same fixed mark as the window icon.
+        TrayStatus::Normal => BLUE,
         TrayStatus::Recording => [240, 68, 56, 255],
         TrayStatus::Muted => [169, 170, 178, 255],
         TrayStatus::Busy => [255, 183, 77, 255],
@@ -151,11 +154,14 @@ pub(crate) fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static>
 
     // Desktop tray/taskbar icons use an opaque brand tile for crisp small-size
     // rendering. The in-app HavenMark remains transparent in the UI.
-    let mut rgba = BLUE.repeat(32 * 32);
-    for y in 0..32 {
-        for x in 0..32 {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
+    // Render a large RGBA icon and let Windows choose the appropriate shell
+    // size; a hand-drawn 32px bitmap looks visibly jagged on high-DPI shells.
+    let mut rgba = BLUE.repeat((TRAY_ICON_SIZE * TRAY_ICON_SIZE) as usize);
+    let scale = TRAY_ICON_SIZE as f32 / 32.0;
+    for y in 0..TRAY_ICON_SIZE {
+        for x in 0..TRAY_ICON_SIZE {
+            let px = (x as f32 + 0.5) / scale;
+            let py = (y as f32 + 0.5) / scale;
             let outer = rounded_rect_contains(px, py, 2.0, 2.0, 30.0, 30.0, 8.0);
             if !outer {
                 continue;
@@ -163,12 +169,12 @@ pub(crate) fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static>
 
             let inner = rounded_rect_contains(px, py, 4.0, 4.0, 28.0, 28.0, 6.0);
             let color = if !inner { status_color } else { BLUE };
-            set_rgba_pixel(&mut rgba, x, y, color);
+            set_rgba_pixel(&mut rgba, x, y, color, TRAY_ICON_SIZE);
 
             let bubble_body = rounded_rect_contains(px, py, 4.0, 7.5, 28.0, 23.0, 5.0);
             let bubble_tail = triangle_contains(px, py, (10.5, 21.5), (10.5, 27.0), (16.0, 23.0));
             if bubble_body || bubble_tail {
-                set_rgba_pixel(&mut rgba, x, y, BUBBLE);
+                set_rgba_pixel(&mut rgba, x, y, BUBBLE, TRAY_ICON_SIZE);
                 continue;
             }
 
@@ -178,17 +184,17 @@ pub(crate) fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static>
                 (17.5, 12.25, 20.0, 18.25, 1.25),
             ] {
                 if rounded_rect_contains(px, py, left, top, right, bottom, radius) {
-                    set_rgba_pixel(&mut rgba, x, y, BLUE);
+                    set_rgba_pixel(&mut rgba, x, y, BLUE, TRAY_ICON_SIZE);
                     break;
                 }
             }
         }
     }
-    tauri::image::Image::new_owned(rgba, 32, 32)
+    tauri::image::Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
 }
 
-fn set_rgba_pixel(rgba: &mut [u8], x: u32, y: u32, color: [u8; 4]) {
-    let offset = ((y * 32 + x) * 4) as usize;
+fn set_rgba_pixel(rgba: &mut [u8], x: u32, y: u32, color: [u8; 4], size: u32) {
+    let offset = ((y * size + x) * 4) as usize;
     rgba[offset..offset + 4].copy_from_slice(&color);
 }
 
