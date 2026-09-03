@@ -503,7 +503,7 @@ fn test_make_tray_icon_all_statuses_have_correct_size() {
 }
 
 #[test]
-fn test_make_tray_icon_uses_transparency_and_status_colors() {
+fn test_make_tray_icon_uses_opaque_background_and_status_colors() {
     let statuses = [
         TrayStatus::Normal,
         TrayStatus::Recording,
@@ -515,13 +515,13 @@ fn test_make_tray_icon_uses_transparency_and_status_colors() {
     assert_eq!(images[0].rgba().len(), 32 * 32 * 4);
     assert_eq!(
         images[0].rgba()[3],
-        0,
-        "tray icon corners should stay transparent"
+        255,
+        "desktop tray icon should use an opaque brand tile"
     );
     assert!(images[0].rgba().chunks_exact(4).any(|pixel| pixel[3] > 0));
     let expected_border_red = [187, 240, 169, 255];
     for (index, image) in images.iter().enumerate() {
-        let border_pixel = &image.rgba()[(6 * 32 + 16) * 4..(6 * 32 + 16) * 4 + 4];
+        let border_pixel = &image.rgba()[(2 * 32 + 16) * 4..(2 * 32 + 16) * 4 + 4];
         assert_eq!(
             border_pixel[0], expected_border_red[index],
             "status {index} should keep its status-coloured perimeter"

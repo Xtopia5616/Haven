@@ -235,11 +235,6 @@
 		session_error: { in_app: true },
 	});
 
-	// The configured recording hotkey binding (e.g. "Ctrl+Shift+Space"),
-	// loaded from settings so the statusbar hint reflects the real value
-	// instead of a hardcoded string. Updated live on `hotkey:rebind`.
-	let hotkeyBinding = $state('Ctrl+Shift+Space');
-
 	$effect(() => syncStore(recordingOverlay, (v) => (overlay = v)));
 
 	$effect(() => {
@@ -518,16 +513,13 @@
 			/* ignore */
 		}
 
-		// Load notify config + hotkey binding in background — don't block
+		// Load notify config in background — don't block
 		// listener registration. Skip outside Tauri (browser / SSR preview).
 		if (isTauri()) {
 			invoke('get_settings')
 				.then((settings) => {
 					if (settings?.notification) {
 						notifyCfg = { ...notifyCfg, ...settings.notification };
-					}
-					if (settings?.hotkey?.key_binding) {
-						hotkeyBinding = settings.hotkey.key_binding;
 					}
 				})
 				.catch((e) => {
@@ -652,12 +644,6 @@
 					'hotkey:conflict': (event) => {
 						const data = event.payload;
 						addNotification(`热键冲突: ${data.binding} - ${data.error}`, 'error', 5000);
-					},
-					'hotkey:rebind': (event) => {
-						const data = event.payload;
-						if (data.newBinding) {
-							hotkeyBinding = data.newBinding;
-						}
 					},
 				}),
 				...sessionEventListeners({
@@ -927,7 +913,6 @@
 	{overlay}
 	{duration}
 	onCancelRecording={cancelRecording}
-	{hotkeyBinding}
 >
 	{#snippet status()}
 		<WorkspaceStatus

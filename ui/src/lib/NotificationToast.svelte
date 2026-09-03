@@ -3,6 +3,7 @@
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { notificationStore } from './stores.ts';
+	import { getStatusColorTokens } from './statusColors.ts';
 	// The container stays mounted (empty when idle) and items are only
 	// populated after its first render: toasts inserted into a freshly
 	// created each block play no intro transition (the block effect has not
@@ -30,6 +31,12 @@
 	function getIcon(type) {
 		return /** @type {Record<string, string>} */ (icons)[type] || icons.info;
 	}
+
+	/** @param {string | undefined} type */
+	function getToastStyle(type) {
+		const { dot, background, foreground } = getStatusColorTokens(type || 'info');
+		return `--toast-accent: ${dot}; --toast-background: ${background}; --toast-foreground: ${foreground};`;
+	}
 </script>
 
 {#if mounted}
@@ -37,6 +44,7 @@
 		{#each items as item (item.id)}
 			<div
 				class="toast toast-{item.type || 'info'}"
+				style={getToastStyle(item.type)}
 				in:fly={{ x: '100%', duration: 450, easing: cubicOut }}
 			>
 				<span class="toast-icon">{@html getIcon(item.type)}</span>
@@ -58,17 +66,20 @@
 	}
 	.toast {
 		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
-		padding-left: calc(var(--md-sys-space-lg) + 4px);
+		padding-left: calc(var(--md-sys-space-lg) + 3px);
 		border-radius: var(--md-sys-shape-small);
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		box-shadow: var(--md-sys-elevation-2);
 		width: min(360px, calc(100vw - 2 * var(--md-sys-content-gutter)));
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		pointer-events: auto;
-		border-left: 4px solid var(--md-sys-color-outline);
+		border-left: 3px solid var(--toast-accent);
+		background: var(--toast-background);
+		color: var(--toast-foreground);
 	}
 	.toast-icon {
 		display: flex;
@@ -87,25 +98,5 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.toast-info {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-primary) 8%,
-			var(--md-sys-color-secondary-container)
-		);
-		color: var(--md-sys-color-on-secondary-container);
-	}
-	.toast-error {
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
-	}
-	.toast-warning {
-		background: var(--md-sys-color-warning-container);
-		color: var(--md-sys-color-on-warning-container);
-	}
-	.toast-success {
-		background: var(--md-sys-color-success-container);
-		color: var(--md-sys-color-on-success-container);
 	}
 </style>

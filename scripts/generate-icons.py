@@ -28,13 +28,14 @@ def scaled(value: float, scale: float) -> int:
     return round(value * scale)
 
 
-def draw_mark(size: int) -> Image.Image:
-    """Render the SVG's flat geometry with supersampling for small sizes."""
+def draw_mark(size: int, *, opaque_background: bool = False) -> Image.Image:
+    """Render the transparent SVG geometry, optionally on an opaque app tile."""
 
     supersample = 4
     canvas = size * supersample
     pixel_scale = supersample * size / 64
-    image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    background = BLUE if opaque_background else (0, 0, 0, 0)
+    image = Image.new("RGBA", (canvas, canvas), background)
     draw = ImageDraw.Draw(image)
 
     def box(values: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
@@ -59,7 +60,37 @@ def draw_mark(size: int) -> Image.Image:
 
 def save_png(size: int, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    draw_mark(size).save(path, format="PNG", optimize=False)
+    draw_mark(size, opaque_background=True).save(path, format="PNG", optimize=False)
+
+
+def write_ico(path: Path, image: Image.Image) -> None:
+    """Write PNG-backed ICO entries with the largest entry first.
+
+    Tauri's Windows codegen consumes the first ICO entry for the default
+    window icon, while Pillow reorders entries from smallest to largest.
+    Writing the directory explicitly keeps the 256px entry first.
+    """
+
+    sizes = (256, 128, 64, 48, 32, 24, 16)
+    payloads: list[tuple[int, bytes]] = []
+    for size in sizes:
+        payload = io.BytesIO()
+        image.resize((size, size), Image.Resampling.LANCZOS).save(
+            payload, format="PNG", optimize=False
+        )
+        payloads.append((size, payload.getvalue()))
+
+    directory_size = 6 + 16 * len(payloads)
+    offset = directory_size
+    directory = bytearray(struct.pack("<HHH", 0, 1, len(payloads)))
+    for size, data in payloads:
+        dimension = 0 if size == 256 else size
+        directory.extend(
+            struct.pack("<BBBBHHII", dimension, dimension, 0, 0, 1, 32, len(data), offset)
+        )
+        offset += len(data)
+
+    path.write_bytes(bytes(directory) + b"".join(data for _, data in payloads))
 
 
 def write_icns(path: Path, image: Image.Image) -> None:
@@ -93,10 +124,8 @@ def main() -> None:
     save_png(50, TAURI_DIR / "StoreLogo.png")
     save_png(32, UI_DIR / "favicon.png")
 
-    source_image = draw_mark(1024)
-    source_image.save(TAURI_DIR / "icon.ico", format="ICO", sizes=[
-        (16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)
-    ])
+    source_image = draw_mark(2048, opaque_background=True)
+    write_ico(TAURI_DIR / "icon.ico", source_image)
     write_icns(TAURI_DIR / "icon.icns", source_image)
 
 

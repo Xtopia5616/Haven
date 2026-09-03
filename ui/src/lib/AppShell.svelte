@@ -18,7 +18,6 @@
 		overlay = {},
 		duration = 0,
 		onCancelRecording = null,
-		hotkeyBinding = '',
 		status,
 		content,
 	} = $props();
@@ -39,13 +38,13 @@
 				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
 			>
 				{#if theme === 'dark'}
-					<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+					<svg class="theme-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
 						<path
 							d="M12 7a5 5 0 100 10 5 5 0 000-10zm0-5a1 1 0 011 1v2a1 1 0 11-2 0V3a1 1 0 011-1zm0 17a1 1 0 011 1v2a1 1 0 11-2 0v-2a1 1 0 011-1zM4.2 4.2a1 1 0 011.4 0l1.5 1.5A1 1 0 015.7 7.1L4.2 5.6a1 1 0 010-1.4zm12.7 12.7a1 1 0 011.4 0l1.5 1.5a1 1 0 11-1.4 1.4l-1.5-1.5a1 1 0 010-1.4zM2 12a1 1 0 011-1h2a1 1 0 110 2H3a1 1 0 01-1-1zm17 0a1 1 0 011-1h2a1 1 0 110 2h-2a1 1 0 01-1-1zM4.2 19.8a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0zm12.7-12.7a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0z"
 						/>
 					</svg>
 				{:else}
-					<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+					<svg class="theme-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
 						<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />
 					</svg>
 				{/if}
@@ -68,13 +67,6 @@
 		onCancel={onCancelRecording}
 	/>
 	<NotificationToast />
-
-	<footer class="statusbar md-toolbar">
-		<span class="hotkey-hint">{hotkeyBinding} 开始录音</span>
-		{#if overlay.isRecording}
-			<span class="recording-label">录音中</span>
-		{/if}
-	</footer>
 </div>
 
 <style>
@@ -110,6 +102,11 @@
 	.titlebar-right {
 		gap: var(--md-sys-space-sm);
 		-webkit-app-region: no-drag;
+	}
+	.theme-icon {
+		display: block;
+		width: 18px;
+		height: 18px;
 	}
 	.content {
 		flex: 1;
@@ -159,33 +156,9 @@
 		display: flex;
 		flex-direction: column;
 	}
-	.statusbar {
-		height: 28px;
-		background: var(--md-sys-color-surface-container-low);
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0 var(--md-sys-space-lg);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		flex-shrink: 0;
-	}
-	.hotkey-hint {
-		font-weight: 600;
-		letter-spacing: var(--md-sys-typescale-label-letter-spacing);
-	}
-	.recording-label {
-		color: var(--md-sys-color-error);
-		font-weight: 700;
-	}
 	@media (max-width: 640px) {
 		.titlebar {
 			padding: 0 var(--md-sys-space-md);
-		}
-		.statusbar {
-			padding-inline: var(--md-sys-space-md);
 		}
 	}
 </style>

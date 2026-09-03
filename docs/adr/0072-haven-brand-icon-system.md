@@ -18,7 +18,7 @@ Haven 的根图标、Tauri bundle 图标、favicon、应用内 Logo、启动占�
    保持 8×8 圆点原语，状态颜色只表达语义：未配置使用灰色 outline，录音、
    等待、生成和就绪分别沿用 error/warning/primary/success。启动占位页也保持
    灰色状态点。托盘保持现有状态事件和 tooltip 契约，保留
-   normal/recording/muted/busy 语义，并将状态色作为透明 Logo 外圈。
+   normal/recording/muted/busy 语义，并将状态色作为不透明蓝色 tile 的外圈。
 
 ## 替代方案
 
@@ -28,7 +28,8 @@ Windows 小尺寸图标和 UI 首屏的长期源。继续使用纯色托盘方�
 ## 影响与验证
 
 静态资源路径和 Tauri bundle 文件名保持兼容，不改变 IPC、业务逻辑或托盘状态
-事件；动态托盘仅改变 RGBA 像素。验证包括 SVG/PNG 尺寸、透明角落、ICO/ICNS
+事件；应用内标记保持透明，桌面/任务栏静态图标使用不透明蓝色背景，动态托盘
+使用不透明蓝色 tile。验证包括 SVG/PNG 尺寸、桌面图标不透明背景、ICO/ICNS
 容器、四种托盘状态差异，以及 UI 检查、测试和 Tauri crate 检查。
 
 ## 回滚

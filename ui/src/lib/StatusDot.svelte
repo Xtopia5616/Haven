@@ -1,9 +1,12 @@
 <script>
+	import { getStatusDotColor } from './statusColors.ts';
+
 	/** @type {{ color?: string; animate?: boolean }} */
 	let { color = 'success', animate = false } = $props();
+	const dotColor = $derived(getStatusDotColor(color));
 </script>
 
-<span class="status-dot" style="--dot-color: var(--md-sys-color-{color});" class:animate></span>
+<span class="status-dot" style="--dot-color: {dotColor};" class:animate></span>
 
 <style>
 	.status-dot {

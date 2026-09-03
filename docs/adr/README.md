@@ -75,3 +75,4 @@
 - [0068：版本化配置服务与运行时应用计划](0068-versioned-config-service.md)
 - [0069：跨 session MessagingService 与统一消息生命周期](0069-messaging-service.md)
 - [0072：Haven 统一品牌图标源与状态变体](0072-haven-brand-icon-system.md)
+- [0073：状态颜色语义标准](0073-status-color-standard.md)
