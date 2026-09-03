@@ -58,7 +58,6 @@
 		onclick={() => onOpenTasks?.()}
 		title={statusTitle}
 		aria-label={`应用状态：${statusLabel}，打开任务中心`}
-		aria-haspopup="dialog"
 		type="button"
 	>
 		<StatusDot

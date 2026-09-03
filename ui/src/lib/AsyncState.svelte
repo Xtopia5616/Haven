@@ -33,8 +33,8 @@
 	.async-state__icon {
 		display: grid;
 		place-items: center;
-		width: 48px;
-		height: 48px;
+		width: var(--md-comp-button-touch-height);
+		height: var(--md-comp-button-touch-height);
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-primary-container);
 		color: var(--md-sys-color-on-primary-container);
