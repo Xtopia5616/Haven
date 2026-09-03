@@ -633,18 +633,17 @@
 
 <style>
 	.section {
-		background: var(--md-sys-color-surface-container);
+		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-lg);
-		margin-bottom: var(--md-sys-space-lg);
+		padding: var(--md-sys-space-xl);
+		margin-bottom: var(--md-sys-space-xl);
 	}
 	.section h2 {
-		font-size: 13px;
-		font-weight: 600;
-		color: var(--md-sys-color-on-surface-variant);
-		text-transform: uppercase;
-		letter-spacing: 1px;
+		font-size: 15px;
+		font-weight: 700;
+		color: var(--md-sys-color-on-surface);
+		letter-spacing: 0.1px;
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.card-list {

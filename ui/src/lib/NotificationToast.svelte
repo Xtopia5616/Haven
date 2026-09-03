@@ -35,7 +35,10 @@
 {#if mounted}
 	<div class="toast-container">
 		{#each items as item (item.id)}
-			<div class="toast toast-{item.type || 'info'}" in:fly={{ x: '100%', duration: 450, easing: cubicOut }}>
+			<div
+				class="toast toast-{item.type || 'info'}"
+				in:fly={{ x: '100%', duration: 450, easing: cubicOut }}
+			>
 				<span class="toast-icon">{@html getIcon(item.type)}</span>
 				<span class="toast-msg">{item.msg}</span>
 			</div>
@@ -47,7 +50,7 @@
 	.toast-container {
 		position: fixed;
 		bottom: 80px;
-		right: var(--md-sys-space-lg);
+		right: var(--md-sys-content-gutter);
 		z-index: var(--md-sys-z-toast);
 		display: flex;
 		flex-direction: column;
@@ -60,12 +63,12 @@
 		font-size: 13px;
 		font-weight: 600;
 		box-shadow: var(--md-sys-elevation-2);
-		max-width: 360px;
+		width: min(360px, calc(100vw - 2 * var(--md-sys-content-gutter)));
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		pointer-events: auto;
-		border-left: 4px solid #322F3B;
+		border-left: 4px solid var(--md-sys-color-outline);
 	}
 	.toast-icon {
 		display: flex;
@@ -86,7 +89,11 @@
 		white-space: nowrap;
 	}
 	.toast-info {
-		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, var(--md-sys-color-secondary-container));
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary) 8%,
+			var(--md-sys-color-secondary-container)
+		);
 		color: var(--md-sys-color-on-secondary-container);
 	}
 	.toast-error {

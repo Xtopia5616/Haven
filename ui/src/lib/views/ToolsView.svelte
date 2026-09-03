@@ -60,12 +60,20 @@
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
-		unlistenSkills = await registerOne('skills:status_change', async () => {
-			await refreshSkillList();
-		}, { tag: 'tools' });
-		unlistenMcp = await registerOne('mcp:status_change', () => {
-			scheduleMcpRefresh();
-		}, { tag: 'tools' });
+		unlistenSkills = await registerOne(
+			'skills:status_change',
+			async () => {
+				await refreshSkillList();
+			},
+			{ tag: 'tools' },
+		);
+		unlistenMcp = await registerOne(
+			'mcp:status_change',
+			() => {
+				scheduleMcpRefresh();
+			},
+			{ tag: 'tools' },
+		);
 	});
 
 	onDestroy(() => {
@@ -108,7 +116,12 @@
 			const removed = result?.removed || [];
 			const updated = result?.updated || [];
 			const failed = result?.failed || [];
-			if (added.length === 0 && removed.length === 0 && updated.length === 0 && failed.length === 0) {
+			if (
+				added.length === 0 &&
+				removed.length === 0 &&
+				updated.length === 0 &&
+				failed.length === 0
+			) {
 				addNotification('MCP 服务器无变化', 'info', 2000);
 			} else {
 				const parts = [];
@@ -118,7 +131,12 @@
 				if (failed.length) parts.push(`${failed.join(', ')} 连接失败`);
 				addNotification(
 					`MCP 刷新: ${parts.join('；')}`,
-					failed.length && added.length === 0 && removed.length === 0 && updated.length === 0 ? 'warning' : 'success',
+					failed.length &&
+						added.length === 0 &&
+						removed.length === 0 &&
+						updated.length === 0
+						? 'warning'
+						: 'success',
 					3000,
 				);
 			}
@@ -154,11 +172,7 @@
 		setList(list.map((x) => (x.name === name ? { ...x, enabled } : x)));
 		try {
 			await invoke(invokeCmd, { name, enabled });
-			addNotification(
-				`${name} 已${enabled ? '启用' : '禁用'}`,
-				'success',
-				2000,
-			);
+			addNotification(`${name} 已${enabled ? '启用' : '禁用'}`, 'success', 2000);
 			if (refresh) await refresh();
 		} catch (e) {
 			setList(prev);
@@ -288,14 +302,19 @@
 	}
 
 	const tabs = [
-		{ id: 'builtin', label: 'BUILTIN' },
+		{ id: 'builtin', label: '内置工具' },
 		{ id: 'mcp', label: 'MCP' },
-		{ id: 'skills', label: 'SKILLS' },
+		{ id: 'skills', label: '技能' },
 	];
 </script>
 
 <div class="tools-page">
-	<h1>Tools</h1>
+	<div class="page-heading">
+		<div>
+			<h1>工具</h1>
+			<p>管理 Haven 可调用的工具、MCP 服务与技能。</p>
+		</div>
+	</div>
 
 	<div class="md-tabs" role="tablist">
 		{#each tabs as tab}
@@ -314,7 +333,7 @@
 	{#if activeTab === 'builtin'}
 		<div class="section">
 			<div class="toolbar">
-				<h2>Built-in Tools</h2>
+				<h2>内置工具</h2>
 				<div class="toolbar-actions">
 					<button class="md-btn md-btn--outlined" onclick={resetToolCircuits}>
 						重置熔断
@@ -323,7 +342,7 @@
 			</div>
 			{#if builtinTools.length === 0}
 				<div class="empty-state">
-					<p>No built-in tools available</p>
+					<p>暂无可用的内置工具</p>
 				</div>
 			{:else}
 				<div class="server-list">
@@ -336,22 +355,24 @@
 	{:else if activeTab === 'mcp'}
 		<div class="section">
 			<div class="toolbar">
-				<h2>MCP Servers</h2>
+				<h2>MCP 服务器</h2>
 				<div class="toolbar-actions">
-					<button class="md-btn md-btn--outlined" onclick={refreshMcpList}>Refresh</button>
+					<button class="md-btn md-btn--outlined" onclick={refreshMcpList}>刷新</button>
 					<button class="md-btn md-btn--outlined" onclick={openAddDialog}>
-						<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
-						Add
+						<svg viewBox="0 0 24 24" fill="currentColor"
+							><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" /></svg
+						>
+						添加
 					</button>
 				</div>
 			</div>
 			{#if mcpServers.length === 0}
 				<div class="empty-state">
-					<p>No MCP servers configured</p>
-					<p class="hint">
-						Add an MCP server to extend the agent with external tools and resources.
-					</p>
-					<button class="md-btn md-btn--filled" onclick={openAddDialog}>Add MCP Server</button>
+					<p>尚未配置 MCP 服务器</p>
+					<p class="hint">添加 MCP 服务器，为 Agent 扩展外部工具与资源。</p>
+					<button class="md-btn md-btn--filled" onclick={openAddDialog}
+						>添加 MCP 服务器</button
+					>
 				</div>
 			{:else}
 				<div class="server-list">
@@ -370,19 +391,19 @@
 	{:else}
 		<div class="section">
 			<div class="toolbar">
-				<h2>Skills</h2>
+				<h2>技能</h2>
 				<div class="toolbar-actions">
-					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>Refresh</button>
-					<button class="md-btn md-btn--outlined" onclick={openFolder}>Open Folder</button>
+					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>刷新</button>
+					<button class="md-btn md-btn--outlined" onclick={openFolder}>打开文件夹</button>
 				</div>
 			</div>
 			{#if skills.length === 0}
 				<div class="empty-state">
-					<p>No skills found</p>
-					<p class="hint">
-						Place SKILL.md files in your skills folder, then click Refresh.
-					</p>
-					<button class="md-btn md-btn--filled" onclick={openFolder}>Open Skills Folder</button>
+					<p>暂无技能</p>
+					<p class="hint">将 SKILL.md 文件放入技能文件夹，然后点击刷新。</p>
+					<button class="md-btn md-btn--filled" onclick={openFolder}
+						>打开技能文件夹</button
+					>
 				</div>
 			{:else}
 				<div class="server-list">
@@ -409,40 +430,44 @@
 		max-width: var(--md-sys-content-max-width);
 	}
 	h1 {
-		font-size: 24px;
-		font-weight: 600;
-		margin-bottom: var(--md-sys-space-xl);
+		font-family: var(--md-ref-typeface-brand);
+		font-size: 28px;
+		font-weight: 700;
+		letter-spacing: -0.35px;
 		color: var(--md-sys-color-on-surface);
 	}
 	.md-tabs {
-		margin-bottom: var(--md-sys-space-xl);
+		margin-bottom: var(--md-sys-space-2xl);
 	}
 	.section {
-		background: var(--md-sys-color-surface-container);
+		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-lg);
-		margin-bottom: var(--md-sys-space-lg);
+		padding: var(--md-sys-space-xl);
+		margin-bottom: var(--md-sys-space-xl);
+		box-shadow: var(--md-sys-elevation-0);
 	}
 	.section:last-child {
 		margin-bottom: 0;
 	}
 	.section h2 {
-		font-size: 13px;
-		font-weight: 600;
-		color: var(--md-sys-color-on-surface-variant);
-		text-transform: uppercase;
-		letter-spacing: 1px;
-		margin-bottom: var(--md-sys-space-lg);
+		font-size: 15px;
+		font-weight: 700;
+		color: var(--md-sys-color-on-surface);
+		letter-spacing: 0.1px;
+		margin-bottom: var(--md-sys-space-md);
 	}
 	.empty-state {
 		text-align: center;
-		padding: 48px 0;
+		padding: var(--md-sys-space-4xl) var(--md-sys-space-xl);
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		color: var(--md-sys-color-on-surface-variant);
+		border: 1px dashed var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container);
 	}
 	.empty-state p {
 		margin: 0;
@@ -455,7 +480,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		margin-bottom: var(--md-sys-space-lg);
+		margin-bottom: var(--md-sys-space-md);
 		min-height: var(--md-comp-button-small-height);
 	}
 	.toolbar h2 {

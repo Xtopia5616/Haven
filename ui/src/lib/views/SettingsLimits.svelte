@@ -516,7 +516,7 @@
 
 <style>
 	.format-card {
-		background: var(--md-sys-color-surface-container-lowest);
+		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		padding: var(--md-sys-space-md);

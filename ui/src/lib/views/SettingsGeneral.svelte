@@ -80,9 +80,9 @@
 
 <div class="settings-general">
 	<div class="section">
-		<h2>Hotkeys</h2>
+		<h2>快捷键</h2>
 		<div class="form-row">
-			<label for="hotkey-binding">Key Binding</label>
+			<label for="hotkey-binding">快捷键</label>
 			<HotkeyInput
 				id="hotkey-binding"
 				value={hotkeyBinding}
@@ -90,13 +90,13 @@
 			/>
 		</div>
 		<div class="form-row">
-			<label for="hotkey-mode">Mode</label>
+			<label for="hotkey-mode">录音模式</label>
 			<MaterialSelect
 				id="hotkey-mode"
 				value={hotkeyMode}
 				options={[
-					{ value: 'toggle', label: 'Toggle (press to start/stop)' },
-					{ value: 'hold', label: 'Hold (push-to-talk)' },
+					{ value: 'toggle', label: '切换（按键开始 / 停止）' },
+					{ value: 'hold', label: '按住说话' },
 				]}
 				onChange={withStringValue((v) => onHotkeyModeChange(v))}
 			/>
@@ -104,13 +104,13 @@
 	</div>
 
 	<div class="section">
-		<h2>Session &amp; Concurrency</h2>
+		<h2>会话与并发</h2>
 		<p class="model-hint">
 			Max Concurrent 控制同时运行的会话数；LLM Per-Endpoint Concurrency
 			限制每个模型端点（角色）同时在途的请求数。后者低于前者时，超出上限的模型请求会排队等待，避免多个会话同时请求同一服务商触发限流（429）。
 		</p>
 		<div class="form-row">
-			<label for="session-max-concurrent">Max Concurrent</label>
+			<label for="session-max-concurrent">最大并发会话</label>
 			<MaterialNumberField
 				id="session-max-concurrent"
 				value={session.max_concurrent}
@@ -122,7 +122,7 @@
 			/>
 		</div>
 		<div class="form-row">
-			<label for="llm-max-concurrent-requests">LLM Per-Endpoint Concurrency</label>
+			<label for="llm-max-concurrent-requests">模型端点并发</label>
 			<MaterialNumberField
 				id="llm-max-concurrent-requests"
 				value={llmConfig.max_concurrent_requests}
@@ -134,7 +134,7 @@
 			/>
 		</div>
 		<div class="form-row">
-			<label for="session-max-steps">Max Steps</label>
+			<label for="session-max-steps">最大步骤数</label>
 			<MaterialNumberField
 				id="session-max-steps"
 				value={session.max_steps}
@@ -148,13 +148,13 @@
 	</div>
 
 	<div class="section">
-		<h2>Agent Shell</h2>
+		<h2>命令行工具</h2>
 		<p class="model-hint">
 			Agent 的 shell 工具默认使用的命令行解释器。模型仍可在调用时通过 shell 参数临时指定其他
 			shell（cmd / powershell / pwsh）。
 		</p>
 		<div class="form-row">
-			<label for="default-shell">Default Shell</label>
+			<label for="default-shell">默认 Shell</label>
 			<MaterialSelect
 				id="default-shell"
 				value={defaultShell}
@@ -171,9 +171,9 @@
 	</div>
 
 	<div class="section">
-		<h2>Memory</h2>
+		<h2>记忆</h2>
 		<div class="form-row">
-			<label for="memory-window-size">Window Size</label>
+			<label for="memory-window-size">窗口大小</label>
 			<MaterialNumberField
 				id="memory-window-size"
 				value={memory.session_window_size}
@@ -185,7 +185,7 @@
 			/>
 		</div>
 		<div class="form-row">
-			<label for="memory-retention">Retention (days)</label>
+			<label for="memory-retention">保留天数</label>
 			<MaterialNumberField
 				id="memory-retention"
 				value={memory.history_retention_days}
@@ -196,7 +196,7 @@
 				})}
 			/>
 		</div>
-		<h3 class="model-group-heading">Maintenance</h3>
+		<h3 class="model-group-heading">维护</h3>
 		<p class="model-hint">维护会清理重复、敏感、过期的事实与残留向量。</p>
 		<div class="form-row">
 			<button
@@ -204,7 +204,7 @@
 				onclick={() => onRunMaintenance()}
 				disabled={memoryMaintenance.running}
 			>
-				{memoryMaintenance.running ? 'Running…' : 'Run Memory Maintenance'}
+				{memoryMaintenance.running ? '运行中…' : '执行记忆维护'}
 			</button>
 			{#if memoryMaintenance.lastCount !== null}
 				<span class="recall-hint">上次清理 {memoryMaintenance.lastCount} 项</span>
@@ -213,17 +213,17 @@
 	</div>
 
 	<div class="section appearance-section">
-		<h2>Appearance</h2>
+		<h2>外观</h2>
 		<div class="form-row">
-			<span class="form-label">Theme</span>
-			<div class="theme-toggle-row" role="radiogroup" aria-label="Theme">
+			<span class="form-label">主题</span>
+			<div class="theme-toggle-row" role="radiogroup" aria-label="主题">
 				<button
 					class="md-btn"
 					class:md-btn--outlined={currentTheme === 'light'}
 					class:md-btn--filled={currentTheme !== 'light'}
 					role="radio"
 					aria-checked={currentTheme === 'light'}
-					onclick={() => themeStore.setTheme('light')}>Light</button
+					onclick={() => themeStore.setTheme('light')}>浅色</button
 				>
 				<button
 					class="md-btn"
@@ -231,13 +231,13 @@
 					class:md-btn--filled={currentTheme !== 'dark'}
 					role="radio"
 					aria-checked={currentTheme === 'dark'}
-					onclick={() => themeStore.setTheme('dark')}>Dark</button
+					onclick={() => themeStore.setTheme('dark')}>深色</button
 				>
 			</div>
 		</div>
 		<div class="form-row">
-			<span class="form-label">Accent Color</span>
-			<div class="accent-picker" role="radiogroup" aria-label="Accent color">
+			<span class="form-label">强调色</span>
+			<div class="accent-picker" role="radiogroup" aria-label="强调色">
 				{#each Object.entries(themeStore.presets) as [key, preset]}
 					<button
 						class="md-btn"
@@ -288,16 +288,16 @@
 	</div>
 
 	<div class="section">
-		<h2>Security</h2>
+		<h2>安全</h2>
 		<div class="form-row">
-			<label for="security-mode">Confirmation Mode</label>
+			<label for="security-mode">确认模式</label>
 			<MaterialSelect
 				id="security-mode"
 				value={security.confirmation_mode}
 				options={[
-					{ value: 'ask', label: 'Ask (by risk threshold)' },
-					{ value: 'paranoid', label: 'Paranoid (all non-safe)' },
-					{ value: 'autopilot', label: 'Autopilot (never ask)' },
+					{ value: 'ask', label: '询问（按风险阈值）' },
+					{ value: 'paranoid', label: '谨慎（所有非安全操作）' },
+					{ value: 'autopilot', label: '自动驾驶（不询问）' },
 				]}
 				onChange={withStringValue((v) => {
 					security.confirmation_mode = v;
@@ -305,7 +305,7 @@
 			/>
 		</div>
 		<div class="form-row">
-			<label for="security-min-level">Minimum Confirmation Level</label>
+			<label for="security-min-level">最低确认级别</label>
 			<MaterialSelect
 				id="security-min-level"
 				value={security.min_risk_level}
@@ -350,13 +350,13 @@
 	</div>
 
 	<div class="section notification-section">
-		<h2>Notifications</h2>
+		<h2>通知</h2>
 		<div class="notify-grid-header">
-			<span class="switch-label"></span><span class="switch-label">In-App Toast</span><span
-				class="switch-label">Windows</span
+			<span class="switch-label"></span><span class="switch-label">应用内提示</span><span
+				class="switch-label">Windows 通知</span
 			>
 		</div>
-		{#each [{ key: 'session_created', label: 'Session Start' }, { key: 'session_completed', label: 'Session Complete' }, { key: 'session_paused', label: 'Session Paused' }, { key: 'session_resumed', label: 'Session Resumed' }, { key: 'session_error', label: 'Session Error' }] as ev (ev.key)}
+		{#each [{ key: 'session_created', label: '会话开始' }, { key: 'session_completed', label: '会话完成' }, { key: 'session_paused', label: '会话暂停' }, { key: 'session_resumed', label: '会话恢复' }, { key: 'session_error', label: '会话出错' }] as ev (ev.key)}
 			<div class="notify-grid-row">
 				<span class="switch-label">{ev.label}</span>
 				<MaterialSwitch
@@ -380,7 +380,7 @@
 
 	<div class="section log-section">
 		<div class="llm-head">
-			<h2>Logging</h2>
+			<h2>日志</h2>
 			<button
 				class="md-btn md-btn--outlined"
 				onclick={() => onOpenLogViewer()}
@@ -388,7 +388,7 @@
 			>
 		</div>
 		<div class="form-row switch-row">
-			<span class="switch-label">File Logging</span><MaterialSwitch
+			<span class="switch-label">文件日志</span><MaterialSwitch
 				checked={log.file_enabled}
 				onChange={withBooleanValue((v) => {
 					log.file_enabled = v;
@@ -396,7 +396,7 @@
 			/>
 		</div>
 		<div class="form-row">
-			<label for="log-level">Log Level</label>
+			<label for="log-level">日志级别</label>
 			<MaterialSelect
 				id="log-level"
 				value={log.level}
@@ -418,9 +418,9 @@
 	</div>
 
 	<div class="section autostart-section">
-		<h2>Autostart</h2>
+		<h2>自动启动</h2>
 		<div class="form-row autostart-row">
-			<span class="autostart-label">Launch Haven on system startup</span><MaterialSwitch
+			<span class="autostart-label">开机时启动 Haven</span><MaterialSwitch
 				checked={autostartEnabled}
 				onChange={withBooleanValue((v) => onAutostartChange(v))}
 			/>
@@ -430,18 +430,17 @@
 
 <style>
 	.section {
-		background: var(--md-sys-color-surface-container);
+		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-lg);
-		margin-bottom: var(--md-sys-space-lg);
+		padding: var(--md-sys-space-xl);
+		margin-bottom: var(--md-sys-space-xl);
 	}
 	.section h2 {
-		font-size: 13px;
-		font-weight: 600;
-		color: var(--md-sys-color-on-surface-variant);
-		text-transform: uppercase;
-		letter-spacing: 1px;
+		font-size: 15px;
+		font-weight: 700;
+		color: var(--md-sys-color-on-surface);
+		letter-spacing: 0.1px;
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.model-hint {
@@ -467,7 +466,7 @@
 	}
 	.form-row label,
 	.form-row .form-label {
-		width: 120px;
+		width: 168px;
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 13px;
 		flex-shrink: 0;
@@ -568,7 +567,7 @@
 	.notify-grid-header .switch-label {
 		font-weight: 600;
 		font-size: 11px;
-		text-transform: uppercase;
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	.llm-head {
 		display: flex;

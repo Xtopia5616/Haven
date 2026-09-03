@@ -633,8 +633,10 @@
 		margin-bottom: var(--md-sys-space-xl);
 	}
 	h1 {
-		font-size: 24px;
-		font-weight: 600;
+		font-family: var(--md-ref-typeface-brand);
+		font-size: 28px;
+		font-weight: 700;
+		letter-spacing: -0.35px;
 		color: var(--md-sys-color-on-surface);
 		margin: 0;
 	}
@@ -644,8 +646,11 @@
 	}
 	.count-badge {
 		font-size: 12px;
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-surface-container);
+		border: 1px solid var(--md-sys-color-outline-variant);
 		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.7;
 		margin-left: auto;
 		margin-right: var(--md-sys-space-md);
 	}

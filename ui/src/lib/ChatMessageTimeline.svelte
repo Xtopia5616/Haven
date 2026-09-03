@@ -20,8 +20,9 @@
 
 {#if messages.length === 0}
 	<div class="welcome" in:fly={{ y: 12, duration: 330 }}>
-		<Logo size={48} />
+		<div class="welcome-mark"><Logo size={48} /></div>
 		<h2>Haven</h2>
+		<span class="welcome-kicker">本地 AI 助手</span>
 		<p>按 {hotkeyBinding} 开始录音，或直接输入指令</p>
 	</div>
 {:else}
@@ -45,10 +46,10 @@
 				received={msg.received ?? false}
 				resolved={msg.resolved ?? null}
 				actionId={msg.actionId ?? null}
-				onContextMenu={onContextMenu}
-				onAskSelectionChange={onAskSelectionChange}
-				onIgnore={onIgnore}
-				onAskSubmit={onAskSubmit}
+				{onContextMenu}
+				{onAskSelectionChange}
+				{onIgnore}
+				{onAskSubmit}
 			/>
 		{/each}
 	</div>
@@ -65,7 +66,11 @@
 
 {#if activeSessionError}
 	<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
-		<button class="md-btn md-btn--filled continue-btn" onclick={() => onContinue()} type="button">
+		<button
+			class="md-btn md-btn--filled continue-btn"
+			onclick={() => onContinue()}
+			type="button"
+		>
 			<svg
 				width="16"
 				height="16"
@@ -82,18 +87,37 @@
 <style>
 	.welcome {
 		text-align: center;
-		padding: var(--md-sys-space-4xl) 0 var(--md-sys-space-3xl);
+		min-height: min(420px, 100%);
+		padding: var(--md-sys-space-3xl) var(--md-sys-space-lg);
 		display: flex;
 		flex-direction: column;
 		align-items: center;
+		justify-content: center;
 		gap: var(--md-sys-space-md);
+	}
+	.welcome-mark {
+		display: grid;
+		place-items: center;
+		width: 72px;
+		height: 72px;
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-extra-large);
+		background: var(--md-sys-color-primary-container);
+		box-shadow: var(--md-sys-elevation-1);
 	}
 	.welcome h2 {
 		font-family: var(--md-ref-typeface-brand);
-		font-size: 32px;
+		font-size: 30px;
 		font-weight: 700;
 		letter-spacing: 0.5px;
 		color: var(--md-sys-color-primary);
+	}
+	.welcome-kicker {
+		margin-top: calc(-1 * var(--md-sys-space-sm));
+		font-size: 12px;
+		font-weight: 700;
+		letter-spacing: 0.8px;
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	.welcome p {
 		color: var(--md-sys-color-on-surface-variant);

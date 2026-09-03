@@ -331,8 +331,8 @@
 	// Auto-grow the input to fit its content. While the content is a single
 	// line, the vertical padding is balanced so the text renders centered
 	// (matching the placeholder); multi-line content uses a fixed padding.
-	const CHAT_INPUT_MIN_H = 44;
-	const CHAT_INPUT_BASE_PAD = 8;
+	const CHAT_INPUT_MIN_H = 48;
+	const CHAT_INPUT_BASE_PAD = 10;
 	const CHAT_INPUT_LINE_H = 20.3; // 14px font-size × 1.45 line-height
 	function autoGrowInput() {
 		const el = transcriptTextarea;
@@ -412,7 +412,10 @@
 		if (!selText) return;
 		const ok = await copyText(selText, '选中');
 		if (!ok) return;
-		setDraftAndCaret(transcriptInput.slice(0, selStart) + transcriptInput.slice(selEnd), selStart);
+		setDraftAndCaret(
+			transcriptInput.slice(0, selStart) + transcriptInput.slice(selEnd),
+			selStart,
+		);
 	}
 
 	async function handleCtxPaste() {
@@ -536,8 +539,7 @@
 			onpaste={handlePaste}
 			oncontextmenu={handleContextMenu}
 			class="md-input chat-input"
-			autocomplete="off"
-		></textarea>
+			autocomplete="off"></textarea>
 	</div>
 	<div class="toolbar-row">
 		<div class="toolbar-left">
@@ -676,7 +678,11 @@
 <style>
 	.input-area {
 		background: var(--md-sys-color-surface-container-low);
-		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-bottom: 0;
+		border-radius: var(--md-sys-shape-extra-large) var(--md-sys-shape-extra-large) 0 0;
+		box-shadow: var(--md-sys-elevation-2);
+		padding: var(--md-sys-space-lg) var(--md-sys-space-xl) var(--md-sys-space-md);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
@@ -785,15 +791,15 @@
 
 	.input-row {
 		display: flex;
-		gap: var(--md-sys-space-xs);
+		gap: var(--md-sys-space-sm);
 		align-items: flex-end;
 	}
 	.chat-input {
-		--chat-pad: 8px;
-		background: var(--md-sys-color-surface-container-high);
-		border: 1px solid transparent;
+		--chat-pad: 10px;
+		background: var(--md-sys-color-surface);
+		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
-		min-height: 44px;
+		min-height: 48px;
 		height: auto;
 		flex: 1;
 		min-width: 0;
@@ -806,10 +812,10 @@
 	.chat-input::placeholder {
 		/* Placeholder line-height tracks the balanced padding so it stays
 		   vertically centered exactly like the (balanced) input text. */
-		line-height: calc(44px - 2 * var(--chat-pad) - 2px);
+		line-height: calc(48px - 2 * var(--chat-pad) - 2px);
 	}
 	.chat-input:hover {
-		border-color: var(--md-sys-color-outline-variant);
+		border-color: var(--md-sys-color-outline);
 	}
 	.chat-input:focus {
 		border-color: var(--md-sys-color-primary);
@@ -821,6 +827,7 @@
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
+		padding-inline: var(--md-sys-space-xs);
 	}
 	.toolbar-left {
 		flex: 0 0 auto;
@@ -854,11 +861,18 @@
 		--_ib-fg: var(--md-sys-color-error);
 		--_ib-bg: var(--md-sys-color-error-container);
 	}
+	.file-btn,
+	.record-btn {
+		background: var(--md-sys-color-surface-container);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-full);
+	}
 	.send-btn {
 		flex-shrink: 0;
 		--_ib-fg: var(--md-sys-color-on-primary);
 		--_ib-bg: var(--md-sys-color-primary);
 		--_ib-state: var(--md-sys-color-on-primary);
+		border-radius: var(--md-sys-shape-full);
 	}
 	.send-btn:hover {
 		box-shadow: var(--md-sys-elevation-1);

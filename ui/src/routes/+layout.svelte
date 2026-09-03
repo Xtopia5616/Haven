@@ -1,6 +1,22 @@
 <script>
 	import '../app.css';
-	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertAction, removeAction, refreshActions, actionStore, sessionStore, cancelAction, refreshActionHistory, deleteAction, formatMessageTime } from '$lib/stores.ts';
+	import {
+		addNotification,
+		recordingOverlay,
+		activeSessionIdStore,
+		modelStateStore,
+		updateModelState,
+		clearModelStateTimer,
+		upsertAction,
+		removeAction,
+		refreshActions,
+		actionStore,
+		sessionStore,
+		cancelAction,
+		refreshActionHistory,
+		deleteAction,
+		formatMessageTime,
+	} from '$lib/stores.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
 	import { invoke, isTauri } from '$lib/tauri.ts';
@@ -96,7 +112,7 @@
 		applyTab(id);
 	}
 	let theme = $state(themeStore.currentTheme);
-	$effect(() => syncStore(themeStore, (v) => theme = v.theme));
+	$effect(() => syncStore(themeStore, (v) => (theme = v.theme)));
 
 	let overlay = $state({
 		visible: false,
@@ -153,9 +169,10 @@
 		llmProbeInFlight = true;
 		try {
 			const status = await invoke('check_llm_connection');
-			llmConnected = status === 'ready' || status === 'disconnected' || status === 'unconfigured'
-				? status
-				: 'disconnected';
+			llmConnected =
+				status === 'ready' || status === 'disconnected' || status === 'unconfigured'
+					? status
+					: 'disconnected';
 			llmProbeFailureStreak = status === 'ready' ? 0 : Math.min(llmProbeFailureStreak + 1, 4);
 		} catch (e) {
 			logger.warn('+layout', 'check_llm_connection error', e);
@@ -218,11 +235,15 @@
 			// Legacy direct deep link (/tools, /memory|/history, /settings):
 			// normalize to the keep-alive URL scheme so the root route (chat)
 			// stays mounted. `/history` and `?tab=history` map to memory (X6).
-		const t =
-			path === '/tools' ? 'tools' :
-			path === '/memory' || path === '/history' ? 'memory' :
-			path === '/settings' ? 'settings' : 'chat';
-		goto('/?tab=' + t, { replaceState: true });
+			const t =
+				path === '/tools'
+					? 'tools'
+					: path === '/memory' || path === '/history'
+						? 'memory'
+						: path === '/settings'
+							? 'settings'
+							: 'chat';
+			goto('/?tab=' + t, { replaceState: true });
 			return;
 		}
 		const rawTab = url.searchParams.get('tab');
@@ -311,9 +332,7 @@
 	const backgroundActionEntries = $derived(
 		actionEntries
 			.filter((a) => a.kind === 'background')
-			.sort((a, b) =>
-				String(b.startedAt || '').localeCompare(String(a.startedAt || '')),
-			),
+			.sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || ''))),
 	);
 	const pendingScheduledActions = $derived(
 		actionEntries
@@ -504,13 +523,20 @@
 		if (actionMenuOpen) {
 			const menu = document.querySelector('.status-action-menu');
 			const chip = document.querySelector('.status-chip-btn');
-			if (menu && chip && !menu.contains(/** @type {Node} */ (e.target)) && !chip.contains(/** @type {Node} */ (e.target))) {
+			if (
+				menu &&
+				chip &&
+				!menu.contains(/** @type {Node} */ (e.target)) &&
+				!chip.contains(/** @type {Node} */ (e.target))
+			) {
 				actionMenuOpen = false;
 			}
 		}
 	}
 
-	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (null);
+	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (
+		null
+	);
 
 	onMount(async () => {
 		// Drop the static app.html boot shell now that the real layout is live.
@@ -523,336 +549,354 @@
 		// Load notify config + hotkey binding in background — don't block
 		// listener registration. Skip outside Tauri (browser / SSR preview).
 		if (isTauri()) {
-			invoke('get_settings').then((settings) => {
-				if (settings?.notification) {
-					notifyCfg = { ...notifyCfg, ...settings.notification };
-				}
-				if (settings?.hotkey?.key_binding) {
-					hotkeyBinding = settings.hotkey.key_binding;
-				}
-			}).catch((e) => {
-				logger.warn('+layout', 'get_settings error', e);
-			});
+			invoke('get_settings')
+				.then((settings) => {
+					if (settings?.notification) {
+						notifyCfg = { ...notifyCfg, ...settings.notification };
+					}
+					if (settings?.hotkey?.key_binding) {
+						hotkeyBinding = settings.hotkey.key_binding;
+					}
+				})
+				.catch((e) => {
+					logger.warn('+layout', 'get_settings error', e);
+				});
 		}
 
-		const registrations = registerListeners({
-			...appEventListeners({
-			'app:bootstrap': (event) => {
-				const status = event?.payload?.status;
-				if (status === 'ready') {
-					bootstrapReady = true;
-					probeLlmConnection();
-				} else if (status === 'loading') {
-					bootstrapReady = false;
-				}
-			},
-			}),
-			...recordingEventListeners({
-			'recording:started': (event) => {
-				const data = event.payload;
-				setOverlay({
-					visible: true,
-					isRecording: true,
-					processing: false,
-					sessionId: data.sessionId || null,
-					startedAt: Date.now(),
-					reason: null,
-					vadState: 'silent',
-				});
-				startTimer();
-			},
-			'recording:stopped': (event) => {
-				const data = event.payload;
-				if (processingTimer) clearTimeout(processingTimer);
-				const reason = data.reason || null;
-				const isAuto = reason === 'silence' || reason === 'max_duration';
-				setOverlay({
-					isRecording: false,
-					processing: isAuto,
-					reason,
-					vadState: 'silent',
-				});
-				stopTimer();
-				if (reason === 'cancel') {
-					setOverlay({ visible: false, processing: false });
-				}
-			},
-			'recording:vad_status': (event) => {
-				const data = event.payload;
-				if (get(recordingOverlay).isRecording) {
-					setOverlay({ vadState: data.state || 'silent' });
-				}
-			},
-			'recording:error': (event) => {
-				const data = event.payload;
-				addNotification(data.error || '录音错误，请检查麦克风/STT 配置', 'error', 5000);
-				resetOverlay();
-			},
-			'transcription:started': (event) => {
-				addNotification('正在转写录音…', 'info', 2000);
-				setOverlay({ processing: true });
-			},
-			'transcription:result': (event) => {
-				const data = event.payload;
-				const text = (data.text || '').trim();
-				if (text) {
-					// Same path as a typed message (see `submitVoiceTranscript`):
-					// appends the voice message, submits with the current
-					// `activeSessionId`, and migrates the message into the session if
-					// the backend created a fresh one.
-					submitVoiceTranscript(text).catch((e) =>
-						addNotification(`语音提交失败: ${formatError(e)}`, 'error', 5000)
-					);
-				} else {
-					// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
-					// 明确反馈，否则看起来像"点了没反应"。
-					const durationMs = data.durationMs || 0;
-					if (durationMs > 0 && durationMs < 1000) {
-						addNotification('录音时间太短，请再试一次', 'warning', 3000);
-					} else {
-						addNotification('未检测到语音，请再试一次', 'error', 4000);
-					}
-				}
-				resetOverlay();
-			},
-			'transcription:error': (event) => {
-				const data = event.payload;
-				addNotification(data.error || '转写失败，请检查 STT 服务配置', 'error', 5000);
-				resetOverlay();
-			},
-			}),
-			...appEventListeners({
-			'mute:changed': (event) => {
-				const data = event.payload;
-				if (data.muted) {
-					addNotification('麦克风已静音', 'info');
-					if (get(recordingOverlay).isRecording) {
-						addNotification('录音被静音强制停止', 'warning', 4000);
-						resetOverlay('muted');
-					}
-				} else {
-					addNotification('麦克风已取消静音', 'info');
-				}
-			},
-			'tray:status_changed': (event) => {
-				const data = event.payload || {};
-				if (data.status === 'muted' && get(recordingOverlay).isRecording) {
-					resetOverlay('muted');
-				}
-			},
-			'hotkey:conflict': (event) => {
-				const data = event.payload;
-				addNotification(
-					`热键冲突: ${data.binding} - ${data.error}`,
-					'error',
-					5000,
-				);
-			},
-			'hotkey:rebind': (event) => {
-				const data = event.payload;
-				if (data.newBinding) {
-					hotkeyBinding = data.newBinding;
-				}
-			},
-			}),
-			...sessionEventListeners({
-			'session:created': (event) => {
-				const data = event.payload;
-				const title = data.title || data.sessionId;
-				if (notifyCfg?.session_created?.in_app !== false) {
-					addNotification(`新会话: ${title}`, 'info', 4000);
-				}
-				lastSessionStatus.set(data.sessionId, data.status);
-				busySessions = new Set(busySessions).add(data.sessionId);
-				updateModelState('waiting', { idleTimeoutMs: 5000 });
-			},
-			'session:completed': (event) => {
-				const data = event.payload;
-				const title = data.title || data.sessionId;
-				if (notifyCfg?.session_completed?.in_app !== false) {
-					addNotification(`会话已完成: ${title}`, 'success');
-				}
-				updateModelState('ready');
-			},
-			'session:deleted': (event) => {
-				// delete_session / clear_history remove sessions without any terminal
-				// `session:updated` (the session no longer exists), so release their
-				// ids from the busy set here — otherwise the chip would stay on
-				// "等待响应" for a session that is gone. `sessionId: null` means all
-				// sessions were removed (clear_history).
-				const data = event.payload;
-				if (data.sessionId) {
-					busySessions = new Set([...busySessions].filter((t) => t !== data.sessionId));
-				} else {
-					busySessions = new Set();
-				}
-				if (busySessions.size === 0) {
-					clearModelStateTimer();
-					updateModelState('ready');
-				}
-			},
-			'session:error': (event) => {
-				const data = event.payload;
-				const errMsg = data.error || data.sessionId;
-				if (notifyCfg?.session_error?.in_app !== false) {
-					addNotification(`会话出错: ${errMsg}`, 'error', 5000);
-				}
-				clearModelStateTimer();
-				updateModelState('ready');
-			},
-			'session:updated': (event) => {
-				const data = event.payload;
-				const title = data.title || data.sessionId;
-				const tid = data.sessionId;
-				const prev = tid ? lastSessionStatus.get(tid) : undefined;
-				if (isBusyStatus(data.status)) {
-					// pending = queued; running = claimed (handler now emits
-					// running on claim). Both keep the session in the busy set.
-					if (tid) busySessions = new Set(busySessions).add(tid);
-				}
-				if (isPausedStatus(data.status)) {
-					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
-					if (notifyCfg?.session_paused?.in_app !== false) {
-						addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
-					}
-					clearModelStateTimer();
-					updateModelState('ready');
-				}
-				if (data.status === 'pending') {
-					// Only paused/error → pending is a real resume; Running→Pending
-					// (ask answered in-turn) must not toast.
-					if (
-						(isPausedStatus(prev) || prev === 'error') &&
-						notifyCfg?.session_resumed?.in_app !== false
-					) {
-						addNotification(`会话已恢复: ${title || '未知'}`, 'info', 3000);
-					}
-					updateModelState('waiting', { idleTimeoutMs: 5000 });
-				}
-				if (data.status === 'completed') {
-					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
-					clearModelStateTimer();
-					updateModelState('ready');
-				}
-				if (data.status === 'error') {
-					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
-					clearModelStateTimer();
-					updateModelState('ready');
-				}
-				if (tid && data.status) {
-					lastSessionStatus.set(tid, data.status);
-				}
-			},
-			}),
-			...appEventListeners({
-			'mcp:status_change': (event) => {
-				const data = event.payload;
-				const name = data.name || '';
-				const status = data.status;
-				// Skip Connecting toasts — cold start connects every server and
-				// the status chip already shows 加载中. ToolsView still refreshes.
-				if (status === 'Connected') {
-					if (bootstrapReady) {
-						addNotification(`MCP 已连接: ${name}`, 'success', 3000);
-					}
-				} else if (status === 'Disconnected') {
-					addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
-				} else if (
-					status &&
-					typeof status === 'object' &&
-					'Offline' in status
-				) {
-					const err = status.Offline.error || '';
-					addNotification(`MCP 离线: ${name}${err ? ` - ${err}` : ''}`, 'error', 5000);
-				}
-			},
-			'skills:status_change': () => {
-				// Skill list refresh is notified by the tools page refresh button.
-			},
-			}),
-			...agentEventListeners({
-			'agent:balanced_model': (event) => {
-				const data = event.payload;
-				const activeId = get(activeSessionIdStore);
-				if (data.sessionId && activeId && data.sessionId !== activeId) return;
-				updateModelState('balanced_model');
-				addNotification(`Balanced Model: ${data.reason}`, 'warning');
-			},
-			'agent:stream_stalled': (event) => {
-				// Provider stream went silent while the step is still in flight
-				// (first-chunk wait or mid-step gap). Show the factual waiting
-				// state — not a guessed "slow" label. Cleared by the next chunk
-				// (streaming) or a terminal session event (ready/error).
-				const data = event.payload;
-				const activeId = get(activeSessionIdStore);
-				if (data.sessionId && activeId && data.sessionId !== activeId) return;
-				updateModelState('stalled');
-			},
-			}),
-			// Router rebuilt (settings saved / model switched): re-probe LLM
-			// connectivity immediately instead of waiting for the next
-			// backoff-scheduled probe (which can be up to 120s away during a
-			// failure streak).
-			...appEventListeners({
-			'llm:config_changed': () => {
-				refreshLlmConnection();
-			},
-			}),
-			...agentEventListeners({
-			'notification:show': (event) => {
-				const data = event.payload;
-				const title = data.title || 'Haven';
-				const body = data.body || '新通知';
-				// When the title is the default "Haven", showing "Haven: msg" is
-				// redundant — the toast itself already lives in the app.
-				addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
-			},
-			}),
-			...actionEventListeners({
-				// Action lifecycle is registered globally so tasks stay tracked while
-				// the user visits other tabs. Both action kinds now share the named
-				// task DTO and use camelCase after this boundary.
-				'action:created': (event) => {
-					upsertAction(event.payload);
-				},
-				'action:updated': (event) => {
-					const p = event.payload;
-					if (p.kind === 'background') {
-						upsertAction(p);
-					} else {
-						removeAction(p.id);
-					}
-				},
-				'action:output': (event) => {
-					upsertAction(event.payload);
-				},
-				'action:finished': (event) => {
-					const p = event.payload;
-					if (p.kind === 'background') {
-						upsertAction(p);
-						// A background action finishing is only worth a toast when the
-						// user is not already watching its owning session (the result
-						// also lands in the session's conversation).
-						if (p.status === 'completed' || p.status === 'failed') {
-							const activeId = get(activeSessionIdStore);
-							if (!p.sessionId || p.sessionId !== activeId) {
-								const label = p.status === 'completed' ? '完成' : '失败';
-								addNotification(
-									`后台任务${label}: ${p.id}`,
-									p.status === 'completed' ? 'success' : 'error',
-									4000,
-								);
+		const registrations = registerListeners(
+			{
+				...appEventListeners({
+					'app:bootstrap': (event) => {
+						const status = event?.payload?.status;
+						if (status === 'ready') {
+							bootstrapReady = true;
+							probeLlmConnection();
+						} else if (status === 'loading') {
+							bootstrapReady = false;
+						}
+					},
+				}),
+				...recordingEventListeners({
+					'recording:started': (event) => {
+						const data = event.payload;
+						setOverlay({
+							visible: true,
+							isRecording: true,
+							processing: false,
+							sessionId: data.sessionId || null,
+							startedAt: Date.now(),
+							reason: null,
+							vadState: 'silent',
+						});
+						startTimer();
+					},
+					'recording:stopped': (event) => {
+						const data = event.payload;
+						if (processingTimer) clearTimeout(processingTimer);
+						const reason = data.reason || null;
+						const isAuto = reason === 'silence' || reason === 'max_duration';
+						setOverlay({
+							isRecording: false,
+							processing: isAuto,
+							reason,
+							vadState: 'silent',
+						});
+						stopTimer();
+						if (reason === 'cancel') {
+							setOverlay({ visible: false, processing: false });
+						}
+					},
+					'recording:vad_status': (event) => {
+						const data = event.payload;
+						if (get(recordingOverlay).isRecording) {
+							setOverlay({ vadState: data.state || 'silent' });
+						}
+					},
+					'recording:error': (event) => {
+						const data = event.payload;
+						addNotification(
+							data.error || '录音错误，请检查麦克风/STT 配置',
+							'error',
+							5000,
+						);
+						resetOverlay();
+					},
+					'transcription:started': (event) => {
+						addNotification('正在转写录音…', 'info', 2000);
+						setOverlay({ processing: true });
+					},
+					'transcription:result': (event) => {
+						const data = event.payload;
+						const text = (data.text || '').trim();
+						if (text) {
+							// Same path as a typed message (see `submitVoiceTranscript`):
+							// appends the voice message, submits with the current
+							// `activeSessionId`, and migrates the message into the session if
+							// the backend created a fresh one.
+							submitVoiceTranscript(text).catch((e) =>
+								addNotification(`语音提交失败: ${formatError(e)}`, 'error', 5000),
+							);
+						} else {
+							// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
+							// 明确反馈，否则看起来像"点了没反应"。
+							const durationMs = data.durationMs || 0;
+							if (durationMs > 0 && durationMs < 1000) {
+								addNotification('录音时间太短，请再试一次', 'warning', 3000);
+							} else {
+								addNotification('未检测到语音，请再试一次', 'error', 4000);
 							}
 						}
-					} else {
-						// Scheduled action fired: drop from the pending list. The
-						// toast is surfaced by the agent's `notification:show` (the
-						// fired consumer always notifies).
-						removeAction(p.id);
-					}
-				},
-			}),
-		}, { tag: '+layout' });
+						resetOverlay();
+					},
+					'transcription:error': (event) => {
+						const data = event.payload;
+						addNotification(
+							data.error || '转写失败，请检查 STT 服务配置',
+							'error',
+							5000,
+						);
+						resetOverlay();
+					},
+				}),
+				...appEventListeners({
+					'mute:changed': (event) => {
+						const data = event.payload;
+						if (data.muted) {
+							addNotification('麦克风已静音', 'info');
+							if (get(recordingOverlay).isRecording) {
+								addNotification('录音被静音强制停止', 'warning', 4000);
+								resetOverlay('muted');
+							}
+						} else {
+							addNotification('麦克风已取消静音', 'info');
+						}
+					},
+					'tray:status_changed': (event) => {
+						const data = event.payload || {};
+						if (data.status === 'muted' && get(recordingOverlay).isRecording) {
+							resetOverlay('muted');
+						}
+					},
+					'hotkey:conflict': (event) => {
+						const data = event.payload;
+						addNotification(`热键冲突: ${data.binding} - ${data.error}`, 'error', 5000);
+					},
+					'hotkey:rebind': (event) => {
+						const data = event.payload;
+						if (data.newBinding) {
+							hotkeyBinding = data.newBinding;
+						}
+					},
+				}),
+				...sessionEventListeners({
+					'session:created': (event) => {
+						const data = event.payload;
+						const title = data.title || data.sessionId;
+						if (notifyCfg?.session_created?.in_app !== false) {
+							addNotification(`新会话: ${title}`, 'info', 4000);
+						}
+						lastSessionStatus.set(data.sessionId, data.status);
+						busySessions = new Set(busySessions).add(data.sessionId);
+						updateModelState('waiting', { idleTimeoutMs: 5000 });
+					},
+					'session:completed': (event) => {
+						const data = event.payload;
+						const title = data.title || data.sessionId;
+						if (notifyCfg?.session_completed?.in_app !== false) {
+							addNotification(`会话已完成: ${title}`, 'success');
+						}
+						updateModelState('ready');
+					},
+					'session:deleted': (event) => {
+						// delete_session / clear_history remove sessions without any terminal
+						// `session:updated` (the session no longer exists), so release their
+						// ids from the busy set here — otherwise the chip would stay on
+						// "等待响应" for a session that is gone. `sessionId: null` means all
+						// sessions were removed (clear_history).
+						const data = event.payload;
+						if (data.sessionId) {
+							busySessions = new Set(
+								[...busySessions].filter((t) => t !== data.sessionId),
+							);
+						} else {
+							busySessions = new Set();
+						}
+						if (busySessions.size === 0) {
+							clearModelStateTimer();
+							updateModelState('ready');
+						}
+					},
+					'session:error': (event) => {
+						const data = event.payload;
+						const errMsg = data.error || data.sessionId;
+						if (notifyCfg?.session_error?.in_app !== false) {
+							addNotification(`会话出错: ${errMsg}`, 'error', 5000);
+						}
+						clearModelStateTimer();
+						updateModelState('ready');
+					},
+					'session:updated': (event) => {
+						const data = event.payload;
+						const title = data.title || data.sessionId;
+						const tid = data.sessionId;
+						const prev = tid ? lastSessionStatus.get(tid) : undefined;
+						if (isBusyStatus(data.status)) {
+							// pending = queued; running = claimed (handler now emits
+							// running on claim). Both keep the session in the busy set.
+							if (tid) busySessions = new Set(busySessions).add(tid);
+						}
+						if (isPausedStatus(data.status)) {
+							if (tid)
+								busySessions = new Set([...busySessions].filter((t) => t !== tid));
+							if (notifyCfg?.session_paused?.in_app !== false) {
+								addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
+							}
+							clearModelStateTimer();
+							updateModelState('ready');
+						}
+						if (data.status === 'pending') {
+							// Only paused/error → pending is a real resume; Running→Pending
+							// (ask answered in-turn) must not toast.
+							if (
+								(isPausedStatus(prev) || prev === 'error') &&
+								notifyCfg?.session_resumed?.in_app !== false
+							) {
+								addNotification(`会话已恢复: ${title || '未知'}`, 'info', 3000);
+							}
+							updateModelState('waiting', { idleTimeoutMs: 5000 });
+						}
+						if (data.status === 'completed') {
+							if (tid)
+								busySessions = new Set([...busySessions].filter((t) => t !== tid));
+							clearModelStateTimer();
+							updateModelState('ready');
+						}
+						if (data.status === 'error') {
+							if (tid)
+								busySessions = new Set([...busySessions].filter((t) => t !== tid));
+							clearModelStateTimer();
+							updateModelState('ready');
+						}
+						if (tid && data.status) {
+							lastSessionStatus.set(tid, data.status);
+						}
+					},
+				}),
+				...appEventListeners({
+					'mcp:status_change': (event) => {
+						const data = event.payload;
+						const name = data.name || '';
+						const status = data.status;
+						// Skip Connecting toasts — cold start connects every server and
+						// the status chip already shows 加载中. ToolsView still refreshes.
+						if (status === 'Connected') {
+							if (bootstrapReady) {
+								addNotification(`MCP 已连接: ${name}`, 'success', 3000);
+							}
+						} else if (status === 'Disconnected') {
+							addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
+						} else if (status && typeof status === 'object' && 'Offline' in status) {
+							const err = status.Offline.error || '';
+							addNotification(
+								`MCP 离线: ${name}${err ? ` - ${err}` : ''}`,
+								'error',
+								5000,
+							);
+						}
+					},
+					'skills:status_change': () => {
+						// Skill list refresh is notified by the tools page refresh button.
+					},
+				}),
+				...agentEventListeners({
+					'agent:balanced_model': (event) => {
+						const data = event.payload;
+						const activeId = get(activeSessionIdStore);
+						if (data.sessionId && activeId && data.sessionId !== activeId) return;
+						updateModelState('balanced_model');
+						addNotification(`Balanced Model: ${data.reason}`, 'warning');
+					},
+					'agent:stream_stalled': (event) => {
+						// Provider stream went silent while the step is still in flight
+						// (first-chunk wait or mid-step gap). Show the factual waiting
+						// state — not a guessed "slow" label. Cleared by the next chunk
+						// (streaming) or a terminal session event (ready/error).
+						const data = event.payload;
+						const activeId = get(activeSessionIdStore);
+						if (data.sessionId && activeId && data.sessionId !== activeId) return;
+						updateModelState('stalled');
+					},
+				}),
+				// Router rebuilt (settings saved / model switched): re-probe LLM
+				// connectivity immediately instead of waiting for the next
+				// backoff-scheduled probe (which can be up to 120s away during a
+				// failure streak).
+				...appEventListeners({
+					'llm:config_changed': () => {
+						refreshLlmConnection();
+					},
+				}),
+				...agentEventListeners({
+					'notification:show': (event) => {
+						const data = event.payload;
+						const title = data.title || 'Haven';
+						const body = data.body || '新通知';
+						// When the title is the default "Haven", showing "Haven: msg" is
+						// redundant — the toast itself already lives in the app.
+						addNotification(
+							title === 'Haven' ? body : `${title}: ${body}`,
+							'info',
+							5000,
+						);
+					},
+				}),
+				...actionEventListeners({
+					// Action lifecycle is registered globally so tasks stay tracked while
+					// the user visits other tabs. Both action kinds now share the named
+					// task DTO and use camelCase after this boundary.
+					'action:created': (event) => {
+						upsertAction(event.payload);
+					},
+					'action:updated': (event) => {
+						const p = event.payload;
+						if (p.kind === 'background') {
+							upsertAction(p);
+						} else {
+							removeAction(p.id);
+						}
+					},
+					'action:output': (event) => {
+						upsertAction(event.payload);
+					},
+					'action:finished': (event) => {
+						const p = event.payload;
+						if (p.kind === 'background') {
+							upsertAction(p);
+							// A background action finishing is only worth a toast when the
+							// user is not already watching its owning session (the result
+							// also lands in the session's conversation).
+							if (p.status === 'completed' || p.status === 'failed') {
+								const activeId = get(activeSessionIdStore);
+								if (!p.sessionId || p.sessionId !== activeId) {
+									const label = p.status === 'completed' ? '完成' : '失败';
+									addNotification(
+										`后台任务${label}: ${p.id}`,
+										p.status === 'completed' ? 'success' : 'error',
+										4000,
+									);
+								}
+							}
+						} else {
+							// Scheduled action fired: drop from the pending list. The
+							// toast is surfaced by the agent's `notification:show` (the
+							// fired consumer always notifies).
+							removeAction(p.id);
+						}
+					},
+				}),
+			},
+			{ tag: '+layout' },
+		);
 		eventRegistrations = registrations;
 		// Attach listeners BEFORE probing bootstrap status so a ready event
 		// that fires in the gap cannot be missed (probe-then-listen TOCTOU).
@@ -915,11 +959,9 @@
 				<button
 					class="status-chip status-chip-btn"
 					onclick={() => (actionMenuOpen = !actionMenuOpen)}
-					title={
-						runningActionCount > 0 || pendingScheduledActions.length > 0
-							? `任务${runningActionCount > 0 ? `（${runningActionCount} 个后台任务运行中）` : ''}${pendingScheduledActions.length > 0 ? `· 定时任务（${pendingScheduledActions.length} 条）` : ''}`
-							: '任务：后台任务与定时任务'
-					}
+					title={runningActionCount > 0 || pendingScheduledActions.length > 0
+						? `任务${runningActionCount > 0 ? `（${runningActionCount} 个后台任务运行中）` : ''}${pendingScheduledActions.length > 0 ? `· 定时任务（${pendingScheduledActions.length} 条）` : ''}`
+						: '任务：后台任务与定时任务'}
 					aria-label="任务：后台任务与定时任务"
 					type="button"
 				>
@@ -984,11 +1026,15 @@
 							{#if runningSessions.length > 0}
 								<div class="action-menu-subtitle">前台（会话）</div>
 								{#each runningSessions as t}
-									<div class="action-item" class:action-item-running={t.status === 'running'}>
+									<div
+										class="action-item"
+										class:action-item-running={t.status === 'running'}
+									>
 										<span
 											class="action-dot"
-											style="color: {t.status === 'running' ? 'var(--md-sys-color-success)' : '#e0a020'}"
-											>&#9679;</span
+											style="color: {t.status === 'running'
+												? 'var(--md-sys-color-success)'
+												: 'var(--md-sys-color-warning)'}">&#9679;</span
 										>
 										<div class="action-item-main">
 											<div class="action-item-top">
@@ -1000,7 +1046,7 @@
 														? '运行中'
 														: t.status === 'paused' &&
 															  runningBackgroundActions.some(
-											(a) => a.sessionId === t.id,
+																	(a) => a.sessionId === t.id,
 															  )
 															? '等待后台'
 															: isPausedStatus(t.status)
@@ -1032,8 +1078,12 @@
 												>
 											</div>
 											<div class="action-item-sub">
-												<span class="action-session">{sessionTitleFor(action)}</span>
-												<span class="action-duration">{actionDuration(action)}</span>
+												<span class="action-session"
+													>{sessionTitleFor(action)}</span
+												>
+												<span class="action-duration"
+													>{actionDuration(action)}</span
+												>
 											</div>
 											{#if action.output}
 												<div class="action-output">{action.output}</div>
@@ -1041,11 +1091,11 @@
 										</div>
 										<button
 											class="action-cancel"
-											onclick={() => handleCancelAction(action.id, 'background')}
+											onclick={() =>
+												handleCancelAction(action.id, 'background')}
 											title="停止后台任务"
 											aria-label="停止后台任务"
-											type="button"
-											>&#x2715;</button
+											type="button">&#x2715;</button
 										>
 									</div>
 								{/each}
@@ -1060,14 +1110,20 @@
 									<span class="scheduled-dot">&#9200;</span>
 									<div class="action-item-main">
 										<div class="action-item-top">
-											<span class="scheduled-title-text">{r.title || r.body}</span>
+											<span class="scheduled-title-text"
+												>{r.title || r.body}</span
+											>
 											<span class="action-item-status"
-												>{r.mode === 'continue' ? '续接会话' : '执行工具'}</span
+												>{r.mode === 'continue'
+													? '续接会话'
+													: '执行工具'}</span
 											>
 										</div>
 										<div class="action-item-sub">
 											<span class="scheduled-body">{r.body}</span>
-											<span class="action-duration">{scheduledActionCountdown(r.dueAt)}</span>
+											<span class="action-duration"
+												>{scheduledActionCountdown(r.dueAt)}</span
+											>
 										</div>
 									</div>
 									<button
@@ -1075,29 +1131,32 @@
 										onclick={() => handleCancelAction(r.id, 'scheduled')}
 										title="取消定时任务"
 										aria-label="取消定时任务"
-										type="button"
-										>&#x2715;</button
+										type="button">&#x2715;</button
 									>
 								</div>
 							{/each}
 						{/if}
 						<div class="action-menu-title scheduled-menu-title">本会话已完成</div>
 						{#if completedActions.length === 0}
-							<div class="action-menu-empty"
-								>{activeSessionId ? '本会话暂无已完成的任务' : '请先打开一个会话'}</div
-							>
+							<div class="action-menu-empty">
+								{activeSessionId ? '本会话暂无已完成的任务' : '请先打开一个会话'}
+							</div>
 						{:else}
 							{#each completedActions as h}
 								{@const tone = historyTitleTone(h)}
-								<div class="action-item scheduled-item history-item history-item--{tone}">
+								<div
+									class="action-item scheduled-item history-item history-item--{tone}"
+								>
 									<div class="action-item-main">
 										<div class="action-item-top">
-											<span class="scheduled-title-text history-title history-title--{tone}"
+											<span
+												class="scheduled-title-text history-title history-title--{tone}"
 												>{h.kind === 'scheduled'
 													? h.title || h.body || '定时任务'
 													: h.command || h.id}</span
 											>
-											<span class="action-item-status history-status history-status--{tone}"
+											<span
+												class="action-item-status history-status history-status--{tone}"
 												>{h.kind === 'scheduled'
 													? h.mode === 'continue'
 														? '已续接会话'
@@ -1107,9 +1166,13 @@
 										</div>
 										<div class="action-item-sub">
 											<span class="scheduled-body"
-								>{h.kind === 'scheduled' ? h.body : h.output || h.errorReason || h.id}</span
+												>{h.kind === 'scheduled'
+													? h.body
+													: h.output || h.errorReason || h.id}</span
 											>
-											<span class="action-duration">{formatHistoryTime(h)}</span>
+											<span class="action-duration"
+												>{formatHistoryTime(h)}</span
+											>
 										</div>
 									</div>
 									<button
@@ -1117,8 +1180,7 @@
 										onclick={() => handleDeleteHistory(h.id)}
 										title="删除记录"
 										aria-label="删除记录"
-										type="button"
-										>&#x2715;</button
+										type="button">&#x2715;</button
 									>
 								</div>
 							{/each}
@@ -1157,6 +1219,59 @@
 				role="tab"
 				onclick={() => switchTab(tab.id)}
 			>
+				<span class="tab-icon" aria-hidden="true">
+					{#if tab.id === 'chat'}
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path
+								d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 4v-4H6.5A2.5 2.5 0 0 1 4 12.5z"
+							/><path d="M9 9h.01M12 9h.01M15 9h.01" /></svg
+						>
+					{:else if tab.id === 'tools'}
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path d="m14.7 6.3 3-3a4.2 4.2 0 0 1 0 5.9l-2.1 2.1" /><path
+								d="m5.3 17.7 8.6-8.6"
+							/><path d="m3 21 3.6-3.6" /><path
+								d="m14 14 4.5 4.5a2.1 2.1 0 0 1-3 3L11 17"
+							/></svg
+						>
+					{:else if tab.id === 'memory'}
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path d="M9 3h6l1 3h3v14H5V6h3z" /><path
+								d="M9 3v4h6V3M8 11h8M8 15h5"
+							/></svg
+						>
+					{:else}
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path
+								d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"
+							/><circle cx="12" cy="12" r="3.5" /><path d="M19 3h2v2" /></svg
+						>
+					{/if}
+				</span>
 				<span class="tab-label">{tab.label}</span>
 			</button>
 		{/each}
@@ -1222,12 +1337,17 @@
 	}
 
 	.titlebar {
-		height: 52px;
-		background: var(--md-sys-color-surface-container);
+		height: 56px;
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container) 92%,
+			var(--md-sys-color-primary)
+		);
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 0 var(--md-sys-space-lg);
+		padding: 0 var(--md-sys-space-xl);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 		flex-shrink: 0;
 		-webkit-app-region: drag;
 	}
@@ -1245,14 +1365,14 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		height: 32px;
+		height: 34px;
 		padding: 0 var(--md-sys-space-md);
-		border-radius: var(--md-sys-shape-small);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 12px;
 		font-weight: 600;
-		border: none;
 		cursor: pointer;
 		font-family: inherit;
 		transition: background var(--md-sys-motion-duration-fast)
@@ -1266,8 +1386,8 @@
 		height: 16px;
 		padding: 0 4px;
 		border-radius: 999px;
-		background: var(--md-sys-color-tertiary, #9c6bff);
-		color: #fff;
+		background: var(--md-sys-color-tertiary);
+		color: var(--md-sys-color-on-tertiary);
 		font-size: 10px;
 		font-weight: 700;
 		line-height: 16px;
@@ -1472,17 +1592,61 @@
 
 	.tabbar {
 		flex-shrink: 0;
+		height: 56px;
+		padding: 6px var(--md-sys-space-xl);
+		gap: var(--md-sys-space-xs);
+		background: var(--md-sys-color-surface);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.md-tabs {
 		/* ensure tab row spans full width; .md-tabs from app.css sets fixed 48px height */
 		width: 100%;
 	}
+	.tabbar .md-tab {
+		flex: 1 1 0;
+		gap: var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-medium);
+		font-size: 13px;
+	}
+	.tabbar .md-tab::after {
+		inset: 0;
+		border-radius: var(--md-sys-shape-medium);
+	}
+	.tabbar .md-tab.active {
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+	}
+	.tabbar .md-tab.active::before {
+		left: 50%;
+		bottom: 3px;
+		transform: translateX(-50%);
+		width: 24px;
+		max-width: 24px;
+		height: 3px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-primary);
+	}
+	.tab-icon {
+		display: inline-flex;
+		width: 17px;
+		height: 17px;
+		flex-shrink: 0;
+	}
+	.tab-icon svg {
+		width: 100%;
+		height: 100%;
+	}
 
 	.content {
 		flex: 1;
 		overflow-y: auto;
-		padding: var(--md-sys-space-2xl);
+		padding: var(--md-sys-content-gutter);
 		background: var(--md-sys-color-surface);
+		background-image: linear-gradient(
+			180deg,
+			color-mix(in srgb, var(--md-sys-color-primary) 3%, transparent),
+			transparent 240px
+		);
 	}
 	.content--chat {
 		overflow: hidden;
@@ -1525,8 +1689,8 @@
 	}
 
 	.statusbar {
-		height: 32px;
-		background: var(--md-sys-color-surface-container);
+		height: 28px;
+		background: var(--md-sys-color-surface-container-low);
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -1543,5 +1707,30 @@
 	.recording-label {
 		color: var(--md-sys-color-error);
 		font-weight: 700;
+	}
+
+	@media (max-width: 640px) {
+		.titlebar {
+			padding: 0 var(--md-sys-space-md);
+		}
+		.tabbar {
+			padding-inline: var(--md-sys-space-md);
+		}
+		.tabbar .md-tab {
+			padding-inline: var(--md-sys-space-sm);
+		}
+		.tab-icon {
+			width: 16px;
+			height: 16px;
+		}
+		.status-text {
+			max-width: 76px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.statusbar {
+			padding-inline: var(--md-sys-space-md);
+		}
 	}
 </style>

@@ -781,7 +781,12 @@
 </script>
 
 <div class="settings-page">
-	<h1>Settings</h1>
+	<div class="page-heading">
+		<div>
+			<h1>设置</h1>
+			<p>调整 Haven 的模型、语音、性能与安全行为。</p>
+		</div>
+	</div>
 	<div class="md-tabs settings-tabs" role="tablist">
 		{#each settingsTabs as tab}<button
 				class="md-tab"
@@ -833,7 +838,9 @@
 	{:else}
 		<SettingsLimits {contextLimits} />
 	{/if}
-	<button class="md-btn md-btn--filled save-btn" onclick={saveSettings}>Save Settings</button>
+	<div class="save-bar">
+		<button class="md-btn md-btn--filled save-btn" onclick={saveSettings}>保存设置</button>
+	</div>
 </div>
 
 {#if logView.open}
@@ -879,8 +886,15 @@
 	.settings-page {
 		max-width: var(--md-sys-content-max-width);
 	}
+	.settings-page h1 {
+		font-family: var(--md-ref-typeface-brand);
+		font-size: 28px;
+		font-weight: 700;
+		letter-spacing: -0.35px;
+		color: var(--md-sys-color-on-surface);
+	}
 	.settings-tabs {
-		margin-bottom: var(--md-sys-space-xl);
+		margin-bottom: var(--md-sys-space-2xl);
 	}
 	.model-hint {
 		font-size: 11px;
@@ -888,12 +902,20 @@
 		margin-top: calc(-1 * var(--md-sys-space-sm));
 		margin-bottom: var(--md-sys-space-md);
 	}
-	.save-btn {
+	.save-bar {
 		position: sticky;
-		bottom: var(--md-sys-space-xs);
-		display: block;
-		margin: var(--md-sys-space-md) auto 0;
+		bottom: 0;
+		display: flex;
+		justify-content: center;
+		margin-top: var(--md-sys-space-xl);
+		padding: var(--md-sys-space-sm) 0;
+		background: var(--md-sys-color-surface);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
 		z-index: 1;
+	}
+	.save-btn {
+		border-radius: var(--md-sys-shape-full);
+		box-shadow: var(--md-sys-elevation-3);
 	}
 	:global(.md-dialog--wide) {
 		width: min(760px, 92vw);
