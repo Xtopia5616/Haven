@@ -1,0 +1,181 @@
+<script>
+	import Logo from './Logo.svelte';
+	import RecordingIndicator from './RecordingIndicator.svelte';
+	import NotificationToast from './NotificationToast.svelte';
+	import WorkspaceNav from './WorkspaceNav.svelte';
+
+	/**
+	 * The shell owns chrome and layout only. Domain state stays in the route and
+	 * reaches the shell through named snippets or explicit props.
+	 */
+	let {
+		activeTab = 'chat',
+		tabs = [],
+		theme = 'dark',
+		onToggleTheme = () => {},
+		onNavigate = () => {},
+		overlay = {},
+		duration = 0,
+		onCancelRecording = null,
+		hotkeyBinding = '',
+		status,
+		content,
+	} = $props();
+</script>
+
+<div class="app-shell">
+	<header class="titlebar">
+		<div class="titlebar-left">
+			<Logo size={22} withText={true} />
+		</div>
+		<div class="titlebar-right">
+			{@render status?.()}
+			<button
+				class="md-icon-button theme-toggle"
+				onclick={() => onToggleTheme?.()}
+				aria-label="切换主题"
+				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
+				type="button"
+			>
+				{#if theme === 'dark'}
+					<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+						<path
+							d="M12 7a5 5 0 100 10 5 5 0 000-10zm0-5a1 1 0 011 1v2a1 1 0 11-2 0V3a1 1 0 011-1zm0 17a1 1 0 011 1v2a1 1 0 11-2 0v-2a1 1 0 011-1zM4.2 4.2a1 1 0 011.4 0l1.5 1.5A1 1 0 015.7 7.1L4.2 5.6a1 1 0 010-1.4zm12.7 12.7a1 1 0 011.4 0l1.5 1.5a1 1 0 11-1.4 1.4l-1.5-1.5a1 1 0 010-1.4zM2 12a1 1 0 011-1h2a1 1 0 110 2H3a1 1 0 01-1-1zm17 0a1 1 0 011-1h2a1 1 0 110 2h-2a1 1 0 01-1-1zM4.2 19.8a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0zm12.7-12.7a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0z"
+						/>
+					</svg>
+				{:else}
+					<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+						<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />
+					</svg>
+				{/if}
+			</button>
+		</div>
+	</header>
+
+	<WorkspaceNav {tabs} {activeTab} onNavigate={onNavigate} />
+
+	<main class="content" class:content--chat={activeTab === 'chat'}>
+		{@render content?.()}
+	</main>
+
+	<RecordingIndicator
+		isRecording={overlay.isRecording}
+		processing={overlay.processing}
+		{duration}
+		vadState={overlay.vadState}
+		reason={overlay.reason}
+		onCancel={onCancelRecording}
+	/>
+	<NotificationToast />
+
+	<footer class="statusbar">
+		<span class="hotkey-hint">{hotkeyBinding} 开始录音</span>
+		{#if overlay.isRecording}
+			<span class="recording-label">录音中</span>
+		{/if}
+	</footer>
+</div>
+
+<style>
+	.app-shell {
+		display: flex;
+		flex-direction: column;
+		height: 100vh;
+		background: var(--md-sys-color-background);
+		color: var(--md-sys-color-on-surface);
+	}
+	.titlebar {
+		height: 56px;
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container) 92%,
+			var(--md-sys-color-primary)
+		);
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0 var(--md-sys-space-xl);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+		flex-shrink: 0;
+		-webkit-app-region: drag;
+	}
+	.titlebar-left,
+	.titlebar-right {
+		display: flex;
+		align-items: center;
+	}
+	.titlebar-right {
+		gap: var(--md-sys-space-sm);
+		-webkit-app-region: no-drag;
+	}
+	.theme-toggle {
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.content {
+		flex: 1;
+		overflow-y: auto;
+		padding: var(--md-sys-content-gutter);
+		background: var(--md-sys-color-surface);
+		background-image: linear-gradient(
+			180deg,
+			color-mix(in srgb, var(--md-sys-color-primary) 3%, transparent),
+			transparent 240px
+		);
+	}
+	.content--chat {
+		overflow: hidden;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	:global(.page-shell) {
+		width: 100%;
+		margin: 0 auto;
+	}
+	:global(.tab-panel[hidden]) {
+		display: none;
+	}
+	:global(.content--chat .tab-panel) {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	:global(.content:not(.content--chat) .page-shell) {
+		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
+	}
+	:global(.content--chat .page-shell) {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	.statusbar {
+		height: 28px;
+		background: var(--md-sys-color-surface-container-low);
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0 var(--md-sys-space-lg);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		flex-shrink: 0;
+	}
+	.hotkey-hint {
+		font-weight: 600;
+		letter-spacing: 0.2px;
+	}
+	.recording-label {
+		color: var(--md-sys-color-error);
+		font-weight: 700;
+	}
+	@media (max-width: 640px) {
+		.titlebar {
+			padding: 0 var(--md-sys-space-md);
+		}
+		.statusbar {
+			padding-inline: var(--md-sys-space-md);
+		}
+	}
+</style>
