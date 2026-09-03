@@ -680,9 +680,9 @@
 		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-bottom: 0;
-		border-radius: var(--md-sys-shape-extra-large) var(--md-sys-shape-extra-large) 0 0;
-		box-shadow: var(--md-sys-elevation-2);
-		padding: var(--md-sys-space-lg) var(--md-sys-space-xl) var(--md-sys-space-md);
+		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) 0 0;
+		box-shadow: var(--md-sys-elevation-1);
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-sm);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
@@ -690,6 +690,13 @@
 		max-width: clamp(600px, 92vw, 800px);
 		margin: 0 auto;
 		width: 100%;
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.input-area:has(.chat-input:focus) {
+		border-color: var(--md-sys-color-primary);
+		box-shadow: var(--md-sys-focus-ring);
 	}
 
 	.image-preview-row {
@@ -791,19 +798,19 @@
 
 	.input-row {
 		display: flex;
-		gap: var(--md-sys-space-sm);
+		gap: 0;
 		align-items: flex-end;
 	}
 	.chat-input {
 		--chat-pad: 10px;
-		background: var(--md-sys-color-surface);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
+		background: transparent;
+		border: none;
+		border-radius: var(--md-sys-shape-small);
 		min-height: 48px;
 		height: auto;
 		flex: 1;
 		min-width: 0;
-		padding: var(--chat-pad) var(--md-sys-space-md);
+		padding: var(--chat-pad) var(--md-sys-space-sm);
 		resize: none;
 		overflow-y: auto;
 		line-height: 1.45;
@@ -814,20 +821,22 @@
 		   vertically centered exactly like the (balanced) input text. */
 		line-height: calc(48px - 2 * var(--chat-pad) - 2px);
 	}
-	.chat-input:hover {
-		border-color: var(--md-sys-color-outline);
-	}
 	.chat-input:focus {
-		border-color: var(--md-sys-color-primary);
-		border-width: 2px;
-		padding: var(--chat-pad) calc(var(--md-sys-space-md) - 1px);
+		border: none;
+		padding: var(--chat-pad) var(--md-sys-space-sm);
+		box-shadow: none;
+	}
+	.chat-input:focus-visible {
+		box-shadow: none;
 	}
 
 	.toolbar-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		padding-inline: var(--md-sys-space-xs);
+		padding-inline: 0;
+		padding-top: var(--md-sys-space-xs);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.toolbar-left {
 		flex: 0 0 auto;
