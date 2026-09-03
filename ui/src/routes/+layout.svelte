@@ -16,6 +16,7 @@
 		refreshActionHistory,
 		deleteAction,
 		formatMessageTime,
+		resumeTargetStore,
 	} from '$lib/stores.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
@@ -43,6 +44,7 @@
 	import SettingsView from '$lib/views/SettingsView.svelte';
 	import AppShell from '$lib/AppShell.svelte';
 	import WorkspaceStatus from '$lib/WorkspaceStatus.svelte';
+	import TaskCenter from '$lib/TaskCenter.svelte';
 
 	let { children } = $props();
 
@@ -52,7 +54,7 @@
 	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
 	// also makes direct deep links (/tools etc.) restore the right tab.
 	// Legacy `history` / `/history` map to `memory` (X6 memory center).
-	const TAB_IDS = ['chat', 'tools', 'memory', 'settings'];
+	const TAB_IDS = ['chat', 'tasks', 'tools', 'memory', 'settings'];
 	function initialTabFromUrl() {
 		if (typeof window === 'undefined') return 'chat';
 		const url = get(page).url;
@@ -61,6 +63,7 @@
 		if (tabParam && TAB_IDS.includes(tabParam)) return tabParam;
 		const path = url.pathname;
 		if (path === '/tools') return 'tools';
+		if (String(path) === '/tasks') return 'tasks';
 		if (path === '/memory' || path === '/history') return 'memory';
 		if (path === '/settings') return 'settings';
 		return 'chat';
@@ -73,6 +76,7 @@
 	let visited = $state({
 		chat: true,
 		tools: initialTab === 'tools',
+		tasks: initialTab === 'tasks',
 		memory: initialTab === 'memory',
 		settings: initialTab === 'settings',
 	});
@@ -108,6 +112,19 @@
 			}
 		}
 		applyTab(id);
+	}
+
+	/** @param {string} sessionId */
+	function openTaskSession(sessionId) {
+		if (!sessionId) return;
+		resumeTargetStore.set({ sessionId, wasError: false });
+		activeSessionIdStore.set(sessionId);
+		switchTab('chat');
+	}
+
+	function startNewSessionFromTasks() {
+		activeSessionIdStore.set(null);
+		switchTab('chat');
 	}
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => (theme = v.theme)));
@@ -236,6 +253,8 @@
 			const t =
 				path === '/tools'
 					? 'tools'
+					: String(path) === '/tasks'
+						? 'tasks'
 					: path === '/memory' || path === '/history'
 						? 'memory'
 						: path === '/settings'
@@ -320,10 +339,7 @@
 	// Action registry (background actions + scheduled actions) mirrored from
 	// actionStore (kept live by the `action:*` listeners above). Background
 	// actions sort newest-first; scheduled actions sort soonest-first; both
-	// derive from one store keyed by the normalized action id. The status chip
-	// in the titlebar opens a menu of these, replacing the old chat-toolbar
-	// button.
-	let actionMenuOpen = $state(false);
+	// derive from one store keyed by the normalized action id.
 	let activities = $state({});
 	$effect(() => syncStore(actionStore, (v) => (activities = v)));
 	const actionEntries = $derived(Object.values(activities));
@@ -356,15 +372,15 @@
 	// fetched whenever the panel opens so it reflects the persisted table.
 	let actionHistory = /** @type {Array<any>} */ ($state([]));
 	$effect(() => {
-		if (!actionMenuOpen) return;
-		// Fetch a wider window so per-session filtering still has enough rows.
+		if (activeTab !== 'tasks') return;
+		// Fetch a wider window so the task center can show cross-session history.
 		refreshActionHistory(null, 200).then((rows) => (actionHistory = rows));
 	});
-	// Terminal background / fired scheduled rows for the *active* session only —
-	// global history was flooding the panel with unrelated old completions.
+	// Terminal background / fired scheduled rows across all sessions. The task
+	// center is the global operational view; session filtering belongs in its
+	// search controls rather than at the data boundary.
 	const completedActions = $derived(
 		actionHistory.filter((h) => {
-			if (!activeSessionId || h.sessionId !== activeSessionId) return false;
 			if (h.kind === 'scheduled') return true;
 			return !!h.status && h.status !== 'running';
 		}),
@@ -383,7 +399,7 @@
 	// While the panel is open, re-render once a second so countdowns tick.
 	let countdownTick = $state(0);
 	$effect(() => {
-		if (!actionMenuOpen) return;
+		if (activeTab !== 'tasks') return;
 		const t = setInterval(() => (countdownTick += 1), 1000);
 		return () => clearInterval(t);
 	});
@@ -413,32 +429,6 @@
 			default:
 				return status || '';
 		}
-	}
-
-	/** @param {string} status */
-	function actionStatusColor(status) {
-		switch (status) {
-			case 'running':
-				return 'var(--md-sys-color-success)';
-			case 'completed':
-				return 'var(--md-sys-color-success)';
-			case 'failed':
-				return 'var(--md-sys-color-error)';
-			case 'cancelled':
-				return '#888';
-			default:
-				return '#888';
-		}
-	}
-
-	/** Title tone for completed-history rows (success / fail / muted). */
-	/** @param {any} h */
-	function historyTitleTone(h) {
-		if (h?.kind === 'scheduled') return 'ok';
-		if (h?.status === 'completed') return 'ok';
-		if (h?.status === 'failed') return 'fail';
-		if (h?.status === 'cancelled') return 'muted';
-		return 'neutral';
 	}
 
 	/** @param {any} action */
@@ -474,7 +464,7 @@
 				// cancelled: that would overwrite a successful terminal payload
 				// and block a later action:finished repair.
 				removeAction(actionId);
-				if (actionMenuOpen) {
+				if (activeTab === 'tasks') {
 					refreshActionHistory(null, 200).then((rows) => (actionHistory = rows));
 				}
 				addNotification(
@@ -514,22 +504,6 @@
 		const d = new Date(ts);
 		if (isNaN(d.getTime())) return '';
 		return formatMessageTime(d);
-	}
-
-	/** @param {MouseEvent} e */
-	function handleWindowClick(e) {
-		if (actionMenuOpen) {
-			const menu = document.querySelector('.status-action-menu');
-			const chip = document.querySelector('.status-chip-btn');
-			if (
-				menu &&
-				chip &&
-				!menu.contains(/** @type {Node} */ (e.target)) &&
-				!chip.contains(/** @type {Node} */ (e.target))
-			) {
-				actionMenuOpen = false;
-			}
-		}
 	}
 
 	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (
@@ -925,7 +899,6 @@
 		// (modelState is 'ready') and triggers the first probe; here we just
 		// start the cadence for all subsequent probes (Tauri only).
 		if (isTauri()) scheduleLlmProbe();
-		window.addEventListener('click', handleWindowClick);
 	});
 
 	onDestroy(() => {
@@ -934,13 +907,11 @@
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);
 		clearModelStateTimer();
 		eventRegistrations?.dispose();
-		if (typeof window !== 'undefined') {
-			window.removeEventListener('click', handleWindowClick);
-		}
 	});
 
 	const tabs = [
 		{ id: 'chat', label: '对话' },
+		{ id: 'tasks', label: '任务' },
 		{ id: 'tools', label: '工具' },
 		{ id: 'memory', label: '记忆' },
 		{ id: 'settings', label: '设置' },
@@ -966,24 +937,9 @@
 			{bootstrapReady}
 			{llmConnected}
 			{awaitingBackgroundActive}
-			{actionMenuOpen}
 			{runningActionCount}
 			{pendingScheduledActions}
-			{runningSessions}
-			{runningBackgroundActions}
-			{completedActions}
-			{activeSessionId}
-			{sessions}
-			onToggle={() => (actionMenuOpen = !actionMenuOpen)}
-			onCancel={handleCancelAction}
-			onDeleteHistory={handleDeleteHistory}
-			{actionStatusLabel}
-			{actionStatusColor}
-			{sessionTitleFor}
-			{actionDuration}
-			{scheduledActionCountdown}
-			{formatHistoryTime}
-			{historyTitleTone}
+			onOpenTasks={() => switchTab('tasks')}
 		/>
 	{/snippet}
 	{#snippet content()}
@@ -1004,6 +960,24 @@
 					{:else if tab.id === 'tools'}
 						<div class="page-shell">
 							<ToolsView />
+						</div>
+					{:else if tab.id === 'tasks'}
+						<div class="page-shell">
+							<TaskCenter
+								{runningSessions}
+								{runningBackgroundActions}
+								{pendingScheduledActions}
+								{completedActions}
+								{actionStatusLabel}
+								{sessionTitleFor}
+								{actionDuration}
+								{scheduledActionCountdown}
+								{formatHistoryTime}
+								onOpenSession={openTaskSession}
+								onCancel={handleCancelAction}
+								onDeleteHistory={handleDeleteHistory}
+								onNewSession={startNewSessionFromTasks}
+							/>
 						</div>
 					{:else if tab.id === 'memory'}
 						<div class="page-shell">
