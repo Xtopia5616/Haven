@@ -624,12 +624,16 @@
 
 <style>
 	.memory-page {
+		width: 100%;
+		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 	}
 	.header-row {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-md);
 		margin-bottom: var(--md-sys-space-xl);
 	}
 	h1 {
@@ -642,7 +646,9 @@
 	}
 	.header-actions {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
+		margin-left: auto;
 	}
 	.count-badge {
 		font-size: 12px;
@@ -708,10 +714,16 @@
 		.header-row {
 			align-items: flex-start;
 			gap: var(--md-sys-space-sm);
-			flex-wrap: wrap;
 		}
 		.count-badge {
 			margin-left: 0;
+		}
+		.header-actions {
+			width: 100%;
+			margin-left: 0;
+		}
+		.header-actions .md-btn {
+			flex: 1 1 auto;
 		}
 		.date-input-row {
 			flex-direction: column;

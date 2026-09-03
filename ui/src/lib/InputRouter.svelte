@@ -7,6 +7,7 @@
 	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import ContextMenu from '$lib/ContextMenu.svelte';
+	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
 	let {
@@ -546,12 +547,11 @@
 			{@render toolbarLeft?.()}
 		</div>
 		<div class="toolbar-right">
-			<button
-				class="md-icon-button file-btn"
-				onclick={() => attachFileInput?.click()}
-				aria-label="添加附件"
+			<MaterialIconButton
+				size="toolbar"
+				label="添加附件"
 				title="添加图片或文件"
-				type="button"
+				onclick={() => attachFileInput?.click()}
 			>
 				<svg
 					width="20"
@@ -567,7 +567,7 @@
 						d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
 					/>
 				</svg>
-			</button>
+			</MaterialIconButton>
 			<input
 				hidden
 				type="file"
@@ -575,13 +575,12 @@
 				bind:this={attachFileInput}
 				onchange={handleAttachSelect}
 			/>
-			<button
-				class="md-icon-button record-btn"
-				class:recording={recordingState.isRecording}
-				onclick={handleRecordClick}
-				aria-label={recordingState.isRecording ? '停止录音' : '开始录音'}
+			<MaterialIconButton
+				size="toolbar"
+				variant={recordingState.isRecording ? 'danger' : 'default'}
+				label={recordingState.isRecording ? '停止录音' : '开始录音'}
 				title={recordingState.isRecording ? '停止录音' : '开始录音'}
-				type="button"
+				onclick={handleRecordClick}
 			>
 				{#if recordingState.isRecording}
 					<svg
@@ -610,16 +609,15 @@
 						/><line x1="12" y1="19" x2="12" y2="22" /></svg
 					>
 				{/if}
-			</button>
+			</MaterialIconButton>
 			{@render toolbarRight?.()}
-			<button
-				class="md-icon-button send-btn"
-				class:stop-mode={stopMode}
-				onclick={stopMode ? () => onstop?.() : handleSubmit}
-				disabled={!hasInput && !isGenerating && !sessionRunning}
-				aria-label={hasInput ? '发送' : stopMode ? '停止会话' : '发送'}
+			<MaterialIconButton
+				size="toolbar"
+				variant={stopMode ? 'danger' : 'primary'}
+				label={hasInput ? '发送' : stopMode ? '停止会话' : '发送'}
 				title={hasInput ? '发送' : stopMode ? '停止会话' : '发送'}
-				type="button"
+				disabled={!hasInput && !isGenerating && !sessionRunning}
+				onclick={stopMode ? () => onstop?.() : handleSubmit}
 			>
 				{#if hasInput}
 					<svg
@@ -662,7 +660,7 @@
 						<polyline points="5 12 12 5 19 12" />
 					</svg>
 				{/if}
-			</button>
+			</MaterialIconButton>
 		</div>
 	</div>
 </div>
@@ -679,15 +677,14 @@
 	.input-area {
 		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-bottom: 0;
-		border-radius: 0;
+		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-sm);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
 		flex-shrink: 0;
-		max-width: clamp(600px, 92vw, 800px);
+		max-width: min(800px, calc(100% - 2 * var(--md-sys-content-gutter)));
 		margin: 0 auto;
 		width: 100%;
 		transition:
@@ -792,14 +789,11 @@
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
 	}
-	.file-btn {
-		flex-shrink: 0;
-	}
-
 	.input-row {
 		display: flex;
 		gap: 0;
 		align-items: flex-end;
+		min-width: 0;
 	}
 	.chat-input {
 		--chat-pad: 10px;
@@ -833,6 +827,7 @@
 	.toolbar-row {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
 		padding-inline: 0;
 		padding-top: var(--md-sys-space-xs);
@@ -840,12 +835,15 @@
 	}
 	.toolbar-left {
 		flex: 0 0 auto;
+		min-width: 0;
+		flex-wrap: wrap;
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 	}
 	.toolbar-right {
 		flex: 0 0 auto;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
@@ -856,39 +854,32 @@
 		padding: 0 var(--md-sys-space-md);
 		font-size: 13px;
 	}
-	.toolbar-row :global(.md-icon-button) {
-		width: 40px;
-		height: 40px;
-		min-width: 40px;
-		min-height: 40px;
-		padding: 0;
+
+	@media (max-width: 700px) {
+		.input-area {
+			max-width: calc(100% - 2 * var(--md-sys-content-gutter));
+			padding-inline: var(--md-sys-space-md);
+		}
+		.toolbar-row {
+			align-items: flex-start;
+		}
+		.toolbar-left,
+		.toolbar-right {
+			flex: 1 1 auto;
+		}
+		.toolbar-right {
+			justify-content: flex-end;
+			margin-left: 0;
+		}
 	}
-	.record-btn {
-		flex-shrink: 0;
-	}
-	.record-btn.recording {
-		--_ib-fg: var(--md-sys-color-error);
-		--_ib-bg: var(--md-sys-color-error-container);
-	}
-	.file-btn,
-	.record-btn {
-		background: var(--md-sys-color-surface-container);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-full);
-	}
-	.send-btn {
-		flex-shrink: 0;
-		--_ib-fg: var(--md-sys-color-on-primary);
-		--_ib-bg: var(--md-sys-color-primary);
-		--_ib-state: var(--md-sys-color-on-primary);
-		border-radius: var(--md-sys-shape-full);
-	}
-	.send-btn:hover {
-		box-shadow: var(--md-sys-elevation-1);
-	}
-	.send-btn.stop-mode {
-		--_ib-fg: var(--md-sys-color-on-error);
-		--_ib-bg: var(--md-sys-color-error);
-		--_ib-state: var(--md-sys-color-on-error);
+
+	@media (max-width: 455px) {
+		.toolbar-left,
+		.toolbar-right {
+			width: 100%;
+		}
+		.toolbar-right {
+			justify-content: space-between;
+		}
 	}
 </style>

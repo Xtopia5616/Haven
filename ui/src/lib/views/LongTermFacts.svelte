@@ -137,6 +137,7 @@
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
+		min-width: 0;
 	}
 	.toolbar-actions :global(.md-select-container) {
 		width: 140px;
@@ -256,6 +257,16 @@
 		font-size: 11px !important;
 	}
 	@media (max-width: 455px) {
+		.toolbar {
+			align-items: stretch;
+			flex-direction: column;
+		}
+		.toolbar-actions,
+		.toolbar-actions :global(.md-select-container),
+		.add-fact-actions,
+		.add-fact-actions .md-btn {
+			width: 100%;
+		}
 		.fact-details { grid-template-columns: 1fr; }
 		.fact-row { align-items: flex-start; flex-direction: column; }
 		.fact-value { width: 100%; }

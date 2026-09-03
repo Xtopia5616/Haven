@@ -177,7 +177,7 @@
 		background: var(--md-sys-color-surface-container-high);
 		border-radius: var(--md-sys-shape-large);
 		padding: var(--md-sys-space-3xl);
-		min-width: 380px;
+		min-width: min(380px, calc(100vw - 2 * var(--md-sys-content-gutter)));
 		max-width: min(560px, 92vw);
 		box-shadow: var(--md-sys-elevation-3);
 	}

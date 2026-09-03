@@ -685,6 +685,10 @@
 		} catch (e) {
 			addNotification(`加载设置失败: ${formatError(e)}`, 'error', 4000);
 		}
+		// Keep the model role shape stable even when the initial settings request
+		// fails. Otherwise opening the model tab would create missing role slots
+		// after the baseline snapshot and incorrectly mark settings as dirty.
+		if (mounted) ensureRoleSlots(llmConfig.roles);
 		try {
 			await refreshApiKeyStatus();
 			if (!mounted) return;
@@ -992,7 +996,10 @@
 
 <style>
 	.settings-page {
+		width: 100%;
+		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
+		padding-bottom: var(--md-sys-space-xl);
 	}
 	.settings-page h1 {
 		font-family: var(--md-ref-typeface-brand);

@@ -434,6 +434,7 @@
 	.bubble {
 		max-width: 72%;
 		min-width: 35%;
+		min-inline-size: 0;
 		width: fit-content;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-large);
@@ -594,6 +595,7 @@
 	}
 	.md-content :global(p) {
 		margin: 0 0 0.75em;
+		overflow-wrap: anywhere;
 	}
 	.md-content :global(p:last-child) {
 		margin-bottom: 0;

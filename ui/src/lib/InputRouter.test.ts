@@ -10,6 +10,19 @@ describe('InputRouter context menu', () => {
 		});
 	});
 
+	it('uses the shared toolbar control for attachment, recording, and send actions', () => {
+		render(InputRouter, { onsubmit: vi.fn() });
+
+		for (const label of ['添加附件', '开始录音', '发送']) {
+			const button = screen.getByRole('button', { name: label });
+			expect(button.classList.contains('md-icon-btn')).toBe(true);
+			expect(button.getAttribute('data-size')).toBe('toolbar');
+		}
+		expect(screen.getByRole('button', { name: '发送' }).getAttribute('data-variant')).toBe(
+			'primary',
+		);
+	});
+
 	it('opens a copy menu on the input and copies the draft', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', {

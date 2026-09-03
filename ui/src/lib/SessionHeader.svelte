@@ -35,6 +35,7 @@
 		padding: var(--md-sys-space-lg) var(--md-sys-space-2xl) var(--md-sys-space-md);
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 		background: var(--md-sys-color-surface);
+		min-width: 0;
 	}
 	.session-header__identity {
 		min-width: 0;
@@ -66,6 +67,7 @@
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		flex-shrink: 0;
+		flex-wrap: wrap;
 	}
 	.session-header__end {
 		color: var(--md-sys-color-error);

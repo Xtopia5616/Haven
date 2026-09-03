@@ -72,6 +72,7 @@
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
+		flex-wrap: wrap;
 	}
 	.recall-actions :global(.md-select-container) {
 		width: 200px;
@@ -105,5 +106,12 @@
 	.recall-text {
 		color: var(--md-sys-color-on-surface);
 		overflow-wrap: anywhere;
+	}
+	@media (max-width: 455px) {
+		.recall-actions,
+		.recall-actions :global(.md-select-container),
+		.recall-actions .md-btn {
+			width: 100%;
+		}
 	}
 </style>

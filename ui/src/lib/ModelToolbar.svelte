@@ -1,4 +1,6 @@
 <script>
+	import MaterialIconButton from './MaterialIconButton.svelte';
+
 	let {
 		modelMenuOpen = false,
 		currentModelName = '',
@@ -17,12 +19,12 @@
 </script>
 
 <div class="model-switch">
-	<button
-		class="md-icon-button model-switch-btn"
+	<MaterialIconButton
+		size="toolbar"
+		className="model-switch-btn"
 		onclick={() => onToggleMenu()}
 		title={`切换默认模型${currentModelName ? `：${currentModelName}` : ''}`}
-		aria-label="切换默认模型"
-		type="button"
+		label="切换默认模型"
 	>
 		<svg
 			width="20"
@@ -40,7 +42,7 @@
 				height="5"
 			/></svg
 		>
-	</button>
+	</MaterialIconButton>
 	{#if modelMenuOpen}
 		<div class="model-menu">
 			<div class="model-menu-title">切换默认模型</div>

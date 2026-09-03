@@ -672,6 +672,7 @@
 		display: flex;
 		gap: var(--md-sys-space-sm);
 		flex-shrink: 0;
+		flex-wrap: wrap;
 	}
 	.model-list {
 		margin-top: var(--md-sys-space-lg);
@@ -816,6 +817,16 @@
 		margin-bottom: 0;
 	}
 	@media (max-width: 700px) {
+		.llm-head {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.llm-head-actions {
+			width: 100%;
+		}
+		.llm-head-actions .md-btn {
+			flex: 1 1 auto;
+		}
 		.picker-card {
 			grid-template-columns: 1fr;
 			gap: var(--md-sys-space-md);

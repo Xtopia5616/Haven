@@ -189,11 +189,11 @@
 </section>
 
 <style>
-	.task-center { min-height: 100%; }
-	.task-heading { align-items: center; }
-	.task-toolbar { display: flex; gap: var(--md-sys-space-md); margin-bottom: var(--md-sys-space-lg); }
+	.task-center { width: 100%; min-width: 0; min-height: 100%; }
+	.task-heading { align-items: center; flex-wrap: wrap; }
+	.task-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--md-sys-space-md); margin-bottom: var(--md-sys-space-lg); }
 	.task-search { flex: 1 1 280px; min-width: 0; }
-	.task-filter { width: min(220px, 36%); }
+	.task-filter { width: min(220px, 36%); min-width: 0; }
 	.task-layout { display: grid; grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.4fr); gap: var(--md-sys-space-lg); align-items: start; }
 	.task-list { display: flex; flex-direction: column; gap: var(--md-sys-space-xs); }
 	.task-row { display: flex; align-items: center; gap: var(--md-sys-space-md); width: 100%; min-height: 64px; padding: var(--md-sys-space-md); border: 1px solid var(--md-sys-color-outline-variant); border-radius: var(--md-sys-shape-medium); background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface); text-align: left; cursor: pointer; }
@@ -228,5 +228,15 @@
 	.task-empty-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: var(--md-sys-shape-full); background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); font-size: 24px; }
 	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 	@media (max-width: 800px) { .task-layout { grid-template-columns: 1fr; } .task-detail { order: -1; } }
-	@media (max-width: 455px) { .task-heading, .task-toolbar { align-items: stretch; flex-direction: column; } .task-filter { width: 100%; } .task-heading .md-btn { width: 100%; } .task-row { padding-inline: var(--md-sys-space-sm); } .task-row-status { display: none; } }
+	@media (max-width: 455px) {
+		.task-heading,
+		.task-toolbar { align-items: stretch; flex-direction: column; }
+		.task-heading > div,
+		.task-search,
+		.task-filter { width: 100%; }
+		.task-search { flex: 0 1 auto; }
+		.task-heading .md-btn { width: 100%; }
+		.task-row { padding-inline: var(--md-sys-space-sm); }
+		.task-row-status { display: none; }
+	}
 </style>

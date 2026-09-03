@@ -1,0 +1,9 @@
+{
+	"name": "haven",
+	"private": true,
+	"packageManager": "pnpm@11.24.0",
+	"scripts": {
+		"dev": "cargo tauri dev",
+		"dev:ui": "corepack pnpm --dir ui run dev"
+	}
+}

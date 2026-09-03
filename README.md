@@ -21,13 +21,19 @@ cargo fetch --locked
 
 ## 运行
 
-前端开发服务器：
+仅启动前端开发服务器（浏览器预览，不包含 Rust/Tauri 后端）：
 
 ```powershell
 corepack pnpm --dir ui run dev
 ```
 
-桌面开发与打包使用 Tauri CLI；如果尚未安装，可执行 `cargo install tauri-cli --version "^2"`，随后运行：
+桌面开发推荐使用根目录的一键命令，它会同时启动 Vite 前端和 Rust/Tauri 后端：
+
+```powershell
+corepack pnpm run dev
+```
+
+也可以直接使用 Tauri CLI。若尚未安装，可执行 `cargo install tauri-cli --version "^2"`，随后运行：
 
 ```powershell
 cargo tauri dev

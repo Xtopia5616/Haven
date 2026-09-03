@@ -103,7 +103,7 @@
 | 类名 | 用途 | 变体 |
 |---|---|---|
 | `.md-btn` | 按钮 | `--filled`, `--tonal`, `--elevated`, `--outlined`, `--text`, `--danger`, `--xs` |
-| `.md-icon-button` | 图标按钮 | `--filled` |
+| `.md-icon-btn` | 图标按钮 | `data-variant`、`data-size` |
 | `.md-input` | 文本输入框 | - |
 | `.md-textarea` | 多行输入 | - |
 | `.md-card` | 卡片容器 | `--elevated`, `--outlined` |

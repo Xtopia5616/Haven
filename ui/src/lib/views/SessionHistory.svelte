@@ -1,6 +1,7 @@
 <script>
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import AsyncState from '$lib/AsyncState.svelte';
 
 	/** Session history tab. Loading, resume and store updates remain in the parent. */
 	let {
@@ -79,7 +80,11 @@
 		</div>
 	{/if}
 	{#if sessions.length === 0}
-		<div class="empty-state">{loading ? '加载中…' : '暂无会话'}</div>
+		<AsyncState
+			state={loading ? 'loading' : 'empty'}
+			title={loading ? '正在加载会话' : '暂无会话'}
+			message={loading ? '会话记录加载完成后会显示在这里。' : '开始一段对话后，会话记录会自动保存在这里。'}
+		/>
 	{:else}
 		<div class="session-list">
 			{#each sessions as session (session.id)}
@@ -215,6 +220,7 @@
 	.filter-bar {
 		display: flex;
 		align-items: center;
+		min-width: 0;
 		gap: var(--md-sys-space-md);
 		margin-bottom: var(--md-sys-space-lg);
 		padding: var(--md-sys-space-sm);
@@ -257,12 +263,6 @@
 		font-family: inherit;
 		cursor: pointer;
 		padding: 0;
-	}
-	.empty-state {
-		text-align: center;
-		padding: 80px 0;
-		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.7;
 	}
 	.session-list {
 		display: flex;
@@ -410,6 +410,10 @@
 		.filter-controls {
 			align-items: stretch;
 			flex-direction: column;
+		}
+		.filter-controls :global(.md-select-container),
+		.filter-controls .md-btn--outlined {
+			width: 100%;
 		}
 		.session-item-main {
 			padding: var(--md-sys-space-md);

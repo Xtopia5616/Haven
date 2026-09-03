@@ -54,7 +54,7 @@
 
 <div class="status-switch">
 	<button
-		class="status-chip"
+		class="md-btn status-chip"
 		onclick={() => onOpenTasks?.()}
 		title={statusTitle}
 		aria-label={`应用状态：${statusLabel}，打开任务中心`}
@@ -83,7 +83,7 @@
 		height: var(--md-comp-button-small-height);
 		padding: 0 var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-full);
+		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 12px;

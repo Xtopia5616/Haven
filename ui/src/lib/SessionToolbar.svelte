@@ -1,4 +1,6 @@
 <script>
+	import MaterialIconButton from './MaterialIconButton.svelte';
+
 	let {
 		activeSessionId = null,
 		showSessionMenu = false,
@@ -38,12 +40,8 @@
 			stroke="currentColor"
 			stroke-width="2"
 			stroke-linecap="round"
-			stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line
-				x1="5"
-				y1="12"
-				x2="19"
-				y2="12"
-			/></svg
+			stroke-linejoin="round"
+			><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg
 		>
 		{#if showSessionMenu}
 			<svg
@@ -112,12 +110,12 @@
 	{/if}
 </div>
 {#if activeSessionId && messagesLength > 0}
-	<button
-		class="md-btn md-btn--outlined end-session-btn"
-		onclick={() => onEndSession()}
-		aria-label="结束会话"
+	<MaterialIconButton
+		size="toolbar"
+		variant="danger-outline"
+		label="结束会话"
 		title="结束当前会话"
-		type="button"
+		onclick={() => onEndSession()}
 	>
 		<svg
 			width="18"
@@ -129,7 +127,7 @@
 			stroke-linecap="round"
 			stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg
 		>
-	</button>
+	</MaterialIconButton>
 {/if}
 <div
 	class="token-stats"
@@ -224,19 +222,6 @@
 		line-height: 18px;
 		text-align: center;
 		font-variant-numeric: tabular-nums;
-	}
-	.end-session-btn {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		flex-shrink: 0;
-		color: var(--md-sys-color-error);
-		border-color: var(--md-sys-color-error);
-	}
-	.end-session-btn:hover {
-		background: var(--md-sys-color-error-container);
-		border-color: var(--md-sys-color-error);
-		color: var(--md-sys-color-on-error-container);
 	}
 	.session-menu {
 		position: absolute;

@@ -3,6 +3,7 @@
 	import RecordingIndicator from './RecordingIndicator.svelte';
 	import NotificationToast from './NotificationToast.svelte';
 	import WorkspaceNav from './WorkspaceNav.svelte';
+	import MaterialIconButton from './MaterialIconButton.svelte';
 
 	/**
 	 * The shell owns chrome and layout only. Domain state stays in the route and
@@ -30,12 +31,11 @@
 		</div>
 		<div class="titlebar-right">
 			{@render status?.()}
-			<button
-				class="md-icon-button theme-toggle"
+			<MaterialIconButton
+				size="toolbar"
 				onclick={() => onToggleTheme?.()}
-				aria-label="切换主题"
+				label="切换主题"
 				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
-				type="button"
 			>
 				{#if theme === 'dark'}
 					<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -48,7 +48,7 @@
 						<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />
 					</svg>
 				{/if}
-			</button>
+			</MaterialIconButton>
 		</div>
 	</header>
 
@@ -81,6 +81,8 @@
 		display: flex;
 		flex-direction: column;
 		height: 100vh;
+		min-width: 0;
+		min-height: 0;
 		background: var(--md-sys-color-background);
 		color: var(--md-sys-color-on-surface);
 	}
@@ -108,11 +110,10 @@
 		gap: var(--md-sys-space-sm);
 		-webkit-app-region: no-drag;
 	}
-	.theme-toggle {
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	.content {
 		flex: 1;
+		min-width: 0;
+		min-height: 0;
 		overflow-y: auto;
 		padding: var(--md-sys-content-gutter);
 		background: var(--md-sys-color-surface);
@@ -132,10 +133,14 @@
 		width: 100%;
 		margin: 0 auto;
 	}
+	/* `display:flex` on the chat panel used to outrank the native hidden
+	 * attribute after another keep-alive view had been visited. That made
+	 * inactive views participate in the chat layout and was the source of
+	 * intermittent blank space/overlap after switching tabs. */
 	:global(.tab-panel[hidden]) {
-		display: none;
+		display: none !important;
 	}
-	:global(.content--chat .tab-panel) {
+	:global(.content--chat .tab-panel:not([hidden])) {
 		flex: 1;
 		min-height: 0;
 		display: flex;
@@ -143,9 +148,12 @@
 	}
 	:global(.content:not(.content--chat) .page-shell) {
 		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
+		min-width: 0;
 	}
 	:global(.content--chat .page-shell) {
 		flex: 1;
+		width: 100%;
+		min-width: 0;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;

@@ -188,6 +188,7 @@
 	--md-comp-tab-indicator-min-width: 24px;
 	--md-comp-tab-indicator-bottom: 3px;
 	--md-comp-icon-button-size: 40px;
+	--md-comp-icon-button-compact-size: 32px;
 	--md-comp-icon-button-touch: 48px;
 	--md-sys-icon-size: 20px;
 
@@ -620,80 +621,6 @@ samp {
 	min-width: 32px;
 	padding: 0 var(--md-sys-space-sm);
 	font-size: 13px;
-}
-
-/* ---------- Icon buttons ---------- */
-.md-icon-button {
-	--_ib-fg: var(--md-sys-color-on-surface-variant);
-	--_ib-bg: transparent;
-	--_ib-state: var(--md-sys-color-on-surface);
-	width: var(--md-comp-icon-button-size);
-	height: var(--md-comp-icon-button-size);
-	min-width: var(--md-comp-icon-button-touch);
-	min-height: var(--md-comp-icon-button-touch);
-	padding: calc((var(--md-comp-icon-button-touch) - var(--md-comp-icon-button-size)) / 2);
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border: none;
-	background: var(--_ib-bg);
-	color: var(--_ib-fg);
-	border-radius: var(--md-sys-shape-small);
-	cursor: pointer;
-	overflow: visible;
-	transition:
-		background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-		border-radius var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
-}
-.md-icon-button > svg {
-	width: var(--md-sys-icon-size);
-	height: var(--md-sys-icon-size);
-}
-.md-icon-button::after {
-	content: '';
-	position: absolute;
-}
-.md-icon-button {
-	position: relative;
-	overflow: hidden;
-}
-.md-icon-button::after {
-	content: '';
-	position: absolute;
-	inset: 0;
-	margin: auto;
-	width: var(--md-comp-icon-button-size);
-	height: var(--md-comp-icon-button-size);
-	border-radius: var(--md-sys-shape-small);
-	background: var(--_ib-state);
-	opacity: 0;
-	transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	pointer-events: none;
-}
-.md-icon-button:hover::after {
-	opacity: var(--md-sys-state-hover-opacity);
-}
-.md-icon-button:focus-visible::after {
-	opacity: var(--md-sys-state-focus-opacity);
-}
-.md-icon-button:active {
-	border-radius: var(--md-sys-shape-small);
-}
-.md-icon-button:active::after {
-	opacity: var(--md-sys-state-pressed-opacity);
-}
-.md-icon-button svg {
-	pointer-events: none;
-	position: relative;
-	z-index: 1;
-}
-.md-icon-button--filled {
-	--_ib-fg: var(--md-sys-color-on-primary);
-	--_ib-bg: var(--md-sys-color-primary);
-	--_ib-state: var(--md-sys-color-on-primary);
-}
-.md-icon-button--filled:hover {
-	box-shadow: var(--md-sys-elevation-1);
 }
 
 /* ---------- Outlined text fields ---------- */

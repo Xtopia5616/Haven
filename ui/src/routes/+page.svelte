@@ -64,6 +64,7 @@
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
+	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import SessionHeader from '$lib/SessionHeader.svelte';
 	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
@@ -1475,12 +1476,13 @@
 			/>
 		</div>
 		{#if !autoFollow && messages.length > 0}
-			<button
-				class="jump-bottom"
-				onclick={jumpToBottom}
-				aria-label="返回底部"
+			<MaterialIconButton
+				size="toolbar"
+				variant="tonal"
+				className="jump-bottom"
+				label="返回底部"
 				title="返回底部"
-				type="button"
+				onclick={jumpToBottom}
 			>
 				<svg
 					width="18"
@@ -1493,7 +1495,7 @@
 					stroke-linejoin="round"
 					><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
 				>
-			</button>
+			</MaterialIconButton>
 		{/if}
 	</div>
 
@@ -1558,6 +1560,8 @@
 		display: flex;
 		flex-direction: column;
 		flex: 1;
+		width: 100%;
+		min-width: 0;
 		min-height: 0;
 	}
 	.messages-wrap {
@@ -1569,7 +1573,7 @@
 		/* Chat content has its own narrower reading-friendly cap; the
 		 * layout shell handles the wider-page case so we only need to
 		 * keep messages from getting too narrow on small viewports. */
-		max-width: clamp(600px, 92vw, 800px);
+		max-width: min(800px, 100%);
 		margin: 0 auto;
 		width: 100%;
 	}
@@ -1577,29 +1581,16 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
-		padding: var(--md-sys-space-md);
+		padding: var(--md-sys-space-lg) var(--md-sys-space-md);
 	}
-	.jump-bottom {
+	:global(.jump-bottom) {
 		position: absolute;
 		right: var(--md-sys-space-md);
 		bottom: var(--md-sys-space-sm);
-		width: 36px;
-		height: 36px;
-		border: none;
-		border-radius: 50%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
 		cursor: pointer;
 		box-shadow: var(--md-sys-elevation-2);
 		transition: background var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
 		z-index: 5;
-	}
-	.jump-bottom:hover {
-		background: var(--md-sys-color-primary);
-		color: var(--md-sys-color-on-primary);
 	}
 </style>

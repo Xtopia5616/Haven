@@ -462,6 +462,8 @@
 
 <style>
 	.tools-page {
+		width: 100%;
+		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 	}
 	h1 {
@@ -477,6 +479,7 @@
 	.resource-toolbar {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-md);
 		margin-bottom: var(--md-sys-space-lg);
 	}
@@ -514,6 +517,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-md);
 		margin-bottom: var(--md-sys-space-md);
 		min-height: var(--md-comp-button-small-height);
 	}
@@ -523,6 +528,7 @@
 	}
 	.toolbar-actions {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
 	}
 	.sr-only {
@@ -536,9 +542,19 @@
 		white-space: nowrap;
 		border: 0;
 	}
-	@media (max-width: 455px) {
+	@media (max-width: 700px) {
 		.resource-toolbar { align-items: stretch; flex-direction: column; }
+		.resource-search,
+		.resource-filter { width: 100%; }
+		.resource-search { flex: 0 1 auto; }
+		.toolbar { align-items: flex-start; }
+		.toolbar-actions { width: 100%; }
+		.toolbar-actions .md-btn { flex: 1 1 auto; }
+	}
+	@media (max-width: 455px) {
 		.resource-filter { width: 100%; }
 		.resource-count { align-self: flex-start; }
+		.toolbar-actions { flex-direction: column; }
+		.toolbar-actions .md-btn { width: 100%; }
 	}
 </style>
