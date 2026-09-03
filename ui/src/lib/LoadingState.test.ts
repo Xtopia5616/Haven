@@ -10,8 +10,11 @@ describe('LoadingState', () => {
 		});
 
 		expect(screen.getByRole('status').getAttribute('aria-busy')).toBe('true');
-		expect(screen.getByText('正在加载工具…')).toBeTruthy();
-		expect(screen.getByText('正在准备工具列表')).toBeTruthy();
+		expect(screen.getByRole('status').getAttribute('aria-label')).toBe(
+			'正在加载工具…，正在准备工具列表',
+		);
+		expect(screen.queryByText('正在加载工具…')).toBeNull();
+		expect(screen.queryByText('正在准备工具列表')).toBeNull();
 		expect(document.querySelectorAll('.loading-state__bar')).toHaveLength(3);
 	});
 
