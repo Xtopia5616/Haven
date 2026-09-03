@@ -879,13 +879,10 @@
 		<SettingsLimits {contextLimits} />
 	{/if}
 	</div>
-	<div class="save-bar md-toolbar" aria-live="polite">
-		<div class="save-status" data-state={saveState}>
-			{#if saveState === 'saving'}保存中…{:else if saveState === 'error'}{saveError || '保存失败'}{:else if settingsDirty}当前有未保存的更改{:else if saveState === 'saved'}已保存{:else}没有待保存的更改{/if}
-		</div>
+	<div class="save-bar md-toolbar">
 		<div class="save-actions">
 			{#if settingsDirty}<button class="md-btn md-btn--text" type="button" onclick={discardAndReset} disabled={saveState === 'saving'}>放弃更改</button>{/if}
-			<button class="md-btn md-btn--filled save-btn" type="button" onclick={saveSettings} disabled={!settingsLoaded || saveState === 'saving' || !settingsDirty}>{saveState === 'saving' ? '保存中…' : '保存设置'}</button>
+			<button class="md-btn md-btn--filled save-btn" type="button" data-state={saveState} aria-live="polite" aria-busy={saveState === 'saving'} onclick={saveSettings} disabled={!settingsLoaded || saveState === 'saving' || !settingsDirty}>{saveState === 'saving' ? '保存中…' : '保存设置'}</button>
 		</div>
 	</div>
 </div>
@@ -963,9 +960,6 @@
 		font-weight: 400;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	.save-status[data-state='error'] {
-		color: var(--md-sys-color-error);
-	}
 	.settings-callout {
 		display: flex;
 		align-items: center;
@@ -996,7 +990,7 @@
 		bottom: 0;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		justify-content: flex-end;
 		gap: var(--md-comp-toolbar-gap);
 		margin-top: var(--md-sys-space-xl);
 		padding: var(--md-sys-space-sm) 0;
@@ -1010,23 +1004,23 @@
 	}
 	.save-btn.md-btn:disabled {
 		opacity: 1;
-		background: transparent;
+		background: transparent !important;
 		color: var(--md-sys-color-on-surface-variant);
-		border: 1px solid var(--md-sys-color-outline-variant);
+		border-color: transparent;
 		box-shadow: none;
 	}
-	.save-status {
-		min-width: 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		overflow-wrap: anywhere;
+	.save-btn.md-btn:disabled::after {
+		opacity: 0;
 	}
-	.save-status[data-state='saving'] {
+	.save-btn.md-btn:disabled[data-state='saving'] {
 		color: var(--md-sys-color-primary);
 	}
-	.save-status[data-state='saved'] {
+	.save-btn.md-btn:disabled[data-state='saved'] {
 		color: var(--md-sys-color-success);
+	}
+	.save-btn.md-btn[data-state='error'] {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 	}
 	.save-actions {
 		display: flex;
