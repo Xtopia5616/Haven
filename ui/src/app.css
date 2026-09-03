@@ -134,6 +134,13 @@
 }
 
 :root {
+	/* ---------- Haven brand mark ---------- */
+	/* Fixed across light/dark themes so the UI mark matches the EXE, tray,
+	 * favicon and Store assets generated from assets/branding/haven-mark.svg. */
+	--haven-mark-background: #2c5090;
+	--haven-mark-bubble: #d7e3ff;
+	--haven-mark-ink: #2c5090;
+
 	/* ---------- Typography ---------- */
 	/* Material Design 3 Latin = Roboto (bundled). CJK is intentionally
 	 * system-only — do NOT put SimSun / SimHei / MingLiU in the chain.

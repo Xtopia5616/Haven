@@ -140,18 +140,83 @@ impl haven_input::InputHandler for HavenInputHandler {
 }
 
 pub(crate) fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static> {
-    let (r, g, b) = match status {
-        TrayStatus::Normal => (60, 100, 200),
-        TrayStatus::Recording => (220, 50, 50),
-        TrayStatus::Muted => (120, 120, 120),
-        TrayStatus::Busy => (220, 140, 40),
+    const BLUE: [u8; 4] = [44, 80, 144, 255];
+    const BUBBLE: [u8; 4] = [215, 227, 255, 255];
+    let status_color = match status {
+        TrayStatus::Normal => [187, 210, 255, 255],
+        TrayStatus::Recording => [240, 68, 56, 255],
+        TrayStatus::Muted => [169, 170, 178, 255],
+        TrayStatus::Busy => [255, 183, 77, 255],
     };
-    let mut rgba = Vec::with_capacity(32 * 32 * 4);
-    for _ in 0..(32 * 32) {
-        rgba.push(r);
-        rgba.push(g);
-        rgba.push(b);
-        rgba.push(255);
+
+    let mut rgba = vec![0u8; 32 * 32 * 4];
+    for y in 0..32 {
+        for x in 0..32 {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let outer = rounded_rect_contains(px, py, 2.0, 2.0, 30.0, 30.0, 8.0);
+            if !outer {
+                continue;
+            }
+
+            let inner = rounded_rect_contains(px, py, 4.0, 4.0, 28.0, 28.0, 6.0);
+            let color = if !inner { status_color } else { BLUE };
+            set_rgba_pixel(&mut rgba, x, y, color);
+
+            let bubble_body = rounded_rect_contains(px, py, 4.0, 7.5, 28.0, 23.0, 5.0);
+            let bubble_tail = triangle_contains(px, py, (10.5, 21.5), (10.5, 27.0), (16.0, 23.0));
+            if bubble_body || bubble_tail {
+                set_rgba_pixel(&mut rgba, x, y, BUBBLE);
+                continue;
+            }
+
+            for (left, top, right, bottom, radius) in [
+                (12.0, 12.25, 14.5, 18.25, 1.25),
+                (14.75, 10.75, 17.25, 19.75, 1.25),
+                (17.5, 12.25, 20.0, 18.25, 1.25),
+            ] {
+                if rounded_rect_contains(px, py, left, top, right, bottom, radius) {
+                    set_rgba_pixel(&mut rgba, x, y, BLUE);
+                    break;
+                }
+            }
+        }
     }
     tauri::image::Image::new_owned(rgba, 32, 32)
+}
+
+fn set_rgba_pixel(rgba: &mut [u8], x: u32, y: u32, color: [u8; 4]) {
+    let offset = ((y * 32 + x) * 4) as usize;
+    rgba[offset..offset + 4].copy_from_slice(&color);
+}
+
+fn rounded_rect_contains(
+    x: f32,
+    y: f32,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+) -> bool {
+    if x < left || x > right || y < top || y > bottom {
+        return false;
+    }
+    let closest_x = x.clamp(left + radius, right - radius);
+    let closest_y = y.clamp(top + radius, bottom - radius);
+    let dx = x - closest_x;
+    let dy = y - closest_y;
+    dx * dx + dy * dy <= radius * radius
+}
+
+fn triangle_contains(x: f32, y: f32, a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> bool {
+    let sign = |p1: (f32, f32), p2: (f32, f32), p3: (f32, f32)| {
+        (p1.0 - p3.0) * (p2.1 - p3.1) - (p2.0 - p3.0) * (p1.1 - p3.1)
+    };
+    let d1 = sign((x, y), a, b);
+    let d2 = sign((x, y), b, c);
+    let d3 = sign((x, y), c, a);
+    let has_negative = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let has_positive = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(has_negative && has_positive)
 }
