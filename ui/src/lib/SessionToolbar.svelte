@@ -11,8 +11,6 @@
 		onToggleSessionMenu = () => {},
 		onNewSession = () => {},
 		onSwitchSession = () => {},
-		onEndSession = () => {},
-		messagesLength = 0,
 		tokenStats = null,
 		tokenStatsHint = '暂无统计',
 		buildTokenTooltip = () => '',
@@ -25,26 +23,26 @@
 	} = $props();
 </script>
 
-<div class="session-switch">
-	<MaterialIconButton
-		size="toolbar"
-		className="session-switch-btn"
-		label="新建会话"
-		onclick={() => onToggleSessionMenu()}
-		title={showSessionMenu ? '切换并行会话或开始新会话' : '开始一个新会话'}
-	>
-		<svg
-			width="20"
-			height="20"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg
+{#if showSessionMenu}
+	<div class="session-switch">
+		<MaterialIconButton
+			size="toolbar"
+			className="session-switch-btn"
+			label="切换会话"
+			onclick={() => onToggleSessionMenu()}
+			title="切换并行会话或开始新会话"
 		>
-		{#if showSessionMenu}
+			<svg
+				width="20"
+				height="20"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg
+			>
 			<svg
 				class="session-switch-caret"
 				width="16"
@@ -56,79 +54,59 @@
 				stroke-linecap="round"
 				stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
 			>
-		{/if}
-		{#if parallelSessions.length > 0}
-			<span class="session-switch-badge">{parallelSessions.length}</span>
-		{/if}
-	</MaterialIconButton>
-	{#if sessionMenuOpen}
-		<div class="session-menu">
-			<div class="session-menu-title">正在执行的会话</div>
-			{#each menuSessions as session}
+			{#if parallelSessions.length > 0}
+				<span class="session-switch-badge">{parallelSessions.length}</span>
+			{/if}
+		</MaterialIconButton>
+		{#if sessionMenuOpen}
+			<div class="session-menu">
+				<div class="session-menu-title">正在执行的会话</div>
+				{#each menuSessions as session}
+					<button
+						class="session-menu-item"
+						class:selected={session.id === activeSessionId}
+						onclick={() => onSwitchSession(session.id)}
+						type="button"
+					>
+						<span class="session-menu-item-main">
+							<span class="session-menu-item-title">{session.title}</span>
+							<span class="session-menu-item-id">{session.id}</span>
+						</span>
+						<span
+							class="session-menu-item-status"
+							class:running={session.status === 'running'}
+						>
+							{sessionStatusLabel(session)}
+						</span>
+					</button>
+				{/each}
+				<div class="session-menu-divider"></div>
 				<button
-					class="session-menu-item"
-					class:selected={session.id === activeSessionId}
-					onclick={() => onSwitchSession(session.id)}
+					class="session-menu-item session-menu-new"
+					onclick={() => onNewSession()}
 					type="button"
 				>
-					<span class="session-menu-item-main">
-						<span class="session-menu-item-title">{session.title}</span>
-						<span class="session-menu-item-id">{session.id}</span>
-					</span>
-					<span
-						class="session-menu-item-status"
-						class:running={session.status === 'running'}
+					<svg
+						width="16"
+						height="16"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						><line x1="12" y1="5" x2="12" y2="19" /><line
+							x1="5"
+							y1="12"
+							x2="19"
+							y2="12"
+						/></svg
 					>
-						{sessionStatusLabel(session)}
-					</span>
+					新建会话
 				</button>
-			{/each}
-			<div class="session-menu-divider"></div>
-			<button
-				class="session-menu-item session-menu-new"
-				onclick={() => onNewSession()}
-				type="button"
-			>
-				<svg
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					><line x1="12" y1="5" x2="12" y2="19" /><line
-						x1="5"
-						y1="12"
-						x2="19"
-						y2="12"
-					/></svg
-				>
-				新建会话
-			</button>
-		</div>
-	{/if}
-</div>
-{#if activeSessionId && messagesLength > 0}
-	<MaterialIconButton
-		size="toolbar"
-		variant="danger-outline"
-		label="结束会话"
-		title="结束当前会话"
-		onclick={() => onEndSession()}
-	>
-		<svg
-			width="18"
-			height="18"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg
-		>
-	</MaterialIconButton>
+			</div>
+		{/if}
+	</div>
 {/if}
 <div
 	class="token-stats"

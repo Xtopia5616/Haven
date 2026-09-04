@@ -167,6 +167,16 @@ impl AgentLayer {
         }
     }
 
+    /// Interrupt the current model/tool run without closing the conversation.
+    /// The paused session keeps its durable snapshot and can accept a later
+    /// follow-up, while the cancellation token stops an in-flight provider call.
+    pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<()> {
+        if self.executor.interrupt_session(session_id).await? {
+            self.events.emit_session_updated(session_id, "paused").await;
+        }
+        Ok(())
+    }
+
     pub fn set_emitter(&self, emitter: Arc<dyn AgentEventEmitter>) {
         self.events.set_emitter(emitter);
     }

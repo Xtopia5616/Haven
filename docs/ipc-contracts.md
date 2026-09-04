@@ -59,6 +59,7 @@
 | `reopen_session` | `SessionIdRequest` | `()` | mutate | session id 选择持久化会话 |
 | `get_sessions` | `-` | `SessionListResponse` | read | 活跃会话投影 |
 | `end_session` | `SessionIdRequest` | `()` | mutate | 仅显式结束 |
+| `interrupt_session` | `SessionIdRequest` | `()` | mutate | 停止当前输出但保留会话，可继续 |
 | `resolve_confirmation` | `ResolveConfirmationRequest` | `()` | mutate | effect/scope 后端校验，deny 优先 |
 | `update_session_title` | `UpdateSessionTitleRequest` | `()` | mutate | trim 后不得为空 |
 | `delete_session` | `SessionIdRequest` | `()` | mutate | 删除并释放运行态 |
@@ -92,7 +93,7 @@
 | `get_sessions` | 无 | `SessionListResponse` | 运行中会话列表 |
 | `get_session_for_resume` | `{ session_id }` | `SessionResumeResponse` | 加载持久化会话、消息、步骤与用量 |
 | `get_last_conversation` | 无 | `Option<SessionResumeResponse>` | 应用启动时恢复最近会话 |
-| `reopen_session` / `continue_session` / `end_session` | `{ session_id }` | `()` | 生命周期控制 |
+| `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | `{ session_id }` | `()` | 生命周期控制；中断保留会话 |
 | `rollback_session` | `{ session_id, target_step, pause, target_message_id }` | `()` | 按事件游标与投影时钟回滚 |
 | `update_session_title` | `{ session_id, title }` | `()` | 保存并广播新标题 |
 | `delete_session` / `clear_history` | `{ session_id }` / 无 | `()` / 删除数量 | 删除后广播 `session:deleted` |

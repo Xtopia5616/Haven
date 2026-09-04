@@ -26,15 +26,15 @@ Get-ChildItem $commandsRoot -Filter '*.rs' | ForEach-Object {
 }
 $implemented = @($implemented | Sort-Object -Unique)
 
-$lib = Get-Content (Join-Path $root 'crates/app-binary/src/lib.rs') -Raw
-$registered = Get-Matches $lib 'commands::[a-z_]+::([a-z0-9_]+)'
+$bootstrap = Get-Content (Join-Path $root 'crates/app-binary/src/bootstrap.rs') -Raw
+$registered = Get-Matches $bootstrap 'commands::[a-z_]+::([a-z0-9_]+)'
 
 $rustContracts = Get-Content (Join-Path $commandsRoot 'contracts.rs') -Raw
 $contractNames = Get-Matches $rustContracts 'name:\s*"([a-z0-9_]+)"'
 
 $tsContracts = Get-Content (Join-Path $root 'ui/src/lib/contracts/commands.ts') -Raw
 $tsSection = [regex]::Match($tsContracts, '(?s)TAURI_COMMAND_CONTRACTS\s*=\s*\{(.*?)\}\s*as const').Groups[1].Value
-$frontendNames = Get-Matches $tsSection '(?m)^\s{1,2}([a-z][a-z0-9_]*)\s*:'
+$frontendNames = Get-Matches $tsSection '(?m)^\s{1,2}([a-z][a-z0-9_]*)\s*:\s*\{'
 
 $docs = Get-Content (Join-Path $root 'docs/ipc-contracts.md') -Raw
 $documentedNames = Get-Matches $docs '(?m)^\|\s*\x60([a-z][a-z0-9_]*)\x60\s*\|'
@@ -44,8 +44,8 @@ Assert-SetEqual 'Tauri handlers vs Rust contract registry' $implemented $contrac
 Assert-SetEqual 'Rust contract registry vs frontend contract registry' $contractNames $frontendNames
 Assert-SetEqual 'Tauri handlers vs IPC contract docs' $implemented $documentedNames
 
-if ($contractNames.Count -ne 67) {
-    throw "expected 67 Tauri command contracts, found $($contractNames.Count)"
+if ($contractNames.Count -ne 68) {
+	throw "expected 68 Tauri command contracts, found $($contractNames.Count)"
 }
 
 Write-Host "IPC contract registry verified: $($contractNames.Count) commands, handlers/registration/frontend/docs agree."

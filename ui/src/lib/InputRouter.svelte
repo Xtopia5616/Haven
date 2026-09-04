@@ -69,7 +69,7 @@
 	// to the backend: the agent injects it in the gap between tool calls and
 	// the final content, so it can steer the answer instead of waiting for
 	// the whole turn to finish.
-	// The merged send button becomes "stop session" only when there is no input
+	// The merged send button becomes "interrupt output" only when there is no input
 	// and the agent is actively working (generating output, a running/pending
 	// session). With fresh input present, it always stays a send button.
 	const stopMode = $derived(!hasInput && (isGenerating || sessionRunning));
@@ -614,8 +614,8 @@
 			<MaterialIconButton
 				size="toolbar"
 				variant={stopMode ? 'danger' : 'primary'}
-				label={hasInput ? '发送' : stopMode ? '停止会话' : '发送'}
-				title={hasInput ? '发送' : stopMode ? '停止会话' : '发送'}
+				label={hasInput ? '发送' : stopMode ? '中断输出' : '发送'}
+				title={hasInput ? '发送' : stopMode ? '中断当前输出' : '发送'}
 				disabled={!hasInput && !isGenerating && !sessionRunning}
 				onclick={stopMode ? () => onstop?.() : handleSubmit}
 			>
@@ -685,7 +685,7 @@
 		gap: var(--md-sys-space-xs);
 		flex-shrink: 0;
 		max-width: min(800px, calc(100% - 2 * var(--md-sys-content-gutter)));
-		margin: 0 auto;
+		margin: 0 auto var(--md-sys-space-md);
 		width: 100%;
 		transition:
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),

@@ -88,6 +88,45 @@ impl SessionExecutor {
         self.end_session_inner(session_id, true).await
     }
 
+    /// Pause an active session without deleting it. Running sessions also get
+    /// their current provider call cancelled; the saved snapshot remains the
+    /// resume point for the next user input.
+    pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<bool> {
+        let status = self
+            .get_session_state(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
+
+        match status {
+            SessionStatus::Running => {
+                let cancel = self.cancellation_token(session_id).await;
+                self.update_session_status(session_id, SessionStatus::Paused)
+                    .await?;
+                cancel.cancel();
+                Ok(matches!(
+                    self.get_session_state(session_id).await,
+                    Some(SessionStatus::Paused)
+                ))
+            }
+            SessionStatus::Pending => {
+                self.update_session_status(session_id, SessionStatus::Paused)
+                    .await?;
+                Ok(matches!(
+                    self.get_session_state(session_id).await,
+                    Some(SessionStatus::Paused)
+                ))
+            }
+            SessionStatus::Paused
+            | SessionStatus::PausedAwaitingAnswer
+            | SessionStatus::PausedAwaitingConfirm => Ok(false),
+            SessionStatus::Completed | SessionStatus::Error => Err(anyhow::anyhow!(
+                "session '{}' is not running (current: {})",
+                session_id,
+                status.as_str()
+            )),
+        }
+    }
+
     /// Shared end path. `cascade` controls whether peer descendants are force-
     /// ended after this session (false when the caller already enumerated the
     /// subtree via [`Self::cascade_end_children`]).

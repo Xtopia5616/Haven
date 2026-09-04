@@ -59,6 +59,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	reopen_session: { request: 'SessionIdRequest', response: 'void', boundary: 'mutate', security: 'session id selects persisted session' },
 	get_sessions: { request: '-', response: 'SessionListResponse', boundary: 'read', security: 'active session projection' },
 	end_session: { request: 'SessionIdRequest', response: 'void', boundary: 'mutate', security: 'explicit user termination' },
+	interrupt_session: { request: 'SessionIdRequest', response: 'void', boundary: 'mutate', security: 'pauses the selected active session without deleting it' },
 	resolve_confirmation: { request: 'ResolveConfirmationRequest', response: 'void', boundary: 'mutate', security: 'effect/scope must match confirmation; deny wins' },
 	update_session_title: { request: 'UpdateSessionTitleRequest', response: 'void', boundary: 'mutate', security: 'trimmed non-empty title only' },
 	delete_session: { request: 'SessionIdRequest', response: 'void', boundary: 'mutate', security: 'delete by session id and release runtime state' },
@@ -88,4 +89,3 @@ export const TAURI_COMMAND_CONTRACTS = {
 
 export type TauriCommandName = keyof typeof TAURI_COMMAND_CONTRACTS;
 export const TAURI_COMMAND_NAMES = Object.keys(TAURI_COMMAND_CONTRACTS) as TauriCommandName[];
-

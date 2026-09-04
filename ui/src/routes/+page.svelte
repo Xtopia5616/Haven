@@ -226,10 +226,9 @@
 		return { used, window, ratio };
 	});
 
-	// Send/stop merged button: text takes priority (always send); with no
-	// text and the agent actively generating output the button becomes
-	// "stop session". Also mirrors the agent's model state so the button can
-	// distinguish "generating right now" from an idle running session.
+	// Send/interrupt merged button: text takes priority (always send); with no
+	// text and the agent actively generating output the button interrupts the
+	// current output while keeping the session resumable.
 	let modelState = $state('ready');
 	$effect(() =>
 		syncStore(modelStateStore, (v) => {
@@ -720,6 +719,15 @@
 		activeSessionId = null;
 		activeSessionIdStore.set(null);
 		newSessionIntentStore.set(false);
+	}
+
+	async function interruptOutput() {
+		if (!activeSessionId) return;
+		try {
+			await invoke('interrupt_session', { sessionId: activeSessionId });
+		} catch (e) {
+			addNotification(`中断输出失败: ${formatError(e)}`, 'error', 3000);
+		}
 	}
 
 	async function handleContinue() {
@@ -1544,7 +1552,7 @@
 		allowEmptySubmit={askSelectionsReady}
 		{...inputLimits}
 		onsubmit={handleInputSubmit}
-		onstop={endSession}
+		onstop={interruptOutput}
 	>
 		{#snippet toolbarLeft()}
 			<SessionToolbar
@@ -1559,8 +1567,6 @@
 				}}
 				onNewSession={newSession}
 				onSwitchSession={switchToSession}
-				onEndSession={endSession}
-				messagesLength={messages.length}
 				{sessionStatusLabel}
 				{tokenStats}
 				{tokenStatsHint}

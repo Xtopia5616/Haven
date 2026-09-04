@@ -25,7 +25,7 @@ pub(crate) fn run() {
     // well as in CI/docs. A drift in the source registry is a startup error,
     // not a silently stale contract inventory.
     debug_assert_eq!(commands::contracts::IPC_CONTRACT_VERSION, 1);
-    debug_assert_eq!(commands::contracts::COMMAND_CONTRACTS.len(), 67);
+    debug_assert_eq!(commands::contracts::COMMAND_CONTRACTS.len(), 68);
 
     // Load config early so we can initialize tracing with the right level
     let config_loader = haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
@@ -488,6 +488,7 @@ pub(crate) fn run() {
             commands::action::list_action_history,
             commands::action::delete_action,
             commands::session::end_session,
+            commands::session::interrupt_session,
             commands::session::resolve_confirmation,
             commands::skills::get_tools,
             commands::skills::reset_tool_circuits,

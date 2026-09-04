@@ -7,8 +7,8 @@ import {
 
 describe('Tauri command contract directory', () => {
 	it('contains the complete unique command set', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(67);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(67);
+		expect(TAURI_COMMAND_NAMES).toHaveLength(68);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(68);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 	});
 
@@ -27,4 +27,3 @@ describe('Tauri command contract directory', () => {
 		expect(TAURI_COMMAND_CONTRACTS.execute_skill.response).toBe('SkillExecutionResponse');
 	});
 });
-

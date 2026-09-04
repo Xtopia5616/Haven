@@ -31,6 +31,17 @@
 		min-height: calc(var(--md-sys-space-4xl) * 5);
 		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
 	}
+	/* Match the pre-hydration loader in app.html: page-level loaders are
+	 * centered in the viewport, independent of the page shell's width/padding. */
+	.loading-state--page {
+		position: fixed;
+		inset: 0;
+		box-sizing: border-box;
+		z-index: var(--md-sys-z-drawer);
+		min-height: 0;
+		padding: 0;
+		pointer-events: none;
+	}
 	.loading-state--inline {
 		min-height: var(--md-sys-space-4xl);
 		padding: var(--md-sys-space-2xl) var(--md-sys-space-md);

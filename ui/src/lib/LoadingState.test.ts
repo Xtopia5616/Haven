@@ -16,6 +16,7 @@ describe('LoadingState', () => {
 		expect(screen.queryByText('正在加载工具…')).toBeNull();
 		expect(screen.queryByText('正在准备工具列表')).toBeNull();
 		expect(document.querySelectorAll('.loading-state__bar')).toHaveLength(3);
+		expect(document.querySelector('.loading-state--page')).toBeTruthy();
 	});
 
 	it('supports the compact inline layout used by the conversation timeline', () => {

@@ -894,21 +894,23 @@
 		<SettingsLimits {contextLimits} />
 	{/if}
 	</div>
-	<div class="save-bar md-toolbar">
-		<div class="save-actions">
-			{#if settingsDirty}<button class="md-btn md-btn--text" type="button" onclick={discardAndReset} disabled={saveState === 'saving'}>放弃更改</button>{/if}
-			<div class="save-button-status" aria-live="polite" aria-busy={saveState === 'saving'}>
-				<MaterialButton
-					variant={settingsDirty ? 'filled' : 'elevated'}
-					className={settingsDirty ? 'save-btn save-btn--dirty' : 'save-btn save-btn--clean'}
-					label={saveState === 'saving' ? '保存中…' : '保存设置'}
-					onclick={handleSaveClick}
-					disabled={saveState === 'saving'}
-				/>
+	{#if settingsDirty}
+		<div class="save-bar md-toolbar">
+			<div class="save-actions">
+				<button class="md-btn md-btn--outlined" type="button" onclick={discardAndReset} disabled={saveState === 'saving'}>放弃更改</button>
+				<div class="save-button-status" aria-live="polite" aria-busy={saveState === 'saving'}>
+					<MaterialButton
+						variant="filled"
+						className="save-btn save-btn--dirty"
+						label={saveState === 'saving' ? '保存中…' : '保存设置'}
+						onclick={handleSaveClick}
+						disabled={saveState === 'saving'}
+					/>
+				</div>
 			</div>
 		</div>
+	{/if}
 	</div>
-</div>
 
 {#if logView.open}
 	<MaterialDialog
@@ -1024,12 +1026,6 @@
 	:global(.save-btn) {
 		width: 96px;
 		min-width: 96px;
-	}
-	:global(.save-btn--clean) {
-		--_btn-bg: var(--md-sys-color-surface-container-high);
-		--_btn-fg: var(--md-sys-color-on-surface-variant);
-		--_btn-state: var(--md-sys-color-on-surface-variant);
-		box-shadow: none;
 	}
 	:global(.save-btn--dirty) {
 		box-shadow: var(--md-sys-elevation-2);

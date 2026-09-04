@@ -855,6 +855,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interrupt_session_pauses_and_cancels_without_removing() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let session = exec.create_session("test").await.unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Running)
+            .await
+            .unwrap();
+
+        let real_token = CancellationToken::new();
+        let clone = real_token.clone();
+        exec.session_cancellations
+            .lock()
+            .await
+            .insert(session.id.clone(), clone);
+
+        assert!(exec.interrupt_session(&session.id).await.unwrap());
+        assert!(real_token.is_cancelled());
+        assert_eq!(
+            exec.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        assert!(exec.get_session(&session.id).await.is_some());
+        assert!(!exec.interrupt_session(&session.id).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn end_session_nonexistent_succeeds() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());

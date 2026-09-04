@@ -343,6 +343,13 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "explicit user termination",
     },
     CommandContract {
+        name: "interrupt_session",
+        request: "SessionIdRequest",
+        response: "()",
+        boundary: CommandBoundary::Mutate,
+        security: "pauses the selected active session without deleting it",
+    },
+    CommandContract {
         name: "resolve_confirmation",
         request: "ResolveConfirmationRequest",
         response: "()",
@@ -583,7 +590,7 @@ mod tests {
     #[test]
     fn command_registry_is_unique_and_covers_the_current_handler_set() {
         assert_eq!(IPC_CONTRACT_VERSION, 1);
-        assert_eq!(COMMAND_CONTRACTS.len(), 67);
+        assert_eq!(COMMAND_CONTRACTS.len(), 68);
         let names: HashSet<_> = COMMAND_CONTRACTS
             .iter()
             .map(|contract| contract.name)

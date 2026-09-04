@@ -72,6 +72,19 @@ pub async fn end_session(
     Ok(())
 }
 
+/// Interrupt the active model/tool run but keep the session resumable.
+#[tauri::command]
+pub async fn interrupt_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<(), String> {
+    state
+        .agent
+        .interrupt_session(&session_id)
+        .await
+        .map_err(|e| log_err("interrupt_session", e))
+}
+
 /// Resolve a confirm dialog.
 ///
 /// Prefer `effect` (`allow`|`deny`) + `scope` (`once`|`session`|`always`).

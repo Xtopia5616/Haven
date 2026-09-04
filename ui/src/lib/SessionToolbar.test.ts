@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 import SessionToolbar from './SessionToolbar.svelte';
 
 describe('SessionToolbar', () => {
-	it('uses the shared toolbar icon button for starting a session', async () => {
+	it('shows the shared toolbar switcher when parallel sessions exist', async () => {
 		const onToggleSessionMenu = vi.fn();
-		render(SessionToolbar, { onToggleSessionMenu });
+		render(SessionToolbar, { showSessionMenu: true, onToggleSessionMenu });
 
-		const button = screen.getByRole('button', { name: '新建会话' });
+		const button = screen.getByRole('button', { name: '切换会话' });
 		expect(button.classList.contains('md-icon-btn')).toBe(true);
 		expect(button.getAttribute('data-size')).toBe('toolbar');
 
@@ -15,12 +15,10 @@ describe('SessionToolbar', () => {
 		expect(onToggleSessionMenu).toHaveBeenCalledTimes(1);
 	});
 
-	it('uses the shared toolbar icon button for ending a session', () => {
-		render(SessionToolbar, { activeSessionId: 'ses-1', messagesLength: 1 });
+	it('does not render duplicate new or end controls in the normal toolbar', () => {
+		render(SessionToolbar, { activeSessionId: 'ses-1' });
 
-		const button = screen.getByRole('button', { name: '结束会话' });
-		expect(button.classList.contains('md-icon-btn')).toBe(true);
-		expect(button.getAttribute('data-size')).toBe('toolbar');
-		expect(button.getAttribute('data-variant')).toBe('danger-outline');
+		expect(screen.queryByRole('button', { name: '新建会话' })).toBeNull();
+		expect(screen.queryByRole('button', { name: '结束会话' })).toBeNull();
 	});
 });
