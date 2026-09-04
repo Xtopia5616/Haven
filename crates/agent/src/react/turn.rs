@@ -88,7 +88,7 @@ impl ReActEngine {
             .await;
 
         self.hooks
-            .before_step(self, &ctx, state)
+            .before_step(self, &ctx, state, cancel.clone())
             .instrument(tracing::info_span!("before_step", session_id, step_num))
             .await;
 

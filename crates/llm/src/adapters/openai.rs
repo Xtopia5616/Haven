@@ -688,23 +688,48 @@ impl OpenAiAdapter {
             .collect()
     }
 
+    #[cfg(test)]
     fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> OpenAiRequest {
-        self.build_request_body_with_mode(messages, tools, stream, self.web_search_mode)
+        self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            stream,
+            self.web_search_mode,
+            self.endpoint.max_tokens,
+        )
     }
 
     /// Request-body construction with an explicit web search mode (tests pin
     /// the mode without touching process-global env vars).
+    #[cfg(test)]
     fn build_request_body_with_mode(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
         web_search_mode: WebSearchMode,
+    ) -> OpenAiRequest {
+        self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            stream,
+            web_search_mode,
+            self.endpoint.max_tokens,
+        )
+    }
+
+    fn build_request_body_with_mode_and_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        stream: bool,
+        web_search_mode: WebSearchMode,
+        max_tokens: u32,
     ) -> OpenAiRequest {
         let has_tools = !tools.is_empty();
         let prompt_cache_key = self.prompt_cache_key(&messages, &tools);
@@ -732,7 +757,7 @@ impl OpenAiAdapter {
                     .reasoning_echo_max_chars
                     .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
             ),
-            max_tokens: Some(self.endpoint.max_tokens),
+            max_tokens: Some(max_tokens),
             // Reasoning / thinking modes reject or ignore non-default
             // temperature. Omit whenever effort or vendor thinking is pinned.
             temperature: (!omit_temperature).then_some(self.endpoint.temperature),
@@ -934,7 +959,24 @@ impl OpenAiAdapter {
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
-        let mut body = self.build_request_body(messages, tools, stream);
+        self.chat_inner_with_max_tokens(messages, tools, stream, None)
+            .await
+    }
+
+    async fn chat_inner_with_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        stream: bool,
+        max_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        let mut body = self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            stream,
+            self.web_search_mode,
+            max_tokens.unwrap_or(self.endpoint.max_tokens),
+        );
         let url = format!(
             "{}/chat/completions",
             self.endpoint.base_url.trim_end_matches('/')
@@ -964,7 +1006,23 @@ impl OpenAiAdapter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        let mut body = self.build_request_body(messages, tools, true);
+        self.chat_stream_inner_with_max_tokens(messages, tools, None)
+            .await
+    }
+
+    async fn chat_stream_inner_with_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let mut body = self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            true,
+            self.web_search_mode,
+            max_tokens.unwrap_or(self.endpoint.max_tokens),
+        );
         let url = format!(
             "{}/chat/completions",
             self.endpoint.base_url.trim_end_matches('/')
@@ -1294,12 +1352,31 @@ impl LlmClient for OpenAiAdapter {
         self.chat_inner(messages, Vec::new(), false).await
     }
 
+    async fn chat_with_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_inner_with_max_tokens(messages, Vec::new(), false, max_output_tokens)
+            .await
+    }
+
     async fn chat_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools, false).await
+    }
+
+    async fn chat_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_inner_with_max_tokens(messages, tools, false, max_output_tokens)
+            .await
     }
 
     async fn chat_stream(
@@ -1309,12 +1386,31 @@ impl LlmClient for OpenAiAdapter {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
+    async fn chat_stream_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens(messages, Vec::new(), max_output_tokens)
+            .await
+    }
+
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
+    }
+
+    async fn chat_stream_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens(messages, tools, max_output_tokens)
+            .await
     }
 
     async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult, LlmError> {

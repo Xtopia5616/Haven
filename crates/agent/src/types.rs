@@ -83,6 +83,8 @@ pub enum TranscriptRecord {
         tokens_before: u32,
         tokens_after: u32,
         episode_id: String,
+        #[serde(default)]
+        degraded: bool,
     },
 }
 
@@ -350,6 +352,7 @@ pub fn seed_events_from_canonical(canonical: Vec<CanonicalMessage>) -> Vec<Trans
         tokens_before: 0,
         tokens_after: 0,
         episode_id: haven_common::types::new_id("msg"),
+        degraded: false,
     }]
 }
 

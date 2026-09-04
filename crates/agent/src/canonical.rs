@@ -54,7 +54,7 @@ pub(crate) fn interrupted_result_text(tool_name: &str, arguments: &Value) -> Str
 
 /// True when the transcript already satisfies tool-call pairing invariants,
 /// so [`sanitize_canonical`] can skip the drain/rebuild (common healthy path).
-fn canonical_pairing_healthy(canonical: &[CanonicalMessage]) -> bool {
+pub(crate) fn canonical_pairing_healthy(canonical: &[CanonicalMessage]) -> bool {
     let mut pending = 0usize;
     for m in canonical {
         match m.role {

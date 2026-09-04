@@ -10,6 +10,7 @@
 use async_trait::async_trait;
 use haven_tools::ConfirmationResult;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::hooks::{
@@ -50,7 +51,13 @@ impl DefaultHooks {
 
 #[async_trait]
 impl LoopHooks for DefaultHooks {
-    async fn before_step(&self, engine: &ReActEngine, ctx: &StepCtx, state: &mut ReActState) {
+    async fn before_step(
+        &self,
+        engine: &ReActEngine,
+        ctx: &StepCtx,
+        state: &mut ReActState,
+        cancel: CancellationToken,
+    ) {
         // M2: after outbox fact writes, surgically refresh MEMORY fence
         // (throttled). It must run before compaction so the budget decision
         // sees the exact system prompt that will be sent to the provider.
@@ -80,7 +87,7 @@ impl LoopHooks for DefaultHooks {
         // settled, so compaction and the following RequestContext snapshot
         // observe one coherent canonical projection.
         let _ = engine
-            .maybe_compact(ctx, state, has_image, &tool_defs)
+            .maybe_compact(ctx, state, has_image, &tool_defs, cancel)
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,

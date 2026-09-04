@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use haven_common::types::CanonicalMessage;
 use haven_llm::LlmResponse;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use haven_common::types::RiskLevel;
 
@@ -75,7 +76,13 @@ pub(crate) struct AfterLlmInput<'a> {
 pub(crate) trait LoopHooks: Send + Sync {
     /// Prologue side effects after inject, before sanitize.
     /// Interval infer (`infer(session, false)`) is time-throttled extraction.
-    async fn before_step(&self, engine: &ReActEngine, ctx: &StepCtx, state: &mut ReActState);
+    async fn before_step(
+        &self,
+        engine: &ReActEngine,
+        ctx: &StepCtx,
+        state: &mut ReActState,
+        cancel: CancellationToken,
+    );
 
     /// Classify the parsed LLM response (Phase 5 / G3). Default accepts.
     async fn after_llm(
@@ -112,7 +119,14 @@ pub(crate) struct NoopHooks;
 
 #[async_trait]
 impl LoopHooks for NoopHooks {
-    async fn before_step(&self, _engine: &ReActEngine, _ctx: &StepCtx, _state: &mut ReActState) {}
+    async fn before_step(
+        &self,
+        _engine: &ReActEngine,
+        _ctx: &StepCtx,
+        _state: &mut ReActState,
+        _cancel: CancellationToken,
+    ) {
+    }
 }
 
 /// Shared handle stored on [`ReActEngine`].
@@ -231,7 +245,10 @@ mod tests {
             emitter: emitter.clone(),
         };
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
-        engine.hooks.before_step(&engine, &ctx, &mut state).await;
+        engine
+            .hooks
+            .before_step(&engine, &ctx, &mut state, CancellationToken::new())
+            .await;
         engine
             .hooks
             .on_pause(&engine, &ctx, PauseReason::TurnEnd)

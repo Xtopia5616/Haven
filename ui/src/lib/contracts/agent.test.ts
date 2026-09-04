@@ -95,4 +95,31 @@ describe('agent IPC contract', () => {
 			reasoningMessageId: 'msg-reasoning',
 		});
 	});
+
+	it('maps degraded compaction and keeps legacy payloads compatible', () => {
+		const degraded = mapAgentEvent({
+			event: 'agent:compaction',
+			id: 4,
+			payload: {
+				session_id: 'ses-1',
+				summary: '[older context omitted]',
+				tokens_before: 1000,
+				tokens_after: 400,
+				degraded: true,
+			},
+		});
+		const legacy = mapAgentEvent({
+			event: 'agent:compaction',
+			id: 5,
+			payload: {
+				session_id: 'ses-1',
+				summary: 'prior turns',
+				tokens_before: 1000,
+				tokens_after: 400,
+			},
+		});
+
+		expect(degraded.payload.degraded).toBe(true);
+		expect(legacy.payload.degraded).toBe(false);
+	});
 });

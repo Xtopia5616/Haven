@@ -115,6 +115,7 @@ mod tests {
             tokens_before: 100,
             tokens_after: 20,
             episode_id: "msg-summary".into(),
+            degraded: false,
         };
         state.replace_with_compaction(record, vec![CanonicalMessage::user_text("recent")]);
 

@@ -304,12 +304,14 @@ impl TauriEmitter {
                 summary,
                 tokens_before,
                 tokens_after,
+                degraded,
                 episode_id,
             } => serialize(AgentCompactionEvent {
                 session_id: session_id.clone(),
                 summary: summary.clone(),
                 tokens_before: *tokens_before,
                 tokens_after: *tokens_after,
+                degraded: *degraded,
                 episode_id: episode_id.clone(),
             }),
             AgentEvent::TitleUpdated { session_id, title } => serialize(SessionTitleUpdatedEvent {

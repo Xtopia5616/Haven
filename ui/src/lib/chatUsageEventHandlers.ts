@@ -102,7 +102,15 @@ export function createChatUsageEventHandlers(): {
 			const d = event.payload;
 			const before = formatTokenCount(d.tokensBefore || 0);
 			const after = formatTokenCount(d.tokensAfter || 0);
-			addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
+			if (d.degraded) {
+				addNotification(
+					`上下文空间不足，已降级压缩：${before} → ${after} tokens；较早内容已省略`,
+					'warning',
+					4000,
+				);
+			} else {
+				addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
+			}
 		},
 	};
 }

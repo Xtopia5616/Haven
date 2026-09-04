@@ -104,6 +104,7 @@ export interface AgentCompactionPayload {
 	summary: string;
 	tokensBefore: number;
 	tokensAfter: number;
+	degraded: boolean;
 	episodeId?: string;
 }
 
@@ -236,6 +237,7 @@ interface AgentCompactionWirePayload {
 	summary: string;
 	tokens_before: number;
 	tokens_after: number;
+	degraded?: boolean;
 	episode_id?: string;
 }
 interface AgentNotificationWirePayload { session_id: string; title: string; body: string; }
@@ -398,6 +400,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				summary: payload.summary,
 				tokensBefore: payload.tokens_before,
 				tokensAfter: payload.tokens_after,
+				degraded: payload.degraded ?? false,
 				...(payload.episode_id !== undefined ? { episodeId: payload.episode_id } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}

@@ -466,20 +466,42 @@ impl GeminiAdapter {
             .collect()
     }
 
+    #[cfg(test)]
     fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         _stream: bool,
     ) -> GeminiRequest {
-        self.build_request_body_with_mode(messages, tools, self.web_search_mode)
+        self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            self.web_search_mode,
+            self.endpoint.max_tokens,
+        )
     }
 
+    #[cfg(test)]
     fn build_request_body_with_mode(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         web_search_mode: WebSearchMode,
+    ) -> GeminiRequest {
+        self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            web_search_mode,
+            self.endpoint.max_tokens,
+        )
+    }
+
+    fn build_request_body_with_mode_and_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        web_search_mode: WebSearchMode,
+        max_output_tokens: u32,
     ) -> GeminiRequest {
         let system_split = messages.iter().any(|message| {
             message.role == CanonicalRole::System
@@ -507,7 +529,7 @@ impl GeminiAdapter {
             },
             generation_config: Some(GeminiGenerationConfig {
                 temperature: self.endpoint.temperature,
-                max_output_tokens: self.endpoint.max_tokens,
+                max_output_tokens,
                 top_p: self.endpoint.top_p,
                 top_k: self.endpoint.top_k,
                 stop_sequences: self.endpoint.stop.clone(),
@@ -639,7 +661,21 @@ impl GeminiAdapter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
-        let body = self.build_request_body(messages, tools, false);
+        self.chat_inner_with_max_tokens(messages, tools, None).await
+    }
+
+    async fn chat_inner_with_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        let body = self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            self.web_search_mode,
+            max_output_tokens.unwrap_or(self.endpoint.max_tokens),
+        );
         let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.generate_url();
         tracing::debug!("POST {} (model: {})", url, body.contents.len());
@@ -678,7 +714,22 @@ impl GeminiAdapter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        let body = self.build_request_body(messages, tools, true);
+        self.chat_stream_inner_with_max_tokens(messages, tools, None)
+            .await
+    }
+
+    async fn chat_stream_inner_with_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let body = self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            self.web_search_mode,
+            max_output_tokens.unwrap_or(self.endpoint.max_tokens),
+        );
         let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.stream_generate_url();
         tracing::debug!(
@@ -936,12 +987,31 @@ impl LlmClient for GeminiAdapter {
         self.chat_inner(messages, Vec::new()).await
     }
 
+    async fn chat_with_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_inner_with_max_tokens(messages, Vec::new(), max_output_tokens)
+            .await
+    }
+
     async fn chat_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools).await
+    }
+
+    async fn chat_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_inner_with_max_tokens(messages, tools, max_output_tokens)
+            .await
     }
 
     async fn chat_stream(
@@ -951,12 +1021,31 @@ impl LlmClient for GeminiAdapter {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
+    async fn chat_stream_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens(messages, Vec::new(), max_output_tokens)
+            .await
+    }
+
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
+    }
+
+    async fn chat_stream_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens(messages, tools, max_output_tokens)
+            .await
     }
 
     async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {

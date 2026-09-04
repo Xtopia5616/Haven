@@ -611,21 +611,46 @@ impl AnthropicAdapter {
         CacheDiagnostics::for_provider_cache(system_split)
     }
 
+    #[cfg(test)]
     fn build_request_body(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> AnthropicRequest {
-        self.build_request_body_with_mode(messages, tools, stream, self.web_search_mode)
+        self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            stream,
+            self.web_search_mode,
+            self.endpoint.max_tokens,
+        )
     }
 
+    #[cfg(test)]
     fn build_request_body_with_mode(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
         web_search_mode: WebSearchMode,
+    ) -> AnthropicRequest {
+        self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            stream,
+            web_search_mode,
+            self.endpoint.max_tokens,
+        )
+    }
+
+    fn build_request_body_with_mode_and_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        stream: bool,
+        web_search_mode: WebSearchMode,
+        max_tokens: u32,
     ) -> AnthropicRequest {
         let cache_diagnostics = Self::cache_diagnostics(&messages);
         let (messages, system) = Self::convert_messages(messages);
@@ -669,7 +694,7 @@ impl AnthropicAdapter {
         Self::apply_messages_cache_breakpoint(&mut messages);
         AnthropicRequest {
             model: self.endpoint.model_name.clone(),
-            max_tokens: self.endpoint.max_tokens,
+            max_tokens,
             messages,
             system: Self::system_with_cache_control(system),
             temperature: Some(self.endpoint.temperature),
@@ -842,7 +867,24 @@ impl AnthropicAdapter {
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
-        let body = self.build_request_body(messages, tools, stream);
+        self.chat_inner_with_max_tokens(messages, tools, stream, None)
+            .await
+    }
+
+    async fn chat_inner_with_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        stream: bool,
+        max_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        let body = self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            stream,
+            self.web_search_mode,
+            max_tokens.unwrap_or(self.endpoint.max_tokens),
+        );
         let url = self.messages_url();
         tracing::debug!("POST {} (model: {})", url, body.model);
         tracing::debug!(
@@ -875,7 +917,23 @@ impl AnthropicAdapter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        let body = self.build_request_body(messages, tools, true);
+        self.chat_stream_inner_with_max_tokens(messages, tools, None)
+            .await
+    }
+
+    async fn chat_stream_inner_with_max_tokens(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let body = self.build_request_body_with_mode_and_max_tokens(
+            messages,
+            tools,
+            true,
+            self.web_search_mode,
+            max_tokens.unwrap_or(self.endpoint.max_tokens),
+        );
         let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.messages_url();
         tracing::debug!(
@@ -1320,12 +1378,31 @@ impl LlmClient for AnthropicAdapter {
         self.chat_inner(messages, Vec::new(), false).await
     }
 
+    async fn chat_with_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_inner_with_max_tokens(messages, Vec::new(), false, max_output_tokens)
+            .await
+    }
+
     async fn chat_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools, false).await
+    }
+
+    async fn chat_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_inner_with_max_tokens(messages, tools, false, max_output_tokens)
+            .await
     }
 
     async fn chat_stream(
@@ -1335,12 +1412,31 @@ impl LlmClient for AnthropicAdapter {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
+    async fn chat_stream_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens(messages, Vec::new(), max_output_tokens)
+            .await
+    }
+
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
+    }
+
+    async fn chat_stream_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens(messages, tools, max_output_tokens)
+            .await
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

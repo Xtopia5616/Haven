@@ -224,8 +224,17 @@ Respond with ONLY the JSON array, no markdown, no explanation.";
 
 /// Conversation compaction summary prefix (default_model). The transcript
 /// is appended after this text.
-pub const CONVERSATION_SUMMARY_PROMPT: &str =
-    "Summarize this conversation. Keep key facts, decisions, and context:\n\n";
+pub const CONVERSATION_SUMMARY_PROMPT: &str = "You are compressing an earlier conversation for a later assistant turn.\n\
+Return a concise plain-text state summary using exactly these headings:\n\
+Goal:\n\
+Facts:\n\
+Decisions:\n\
+Tool results:\n\
+Current state:\n\
+Pending:\n\
+Constraints:\n\
+Preserve concrete values, file paths, identifiers, errors, and unresolved work.\n\
+Do not invent information. If a section has no reliable content, write - none.\n\n";
 
 /// Prefix marker of compaction summary assistant messages persisted into the
 /// message stream. Shared by the compactor (which writes it), the react loop

@@ -13,6 +13,7 @@ use haven_memory::Database;
 use haven_memory::recall::{MAX_MEMORY_QUERY_CHARS, MemoryKind, MemoryQuery, MemoryRetriever};
 use haven_tools::ToolsManager;
 
+use crate::compactor::estimate_tokens;
 use crate::memory_index::embedding_index_model;
 
 /// Builds the system prompt, including a **short** tools / skills / MCP index.
@@ -189,6 +190,51 @@ pub struct MemorySections {
     pub episodes: String,
 }
 
+fn truncate_lines_to_token_budget(text: &str, max_tokens: u32) -> String {
+    if text.is_empty() || estimate_tokens(text) <= max_tokens {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for line in lines {
+        let candidate = format!("{out}{line}\n");
+        if estimate_tokens(&candidate) > max_tokens {
+            if out.is_empty() {
+                return truncate_to_token_budget(line, max_tokens);
+            }
+            break;
+        }
+        out = candidate;
+    }
+    out
+}
+
+fn cap_memory_sections_to_tokens(mut sections: MemorySections) -> MemorySections {
+    let total_tokens =
+        estimate_tokens(&sections.facts).saturating_add(estimate_tokens(&sections.episodes));
+    if total_tokens <= MEMORY_BODY_TOKEN_BUDGET {
+        return sections;
+    }
+    let facts_tokens = estimate_tokens(&sections.facts);
+    let episodes_tokens = estimate_tokens(&sections.episodes);
+    let facts_budget = if episodes_tokens == 0 {
+        MEMORY_BODY_TOKEN_BUDGET
+    } else {
+        MEMORY_BODY_TOKEN_BUDGET
+            .saturating_mul(facts_tokens)
+            .checked_div(total_tokens)
+            .unwrap_or(1)
+            .max(1)
+    };
+    let episodes_budget = MEMORY_BODY_TOKEN_BUDGET.saturating_sub(facts_budget).max(1);
+    sections.facts = truncate_lines_to_token_budget(&sections.facts, facts_budget);
+    sections.episodes = truncate_lines_to_token_budget(&sections.episodes, episodes_budget);
+    sections
+}
+
 /// Cross-session memory fence (facts + episodes). Mid-run (M2) patches this
 /// fence in place; resume (X2) rebuilds the full system prompt instead.
 pub const MEMORY_START: &str = haven_common::prompts::MEMORY_FENCE_START;
@@ -209,19 +255,48 @@ const USER_FACTS_SEED_LIMIT: usize = 40;
 const CROSS_SEARCH_LIMIT: usize = 48;
 /// Character budget for facts + episodes body (inside MEMORY fence).
 const MEMORY_BODY_CHAR_BUDGET: usize = 2800;
+/// Token budget for facts + episodes. Character limits remain as a secondary
+/// guard, but token count is authoritative for mixed Chinese/JSON content.
+const MEMORY_BODY_TOKEN_BUDGET: u32 = 768;
 /// Prefer shorter objects when packing under the budget.
 const FACT_OBJECT_MAX_CHARS: usize = 120;
 /// Hard cap for the complete session-specific context block, including the
 /// current-session description, additional context, and rendered memory.
 const SESSION_CONTEXT_CHAR_BUDGET: usize = 8000;
+/// Token budget for the session-specific system-prompt block.
+const SESSION_CONTEXT_TOKEN_BUDGET: u32 = 2048;
 /// Prevent one verbose historical entry from crowding every other recent
 /// entry out of the bounded Additional context section.
 const RECENT_CONTEXT_ITEM_MAX_CHARS: usize = 1200;
+const RECENT_CONTEXT_ITEM_MAX_TOKENS: u32 = 300;
 /// The description is shown verbatim-ish to the model, but must not consume
 /// the whole context allocation or become an unbounded embedding query.
 const SESSION_DESCRIPTION_CHAR_BUDGET: usize = 1200;
+const SESSION_DESCRIPTION_TOKEN_BUDGET: u32 = 384;
 fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
+}
+
+fn truncate_to_token_budget(text: &str, max_tokens: u32) -> String {
+    if max_tokens == 0 {
+        return String::new();
+    }
+    if estimate_tokens(text) <= max_tokens {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        let candidate: String = chars[..middle].iter().collect();
+        if estimate_tokens(&candidate) <= max_tokens {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    chars[..low].iter().collect()
 }
 
 /// Canonicalize whitespace before it becomes a memory-cache key or embedding
@@ -236,14 +311,30 @@ fn normalize_memory_query(text: &str) -> String {
 /// context budget. History is already ordered oldest-to-newest, so packing
 /// from the tail preserves the information most relevant to the next turn and
 /// never cuts an older entry in half just because the prompt budget ended.
+#[cfg_attr(not(test), allow(dead_code))]
 fn render_recent_context(history: &[String], max_chars: usize) -> String {
+    // Legacy callers only supplied a character limit. Give them a generous
+    // token ceiling so the compatibility wrapper preserves its old behavior;
+    // production callers use the explicit token-aware variant below.
+    render_recent_context_with_budget(history, max_chars, max_chars as u32)
+}
+
+fn render_recent_context_with_budget(
+    history: &[String],
+    max_chars: usize,
+    max_tokens: u32,
+) -> String {
     const HEADER: &str = "Additional context:\n";
 
-    if history.is_empty() || max_chars <= HEADER.chars().count() {
+    if history.is_empty()
+        || max_chars <= HEADER.chars().count()
+        || estimate_tokens(HEADER) >= max_tokens
+    {
         return String::new();
     }
 
     let mut used = HEADER.chars().count();
+    let mut used_tokens = estimate_tokens(HEADER);
     let mut selected = Vec::new();
     for message in history.iter().rev() {
         // History is user/model-produced data, not prompt instructions. Keep
@@ -253,12 +344,17 @@ fn render_recent_context(history: &[String], max_chars: usize) -> String {
             message,
             RECENT_CONTEXT_ITEM_MAX_CHARS.min(max_chars),
         );
+        let safe_message = truncate_to_token_budget(&safe_message, RECENT_CONTEXT_ITEM_MAX_TOKENS);
         let line = format!("  {safe_message}\n");
         let line_chars = line.chars().count();
-        if used.saturating_add(line_chars) > max_chars {
+        let line_tokens = estimate_tokens(&line);
+        if used.saturating_add(line_chars) > max_chars
+            || used_tokens.saturating_add(line_tokens) > max_tokens
+        {
             break;
         }
         used += line_chars;
+        used_tokens = used_tokens.saturating_add(line_tokens);
         selected.push(line);
     }
 
@@ -266,13 +362,18 @@ fn render_recent_context(history: &[String], max_chars: usize) -> String {
         // A single oversized newest entry is still more useful than silently
         // dropping the entire history block. The entry itself is the only
         // place where a character boundary may be introduced.
-        let available = max_chars.saturating_sub(used);
-        if available == 0 {
+        let available_chars = max_chars.saturating_sub(used);
+        let available_tokens = max_tokens.saturating_sub(used_tokens);
+        if available_chars == 0 || available_tokens == 0 {
             return String::new();
         }
         let safe_message =
-            haven_common::text::sanitize_prompt_field(history.last().unwrap(), max_chars);
-        selected.push(truncate_chars(&format!("  {safe_message}\n"), available));
+            haven_common::text::sanitize_prompt_field(history.last().unwrap(), available_chars);
+        let safe_message = truncate_to_token_budget(&safe_message, available_tokens);
+        selected.push(truncate_chars(
+            &format!("  {safe_message}\n"),
+            available_chars,
+        ));
     } else {
         selected.reverse();
     }
@@ -282,7 +383,11 @@ fn render_recent_context(history: &[String], max_chars: usize) -> String {
     if rendered.chars().count() < max_chars {
         rendered.push('\n');
     }
-    rendered
+    if estimate_tokens(&rendered) > max_tokens {
+        truncate_to_token_budget(&rendered, max_tokens)
+    } else {
+        rendered
+    }
 }
 
 /// Cross-session messaging guidance, appended to the tool index only when the
@@ -375,11 +480,21 @@ impl SystemPromptBuilder {
             session_description.trim(),
             SESSION_DESCRIPTION_CHAR_BUDGET,
         );
+        let session_description =
+            truncate_to_token_budget(&session_description, SESSION_DESCRIPTION_TOKEN_BUDGET);
         let prefix =
             format!("{SESSION_CONTEXT_FENCE_START}Current session: {session_description}\n\n");
         let fixed_chars = prefix.chars().count() + facts_section.chars().count();
+        let fixed_tokens = estimate_tokens(&prefix).saturating_add(estimate_tokens(&facts_section));
         let context_budget = SESSION_CONTEXT_CHAR_BUDGET.saturating_sub(fixed_chars);
-        let context_section = render_recent_context(conversation_history, context_budget);
+        let context_token_budget = SESSION_CONTEXT_TOKEN_BUDGET
+            .saturating_sub(fixed_tokens)
+            .max(1);
+        let context_section = render_recent_context_with_budget(
+            conversation_history,
+            context_budget,
+            context_token_budget,
+        );
         let dynamic_context = format!("{prefix}{context_section}{facts_section}");
 
         render(
@@ -679,10 +794,10 @@ impl SystemPromptBuilder {
             }
         }
 
-        let sections = MemorySections {
+        let sections = cap_memory_sections_to_tokens(MemorySections {
             facts: facts_section,
             episodes: episodes_section,
-        };
+        });
         if cacheable && let Ok(mut cache) = self.memory_cache.lock() {
             cache.insert(cache_key, sections.clone());
         }
@@ -1365,6 +1480,29 @@ mod tests {
         assert!(rendered.starts_with("Additional context:\n  "));
         assert!(rendered.chars().count() <= budget);
         assert!(!rendered.contains("[user] old"));
+    }
+
+    #[test]
+    fn token_aware_prompt_sections_never_exceed_their_budgets() {
+        let sections = cap_memory_sections_to_tokens(MemorySections {
+            facts: (0..80)
+                .map(|i| format!("fact-{i}: {}\n", "detail ".repeat(50)))
+                .collect(),
+            episodes: (0..80)
+                .map(|i| format!("episode-{i}: {}\n", "detail ".repeat(50)))
+                .collect(),
+        });
+        assert!(
+            estimate_tokens(&sections.facts) + estimate_tokens(&sections.episodes)
+                <= MEMORY_BODY_TOKEN_BUDGET
+        );
+
+        let rendered = render_recent_context_with_budget(
+            &[("old ".to_string() + &"x".repeat(2_000)), "newest".into()],
+            8_000,
+            40,
+        );
+        assert!(estimate_tokens(&rendered) <= 40);
     }
 
     #[test]

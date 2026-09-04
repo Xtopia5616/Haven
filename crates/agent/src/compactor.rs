@@ -1,10 +1,11 @@
 use crate::is_dangling_boundary;
 use haven_common::prompts::CONVERSATION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use haven_llm::{EndpointRole, LlmRouter};
+use haven_llm::{EndpointRole, LlmError, LlmRouter, ToolDefinition};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use tiktoken_rs::o200k_base;
+use tokio_util::sync::CancellationToken;
 
 static TOKENIZER: LazyLock<tiktoken_rs::CoreBPE> =
     LazyLock::new(|| o200k_base().expect("failed to initialize o200k_base tokenizer"));
@@ -37,18 +38,35 @@ fn estimate_message_token_cost(msg: &CanonicalMessage) -> u32 {
     if let Some(r) = &msg.reasoning {
         total = total.saturating_add(estimate_tokens(r));
     }
-    // Anthropic thinking text is carried as raw `thinking_blocks` when the
-    // redundant `reasoning` copy is dropped; count it either way so
-    // reasoning-heavy conversations still trigger compaction.
+    // Anthropic thinking blocks and built-in search items are echoed as raw
+    // JSON. Count their complete serialized form, including signatures and
+    // provider metadata, rather than only the visible thinking text.
     for block in &msg.thinking_blocks {
-        if let Some(t) = block.get("thinking").and_then(serde_json::Value::as_str) {
-            total = total.saturating_add(estimate_tokens(t));
+        total = total.saturating_add(estimate_serialized_tokens(block));
+    }
+    if !msg.web_search_calls.is_empty() {
+        total = total.saturating_add(estimate_serialized_tokens(&msg.web_search_calls));
+    }
+    if let Some(calls) = &msg.tool_calls {
+        // Tool arguments can be large (for example a generated patch). The
+        // old fixed 50-token allowance missed that provider-visible payload.
+        for call in calls {
+            total = total
+                .saturating_add(estimate_serialized_tokens(call))
+                .saturating_add(10);
         }
     }
-    if msg.tool_calls.is_some() {
-        total = total.saturating_add(50);
+    if let Some(tool_call_id) = &msg.tool_call_id {
+        total = total.saturating_add(estimate_tokens(tool_call_id));
     }
     total
+}
+
+fn estimate_serialized_tokens<T: serde::Serialize>(value: &T) -> u32 {
+    serde_json::to_string(value)
+        .ok()
+        .map(|json| estimate_tokens(&json))
+        .unwrap_or_default()
 }
 
 /// Estimate tokens in a list of canonical messages by summing each message's
@@ -58,6 +76,55 @@ pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
         .iter()
         .map(estimate_message_token_cost)
         .fold(0, u32::saturating_add)
+}
+
+/// Estimate the serialized schema cost once per request. Tool definitions are
+/// not part of the durable transcript, but they occupy the same provider
+/// context window as messages.
+pub fn estimate_tool_tokens(tools: &[ToolDefinition]) -> u32 {
+    serde_json::to_string(tools)
+        .ok()
+        .map(|json| estimate_tokens(&json))
+        .unwrap_or_default()
+}
+
+/// Provider framing and adapter-side fields are not represented in canonical
+/// messages. Keep one conservative allowance shared by compaction and the
+/// dynamic output-cap calculation.
+pub const PROVIDER_REQUEST_OVERHEAD_TOKENS: u32 = 256;
+
+/// Estimate the request that will actually reach a provider. Sanitization is
+/// applied to a clone so durable transcript state remains authoritative while
+/// dangling tool-call repairs still participate in the budget.
+pub fn estimate_provider_request_tokens(
+    messages: &[CanonicalMessage],
+    tools: &[ToolDefinition],
+) -> u32 {
+    estimate_provider_request_tokens_with_message_estimate(
+        messages,
+        tools,
+        estimate_message_tokens(messages),
+    )
+}
+
+/// Cache-friendly variant used by the ReAct preflight. Healthy canonical
+/// arrays reuse the incremental message estimate; only malformed tool
+/// boundaries need a sanitized clone and a fresh message pass.
+pub fn estimate_provider_request_tokens_with_message_estimate(
+    messages: &[CanonicalMessage],
+    tools: &[ToolDefinition],
+    cached_message_tokens: u32,
+) -> u32 {
+    let message_tokens = if crate::canonical::canonical_pairing_healthy(messages) {
+        cached_message_tokens
+    } else {
+        let mut provider_messages = messages.to_vec();
+        crate::sanitize_canonical(&mut provider_messages);
+        estimate_message_tokens(&provider_messages)
+    };
+    message_tokens
+        .saturating_add(estimate_tool_tokens(tools))
+        .saturating_add(PROVIDER_REQUEST_OVERHEAD_TOKENS)
 }
 
 /// Prefix sums let the compaction planner compare many candidate boundaries
@@ -93,6 +160,7 @@ const SUMMARY_INPUT_TOKEN_BUDGET: u32 = 16_000;
 /// little framing overhead is reserved by the range planner below.
 const SUMMARY_TEXT_TOKEN_BUDGET: u32 = 768;
 const SUMMARY_MESSAGE_TOKEN_BUDGET: u32 = 1_024;
+const SUMMARY_REQUEST_OVERHEAD_TOKENS: u32 = PROVIDER_REQUEST_OVERHEAD_TOKENS;
 
 fn truncate_to_token_budget(text: &str, max_tokens: u32) -> String {
     if max_tokens == 0 {
@@ -156,6 +224,9 @@ pub struct CompactionResult {
     pub tokens_after: u32,
     /// Stable `msg-*` shared by the summary bubble and `memory_items` (L1).
     pub episode_id: String,
+    /// True when the deterministic older-context marker was used because the
+    /// summary request failed, returned empty output, or could not fit.
+    pub degraded: bool,
 }
 
 /// Context window pressure monitor and auto-compactor.
@@ -164,7 +235,7 @@ pub struct CompactionResult {
 /// after each ReAct step. When the estimate exceeds `context_window *
 /// trigger_ratio` (clamped to leave room for the model's response and a
 /// retry buffer), it compresses the oldest messages into a single summary
-/// via the DefaultModel.
+/// via the configured text/vision summary endpoint.
 ///
 /// `trigger_ratio` defaults to 0.75 — i.e. compact when 75% of the context
 /// window is consumed. The previous behaviour (`context_window -
@@ -232,7 +303,15 @@ impl ContextCompactor {
     /// Build a bounded prompt from the messages being removed. The source
     /// renderer keeps both edges when the middle is larger than the summary
     /// model's input budget.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn build_summary_prompt(messages: &[CanonicalMessage]) -> String {
+        Self::build_summary_prompt_with_budget(messages, SUMMARY_INPUT_TOKEN_BUDGET)
+    }
+
+    fn build_summary_prompt_with_budget(
+        messages: &[CanonicalMessage],
+        input_budget: u32,
+    ) -> String {
         use std::fmt::Write as _;
         let mut lines = Vec::with_capacity(messages.len());
         for msg in messages {
@@ -244,8 +323,24 @@ impl ContextCompactor {
             };
             let mut line = String::new();
             for part in &msg.content {
-                if let ContentPart::Text(t) = part {
-                    let _ = writeln!(line, "[{}] {}", role, t);
+                match part {
+                    ContentPart::Text(t) => {
+                        let _ = writeln!(line, "[{}] {}", role, t);
+                    }
+                    ContentPart::Image { media_type, .. } => {
+                        let _ = writeln!(
+                            line,
+                            "[{} image attachment media_type={} follows]",
+                            role, media_type
+                        );
+                    }
+                    ContentPart::Audio { media_type, .. } => {
+                        let _ = writeln!(
+                            line,
+                            "[{} audio attachment media_type={} follows]",
+                            role, media_type
+                        );
+                    }
                 }
             }
             if let Some(calls) = &msg.tool_calls {
@@ -257,10 +352,8 @@ impl ContextCompactor {
                     );
                 }
             }
-            if line.is_empty()
-                && let Some(tool_call_id) = &msg.tool_call_id
-            {
-                let _ = writeln!(line, "[tool result for {}]", tool_call_id);
+            if let Some(tool_call_id) = &msg.tool_call_id {
+                let _ = writeln!(line, "[tool result id={}]", tool_call_id);
             }
             if !line.is_empty() {
                 lines.push(line);
@@ -274,9 +367,7 @@ impl ContextCompactor {
         let suffix = "\n---\nSummary:";
         let fixed_tokens =
             estimate_tokens(CONVERSATION_SUMMARY_PROMPT).saturating_add(estimate_tokens(suffix));
-        let available = SUMMARY_INPUT_TOKEN_BUDGET
-            .saturating_sub(fixed_tokens)
-            .max(1);
+        let available = input_budget.saturating_sub(fixed_tokens).max(1);
         let full_body = lines.concat();
         let body = if estimate_tokens(&full_body) <= available {
             full_body
@@ -297,6 +388,29 @@ impl ContextCompactor {
         text.push_str(&body);
         text.push_str(suffix);
         text
+    }
+
+    /// Build one multimodal summary request. Text is bounded independently so
+    /// image/audio parts remain available to a vision-capable provider instead
+    /// of being counted and silently discarded.
+    fn build_summary_messages(
+        messages: &[CanonicalMessage],
+        input_budget: u32,
+    ) -> Vec<CanonicalMessage> {
+        let media: Vec<ContentPart> = messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|part| match part {
+                ContentPart::Image { .. } | ContentPart::Audio { .. } => Some(part.clone()),
+                ContentPart::Text(_) => None,
+            })
+            .collect();
+        let media_tokens = estimate_message_tokens(&[CanonicalMessage::user(media.clone())]);
+        let text_budget = input_budget.saturating_sub(media_tokens).max(1);
+        let prompt = Self::build_summary_prompt_with_budget(messages, text_budget);
+        let mut content = vec![ContentPart::text(prompt)];
+        content.extend(media);
+        vec![CanonicalMessage::user(content)]
     }
 
     /// Compute a safe cutoff index that never splits a tool-call/tool-result
@@ -340,9 +454,37 @@ impl ContextCompactor {
         }
     }
 
+    /// Pick the beginning of a recent suffix without leaving an orphaned
+    /// tool result in that suffix. Unlike `safe_end_idx`, a tool result is
+    /// rewound to its assistant declaration when the whole call round can be
+    /// retained. This is used by the deterministic degraded path, whose
+    /// contract is to keep recent rounds rather than summarize them away.
+    fn safe_suffix_start_idx(messages: &[CanonicalMessage], desired: usize) -> usize {
+        let mut candidate = desired.min(messages.len());
+        while candidate < messages.len() {
+            if crate::canonical::canonical_pairing_healthy(&messages[candidate..]) {
+                return candidate;
+            }
+            if messages[candidate].role == haven_common::types::CanonicalRole::Tool {
+                let rewound = Self::safe_start_idx(messages, candidate);
+                if rewound < candidate
+                    && crate::canonical::canonical_pairing_healthy(&messages[rewound..])
+                {
+                    return rewound;
+                }
+            }
+            candidate += 1;
+        }
+        messages.len()
+    }
+
     /// Keep the earliest non-system messages so provider message-prefix cache
     /// can survive compaction. Summarize the **middle**, not the head.
     const STICKY_PREFIX_MESSAGES: usize = 2;
+    /// Deterministic degraded compaction keeps a few recent turns verbatim.
+    /// Six messages cover a normal exchange plus one complete
+    /// assistant-tool-result round without making the fallback unbounded.
+    const DEGRADED_RECENT_MESSAGES: usize = 6;
 
     /// Choose `[start, end)` of the middle region to summarize.
     ///
@@ -350,10 +492,20 @@ impl ContextCompactor {
     /// head of the conversation (prompt-cache friendly); middle is selected by
     /// token cost; suffix is the largest recent tail that fits the post-
     /// compaction target.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn compaction_range(
         &self,
         messages: &[CanonicalMessage],
         token_prefixes: &[u32],
+    ) -> Option<(usize, usize, usize)> {
+        self.compaction_range_with_extra_tokens(messages, token_prefixes, 0)
+    }
+
+    fn compaction_range_with_extra_tokens(
+        &self,
+        messages: &[CanonicalMessage],
+        token_prefixes: &[u32],
+        extra_tokens: u32,
     ) -> Option<(usize, usize, usize)> {
         let system_count = messages
             .iter()
@@ -385,7 +537,8 @@ impl ContextCompactor {
             .get(start_idx)
             .copied()
             .unwrap_or_default()
-            .saturating_add(SUMMARY_MESSAGE_TOKEN_BUDGET);
+            .saturating_add(SUMMARY_MESSAGE_TOKEN_BUDGET)
+            .saturating_add(extra_tokens);
         let mut end_idx = None;
         for desired_end in (start_idx + 2)..=messages.len() {
             let candidate = Self::safe_end_idx(messages, desired_end);
@@ -398,7 +551,24 @@ impl ContextCompactor {
                 break;
             }
         }
-        let end_idx = end_idx.unwrap_or(messages.len());
+        let end_idx = end_idx.unwrap_or_else(|| {
+            // If the normal token target cannot retain any suffix, keep the
+            // latest few messages anyway. This is the bounded deterministic
+            // fallback used when a summary request fails, and is preferable
+            // to deleting the entire recent tail. The suffix helper keeps a
+            // complete tool-call round together.
+            let recent_start = Self::safe_suffix_start_idx(
+                messages,
+                messages
+                    .len()
+                    .saturating_sub(Self::DEGRADED_RECENT_MESSAGES),
+            );
+            if recent_start > start_idx + 1 {
+                recent_start
+            } else {
+                messages.len()
+            }
+        });
 
         // A summary may legitimately replace the whole trailing tool round:
         // it is then the new clean tail. Otherwise a suffix must remain.
@@ -418,75 +588,117 @@ impl ContextCompactor {
     pub async fn compact(
         &self,
         messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
         router: &Arc<LlmRouter>,
-    ) -> Option<CompactionResult> {
+        cancel: CancellationToken,
+    ) -> Result<Option<CompactionResult>, LlmError> {
         // A user -> assistant tool-call -> tool-result round is the minimum
         // recoverable shape after a context-length failure.
         if messages.len() < 3 {
-            return None;
+            return Ok(None);
         }
 
         let token_prefixes = message_token_prefixes(messages);
-        let (system_count, start_idx, end_idx) =
-            self.compaction_range(messages, &token_prefixes)?;
+        let extra_tokens =
+            estimate_tool_tokens(tools).saturating_add(PROVIDER_REQUEST_OVERHEAD_TOKENS);
+        let Some((system_count, start_idx, end_idx)) =
+            self.compaction_range_with_extra_tokens(messages, &token_prefixes, extra_tokens)
+        else {
+            return Ok(None);
+        };
         let middle = &messages[start_idx..end_idx];
         let suffix = &messages[end_idx..];
         let summarized_count = end_idx - start_idx;
 
-        let tokens_before = token_prefixes.last().copied().unwrap_or_default();
+        let tokens_before = estimate_provider_request_tokens(messages, tools);
+        let summary_role = if middle.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Image { .. }))
+        }) {
+            router.vision_role().await
+        } else {
+            EndpointRole::DefaultModel
+        };
+        let summary_window = router.context_window_for_role(summary_role).await;
+        let summary_budget = SUMMARY_INPUT_TOKEN_BUDGET.min(
+            summary_window
+                .saturating_sub(SUMMARY_TEXT_TOKEN_BUDGET)
+                .saturating_sub(SUMMARY_REQUEST_OVERHEAD_TOKENS)
+                .max(1),
+        );
+        let summary_messages = Self::build_summary_messages(middle, summary_budget);
+        let summary_input_tokens = estimate_provider_request_tokens(&summary_messages, &[]);
+        let summary_fits = summary_input_tokens
+            .saturating_add(1)
+            .saturating_add(SUMMARY_REQUEST_OVERHEAD_TOKENS)
+            <= summary_window;
 
-        let prompt = Self::build_summary_prompt(middle);
-
-        match router
-            .chat_with_prompt(EndpointRole::DefaultModel, "", &prompt)
-            .await
-        {
-            Ok(response) => {
-                let summary =
-                    truncate_to_token_budget(response.text.trim(), SUMMARY_TEXT_TOKEN_BUDGET);
-                if summary.is_empty() {
-                    return None;
+        let summary = if summary_fits {
+            let output_cap = router
+                .effective_output_tokens(summary_role, summary_input_tokens)
+                .await
+                .clamp(1, SUMMARY_TEXT_TOKEN_BUDGET);
+            match router
+                .chat_messages_cancellable(summary_role, summary_messages, Some(output_cap), cancel)
+                .await
+            {
+                Ok(response) => {
+                    let text =
+                        truncate_to_token_budget(response.text.trim(), SUMMARY_TEXT_TOKEN_BUDGET);
+                    (!text.is_empty()).then_some(text)
                 }
-
-                let episode_id = haven_common::types::new_id("msg");
-                let mut compacted: Vec<CanonicalMessage> = Vec::with_capacity(
-                    system_count + (start_idx - system_count) + 1 + suffix.len(),
-                );
-                compacted.extend_from_slice(&messages[..system_count]);
-                compacted.extend_from_slice(&messages[system_count..start_idx]);
-                let mut summary_msg = CanonicalMessage::assistant(
-                    vec![ContentPart::text(format!(
-                        "{} {}",
-                        haven_common::prompts::COMPACTED_SUMMARY_PREFIX,
-                        summary
-                    ))],
-                    None,
-                    None,
-                    // Compaction summarizes away the old turns; any search
-                    // context they carried is intentionally not carried over.
-                    Vec::new(),
-                    Vec::new(),
-                );
-                summary_msg.id = Some(episode_id.clone());
-                compacted.push(summary_msg);
-                compacted.extend_from_slice(suffix);
-
-                let tokens_after = estimate_message_tokens(&compacted);
-
-                Some(CompactionResult {
-                    compacted,
-                    summarized_count,
-                    summary,
-                    tokens_before,
-                    tokens_after,
-                    episode_id,
-                })
+                Err(LlmError::Cancelled) => return Err(LlmError::Cancelled),
+                Err(error) => {
+                    tracing::warn!("compaction summary request failed; degrading: {error}");
+                    None
+                }
             }
-            Err(e) => {
-                tracing::warn!("Compaction LLM call failed: {}", e);
-                None
-            }
-        }
+        } else {
+            tracing::warn!(
+                "compaction summary request does not fit model window {}; degrading",
+                summary_window
+            );
+            None
+        };
+
+        let degraded = summary.is_none();
+        let summary = summary.unwrap_or_else(|| "[older context omitted]".into());
+        let episode_id = haven_common::types::new_id("msg");
+        let mut compacted: Vec<CanonicalMessage> =
+            Vec::with_capacity(system_count + (start_idx - system_count) + 1 + suffix.len());
+        // Both normal and degraded compaction retain system messages, a
+        // cache-friendly early anchor, and a recent suffix beginning at a
+        // complete tool-call boundary. Only the middle is removed.
+        compacted.extend_from_slice(&messages[..system_count]);
+        compacted.extend_from_slice(&messages[system_count..start_idx]);
+        let mut summary_msg = CanonicalMessage::assistant(
+            vec![ContentPart::text(format!(
+                "{} {}",
+                haven_common::prompts::COMPACTED_SUMMARY_PREFIX,
+                summary
+            ))],
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        summary_msg.id = Some(episode_id.clone());
+        compacted.push(summary_msg);
+        compacted.extend_from_slice(suffix);
+
+        let tokens_after = estimate_provider_request_tokens(&compacted, tools);
+
+        Ok(Some(CompactionResult {
+            compacted,
+            summarized_count,
+            summary,
+            tokens_before,
+            tokens_after,
+            episode_id,
+            degraded,
+        }))
     }
 }
 
@@ -494,6 +706,35 @@ impl ContextCompactor {
 mod tests {
     use super::*;
     use haven_common::types::CanonicalRole;
+    use haven_llm::{LlmClient, LlmResponse, StreamChunk};
+    use std::pin::Pin;
+
+    struct FailingSummaryClient;
+
+    #[async_trait::async_trait]
+    impl LlmClient for FailingSummaryClient {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::UnsupportedCapability(
+                "summary disabled in test".into(),
+            ))
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::UnsupportedCapability(
+                "summary streaming disabled in test".into(),
+            ))
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
 
     fn make_msg(role: CanonicalRole, text: &str) -> CanonicalMessage {
         CanonicalMessage {
@@ -605,8 +846,8 @@ mod tests {
             make_msg(CanonicalRole::User, "Hi"),
         ];
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(compactor.compact(&msgs, &router));
-        assert!(result.is_none());
+        let result = rt.block_on(compactor.compact(&msgs, &[], &router, CancellationToken::new()));
+        assert!(result.unwrap().is_none());
     }
 
     #[test]
@@ -617,6 +858,37 @@ mod tests {
         ];
         let prompt = ContextCompactor::build_summary_prompt(&msgs);
         assert!(prompt.contains("Alice"));
+    }
+
+    #[test]
+    fn summary_prompt_preserves_tool_result_identity_and_media_shape() {
+        let mut result = make_tool_result("contents");
+        result.tool_call_id = Some("call-42".into());
+        let image = CanonicalMessage {
+            role: CanonicalRole::User,
+            content: vec![ContentPart::Image {
+                content_type: "image".into(),
+                media_type: "image/png".into(),
+                data: "encoded-image".into(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        };
+        let prompt = ContextCompactor::build_summary_prompt(&[result, image.clone()]);
+        assert!(prompt.contains("tool result id=call-42"));
+        assert!(prompt.contains("image attachment media_type=image/png"));
+
+        let summary_messages =
+            ContextCompactor::build_summary_messages(&[image], SUMMARY_INPUT_TOKEN_BUDGET);
+        assert!(summary_messages[0].content.iter().any(|part| matches!(
+            part,
+            ContentPart::Image { data, .. } if data == "encoded-image"
+        )));
     }
 
     fn make_tool_result(text: &str) -> CanonicalMessage {
@@ -631,6 +903,85 @@ mod tests {
             source: None,
             id: None,
         }
+    }
+
+    #[test]
+    fn compact_degrades_to_marker_and_retains_recent_tool_boundary() {
+        let mut first_call = make_msg(CanonicalRole::Assistant, "old call");
+        first_call.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
+            id: "call-old".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({"path": "old.txt"}),
+        }]);
+        let mut first_result = make_tool_result("old result");
+        first_result.tool_call_id = Some("call-old".into());
+
+        let mut recent_call = make_msg(CanonicalRole::Assistant, "recent call");
+        recent_call.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
+            id: "call-recent".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({"path": "recent.txt"}),
+        }]);
+        let mut recent_result = make_tool_result("recent result");
+        recent_result.tool_call_id = Some("call-recent".into());
+
+        let messages = vec![
+            make_msg(CanonicalRole::System, "stable system"),
+            make_msg(CanonicalRole::User, "anchor"),
+            make_msg(CanonicalRole::Assistant, "old answer"),
+            first_call,
+            first_result,
+            make_msg(CanonicalRole::User, "old follow-up"),
+            recent_call,
+            recent_result,
+            make_msg(CanonicalRole::User, "recent user"),
+            make_msg(CanonicalRole::Assistant, "recent answer"),
+            make_msg(CanonicalRole::User, "latest user"),
+            make_msg(CanonicalRole::Assistant, "latest answer"),
+        ];
+        let failing: Arc<dyn LlmClient> = Arc::new(FailingSummaryClient);
+        let router = Arc::new(haven_llm::LlmRouter::new_with_clients(
+            failing.clone(),
+            failing.clone(),
+            failing.clone(),
+            failing.clone(),
+            failing,
+        ));
+        let compactor = ContextCompactor::new(100, 20);
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(compactor.compact(&messages, &[], &router, CancellationToken::new()))
+            .unwrap()
+            .expect("enough history to compact");
+
+        assert!(result.degraded);
+        assert_eq!(result.summary, "[older context omitted]");
+        assert!(result.compacted.iter().any(|message| {
+            message.content.iter().any(
+                |part| matches!(part, ContentPart::Text(text) if text.contains("stable system")),
+            )
+        }));
+        assert!(result.compacted.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Text(text) if text.contains("latest user")))
+        }));
+        assert!(result.compacted.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Text(text) if text == "recent call"))
+        }));
+        assert!(!result.compacted.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Text(text) if text == "old follow-up"))
+        }));
+        assert!(crate::canonical::canonical_pairing_healthy(
+            &result.compacted
+        ));
     }
 
     #[test]
@@ -691,6 +1042,29 @@ mod tests {
         assert_eq!(ContextCompactor::safe_end_idx(&with_calls, 2), 4);
         // Desired index 4 (User) -> safe as-is.
         assert_eq!(ContextCompactor::safe_end_idx(&with_calls, 4), 4);
+    }
+
+    #[test]
+    fn safe_suffix_start_keeps_complete_tool_round() {
+        let mut assistant = make_msg(CanonicalRole::Assistant, "call");
+        assistant.tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({"path": "notes.txt"}),
+        }]);
+        let mut result = make_tool_result("contents");
+        result.tool_call_id = Some("call-1".into());
+        let messages = vec![
+            make_msg(CanonicalRole::User, "old"),
+            assistant,
+            result,
+            make_msg(CanonicalRole::User, "recent"),
+        ];
+
+        // The desired position points at the tool result. The degraded tail
+        // must rewind to the assistant declaration, not start with Tool.
+        assert_eq!(ContextCompactor::safe_suffix_start_idx(&messages, 2), 1);
+        assert!(crate::canonical::canonical_pairing_healthy(&messages[1..]));
     }
 
     #[test]

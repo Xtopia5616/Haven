@@ -448,6 +448,7 @@ pub(crate) struct AgentCompactionEvent {
     pub summary: String,
     pub tokens_before: u32,
     pub tokens_after: u32,
+    pub degraded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_id: Option<String>,
 }

@@ -183,6 +183,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 tokens_before: 1,
                 tokens_after: 2,
                 episode_id: None,
+                degraded: false,
             },
             "agent:compaction",
         ),

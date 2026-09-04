@@ -458,6 +458,20 @@ impl ReActEngine {
             reasoning_msg_id,
         );
         let started = std::time::Instant::now();
+        // RequestContext is already sanitized. Reuse the per-session message
+        // estimate (the fingerprint still detects retry nudges or repairs)
+        // and only add the request-scoped tool schema/overhead here.
+        let cached_message_tokens =
+            self.estimate_canonical_tokens(&ctx.session_id, request_context.messages());
+        let estimated_input_tokens =
+            crate::compactor::estimate_provider_request_tokens_with_message_estimate(
+                request_context.messages(),
+                tools,
+                cached_message_tokens,
+            );
+        let max_output_tokens = router
+            .effective_output_tokens(role, estimated_input_tokens)
+            .await;
         let result = router
             .chat_stream_with_tools_aggregated_cancellable_with_attempts(
                 role,
@@ -465,6 +479,7 @@ impl ReActEngine {
                 tools,
                 StreamAttemptHooks::new(on_chunk, on_attempt_start, replace_output_on_start),
                 cancel,
+                Some(max_output_tokens),
             )
             .await;
         let duration_ms = started.elapsed().as_millis() as u64;
@@ -553,98 +568,141 @@ impl ReActEngine {
                     "context length exceeded for session {}, forcing compaction",
                     ctx.session_id
                 );
-                if let Some(result) = {
+                let compaction = {
                     let compactor = self.context_compactor(*role).await;
-                    compactor.compact(&state.canonical, &self.router()).await
-                } {
-                    tracing::debug!(
-                        "compacted {} -> {} tokens",
-                        result.tokens_before,
-                        result.tokens_after
-                    );
-                    // Phase 6.1: CompactSummary via apply (emit + persist + replace).
-                    self.reset_token_estimate(&ctx.session_id);
-                    self.apply_transcript(
-                        ctx,
-                        TranscriptEvent::CompactSummary {
-                            compacted: result.compacted,
-                            summary: result.summary,
-                            tokens_before: result.tokens_before,
-                            tokens_after: result.tokens_after,
-                            episode_id: result.episode_id,
-                        },
-                        state,
-                    )
-                    .await;
-                    // Retry streams the *compacted* canonical in place; the
-                    // role must be re-resolved: summarizing away the last
-                    // image-bearing turn changes routing for the retry.
-                    let retry_role = if canonical_has_image(&state.canonical) {
-                        router.vision_role().await
-                    } else {
-                        EndpointRole::DefaultModel
-                    };
-                    *role = retry_role;
-                    let retry_context = RequestContext::from_state(state, retry_nudge);
-                    match self
-                        .stream_llm_call(
-                            ctx,
-                            router.clone(),
-                            retry_role,
-                            &retry_context,
-                            true,
-                            tools,
-                            cancel,
-                            partial_thought,
-                            partial_reasoning,
-                        )
+                    compactor
+                        .compact(&state.canonical, tools, &self.router(), cancel.clone())
                         .await
-                    {
-                        Ok((retry_resp, retry_duration_ms)) => {
-                            self.record_step_usage(ctx, retry_role, &retry_resp, retry_duration_ms)
-                                .await;
-                            StepCallOutcome::Response(Box::new(retry_resp))
-                        }
-                        Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
-                        Err(e2) => {
-                            let err_msg = format!("Compaction retry also failed: {}", e2);
-                            tracing::error!(
-                                "ReAct step {} session {} fatal: {}",
-                                ctx.step_num,
-                                ctx.session_id,
-                                err_msg
-                            );
-                            self.persist_partial_on_error(
+                };
+                match compaction {
+                    Ok(Some(result)) => {
+                        tracing::debug!(
+                            "compacted {} -> {} tokens",
+                            result.tokens_before,
+                            result.tokens_after
+                        );
+                        // Phase 6.1: CompactSummary via apply (emit + persist + replace).
+                        self.reset_token_estimate(&ctx.session_id);
+                        self.apply_transcript(
+                            ctx,
+                            TranscriptEvent::CompactSummary {
+                                compacted: result.compacted,
+                                summary: result.summary,
+                                tokens_before: result.tokens_before,
+                                tokens_after: result.tokens_after,
+                                episode_id: result.episode_id,
+                                degraded: result.degraded,
+                            },
+                            state,
+                        )
+                        .await;
+                        // Retry streams the *compacted* canonical in place; the
+                        // role must be re-resolved: summarizing away the last
+                        // image-bearing turn changes routing for the retry.
+                        let retry_role = if canonical_has_image(&state.canonical) {
+                            router.vision_role().await
+                        } else {
+                            EndpointRole::DefaultModel
+                        };
+                        *role = retry_role;
+                        let retry_context = RequestContext::from_state(state, retry_nudge);
+                        match self
+                            .stream_llm_call(
                                 ctx,
-                                state,
+                                router.clone(),
+                                retry_role,
+                                &retry_context,
+                                true,
+                                tools,
+                                cancel,
                                 partial_thought,
                                 partial_reasoning,
                             )
-                            .await;
-                            self.emit_error(&ctx.emitter, &ctx.session_id, &err_msg)
+                            .await
+                        {
+                            Ok((retry_resp, retry_duration_ms)) => {
+                                self.record_step_usage(
+                                    ctx,
+                                    retry_role,
+                                    &retry_resp,
+                                    retry_duration_ms,
+                                )
                                 .await;
-                            self.mark_session_error(&ctx.session_id).await;
-                            StepCallOutcome::Fatal(err_msg)
+                                StepCallOutcome::Response(Box::new(retry_resp))
+                            }
+                            Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
+                            Err(e2) => {
+                                let err_msg = format!("Compaction retry also failed: {}", e2);
+                                tracing::error!(
+                                    "ReAct step {} session {} fatal: {}",
+                                    ctx.step_num,
+                                    ctx.session_id,
+                                    err_msg
+                                );
+                                self.persist_partial_on_error(
+                                    ctx,
+                                    state,
+                                    partial_thought,
+                                    partial_reasoning,
+                                )
+                                .await;
+                                self.emit_error(&ctx.emitter, &ctx.session_id, &err_msg)
+                                    .await;
+                                self.mark_session_error(&ctx.session_id).await;
+                                StepCallOutcome::Fatal(err_msg)
+                            }
                         }
                     }
-                } else {
-                    let err_msg = "context length exceeded but compaction failed".to_string();
-                    tracing::error!(
-                        "ReAct step {} session {} fatal: {}",
-                        ctx.step_num,
-                        ctx.session_id,
-                        err_msg
-                    );
-                    self.persist_partial_on_error(ctx, state, partial_thought, partial_reasoning)
+                    Ok(None) | Err(haven_llm::LlmError::RequestFailed(_)) => {
+                        let err_msg = "context length exceeded but compaction failed".to_string();
+                        tracing::error!(
+                            "ReAct step {} session {} fatal: {}",
+                            ctx.step_num,
+                            ctx.session_id,
+                            err_msg
+                        );
+                        self.persist_partial_on_error(
+                            ctx,
+                            state,
+                            partial_thought,
+                            partial_reasoning,
+                        )
                         .await;
-                    EventDispatcher::emit_session_error_from(
-                        &ctx.emitter,
-                        &ctx.session_id,
-                        &err_msg,
-                    )
-                    .await;
-                    self.mark_session_error(&ctx.session_id).await;
-                    StepCallOutcome::Fatal(err_msg)
+                        EventDispatcher::emit_session_error_from(
+                            &ctx.emitter,
+                            &ctx.session_id,
+                            &err_msg,
+                        )
+                        .await;
+                        self.mark_session_error(&ctx.session_id).await;
+                        StepCallOutcome::Fatal(err_msg)
+                    }
+                    Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
+                    Err(error) => {
+                        let err_msg =
+                            format!("context length exceeded and compaction failed: {error}");
+                        tracing::error!(
+                            "ReAct step {} session {} fatal: {}",
+                            ctx.step_num,
+                            ctx.session_id,
+                            err_msg
+                        );
+                        self.persist_partial_on_error(
+                            ctx,
+                            state,
+                            partial_thought,
+                            partial_reasoning,
+                        )
+                        .await;
+                        EventDispatcher::emit_session_error_from(
+                            &ctx.emitter,
+                            &ctx.session_id,
+                            &err_msg,
+                        )
+                        .await;
+                        self.mark_session_error(&ctx.session_id).await;
+                        StepCallOutcome::Fatal(err_msg)
+                    }
                 }
             }
             Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,

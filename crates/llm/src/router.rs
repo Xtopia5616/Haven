@@ -65,6 +65,10 @@ type RuntimeStateParts = (
 
 pub struct LlmRouter {
     config: Arc<RwLock<RouterConfig>>,
+    /// Fallback context window used when an endpoint does not declare one.
+    /// Kept on the router so per-request output caps use the same resolved
+    /// window as construction-time max-token clamping.
+    default_context_window: u32,
     pub small_model: Arc<dyn LlmClient>,
     pub default_model: Arc<dyn LlmClient>,
     pub balanced_model: Arc<dyn LlmClient>,
@@ -130,6 +134,7 @@ struct ActiveStreamHooks {
 struct RetryStreamRequest<'a> {
     messages: &'a [CanonicalMessage],
     tools: &'a [ToolDefinition],
+    max_output_tokens: Option<u32>,
     cancel: CancellationToken,
     error: LlmError,
     replace_output: bool,
@@ -199,6 +204,7 @@ impl LlmRouter {
         let (health, _, semaphores, rate_limited) = Self::runtime_state(request_limit);
         Self {
             config: Arc::new(RwLock::new(config)),
+            default_context_window: fallback,
             small_model,
             default_model,
             balanced_model,
@@ -379,6 +385,7 @@ impl LlmRouter {
         let (health, stream_rules, semaphores, rate_limited) = Self::runtime_state(64);
         Self {
             config: Arc::new(RwLock::new(RouterConfig::default())),
+            default_context_window: crate::registry::FALLBACK_CONTEXT_WINDOW,
             small_model,
             default_model,
             balanced_model,
@@ -405,6 +412,36 @@ impl LlmRouter {
             EndpointRole::AudioModel => self.audio_model.clone(),
             EndpointRole::EmbeddingModel => self.embedding_model.clone(),
         }
+    }
+
+    /// Resolve the model context window using the same endpoint metadata and
+    /// fallback used during router construction.
+    pub async fn context_window_for_role(&self, role: EndpointRole) -> u32 {
+        let config = self.config.read().await;
+        crate::registry::context_window_for(config.endpoint(role))
+            .unwrap_or(self.default_context_window)
+            .max(1)
+    }
+
+    /// Calculate the maximum output budget that can be requested for one
+    /// provider call after accounting for the estimated input. Providers
+    /// commonly validate input + requested output against one shared window.
+    pub async fn effective_output_tokens(
+        &self,
+        role: EndpointRole,
+        estimated_input_tokens: u32,
+    ) -> u32 {
+        const REQUEST_SAFETY_MARGIN: u32 = 256;
+        let config = self.config.read().await;
+        let endpoint = config.endpoint(role);
+        let window = crate::registry::context_window_for(endpoint)
+            .unwrap_or(self.default_context_window)
+            .max(1);
+        let remaining = window
+            .saturating_sub(estimated_input_tokens)
+            .saturating_sub(REQUEST_SAFETY_MARGIN)
+            .max(1);
+        endpoint.max_tokens.max(1).min(remaining)
     }
 
     fn health_index(role: &EndpointRole) -> usize {
@@ -549,6 +586,7 @@ impl LlmRouter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         role: &EndpointRole,
+        max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
@@ -557,13 +595,15 @@ impl LlmRouter {
 
         let primary_result = if tools.is_empty() {
             execute_with_retry(primary_policy.retry, None, || async {
-                primary.chat(messages.clone()).await
+                primary
+                    .chat_with_output_cap(messages.clone(), max_output_tokens)
+                    .await
             })
             .await
         } else {
             execute_with_retry(primary_policy.retry, None, || async {
                 primary
-                    .chat_with_tools(messages.clone(), tools.clone())
+                    .chat_with_tools_output_cap(messages.clone(), tools.clone(), max_output_tokens)
                     .await
             })
             .await
@@ -596,13 +636,19 @@ impl LlmRouter {
                 // §2.11: balanced model also gets retry
                 let balanced_result = if tools.is_empty() {
                     execute_with_retry(fallback_policy.retry, None, || async {
-                        self.balanced_model.chat(messages.clone()).await
+                        self.balanced_model
+                            .chat_with_output_cap(messages.clone(), max_output_tokens)
+                            .await
                     })
                     .await
                 } else {
                     execute_with_retry(fallback_policy.retry, None, || async {
                         self.balanced_model
-                            .chat_with_tools(messages.clone(), tools.clone())
+                            .chat_with_tools_output_cap(
+                                messages.clone(),
+                                tools.clone(),
+                                max_output_tokens,
+                            )
                             .await
                     })
                     .await
@@ -632,12 +678,30 @@ impl LlmRouter {
         role: EndpointRole,
         messages: Vec<CanonicalMessage>,
     ) -> Result<LlmResponse, LlmError> {
+        self.chat_with_output_cap(role, messages, None).await
+    }
+
+    /// Chat with an optional per-request output cap. The cap is forwarded to
+    /// the provider adapter and is still subject to the router's retry and
+    /// failover policy.
+    pub async fn chat_with_output_cap(
+        &self,
+        role: EndpointRole,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
         self.with_endpoint_permit(&role, || async {
             self.check_circuit(&role).await?;
             let primary = self.select_endpoint(role);
             self.with_total_timeout(|| async {
-                self.call_with_retry_and_balanced_model(primary, messages, Vec::new(), &role)
-                    .await
+                self.call_with_retry_and_balanced_model(
+                    primary,
+                    messages,
+                    Vec::new(),
+                    &role,
+                    max_output_tokens,
+                )
+                .await
             })
             .await
         })
@@ -654,12 +718,41 @@ impl LlmRouter {
         system: &str,
         user: &str,
     ) -> Result<LlmResponse, LlmError> {
+        self.chat_with_prompt_output_cap(role, system, user, None)
+            .await
+    }
+
+    pub async fn chat_with_prompt_output_cap(
+        &self,
+        role: EndpointRole,
+        system: &str,
+        user: &str,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
         let mut messages = Vec::with_capacity(if system.is_empty() { 1 } else { 2 });
         if !system.is_empty() {
             messages.push(CanonicalMessage::system(vec![ContentPart::text(system)]));
         }
         messages.push(CanonicalMessage::user(vec![ContentPart::text(user)]));
-        self.chat(role, messages).await
+        self.chat_with_output_cap(role, messages, max_output_tokens)
+            .await
+    }
+
+    /// Cancellable one-shot chat used by compaction and other maintenance
+    /// calls. Dropping the in-flight request releases the provider future as
+    /// soon as the user cancels the owning session.
+    pub async fn chat_messages_cancellable(
+        &self,
+        role: EndpointRole,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+        cancel: CancellationToken,
+    ) -> Result<LlmResponse, LlmError> {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(LlmError::Cancelled),
+            result = self.chat_with_output_cap(role, messages, max_output_tokens) => result,
+        }
     }
 
     /// Embed a batch of texts into vectors via the dedicated `embedding_model`
@@ -713,12 +806,29 @@ impl LlmRouter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
+        self.chat_with_tools_output_cap(role, messages, tools, None)
+            .await
+    }
+
+    pub async fn chat_with_tools_output_cap(
+        &self,
+        role: EndpointRole,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
         self.with_endpoint_permit(&role, || async {
             self.check_circuit(&role).await?;
             let primary = self.select_endpoint(role);
             self.with_total_timeout(|| async {
-                self.call_with_retry_and_balanced_model(primary, messages, tools, &role)
-                    .await
+                self.call_with_retry_and_balanced_model(
+                    primary,
+                    messages,
+                    tools,
+                    &role,
+                    max_output_tokens,
+                )
+                .await
             })
             .await
         })
@@ -834,6 +944,7 @@ impl LlmRouter {
             tools,
             StreamAttemptHooks::new(on_chunk, |_| {}, false),
             cancel,
+            None,
         )
         .await
     }
@@ -853,10 +964,16 @@ impl LlmRouter {
         tools: &[ToolDefinition],
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
+        max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         self.with_endpoint_permit(&role, || async {
             self.chat_stream_with_tools_aggregated_cancellable_inner(
-                role, messages, tools, hooks, cancel,
+                role,
+                messages,
+                tools,
+                hooks,
+                cancel,
+                max_output_tokens,
             )
             .await
         })
@@ -876,6 +993,7 @@ impl LlmRouter {
         let RetryStreamRequest {
             messages,
             tools,
+            max_output_tokens,
             cancel,
             error,
             replace_output,
@@ -907,6 +1025,7 @@ impl LlmRouter {
             cancel,
             &self.stream_rules,
             idle_dur,
+            max_output_tokens,
         )
         .await
     }
@@ -918,6 +1037,7 @@ impl LlmRouter {
         tools: &[ToolDefinition],
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
+        max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         self.check_circuit(&role).await?;
         tracing::debug!(
@@ -945,7 +1065,11 @@ impl LlmRouter {
         // time out instantly, disabling all model replies.
         let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
         drop(cfg);
-        let stream_context = streaming::StreamContext { messages, tools };
+        let stream_context = streaming::StreamContext {
+            messages,
+            tools,
+            max_output_tokens,
+        };
 
         execute_with_timeout(primary_policy.total_timeout_secs, "router streaming", || async {
             let primary_result = streaming::aggregate_stream_with_retry_before_output(
@@ -972,6 +1096,7 @@ impl LlmRouter {
                         RetryStreamRequest {
                             messages,
                             tools,
+                            max_output_tokens,
                             cancel: cancel.clone(),
                             error: err,
                             replace_output: true,
@@ -1641,6 +1766,7 @@ mod tests {
             CancellationToken::new(),
             &rules,
             idle_timeout,
+            None,
         )
         .await
     }
@@ -2404,5 +2530,144 @@ mod tests {
             "max_tokens must be clamped to the resolved context window, got {}",
             built.default_model.max_tokens
         );
+    }
+
+    #[tokio::test]
+    async fn effective_output_tokens_leaves_request_safety_margin() {
+        let mut cfg = RouterConfig::default();
+        cfg.default_model.context_window = Some(4_096);
+        cfg.default_model.max_tokens = 8_192;
+        let router = LlmRouter::with_default_context_window(cfg, 128_000);
+
+        assert_eq!(
+            router
+                .context_window_for_role(EndpointRole::DefaultModel)
+                .await,
+            4_096
+        );
+        // 4,096 - 3,000 input - 256 safety margin.
+        assert_eq!(
+            router
+                .effective_output_tokens(EndpointRole::DefaultModel, 3_000)
+                .await,
+            840
+        );
+        assert_eq!(
+            router
+                .effective_output_tokens(EndpointRole::DefaultModel, 10_000)
+                .await,
+            1,
+            "an over-window request still receives a valid positive provider cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_with_output_cap_forwards_cap_to_client() {
+        struct OutputCapProbe(Arc<StdMutex<Option<u32>>>);
+
+        #[async_trait]
+        impl LlmClient for OutputCapProbe {
+            async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+                Ok(LlmResponse {
+                    text: "ok".into(),
+                    tool_calls: Vec::new(),
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: Usage::default(),
+                    model: None,
+                    reasoning: None,
+                    web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
+                })
+            }
+
+            async fn chat_with_output_cap(
+                &self,
+                _: Vec<CanonicalMessage>,
+                max_output_tokens: Option<u32>,
+            ) -> Result<LlmResponse, LlmError> {
+                *self.0.lock().unwrap() = max_output_tokens;
+                self.chat(Vec::new()).await
+            }
+
+            async fn chat_stream(
+                &self,
+                _: Vec<CanonicalMessage>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                Err(LlmError::UnsupportedCapability("not used".into()))
+            }
+
+            async fn health_check(&self) -> Result<(), LlmError> {
+                Ok(())
+            }
+        }
+
+        let seen = Arc::new(StdMutex::new(None));
+        let client: Arc<dyn LlmClient> = Arc::new(OutputCapProbe(seen.clone()));
+        let router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
+        router
+            .chat_with_output_cap(EndpointRole::DefaultModel, Vec::new(), Some(37))
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some(37));
+    }
+
+    #[tokio::test]
+    async fn cancellable_chat_returns_cancelled_while_client_is_pending() {
+        struct PendingClient;
+
+        #[async_trait]
+        impl LlmClient for PendingClient {
+            async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+                std::future::pending().await
+            }
+
+            async fn chat_stream(
+                &self,
+                _: Vec<CanonicalMessage>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                std::future::pending().await
+            }
+
+            async fn health_check(&self) -> Result<(), LlmError> {
+                Ok(())
+            }
+        }
+
+        let client: Arc<dyn LlmClient> = Arc::new(PendingClient);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task_router = router.clone();
+        let task = tokio::spawn(async move {
+            task_router
+                .chat_messages_cancellable(
+                    EndpointRole::DefaultModel,
+                    Vec::new(),
+                    Some(64),
+                    task_cancel,
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        assert!(matches!(task.await.unwrap(), Err(LlmError::Cancelled)));
     }
 }

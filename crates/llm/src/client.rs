@@ -52,6 +52,27 @@ pub trait LlmClient: Send + Sync {
         self.chat(messages).await
     }
 
+    /// Chat with a per-request output cap. The default keeps compatibility
+    /// with lightweight/test clients; provider adapters override this so the
+    /// cap reaches the wire request.
+    async fn chat_with_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat(messages).await
+    }
+
+    /// Tool chat with a per-request output cap.
+    async fn chat_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_with_tools(messages, tools).await
+    }
+
     async fn chat_stream(
         &self,
         messages: Vec<CanonicalMessage>,
@@ -89,6 +110,25 @@ pub trait LlmClient: Send + Sync {
             Ok(chunk),
             Ok(final_chunk),
         ])))
+    }
+
+    /// Streaming chat with a per-request output cap.
+    async fn chat_stream_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream(messages).await
+    }
+
+    /// Streaming tool chat with a per-request output cap.
+    async fn chat_stream_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_with_tools(messages, tools).await
     }
 
     /// Embed a batch of texts into vectors via the provider's embeddings API.

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -361,17 +362,34 @@ pub(super) struct TokenEstimate {
     fingerprint: [u8; 32],
 }
 
-fn canonical_fingerprint(messages: &[CanonicalMessage]) -> [u8; 32] {
-    match serde_json::to_vec(messages) {
-        Ok(encoded) => Sha256::digest(encoded).into(),
-        Err(_) => {
-            // Canonical messages currently serialize infallibly. Keep the
-            // fallback deterministic if a future content part adds a
-            // non-serializable field, and never turn the failure into a false
-            // cache hit.
-            Sha256::digest(format!("{messages:?}").as_bytes()).into()
-        }
+struct FingerprintWriter(Sha256);
+
+impl io::Write for FingerprintWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
     }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn canonical_fingerprint(messages: &[CanonicalMessage]) -> [u8; 32] {
+    // Stream JSON directly into the digest instead of allocating one large
+    // Vec containing every message and every base64 attachment. A separator
+    // keeps [a, bc] distinct from [ab, c] without retaining serialized data.
+    let mut writer = FingerprintWriter(Sha256::new());
+    for message in messages {
+        if serde_json::to_writer(&mut writer, message).is_err() {
+            // Canonical messages currently serialize infallibly. If a future
+            // content part does not, the debug form remains deterministic and
+            // still cannot create a false cache hit for valid JSON.
+            writer.0.update(format!("{message:?}").as_bytes());
+        }
+        writer.0.update([0]);
+    }
+    writer.0.finalize().into()
 }
 
 /// Per-session incremental token-estimate cache.

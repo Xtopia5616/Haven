@@ -145,6 +145,10 @@ pub enum AgentEvent {
         /// Shared `msg-*` with the canonical summary bubble / episode row (L1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         episode_id: Option<String>,
+        /// True when a deterministic older-context marker was used instead
+        /// of an LLM-generated summary.
+        #[serde(default)]
+        degraded: bool,
     },
     TitleUpdated {
         session_id: String,
@@ -878,6 +882,7 @@ impl EventDispatcher {
         tokens_before: u32,
         tokens_after: u32,
         episode_id: &str,
+        degraded: bool,
     ) {
         emitter
             .emit(AgentEvent::Compaction {
@@ -886,6 +891,7 @@ impl EventDispatcher {
                 tokens_before,
                 tokens_after,
                 episode_id: Some(episode_id.into()),
+                degraded,
             })
             .await;
     }

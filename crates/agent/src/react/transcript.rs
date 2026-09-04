@@ -95,6 +95,7 @@ pub(super) enum TranscriptEvent {
         tokens_before: u32,
         tokens_after: u32,
         episode_id: String,
+        degraded: bool,
     },
 }
 
@@ -161,12 +162,14 @@ impl TranscriptEvent {
                 tokens_before,
                 tokens_after,
                 episode_id,
+                degraded,
             } => TranscriptRecord::CompactSummary {
                 compacted: compacted.clone(),
                 summary: summary.clone(),
                 tokens_before: *tokens_before,
                 tokens_after: *tokens_after,
                 episode_id: episode_id.clone(),
+                degraded: *degraded,
             },
         }
     }
@@ -396,6 +399,7 @@ impl ReActEngine {
                 tokens_before,
                 tokens_after,
                 episode_id,
+                degraded,
             } => {
                 // Replace the log with the CompactSummary root so pre-compaction
                 // events (and embedded prior CompactSummaries) do not grow forever.
@@ -407,6 +411,7 @@ impl ReActEngine {
                     tokens_before,
                     tokens_after,
                     &episode_id,
+                    degraded,
                 )
                 .await;
                 self.persist_compaction_summary(&ctx.session_id, &summary, &episode_id)
@@ -717,6 +722,7 @@ mod tests {
                     tokens_before: 100,
                     tokens_after: 40,
                     episode_id: haven_common::types::new_id("msg"),
+                    degraded: false,
                 },
                 &mut state,
             )

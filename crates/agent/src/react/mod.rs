@@ -11,7 +11,7 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::Database;
 
-use crate::compactor::{ContextCompactor, estimate_tokens};
+use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, TranscriptRecord};
 use chrono::Utc;
@@ -823,6 +823,7 @@ impl ReActEngine {
         state: &mut ReActState,
         has_image: bool,
         tool_defs: &[ToolDefinition],
+        cancel: tokio_util::sync::CancellationToken,
     ) -> bool {
         if state.canonical.len() < 4 {
             return false;
@@ -840,43 +841,56 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        let message_tokens = self.estimate_canonical_tokens(&ctx.session_id, &state.canonical);
-        // Provider tool schemas are sent alongside messages but do not live in
-        // the canonical transcript. Include their serialized cost in the
-        // preflight estimate; otherwise a large MCP overlay can pass the
-        // compaction check and still hit a provider 400 on the next request.
-        let tool_tokens = serde_json::to_string(tool_defs)
-            .map(|json| estimate_tokens(&json))
-            .unwrap_or(0);
-        if message_tokens.saturating_add(tool_tokens) <= compactor.threshold_tokens() {
+        let cached_message_tokens =
+            self.estimate_canonical_tokens(&ctx.session_id, &state.canonical);
+        let request_tokens = estimate_provider_request_tokens_with_message_estimate(
+            &state.canonical,
+            tool_defs,
+            cached_message_tokens,
+        );
+        if request_tokens <= compactor.threshold_tokens() {
             return false;
         }
-        if let Some(result) = compactor.compact(&state.canonical, &router).await {
-            tracing::info!(
-                "compaction for session {}: {} tokens -> {} tokens ({} msgs summarized)",
-                ctx.session_id,
-                result.tokens_before,
-                result.tokens_after,
-                result.summarized_count
-            );
-            // Compaction replaced the list wholesale: the incremental
-            // estimate is stale, drop it so the next step does a full pass.
-            self.reset_token_estimate(&ctx.session_id);
-            self.apply_transcript(
-                ctx,
-                TranscriptEvent::CompactSummary {
-                    compacted: result.compacted,
-                    summary: result.summary,
-                    tokens_before: result.tokens_before,
-                    tokens_after: result.tokens_after,
-                    episode_id: result.episode_id,
-                },
-                state,
-            )
-            .await;
-            true
-        } else {
-            false
+        match compactor
+            .compact(&state.canonical, tool_defs, &router, cancel)
+            .await
+        {
+            Ok(Some(result)) => {
+                tracing::info!(
+                    session_id = %ctx.session_id,
+                    tokens_before = result.tokens_before,
+                    tokens_after = result.tokens_after,
+                    summarized_count = result.summarized_count,
+                    degraded = result.degraded,
+                    "compaction completed"
+                );
+                // Compaction replaced the list wholesale: the incremental
+                // estimate is stale, drop it so the next step does a full pass.
+                self.reset_token_estimate(&ctx.session_id);
+                self.apply_transcript(
+                    ctx,
+                    TranscriptEvent::CompactSummary {
+                        compacted: result.compacted,
+                        summary: result.summary,
+                        tokens_before: result.tokens_before,
+                        tokens_after: result.tokens_after,
+                        episode_id: result.episode_id,
+                        degraded: result.degraded,
+                    },
+                    state,
+                )
+                .await;
+                true
+            }
+            Ok(None) => false,
+            Err(haven_llm::LlmError::Cancelled) => false,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %ctx.session_id,
+                    "compaction cancelled or unavailable: {error}"
+                );
+                false
+            }
         }
     }
 

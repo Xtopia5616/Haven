@@ -39,6 +39,7 @@ pub(crate) const IDLE_SCALE_CAP_SECS: u64 = 90;
 pub(crate) struct StreamContext<'a> {
     pub(crate) messages: &'a [CanonicalMessage],
     pub(crate) tools: &'a [ToolDefinition],
+    pub(crate) max_output_tokens: Option<u32>,
 }
 
 /// Rough prompt-size estimate in tokens (text chars / 4, ~1k per image or
@@ -137,6 +138,7 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
             cancel.clone(),
             stream_rules,
             idle_timeout,
+            context.max_output_tokens,
         )
         .await;
         let Err(err) = result else {
@@ -168,6 +170,7 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
     Err(LlmError::Unknown("stream retry loop exhausted".into()))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn aggregate_stream_cancellable(
     client: Arc<dyn LlmClient>,
     messages: Vec<CanonicalMessage>,
@@ -176,6 +179,7 @@ pub(crate) async fn aggregate_stream_cancellable(
     cancel: CancellationToken,
     stream_rules: &RwLock<Vec<StreamRule>>,
     idle_timeout: Duration,
+    max_output_tokens: Option<u32>,
 ) -> Result<LlmResponse, LlmError> {
     // Long contexts make providers slower between deltas; grant extra
     // data-gap budget proportional to the request size so a slow-but-alive
@@ -184,7 +188,9 @@ pub(crate) async fn aggregate_stream_cancellable(
     // Code-fence abort only applies when the model has tools available —
     // without tools, dumping a code sample is legitimate assistant output.
     let enforce_stream_rules = !tools.is_empty();
-    let mut stream = client.chat_stream_with_tools(messages, tools).await?;
+    let mut stream = client
+        .chat_stream_with_tools_output_cap(messages, tools, max_output_tokens)
+        .await?;
     tracing::debug!("aggregate_stream_cancellable start");
 
     // Channel decouples the stream loop from callback execution.
