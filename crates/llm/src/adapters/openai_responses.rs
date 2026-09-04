@@ -270,12 +270,66 @@ enum ResponsesStreamEvent {
 struct ResponsesStreamResponse {
     #[serde(default)]
     status: Option<String>,
+    /// Some OpenAI-compatible Responses gateways omit trailing
+    /// `response.output_text.delta` events around a function call and only
+    /// include the complete assistant output in `response.completed`.
+    #[serde(default)]
+    output: Vec<ResponsesItem>,
     #[serde(default)]
     usage: Option<ResponsesUsage>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     error: Option<Value>,
+}
+
+/// Extract the visible assistant text from a completed Responses payload.
+/// Reasoning and function-call items are intentionally excluded: they have
+/// separate live/round-trip channels.
+fn completed_output_text(output: &[ResponsesItem]) -> String {
+    let mut text = String::new();
+    for item in output {
+        if item.item_type.as_deref() != Some("message") {
+            continue;
+        }
+        for part in &item.content {
+            if let Some(t) = &part.text {
+                text.push_str(t);
+            }
+        }
+    }
+    text
+}
+
+/// Return only the suffix missing from the streamed text when a provider
+/// repeats the complete output in `response.completed`. The stream contract
+/// exposes appendable deltas, so an already-complete or stale final payload
+/// must be ignored rather than duplicated.
+fn append_completed_output(accumulated: &mut String, output: &[ResponsesItem]) -> Option<String> {
+    let full = completed_output_text(output);
+    if full.is_empty() || full == *accumulated {
+        return None;
+    }
+    if let Some(suffix) = full.strip_prefix(accumulated.as_str()) {
+        if suffix.is_empty() {
+            return None;
+        }
+        accumulated.push_str(suffix);
+        return Some(suffix.to_string());
+    }
+    // A shorter completion is stale relative to already streamed output. A
+    // divergent completion cannot be represented as an append-only delta, so
+    // leave the stream's accumulated text intact and make the discrepancy
+    // observable for provider-specific follow-up.
+    if accumulated.starts_with(full.as_str()) {
+        return None;
+    }
+    tracing::warn!(
+        streamed_chars = accumulated.len(),
+        completed_chars = full.len(),
+        "Responses completed output diverges from streamed text"
+    );
+    None
 }
 
 /// OpenAI Responses API adapter (`/v1/responses`), for GPT-5 and other
@@ -1314,7 +1368,10 @@ impl OpenAiResponsesAdapter {
                     }
                     Ok(ResponsesStreamEvent::Completed { response }) => {
                         state.saw_completed = true;
+                        let mut completed_text = None;
                         if let Some(resp) = response {
+                            completed_text =
+                                append_completed_output(&mut state.accumulated_text, &resp.output);
                             if let Some(m) = &resp.model {
                                 state.last_model = Some(m.clone());
                             }
@@ -1333,28 +1390,30 @@ impl OpenAiResponsesAdapter {
                             }
                         }
                         state.done = true;
-                        Some((
-                            Ok(StreamChunk {
-                                text: None,
-                                tool_calls: state
-                                    .tool_calls
-                                    .drain(..)
-                                    .map(|(_, id, name, args)| CanonicalToolCall {
-                                        id,
-                                        name,
-                                        arguments: CanonicalToolCall::from_wire_args(&args),
-                                    })
-                                    .collect(),
-                                finish_reason: state.finish_reason,
-                                usage: state.usage.take(),
-                                model: state.last_model.clone(),
-                                reasoning: None,
-                                web_search: None,
-                                web_search_calls: std::mem::take(&mut state.web_search_calls),
-                                thinking_blocks: Vec::new(),
-                            }),
-                            state,
-                        ))
+                        let final_chunk = StreamChunk {
+                            text: completed_text,
+                            tool_calls: state
+                                .tool_calls
+                                .drain(..)
+                                .map(|(_, id, name, args)| CanonicalToolCall {
+                                    id,
+                                    name,
+                                    arguments: CanonicalToolCall::from_wire_args(&args),
+                                })
+                                .collect(),
+                            finish_reason: state.finish_reason,
+                            usage: state.usage.take(),
+                            model: state.last_model.clone(),
+                            reasoning: None,
+                            web_search: None,
+                            web_search_calls: std::mem::take(&mut state.web_search_calls),
+                            thinking_blocks: Vec::new(),
+                        };
+                        // Keep the output shape identical for the router: the
+                        // completed payload contributes a final text delta,
+                        // while tool calls and usage remain in this terminal
+                        // chunk as before.
+                        Some((Ok(final_chunk), state))
                     }
                     Ok(ResponsesStreamEvent::Failed { response }) => {
                         let msg = response
@@ -2548,6 +2607,77 @@ mod tests {
         );
         server.await.unwrap();
         assert_eq!(*seen_keys.lock().unwrap(), vec![true, false]);
+    }
+
+    #[tokio::test]
+    async fn stream_completed_output_recovers_text_before_tool_call() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if buf.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+
+            let body = concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"我\"}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"file\",\"arguments\":\"\"}}\n\n",
+                "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{}\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"text\":\"我先读取文件\"}]},{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"file\",\"arguments\":\"{}\"}]}}\n\n",
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint {
+            base_url: format!("http://{addr}"),
+            model_name: "gpt-test".into(),
+            ..Default::default()
+        });
+        let mut stream = client
+            .chat_stream_with_tools(Vec::new(), Vec::new())
+            .await
+            .unwrap();
+        let mut text = String::new();
+        let mut tool_calls = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            if let Some(delta) = chunk.text {
+                text.push_str(&delta);
+            }
+            tool_calls.extend(chunk.tool_calls);
+        }
+
+        assert_eq!(text, "我先读取文件");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].name, "file");
+        server.await.unwrap();
     }
 
     #[test]
