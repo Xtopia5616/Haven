@@ -399,7 +399,7 @@
 		<div class="section">
 			<div class="toolbar md-toolbar">
 				<h2>MCP 服务器</h2>
-				<div class="toolbar-actions">
+				<div class="toolbar-actions toolbar-actions--paired">
 					<button class="md-btn md-btn--outlined" onclick={refreshMcpList}>刷新</button>
 					<button class="md-btn md-btn--outlined" onclick={openAddDialog}>添加</button>
 				</div>
@@ -426,7 +426,7 @@
 		<div class="section">
 			<div class="toolbar md-toolbar">
 				<h2>技能</h2>
-				<div class="toolbar-actions">
+				<div class="toolbar-actions toolbar-actions--paired">
 					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>刷新</button>
 					<button class="md-btn md-btn--outlined" onclick={openFolder}>打开文件夹</button>
 				</div>
@@ -529,8 +529,13 @@
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
 	}
-	.toolbar-actions .md-btn {
-		width: 104px;
+	.toolbar-actions--paired {
+		flex: 0 1 30%;
+	}
+	.toolbar-actions--paired .md-btn {
+		flex: 1 1 0;
+		min-width: 0;
+		white-space: nowrap;
 	}
 	.sr-only {
 		position: absolute;
@@ -550,10 +555,8 @@
 		.resource-search { flex: 0 1 auto; }
 		.toolbar { align-items: flex-start; }
 		.toolbar-actions { width: 100%; }
-		.toolbar-actions .md-btn {
-			flex: 1 1 0;
-			width: auto;
-		}
+		.toolbar-actions--paired { flex: 0 0 100%; }
+		.toolbar-actions .md-btn { flex: 1 1 0; }
 	}
 	@media (max-width: 455px) {
 		.resource-filter { width: 100%; }

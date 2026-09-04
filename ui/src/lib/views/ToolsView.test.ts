@@ -31,14 +31,18 @@ describe('ToolsView toolbar actions', () => {
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
 		const addButton = screen.getByRole('button', { name: '添加' });
 		const mcpToolbarButtons = Array.from(document.querySelectorAll('.toolbar-actions .md-btn'));
+		const mcpToolbar = addButton.closest('.toolbar-actions');
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
 		const openFolderButton = screen.getByRole('button', { name: '打开文件夹' });
 		const skillToolbarButtons = Array.from(document.querySelectorAll('.toolbar-actions .md-btn'));
+		const skillToolbar = openFolderButton.closest('.toolbar-actions');
 
 		expect(addButton.querySelector('svg')).toBeNull();
 		expect(openFolderButton.querySelector('svg')).toBeNull();
 		expect(mcpToolbarButtons).toHaveLength(2);
 		expect(skillToolbarButtons).toHaveLength(2);
+		expect(mcpToolbar?.classList.contains('toolbar-actions--paired')).toBe(true);
+		expect(skillToolbar?.classList.contains('toolbar-actions--paired')).toBe(true);
 		for (const button of [...mcpToolbarButtons, ...skillToolbarButtons]) {
 			expect(button.classList.contains('md-btn')).toBe(true);
 		}
