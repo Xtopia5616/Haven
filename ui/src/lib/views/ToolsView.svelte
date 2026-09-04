@@ -433,7 +433,19 @@
 				<h2>技能</h2>
 				<div class="toolbar-actions">
 					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>刷新</button>
-					<button class="md-btn md-btn--outlined" onclick={openFolder}>打开文件夹</button>
+					<button class="md-btn md-btn--outlined" onclick={openFolder}>
+						<svg
+							viewBox="0 0 24 24"
+							fill="currentColor"
+							aria-hidden="true"
+							focusable="false"
+						>
+							<path
+								d="M10 4H2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-10l-2-2z"
+							/>
+						</svg>
+						打开文件夹
+					</button>
 				</div>
 			</div>
 			{#if skills.length === 0}
