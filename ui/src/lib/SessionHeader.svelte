@@ -11,51 +11,116 @@
 	 * @prop {() => void} onNew — create a fresh conversation
 	 * @prop {() => void} onEnd — close the active conversation
 	 */
-	let { title = '新会话', status = '准备开始', running = false, hasSession = false, onNew, onEnd } = $props();
+	let {
+		title = '新会话',
+		status = '准备开始',
+		running = false,
+		hasSession = false,
+		onNew,
+		onEnd,
+	} = $props();
 </script>
 
 <header class="session-header">
 	<div class="session-header__identity">
-		<span class="session-header__eyebrow">当前会话</span>
-		<h1>{title}</h1>
-		<span class="md-badge session-header__status" data-variant={running ? 'success' : 'neutral'}>{status}</span>
+		<span class="session-header__eyebrow">
+			<span class="session-header__marker" aria-hidden="true"></span>
+			当前会话
+		</span>
+		<div class="session-header__title-row">
+			<h1>{title}</h1>
+			<span
+				class="md-badge session-header__status"
+				data-variant={running ? 'success' : 'neutral'}>{status}</span
+			>
+		</div>
 	</div>
 	<div class="session-header__actions">
-		<MaterialButton variant="outlined" onclick={() => onNew?.()}>新建会话</MaterialButton>
+		<MaterialButton
+			variant="outlined"
+			className="session-header__new"
+			ariaLabel="新建会话"
+			title="新建会话"
+			onclick={() => onNew?.()}
+		>
+			<svg
+				class="session-header__new-icon"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				aria-hidden="true"
+			>
+				<path d="M12 5v14M5 12h14" />
+			</svg>
+			<span class="session-header__new-label">新建会话</span>
+		</MaterialButton>
 		{#if hasSession}
 			<MaterialButton
 				variant="text"
 				className="session-header__end"
 				onclick={() => onEnd?.()}
-				ariaLabel="结束会话"
-			>结束</MaterialButton>
+				ariaLabel="结束会话">结束</MaterialButton
+			>
 		{/if}
 	</div>
 </header>
 
 <style>
 	.session-header {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--md-sys-space-lg);
-		padding: var(--md-sys-space-lg) var(--md-sys-space-2xl) var(--md-sys-space-md);
+		padding: var(--md-sys-space-md) var(--md-sys-space-2xl);
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
-		background: var(--md-sys-color-surface);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container-low) 92%,
+			var(--md-sys-color-primary) 8%
+		);
 		min-width: 0;
+	}
+	.session-header::before {
+		content: '';
+		position: absolute;
+		inset: 0 auto 0 0;
+		width: 3px;
+		background: var(--md-sys-color-primary);
+		opacity: 0.72;
 	}
 	.session-header__identity {
 		min-width: 0;
 		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-md);
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--md-sys-space-xs);
 	}
 	.session-header__eyebrow {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
+		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		letter-spacing: var(--md-sys-typescale-label-letter-spacing);
 		white-space: nowrap;
+	}
+	.session-header__marker {
+		width: 6px;
+		height: 6px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-primary);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent);
+	}
+	.session-header__title-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		min-width: 0;
 	}
 	.session-header h1 {
 		min-width: 0;
@@ -78,27 +143,35 @@
 		flex-shrink: 0;
 		flex-wrap: wrap;
 	}
+	:global(.session-header__new-icon) {
+		width: var(--md-sys-icon-size);
+		height: var(--md-sys-icon-size);
+		flex-shrink: 0;
+	}
 	:global(.session-header__end) {
 		color: var(--md-sys-color-error);
 	}
 	@media (max-width: 640px) {
 		.session-header {
 			align-items: flex-start;
-			padding-inline: var(--md-sys-space-md);
+			padding: var(--md-sys-space-md);
+			padding-left: var(--md-sys-space-lg);
 		}
-		.session-header__identity {
+		.session-header__title-row {
 			align-items: flex-start;
 			flex-direction: column;
 			gap: var(--md-sys-space-xs);
 		}
-		.session-header__actions :global(.md-btn--outlined) {
-			font-size: 0;
-			min-width: var(--md-comp-button-touch-height);
+		.session-header h1 {
+			max-width: min(48vw, 240px);
 		}
-		.session-header__actions :global(.md-btn--outlined)::after {
-			content: '+';
-			font-size: var(--md-sys-typescale-title-large-size);
-			line-height: var(--md-sys-typescale-title-large-line-height);
+		:global(.session-header__new) {
+			width: var(--md-comp-button-small-height);
+			min-width: var(--md-comp-button-small-height);
+			padding-inline: 0;
+		}
+		:global(.session-header__new-label) {
+			display: none;
 		}
 	}
 </style>

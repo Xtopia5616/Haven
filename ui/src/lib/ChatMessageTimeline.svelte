@@ -103,12 +103,10 @@
 	.welcome-mark {
 		display: grid;
 		place-items: center;
-		width: 72px;
-		height: 72px;
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-extra-large);
-		background: var(--md-sys-color-primary-container);
-		box-shadow: var(--md-sys-elevation-1);
+		width: 64px;
+		height: 64px;
+		border-radius: var(--md-sys-shape-medium);
+		background: transparent;
 	}
 	.welcome h2 {
 		font-family: var(--md-ref-typeface-brand);

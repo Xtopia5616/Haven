@@ -83,7 +83,9 @@
 		<AsyncState
 			state={loading ? 'loading' : 'empty'}
 			title={loading ? '正在加载会话' : '暂无会话'}
-			message={loading ? '会话记录加载完成后会显示在这里。' : '开始一段对话后，会话记录会自动保存在这里。'}
+			message={loading
+				? '会话记录加载完成后会显示在这里。'
+				: '开始一段对话后，会话记录会自动保存在这里。'}
 		/>
 	{:else}
 		<div class="session-list">
@@ -229,7 +231,8 @@
 		background: var(--md-sys-color-surface-container-low);
 	}
 	.filter-bar > .md-input {
-		flex: 1;
+		flex: 1 1 auto;
+		min-width: 0;
 	}
 	.filter-controls {
 		display: flex;
@@ -416,6 +419,9 @@
 		.filter-controls {
 			align-items: stretch;
 			flex-direction: column;
+		}
+		.filter-bar > .md-input {
+			flex: none;
 		}
 		.filter-controls :global(.md-select-container),
 		.filter-controls .md-btn--outlined {
