@@ -305,7 +305,8 @@ impl MemoryTool {
             anyhow::bail!("memory database is not available");
         };
 
-        match params.operation.unwrap_or(MemoryOperation::Search) {
+        let operation = params.operation.unwrap_or(MemoryOperation::Search);
+        let mut result = match operation {
             MemoryOperation::Search => {
                 db.run_blocking(move |db| Self::execute_search(&params, db))
                     .await
@@ -326,7 +327,23 @@ impl MemoryTool {
                 self.execute_recall(&params, db, session_id.as_deref())
                     .await
             }
+        }?;
+        if let Some(object) = result.output.as_object_mut() {
+            object.insert(
+                "operation".into(),
+                Value::String(
+                    match operation {
+                        MemoryOperation::Search => "search",
+                        MemoryOperation::List => "list",
+                        MemoryOperation::Remember => "remember",
+                        MemoryOperation::Forget => "forget",
+                        MemoryOperation::Recall => "recall",
+                    }
+                    .into(),
+                ),
+            );
         }
+        Ok(result)
     }
 
     pub async fn run(
@@ -374,46 +391,74 @@ impl Tool for MemoryTool {
         json!({
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["search", "list", "remember", "forget", "recall"],
-                    "description": "search/list/remember/forget = facts CRUD; recall = unified fact/episode retrieval"
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Free-text query (search / recall)"
-                },
-                "kind": {
-                    "type": "string",
-                    "enum": ["fact", "episode"],
-                    "default": "fact",
-                    "description": "recall only: fact (default) or episode"
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 50,
-                    "description": "Max results (default 10 search / 20 list / 5 recall; recall max 20)"
-                },
-                "predicate": {
-                    "type": "string",
-                    "description": "Short attribute key for remember/forget"
-                },
-                "object": {
-                    "type": "string",
-                    "description": "Value to remember, or specific value to forget"
-                },
-                "tags": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional for remember: identity, preference, workspace, project"
-                },
-                "subject": {
-                    "type": "string",
-                    "description": "Fact subject. remember/forget default to \"user\". For list, omit for all subjects"
-                }
+                "operation": { "type": "string", "enum": ["search", "list", "remember", "forget", "recall"] },
+                "query": { "type": "string", "minLength": 1 },
+                "kind": { "type": "string", "enum": ["fact", "episode"], "default": "fact" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                "predicate": { "type": "string", "minLength": 1 },
+                "object": { "type": "string", "minLength": 1 },
+                "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+                "subject": { "type": "string", "minLength": 1 }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "search" },
+                        "query": { "type": "string", "minLength": 1 },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                        "subject": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "query"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "list" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                        "subject": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "remember" },
+                        "predicate": { "type": "string", "minLength": 1 },
+                        "object": { "type": "string", "minLength": 1 },
+                        "tags": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+                        "subject": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "predicate", "object"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "forget" },
+                        "predicate": { "type": "string", "minLength": 1 },
+                        "object": { "type": "string", "minLength": 1 },
+                        "subject": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "predicate"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "recall" },
+                        "query": { "type": "string", "minLength": 1 },
+                        "kind": { "type": "string", "enum": ["fact", "episode"] },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                        "subject": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "query"]
+                }
+            ]
         })
     }
 

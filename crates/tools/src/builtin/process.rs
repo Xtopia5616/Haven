@@ -86,6 +86,7 @@ impl ProcessTool {
                 let count = processes.len();
                 let (mut output, truncated) =
                     crate::util::json_list_within_budget("processes", processes, count, max_chars);
+                output["operation"] = serde_json::json!("list");
                 if truncated {
                     output["hint"] = serde_json::json!(
                         "Output truncated to the max chars budget. Narrow by filtering processes, or reduce the returned fields."
@@ -124,13 +125,16 @@ impl ProcessTool {
                     child.creation_flags(crate::CREATE_NO_WINDOW);
                 }
                 child.spawn()?;
-                Ok(ToolResult::ok(serde_json::json!({"launched": cmd})))
+                Ok(ToolResult::ok(
+                    serde_json::json!({"operation": "launch", "launched": cmd}),
+                ))
             }
             ProcessOperation::Kill => {
-                let pid = params.pid.unwrap_or(0) as u32;
-                if pid == 0 {
+                let raw_pid = params.pid.unwrap_or(0);
+                if raw_pid <= 0 {
                     anyhow::bail!("valid pid is required");
                 }
+                let pid = raw_pid as u32;
                 tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                     // new_all() refreshes the whole system; refresh_processes
                     // is enough to find a single process by pid.
@@ -153,7 +157,9 @@ impl ProcessTool {
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
-                Ok(ToolResult::ok(serde_json::json!({"killed": pid})))
+                Ok(ToolResult::ok(
+                    serde_json::json!({"operation": "kill", "killed": pid}),
+                ))
             }
         }
     }
@@ -195,12 +201,33 @@ impl Tool for ProcessTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["list", "launch", "kill"] },
-                "command": { "type": "string" },
-                "pid": { "type": "integer" },
-                "cwd": { "type": "string", "description": "Working directory for the launched command. Defaults to the shared Temp working directory.", "default": null }
+                "operation": { "type": "string", "enum": ["list", "launch", "kill"] }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "list" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "launch" },
+                        "command": { "type": "string", "minLength": 1 },
+                        "cwd": { "type": "string", "minLength": 1, "description": "Working directory; defaults to Haven's temporary working directory" }
+                    },
+                    "required": ["operation", "command"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "kill" }, "pid": { "type": "integer", "minimum": 1 } },
+                    "required": ["operation", "pid"]
+                }
+            ]
         })
     }
 

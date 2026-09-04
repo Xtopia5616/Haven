@@ -158,11 +158,32 @@ impl Tool for ClipboardTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "history"] },
-                "content": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                "operation": { "type": "string", "enum": ["read", "write", "history"] }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "read" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "write" }, "content": { "type": "string" } },
+                    "required": ["operation", "content"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "history" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                    },
+                    "required": ["operation"]
+                }
+            ]
         })
     }
 
@@ -201,7 +222,7 @@ impl ClipboardTool {
                 self.history.record(text.clone());
                 let max_chars = self.max_output_chars;
                 let (text, truncated) = haven_common::encoding::truncate_output(&text, max_chars);
-                let mut result = serde_json::json!({"content": text});
+                let mut result = serde_json::json!({"operation": "read", "content": text});
                 if truncated {
                     result["truncated"] = serde_json::Value::Bool(true);
                 }
@@ -226,7 +247,9 @@ impl ClipboardTool {
                     anyhow::bail!("cancelled");
                 }
                 self.history.record(content);
-                Ok(ToolResult::ok(serde_json::json!({"written": true})))
+                Ok(ToolResult::ok(
+                    serde_json::json!({"operation": "write", "written": true}),
+                ))
             }
             ClipboardOperation::History => {
                 if cancel.is_cancelled() {
@@ -251,6 +274,7 @@ impl ClipboardTool {
                     })
                     .collect();
                 Ok(ToolResult::ok(serde_json::json!({
+                    "operation": "history",
                     "entries": json_entries,
                     "total": self.history.len(),
                 })))
@@ -309,6 +333,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires an interactive desktop clipboard provider"]
     async fn test_clipboard_write_read_roundtrip() {
         let content = format!("haven-clipboard-test-{}", std::process::id());
         let write = test_tool()

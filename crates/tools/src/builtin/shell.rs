@@ -314,11 +314,11 @@ impl Tool for ShellTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string", "description": "Shell command to execute" },
+                "command": { "type": "string", "minLength": 1, "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
                 "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. Prefer true for long-running work when later steps depend on the result. After launch, if nothing else useful can run in parallel, end your turn — the result is auto-pushed when the action finishes (do not poll).", "default": false },
-                "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
+                "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the shared Temp working directory." }
             },
             "required": ["command"]
         })

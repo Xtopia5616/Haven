@@ -157,38 +157,42 @@ impl Tool for InputTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["type", "key", "click", "move", "scroll"],
-                    "description": "What to send"
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Text to type (type only; supports any Unicode)"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Key name or chord (enter, esc, tab, ctrl+c)"
-                },
-                "x": {
-                    "type": "integer",
-                    "description": "Screen x in pixels (click/move)"
-                },
-                "y": {
-                    "type": "integer",
-                    "description": "Screen y in pixels (click/move)"
-                },
-                "button": {
-                    "type": "string",
-                    "enum": ["left", "right", "middle"],
-                    "description": "Mouse button (click only; default left)"
-                },
-                "delta": {
-                    "type": "integer",
-                    "description": "Wheel steps (scroll only; positive = up/away, negative = down/toward)"
-                }
+                "operation": { "type": "string", "enum": ["type", "key", "click", "move", "scroll"] },
+                "text": { "type": "string", "minLength": 1 },
+                "key": { "type": "string", "minLength": 1 },
+                "x": { "type": "integer" },
+                "y": { "type": "integer" },
+                "button": { "type": "string", "enum": ["left", "right", "middle"] },
+                "delta": { "type": "integer", "minimum": -100, "maximum": 100 }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "oneOf": [
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "type" }, "text": { "type": "string", "minLength": 1 } }, "required": ["operation", "text"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "key" }, "key": { "type": "string", "minLength": 1 } }, "required": ["operation", "key"] },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "click" },
+                        "x": { "type": "integer" },
+                        "y": { "type": "integer" },
+                        "button": { "type": "string", "enum": ["left", "right", "middle"] }
+                    },
+                    "required": ["operation", "x", "y"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "move" }, "x": { "type": "integer" }, "y": { "type": "integer" } },
+                    "required": ["operation", "x", "y"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "scroll" }, "delta": { "type": "integer", "minimum": -100, "maximum": 100 } },
+                    "required": ["operation"]
+                }
+            ]
         })
     }
 

@@ -79,11 +79,19 @@ impl AudioTool {
             anyhow::bail!("cancelled");
         }
         match params.operation {
-            AudioOperation::Record => self.record(&params, cancel).await,
-            AudioOperation::Play => self.play(&params).await,
+            AudioOperation::Record => {
+                let result = self.record(&params, cancel).await?;
+                Ok(add_operation(result, "record"))
+            }
+            AudioOperation::Play => {
+                let result = self.play(&params).await?;
+                Ok(add_operation(result, "play"))
+            }
             AudioOperation::VolumeGet => {
                 let volume = tokio::task::spawn_blocking(imp::get_volume).await??;
-                Ok(ToolResult::ok(serde_json::json!({ "volume": volume })))
+                Ok(ToolResult::ok(
+                    serde_json::json!({ "operation": "volume_get", "volume": volume }),
+                ))
             }
             AudioOperation::VolumeSet => {
                 let level = params.volume.ok_or_else(|| {
@@ -92,13 +100,16 @@ impl AudioTool {
                 let clamped = level.clamp(0.0, 1.0) as f32;
                 tokio::task::spawn_blocking(move || imp::set_volume(clamped)).await??;
                 Ok(ToolResult::ok(serde_json::json!({
+                    "operation": "volume_set",
                     "volume": clamped,
                     "set": true,
                 })))
             }
             AudioOperation::MuteGet => {
                 let muted = tokio::task::spawn_blocking(imp::get_mute).await??;
-                Ok(ToolResult::ok(serde_json::json!({ "muted": muted })))
+                Ok(ToolResult::ok(
+                    serde_json::json!({ "operation": "mute_get", "muted": muted }),
+                ))
             }
             AudioOperation::MuteSet => {
                 let muted = params.muted.ok_or_else(|| {
@@ -106,12 +117,20 @@ impl AudioTool {
                 })?;
                 tokio::task::spawn_blocking(move || imp::set_mute(muted)).await??;
                 Ok(ToolResult::ok(serde_json::json!({
+                    "operation": "mute_set",
                     "muted": muted,
                     "set": true,
                 })))
             }
         }
     }
+}
+
+fn add_operation(mut result: ToolResult, operation: &str) -> ToolResult {
+    if let Some(object) = result.output.as_object_mut() {
+        object.insert("operation".into(), Value::String(operation.into()));
+    }
+    result
 }
 
 #[async_trait]
@@ -141,39 +160,63 @@ impl Tool for AudioTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": [
-                        "play",
-                        "record",
-                        "volume_get",
-                        "volume_set",
-                        "mute_get",
-                        "mute_set"
-                    ]
-                },
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to a .wav file for play"
-                },
-                "duration": {
-                    "type": "number",
-                    "description": "Recording duration in seconds (default 10, max 60)"
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Text for TTS play (not wired; returns a clear error)"
-                },
-                "volume": {
-                    "type": "number",
-                    "description": "Master volume scalar 0.0–1.0 for volume_set"
-                },
-                "muted": {
-                    "type": "boolean",
-                    "description": "Mute state for mute_set"
-                }
+                "operation": { "type": "string", "enum": ["play", "record", "volume_get", "volume_set", "mute_get", "mute_set"] },
+                "file_path": { "type": "string" },
+                "duration": { "type": "number" },
+                "volume": { "type": "number" },
+                "muted": { "type": "boolean" }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "record" },
+                        "duration": { "type": "number", "minimum": 1, "maximum": 60, "description": "Recording duration in seconds (default 10)" }
+                    },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "play" },
+                        "file_path": { "type": "string", "minLength": 1, "description": "Path to a .wav file" }
+                    },
+                    "required": ["operation", "file_path"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "volume_get" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "volume_set" },
+                        "volume": { "type": "number", "minimum": 0, "maximum": 1 }
+                    },
+                    "required": ["operation", "volume"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "mute_get" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "mute_set" },
+                        "muted": { "type": "boolean" }
+                    },
+                    "required": ["operation", "muted"]
+                }
+            ]
         })
     }
 
@@ -450,9 +493,9 @@ mod tests {
         assert!(req.contains(&"operation"));
         assert!(schema["properties"]["file_path"]["type"].as_str().is_some());
         assert!(schema["properties"]["duration"]["type"].as_str().is_some());
-        assert!(schema["properties"]["text"]["type"].as_str().is_some());
         assert!(schema["properties"]["volume"]["type"].as_str().is_some());
         assert!(schema["properties"]["muted"]["type"].as_str().is_some());
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 6);
     }
 
     #[tokio::test]

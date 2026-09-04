@@ -56,7 +56,11 @@ impl ActionsTool {
                 .actions
                 .status_for_session(action_id, &session_id)
                 .await;
-            return Ok(ToolResult::ok(status));
+            let mut output = status;
+            if let Some(object) = output.as_object_mut() {
+                object.insert("operation".into(), serde_json::json!("inspect"));
+            }
+            return Ok(ToolResult::ok(output));
         }
 
         let filter = params.status;
@@ -72,10 +76,13 @@ impl ActionsTool {
             let mut body = haven_common::tools::background_wait_object(
                 "All listed background actions are still running. END YOUR TURN if you have nothing else useful to do — do not poll. Results are auto-pushed and the session is auto-woken when they finish.",
             );
+            body.insert("operation".into(), serde_json::json!("list"));
             body.insert("actions".into(), serde_json::json!(rows));
             return Ok(ToolResult::ok(serde_json::Value::Object(body)));
         }
-        Ok(ToolResult::ok(serde_json::json!({ "actions": rows })))
+        Ok(ToolResult::ok(
+            serde_json::json!({ "operation": "list", "actions": rows }),
+        ))
     }
 }
 
@@ -108,14 +115,30 @@ impl Tool for ActionsTool {
             "properties": {
                 "action_id": {
                     "type": "string",
-                    "description": "Optional: inspect this single background action instead of listing"
+                    "minLength": 1,
+                    "description": "Inspect this single background action instead of listing"
                 },
                 "status": {
                     "type": "string",
                     "enum": ["running", "completed", "failed", "cancelled"],
                     "description": "Optional filter when listing: only actions in this state"
                 }
-            }
+            },
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "action_id": { "type": "string", "minLength": 1 } },
+                    "required": ["action_id"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "status": { "type": "string", "enum": ["running", "completed", "failed", "cancelled"] }
+                    }
+                }
+            ]
         })
     }
 

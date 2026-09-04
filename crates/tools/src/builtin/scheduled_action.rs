@@ -910,6 +910,7 @@ impl ScheduledActionTool {
                         })
                 };
                 let mut output = serde_json::json!({
+                    "operation": "set",
                     "id": id,
                     "mode": mode.as_str(),
                     "fires_at": fires_at,
@@ -943,7 +944,7 @@ impl ScheduledActionTool {
                     .ok_or_else(|| anyhow::anyhow!("schedule list requires a session context"))?;
                 let rows = self.center.list_for_session(session_id).await;
                 Ok(ToolResult::ok(
-                    serde_json::json!({ "scheduled_actions": rows }),
+                    serde_json::json!({ "operation": "list", "scheduled_actions": rows }),
                 ))
             }
             ScheduleOperation::Cancel => {
@@ -955,7 +956,9 @@ impl ScheduledActionTool {
                     .action_id
                     .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
                 if self.center.cancel_for_session(&id, session_id).await {
-                    Ok(ToolResult::ok(serde_json::json!({ "cancelled": id })))
+                    Ok(ToolResult::ok(
+                        serde_json::json!({ "operation": "cancel", "cancelled": id }),
+                    ))
                 } else {
                     anyhow::bail!("scheduled_action '{}' not found or already fired", id)
                 }
@@ -1006,54 +1009,66 @@ impl Tool for ScheduledActionTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["set", "list", "cancel"],
-                    "description": "set = schedule, list = pending, cancel = stop one"
-                },
-                "delay_secs": {
-                    "type": "integer",
-                    "description": "Delay in seconds before firing (set only; use delay_secs OR due_at OR watch_action_id, exactly one, not combined)"
-                },
-                "due_at": {
-                    "type": "string",
-                    "description": "Absolute fire time, ISO 8601 e.g. 2026-08-05T15:00:00+08:00 (set only; use due_at OR delay_secs OR watch_action_id, exactly one, not combined)"
-                },
-                "watch_action_id": {
-                    "type": "string",
-                    "description": "Set only: fire when this background action (id from shell background:true) finishes or fails, instead of on a timer. Requires mode 'continue' — the session is resumed with the action's result. Exclusive with delay_secs and due_at; in-memory only (the watched action cannot survive a restart)."
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["tool", "continue"],
-                    "description": "Action when it fires (set only): tool (default) = call tool_name with tool_args, e.g. tool_name 'notify' to send a message; continue = resume the current session with prompt as the continuation instruction (or with the action's result when watch_action_id is set; only works while that session is still active — it is cancelled when the session ends)"
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Scheduled action title (defaults to 'Haven')"
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Scheduled action message shown when it fires (set only)"
-                },
-                "tool_name": {
-                    "type": "string",
-                    "description": "Tool to call when it fires (set only, mode=tool), e.g. 'notify'"
-                },
-                "tool_args": {
-                    "type": "object",
-                    "description": "Arguments for the tool call (set only, mode=tool)"
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Continuation instruction delivered to the session when it resumes (set only, mode=continue)"
-                },
-                "action_id": {
-                    "type": "string",
-                    "description": "Scheduled action id returned by set (cancel only)"
-                }
+                "operation": { "type": "string", "enum": ["set", "list", "cancel"] },
+                "delay_secs": { "type": "integer", "minimum": 1 },
+                "due_at": { "type": "string", "minLength": 1 },
+                "watch_action_id": { "type": "string", "minLength": 1 },
+                "mode": { "type": "string", "enum": ["tool", "continue"] },
+                "title": { "type": "string", "minLength": 1 },
+                "body": { "type": "string", "minLength": 1 },
+                "tool_name": { "type": "string", "minLength": 1 },
+                "tool_args": { "type": "object" },
+                "prompt": { "type": "string", "minLength": 1 },
+                "action_id": { "type": "string", "minLength": 1 }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "list" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "cancel" }, "action_id": { "type": "string", "minLength": 1 } },
+                    "required": ["operation", "action_id"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "set" },
+                        "delay_secs": { "type": "integer", "minimum": 1 },
+                        "due_at": { "type": "string", "minLength": 1 },
+                        "mode": { "type": "string", "enum": ["tool", "continue"] },
+                        "title": { "type": "string", "minLength": 1 },
+                        "body": { "type": "string", "minLength": 1 },
+                        "tool_name": { "type": "string", "minLength": 1 },
+                        "tool_args": { "type": "object" },
+                        "prompt": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "body"],
+                    "oneOf": [
+                        { "required": ["delay_secs"], "not": { "anyOf": [{ "required": ["due_at"] }, { "required": ["watch_action_id"] }] } },
+                        { "required": ["due_at"], "not": { "required": ["delay_secs"] } }
+                    ]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "set" },
+                        "watch_action_id": { "type": "string", "minLength": 1 },
+                        "mode": { "const": "continue" },
+                        "title": { "type": "string", "minLength": 1 },
+                        "body": { "type": "string", "minLength": 1 },
+                        "prompt": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "watch_action_id", "mode", "body"]
+                }
+            ]
         })
     }
 

@@ -211,7 +211,9 @@ pub async fn register_builtin_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Tool;
     use haven_common::config::ToolConfig;
+    use serde_json::json;
 
     fn settings_with(tool: &str, cap: Option<usize>) -> HashMap<String, ToolConfig> {
         let mut map = HashMap::new();
@@ -243,5 +245,80 @@ mod tests {
     fn tool_output_cap_none_inherits_global() {
         let settings = settings_with("shell", None);
         assert_eq!(tool_output_cap(&settings, "shell", 5_000), 5_000);
+    }
+
+    #[test]
+    fn operation_schemas_reject_cross_operation_arguments() {
+        let clipboard = clipboard::ClipboardTool::new(
+            Arc::new(clipboard::ClipboardHistory::new(8)),
+            2_000,
+            4,
+            8,
+            500,
+        );
+        let audio = audio::AudioTool::new(None);
+        let process = process::ProcessTool::default();
+        let http = http::HttpTool::default();
+        let input = input::InputTool;
+        let system = system::SystemTool::default();
+        let window = window::WindowTool::new(None);
+        let schedule = scheduled_action::ScheduledActionTool {
+            center: Arc::new(scheduled_action::ScheduledActionCenter::new()),
+            registry: None,
+        };
+        let cases: Vec<(&dyn Tool, serde_json::Value, serde_json::Value)> = vec![
+            (
+                &audio,
+                json!({"operation": "volume_set", "volume": 0.5}),
+                json!({"operation": "volume_set"}),
+            ),
+            (
+                &process,
+                json!({"operation": "kill", "pid": 1}),
+                json!({"operation": "kill", "command": "taskkill"}),
+            ),
+            (
+                &clipboard,
+                json!({"operation": "write", "content": "x"}),
+                json!({"operation": "write"}),
+            ),
+            (
+                &http,
+                json!({"url": "https://example.com"}),
+                json!({"method": "POST", "url": "https://example.com", "body": 1}),
+            ),
+            (
+                &input,
+                json!({"operation": "click", "x": 1, "y": 2}),
+                json!({"operation": "click", "x": 1}),
+            ),
+            (
+                &system,
+                json!({"scope": "env", "operation": "set", "name": "HAVEN_TEST", "value": "x"}),
+                json!({"scope": "env", "operation": "set", "name": "HAVEN_TEST"}),
+            ),
+            (
+                &window,
+                json!({"operation": "wait", "condition": "title_contains", "text": "Haven"}),
+                json!({"operation": "focus"}),
+            ),
+            (
+                &schedule,
+                json!({"operation": "set", "delay_secs": 5, "body": "check"}),
+                json!({"operation": "cancel"}),
+            ),
+        ];
+        for (tool, valid, invalid) in cases {
+            assert!(
+                tool.validate_input(&valid).is_ok(),
+                "{} rejected {valid}",
+                tool.name()
+            );
+            assert!(
+                tool.validate_input(&invalid).is_err(),
+                "{} accepted {invalid}",
+                tool.name()
+            );
+        }
     }
 }

@@ -67,8 +67,8 @@ impl SystemTool {
             .filter(|s| !s.is_empty())
             .unwrap_or("info");
 
-        match scope {
-            "info" | "overview" => self.run_info(params.category, cancel).await,
+        let mut result = match scope {
+            "info" | "overview" => self.run_info(params.category, cancel).await?,
             "env" => {
                 let op = parse_env_op(params.operation.as_deref())?;
                 EnvTool {
@@ -82,7 +82,7 @@ impl SystemTool {
                     },
                     cancel,
                 )
-                .await
+                .await?
             }
             "registry" => {
                 let op = parse_registry_op(params.operation.as_deref())?;
@@ -97,7 +97,7 @@ impl SystemTool {
                         },
                         cancel,
                     )
-                    .await
+                    .await?
             }
             "power" => {
                 let op = parse_power_op(params.operation.as_deref())?;
@@ -108,17 +108,21 @@ impl SystemTool {
                         },
                         cancel,
                     )
-                    .await
+                    .await?
             }
             "display" | "displays" => {
                 let displays = tokio::task::spawn_blocking(list_displays).await??;
-                Ok(ToolResult::ok(serde_json::json!({ "displays": displays })))
+                ToolResult::ok(serde_json::json!({ "displays": displays }))
             }
             other => anyhow::bail!(
                 "unknown scope '{}'; use info, env, registry, power, or display",
                 other
             ),
+        };
+        if let Some(object) = result.output.as_object_mut() {
+            object.insert("scope".into(), Value::String(scope.to_string()));
         }
+        Ok(result)
     }
 
     async fn run_info(
@@ -242,34 +246,99 @@ impl Tool for SystemTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "scope": {
-                    "type": "string",
-                    "enum": ["info", "env", "registry", "power", "display"],
-                    "default": "info",
-                    "description": "Domain to operate on"
+                "scope": { "type": "string", "enum": ["info", "overview", "env", "registry", "power", "display", "displays"] },
+                "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"] },
+                "operation": { "type": "string" },
+                "name": { "type": "string" },
+                "value": { "type": "string" },
+                "path": { "type": "string" },
+                "type": { "type": "string", "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"] }
+            },
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "scope": { "enum": ["info", "overview"] },
+                        "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"] }
+                    }
                 },
-                "category": {
-                    "type": "string",
-                    "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"],
-                    "default": "overview",
-                    "description": "Info category when scope=info"
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "scope": { "const": "display" }
+                    },
+                    "required": ["scope"]
                 },
-                "operation": {
-                    "type": "string",
-                    "description": "Sub-op: env get/set/unset/list; registry get/set/delete/list; power status/lock/sleep/hibernate"
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "scope": { "const": "displays" }
+                    },
+                    "required": ["scope"]
                 },
-                "name": {
-                    "type": "string",
-                    "description": "Env var or registry value name; for env list, optional case-insensitive prefix filter"
+                {
+                    "type": "object",
+                    "oneOf": [
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "list" }, "name": { "type": "string", "minLength": 1 } },
+                            "required": ["scope"]
+                        },
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "get" }, "name": { "type": "string", "minLength": 1 } },
+                            "required": ["scope", "operation", "name"]
+                        },
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "set" }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } },
+                            "required": ["scope", "operation", "name", "value"]
+                        },
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "unset" }, "name": { "type": "string", "minLength": 1 } },
+                            "required": ["scope", "operation", "name"]
+                        }
+                    ]
                 },
-                "value": { "type": "string", "description": "Value for env/registry set" },
-                "path": { "type": "string", "description": "Registry path, e.g. HKCU:\\Software\\..." },
-                "type": {
-                    "type": "string",
-                    "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"],
-                    "description": "Registry value type for set"
+                {
+                    "type": "object",
+                    "oneOf": [
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "list" }, "path": { "type": "string", "minLength": 1 } },
+                            "required": ["scope", "path"]
+                        },
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "get" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 } },
+                            "required": ["scope", "operation", "path", "name"]
+                        },
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "set" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" }, "type": { "type": "string", "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"] } },
+                            "required": ["scope", "operation", "path", "name", "value"]
+                        },
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "delete" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 } },
+                            "required": ["scope", "operation", "path"]
+                        }
+                    ]
+                },
+                {
+                    "type": "object",
+                    "oneOf": [
+                        { "additionalProperties": false, "properties": { "scope": { "const": "power" }, "operation": { "const": "status" } }, "required": ["scope"] },
+                        { "additionalProperties": false, "properties": { "scope": { "const": "power" }, "operation": { "const": "lock" } }, "required": ["scope", "operation"] },
+                        { "additionalProperties": false, "properties": { "scope": { "const": "power" }, "operation": { "const": "sleep" } }, "required": ["scope", "operation"] },
+                        { "additionalProperties": false, "properties": { "scope": { "const": "power" }, "operation": { "const": "hibernate" } }, "required": ["scope", "operation"] }
+                    ]
                 }
-            }
+            ]
         })
     }
 

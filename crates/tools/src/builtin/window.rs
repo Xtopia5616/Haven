@@ -96,7 +96,11 @@ impl WindowTool {
             anyhow::bail!("cancelled");
         }
 
-        let filter_pid = params.pid.map(|p| p as u32);
+        let filter_pid = match params.pid {
+            Some(pid) if pid > 0 => Some(pid as u32),
+            Some(_) => anyhow::bail!("pid must be a positive integer"),
+            None => None,
+        };
         let title = params.title.clone();
 
         match params.operation.unwrap_or(WindowOperation::List) {
@@ -118,21 +122,25 @@ impl WindowTool {
                         max, max
                     ));
                 }
-                Ok(ToolResult::ok(result))
+                Ok(with_operation(ToolResult::ok(result), "list"))
             }
             WindowOperation::Foreground => {
                 let fg = imp::get_foreground_window_info()?;
-                Ok(ToolResult::ok(fg))
+                Ok(with_operation(ToolResult::ok(fg), "foreground"))
             }
             WindowOperation::Focus => {
                 let t = title.ok_or_else(|| anyhow::anyhow!("title is required for focus"))?;
                 imp::focus_window_by_title(&t)?;
-                Ok(ToolResult::ok(serde_json::json!({"focused": t})))
+                Ok(ToolResult::ok(
+                    serde_json::json!({"operation": "focus", "focused": t}),
+                ))
             }
             WindowOperation::Close => {
                 let t = title.ok_or_else(|| anyhow::anyhow!("title is required for close"))?;
                 imp::close_window_by_title(&t)?;
-                Ok(ToolResult::ok(serde_json::json!({"closed": t})))
+                Ok(ToolResult::ok(
+                    serde_json::json!({"operation": "close", "closed": t}),
+                ))
             }
             WindowOperation::Screenshot => {
                 let path = params
@@ -140,7 +148,7 @@ impl WindowTool {
                     .filter(|p| !p.trim().is_empty())
                     .map(|p| std::path::PathBuf::from(p.trim()));
                 let shot = imp::capture_screen(path)?;
-                Ok(ToolResult::ok(shot))
+                Ok(with_operation(ToolResult::ok(shot), "screenshot"))
             }
             WindowOperation::Ocr => self.ocr(params.path, cancel).await,
             WindowOperation::UiTree => {
@@ -152,6 +160,7 @@ impl WindowTool {
                 let count = elements.len();
                 let truncated = count >= UI_TREE_CAP;
                 Ok(ToolResult::ok(serde_json::json!({
+                    "operation": "ui_tree",
                     "elements": elements,
                     "count": count,
                     "truncated": truncated,
@@ -172,6 +181,7 @@ impl WindowTool {
         // unavailable-capability path independent of an interactive desktop.
         let Some(client) = &self.router else {
             return Ok(ToolResult::ok(serde_json::json!({
+                "operation": "ocr",
                 "ocr": true,
                 "ocr_unavailable": true,
                 "reason": "No LLM router installed, so OCR cannot run."
@@ -194,6 +204,7 @@ impl WindowTool {
         let size = meta.len();
         if size > self.vision_max_bytes {
             return Ok(ToolResult::ok(serde_json::json!({
+                "operation": "ocr",
                 "ocr": true,
                 "path": shot_path,
                 "size": size,
@@ -251,6 +262,7 @@ impl WindowTool {
                     return Ok(ToolResult {
                         success: false,
                         output: serde_json::json!({
+                            "operation": "ocr",
                             "ocr": true,
                             "path": shot_path,
                             "ocr_error": true,
@@ -266,6 +278,7 @@ impl WindowTool {
                     return Ok(ToolResult {
                         success: false,
                         output: serde_json::json!({
+                            "operation": "ocr",
                             "ocr": true,
                             "path": shot_path,
                             "ocr_error": true,
@@ -280,6 +293,7 @@ impl WindowTool {
             };
 
         Ok(ToolResult::ok(serde_json::json!({
+            "operation": "ocr",
             "ocr": true,
             "path": shot_path,
             "size": size,
@@ -333,6 +347,7 @@ impl WindowTool {
                 };
                 if matched {
                     return Ok(ToolResult::ok(serde_json::json!({
+                        "operation": "wait",
                         "waited": true,
                         "timed_out": false,
                         "matched": true,
@@ -342,6 +357,7 @@ impl WindowTool {
                 }
                 if Instant::now() >= deadline {
                     return Ok(ToolResult::ok(serde_json::json!({
+                        "operation": "wait",
                         "waited": true,
                         "timed_out": true,
                         "matched": false,
@@ -355,6 +371,13 @@ impl WindowTool {
         })
         .await?
     }
+}
+
+fn with_operation(mut result: ToolResult, operation: &str) -> ToolResult {
+    if let Some(object) = result.output.as_object_mut() {
+        object.insert("operation".into(), Value::String(operation.into()));
+    }
+    result
 }
 
 #[async_trait]
@@ -394,43 +417,74 @@ impl Tool for WindowTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": [
-                        "list",
-                        "foreground",
-                        "focus",
-                        "close",
-                        "screenshot",
-                        "ocr",
-                        "ui_tree",
-                        "wait"
-                    ]
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Window title substring (focus/close/ui_tree target)"
-                },
-                "pid": { "type": "integer", "description": "Filter windows by PID" },
-                "path": {
-                    "type": "string",
-                    "description": "Optional output path for screenshot/ocr; defaults to a temp file"
-                },
-                "condition": {
-                    "type": "string",
-                    "enum": ["title_contains", "foreground_contains", "ui_text"],
-                    "description": "Wait condition for operation=wait"
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Text needle for wait conditions"
-                },
-                "timeout_secs": {
-                    "type": "integer",
-                    "description": "Wait timeout in seconds (default 10, max 120)"
-                }
+                "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close", "screenshot", "ocr", "ui_tree", "wait"] },
+                "title": { "type": "string" },
+                "pid": { "type": "integer", "minimum": 1 },
+                "path": { "type": "string", "minLength": 1 },
+                "condition": { "type": "string", "enum": ["title_contains", "foreground_contains", "ui_text"] },
+                "text": { "type": "string", "minLength": 1 },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120 }
             },
-            "required": ["operation"]
+            "required": ["operation"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "list" },
+                        "pid": { "type": "integer", "minimum": 1 }
+                    },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "foreground" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "focus" }, "title": { "type": "string", "minLength": 1 } },
+                    "required": ["operation", "title"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "close" }, "title": { "type": "string", "minLength": 1 } },
+                    "required": ["operation", "title"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "screenshot" }, "path": { "type": "string", "minLength": 1 } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "ocr" }, "path": { "type": "string", "minLength": 1 } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "ui_tree" }, "title": { "type": "string", "minLength": 1 } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "wait" },
+                        "condition": { "type": "string", "enum": ["title_contains", "foreground_contains", "ui_text"] },
+                        "text": { "type": "string", "minLength": 1 },
+                        "title": { "type": "string", "minLength": 1 },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120 }
+                    },
+                    "required": ["operation", "condition", "text"]
+                }
+            ]
         })
     }
 

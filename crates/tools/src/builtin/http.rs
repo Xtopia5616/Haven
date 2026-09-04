@@ -74,7 +74,9 @@ impl HttpTool {
             .method
             .map(|m| m.as_str().to_string())
             .unwrap_or_else(|| "GET".to_string());
-        let timeout_secs = params.timeout_secs.unwrap_or(15) as u64;
+        // Keep direct/native callers safe too; JSON schema validation is only
+        // applied at the model boundary and cannot protect internal callers.
+        let timeout_secs = params.timeout_secs.unwrap_or(15).clamp(1, 120) as u64;
 
         let body = params.body;
         let as_html = params.as_html.unwrap_or(false);
@@ -156,13 +158,39 @@ impl Tool for HttpTool {
             "type": "object",
             "properties": {
                 "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET" },
-                "url": { "type": "string", "description": "The URL to request" },
-                "headers": { "type": "object", "description": "Optional HTTP headers as key-value pairs" },
-                "body": { "type": "string", "description": "Request body for POST" },
-                "as_html": { "type": "boolean", "description": "Return the raw HTML instead of converting HTML pages to plain text (default false)" },
-                "timeout_secs": { "type": "integer", "description": "Request timeout in seconds", "default": 15 }
+                "url": { "type": "string", "minLength": 1 },
+                "headers": { "type": "object" },
+                "body": { "type": "string" },
+                "as_html": { "type": "boolean" },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120 }
             },
-            "required": ["url"]
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "method": { "const": "GET", "default": "GET" },
+                        "url": { "type": "string", "minLength": 1, "description": "The URL to request" },
+                        "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional HTTP headers" },
+                        "as_html": { "type": "boolean", "description": "Return raw HTML instead of extracted text" },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15 }
+                    },
+                    "required": ["url"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "method": { "const": "POST" },
+                        "url": { "type": "string", "minLength": 1, "description": "The URL to request" },
+                        "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Optional HTTP headers" },
+                        "body": { "type": "string", "description": "Request body" },
+                        "as_html": { "type": "boolean", "description": "Return raw HTML instead of extracted text" },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120, "default": 15 }
+                    },
+                    "required": ["method", "url"]
+                }
+            ]
         })
     }
 
@@ -267,6 +295,8 @@ async fn execute_once_with(
     };
 
     Ok(ToolResult::ok(serde_json::json!({
+        "operation": "request",
+        "method": method,
         "status": status,
         "headers": resp_headers,
         "body": body_truncated,

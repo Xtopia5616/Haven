@@ -160,7 +160,7 @@ impl Tool for LoadSkillTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "skill_name": { "type": "string", "description": "The name of the skill to load" }
+                "skill_name": { "type": "string", "minLength": 1, "description": "The name of the skill to load" }
             },
             "required": ["skill_name"]
         })

@@ -847,62 +847,90 @@ impl Tool for AgentTool {
         json!({
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": OPERATIONS,
-                    "description": "list | send | inbox | reply | profile | request | spawn"
-                },
-                "to": {
-                    "type": "string",
-                    "description": "Recipient agent name (from list). Required for send/request; optional for reply (omit to auto-target). Use '*' with send to broadcast."
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Message / reply / request body. Required for send, reply, request."
-                },
-                "subject": {
-                    "type": "string",
-                    "description": "Optional short subject line (send / reply / request)."
-                },
-                "payload": {
-                    "type": "object",
-                    "description": "Optional structured data (JSON only; reference files by path, never embed binaries)."
-                },
-                "type": {
-                    "type": "string",
-                    "description": "Optional explicit envelope type for send: message | reply | broadcast | request (system is runtime-reserved)."
-                },
-                "expires_at": {
-                    "type": "string",
-                    "description": "Optional RFC3339 expiry; expired messages are dropped from the recipient's inbox."
-                },
-                "in_reply_to": {
-                    "type": "string",
-                    "description": "Id of the original message (reply). Omit to target the most recent received message."
-                },
-                "role": {
-                    "type": "string",
-                    "description": "Short role label for profile / spawn (e.g. researcher, coder, reviewer)."
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Human-readable session title for profile / spawn (shown in list / UI)."
-                },
-                "capabilities": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Capability tags for profile / spawn (non-empty replaces the previous list on profile)."
-                },
-                "timeout_secs": {
-                    "type": "integer",
-                    "description": "Seconds to wait for a reply on request (1-300, default 60)."
-                },
-                "task": {
-                    "type": "string",
-                    "description": "Delegated task brief for spawn (what the new agent should do and how to report back)."
-                }
+                "operation": { "type": "string", "enum": OPERATIONS },
+                "to": { "type": "string", "minLength": 1 },
+                "text": { "type": "string", "minLength": 1 },
+                "subject": { "type": "string" },
+                "payload": { "type": "object" },
+                "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"] },
+                "expires_at": { "type": "string", "minLength": 1 },
+                "in_reply_to": { "type": "string", "minLength": 1 },
+                "role": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 },
+                "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS },
+                "task": { "type": "string", "minLength": 1 }
             },
             "required": ["operation"],
+            "oneOf": [
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" } }, "required": ["operation"] },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "send" },
+                        "to": { "type": "string", "minLength": 1 },
+                        "text": { "type": "string", "minLength": 1 },
+                        "subject": { "type": "string" },
+                        "payload": { "type": "object" },
+                        "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"] },
+                        "expires_at": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "to", "text"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "reply" },
+                        "to": { "type": "string", "minLength": 1 },
+                        "text": { "type": "string", "minLength": 1 },
+                        "subject": { "type": "string" },
+                        "payload": { "type": "object" },
+                        "expires_at": { "type": "string", "minLength": 1 },
+                        "in_reply_to": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "text"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "profile" },
+                        "role": { "type": "string", "minLength": 1 },
+                        "title": { "type": "string", "minLength": 1 },
+                        "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } }
+                    },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "request" },
+                        "to": { "type": "string", "minLength": 1 },
+                        "text": { "type": "string", "minLength": 1 },
+                        "subject": { "type": "string" },
+                        "payload": { "type": "object" },
+                        "expires_at": { "type": "string", "minLength": 1 },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS }
+                    },
+                    "required": ["operation", "to", "text"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "spawn" },
+                        "task": { "type": "string", "minLength": 1 },
+                        "title": { "type": "string", "minLength": 1 },
+                        "role": { "type": "string", "minLength": 1 },
+                        "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } }
+                    },
+                    "required": ["operation", "task"]
+                }
+            ],
         })
     }
 
