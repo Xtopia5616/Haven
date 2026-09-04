@@ -232,6 +232,38 @@ fn binary_result(path: &str, size: u64) -> ToolResult {
     }))
 }
 
+/// Add the stable context fields shared by every structured `files` result.
+///
+/// The operation-specific helpers intentionally only know about their own
+/// payload. Keeping this normalization at the tool boundary prevents read,
+/// list, search, and mutation results from slowly acquiring incompatible
+/// shapes while preserving the existing operation-specific fields.
+fn annotate_file_result(
+    mut result: ToolResult,
+    operation: FilesOperation,
+    path: Option<&str>,
+    root: Option<&str>,
+) -> ToolResult {
+    let truncated = result.truncated;
+    if let Some(output) = result.output.as_object_mut() {
+        output.insert("operation".into(), serde_json::json!(operation));
+        if let Some(path) = path {
+            output
+                .entry("path")
+                .or_insert_with(|| serde_json::json!(path));
+        }
+        if let Some(root) = root {
+            output
+                .entry("root")
+                .or_insert_with(|| serde_json::json!(root));
+        }
+        output
+            .entry("truncated")
+            .or_insert_with(|| serde_json::json!(truncated));
+    }
+    result
+}
+
 /// Read a file in full. Refuses files larger than `max_read_chars` and
 /// rejects binary content. Only reads what the output budget can hold,
 /// instead of pulling the whole file into memory first.
@@ -299,14 +331,19 @@ async fn read_full(
     }
     let content = haven_common::encoding::decode_lossy(&buf);
     let (output, truncated) = haven_common::encoding::truncate_output(&content, max_chars);
+    let is_truncated = truncated || (n as u64) < size;
     let mut result = serde_json::json!({"content": output, "size": size});
-    if truncated || (n as u64) < size {
+    if is_truncated {
         result["truncated"] = serde_json::Value::Bool(true);
         result["hint"] = serde_json::json!(
             "Output truncated to the max chars budget. Read specific ranges with offset/limit (bytes) or start_line/end_line (lines), or use operation=summary."
         );
     }
-    Ok(ToolResult::truncated(result))
+    Ok(if is_truncated {
+        ToolResult::truncated(result)
+    } else {
+        ToolResult::ok(result)
+    })
 }
 
 /// Byte-mode segmented read (B): seek to `offset` and read at most `limit` bytes.
@@ -656,6 +693,7 @@ impl FilesTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let op = params.operation.unwrap_or(FilesOperation::Read);
+        let search_root = params.root.clone();
         let path = sanitize_path(params.path.as_deref().unwrap_or_default())?;
         let max_chars = self.max_output_chars;
 
@@ -663,7 +701,7 @@ impl FilesTool {
             anyhow::bail!("cancelled");
         }
 
-        match op {
+        let result = match op {
             FilesOperation::Read => {
                 let has_line_args = params.start_line.is_some() || params.end_line.is_some();
                 let has_byte_args = params.offset.is_some() || params.limit.is_some();
@@ -827,7 +865,11 @@ impl FilesTool {
                         self.max_list_entries, self.max_list_entries
                     ));
                 }
-                Ok(ToolResult::ok(result))
+                Ok(if truncated {
+                    ToolResult::truncated(result)
+                } else {
+                    ToolResult::ok(result)
+                })
             }
             FilesOperation::Summary => {
                 let start_line = params.start_line.unwrap_or(1).max(1);
@@ -859,7 +901,19 @@ impl FilesTool {
                 let search_input = serde_json::to_value(params.clone())?;
                 self.search.search(search_input, cancel).await
             }
-        }
+        }?;
+
+        let result_path = if matches!(op, FilesOperation::Search) {
+            None
+        } else {
+            Some(path.as_str())
+        };
+        Ok(annotate_file_result(
+            result,
+            op,
+            result_path,
+            search_root.as_deref(),
+        ))
     }
 }
 
@@ -897,27 +951,95 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "What to do with the file (required): read, write, edit, copy, move, delete, list, summary, or search" },
-                "path": { "type": "string", "description": "File or directory path to operate on (required)" },
-                "destination": { "type": "string" },
-                "content": { "type": "string" },
-                "old_string": { "type": "string", "description": "Text to search for (edit operation)" },
-                "new_string": { "type": "string", "description": "Replacement text (edit operation)" },
-                "offset": { "type": "integer", "description": "Byte offset to start reading from (bytes mode)", "default": 0, "minimum": 0 },
-                "limit": { "type": "integer", "description": "Max bytes to read (bytes mode)", "default": self.max_read_chars, "minimum": 1, "maximum": self.max_byte_read },
-                "start_line": { "type": "integer", "description": "1-based first line to read, summarize, or search within (lines mode / summary / search content mode)", "default": 1 },
-                "end_line": { "type": "integer", "description": "1-based last line to read, summarize, or search within (lines mode / summary / search content mode). When omitted, start_line + {} lines are read.", "default": self.line_span },
-                "focus": { "type": "string", "description": "Optional focus/topic (summary operation, or image understanding in read operation)" },
-                "max_chars": { "type": "integer", "description": "Max input characters sent to the summarizer (summary operation)", "default": self.summary_input_chars },
-                "root": { "type": "string", "description": "Root directory to search from (search operation)" },
-                "pattern": { "type": "string", "description": "Filename glob or regex pattern (e.g. *.rs, test_*.py, config\\.json$). In content mode the pattern is a regex; invalid regex falls back to literal substring search. (search operation)" },
-                "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "Search mode: filename (match file names) or content (full-text grep with line numbers) (search operation)" },
-                "max_depth": { "type": "integer", "description": "Maximum directory depth. 0 = unlimited. (search operation)", "default": 10 },
-                "max_results": { "type": "integer", "description": format!("Maximum results to return (capped at {}) (search operation)", self.search.max_results_cap), "default": 50 },
-                "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories (search operation)", "default": true },
-                "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited. (search operation)", "default": self.search.max_file_size }
+                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; all other operations use path." }
             },
-            "required": ["operation", "path"]
+            "required": ["operation"],
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "read" },
+                        "path": { "type": "string", "minLength": 1, "description": "File path to read" },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Byte offset; use with limit for a byte-range read" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_byte_read, "description": "Maximum bytes for a byte-range read" },
+                        "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line; use with end_line for a line-range read" },
+                        "end_line": { "type": "integer", "minimum": 0, "description": format!("1-based last line; omit for up to {} lines", self.line_span) },
+                        "focus": { "type": "string", "description": "Optional focus when reading an image" }
+                    },
+                    "required": ["operation", "path"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "write" },
+                        "path": { "type": "string", "minLength": 1, "description": "File path to replace or create" },
+                        "content": { "type": "string", "description": "Complete file content; an empty string is allowed" }
+                    },
+                    "required": ["operation", "path", "content"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "edit" },
+                        "path": { "type": "string", "minLength": 1, "description": "Text file path to edit" },
+                        "old_string": { "type": "string", "description": "Existing text to replace; must match exactly once" },
+                        "new_string": { "type": "string", "description": "Replacement text; an empty string deletes the match" }
+                    },
+                    "required": ["operation", "path", "old_string", "new_string"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "enum": ["copy", "move"] },
+                        "path": { "type": "string", "minLength": 1, "description": "Source file path" },
+                        "destination": { "type": "string", "minLength": 1, "description": "Destination file path" }
+                    },
+                    "required": ["operation", "path", "destination"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "enum": ["delete", "list"] },
+                        "path": { "type": "string", "minLength": 1, "description": "File path for delete, directory path for list" }
+                    },
+                    "required": ["operation", "path"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "summary" },
+                        "path": { "type": "string", "minLength": 1, "description": "Text file path to summarize" },
+                        "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line; defaults to 1" },
+                        "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; 0 or omitted means through EOF" },
+                        "focus": { "type": "string", "description": "Optional topic to focus the summary on" },
+                        "max_chars": { "type": "integer", "minimum": 1, "maximum": self.summary_input_chars, "description": "Maximum characters sent to the summarizer" }
+                    },
+                    "required": ["operation", "path"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "search" },
+                        "root": { "type": "string", "minLength": 1, "description": "Directory or file path to search under" },
+                        "pattern": { "type": "string", "minLength": 1, "description": "Filename glob, or regex in content mode" },
+                        "mode": { "type": "string", "enum": ["filename", "content"], "description": "filename matches names; content searches text and returns line snippets" },
+                        "max_depth": { "type": "integer", "minimum": 0, "description": "Maximum directory depth; 0 means unlimited" },
+                        "max_results": { "type": "integer", "minimum": 1, "maximum": self.search.max_results_cap, "description": format!("Maximum results, capped at {}", self.search.max_results_cap) },
+                        "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories" },
+                        "max_file_size": { "type": "integer", "minimum": 0, "description": "Content-mode file size limit in bytes; 0 means unlimited" },
+                        "start_line": { "type": "integer", "minimum": 1, "description": "Content-mode first line" },
+                        "end_line": { "type": "integer", "minimum": 0, "description": "Content-mode last line; 0 or omitted means through EOF" }
+                    },
+                    "required": ["operation", "root", "pattern"]
+                }
+            ]
         })
     }
 
@@ -1289,7 +1411,6 @@ mod tests {
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(req.contains(&"operation"));
-        assert!(req.contains(&"path"));
         let enum_vals = schema["properties"]["operation"]["enum"]
             .as_array()
             .unwrap();
@@ -1302,16 +1423,51 @@ mod tests {
         assert!(ops.contains(&"delete"));
         assert!(ops.contains(&"list"));
         assert!(ops.contains(&"search"));
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 7);
     }
 
     #[test]
     fn test_file_read_schema_has_segmented_args() {
         let schema = FilesTool::default().input_schema();
-        let props = &schema["properties"];
+        let read_branch = schema["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["const"] == "read")
+            .expect("read schema branch");
+        let props = &read_branch["properties"];
         assert!(props["offset"]["type"].as_str().is_some());
         assert!(props["limit"]["type"].as_str().is_some());
         assert!(props["start_line"]["type"].as_str().is_some());
         assert!(props["end_line"]["type"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_file_schema_uses_operation_specific_required_fields() {
+        let tool = FilesTool::default();
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "search",
+                "root": "workspace",
+                "pattern": "*.rs"
+            }))
+            .is_ok()
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "write",
+                "path": "output.txt"
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "read",
+                "path": "input.txt",
+                "root": "workspace"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1558,7 +1714,11 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
+        assert!(!result.truncated);
         assert_eq!(result.output["content"].as_str().unwrap(), "hello world");
+        assert_eq!(result.output["operation"], "read");
+        assert_eq!(result.output["path"], path_str);
+        assert_eq!(result.output["truncated"], false);
     }
 
     #[tokio::test]
@@ -1728,6 +1888,38 @@ mod tests {
         let names: Vec<&str> = entries.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(names.contains(&"a.txt"));
         assert!(names.contains(&"b.txt"));
+        assert!(!result.truncated);
+        assert_eq!(result.output["operation"], "list");
+        assert_eq!(
+            result.output["path"],
+            tmp.path().to_string_lossy().to_string()
+        );
+        assert_eq!(result.output["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_list_cap_marks_result_truncated() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("a.txt"), "a")
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("b.txt"), "b")
+            .await
+            .unwrap();
+
+        let mut tool = FilesTool::default();
+        tool.max_list_entries = 1;
+        let result = tool
+            .execute(
+                json!({"operation": "list", "path": tmp.path().to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.truncated);
+        assert_eq!(result.output["truncated"], true);
+        assert_eq!(result.output["entries"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

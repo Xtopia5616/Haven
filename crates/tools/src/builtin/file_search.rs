@@ -122,7 +122,11 @@ impl FileSearchEngine {
                 "Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results."
             ));
         }
-        Ok(ToolResult::ok(output))
+        Ok(if truncated {
+            ToolResult::truncated(output)
+        } else {
+            ToolResult::ok(output)
+        })
     }
 }
 
@@ -805,6 +809,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
+        assert!(result.truncated);
         assert!(result.output["truncated"].as_bool().unwrap());
         assert!(
             result.output["hint"]
