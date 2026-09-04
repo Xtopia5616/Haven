@@ -529,6 +529,9 @@
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
 	}
+	.toolbar-actions .md-btn {
+		width: 104px;
+	}
 	.sr-only {
 		position: absolute;
 		width: 1px;
@@ -547,7 +550,10 @@
 		.resource-search { flex: 0 1 auto; }
 		.toolbar { align-items: flex-start; }
 		.toolbar-actions { width: 100%; }
-		.toolbar-actions .md-btn { flex: 1 1 auto; }
+		.toolbar-actions .md-btn {
+			flex: 1 1 0;
+			width: auto;
+		}
 	}
 	@media (max-width: 455px) {
 		.resource-filter { width: 100%; }
