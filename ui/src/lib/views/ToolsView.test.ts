@@ -24,7 +24,7 @@ describe('ToolsView toolbar actions', () => {
 		});
 	});
 
-	it('uses icons for the secondary MCP and skill toolbar actions', async () => {
+	it('keeps MCP and skill toolbar actions text-only', async () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByRole('tab', { name: '技能' })).toBeTruthy());
@@ -33,7 +33,7 @@ describe('ToolsView toolbar actions', () => {
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
 		const openFolderButton = screen.getByRole('button', { name: '打开文件夹' });
 
-		expect(addButton.querySelector('svg')).toBeTruthy();
-		expect(openFolderButton.querySelector('svg')).toBeTruthy();
+		expect(addButton.querySelector('svg')).toBeNull();
+		expect(openFolderButton.querySelector('svg')).toBeNull();
 	});
 });

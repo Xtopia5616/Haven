@@ -401,12 +401,7 @@
 				<h2>MCP 服务器</h2>
 				<div class="toolbar-actions">
 					<button class="md-btn md-btn--outlined" onclick={refreshMcpList}>刷新</button>
-					<button class="md-btn md-btn--outlined" onclick={openAddDialog}>
-						<svg viewBox="0 0 24 24" fill="currentColor"
-							><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" /></svg
-						>
-						添加
-					</button>
+					<button class="md-btn md-btn--outlined" onclick={openAddDialog}>添加</button>
 				</div>
 			</div>
 			{#if mcpServers.length === 0}
@@ -433,19 +428,7 @@
 				<h2>技能</h2>
 				<div class="toolbar-actions">
 					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>刷新</button>
-					<button class="md-btn md-btn--outlined" onclick={openFolder}>
-						<svg
-							viewBox="0 0 24 24"
-							fill="currentColor"
-							aria-hidden="true"
-							focusable="false"
-						>
-							<path
-								d="M10 4H2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-10l-2-2z"
-							/>
-						</svg>
-						打开文件夹
-					</button>
+					<button class="md-btn md-btn--outlined" onclick={openFolder}>打开文件夹</button>
 				</div>
 			</div>
 			{#if skills.length === 0}
