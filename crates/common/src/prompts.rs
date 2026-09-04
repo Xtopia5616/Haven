@@ -78,6 +78,19 @@ pub fn split_system_prompt_cache_boundary(text: &str) -> Option<(&str, &str)> {
         .map(|index| (&text[..index], &text[index..]))
 }
 
+/// Split the current agent prompt into its stable instructions, per-session
+/// context, and refreshable cross-session MEMORY suffix. The latter two are
+/// both dynamic from the static-prompt perspective, but the session context
+/// remains stable for the lifetime of a ReAct run while MEMORY may be patched
+/// after fact extraction.
+pub fn split_system_prompt_cache_sections(text: &str) -> Option<(&str, &str, &str)> {
+    let (stable, dynamic) = split_system_prompt_cache_boundary(text)?;
+    let Some(memory_start) = dynamic.rfind(MEMORY_FENCE_START) else {
+        return Some((stable, dynamic, ""));
+    };
+    Some((stable, &dynamic[..memory_start], &dynamic[memory_start..]))
+}
+
 /// Main ReAct agent system prompt (default_model).
 ///
 /// Placeholders:
@@ -339,5 +352,14 @@ mod tests {
             format!("stable {SESSION_CONTEXT_FENCE_START} decoy ")
         );
         assert_eq!(dynamic, format!("{SESSION_CONTEXT_FENCE_START}actual"));
+    }
+
+    #[test]
+    fn cache_sections_keep_refreshable_memory_separate() {
+        let prompt = format!("stable{SESSION_CONTEXT_FENCE_START}session{MEMORY_FENCE_START}facts");
+        let (stable, session, memory) = split_system_prompt_cache_sections(&prompt).unwrap();
+        assert_eq!(stable, "stable");
+        assert_eq!(session, format!("{SESSION_CONTEXT_FENCE_START}session"));
+        assert_eq!(memory, format!("{MEMORY_FENCE_START}facts"));
     }
 }

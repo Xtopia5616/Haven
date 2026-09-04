@@ -18,9 +18,11 @@ use crate::adapters::{
     xai_search_mode,
 };
 use crate::client::LlmClient;
-use haven_common::prompts::split_system_prompt_cache_boundary;
 #[cfg(test)]
 use haven_common::prompts::{MEMORY_FENCE_START, SESSION_CONTEXT_FENCE_START};
+use haven_common::prompts::{
+    split_system_prompt_cache_boundary, split_system_prompt_cache_sections,
+};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
@@ -428,8 +430,11 @@ impl OpenAiAdapter {
         // Tool schemas are part of the provider cache key. Changing a loaded
         // MCP/Skill therefore gets a new routing key rather than contaminating
         // the old cache shard.
-        let tool_bytes = serde_json::to_vec(tools).ok()?;
-        hasher.update(tool_bytes);
+        // Hash the exact provider tool projection, not the canonical
+        // ToolDefinition. This keeps the routing key aligned with the wire
+        // schema after recursive JSON canonicalization.
+        let tool_value = serde_json::to_value(Self::convert_tools(tools.to_vec())).ok()?;
+        hasher.update(crate::types::stable_json_bytes(&tool_value));
 
         let digest = hasher.finalize();
         let fingerprint = digest[..16]
@@ -609,9 +614,10 @@ impl OpenAiAdapter {
             .collect()
     }
 
-    /// Keep the stable system prefix byte-identical when cross-session memory
-    /// refreshes. Canonical state remains one message; only the OpenAI wire
-    /// representation receives the second, volatile system segment.
+    /// Keep the stable prompt and the current-run session context ahead of the
+    /// transcript. Refreshable MEMORY is appended as a provider-only user
+    /// message so changing it does not invalidate the already reusable
+    /// conversation prefix. Canonical state remains one system message.
     fn split_system_memory(mut messages: Vec<CanonicalMessage>) -> (Vec<CanonicalMessage>, bool) {
         let Some(index) = messages
             .iter()
@@ -622,19 +628,28 @@ impl OpenAiAdapter {
         let Some(ContentPart::Text(text)) = messages[index].content.first() else {
             return (messages, false);
         };
-        let Some((stable, volatile)) = split_system_prompt_cache_boundary(text) else {
+        let Some((stable, session, memory)) = split_system_prompt_cache_sections(text) else {
             return (messages, false);
         };
-        if stable.trim().is_empty() || volatile.is_empty() {
+        if stable.trim().is_empty() || (session.is_empty() && memory.is_empty()) {
             return (messages, false);
         }
         let stable = stable.to_string();
-        let volatile = volatile.to_string();
+        let session = session.to_string();
+        let memory = memory.to_string();
         messages[index].content = vec![ContentPart::text(stable)];
-        messages.insert(
-            index + 1,
-            CanonicalMessage::system(vec![ContentPart::text(volatile.to_string())]),
-        );
+        if !session.is_empty() {
+            messages.insert(
+                index + 1,
+                CanonicalMessage::system(vec![ContentPart::text(session)]),
+            );
+        }
+        if !memory.is_empty() {
+            // OpenAI-compatible chat endpoints require system messages to
+            // lead the conversation. A trailing user context item is the
+            // compatible position for refreshable, explicitly quoted data.
+            messages.push(CanonicalMessage::user_text(memory));
+        }
         (messages, true)
     }
 
@@ -667,7 +682,7 @@ impl OpenAiAdapter {
                 function: OpenAiToolFunction {
                     name: t.function.name,
                     description: t.function.description,
-                    parameters: t.function.parameters,
+                    parameters: crate::types::canonicalize_json(t.function.parameters),
                 },
             })
             .collect()
@@ -1800,6 +1815,47 @@ mod tests {
     }
 
     #[test]
+    fn prompt_cache_key_canonicalizes_nested_tool_schema_objects() {
+        let client = OpenAiAdapter::new(ModelEndpoint {
+            model_name: "gpt-test".into(),
+            ..Default::default()
+        });
+        let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+        let user = CanonicalMessage::user_text("session anchor");
+        let tool = |parameters| ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "read".into(),
+                description: "read a file".into(),
+                parameters,
+            },
+        };
+        let first_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["path", "limit"]
+        });
+        let reordered_schema = serde_json::json!({
+            "required": ["path", "limit"],
+            "properties": {"limit": {"type": "integer"}, "path": {"type": "string"}},
+            "type": "object"
+        });
+
+        let first = client
+            .build_request_body(
+                vec![system.clone(), user.clone()],
+                vec![tool(first_schema)],
+                false,
+            )
+            .prompt_cache_key;
+        let reordered = client
+            .build_request_body(vec![system, user], vec![tool(reordered_schema)], false)
+            .prompt_cache_key;
+
+        assert_eq!(first, reordered);
+    }
+
+    #[test]
     fn build_request_splits_memory_after_stable_system_prefix() {
         let client = OpenAiAdapter::new(ModelEndpoint::default());
         let body = client.build_request_body(
@@ -1820,12 +1876,64 @@ mod tests {
             body.messages[0].content,
             Some(Value::String("stable instructions\n".into()))
         );
-        assert_eq!(body.messages[1].role, "system");
+        assert_eq!(body.messages[1].role, "user");
         assert_eq!(
             body.messages[1].content,
-            Some(Value::String(format!("{MEMORY_FENCE_START}volatile fact")))
+            Some(Value::String("session anchor".into()))
         );
         assert_eq!(body.messages[2].role, "user");
+        assert_eq!(
+            body.messages[2].content,
+            Some(Value::String(format!("{MEMORY_FENCE_START}volatile fact")))
+        );
+    }
+
+    #[test]
+    fn chat_memory_refresh_preserves_the_transcript_prefix() {
+        let client = OpenAiAdapter::new(ModelEndpoint::default());
+        let stable = "stable instructions\n";
+        let session = format!("{SESSION_CONTEXT_FENCE_START}Current session: inspect cache\n");
+        let history = vec![
+            CanonicalMessage::user_text("session anchor"),
+            CanonicalMessage::assistant(
+                vec![ContentPart::text("checking")],
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+            ),
+            CanonicalMessage::tool(vec![ContentPart::text("result")], Some("call_1".into())),
+        ];
+        let first = client.build_request_body(
+            vec![CanonicalMessage::system(vec![ContentPart::text(format!(
+                "{stable}{session}{MEMORY_FENCE_START}old fact"
+            ))])]
+            .into_iter()
+            .chain(history.clone())
+            .collect(),
+            Vec::new(),
+            false,
+        );
+        let refreshed = client.build_request_body(
+            vec![CanonicalMessage::system(vec![ContentPart::text(format!(
+                "{stable}{session}{MEMORY_FENCE_START}new fact"
+            ))])]
+            .into_iter()
+            .chain(history)
+            .collect(),
+            Vec::new(),
+            false,
+        );
+
+        assert_eq!(first.messages.len(), refreshed.messages.len());
+        assert_eq!(
+            serde_json::to_value(&first.messages[..first.messages.len() - 1]).unwrap(),
+            serde_json::to_value(&refreshed.messages[..refreshed.messages.len() - 1]).unwrap()
+        );
+        assert_ne!(
+            first.messages.last().unwrap().content,
+            refreshed.messages.last().unwrap().content
+        );
     }
 
     #[test]

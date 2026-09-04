@@ -18,8 +18,10 @@ use crate::adapters::{
 };
 use crate::client::LlmClient;
 #[cfg(test)]
-use haven_common::prompts::MEMORY_FENCE_START;
-use haven_common::prompts::split_system_prompt_cache_boundary;
+use haven_common::prompts::{MEMORY_FENCE_START, SESSION_CONTEXT_FENCE_START};
+use haven_common::prompts::{
+    split_system_prompt_cache_boundary, split_system_prompt_cache_sections,
+};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
@@ -381,6 +383,7 @@ impl OpenAiResponsesAdapter {
         &self,
         messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
+        web_search_mode: WebSearchMode,
     ) -> Option<String> {
         if self.prompt_cache_key_state.load(Ordering::Relaxed) == PROMPT_CACHE_KEY_UNSUPPORTED {
             return None;
@@ -411,7 +414,18 @@ impl OpenAiResponsesAdapter {
             return None;
         }
 
-        hasher.update(serde_json::to_vec(tools).ok()?);
+        // Hash the exact provider tool projection, not the canonical
+        // ToolDefinition. In particular, sanitized schemas must not select a
+        // different cache shard from the wire request they produce.
+        let tool_value = serde_json::to_value(Self::convert_tools(tools.to_vec())).ok()?;
+        hasher.update(crate::types::stable_json_bytes(&tool_value));
+        // Built-in web search changes the Responses tool surface and
+        // tool-choice semantics, so it must select a distinct cache shard.
+        hasher.update([match web_search_mode {
+            WebSearchMode::Off => 0,
+            WebSearchMode::Auto => 1,
+            WebSearchMode::Always => 2,
+        }]);
         let digest = hasher.finalize();
         let fingerprint = digest[..16]
             .iter()
@@ -523,10 +537,11 @@ impl OpenAiResponsesAdapter {
     }
 
     /// Convert provider-neutral messages into Responses API input items.
-    /// Stable system instructions go to top-level `instructions`; the volatile
-    /// MEMORY suffix becomes the first developer input item so a memory refresh
-    /// does not invalidate the reusable instruction prefix. Assistant tool calls
-    /// become standalone `function_call` items; tool results become
+    /// Stable system instructions go to top-level `instructions`; session
+    /// context becomes a leading developer item and refreshable MEMORY becomes
+    /// a trailing developer item. This keeps the session context and prior
+    /// conversation prefix reusable when MEMORY is refreshed. Assistant tool
+    /// calls become standalone `function_call` items; tool results become
     /// `function_call_output` items.
     ///
     /// `requires_reasoning_echo` is set for endpoints whose Responses-compat
@@ -554,6 +569,7 @@ impl OpenAiResponsesAdapter {
         split_memory: bool,
     ) -> (Vec<Value>, Option<String>) {
         let mut instructions: Vec<String> = Vec::new();
+        let mut session_context: Vec<String> = Vec::new();
         let mut volatile_system: Vec<String> = Vec::new();
         let mut items: Vec<Value> = Vec::new();
         for m in msgs {
@@ -562,14 +578,17 @@ impl OpenAiResponsesAdapter {
                     for p in &m.content {
                         if let ContentPart::Text(t) = p {
                             if split_memory
-                                && let Some((stable, volatile)) =
-                                    split_system_prompt_cache_boundary(t)
+                                && let Some((stable, session, memory)) =
+                                    split_system_prompt_cache_sections(t)
                             {
                                 if !stable.is_empty() {
                                     instructions.push(stable.to_string());
                                 }
-                                if !volatile.is_empty() {
-                                    volatile_system.push(volatile.to_string());
+                                if !session.is_empty() {
+                                    session_context.push(session.to_string());
+                                }
+                                if !memory.is_empty() {
+                                    volatile_system.push(memory.to_string());
                                 }
                             } else {
                                 instructions.push(t.clone());
@@ -697,20 +716,31 @@ impl OpenAiResponsesAdapter {
                 }
             }
         }
-        if !volatile_system.is_empty() {
-            // Responses applies `instructions` before all input items. Keeping
-            // recalled memory as the first developer turn preserves its system
-            // level while leaving the byte-stable instructions prefix cacheable.
+        if !session_context.is_empty() {
+            // Session context is stable for a ReAct run, so keep it before the
+            // transcript and preserve its developer-level priority.
             items.insert(
                 0,
                 json!({
                     "role": "developer",
                     "content": [{
                         "type": "input_text",
-                        "text": volatile_system.join("\n\n")
+                        "text": session_context.join("\n\n")
                     }]
                 }),
             );
+        }
+        if !volatile_system.is_empty() {
+            // Refreshed MEMORY belongs after the reusable conversation prefix.
+            // Responses accepts developer input items in the input sequence,
+            // preserving system-level priority without moving instructions.
+            items.push(json!({
+                "role": "developer",
+                "content": [{
+                    "type": "input_text",
+                    "text": volatile_system.join("\n\n")
+                }]
+            }));
         }
         let instructions = if instructions.is_empty() {
             None
@@ -721,22 +751,26 @@ impl OpenAiResponsesAdapter {
     }
 
     /// Downgrade to the legacy all-in-`instructions` shape after a gateway
-    /// explicitly rejects the standard Responses developer role.
+    /// explicitly rejects the standard Responses developer role. Merge all
+    /// provider-only developer items in one retry so a gateway that rejects
+    /// the role cannot consume the optional retry budget one item at a time.
     fn merge_developer_memory_into_instructions(body: &mut ResponsesRequest) -> bool {
-        let Some(index) = body
-            .input
-            .iter()
-            .position(|item| item.get("role").and_then(Value::as_str) == Some("developer"))
-        else {
+        let mut developer_text = Vec::new();
+        body.input.retain(|item| {
+            if item.get("role").and_then(Value::as_str) != Some("developer") {
+                return true;
+            }
+            if let Some(text) = item.pointer("/content/0/text").and_then(Value::as_str) {
+                developer_text.push(text.to_string());
+            }
+            false
+        });
+        if developer_text.is_empty() {
             return false;
-        };
-        let memory = body.input.remove(index);
-        let Some(text) = memory.pointer("/content/0/text").and_then(Value::as_str) else {
-            return false;
-        };
+        }
         body.instructions
             .get_or_insert_with(String::new)
-            .push_str(text);
+            .push_str(&developer_text.join("\n\n"));
         true
     }
 
@@ -746,7 +780,9 @@ impl OpenAiResponsesAdapter {
             .map(|t| {
                 // Defense in depth: `ToolDefinition::from` already sanitizes,
                 // but direct constructors / cache hits may still carry Null.
-                let parameters = crate::types::sanitize_tool_parameters(t.function.parameters);
+                let parameters = crate::types::canonicalize_json(
+                    crate::types::sanitize_tool_parameters(t.function.parameters),
+                );
                 serde_json::to_value(ResponsesTool {
                     tool_type: t.tool_type,
                     name: Some(t.function.name),
@@ -777,7 +813,7 @@ impl OpenAiResponsesAdapter {
         stream: bool,
         web_search_mode: WebSearchMode,
     ) -> ResponsesRequest {
-        let prompt_cache_key = self.prompt_cache_key(&messages, &tools);
+        let prompt_cache_key = self.prompt_cache_key(&messages, &tools, web_search_mode);
         let cache_diagnostics = Self::cache_diagnostics(&messages, prompt_cache_key.is_some());
         let max_reasoning_echo_chars = self
             .endpoint
@@ -2410,6 +2446,57 @@ mod tests {
     }
 
     #[test]
+    fn prompt_cache_key_matches_the_sanitized_responses_tool_wire() {
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint {
+            model_name: "gpt-test".into(),
+            ..Default::default()
+        });
+        let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+        let user = CanonicalMessage::user_text("session anchor");
+        let tool = |parameters| ToolDefinition {
+            tool_type: "function".into(),
+            function: crate::types::ToolFunction {
+                name: "read".into(),
+                description: "read a file".into(),
+                parameters,
+            },
+        };
+
+        let null_root = client
+            .build_request_body(
+                vec![system.clone(), user.clone()],
+                vec![tool(Value::Null)],
+                false,
+            )
+            .prompt_cache_key;
+        let sanitized_root = client
+            .build_request_body(
+                vec![system, user],
+                vec![tool(json!({"type": "object", "properties": {}}))],
+                false,
+            )
+            .prompt_cache_key;
+
+        assert_eq!(null_root, sanitized_root);
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_with_builtin_web_search_mode() {
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
+        let messages = vec![CanonicalMessage::system(vec![ContentPart::text(
+            "stable system",
+        )])];
+        let off = client
+            .build_request_body_with_mode(messages.clone(), Vec::new(), false, WebSearchMode::Off)
+            .prompt_cache_key;
+        let auto = client
+            .build_request_body_with_mode(messages, Vec::new(), false, WebSearchMode::Auto)
+            .prompt_cache_key;
+
+        assert_ne!(off, auto);
+    }
+
+    #[test]
     fn memory_refresh_keeps_responses_instructions_prefix_stable() {
         let client = OpenAiResponsesAdapter::new(ModelEndpoint {
             model_name: "gpt-test".into(),
@@ -2429,17 +2516,60 @@ mod tests {
 
         assert_eq!(first.instructions, Some(stable.into()));
         assert_eq!(first.instructions, refreshed.instructions);
-        assert_eq!(first.input[0]["role"], "developer");
+        assert_eq!(first.input[0]["role"], "user");
+        assert_eq!(first.input[0]["content"][0]["text"], "continue");
+        assert_eq!(refreshed.input[1]["role"], "developer");
         assert_eq!(
-            first.input[0]["content"][0]["text"],
-            format!("{MEMORY_FENCE_START}first recalled fact")
-        );
-        assert_eq!(refreshed.input[0]["role"], "developer");
-        assert_eq!(
-            refreshed.input[0]["content"][0]["text"],
+            refreshed.input[1]["content"][0]["text"],
             format!("{MEMORY_FENCE_START}refreshed recalled fact")
         );
-        assert_eq!(first.input[1]["role"], "user");
+        assert_eq!(first.input[1]["role"], "developer");
+        assert_eq!(
+            first.input[1]["content"][0]["text"],
+            format!("{MEMORY_FENCE_START}first recalled fact")
+        );
+    }
+
+    #[test]
+    fn responses_memory_refresh_preserves_the_conversation_prefix() {
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
+        let stable = "stable instructions\n";
+        let session = format!("{SESSION_CONTEXT_FENCE_START}Current session: inspect cache\n");
+        let canonical = |memory: &str| {
+            vec![
+                CanonicalMessage::system(vec![ContentPart::text(format!(
+                    "{stable}{session}{MEMORY_FENCE_START}{memory}"
+                ))]),
+                CanonicalMessage::user_text("session anchor"),
+                CanonicalMessage::assistant(
+                    vec![ContentPart::text("checking")],
+                    Some(vec![CanonicalToolCall {
+                        id: "call_1".into(),
+                        name: "read".into(),
+                        arguments: json!({"path": "notes.txt"}),
+                    }]),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                ),
+                CanonicalMessage::tool(vec![ContentPart::text("result")], Some("call_1".into())),
+            ]
+        };
+        let first = client.build_request_body(canonical("old fact"), Vec::new(), false);
+        let refreshed = client.build_request_body(canonical("new fact"), Vec::new(), false);
+
+        assert_eq!(first.instructions, refreshed.instructions);
+        assert_eq!(first.input.len(), refreshed.input.len());
+        assert_eq!(
+            first.input[..first.input.len() - 1],
+            refreshed.input[..refreshed.input.len() - 1]
+        );
+        assert_eq!(first.input.last().unwrap()["role"], "developer");
+        assert_eq!(refreshed.input.last().unwrap()["role"], "developer");
+        assert_ne!(
+            first.input.last().unwrap()["content"][0]["text"],
+            refreshed.input.last().unwrap()["content"][0]["text"]
+        );
     }
 
     #[test]
