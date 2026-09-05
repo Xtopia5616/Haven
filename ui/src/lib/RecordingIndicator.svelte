@@ -1,5 +1,6 @@
 <script>
 	import { cubicOut } from 'svelte/easing';
+	import VoiceBars from './VoiceBars.svelte';
 
 	/** @type {{ isRecording?: boolean; processing?: boolean; duration?: number; vadState?: string; reason?: string | null; onCancel?: (() => Promise<void>) | null }} */
 	let {
@@ -71,9 +72,12 @@
 				<span class="ripple"></span>
 			{/if}
 		</div>
-		<div class="eq" aria-hidden="true">
-			<span></span><span></span><span></span><span></span><span></span>
-		</div>
+		<VoiceBars
+			pattern="equalizer"
+			count={5}
+			tone={processing ? 'primary' : 'error'}
+			state={processing ? 'processing' : speaking ? 'active' : 'idle'}
+		/>
 		<div class="content">
 			<div class="top-row">
 				<span class="state-label">
@@ -171,61 +175,6 @@
 		}
 		to {
 			transform: rotate(360deg);
-		}
-	}
-	.eq {
-		display: flex;
-		align-items: center;
-		gap: 3px;
-		height: 26px;
-		flex-shrink: 0;
-	}
-	.eq span {
-		width: 3px;
-		height: 16px;
-		border-radius: 2px;
-		background: var(--md-sys-color-error);
-		opacity: 0.55;
-		transform-origin: center;
-		animation: eq-bounce 1.8s ease-in-out infinite;
-		transition: height var(--md-sys-motion-duration-medium)
-				var(--md-sys-motion-easing-standard),
-			background-color var(--md-sys-motion-duration-medium)
-				var(--md-sys-motion-easing-standard),
-			opacity var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
-	}
-	.overlay.speaking .eq span {
-		height: 26px;
-		opacity: 1;
-		animation-duration: 0.9s;
-	}
-	.eq span:nth-child(1) {
-		animation-delay: -0.1s;
-	}
-	.eq span:nth-child(2) {
-		animation-delay: -0.4s;
-	}
-	.eq span:nth-child(3) {
-		animation-delay: -0.2s;
-	}
-	.eq span:nth-child(4) {
-		animation-delay: -0.55s;
-	}
-	.eq span:nth-child(5) {
-		animation-delay: -0.3s;
-	}
-	.overlay.processing .eq span {
-		height: 14px;
-		opacity: 0.5;
-		background: var(--md-sys-color-primary);
-	}
-	@keyframes eq-bounce {
-		0%,
-		100% {
-			transform: scaleY(0.3);
-		}
-		50% {
-			transform: scaleY(1);
 		}
 	}
 	.content {

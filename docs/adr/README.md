@@ -81,3 +81,4 @@
 - [0077：Agent 可刷新上下文的缓存前缀布局](0077-agent-prompt-cache-prefix-layout.md)
 - [0079：统一上下文预算与降级压缩边界](0079-context-compaction-budget-and-degradation.md)
 - [0080：UI 可展开资源卡片壳层](0080-ui-expandable-resource-card-shell.md)
+- [0081：UI 共享声波条动画原语](0081-ui-shared-voice-bars.md)
