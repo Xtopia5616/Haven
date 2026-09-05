@@ -423,7 +423,12 @@ impl Default for SkillsExecConfig {
 /// "current directory does not exist".
 pub fn default_work_dir() -> PathBuf {
     let dir = std::env::temp_dir().join("haven");
-    let _ = std::fs::create_dir_all(&dir);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            error = %crate::error::sanitize_error_text(&error.to_string()),
+            "failed to create default tool working directory"
+        );
+    }
     dir
 }
 

@@ -244,10 +244,15 @@ impl AppState {
             let db_retention = db.clone();
             let days = retention_days;
             tokio::spawn(async move {
-                if let Ok(n) = db_retention.delete_old_sessions(days)
-                    && n > 0
-                {
-                    tracing::info!("cleaned up {} session(s) older than {} days", n, days);
+                match db_retention.delete_old_sessions(days) {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("cleaned up {} session(s) older than {} days", n, days);
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "deferred session retention cleanup failed"
+                    ),
                 }
             });
         }
@@ -259,11 +264,17 @@ impl AppState {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
             loop {
                 interval.tick().await;
-                if retention > 0
-                    && let Ok(n) = db_clone.delete_old_sessions(retention)
-                    && n > 0
-                {
-                    tracing::info!("background cleanup: removed {} old session(s)", n);
+                if retention > 0 {
+                    match db_clone.delete_old_sessions(retention) {
+                        Ok(n) if n > 0 => {
+                            tracing::info!("background cleanup: removed {} old session(s)", n);
+                        }
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "background session retention cleanup failed"
+                        ),
+                    }
                 }
             }
         });
@@ -277,9 +288,12 @@ impl AppState {
             // Bound the prewarm: a slow/unreachable endpoint's health check
             // must not hold the runtime. On timeout the endpoint fails fast
             // on its first real request instead.
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(2), router_warm.prewarm_all())
-                    .await;
+            if tokio::time::timeout(std::time::Duration::from_secs(2), router_warm.prewarm_all())
+                .await
+                .is_err()
+            {
+                tracing::debug!("LLM HTTP prewarm timed out; first request will warm lazily");
+            }
         });
         tracing::debug!(
             "AppState::new phase=agent elapsed={}ms",
@@ -298,9 +312,14 @@ impl AppState {
         let log_handles = filter_handles.clone();
         let set_log_level = Some(Arc::new(move |level: String| {
             for handle in &log_handles {
-                let _ = handle.modify(|filter| {
+                if let Err(error) = handle.modify(|filter| {
                     *filter = EnvFilter::new(format!("haven={}", level));
-                });
+                }) {
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "failed to apply runtime log level"
+                    );
+                }
             }
         }) as Arc<dyn Fn(String) + Send + Sync>);
         let admin_context = haven_tools::SelfToolContext {

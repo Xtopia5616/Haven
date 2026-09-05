@@ -406,7 +406,7 @@ pub(crate) fn run() {
                                     SESSION_ERROR_EVENT,
                                     SessionErrorEvent {
                                         session_id: session_id.clone(),
-                                        error: reason,
+                                        error: sanitize_error_text(&reason),
                                     },
                                 );
                                 let _ = app_h.emit(
@@ -485,7 +485,7 @@ pub(crate) fn run() {
                         HOTKEY_CONFLICT_EVENT,
                         HotkeyConflictEvent {
                             binding: key_binding,
-                            error: e.to_string(),
+                            error: sanitize_error_text(&e.to_string()),
                         },
                     );
                 }
