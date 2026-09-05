@@ -901,8 +901,11 @@
 				}
 			} catch (e) {
 				logger.warn('+layout', 'get_bootstrap_status error', e);
-				// Fail open so a missing command never leaves the chip stuck.
-				bootstrapReady = true;
+				// Do not report readiness when the backend status probe failed. The
+				// bootstrap event listener above can still transition us to ready;
+				// otherwise the loading state remains honest instead of claiming the
+				// backend is usable after an unknown failure.
+				bootstrapReady = false;
 			}
 		} else {
 			bootstrapReady = true;

@@ -1,4 +1,6 @@
 import { addNotification } from '$lib/stores.ts';
+import logger from './logger.ts';
+import { formatError } from './formatError.ts';
 
 /**
  * Copy `text` to the clipboard and surface a toast. Shared by every context
@@ -17,7 +19,8 @@ export async function copyText(text: string, label = '') {
 		await navigator.clipboard.writeText(value);
 		addNotification(`已复制${label}`, 'info', 1500);
 		return true;
-	} catch {
+	} catch (error) {
+		logger.warn('clipboard', 'clipboard write failed', formatError(error));
 		addNotification('复制失败', 'error', 2000);
 		return false;
 	}

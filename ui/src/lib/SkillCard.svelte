@@ -2,6 +2,7 @@
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
+	import { formatError } from '$lib/formatError.ts';
 
 	let { skill, onToggle } = $props();
 
@@ -66,7 +67,7 @@
 			});
 			previewResult = JSON.stringify(result, null, 2);
 		} catch (err) {
-			const msg = String(err ?? '');
+			const msg = formatError(err);
 			try {
 				const parsed = JSON.parse(msg);
 				if (parsed?.requires_confirmation) {

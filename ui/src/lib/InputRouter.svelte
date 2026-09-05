@@ -5,6 +5,7 @@
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification, recordingOverlay, imageDataUrl } from '$lib/stores.ts';
 	import { reportError } from '$lib/errorHandling.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -428,7 +429,8 @@
 				transcriptInput.slice(0, start) + (text ?? '') + transcriptInput.slice(end),
 				start + (text ?? '').length,
 			);
-		} catch {
+		} catch (error) {
+			logger.warn('InputRouter', 'clipboard paste failed', formatError(error));
 			addNotification('粘贴失败', 'error', 2000);
 		}
 	}

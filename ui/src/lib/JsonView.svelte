@@ -1,6 +1,8 @@
 <script>
 	import { untrack } from 'svelte';
 	import JsonView from './JsonView.svelte';
+	import logger from './logger.ts';
+	import { formatError } from './formatError.ts';
 
 	// Recursive, collapsible JSON tree viewer with syntax coloring and a
 	// copy-to-clipboard button at the root. Used by ToolResultCard for tool
@@ -62,8 +64,8 @@
 			copied = true;
 			if (copyTimer) clearTimeout(copyTimer);
 			copyTimer = setTimeout(() => (copied = false), 1500);
-		} catch {
-			// Clipboard unavailable (e.g. non-secure context) — ignore.
+		} catch (error) {
+			logger.warn('JsonView', 'JSON copy failed', formatError(error));
 		}
 	}
 </script>

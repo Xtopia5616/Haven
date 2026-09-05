@@ -6,6 +6,8 @@
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { createDragScrollController } from '$lib/dragScroll.ts';
+	import logger from '$lib/logger.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { PEER_KICKOFF_PREFIX } from '$lib/peerKickoff.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
@@ -141,7 +143,9 @@
 					label.textContent = original;
 				}, 1500);
 			})
-			.catch(() => {});
+			.catch((error) => {
+				logger.warn('ChatBubble', 'markdown copy failed', formatError(error));
+			});
 	}
 
 	/** @param {any} e */

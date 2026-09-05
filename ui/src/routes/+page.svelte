@@ -1,6 +1,7 @@
 <script>
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
 	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
@@ -434,7 +435,8 @@
 			try {
 				await navigator.clipboard.writeText(text);
 				addNotification('已复制', 'info', 1500);
-			} catch {
+			} catch (error) {
+				logger.warn('+page', 'context menu copy failed', formatError(error));
 				addNotification('复制失败', 'error', 2000);
 			}
 		}

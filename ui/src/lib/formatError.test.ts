@@ -26,6 +26,15 @@ describe('formatError', () => {
 		);
 	});
 
+	it('redacts common provider token prefixes', () => {
+		expect(formatError('providers returned sk-1234567890 and gsk_1234567890')).toBe(
+			'providers returned [REDACTED] and [REDACTED]',
+		);
+		expect(formatError('azure key AIza123456789012345678901234567890')).toBe(
+			'azure key [REDACTED]',
+		);
+	});
+
 	it('keeps UI messages on one bounded line', () => {
 		expect(formatError('line one\nline two\twith spaces')).toBe(
 			'line one line two with spaces',

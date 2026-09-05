@@ -10,6 +10,8 @@
 	import ConversationEmptyState from './ConversationEmptyState.svelte';
 	import LoadingState from './LoadingState.svelte';
 	import MaterialButton from './MaterialButton.svelte';
+	import logger from './logger.ts';
+	import { formatError } from './formatError.ts';
 
 	let { messages = [], loading = false, ...restProps } = $props();
 	/** @type {any} */
@@ -26,7 +28,8 @@
 				timelineComponent = module.default;
 				timelineLoadState = 'ready';
 			})
-			.catch(() => {
+			.catch((error) => {
+				logger.error('ConversationTimeline', 'message timeline load failed', formatError(error));
 				timelineLoadState = 'error';
 			})
 			.finally(() => {

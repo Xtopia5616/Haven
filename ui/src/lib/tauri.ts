@@ -1,5 +1,6 @@
 import logger from './logger.ts';
 import { logError } from './errorHandling.ts';
+import { formatError } from './formatError.ts';
 
 let _tauriInvoke: ((cmd: string, args?: any) => Promise<any>) | null = null;
 let _tauriListen: ((event: string, handler: (event: unknown) => void) => Promise<unknown>) | null =
@@ -51,10 +52,26 @@ export async function listen(
 ): Promise<() => void> {
 	await init();
 	if (isTauri() && _tauriListen) {
-		const unlisten = await _tauriListen(event, handler);
-		return () => {
-			if (typeof unlisten === 'function') unlisten();
-		};
+		try {
+			const unlisten = await _tauriListen(event, handler);
+			return () => {
+				if (typeof unlisten !== 'function') return;
+				try {
+					const result = unlisten();
+					if (result && typeof (result as Promise<unknown>).catch === 'function') {
+						(result as Promise<unknown>).catch((error) =>
+							logger.warn('tauri', `unlisten '${event}' failed`, formatError(error)),
+						);
+					}
+				} catch (error) {
+					logger.warn('tauri', `unlisten '${event}' failed`, formatError(error));
+				}
+			};
+		} catch (error) {
+			logError('listen', `event '${event}' registration failed`, error);
+			throw error;
+		}
 	}
+	if (isTauri()) throw new Error(`Tauri event API not available, cannot listen '${event}'`);
 	return () => {};
 }

@@ -1,4 +1,7 @@
 <script>
+	import logger from './logger.ts';
+	import { formatError } from './formatError.ts';
+
 	let { data = {} } = $props();
 
 	/** @param {unknown} value */
@@ -56,8 +59,8 @@
 	async function copyEnvValue(text) {
 		try {
 			await navigator.clipboard.writeText(text);
-		} catch {
-			// Clipboard unavailable — ignore.
+		} catch (error) {
+			logger.warn('ToolSystemResult', 'environment value copy failed', formatError(error));
 		}
 	}
 </script>
