@@ -21,6 +21,18 @@ use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
 
+macro_rules! log_ignored_result {
+    ($context:expr, $result:expr) => {{
+        if let Err(error) = $result {
+            tracing::debug!(
+                context = $context,
+                error = %sanitize_error_text(&error.to_string()),
+                "best-effort desktop operation failed"
+            );
+        }
+    }};
+}
+
 pub(crate) fn run() {
     // Keep the versioned command directory live in the application binary as
     // well as in CI/docs. A drift in the source registry is a startup error,
@@ -89,14 +101,14 @@ pub(crate) fn run() {
                 return;
             }
             let _ = app.get_webview_window("main").map(|w| {
-                let _ = w.show();
-                let _ = w.set_focus();
+                log_ignored_result!("single_instance.show", w.show());
+                log_ignored_result!("single_instance.set_focus", w.set_focus());
             });
         }))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
+                log_ignored_result!("window.close.hide", window.hide());
             }
         })
         .setup(move |app| {
@@ -117,7 +129,7 @@ pub(crate) fn run() {
             if autostart::is_autostart_launch()
                 && let Some(w) = app.get_webview_window("main")
             {
-                let _ = w.hide();
+                log_ignored_result!("autostart.hide", w.hide());
             }
 
             let state = app.state::<Arc<AppState>>();
@@ -129,7 +141,10 @@ pub(crate) fn run() {
             {
                 let emit_handle = handle.clone();
                 state.spawn_background_init(move |payload: AppBootstrapEvent| {
-                    let _ = emit_handle.emit(APP_BOOTSTRAP_EVENT, payload);
+                    log_ignored_result!(
+                        "event.app_bootstrap",
+                        emit_handle.emit(APP_BOOTSTRAP_EVENT, payload)
+                    );
                 });
             }
 
@@ -144,12 +159,15 @@ pub(crate) fn run() {
                     loop {
                         match rx.recv().await {
                             Ok(ev) => {
-                                let _ = emit_handle.emit(
-                                    MCP_STATUS_CHANGED_EVENT,
-                                    McpStatusChangedEvent {
-                                        name: ev.name,
-                                        status: ev.status,
-                                    },
+                                log_ignored_result!(
+                                    "event.mcp_status_changed",
+                                    emit_handle.emit(
+                                        MCP_STATUS_CHANGED_EVENT,
+                                        McpStatusChangedEvent {
+                                            name: ev.name,
+                                            status: ev.status,
+                                        },
+                                    )
                                 );
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -168,11 +186,14 @@ pub(crate) fn run() {
                 state.tools.clone().spawn_skills_watcher(
                     std::time::Duration::from_secs(3),
                     move || {
-                        let _ = emit_handle.emit(
-                            SKILLS_STATUS_CHANGED_EVENT,
-                            SkillsStatusChangedEvent {
-                                op: "auto_refresh".into(),
-                            },
+                        log_ignored_result!(
+                            "event.skills_status_changed",
+                            emit_handle.emit(
+                                SKILLS_STATUS_CHANGED_EVENT,
+                                SkillsStatusChangedEvent {
+                                    op: "auto_refresh".into(),
+                                },
+                            )
                         );
                     },
                 );
@@ -238,7 +259,10 @@ pub(crate) fn run() {
                     }
                     match serde_json::from_value::<AgentToolOutputEvent>(payload) {
                         Ok(projected) => {
-                            let _ = tool_output_handle.emit(AGENT_TOOL_OUTPUT_EVENT, projected);
+                            log_ignored_result!(
+                                "event.agent_tool_output",
+                                tool_output_handle.emit(AGENT_TOOL_OUTPUT_EVENT, projected)
+                            );
                         }
                         Err(error) => {
                             tracing::warn!("dropping malformed live tool-output event: {error}");
@@ -279,8 +303,8 @@ pub(crate) fn run() {
                     match id {
                         "show" => {
                             let _ = app.get_webview_window("main").map(|w| {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                                log_ignored_result!("tray.show", w.show());
+                                log_ignored_result!("tray.set_focus", w.set_focus());
                             });
                         }
                         "mute" => {
@@ -292,9 +316,12 @@ pub(crate) fn run() {
                         }
                         "settings" => {
                             let _ = app.get_webview_window("main").map(|w| {
-                                let _ = w.eval("window.location.href = '/settings'");
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                                log_ignored_result!(
+                                    "tray.settings.navigate",
+                                    w.eval("window.location.href = '/settings'")
+                                );
+                                log_ignored_result!("tray.settings.show", w.show());
+                                log_ignored_result!("tray.settings.set_focus", w.set_focus());
                             });
                         }
                         "quit" => {
@@ -320,11 +347,21 @@ pub(crate) fn run() {
                     {
                         let app = tray.app_handle();
                         let _ = app.get_webview_window("main").map(|w| {
-                            if w.is_visible().unwrap_or(false) {
-                                let _ = w.hide();
+                            let is_visible = match w.is_visible() {
+                                Ok(is_visible) => is_visible,
+                                Err(error) => {
+                                    tracing::debug!(
+                                        error = %sanitize_error_text(&error.to_string()),
+                                        "failed to read main window visibility"
+                                    );
+                                    false
+                                }
+                            };
+                            if is_visible {
+                                log_ignored_result!("tray.toggle.hide", w.hide());
                             } else {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                                log_ignored_result!("tray.toggle.show", w.show());
+                                log_ignored_result!("tray.toggle.set_focus", w.set_focus());
                             }
                         });
                     }
@@ -372,19 +409,22 @@ pub(crate) fn run() {
                                   tool_call_id: Option<String>| {
                                 let permission_key =
                                     haven_common::types::permission_key(&tool_name, &params);
-                                let _ = app_h.emit(
-                                    CONFIRM_REQUESTED_EVENT,
-                                    ConfirmationRequestedEvent {
-                                        step_id,
-                                        invocation_step_id,
-                                        action_index,
-                                        tool_call_id,
-                                        tool_name,
-                                        risk_level,
-                                        session_id,
-                                        params,
-                                        permission_key,
-                                    },
+                                log_ignored_result!(
+                                    "event.confirm_requested",
+                                    app_h.emit(
+                                        CONFIRM_REQUESTED_EVENT,
+                                        ConfirmationRequestedEvent {
+                                            step_id,
+                                            invocation_step_id,
+                                            action_index,
+                                            tool_call_id,
+                                            tool_name,
+                                            risk_level,
+                                            session_id,
+                                            params,
+                                            permission_key,
+                                        },
+                                    )
                                 );
                             },
                         ));
@@ -402,20 +442,26 @@ pub(crate) fn run() {
                     rt.block_on(async {
                         st_arc.executor.on_session_error.set(Arc::new(
                             move |session_id: String, reason: String| {
-                                let _ = app_h.emit(
-                                    SESSION_ERROR_EVENT,
-                                    SessionErrorEvent {
-                                        session_id: session_id.clone(),
-                                        error: sanitize_error_text(&reason),
-                                    },
+                                log_ignored_result!(
+                                    "event.session_error",
+                                    app_h.emit(
+                                        SESSION_ERROR_EVENT,
+                                        SessionErrorEvent {
+                                            session_id: session_id.clone(),
+                                            error: sanitize_error_text(&reason),
+                                        },
+                                    )
                                 );
-                                let _ = app_h.emit(
-                                    SESSION_UPDATED_EVENT,
-                                    SessionLifecycleEvent {
-                                        session_id,
-                                        status: "error".into(),
-                                        title: Some(String::new()),
-                                    },
+                                log_ignored_result!(
+                                    "event.session_updated",
+                                    app_h.emit(
+                                        SESSION_UPDATED_EVENT,
+                                        SessionLifecycleEvent {
+                                            session_id,
+                                            status: "error".into(),
+                                            title: Some(String::new()),
+                                        },
+                                    )
                                 );
                             },
                         ));
@@ -455,8 +501,8 @@ pub(crate) fn run() {
                         // 快捷键唤起：先显示并聚焦前端窗口（含自启隐藏后的
                         // 后台场景），再开始/结束录音。
                         if pressed && let Some(w) = app_h.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
+                            log_ignored_result!("hotkey.show", w.show());
+                            log_ignored_result!("hotkey.set_focus", w.set_focus());
                         }
                         // 未配置录音（STT 不可用）时，快捷键仅唤醒窗口，不尝试
                         // 开始录音，避免无意义的录音错误提示。
@@ -481,12 +527,15 @@ pub(crate) fn run() {
                 }
                 Err(e) => {
                     tracing::warn!("Hotkey conflict detected: {} - {}", key_binding, e);
-                    let _ = handle.emit(
-                        HOTKEY_CONFLICT_EVENT,
-                        HotkeyConflictEvent {
-                            binding: key_binding,
-                            error: sanitize_error_text(&e.to_string()),
-                        },
+                    log_ignored_result!(
+                        "event.hotkey_conflict",
+                        handle.emit(
+                            HOTKEY_CONFLICT_EVENT,
+                            HotkeyConflictEvent {
+                                binding: key_binding,
+                                error: sanitize_error_text(&e.to_string()),
+                            },
+                        )
                     );
                 }
             }
@@ -706,7 +755,12 @@ fn init_app_state(
 ) -> AppState {
     let db_path = haven_common::config::ConfigLoader::data_dir().join("haven.db");
     if let Some(parent) = db_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to create application data directory"
+            );
+        }
     }
     let fh = filter_handles.clone();
     tokio::task::block_in_place(|| {

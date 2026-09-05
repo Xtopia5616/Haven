@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::commands::log_err;
+use crate::commands::{emit_event_logged, log_err};
 use crate::events::{
     RECORDING_ERROR_EVENT, RECORDING_STARTED_EVENT, RECORDING_STOPPED_EVENT, RecordingErrorEvent,
     RecordingEvent, TRANSCRIPTION_ERROR_EVENT, TRANSCRIPTION_RESULT_EVENT,
@@ -11,7 +11,6 @@ use haven_common::error::sanitize_error_text;
 use haven_input::{RecordingReason, RecordingResult};
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::Emitter;
 use tauri::State;
 
 #[derive(Serialize)]
@@ -61,7 +60,8 @@ pub(crate) fn emit_recording_started(
     app: &tauri::AppHandle,
     session_id: &haven_common::types::SessionId,
 ) {
-    let _ = app.emit(
+    emit_event_logged(
+        app,
         RECORDING_STARTED_EVENT,
         RecordingEvent {
             is_recording: true,
@@ -69,6 +69,7 @@ pub(crate) fn emit_recording_started(
             reason: None,
             duration_ms: None,
         },
+        "recording_started",
     );
 }
 
@@ -81,7 +82,8 @@ pub(crate) fn emit_recording_stopped(
     reason: &str,
     duration_ms: Option<u64>,
 ) {
-    let _ = app.emit(
+    emit_event_logged(
+        app,
         RECORDING_STOPPED_EVENT,
         RecordingEvent {
             is_recording: false,
@@ -89,6 +91,7 @@ pub(crate) fn emit_recording_stopped(
             reason: Some(reason.to_string()),
             duration_ms,
         },
+        "recording_stopped",
     );
 }
 
@@ -96,18 +99,15 @@ pub(crate) fn emit_recording_stopped(
 /// user-facing error message.
 pub(crate) fn emit_recording_error(app: &tauri::AppHandle, error: impl Into<String>) {
     let error = sanitize_error_text(&error.into());
-    if let Err(emit_error) = app.emit(
+    emit_event_logged(
+        app,
         RECORDING_ERROR_EVENT,
         RecordingErrorEvent {
             session_id: haven_common::types::new_id("rec").into(),
             error,
         },
-    ) {
-        tracing::warn!(
-            error = %sanitize_error_text(&emit_error.to_string()),
-            "failed to emit recording error"
-        );
-    }
+        "recording_error",
+    );
 }
 
 /// Transcribe a captured recording and emit `transcription:result` /
@@ -139,18 +139,21 @@ pub(crate) async fn finalize_transcription(
 
     // Tell the UI STT is about to run, before the (potentially slow)
     // network call, so it can show a "transcribing" hint right away.
-    let _ = app.emit(
+    emit_event_logged(
+        app,
         TRANSCRIPTION_STARTED_EVENT,
         TranscriptionStartedEvent {
             session_id: session_id.clone(),
         },
+        "transcription_started",
     );
 
     state.pipeline.transcribe(&mut result).await;
 
     match result.transcript {
         Some(text) => {
-            let _ = app.emit(
+            emit_event_logged(
+                app,
                 TRANSCRIPTION_RESULT_EVENT,
                 TranscriptionResultEvent {
                     session_id: session_id.clone(),
@@ -158,24 +161,28 @@ pub(crate) async fn finalize_transcription(
                     duration_ms: result.duration_ms,
                     confidence: None,
                 },
+                "transcription_result",
             );
             Some(text)
         }
         None => {
             if let Some(err) = result.transcript_error {
-                let _ = app.emit(
+                emit_event_logged(
+                    app,
                     TRANSCRIPTION_ERROR_EVENT,
                     TranscriptionErrorEvent {
                         session_id: session_id.clone(),
                         error: sanitize_error_text(&err),
                     },
+                    "transcription_error",
                 );
             } else {
                 // STT succeeded but returned no text (silence / too-short
                 // clip): there is nothing to submit, but the UI still needs
                 // the "transcribing" overlay closed. The frontend treats an
                 // empty `transcription:result` as "close, add no message".
-                let _ = app.emit(
+                emit_event_logged(
+                    app,
                     TRANSCRIPTION_RESULT_EVENT,
                     TranscriptionResultEvent {
                         session_id: session_id.clone(),
@@ -183,6 +190,7 @@ pub(crate) async fn finalize_transcription(
                         duration_ms: result.duration_ms,
                         confidence: None,
                     },
+                    "transcription_empty_result",
                 );
             }
             None

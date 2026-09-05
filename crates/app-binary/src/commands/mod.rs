@@ -23,6 +23,7 @@ pub mod skills;
 
 use crate::app_state::AppState;
 use crate::events::LLM_CONFIG_CHANGED_EVENT;
+use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
@@ -39,7 +40,26 @@ use tauri::Emitter;
 /// a router hot-swap (settings save, model switch, …). Best-effort: a missing
 /// renderer must never fail the command.
 pub(crate) fn emit_llm_config_changed(app: &tauri::AppHandle) {
-    let _ = app.emit(LLM_CONFIG_CHANGED_EVENT, ());
+    emit_event_logged(app, LLM_CONFIG_CHANGED_EVENT, (), "llm_config_changed");
+}
+
+/// Emit a frontend event without turning a completed backend operation into a
+/// false command failure. Tauri emit failures are still observable and are
+/// sanitized because event payloads often contain provider-controlled text.
+pub(crate) fn emit_event_logged<T: Serialize + Clone>(
+    app: &tauri::AppHandle,
+    event: &str,
+    payload: T,
+    context: &str,
+) {
+    if let Err(error) = app.emit(event, payload) {
+        tracing::debug!(
+            event,
+            context,
+            error = %sanitize_error_text(&error.to_string()),
+            "failed to emit frontend event"
+        );
+    }
 }
 
 /// Recording helpers shared with the shell hotkey path in `lib.rs`.

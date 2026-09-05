@@ -1,16 +1,16 @@
 use crate::app_state::AppState;
-use crate::commands::SessionListResponse;
 use crate::commands::log_err;
+use crate::commands::{SessionListResponse, emit_event_logged};
 use crate::events::{
     SESSION_DELETED_EVENT, SESSION_TITLE_UPDATED_EVENT, SessionDeletedEvent,
     SessionTitleUpdatedEvent,
 };
+use crate::logging::sanitize_error_text;
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use haven_memory::repositories::sessions::Session;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::Emitter;
 use tauri::State;
 
 #[tauri::command]
@@ -48,13 +48,16 @@ pub async fn end_session(
         .get_session(&session_id)
         .await
         .map(|t| t.title.clone().unwrap_or(t.input))
-        .or_else(|| {
-            state
-                .db
-                .get_session(&session_id)
-                .ok()
-                .flatten()
-                .map(|t| t.title.unwrap_or(t.input_text))
+        .or_else(|| match state.db.get_session(&session_id) {
+            Ok(session) => session.map(|t| t.title.unwrap_or(t.input_text)),
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    error = %sanitize_error_text(&error.to_string()),
+                    "failed to resolve session title before ending session"
+                );
+                None
+            }
         })
         .unwrap_or_default();
 
@@ -247,9 +250,11 @@ pub async fn update_session_title(
         .executor
         .update_session_title(&session_id, &title)
         .await;
-    let _ = app.emit(
+    emit_event_logged(
+        &app,
         SESSION_TITLE_UPDATED_EVENT,
         SessionTitleUpdatedEvent { session_id, title },
+        "session_title_updated",
     );
     Ok(())
 }
@@ -271,11 +276,13 @@ pub async fn delete_session(
     // The session is gone, so no `session:updated` terminal transition will ever
     // fire for it; a dedicated `session:deleted` lets listeners (busy-session
     // tracking, per-session state) release the id immediately.
-    let _ = app.emit(
+    emit_event_logged(
+        &app,
         SESSION_DELETED_EVENT,
         SessionDeletedEvent {
             session_id: Some(session_id),
         },
+        "session_deleted",
     );
     Ok(())
 }
@@ -297,9 +304,11 @@ pub async fn clear_history(
     // `session_id: null` signals "every session was removed" so listeners clear
     // per-session state (e.g. the busy set) in one shot instead of one event
     // per deleted session.
-    let _ = app.emit(
+    emit_event_logged(
+        &app,
         SESSION_DELETED_EVENT,
         SessionDeletedEvent { session_id: None },
+        "history_cleared",
     );
     Ok(count)
 }

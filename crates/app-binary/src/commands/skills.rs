@@ -1,13 +1,12 @@
 use crate::app_state::AppState;
-use crate::commands::confirmation_error;
 use crate::commands::contracts::{SkillExecutionResponse, ToolInfoResponse, ToolListResponse};
 use crate::commands::log_err;
+use crate::commands::{confirmation_error, emit_event_logged};
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent};
 use haven_common::types::RiskLevel;
 use haven_tools::{ConfirmationResult, SkillInfo};
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::Emitter;
 use tauri::State;
 
 #[tauri::command]
@@ -30,11 +29,13 @@ pub async fn refresh_skills(
     // Rebuild tool catalog so skills appear in the Reasoner's tool list.
     state.tools.rebuild_catalog().await;
     // Notify the frontend that the registry changed so views can refetch.
-    let _ = app.emit(
+    emit_event_logged(
+        &app,
         SKILLS_STATUS_CHANGED_EVENT,
         SkillsStatusChangedEvent {
             op: "refresh".into(),
         },
+        "skills_refreshed",
     );
     Ok(())
 }

@@ -16,23 +16,54 @@ fn is_daily_log_name(name: &str, prefix: &str) -> bool {
 /// configured `[log] file_path` (or the default). The tracing rolling
 /// appender writes `{stem}.{YYYY-MM-DD}` files (e.g. `haven.2026-08-09`) in
 /// the same directory, so the newest matching file wins.
-fn resolve_current_log_file(log_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    let dir = log_path.parent()?;
-    let stem = log_path.file_stem()?.to_string_lossy();
+fn resolve_current_log_file(
+    log_path: &std::path::Path,
+) -> std::io::Result<Option<std::path::PathBuf>> {
+    let Some(dir) = log_path.parent() else {
+        return Ok(None);
+    };
+    let Some(stem) = log_path.file_stem() else {
+        return Ok(None);
+    };
+    let stem = stem.to_string_lossy();
     let prefix = format!("{}.", stem);
     let mut best: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!(
+                    error = %crate::logging::sanitize_error_text(&error.to_string()),
+                    "failed to inspect a log directory entry"
+                );
+                continue;
+            }
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
         if !is_daily_log_name(&name, &prefix) {
             continue;
         }
-        let mtime = entry.metadata().ok().and_then(|m| m.modified().ok());
-        let Some(mtime) = mtime else { continue };
-        if best.is_none() || mtime > best.as_ref().unwrap().1 {
+        let mtime = match entry.metadata().and_then(|metadata| metadata.modified()) {
+            Ok(mtime) => mtime,
+            Err(error) => {
+                tracing::debug!(
+                    path = %entry.path().display(),
+                    error = %crate::logging::sanitize_error_text(&error.to_string()),
+                    "failed to read log file metadata"
+                );
+                continue;
+            }
+        };
+        if best.as_ref().is_none_or(|(_, current)| mtime > *current) {
             best = Some((entry.path(), mtime));
         }
     }
-    best.map(|(p, _)| p)
+    Ok(best.map(|(p, _)| p))
 }
 
 /// Read the last `max_lines` lines of a text file. Reads backwards from the
@@ -102,7 +133,9 @@ pub fn get_log_info(state: State<'_, Arc<AppState>>) -> Result<LogInfo, String> 
         .file_path
         .clone()
         .unwrap_or_else(LogConfig::default_log_path);
-    let path = resolve_current_log_file(&log_path).map(|p| p.to_string_lossy().into_owned());
+    let path = resolve_current_log_file(&log_path)
+        .map_err(|e| log_err("get_log_info", e))?
+        .map(|p| p.to_string_lossy().into_owned());
     Ok(LogInfo {
         enabled: log_cfg.file_enabled,
         level: log_cfg.level.as_str().to_string(),
@@ -130,6 +163,7 @@ pub fn read_log_tail(
         .clone()
         .unwrap_or_else(LogConfig::default_log_path);
     let path = resolve_current_log_file(&log_path)
+        .map_err(|e| log_err("read_log_tail", e))?
         .ok_or_else(|| log_err("read_log_tail", "no log file found yet"))?;
     let content = read_tail(&path, max_lines.unwrap_or(200).clamp(10, 2000))
         .map_err(|e| log_err("read_log_tail", e))?;
@@ -223,7 +257,7 @@ mod tests {
         drop(f);
 
         let resolved = resolve_current_log_file(&dir.join("haven.log")).unwrap();
-        assert_eq!(resolved, new);
+        assert_eq!(resolved, Some(new));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -232,7 +266,11 @@ mod tests {
         let dir = temp_log_dir("resolve-ignore");
         std::fs::write(dir.join("other.log"), "x").unwrap();
         std::fs::write(dir.join("haven.txt"), "x").unwrap();
-        assert!(resolve_current_log_file(&dir.join("haven.log")).is_none());
+        assert!(
+            resolve_current_log_file(&dir.join("haven.log"))
+                .unwrap()
+                .is_none()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

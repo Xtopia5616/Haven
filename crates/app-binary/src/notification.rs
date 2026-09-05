@@ -9,7 +9,7 @@ use crate::logging::sanitize_error_text;
 use haven_agent::AgentEvent;
 use haven_common::config::NotificationConfig;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
@@ -40,12 +40,21 @@ impl DesktopNotifications {
         pick: impl FnOnce(&NotificationConfig) -> bool,
         default: bool,
     ) -> bool {
-        self.handle
+        match self
+            .handle
             .state::<Arc<AppState>>()
             .config_service
             .snapshot()
-            .map(|snapshot| pick(&snapshot.config.notification))
-            .unwrap_or(default)
+        {
+            Ok(snapshot) => pick(&snapshot.config.notification),
+            Err(error) => {
+                tracing::warn!(
+                    error = %sanitize_error_text(&error.to_string()),
+                    "failed to read notification settings; using safe default"
+                );
+                default
+            }
+        }
     }
 
     fn show_windows_toast(&self, title: &str, body: impl AsRef<str>) {
@@ -65,16 +74,29 @@ impl DesktopNotifications {
     }
 
     fn cache_title(&self, session_id: &str, title: impl Into<String>) {
-        if let Ok(mut map) = self.session_titles.lock() {
-            map.insert(session_id.to_string(), title.into());
-        }
+        self.lock_session_titles()
+            .insert(session_id.to_string(), title.into());
+    }
+
+    fn lock_session_titles(&self) -> MutexGuard<'_, HashMap<String, String>> {
+        self.session_titles.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("session title notification cache lock was poisoned; recovering");
+            poisoned.into_inner()
+        })
+    }
+
+    fn lock_session_statuses(&self) -> MutexGuard<'_, HashMap<String, String>> {
+        self.last_session_status.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("session status notification cache lock was poisoned; recovering");
+            poisoned.into_inner()
+        })
     }
 
     /// 会话展示名：cache → DB title → input_text → session_id（绝不把 raw input
     /// 当默认首选给 `SessionCreated`；该路径只用 title||id）。
     pub(crate) fn session_display_title(&self, session_id: &str) -> String {
-        if let Ok(map) = self.session_titles.lock()
-            && let Some(title) = map.get(session_id)
+        let map = self.lock_session_titles();
+        if let Some(title) = map.get(session_id)
             && !title.is_empty()
         {
             return title.clone();
@@ -108,9 +130,8 @@ impl DesktopNotifications {
     pub(crate) fn remember_session_status(&self, event: &AgentEvent) {
         match event {
             AgentEvent::SessionCreated(session) => {
-                if let Ok(mut map) = self.last_session_status.lock() {
-                    map.insert(session.id.clone(), session.status.as_str().to_string());
-                }
+                self.lock_session_statuses()
+                    .insert(session.id.clone(), session.status.as_str().to_string());
                 let display = session
                     .title
                     .as_deref()
@@ -119,22 +140,19 @@ impl DesktopNotifications {
                 self.cache_title(&session.id, display.to_string());
             }
             AgentEvent::SessionUpdated { session_id, status } => {
-                if let Ok(mut map) = self.last_session_status.lock() {
-                    map.insert(session_id.clone(), status.clone());
-                }
+                self.lock_session_statuses()
+                    .insert(session_id.clone(), status.clone());
             }
             AgentEvent::SessionCompleted { session_id, title } => {
-                if let Ok(mut map) = self.last_session_status.lock() {
-                    map.insert(session_id.clone(), "completed".into());
-                }
+                self.lock_session_statuses()
+                    .insert(session_id.clone(), "completed".into());
                 if !title.is_empty() {
                     self.cache_title(session_id, title.clone());
                 }
             }
             AgentEvent::SessionError { session_id, .. } => {
-                if let Ok(mut map) = self.last_session_status.lock() {
-                    map.insert(session_id.clone(), "error".into());
-                }
+                self.lock_session_statuses()
+                    .insert(session_id.clone(), "error".into());
             }
             AgentEvent::TitleUpdated { session_id, title } if !title.is_empty() => {
                 self.cache_title(session_id, title.clone());
@@ -144,10 +162,7 @@ impl DesktopNotifications {
     }
 
     fn previous_session_status(&self, session_id: &str) -> Option<String> {
-        self.last_session_status
-            .lock()
-            .ok()
-            .and_then(|m| m.get(session_id).cloned())
+        self.lock_session_statuses().get(session_id).cloned()
     }
 
     /// 会话生命周期与 agent `notify` 的 Windows 桌面通知（其余变体直接返回）。
