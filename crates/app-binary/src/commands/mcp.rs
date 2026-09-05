@@ -4,6 +4,7 @@ use crate::commands::connect_and_monitor;
 use crate::commands::contracts::McpToolCallResponse;
 use crate::commands::log_err;
 use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
+use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
 use haven_common::types::RiskLevel;
 use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot};
@@ -72,6 +73,19 @@ fn redact_mcp_snapshot(snapshot: &mut McpServerSnapshot) {
                 .unwrap_or_else(|| "<redacted>".into())
         })
         .collect();
+}
+
+fn emit_mcp_status(app: &tauri::AppHandle, name: String, status: McpClientStatus, context: &str) {
+    if let Err(error) = app.emit(
+        MCP_STATUS_CHANGED_EVENT,
+        McpStatusChangedEvent { name, status },
+    ) {
+        tracing::warn!(
+            context,
+            error = %sanitize_error_text(&error.to_string()),
+            "failed to emit MCP status event"
+        );
+    }
 }
 
 #[tauri::command]
@@ -173,12 +187,11 @@ pub async fn refresh_mcp_servers(
         );
         state.tools.mcp_manager.remove_client(&server.name).await;
         updated.push(server.name.clone());
-        let _ = app.emit(
-            MCP_STATUS_CHANGED_EVENT,
-            McpStatusChangedEvent {
-                name: server.name.clone(),
-                status: McpClientStatus::Disconnected,
-            },
+        emit_mcp_status(
+            &app,
+            server.name.clone(),
+            McpClientStatus::Disconnected,
+            "refresh_mcp_servers",
         );
     }
 
@@ -193,12 +206,11 @@ pub async fn refresh_mcp_servers(
                 if !updated.iter().any(|n| n == &server.name) {
                     added.push(server.name.clone());
                 }
-                let _ = app.emit(
-                    MCP_STATUS_CHANGED_EVENT,
-                    McpStatusChangedEvent {
-                        name: server.name.clone(),
-                        status: McpClientStatus::Connected,
-                    },
+                emit_mcp_status(
+                    &app,
+                    server.name.clone(),
+                    McpClientStatus::Connected,
+                    "refresh_mcp_servers",
                 );
             }
             Err(e) => {
@@ -218,12 +230,11 @@ pub async fn refresh_mcp_servers(
     for name in reconcile.to_remove {
         state.tools.mcp_manager.remove_client(&name).await;
         removed.push(name.clone());
-        let _ = app.emit(
-            MCP_STATUS_CHANGED_EVENT,
-            McpStatusChangedEvent {
-                name,
-                status: McpClientStatus::Disconnected,
-            },
+        emit_mcp_status(
+            &app,
+            name,
+            McpClientStatus::Disconnected,
+            "refresh_mcp_servers",
         );
     }
 
@@ -288,15 +299,15 @@ pub async fn mcp_tool_call(
 /// mcp_add/update/toggle ops connect clients without a monitor (the LLM path
 /// does not need one), so the app commands re-attach it after routing through
 /// the tool — same wiring as `reconnect_mcp`.
-async fn spawn_monitor_if_client(state: &AppState, name: &str) {
+async fn spawn_monitor_if_client(state: &AppState, name: &str) -> Result<(), String> {
     let Some(client) = state.tools.mcp_manager.get_client(name).await else {
-        return;
+        return Ok(());
     };
     let discovery = state
         .config_service
         .snapshot()
         .map(|snapshot| snapshot.config.mcp_discovery)
-        .unwrap_or_default();
+        .map_err(|error| log_err("spawn_monitor_if_client", error))?;
     let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
     let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
     let max_backoff = std::time::Duration::from_millis(discovery.reconnect_max_ms);
@@ -309,6 +320,7 @@ async fn spawn_monitor_if_client(state: &AppState, name: &str) {
         max_retries,
         status_tx,
     );
+    Ok(())
 }
 
 #[tauri::command]
@@ -341,7 +353,7 @@ pub async fn add_mcp_server(
     .await?;
 
     // App-level aftermath: health monitor + catalog rebuild + UI event.
-    spawn_monitor_if_client(&state, &config.name).await;
+    spawn_monitor_if_client(&state, &config.name).await?;
     state.tools.rebuild_catalog().await;
     let connected = state
         .tools
@@ -349,16 +361,15 @@ pub async fn add_mcp_server(
         .get_client(&config.name)
         .await
         .is_some();
-    let _ = app.emit(
-        MCP_STATUS_CHANGED_EVENT,
-        McpStatusChangedEvent {
-            name: config.name,
-            status: if connected {
-                McpClientStatus::Connected
-            } else {
-                McpClientStatus::Disconnected
-            },
+    emit_mcp_status(
+        &app,
+        config.name,
+        if connected {
+            McpClientStatus::Connected
+        } else {
+            McpClientStatus::Disconnected
         },
+        "add_mcp_server",
     );
     Ok(())
 }
@@ -393,19 +404,18 @@ pub async fn update_mcp_server(
     .await?;
 
     // App-level aftermath: health monitor + catalog rebuild + UI event.
-    spawn_monitor_if_client(&state, &name).await;
+    spawn_monitor_if_client(&state, &name).await?;
     state.tools.rebuild_catalog().await;
     let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
-    let _ = app.emit(
-        MCP_STATUS_CHANGED_EVENT,
-        McpStatusChangedEvent {
-            name,
-            status: if connected {
-                McpClientStatus::Connected
-            } else {
-                McpClientStatus::Disconnected
-            },
+    emit_mcp_status(
+        &app,
+        name,
+        if connected {
+            McpClientStatus::Connected
+        } else {
+            McpClientStatus::Disconnected
         },
+        "update_mcp_server",
     );
     Ok(())
 }
@@ -433,12 +443,11 @@ pub async fn remove_mcp_server(
     // App-level aftermath: catalog rebuild so removed MCP tools disappear
     // from the Reasoner, plus the UI status event.
     state.tools.rebuild_catalog().await;
-    let _ = app.emit(
-        MCP_STATUS_CHANGED_EVENT,
-        McpStatusChangedEvent {
-            name,
-            status: McpClientStatus::Disconnected,
-        },
+    emit_mcp_status(
+        &app,
+        name,
+        McpClientStatus::Disconnected,
+        "remove_mcp_server",
     );
     Ok(())
 }
@@ -466,19 +475,18 @@ pub async fn toggle_mcp_server(
     .await?;
 
     // App-level aftermath: health monitor + catalog rebuild + UI event.
-    spawn_monitor_if_client(&state, &name).await;
+    spawn_monitor_if_client(&state, &name).await?;
     state.tools.rebuild_catalog().await;
     let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
-    let _ = app.emit(
-        MCP_STATUS_CHANGED_EVENT,
-        McpStatusChangedEvent {
-            name,
-            status: if connected {
-                McpClientStatus::Connected
-            } else {
-                McpClientStatus::Disconnected
-            },
+    emit_mcp_status(
+        &app,
+        name,
+        if connected {
+            McpClientStatus::Connected
+        } else {
+            McpClientStatus::Disconnected
         },
+        "toggle_mcp_server",
     );
     Ok(())
 }

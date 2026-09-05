@@ -4,6 +4,7 @@ use crate::app_state::AppState;
 use crate::desktop::{self, TrayStatus};
 use crate::events;
 use crate::events::*;
+use crate::logging::sanitize_error_text;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
@@ -85,8 +86,13 @@ impl desktop::ShellHandler for HavenShellHandler {
             TrayStatus::Muted => "Haven - Muted",
             TrayStatus::Busy => "Haven - Busy",
         };
-        let _ = self.tray.set_icon(Some(make_tray_icon(status)));
-        let _ = self.app_h.emit(
+        if let Err(error) = self.tray.set_icon(Some(make_tray_icon(status))) {
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to update tray icon"
+            );
+        }
+        if let Err(error) = self.app_h.emit(
             TRAY_STATUS_CHANGED_EVENT,
             TrayStatusChangedEvent {
                 status: match status {
@@ -98,13 +104,24 @@ impl desktop::ShellHandler for HavenShellHandler {
                 .into(),
                 tooltip: tooltip.into(),
             },
-        );
+        ) {
+            tracing::debug!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to emit tray status event"
+            );
+        }
     }
 
     fn on_mute_change(&self, muted: bool) {
-        let _ = self
+        if let Err(error) = self
             .app_h
-            .emit(MUTE_CHANGED_EVENT, MuteChangedEvent { muted });
+            .emit(MUTE_CHANGED_EVENT, MuteChangedEvent { muted })
+        {
+            tracing::debug!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to emit mute status event"
+            );
+        }
     }
 }
 
@@ -134,13 +151,18 @@ impl haven_input::InputHandler for HavenInputHandler {
             haven_input::vad::VadState::Speech => "speech",
             haven_input::vad::VadState::SilenceAfterSpeech { .. } => "silence_after_speech",
         };
-        let _ = self.app_h.emit(
+        if let Err(error) = self.app_h.emit(
             RECORDING_VAD_STATUS_EVENT,
             events::VadStatusEvent {
                 signal: signal_str.to_string(),
                 state: state_str.to_string(),
             },
-        );
+        ) {
+            tracing::debug!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to emit VAD status event"
+            );
+        }
     }
 
     async fn on_auto_stop(&self) {
