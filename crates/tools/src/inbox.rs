@@ -706,7 +706,9 @@ impl InboxBus {
                             .open(self.archive(name))?,
                     );
                 }
-                let file = archive.as_mut().expect("archive file was opened");
+                let file = archive
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("inbox archive handle was not initialized"))?;
                 writeln!(file, "{}", serde_json::to_string(env)?)?;
             }
         }

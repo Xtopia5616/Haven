@@ -49,19 +49,24 @@ pub fn build_ocr_client(cfg: &OcrConfig) -> Result<Option<Box<dyn OcrClient>>> {
     let timeout = Duration::from_secs(cfg.timeout_secs);
     let client: Box<dyn OcrClient> = match cfg.provider.as_str() {
         "none" | "llm" => return Ok(None),
-        "baidu" => Box::new(BaiduOcrClient::new(cfg, timeout)),
-        "azure" => Box::new(AzureOcrClient::new(cfg, timeout)),
-        "tencent" => Box::new(TencentOcrClient::new(cfg, timeout)),
+        "baidu" => Box::new(BaiduOcrClient::new(cfg, timeout)?),
+        "azure" => Box::new(AzureOcrClient::new(cfg, timeout)?),
+        "tencent" => Box::new(TencentOcrClient::new(cfg, timeout)?),
         other => anyhow::bail!("unknown OCR provider: {}", other),
     };
     Ok(Some(client))
 }
 
-fn media_http_client(timeout: Duration) -> reqwest::Client {
+fn media_http_client(timeout: Duration) -> Result<reqwest::Client> {
     crate::client::http_client_builder()
         .timeout(timeout)
         .build()
-        .unwrap_or_default()
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to build OCR HTTP client: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })
 }
 
 /// Error text extraction for media HTTP responses, so upstream error bodies
@@ -214,17 +219,24 @@ pub struct BaiduOcrClient {
 }
 
 impl BaiduOcrClient {
-    pub fn new(cfg: &OcrConfig, timeout: Duration) -> Self {
-        Self {
-            client: media_http_client(timeout),
+    pub fn new(cfg: &OcrConfig, timeout: Duration) -> Result<Self> {
+        Ok(Self {
+            client: media_http_client(timeout)?,
             api_key: cfg.api_key.clone(),
             api_secret: cfg.api_secret.clone(),
             token_cache: Mutex::new(None),
-        }
+        })
+    }
+
+    fn token_cache(&self) -> std::sync::MutexGuard<'_, Option<(String, Instant)>> {
+        self.token_cache.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("Baidu OCR token cache lock poisoned; recovering state");
+            poisoned.into_inner()
+        })
     }
 
     async fn access_token(&self) -> Result<String> {
-        if let Some((token, at)) = self.token_cache.lock().unwrap().as_ref() {
+        if let Some((token, at)) = self.token_cache().as_ref() {
             // Tokens expire after ~30 days; refresh with a wide margin.
             if at.elapsed() < Duration::from_secs(25 * 24 * 3600) {
                 return Ok(token.clone());
@@ -271,7 +283,7 @@ impl BaiduOcrClient {
                 )
             })?;
         let token = token.to_string();
-        *self.token_cache.lock().unwrap() = Some((token.clone(), Instant::now()));
+        *self.token_cache() = Some((token.clone(), Instant::now()));
         Ok(token)
     }
 }
@@ -327,12 +339,12 @@ pub struct AzureOcrClient {
 }
 
 impl AzureOcrClient {
-    pub fn new(cfg: &OcrConfig, timeout: Duration) -> Self {
-        Self {
-            client: media_http_client(timeout),
+    pub fn new(cfg: &OcrConfig, timeout: Duration) -> Result<Self> {
+        Ok(Self {
+            client: media_http_client(timeout)?,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             api_key: cfg.api_key.clone(),
-        }
+        })
     }
 }
 
@@ -364,12 +376,12 @@ impl OcrClient for AzureOcrClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<String>();
+        let body = resp.text().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Azure OCR response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         if !status.is_success() {
             return Err(media_error_body("Azure OCR", status, &body));
         }
@@ -386,12 +398,12 @@ pub struct TencentOcrClient {
 }
 
 impl TencentOcrClient {
-    pub fn new(cfg: &OcrConfig, timeout: Duration) -> Self {
-        Self {
-            client: media_http_client(timeout),
+    pub fn new(cfg: &OcrConfig, timeout: Duration) -> Result<Self> {
+        Ok(Self {
+            client: media_http_client(timeout)?,
             api_key: cfg.api_key.clone(),
             api_secret: cfg.api_secret.clone(),
-        }
+        })
     }
 }
 
@@ -513,12 +525,12 @@ impl OcrClient for TencentOcrClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<String>();
+        let body = resp.text().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Tencent OCR response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         if !status.is_success() {
             return Err(media_error_body("Tencent OCR", status, &body));
         }
@@ -666,7 +678,7 @@ mod tests {
             api_secret: "s".into(),
             ..Default::default()
         };
-        let client = BaiduOcrClient::new(&cfg, Duration::from_secs(10));
+        let client = BaiduOcrClient::new(&cfg, Duration::from_secs(10)).unwrap();
         assert_eq!(client.api_key, "k");
         assert!(client.token_cache.lock().unwrap().is_none());
     }
@@ -678,7 +690,7 @@ mod tests {
             api_key: "k".into(),
             ..Default::default()
         };
-        let client = AzureOcrClient::new(&cfg, Duration::from_secs(10));
+        let client = AzureOcrClient::new(&cfg, Duration::from_secs(10)).unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt
             .block_on(client.recognize(b"fake", "image/png"))
