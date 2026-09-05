@@ -131,9 +131,6 @@ pub(crate) async fn hot_swap_router(
     state: &AppState,
     new_router: Arc<LlmRouter>,
 ) -> Result<(), String> {
-    state.agent.replace_router(new_router.clone());
-    state.tools.set_router(new_router.clone()).await;
-
     let config = state
         .config_service
         .snapshot()
@@ -150,10 +147,31 @@ pub(crate) async fn hot_swap_router(
     ) {
         Ok(client) => client.map(std::sync::Arc::from),
         Err(e) => {
-            tracing::warn!("STT client rebuild failed, transcription disabled: {e}");
-            None
+            return Err(log_err("hot_swap_router STT", e));
         }
     };
+
+    // Rebuild the media gateway with the new router so fallback extraction
+    // calls (low confidence / failed dedicated provider) keep routing to the
+    // freshly-switched model endpoints.
+    let media = config.media;
+    let ocr: Option<Arc<dyn haven_llm::OcrClient>> = haven_llm::build_ocr_client(&media.ocr)
+        .map_err(|e| log_err("hot_swap_router OCR", e))?
+        .map(std::sync::Arc::from);
+    let tts: Option<Arc<dyn haven_llm::TtsClient>> =
+        haven_llm::build_tts_client(&media.tts, &providers)
+            .map_err(|e| log_err("hot_swap_router TTS", e))?
+            .map(std::sync::Arc::from);
+    let image_gen: Option<Arc<dyn haven_llm::ImageGenClient>> =
+        haven_llm::build_image_gen_client(&media.image_gen, &providers)
+            .map_err(|e| log_err("hot_swap_router image generation", e))?
+            .map(std::sync::Arc::from);
+
+    // All dependent clients are valid before swapping any shared runtime
+    // pointer. This keeps a failed rebuild from leaving a mixed-generation
+    // router/pipeline/gateway state.
+    state.agent.replace_router(new_router.clone());
+    state.tools.set_router(new_router.clone()).await;
     state.pipeline.set_stt_client(stt_client.clone()).await;
     if stt_config.provider == "llm" {
         state
@@ -163,49 +181,10 @@ pub(crate) async fn hot_swap_router(
     } else {
         state.pipeline.set_stt_router(None).await;
     }
-
-    // Rebuild the media gateway with the new router so fallback extraction
-    // calls (low confidence / failed dedicated provider) keep routing to the
-    // freshly-switched model endpoints.
-    {
-        let config = state
-            .config_service
-            .snapshot()
-            .map_err(|e| log_err("hot_swap_router", e))?
-            .config;
-        let media = config.media;
-        let providers = config.llm.providers;
-        let ocr: Option<Arc<dyn haven_llm::OcrClient>> =
-            match haven_llm::build_ocr_client(&media.ocr) {
-                Ok(c) => c.map(std::sync::Arc::from),
-                Err(e) => {
-                    tracing::warn!("OCR client rebuild failed, OCR disabled: {e}");
-                    None
-                }
-            };
-        let tts: Option<Arc<dyn haven_llm::TtsClient>> =
-            match haven_llm::build_tts_client(&media.tts, &providers) {
-                Ok(c) => c.map(std::sync::Arc::from),
-                Err(e) => {
-                    tracing::warn!("TTS client rebuild failed, TTS disabled: {e}");
-                    None
-                }
-            };
-        let image_gen: Option<Arc<dyn haven_llm::ImageGenClient>> =
-            match haven_llm::build_image_gen_client(&media.image_gen, &providers) {
-                Ok(c) => c.map(std::sync::Arc::from),
-                Err(e) => {
-                    tracing::warn!(
-                        "image generation client rebuild failed, image generation disabled: {e}"
-                    );
-                    None
-                }
-            };
-        let gateway = Arc::new(haven_llm::media::MediaGateway::new(
-            new_router, stt_client, ocr, tts, image_gen, media,
-        ));
-        state.agent.set_gateway(Some(gateway)).await;
-    }
+    let gateway = Arc::new(haven_llm::media::MediaGateway::new(
+        new_router, stt_client, ocr, tts, image_gen, media,
+    ));
+    state.agent.set_gateway(Some(gateway)).await;
     Ok(())
 }
 

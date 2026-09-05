@@ -410,7 +410,9 @@
 	$effect(() => {
 		if (activeTab !== 'tasks') return;
 		// Fetch a wider window so the task center can show cross-session history.
-		refreshActionHistory(null, 200).then((rows) => (actionHistory = rows));
+		refreshActionHistory(null, 200).then((rows) => {
+			if (rows) actionHistory = rows;
+		});
 	});
 	// Terminal background / fired scheduled rows across all sessions. The task
 	// center is the global operational view; session filtering belongs in its
@@ -485,7 +487,9 @@
 				// and block a later action:finished repair.
 				removeAction(actionId);
 				if (activeTab === 'tasks') {
-					refreshActionHistory(null, 200).then((rows) => (actionHistory = rows));
+					refreshActionHistory(null, 200).then((rows) => {
+						if (rows) actionHistory = rows;
+					});
 				}
 				addNotification(
 					kind === 'scheduled' ? '定时任务已触发或不存在' : '后台任务已结束，无需停止',

@@ -116,7 +116,6 @@
 			mcpServers = result || [];
 			return true;
 		} catch (e) {
-			mcpServers = [];
 			logger.warn('tools', 'list_mcp_tools error', e);
 			return false;
 		}
@@ -178,7 +177,6 @@
 			const result = await invoke('list_skills');
 			skills = result || [];
 		} catch (e) {
-			skills = [];
 			logger.warn('tools', 'list_skills error', e);
 		}
 	}

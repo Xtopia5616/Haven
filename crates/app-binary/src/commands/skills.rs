@@ -123,7 +123,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
     }
     // Ensure the directory exists so the file manager opens something sensible
     // instead of erroring; users may have an empty skills root on first run.
-    let _ = std::fs::create_dir_all(&root);
+    std::fs::create_dir_all(&root).map_err(|e| log_err("open_skills_dir", e))?;
     if !haven_tools::is_safe_local_path(&root) {
         return Err("skills directory changed to an unsafe reparse point".into());
     }

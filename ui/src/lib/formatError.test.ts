@@ -17,7 +17,13 @@ describe('formatError', () => {
 	it('stringifies other values', () => {
 		expect(formatError(42)).toBe('42');
 		expect(formatError(null)).toBe('未知错误');
-		expect(formatError({ code: 'E_FAIL' })).toBe('{"code":"E_FAIL"}');
+		expect(formatError({ code: 'E_FAIL' })).toBe('未知错误');
+	});
+
+	it('redacts credentials and local paths', () => {
+		expect(formatError('request failed api_key=sk-secret at C:\\Users\\olive\\haven.db')).toBe(
+			'request failed api_key=[REDACTED] at [PATH]',
+		);
 	});
 
 	it('keeps UI messages on one bounded line', () => {

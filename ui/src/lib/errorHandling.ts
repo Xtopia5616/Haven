@@ -34,7 +34,7 @@ function wasLogged(error: unknown): boolean {
 /** Log an error once at the UI boundary using the shared context format. */
 export function logError(context: string, message: string, error: unknown): void {
 	if (wasLogged(error)) return;
-	logger.error(context, message, error);
+	logger.error(context, message, formatError(error));
 	markLogged(error);
 }
 

@@ -149,7 +149,7 @@ export async function refreshActionHistory(kind: ActionKind | null = 'scheduled'
 		return Array.isArray(rows) ? rows.map((row) => mapActionPayload(row as never)) : [];
 	} catch (e) {
 		logger.warn('stores', 'refreshActionHistory failed', e);
-		return [];
+		return undefined;
 	}
 }
 

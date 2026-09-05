@@ -1,7 +1,18 @@
 const MAX_ERROR_MESSAGE_LENGTH = 240;
 
+function redactSensitiveText(value: string): string {
+	return value
+		.replace(
+			/((?:api[-_]?key|client[-_]?secret|access[-_]?token|authorization|password|secret|token|key)\s*[:=]\s*)[^\s,&;]+/gi,
+			'$1[REDACTED]',
+		)
+		.replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+		.replace(/\b[A-Za-z]:[\\/][^\s,;"'()[\]{}]+/g, '[PATH]')
+		.replace(/\\\\[^\s,;"'()[\]{}]+/g, '[PATH]');
+}
+
 function trimMessage(value: string): string {
-	const normalized = value
+	const normalized = redactSensitiveText(value)
 		.replace(/[\r\n\t]+/g, ' ')
 		.replace(/\s{2,}/g, ' ')
 		.trim();
@@ -20,12 +31,8 @@ export function formatError(error: unknown): string {
 		for (const candidate of [record.message, record.error, record.reason]) {
 			if (typeof candidate === 'string' && candidate.trim()) return trimMessage(candidate);
 		}
-		try {
-			const serialized = JSON.stringify(error);
-			if (serialized && serialized !== '{}') return trimMessage(serialized);
-		} catch {
-			// Fall through to the stable fallback below.
-		}
+		// Unknown objects are never serialized because their fields may contain
+		// secrets, internal paths, or complete provider responses.
 		return '未知错误';
 	}
 	return trimMessage(String(error));

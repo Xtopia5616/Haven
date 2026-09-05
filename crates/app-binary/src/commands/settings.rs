@@ -166,16 +166,18 @@ pub async fn update_settings(
             .set_config(config.skills.root.clone(), config.skills.enabled.clone())
             .await
     {
-        tracing::warn!("failed to apply skills config: {error}");
+        return Err(log_err("update_settings skills", error));
     }
 
     // Propagate log level to tracing subscriber (console + file)
     if plan.contains(RuntimeConfigTarget::Logging) {
         let level = config.log.level.as_str();
         for handle in &state.log_filter_handles {
-            let _ = handle.modify(|filter| {
-                *filter = EnvFilter::new(format!("haven={}", level));
-            });
+            handle
+                .modify(|filter| {
+                    *filter = EnvFilter::new(format!("haven={}", level));
+                })
+                .map_err(|e| log_err("update_settings logging", e))?;
         }
     }
 
@@ -195,7 +197,7 @@ pub async fn update_settings(
             .and_then(|c| crate::to_tauri_shortcut(&c))
             && let Err(e) = app.global_shortcut().unregister(old_shortcut)
         {
-            tracing::warn!("failed to unregister old hotkey {}: {}", old_hotkey, e);
+            return Err(log_err("update_settings unregister hotkey", e));
         }
 
         if let Some(new_shortcut) = haven_input::hotkey::KeyCombo::parse(&config.hotkey.key_binding)
@@ -235,22 +237,20 @@ pub async fn update_settings(
                     );
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Hotkey rebind conflict: {} - {}",
-                        config.hotkey.key_binding,
-                        e,
-                    );
+                    return Err(log_err("update_settings register hotkey", e));
                 }
             }
         }
 
-        let _ = app.emit(
+        if let Err(e) = app.emit(
             HOTKEY_REBIND_EVENT,
             HotkeyRebindEvent {
                 old_binding: old_hotkey,
                 new_binding: config.hotkey.key_binding,
             },
-        );
+        ) {
+            tracing::warn!(error = %e, "update_settings: hotkey rebind event emit failed");
+        }
     }
     tick("hotkey section");
     tracing::info!("update_settings: TOTAL {:?}", t0.elapsed());

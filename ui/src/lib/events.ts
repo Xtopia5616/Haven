@@ -47,6 +47,17 @@ type AppListenerMap = Partial<{
 	[K in AppEventName]: (event: TauriEvent<AppEventPayloadMap[K]>) => void;
 }>;
 
+/** Keep malformed payloads and listener exceptions isolated from the event bus. */
+function protectEventCallback(eventName: string, callback: () => unknown): void {
+	try {
+		void Promise.resolve(callback()).catch((error) => {
+			logger.error('events', `Event handler failed for '${eventName}'`, error);
+		});
+	} catch (error) {
+		logger.error('events', `Event mapping failed for '${eventName}'`, error);
+	}
+}
+
 /**
  * Register many Tauri event listeners from a single map and return a handle
  * that can dispose them all. Listener registration failures are logged and
@@ -114,8 +125,10 @@ export function sessionEventListeners(
 		Object.entries(map).map(([eventName, handler]) => [
 			eventName,
 			(event: TauriEvent<unknown>) => {
-				const name = eventName as SessionEventName;
-				handler?.(mapSessionEvent({ ...event, event: name } as never) as never);
+				protectEventCallback(eventName, () => {
+					const name = eventName as SessionEventName;
+					handler?.(mapSessionEvent({ ...event, event: name } as never) as never);
+				});
 			},
 		]),
 	);
@@ -132,7 +145,9 @@ export function actionEventListeners(
 		Object.entries(map).map(([eventName, handler]) => [
 			eventName,
 			(event: TauriEvent<unknown>) => {
-				handler?.(mapActionEvent({ ...event, event: eventName } as never) as never);
+				protectEventCallback(eventName, () => {
+					handler?.(mapActionEvent({ ...event, event: eventName } as never) as never);
+				});
 			},
 		]),
 	);
@@ -146,7 +161,9 @@ export function recordingEventListeners(
 		Object.entries(map).map(([eventName, handler]) => [
 			eventName,
 			(event: TauriEvent<unknown>) => {
-				handler?.(mapRecordingEvent({ ...event, event: eventName } as never) as never);
+				protectEventCallback(eventName, () => {
+					handler?.(mapRecordingEvent({ ...event, event: eventName } as never) as never);
+				});
 			},
 		]),
 	);
@@ -160,7 +177,9 @@ export function agentEventListeners(
 		Object.entries(map).map(([eventName, handler]) => [
 			eventName,
 			(event: TauriEvent<unknown>) => {
-				handler?.(mapAgentEvent({ ...event, event: eventName } as never) as never);
+				protectEventCallback(eventName, () => {
+					handler?.(mapAgentEvent({ ...event, event: eventName } as never) as never);
+				});
 			},
 		]),
 	);
@@ -174,7 +193,9 @@ export function appEventListeners(
 		Object.entries(map).map(([eventName, handler]) => [
 			eventName,
 			(event: TauriEvent<unknown>) => {
-				handler?.(mapAppEvent({ ...event, event: eventName } as never) as never);
+				protectEventCallback(eventName, () => {
+					handler?.(mapAppEvent({ ...event, event: eventName } as never) as never);
+				});
 			},
 		]),
 	);
@@ -219,7 +240,8 @@ export async function registerSessionListener<K extends SessionEventName>(
 ): Promise<{ dispose: () => void }> {
 	return registerOne(
 		event,
-		(rawEvent) => handler(mapSessionEvent({ ...rawEvent, event } as never)),
+		(rawEvent) =>
+			protectEventCallback(event, () => handler(mapSessionEvent({ ...rawEvent, event } as never))),
 		{ tag },
 	);
 }

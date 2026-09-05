@@ -25,38 +25,40 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
         live_ids.insert(event.id.clone());
         rows.push(event);
     }
-    if let Ok(history) = state.db.list_actions(Some("background")) {
-        for a in history {
-            if live_ids.contains(&a.id) {
-                continue;
-            }
-            let preview = a
-                .output
-                .as_deref()
-                .or(a.error.as_deref())
-                .unwrap_or("")
-                .chars()
-                .take(200)
-                .collect::<String>();
-            rows.push(ActionEvent {
-                id: a.id,
-                kind: ActionKind::Background,
-                status: a.status,
-                session_id: a.session_id,
-                started_at: a.started_at,
-                finished_at: a.finished_at,
-                due_at: None,
-                title: None,
-                body: None,
-                mode: None,
-                command: a.command,
-                output: a.output,
-                error: a.error,
-                error_reason: a.error_reason,
-                exit_code: a.exit_code,
-                preview: Some(preview),
-            });
+    let history = state
+        .db
+        .list_actions(Some("background"))
+        .map_err(|e| log_err("list_actions history", e))?;
+    for a in history {
+        if live_ids.contains(&a.id) {
+            continue;
         }
+        let preview = a
+            .output
+            .as_deref()
+            .or(a.error.as_deref())
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        rows.push(ActionEvent {
+            id: a.id,
+            kind: ActionKind::Background,
+            status: a.status,
+            session_id: a.session_id,
+            started_at: a.started_at,
+            finished_at: a.finished_at,
+            due_at: None,
+            title: None,
+            body: None,
+            mode: None,
+            command: a.command,
+            output: a.output,
+            error: a.error,
+            error_reason: a.error_reason,
+            exit_code: a.exit_code,
+            preview: Some(preview),
+        });
     }
     for row in state.tools.scheduled_actions.list().await {
         rows.push(
@@ -116,8 +118,9 @@ pub async fn list_action_history(
             "background" => ActionKind::Background,
             "scheduled" => ActionKind::Scheduled,
             other => {
-                return Err(format!(
-                    "list_action_history: unknown action kind '{other}'"
+                return Err(log_err(
+                    "list_action_history",
+                    format!("unknown action kind '{other}'"),
                 ));
             }
         };

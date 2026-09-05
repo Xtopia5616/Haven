@@ -223,7 +223,6 @@
 			backfillRoleMetaFromDiscovery();
 		} catch (e) {
 			logger.warn('ModelSettings', `discover_models ${providerName} error`, formatError(e));
-			modelsByProvider = { ...modelsByProvider, [providerName]: [] };
 		} finally {
 			modelFetching[providerName] = false;
 		}
