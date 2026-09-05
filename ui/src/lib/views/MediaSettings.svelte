@@ -2,7 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification } from '$lib/stores.ts';
-	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -150,7 +150,7 @@
 				})) || [];
 		} catch (e) {
 			sttModels = [];
-			addNotification(`获取 STT 模型失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'MediaSettings', message: '获取 STT 模型失败', log: false });
 		} finally {
 			sttFetching = false;
 		}

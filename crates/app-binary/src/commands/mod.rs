@@ -70,16 +70,19 @@ pub(crate) async fn run_admin_op(
         .tools
         .admin_surface()
         .await
-        .ok_or_else(|| format!("{ctx}: admin surface is not wired"))?;
+        .ok_or_else(|| log_err(ctx, "admin surface is not wired"))?;
     let cancel = tokio_util::sync::CancellationToken::new();
     let result = admin_surface
         .run(params, cancel)
         .await
         .map_err(|e| log_err(ctx, e))?;
     if !result.success {
-        return Err(result
-            .error
-            .unwrap_or_else(|| "self tool operation failed".into()));
+        return Err(log_err(
+            ctx,
+            result
+                .error
+                .unwrap_or_else(|| "self tool operation failed".into()),
+        ));
     }
     Ok(result)
 }
@@ -98,7 +101,7 @@ pub(crate) fn confirmation_error(
         "params": params,
         "risk_level": risk_level,
     }))
-    .map_err(|e| e.to_string())
+    .map_err(|e| log_err("confirmation_error", e))
 }
 
 /// Rebuild the LlmRouter from the current config and hot-swap it into the

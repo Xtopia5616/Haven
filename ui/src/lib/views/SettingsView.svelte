@@ -6,6 +6,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
 	import { ensureRoleSlots } from '$lib/modelRoles.ts';
@@ -197,7 +198,7 @@
 			await refreshLogs();
 			logView.open = true;
 		} catch (e) {
-			addNotification(`无法读取日志: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'SettingsView', message: '无法读取日志', log: false });
 		} finally {
 			logView.loading = false;
 		}
@@ -209,7 +210,7 @@
 			logView.path = data.path;
 			logView.content = data.content;
 		} catch (e) {
-			addNotification(`无法读取日志: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'SettingsView', message: '无法读取日志', log: false });
 		}
 	}
 
@@ -620,7 +621,7 @@
 				checkShells();
 			}
 		} catch (e) {
-			addNotification(`加载设置失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'SettingsView', message: '加载设置失败', log: false });
 		}
 		// Keep the model role shape stable even when the initial settings request
 		// fails. Otherwise opening the model tab would create missing role slots
@@ -630,14 +631,22 @@
 			await refreshApiKeyStatus();
 			if (!mounted) return;
 		} catch (e) {
-			addNotification(`获取 API Key 状态失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, {
+				context: 'SettingsView',
+				message: '获取 API Key 状态失败',
+				log: false,
+			});
 		}
 		if (mounted) settingsLoaded = true;
 		try {
 			autostartEnabled = await invoke('is_autostart_enabled');
 			if (!mounted) return;
 		} catch (e) {
-			addNotification(`获取开机自启状态失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, {
+				context: 'SettingsView',
+				message: '获取开机自启状态失败',
+				log: false,
+			});
 		}
 		if (mounted) {
 			await tick();
@@ -655,7 +664,7 @@
 				3000,
 			);
 		} catch (e) {
-			addNotification(`记忆维护失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'SettingsView', message: '记忆维护失败', log: false });
 		} finally {
 			memoryMaintenance.running = false;
 		}
@@ -673,7 +682,7 @@
 				(/** @type {any} */ permission) => permission.key !== key,
 			);
 		} catch (e) {
-			addNotification(`撤销权限失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'SettingsView', message: '撤销权限失败', log: false });
 		}
 	}
 	/** @param {string} value */
@@ -785,7 +794,11 @@
 			try {
 				await refreshApiKeyStatus();
 			} catch (e) {
-				addNotification(`获取 API Key 状态失败: ${formatError(e)}`, 'error', 3000);
+				reportError(e, {
+					context: 'SettingsView',
+					message: '获取 API Key 状态失败',
+					log: false,
+				});
 			}
 			try {
 				if (autostartEnabled) await invoke('enable_autostart');
@@ -801,7 +814,7 @@
 			skipNextDefaultModelSync = false;
 			saveState = 'error';
 			saveError = formatError(e);
-			addNotification(`保存设置失败: ${saveError}`, 'error', 5000);
+			reportError(e, { context: 'SettingsView', message: '保存设置失败', log: false });
 			return false;
 		}
 	}

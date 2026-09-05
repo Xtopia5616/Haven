@@ -22,7 +22,7 @@
 	import { themeStore } from '$lib/themeStore.ts';
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import logger from '$lib/logger.ts';
-	import { formatError } from '$lib/formatError.ts';
+	import { installGlobalErrorHandlers, reportError } from '$lib/errorHandling.ts';
 	import {
 		actionEventListeners,
 		agentEventListeners,
@@ -362,7 +362,7 @@
 		try {
 			await invoke('cancel_recording');
 		} catch (e) {
-			addNotification(`停止录音失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: '+layout', message: '停止录音失败', log: false });
 		}
 		resetOverlay();
 	}
@@ -447,7 +447,7 @@
 			actionHistory = actionHistory.filter((h) => h.id !== id);
 			addNotification('已删除历史记录', 'success', 2000);
 		} catch (e) {
-			addNotification(`删除历史记录失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: '+layout', message: '删除历史记录失败', log: false });
 		}
 	}
 
@@ -494,11 +494,11 @@
 				);
 			}
 		} catch (e) {
-			addNotification(
-				`${kind === 'scheduled' ? '取消定时任务' : '停止后台任务'}失败: ${formatError(e)}`,
-				'error',
-				3000,
-			);
+			reportError(e, {
+				context: '+layout',
+				message: `${kind === 'scheduled' ? '取消定时任务' : '停止后台任务'}失败`,
+				log: false,
+			});
 		}
 	}
 
@@ -529,8 +529,10 @@
 	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (
 		null
 	);
+	let removeGlobalErrorHandlers = () => {};
 
 	onMount(async () => {
+		removeGlobalErrorHandlers = installGlobalErrorHandlers();
 		// Keep the static shell above the live DOM until it has had a paint pass.
 		// This avoids exposing a partially hydrated layout for one frame, while
 		// the shell's structure and tokens keep the visual handoff quiet.
@@ -626,9 +628,13 @@
 							// appends the voice message, submits with the current
 							// `activeSessionId`, and migrates the message into the session if
 							// the backend created a fresh one.
-							submitVoiceTranscript(text).catch((e) =>
-								addNotification(`语音提交失败: ${formatError(e)}`, 'error', 5000),
-							);
+							submitVoiceTranscript(text).catch((e) => {
+								reportError(e, {
+									context: '+layout',
+									message: '语音提交失败',
+									log: false,
+								});
+							});
 						} else {
 							// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
 							// 明确反馈，否则看起来像"点了没反应"。
@@ -910,6 +916,7 @@
 	});
 
 	onDestroy(() => {
+		removeGlobalErrorHandlers();
 		stopTimer();
 		if (processingTimer) clearTimeout(processingTimer);
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);

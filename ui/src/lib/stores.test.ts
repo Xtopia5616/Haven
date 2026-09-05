@@ -136,8 +136,8 @@ describe('addNotification', () => {
 	});
 
 	it('deduplicates identical msg+type', () => {
-		addNotification('same', 'warn');
-		addNotification('same', 'warn');
+		addNotification('same', 'warning');
+		addNotification('same', 'warning');
 		addNotification('same', 'info');
 		expect(get(notificationStore)).toHaveLength(2);
 	});

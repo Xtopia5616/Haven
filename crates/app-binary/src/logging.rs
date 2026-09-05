@@ -87,8 +87,8 @@ pub(crate) fn init_tracing(
 /// separate line so the original `command error: <e>` line is preserved
 /// verbatim for log scrapers / dashboards.
 pub(crate) fn log_err<E: std::fmt::Display>(ctx: &str, e: E) -> String {
-    tracing::error!("command `{}` failed", ctx);
-    tracing::error!("command error: {}", e);
+    tracing::error!(command = ctx, "command `{}` failed", ctx);
+    tracing::error!(command = ctx, error = %e, "command error: {}", e);
     e.to_string()
 }
 

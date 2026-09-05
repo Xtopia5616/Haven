@@ -85,3 +85,4 @@
 - [0082：删除后端过时兼容层](0082-remove-stale-backend-compat-shims.md)
 - [0083：UI 表单字段与弹窗操作原语](0083-ui-form-field-and-dialog-actions.md)
 - [0084：UI 语义化按钮迁移](0084-ui-semantic-button-migration.md)
+- [0085：统一错误上报、日志与前端通知](0085-unified-error-reporting.md)

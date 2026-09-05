@@ -4,7 +4,7 @@
 	import { browser } from '$app/environment';
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification, recordingOverlay, imageDataUrl } from '$lib/stores.ts';
-	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -109,7 +109,7 @@
 				}
 			}
 		} catch (e) {
-			addNotification(`录音失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'InputRouter', message: '录音失败' });
 		}
 	}
 
@@ -223,7 +223,7 @@
 			try {
 				pendingImages = [...pendingImages, await fileToAttachment(f)];
 			} catch (e) {
-				addNotification(formatError(e) || '图片读取失败', 'error', 3000);
+				reportError(e, { context: 'InputRouter', message: '图片读取失败' });
 			}
 		}
 	}
@@ -285,7 +285,7 @@
 					{ media_type, data, filename: f.name, size: f.size },
 				];
 			} catch (e) {
-				addNotification(formatError(e) || '文件读取失败', 'error', 3000);
+				reportError(e, { context: 'InputRouter', message: '文件读取失败' });
 			}
 		}
 	}

@@ -1,6 +1,6 @@
 <script>
 	import logger from '$lib/logger.ts';
-	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
 	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
@@ -327,7 +327,7 @@
 			addNotification(`联网搜索: ${label}`, 'success', 2500);
 		} catch (e) {
 			skipNextDefaultModelRefresh = false;
-			addNotification(`设置联网搜索失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: '+page', message: '设置联网搜索失败', log: false });
 		}
 	}
 
@@ -342,7 +342,7 @@
 			addNotification(`已切换默认模型: ${currentModelName}`, 'success', 3000);
 		} catch (e) {
 			skipNextDefaultModelRefresh = false;
-			addNotification(`切换模型失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: '+page', message: '切换模型失败', log: false });
 		}
 	}
 
@@ -356,7 +356,7 @@
 			addNotification(`思考强度: ${label}`, 'success', 2500);
 		} catch (e) {
 			skipNextDefaultModelRefresh = false;
-			addNotification(`设置思考强度失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: '+page', message: '设置思考强度失败', log: false });
 		}
 	}
 
@@ -570,7 +570,7 @@
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
 		} catch (e) {
-			addNotification(`回退失败: ${formatError(e)}`, 'error', 5000);
+			reportError(e, { context: '+page', message: '回退失败', log: false });
 		}
 		rollbackLoading = false;
 		rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
@@ -603,7 +603,7 @@
 			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
 			restoreSessionLlmUsage(sessionId, result.llm_usage);
 		} catch (e) {
-			addNotification(`同步消息失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: '+page', message: '同步消息失败', log: false });
 		}
 	}
 
@@ -692,7 +692,7 @@
 			const t = sessions.find((x) => x.id === sessionId);
 			addNotification(`已切换到：${t?.title || '会话'}`, 'info', 1500);
 		} catch (e) {
-			addNotification(`切换会话失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: '+page', message: '切换会话失败', log: false });
 		}
 	}
 
@@ -713,7 +713,7 @@
 			// it so the user can retry. Clearing the pointer here would orphan a
 			// session that keeps running (and streaming) with no visible target.
 			newSessionIntentStore.set(false);
-			addNotification(`结束会话失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: '+page', message: '结束会话失败', log: false });
 			return;
 		}
 		activeSessionId = null;
@@ -726,7 +726,7 @@
 		try {
 			await invoke('interrupt_session', { sessionId: activeSessionId });
 		} catch (e) {
-			addNotification(`中断输出失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: '+page', message: '中断输出失败', log: false });
 		}
 	}
 
@@ -783,7 +783,7 @@
 			}
 			await loadSessions();
 		} catch (e) {
-			addNotification(`继续失败: ${formatError(e)}`, 'error', 5000);
+			reportError(e, { context: '+page', message: '继续失败', log: false });
 			// Keep the banner visible so the user can retry.
 		}
 	}
@@ -1238,7 +1238,7 @@
 			// Same for scheduled actions: fired ones are gone from the pending list.
 			refreshActions();
 		})().catch((e) => {
-			addNotification(`加载会话列表失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: '+page', message: '加载会话列表失败', log: false });
 		});
 		loadSessionsSettled = run;
 		return run;
@@ -1323,7 +1323,7 @@
 			}
 			loadSessions();
 		} catch (e) {
-			addNotification(`发送失败: ${formatError(e)}`, 'error', 5000);
+			reportError(e, { context: '+page', message: '发送失败', log: false });
 		}
 	}
 
@@ -1419,7 +1419,7 @@
 				scope: resolvedScope,
 			});
 		} catch (e) {
-			addNotification(`确认失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: '+page', message: '确认失败', log: false });
 		}
 	}
 

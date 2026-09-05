@@ -1,6 +1,23 @@
 const LEVELS = ['debug', 'info', 'warn', 'error'];
 const currentLevel = import.meta.env.DEV ? 'debug' : 'info';
 
+function normalizeContext(context: string): string {
+	return context.trim().replace(/\s+/g, '_') || 'unknown';
+}
+
+function write(level: string, context: string, msg: string, args: unknown[]) {
+	const prefix = `[${level.toUpperCase()}][${normalizeContext(context)}]`;
+	const method =
+		level === 'debug'
+			? console.debug
+			: level === 'info'
+				? console.info
+				: level === 'warn'
+					? console.warn
+					: console.error;
+	method(`${prefix} ${msg}`, ...args);
+}
+
 function shouldLog(level: string) {
 	return LEVELS.indexOf(level) >= LEVELS.indexOf(currentLevel);
 }
@@ -8,22 +25,22 @@ function shouldLog(level: string) {
 const logger = {
 	debug(context: string, msg: string, ...args: unknown[]) {
 		if (shouldLog('debug')) {
-			console.debug(`[DEBUG][${context}] ${msg}`, ...args);
+			write('debug', context, msg, args);
 		}
 	},
 	info(context: string, msg: string, ...args: unknown[]) {
 		if (shouldLog('info')) {
-			console.info(`[INFO][${context}] ${msg}`, ...args);
+			write('info', context, msg, args);
 		}
 	},
 	warn(context: string, msg: string, ...args: unknown[]) {
 		if (shouldLog('warn')) {
-			console.warn(`[WARN][${context}] ${msg}`, ...args);
+			write('warn', context, msg, args);
 		}
 	},
 	error(context: string, msg: string, ...args: unknown[]) {
 		if (shouldLog('error')) {
-			console.error(`[ERROR][${context}] ${msg}`, ...args);
+			write('error', context, msg, args);
 		}
 	},
 };

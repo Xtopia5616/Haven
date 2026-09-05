@@ -16,7 +16,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification } from '$lib/stores.ts';
-	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import logger from '$lib/logger.ts';
 	import { registerOne } from '$lib/events.ts';
 	import SkillCard from '$lib/SkillCard.svelte';
@@ -84,7 +84,7 @@
 			}
 		} catch (e) {
 			builtinTools = [];
-			addNotification(`加载工具列表失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: '加载工具列表失败', log: false });
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
@@ -127,7 +127,7 @@
 			await invoke('reset_tool_circuits');
 			addNotification('工具熔断已重置', 'success', 2500);
 		} catch (e) {
-			addNotification(`重置工具熔断失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: '重置工具熔断失败', log: false });
 		}
 	}
 
@@ -169,7 +169,7 @@
 				);
 			}
 		} catch (e) {
-			addNotification(`刷新 MCP 服务器失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: '刷新 MCP 服务器失败', log: false });
 		}
 	}
 
@@ -204,7 +204,7 @@
 			if (refresh) await refresh();
 		} catch (e) {
 			setList(prev);
-			addNotification(`切换 ${name} 失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: `切换 ${name} 失败`, log: false });
 		}
 	}
 
@@ -222,7 +222,7 @@
 			await refreshSkillList();
 			addNotification('技能已刷新', 'success', 2000);
 		} catch (e) {
-			addNotification(`刷新技能失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: '刷新技能失败', log: false });
 		}
 	}
 
@@ -231,7 +231,7 @@
 			const path = await invoke('open_skills_dir');
 			addNotification(`已打开: ${path}`, 'info', 3000);
 		} catch (e) {
-			addNotification(`打开技能文件夹失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: '打开技能文件夹失败', log: false });
 		}
 	}
 
@@ -268,7 +268,7 @@
 			closeDialog();
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`操作失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'ToolsView', message: '操作失败', log: false });
 		}
 	}
 
@@ -281,7 +281,7 @@
 			addNotification(`已移除 ${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`移除失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: '移除失败', log: false });
 		}
 	}
 
@@ -295,7 +295,7 @@
 			addNotification(`刷新成功：${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`刷新失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'ToolsView', message: '刷新失败', log: false });
 		}
 	}
 

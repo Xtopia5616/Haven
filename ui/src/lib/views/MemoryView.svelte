@@ -1,7 +1,7 @@
 <script>
 	/** @typedef {{ id: string; title?: string; input_text?: string; transcript?: string; status: string; created_at: string; [key: string]: any }} MemorySession */
 	import logger from '$lib/logger.ts';
-	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
 	import {
 		formatMessageTime,
@@ -240,7 +240,7 @@
 			});
 			await goto('/');
 		} catch (e) {
-			addNotification(`加载会话详情失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'MemoryView', message: '加载会话详情失败', log: false });
 		}
 	}
 	/** @param {string} sessionId */
@@ -255,7 +255,7 @@
 			}
 			addNotification('会话已删除', 'success', 2000);
 		} catch (e) {
-			addNotification(`删除失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'MemoryView', message: '删除失败', log: false });
 		}
 		deleteTarget = null;
 	}
@@ -324,7 +324,7 @@
 			const session = sessions.find((item) => item.id === sessionId);
 			if (session) session.title = value;
 		} catch (e) {
-			addNotification(`重命名失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'MemoryView', message: '重命名失败', log: false });
 		}
 		cancelEdit();
 	}
@@ -434,7 +434,7 @@
 			await loadFacts();
 			addNotification('事实已保存', 'success', 2500);
 		} catch (e) {
-			addNotification(`添加事实失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'MemoryView', message: '添加事实失败', log: false });
 		} finally {
 			addingFact = false;
 		}
@@ -445,7 +445,7 @@
 			await invoke('delete_fact', { factId });
 			facts = facts.filter((fact) => fact.id !== factId);
 		} catch (e) {
-			addNotification(`删除事实失败: ${formatError(e)}`, 'error', 3000);
+			reportError(e, { context: 'MemoryView', message: '删除事实失败', log: false });
 		}
 	}
 	async function runRecall() {
@@ -460,7 +460,7 @@
 		} catch (e) {
 			memoryRecall.results = [];
 			memoryRecall.searched = true;
-			addNotification(`记忆检索失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'MemoryView', message: '记忆检索失败', log: false });
 		} finally {
 			memoryRecall.loading = false;
 		}

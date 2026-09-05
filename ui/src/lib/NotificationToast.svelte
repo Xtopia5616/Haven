@@ -45,6 +45,9 @@
 			<div
 				class="toast toast-{item.type || 'info'}"
 				style={getToastStyle(item.type)}
+				role={item.type === 'error' ? 'alert' : 'status'}
+				aria-live={item.type === 'error' ? 'assertive' : 'polite'}
+				aria-label={item.msg}
 				in:fly={{ x: '100%', duration: 450, easing: cubicOut }}
 			>
 				<span class="toast-icon">{@html getIcon(item.type)}</span>
@@ -80,6 +83,7 @@
 		border-left: 3px solid var(--toast-accent);
 		background: var(--toast-background);
 		color: var(--toast-foreground);
+		min-height: 48px;
 	}
 	.toast-icon {
 		display: flex;
@@ -95,8 +99,10 @@
 	.toast-msg {
 		flex: 1;
 		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
+		white-space: normal;
+	}
+	.toast-error {
+		font-weight: 700;
 	}
 </style>

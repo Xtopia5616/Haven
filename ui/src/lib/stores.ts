@@ -199,12 +199,37 @@ export function finalizeBackgroundActionMessages(payload: ActionPayload) {
 	}
 }
 
-export const notificationStore = writable<Array<{ id: string; msg: string; type: string }>>([]);
+export type NotificationType = 'info' | 'success' | 'warning' | 'error';
+
+export type Notification = {
+	id: string;
+	msg: string;
+	type: NotificationType;
+};
+
+export type NotificationOptions = {
+	/** Internal escape hatch for reportError, which owns the log entry. */
+	logError?: boolean;
+};
+
+export const notificationStore = writable<Notification[]>([]);
+
+export const NOTIFICATION_DURATIONS: Record<NotificationType, number> = {
+	info: 3000,
+	success: 3000,
+	warning: 4000,
+	error: 5000,
+};
 
 let notificationSeq = 0;
 
-export function addNotification(msg: string, type = 'info', duration = 3000) {
-	if (type === 'error') {
+export function addNotification(
+	msg: string,
+	type: NotificationType = 'info',
+	duration = NOTIFICATION_DURATIONS[type],
+	options: NotificationOptions = {},
+) {
+	if (type === 'error' && options.logError !== false) {
 		logger.error('notification', msg);
 	}
 	let id: string | null = null;

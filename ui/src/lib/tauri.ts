@@ -1,7 +1,9 @@
 import logger from './logger.ts';
+import { logError } from './errorHandling.ts';
 
 let _tauriInvoke: ((cmd: string, args?: any) => Promise<any>) | null = null;
-let _tauriListen: ((event: string, handler: (event: unknown) => void) => Promise<unknown>) | null = null;
+let _tauriListen: ((event: string, handler: (event: unknown) => void) => Promise<unknown>) | null =
+	null;
 let _initialized = false;
 
 /** True when running inside a Tauri webview (not plain browser / SSR). */
@@ -36,7 +38,7 @@ export async function invoke(cmd: string, args?: unknown): Promise<any> {
 		try {
 			return await _tauriInvoke(cmd, args);
 		} catch (e) {
-			logger.error('invoke', `'${cmd}' failed`, e);
+			logError('invoke', `command '${cmd}' failed`, e);
 			throw e;
 		}
 	}

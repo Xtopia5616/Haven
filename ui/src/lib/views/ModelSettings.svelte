@@ -3,6 +3,7 @@
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -202,7 +203,7 @@
 				addNotification('模型列表已刷新', 'success', 2500);
 			}
 		} catch (e) {
-			addNotification(`刷新模型列表失败: ${formatError(e)}`, 'error', 4000);
+			reportError(e, { context: 'ModelSettings', message: '刷新模型列表失败', log: false });
 		} finally {
 			refreshingAll = false;
 		}

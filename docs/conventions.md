@@ -1,6 +1,6 @@
 # Haven 通知 / 日志 / 错误处理规范
 
-> 版本: v1.3 | 日期: 2026-08-20
+> 版本: v1.4 | 日期: 2026-09-05
 
 本文档统一 Haven 项目中**通知（Notification）**、**日志（Logging）**、**错误处理（Error Handling）** 三套规范，覆盖 Rust 后端（Tauri 2）与 Svelte 5 前端。
 
@@ -12,8 +12,8 @@
 | 事件发射（channel / payload） | `crates/app-binary/src/lib.rs`（`TauriEmitter`） |
 | Windows 桌面通知 | `crates/app-binary/src/notification.rs`（`DesktopNotifications`） |
 | 通知配置 | `crates/common/src/config/misc.rs`（`NotificationConfig` / `NotifyChannels`） |
-| 前端日志 | `ui/src/lib/logger.ts` |
-| 错误文案归一 | `ui/src/lib/formatError.ts`（`formatError`） |
+| 前端日志 | `ui/src/lib/logger.ts` + `ui/src/lib/errorHandling.ts` |
+| 错误文案归一 / 统一上报 | `ui/src/lib/formatError.ts`（`formatError`）+ `ui/src/lib/errorHandling.ts`（`reportError`） |
 | 应用内 toast | `ui/src/lib/stores.ts`（`addNotification`）+ `ui/src/lib/NotificationToast.svelte` |
 | 事件监听注册 | `ui/src/lib/events.ts`（`registerListeners` / `registerOne`） |
 | 事件 → toast 映射 | `ui/src/routes/+layout.svelte` |
@@ -51,9 +51,11 @@
 
 **唯一入口**：`logger.debug / logger.info / logger.warn / logger.error(context, msg, ...args)`。
 
+可恢复错误的组合入口是 `reportError(error, { context, message })`：它负责把错误归一成单行、限长的用户文案，同时写一条带 UI 上下文的 ERROR 日志并投递 error toast。底层边界（当前是 `tauri.ts::invoke`）已经记录过的错误，页面 catch 传 `log: false`，避免同一失败重复记日志。
+
 - **`context`**：模块短名，小驼峰。常用：`stores`、`events`、`invoke`、`notification`、`tauri`、`+layout`、页面/组件短名。
 - **级别门控**：`currentLevel` 在 DEV 为 `debug`，生产为 `info`；`debug` 只在开发环境输出。
-- **与 toast 的关系**：`addNotification(..., 'error')` 会自动 `logger.error('notification', msg)`；调用方**不要**再对同一条消息打一遍 error 日志。
+- **与 toast 的关系**：普通 `addNotification(..., 'error')` 仍会自动 `logger.error('notification', msg)`；统一异常走 `reportError`，由 `reportError` 负责日志，toast 通过内部 `logError: false` 选项避免重复记录。
 - **invoke 失败**：`tauri.ts::invoke` 已在抛出前 `logger.error('invoke', ...)`；页面 `catch` 只负责用户提示，不再记日志。
 
 ```ts
@@ -156,7 +158,7 @@ AgentEvent / 其它后端事件
 
 ### 2.3 应用内 toast API（`ui/src/lib/stores.ts`）
 
-**唯一入口**：`addNotification(msg, type = 'info', duration = 3000)`。
+**唯一入口**：`addNotification(msg, type = 'info', duration = 按 type 默认值, options?)`。
 
 - `type`：`info` | `success` | `warning` | `error`（由 `NotificationToast.svelte` 渲染）。
 - **去重**：同 `msg` + 同 `type` 已在队列中则不再插入。
@@ -171,13 +173,16 @@ AgentEvent / 其它后端事件
 
 - **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`MCP`、产品名 `Haven`）可保留英文。
 - `error` 类型自动 `logger.error('notification', msg)`，调用方不再重复记日志。
+- 默认时长固定为 info 3s、success 3s、warning 4s、error 5s；错误上报统一使用 error 5s。
+- `NotificationToast` 统一使用语义色板、错误 `alert` 语义、48px 最小高度和可换行文本。
 
 ```ts
 import { addNotification } from '$lib/stores.ts';
+import { reportError } from '$lib/errorHandling.ts';
 
 addNotification(`会话已完成: ${title}`, 'success');
 addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
-addNotification(e?.message || '操作失败', 'error', 4000);
+reportError(e, { context: 'SettingsView', message: '操作失败', log: false });
 ```
 
 ### 2.4 后端事件与桌面通知
@@ -243,12 +248,13 @@ session_created / session_completed / session_paused / session_resumed / session
 try {
 	const result = await invoke('xxx', args);
 } catch (e) {
-	addNotification(e?.message || '操作失败', 'error', 4000);
+	reportError(e, { context: 'SettingsView', message: '保存设置失败', log: false });
 }
 ```
 
-- `invoke` 已记日志 → catch 只做用户提示。
-- 失败文案统一 `formatError(e)`（`ui/src/lib/formatError.ts`），拼进 toast：`` `操作失败: ${formatError(e)}` ``；无上下文时用中文兜底（`操作失败`）。
+- `invoke` 已记日志 → catch 只做用户提示，传 `log: false`。
+- 失败文案统一由 `reportError` 调用 `formatError(e)` 生成；`formatError` 会处理 `unknown`、折叠换行并限制长度，禁止页面自行 `${e}` 拼接。
+- `+layout.svelte` 注册 `error` / `unhandledrejection` 最后防线：记录 `global` 上下文并显示通用错误提示。已被低层记录的对象错误不会再次记 ERROR。
 - 页面级重复逻辑可收敛为局部 helper（先例：settings 的 `notifyFetch`，带 per-key 节流）。
 - 事件监听注册失败：只走 `events.ts`（内部 `logger.error` 后吞掉，不阻塞 mount）；页面不得裸 `listen`。
 - catch 后禁止仅打日志而无用户提示（除非确认无需用户感知，则只用 `logger.*`，不弹 toast）。
@@ -323,6 +329,12 @@ try {
 | ID | 问题 | 建议 | 优先级 |
 |---|---|---|---|
 | L2 | `TauriEmitter::trace_event` 仍多用文本内联 ID | 新增/改动时改为结构化字段 `session_id = %id`，存量渐进 | P3 |
+
+### 已完成（v1.4）
+
+| ID | 变更 |
+|---|---|
+| E2 | 前端错误统一经 `reportError` 组合日志与 toast；`formatError` 限制文案并处理 unknown；根布局接住未处理异常；后端 `log_err` 增加结构化 command/error 字段 |
 
 落地时：改代码须同步更新 §2 / §4。
 

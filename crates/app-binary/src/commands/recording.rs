@@ -204,7 +204,7 @@ pub async fn start_recording(
             format!("录音启动失败，请检查麦克风/STT 配置: {e}")
         };
         emit_recording_error(&app, msg.clone());
-        return Err(msg);
+        return Err(log_err("start_recording", msg));
     }
     // Keep the shell state in sync so the tray icon, the mute hotkey and the
     // recording toggle reflect a UI-button-started recording.
@@ -303,8 +303,11 @@ pub async fn process_transcript(
         .config
         .context_limits
         .clone();
-    let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)?;
-    let attachments = persist_file_attachments(attachments).await?;
+    let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)
+        .map_err(|e| log_err("process_transcript", e))?;
+    let attachments = persist_file_attachments(attachments)
+        .await
+        .map_err(|e| log_err("process_transcript", e))?;
     let voice = voice.unwrap_or(false);
     tracing::debug!(
         "process_transcript called: text={:?} active_session_id={:?} attachments={} voice={}",
