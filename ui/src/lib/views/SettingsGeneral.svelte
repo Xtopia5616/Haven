@@ -2,6 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import { themeStore } from '$lib/themeStore.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
@@ -199,13 +200,12 @@
 		<h3 class="model-group-heading">维护</h3>
 		<p class="model-hint">维护会清理重复、敏感、过期的事实与残留向量。</p>
 		<div class="form-row">
-			<button
-				class="md-btn"
+			<MaterialButton
+				variant="text"
+				label={memoryMaintenance.running ? '运行中…' : '执行记忆维护'}
 				onclick={() => onRunMaintenance()}
 				disabled={memoryMaintenance.running}
-			>
-				{memoryMaintenance.running ? '运行中…' : '执行记忆维护'}
-			</button>
+			/>
 			{#if memoryMaintenance.lastCount !== null}
 				<span class="recall-hint">上次清理 {memoryMaintenance.lastCount} 项</span>
 			{/if}
@@ -381,11 +381,12 @@
 	<div class="section log-section">
 		<div class="llm-head">
 			<h2>日志</h2>
-			<button
-				class="md-btn md-btn--outlined"
+			<MaterialButton
+				variant="outlined"
+				label="查看日志"
 				onclick={() => onOpenLogViewer()}
-				disabled={logView.loading}>查看日志</button
-			>
+				disabled={logView.loading}
+			/>
 		</div>
 		<div class="form-row switch-row">
 			<span class="switch-label">文件日志</span><MaterialSwitch

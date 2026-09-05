@@ -1,5 +1,6 @@
 <script>
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 
 	let { memoryRecall, onRecallKindChange = () => {}, onRunRecall = () => {} } = $props();
 	/** @param {string} value */
@@ -33,11 +34,13 @@
 				{ value: 'episode', label: '情景' },
 			]}
 			onChange={handleKindChange}
-		/><button
-			class="md-btn md-btn--filled"
+		/>
+		<MaterialButton
+			variant="filled"
+			label={memoryRecall.loading ? '检索中…' : '检索'}
 			onclick={() => onRunRecall()}
-			disabled={memoryRecall.loading}>{memoryRecall.loading ? '检索中…' : '检索'}</button
-		>
+			disabled={memoryRecall.loading}
+		/>
 	</div>
 	{#if memoryRecall.results.length > 0}<ul class="recall-results">
 			{#each memoryRecall.results as result (result.entity_id + result.text)}<li>
@@ -113,7 +116,7 @@
 	@media (max-width: 455px) {
 		.recall-actions,
 		.recall-actions :global(.md-select-container),
-		.recall-actions .md-btn {
+		.recall-actions :global(.md-btn) {
 			width: 100%;
 		}
 	}

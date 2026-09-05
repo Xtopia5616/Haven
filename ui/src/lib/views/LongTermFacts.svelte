@@ -1,5 +1,6 @@
 <script>
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 
 	let {
 		facts = [],
@@ -13,7 +14,9 @@
 		onDeleteFact = () => {},
 	} = $props();
 	let selectedFactId = $state(null);
-	const selectedFact = $derived.by(() => facts.find((fact) => fact.id === selectedFactId) || facts[0] || null);
+	const selectedFact = $derived.by(
+		() => facts.find((fact) => fact.id === selectedFactId) || facts[0] || null,
+	);
 	$effect(() => {
 		if (selectedFact && selectedFactId !== selectedFact.id) selectedFactId = selectedFact.id;
 		if (!selectedFact) selectedFactId = null;
@@ -61,9 +64,12 @@
 		autocomplete="off"
 	/>
 	<div class="add-fact-actions">
-		<button class="md-btn md-btn--filled" onclick={() => onAddFact()} disabled={addingFact}
-			>{addingFact ? '添加中…' : '添加事实'}</button
-		>
+		<MaterialButton
+			variant="filled"
+			label={addingFact ? '添加中…' : '添加事实'}
+			onclick={() => onAddFact()}
+			disabled={addingFact}
+		/>
 	</div>
 	{#if factsLoaded && facts.length > 0}
 		<div class="fact-list">
@@ -96,16 +102,44 @@
 						<span class="fact-detail-kicker">记忆条目详情</span>
 						<h3 id="fact-detail-title">{detailFact.predicate}</h3>
 					</div>
-					<span class="fact-tag" class:fact-tag--inf={detailFact.source === 'inferred'} class:fact-tag--user={detailFact.source !== 'inferred'}>{detailFact.source === 'inferred' ? '推断' : '手动'}</span>
+					<span
+						class="fact-tag"
+						class:fact-tag--inf={detailFact.source === 'inferred'}
+						class:fact-tag--user={detailFact.source !== 'inferred'}
+						>{detailFact.source === 'inferred' ? '推断' : '手动'}</span
+					>
 				</div>
 				<dl class="fact-details">
-					<div><dt>主语</dt><dd>{detailFact.subject || 'user'}</dd></div>
-					<div><dt>谓词</dt><dd>{detailFact.predicate}</dd></div>
-					<div><dt>对象</dt><dd>{detailFact.object}</dd></div>
-					{#if detailFact.tags}<div><dt>标签</dt><dd>{Array.isArray(detailFact.tags) ? detailFact.tags.join('、') : detailFact.tags}</dd></div>{/if}
-					<div><dt>编号</dt><dd class="fact-id">{detailFact.id}</dd></div>
+					<div>
+						<dt>主语</dt>
+						<dd>{detailFact.subject || 'user'}</dd>
+					</div>
+					<div>
+						<dt>谓词</dt>
+						<dd>{detailFact.predicate}</dd>
+					</div>
+					<div>
+						<dt>对象</dt>
+						<dd>{detailFact.object}</dd>
+					</div>
+					{#if detailFact.tags}<div>
+							<dt>标签</dt>
+							<dd>
+								{Array.isArray(detailFact.tags)
+									? detailFact.tags.join('、')
+									: detailFact.tags}
+							</dd>
+						</div>{/if}
+					<div>
+						<dt>编号</dt>
+						<dd class="fact-id">{detailFact.id}</dd>
+					</div>
 				</dl>
-				<button class="md-btn md-btn--danger" type="button" onclick={() => onDeleteFact(detailFact.id)}>删除这条事实</button>
+				<MaterialButton
+					variant="danger"
+					label="删除这条事实"
+					onclick={() => onDeleteFact(detailFact.id)}
+				/>
 			</article>
 		{/if}
 	{:else if factsLoaded}<p class="model-hint">
@@ -273,11 +307,18 @@
 		.toolbar-actions,
 		.toolbar-actions :global(.md-select-container),
 		.add-fact-actions,
-		.add-fact-actions .md-btn {
+		.add-fact-actions :global(.md-btn) {
 			width: 100%;
 		}
-		.fact-details { grid-template-columns: 1fr; }
-		.fact-row { align-items: flex-start; flex-direction: column; }
-		.fact-value { width: 100%; }
+		.fact-details {
+			grid-template-columns: 1fr;
+		}
+		.fact-row {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.fact-value {
+			width: 100%;
+		}
 	}
 </style>

@@ -22,6 +22,7 @@
 	import { invoke } from '$lib/tauri.ts';
 	import { registerSessionListener } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDatePicker from '$lib/MaterialDatePicker.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import SessionHistory from './SessionHistory.svelte';
@@ -471,17 +472,24 @@
 		<h1>记忆</h1>
 		{#if activeTab === 'sessions'}<span class="count-badge">已显示 {totalCount} 条</span>
 			<div class="header-actions">
-				{#if selectMode}<button
-						class="md-btn md-btn--filled"
+				{#if selectMode}
+					<MaterialButton
+						variant="filled"
+						label={`导出选中（${selectedIds.size}）`}
 						onclick={exportSelected}
-						disabled={selectedIds.size === 0}>导出选中（{selectedIds.size}）</button
-					><button class="md-btn md-btn--text" onclick={cancelSelectMode}>取消</button
-					>{:else}<button class="md-btn md-btn--outlined" onclick={enterSelectMode}
-						>导出</button
-					>{#if sessions.length > 0}<button
-							class="md-btn md-btn--danger"
-							onclick={() => (showClearDialog = true)}>清空会话</button
-						>{/if}{/if}
+						disabled={selectedIds.size === 0}
+					/>
+					<MaterialButton variant="text" label="取消" onclick={cancelSelectMode} />
+				{:else}
+					<MaterialButton variant="outlined" label="导出" onclick={enterSelectMode} />
+					{#if sessions.length > 0}
+						<MaterialButton
+							variant="danger"
+							label="清空会话"
+							onclick={() => (showClearDialog = true)}
+						/>
+					{/if}
+				{/if}
 			</div>{/if}
 	</div>
 	<div class="md-tabs memory-tabs" role="tablist">
@@ -581,15 +589,18 @@
 			</div>
 		</div>
 	{/snippet}
-	{#snippet footer()}<button
-			class="md-btn md-btn--text"
+	{#snippet footer()}
+		<MaterialButton
+			variant="text"
+			label="清除"
 			onclick={() => {
 				startDate = '';
 				endDate = '';
 				handleFilterChange();
-			}}>清除</button
-		><button class="md-btn md-btn--filled" onclick={() => (showDateFilter = false)}>完成</button
-		>{/snippet}
+			}}
+		/>
+		<MaterialButton variant="filled" label="完成" onclick={() => (showDateFilter = false)} />
+	{/snippet}
 </MaterialDialog>
 <MaterialDialog open={deleteTarget !== null} onClose={() => (deleteTarget = null)} title="删除会话">
 	{#snippet children()}<p class="dialog-text">
@@ -597,22 +608,25 @@
 				deleteTarget?.input_text ||
 				'未命名会话'}」？此操作不可撤销。
 		</p>{/snippet}
-	{#snippet footer()}<button class="md-btn md-btn--text" onclick={() => (deleteTarget = null)}
-			>取消</button
-		><button
-			class="md-btn md-btn--danger"
+	{#snippet footer()}
+		<MaterialButton variant="text" label="取消" onclick={() => (deleteTarget = null)} />
+		<MaterialButton
+			variant="danger"
+			label="删除"
 			onclick={() => {
 				if (deleteTarget) deleteSession(deleteTarget.id);
-			}}>删除</button
-		>{/snippet}
+			}}
+		/>
+	{/snippet}
 </MaterialDialog>
 <MaterialDialog open={showClearDialog} onClose={() => (showClearDialog = false)} title="清空会话">
 	{#snippet children()}<p class="dialog-text">
 			将永久删除全部会话记录（长期事实不受影响）。此操作不可撤销。
 		</p>{/snippet}
-	{#snippet footer()}<button class="md-btn md-btn--text" onclick={() => (showClearDialog = false)}
-			>取消</button
-		><button class="md-btn md-btn--danger" onclick={clearSessions}>清空全部</button>{/snippet}
+	{#snippet footer()}
+		<MaterialButton variant="text" label="取消" onclick={() => (showClearDialog = false)} />
+		<MaterialButton variant="danger" label="清空全部" onclick={clearSessions} />
+	{/snippet}
 </MaterialDialog>
 <ContextMenu
 	open={ctxMenu.open}
@@ -726,7 +740,7 @@
 			width: 100%;
 			margin-left: 0;
 		}
-		.header-actions .md-btn {
+		.header-actions :global(.md-btn) {
 			flex: 1 1 auto;
 		}
 		.date-input-row {

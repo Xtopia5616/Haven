@@ -24,6 +24,7 @@
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -360,7 +361,12 @@
 	<div class="resource-toolbar md-toolbar" role="search" aria-label="筛选工具资源">
 		<label class="resource-search">
 			<span class="sr-only">搜索工具资源</span>
-			<input class="md-input" type="search" bind:value={searchQuery} placeholder="搜索名称、描述或地址" />
+			<input
+				class="md-input"
+				type="search"
+				bind:value={searchQuery}
+				placeholder="搜索名称、描述或地址"
+			/>
 		</label>
 		<label class="resource-filter">
 			<span class="sr-only">启用状态</span>
@@ -378,13 +384,18 @@
 			<div class="toolbar md-toolbar">
 				<h2>内置工具</h2>
 				<div class="toolbar-actions">
-					<button class="md-btn md-btn--outlined" onclick={resetToolCircuits}>
-						重置熔断
-					</button>
+					<MaterialButton
+						variant="outlined"
+						label="重置熔断"
+						onclick={resetToolCircuits}
+					/>
 				</div>
 			</div>
 			{#if builtinTools.length === 0}
-				<AsyncState title="暂无可用的内置工具" message="工具列表加载后，可在此查看详情与启用状态。" />
+				<AsyncState
+					title="暂无可用的内置工具"
+					message="工具列表加载后，可在此查看详情与启用状态。"
+				/>
 			{:else if visibleBuiltinTools.length === 0}
 				<AsyncState title="没有匹配的内置工具" message="换一个关键词或清除状态筛选。" />
 			{:else}
@@ -400,12 +411,17 @@
 			<div class="toolbar md-toolbar">
 				<h2>MCP 服务器</h2>
 				<div class="toolbar-actions toolbar-actions--paired">
-					<button class="md-btn md-btn--outlined" onclick={refreshMcpList}>刷新</button>
-					<button class="md-btn md-btn--outlined" onclick={openAddDialog}>添加</button>
+					<MaterialButton variant="outlined" label="刷新" onclick={refreshMcpList} />
+					<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
 				</div>
 			</div>
 			{#if mcpServers.length === 0}
-				<AsyncState title="尚未配置 MCP 服务器" message="添加 MCP 服务器，为 Agent 扩展外部工具与资源。" actionLabel="添加 MCP 服务器" onAction={openAddDialog} />
+				<AsyncState
+					title="尚未配置 MCP 服务器"
+					message="添加 MCP 服务器，为 Agent 扩展外部工具与资源。"
+					actionLabel="添加 MCP 服务器"
+					onAction={openAddDialog}
+				/>
 			{:else if visibleMcpServers.length === 0}
 				<AsyncState title="没有匹配的 MCP 服务器" message="换一个关键词或清除状态筛选。" />
 			{:else}
@@ -427,12 +443,17 @@
 			<div class="toolbar md-toolbar">
 				<h2>技能</h2>
 				<div class="toolbar-actions toolbar-actions--paired">
-					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>刷新</button>
-					<button class="md-btn md-btn--outlined" onclick={openFolder}>打开文件夹</button>
+					<MaterialButton variant="outlined" label="刷新" onclick={refreshSkills} />
+					<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />
 				</div>
 			</div>
 			{#if skills.length === 0}
-				<AsyncState title="暂无技能" message="将 SKILL.md 文件放入技能文件夹，然后点击刷新。" actionLabel="打开技能文件夹" onAction={openFolder} />
+				<AsyncState
+					title="暂无技能"
+					message="将 SKILL.md 文件放入技能文件夹，然后点击刷新。"
+					actionLabel="打开技能文件夹"
+					onAction={openFolder}
+				/>
 			{:else if visibleSkills.length === 0}
 				<AsyncState title="没有匹配的技能" message="换一个关键词或清除状态筛选。" />
 			{:else}
@@ -479,8 +500,13 @@
 		gap: var(--md-comp-toolbar-gap);
 		margin-bottom: var(--md-sys-space-lg);
 	}
-	.resource-search { flex: 1 1 280px; min-width: 0; }
-	.resource-filter { width: min(180px, 30%); }
+	.resource-search {
+		flex: 1 1 280px;
+		min-width: 0;
+	}
+	.resource-filter {
+		width: min(180px, 30%);
+	}
 	.resource-count {
 		flex: 0 0 auto;
 		color: var(--md-sys-color-on-surface-variant);
@@ -532,7 +558,7 @@
 	.toolbar-actions--paired {
 		flex: 0 1 30%;
 	}
-	.toolbar-actions--paired .md-btn {
+	.toolbar-actions--paired :global(.md-btn) {
 		flex: 1 1 0;
 		min-width: 0;
 		white-space: nowrap;
@@ -549,19 +575,42 @@
 		border: 0;
 	}
 	@media (max-width: 700px) {
-		.resource-toolbar { align-items: stretch; flex-direction: column; }
+		.resource-toolbar {
+			align-items: stretch;
+			flex-direction: column;
+		}
 		.resource-search,
-		.resource-filter { width: 100%; }
-		.resource-search { flex: 0 1 auto; }
-		.toolbar { align-items: flex-start; }
-		.toolbar-actions { width: 100%; }
-		.toolbar-actions--paired { flex: 0 0 100%; }
-		.toolbar-actions .md-btn { flex: 1 1 0; }
+		.resource-filter {
+			width: 100%;
+		}
+		.resource-search {
+			flex: 0 1 auto;
+		}
+		.toolbar {
+			align-items: flex-start;
+		}
+		.toolbar-actions {
+			width: 100%;
+		}
+		.toolbar-actions--paired {
+			flex: 0 0 100%;
+		}
+		.toolbar-actions :global(.md-btn) {
+			flex: 1 1 0;
+		}
 	}
 	@media (max-width: 455px) {
-		.resource-filter { width: 100%; }
-		.resource-count { align-self: flex-start; }
-		.toolbar-actions { flex-direction: column; }
-		.toolbar-actions .md-btn { width: 100%; }
+		.resource-filter {
+			width: 100%;
+		}
+		.resource-count {
+			align-self: flex-start;
+		}
+		.toolbar-actions {
+			flex-direction: column;
+		}
+		.toolbar-actions :global(.md-btn) {
+			width: 100%;
+		}
 	}
 </style>

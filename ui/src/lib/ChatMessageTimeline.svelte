@@ -2,6 +2,7 @@
 	import { fly } from 'svelte/transition';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Logo from '$lib/Logo.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 
 	let {
@@ -71,10 +72,11 @@
 
 {#if activeSessionError}
 	<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
-		<button
-			class="md-btn md-btn--filled continue-btn"
+		<MaterialButton
+			variant="filled"
+			className="continue-btn"
+			ariaLabel="继续生成"
 			onclick={() => onContinue()}
-			type="button"
 		>
 			<svg
 				width="16"
@@ -82,10 +84,13 @@
 				viewBox="0 0 24 24"
 				fill="none"
 				stroke="currentColor"
-				stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg
+				stroke-width="2"
+				aria-hidden="true"
 			>
-			继续生成
-		</button>
+				<polygon points="5 3 19 12 5 21 5 3" />
+			</svg>
+			<span>继续生成</span>
+		</MaterialButton>
 	</div>
 {/if}
 
@@ -146,7 +151,7 @@
 		margin: 0 auto;
 		width: 100%;
 	}
-	.continue-btn {
+	:global(.continue-btn) {
 		gap: var(--md-sys-space-xs);
 		font-size: var(--md-sys-typescale-label-large-size);
 		line-height: var(--md-sys-typescale-label-large-line-height);

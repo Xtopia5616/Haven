@@ -832,9 +832,15 @@
 		<div class="settings-callout" data-state="unconfigured" role="status">
 			<div>
 				<strong>模型尚未配置</strong>
-				<p>添加 Provider 后，Haven 才能生成回复。你可以先完成模型配置，再回来调整其他选项。</p>
+				<p>
+					添加 Provider 后，Haven 才能生成回复。你可以先完成模型配置，再回来调整其他选项。
+				</p>
 			</div>
-			<button class="md-btn md-btn--outlined" type="button" onclick={() => changeSettingsTab('models')}>去配置模型</button>
+			<MaterialButton
+				variant="outlined"
+				label="去配置模型"
+				onclick={() => changeSettingsTab('models')}
+			/>
 		</div>
 	{/if}
 	<div class="md-tabs settings-tabs" role="tablist">
@@ -844,61 +850,74 @@
 				role="tab"
 				aria-controls="settings-panel"
 				aria-selected={settingsTab === tab.id}
-				onclick={() => changeSettingsTab(tab.id)}>
+				onclick={() => changeSettingsTab(tab.id)}
+			>
 				<span>{tab.label}</span>
-					<small>{tab.hint}</small>
-			</button
-			>{/each}
+				<small>{tab.hint}</small>
+			</button>{/each}
 	</div>
-	<div id="settings-panel" role="tabpanel" aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}>
-	{#if settingsTab === 'general'}
-		<SettingsGeneral
-			{hotkeyMode}
-			{hotkeyBinding}
-			{llmConfig}
-			{session}
-			{defaultShell}
-			{shellAvailable}
-			{memory}
-			{memoryMaintenance}
-			{security}
-			{notification}
-			{log}
-			{logView}
-			{autostartEnabled}
-			onHotkeyModeChange={setHotkeyMode}
-			onHotkeyBindingChange={setHotkeyBinding}
-			onDefaultShellChange={setDefaultShell}
-			onAutostartChange={setAutostart}
-			onRunMaintenance={runMaintenance}
-			onOpenLogViewer={openLogViewer}
-			onRevokePermission={revokePermission}
-		/>
-	{:else if settingsTab === 'models' || settingsTab === 'media'}
-		{#if settingsLoaded}<ModelSettings
-				section={settingsTab}
+	<div
+		id="settings-panel"
+		role="tabpanel"
+		aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}
+	>
+		{#if settingsTab === 'general'}
+			<SettingsGeneral
+				{hotkeyMode}
+				{hotkeyBinding}
 				{llmConfig}
-				{audio}
-				{stt}
-				{ocr}
-				{tts}
-				{imageGen}
-				{contextLimits}
-				{keyConfigured}
-				{keyConfiguredProviders}
-				{mcpServerNames}
-				loaded={true}
-				onDiscoverySettled={reBaselineAfterDiscovery}
-			/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
-	{:else}
-		<SettingsLimits {contextLimits} />
-	{/if}
+				{session}
+				{defaultShell}
+				{shellAvailable}
+				{memory}
+				{memoryMaintenance}
+				{security}
+				{notification}
+				{log}
+				{logView}
+				{autostartEnabled}
+				onHotkeyModeChange={setHotkeyMode}
+				onHotkeyBindingChange={setHotkeyBinding}
+				onDefaultShellChange={setDefaultShell}
+				onAutostartChange={setAutostart}
+				onRunMaintenance={runMaintenance}
+				onOpenLogViewer={openLogViewer}
+				onRevokePermission={revokePermission}
+			/>
+		{:else if settingsTab === 'models' || settingsTab === 'media'}
+			{#if settingsLoaded}<ModelSettings
+					section={settingsTab}
+					{llmConfig}
+					{audio}
+					{stt}
+					{ocr}
+					{tts}
+					{imageGen}
+					{contextLimits}
+					{keyConfigured}
+					{keyConfiguredProviders}
+					{mcpServerNames}
+					loaded={true}
+					onDiscoverySettled={reBaselineAfterDiscovery}
+				/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
+		{:else}
+			<SettingsLimits {contextLimits} />
+		{/if}
 	</div>
 	{#if settingsDirty}
 		<div class="save-bar md-toolbar">
 			<div class="save-actions">
-				<button class="md-btn md-btn--outlined" type="button" onclick={discardAndReset} disabled={saveState === 'saving'}>放弃更改</button>
-				<div class="save-button-status" aria-live="polite" aria-busy={saveState === 'saving'}>
+				<MaterialButton
+					variant="outlined"
+					label="放弃更改"
+					onclick={discardAndReset}
+					disabled={saveState === 'saving'}
+				/>
+				<div
+					class="save-button-status"
+					aria-live="polite"
+					aria-busy={saveState === 'saving'}
+				>
 					<MaterialButton
 						variant="filled"
 						className="save-btn save-btn--dirty"
@@ -910,7 +929,7 @@
 			</div>
 		</div>
 	{/if}
-	</div>
+</div>
 
 {#if logView.open}
 	<MaterialDialog
@@ -926,29 +945,41 @@
 				</p>{/if}
 			<pre class="log-viewer" bind:this={logPreEl}>{logView.content ||
 					'（暂无日志内容）'}</pre>{/snippet}
-		{#snippet footer()}<button
-				class="md-btn md-btn--outlined"
+		{#snippet footer()}
+			<MaterialButton
+				variant="outlined"
+				label="刷新"
 				onclick={refreshLogs}
-				disabled={logView.loading}>刷新</button
-			><button
-				class="md-btn"
+				disabled={logView.loading}
+			/>
+			<MaterialButton
+				variant="text"
+				label="关闭"
 				onclick={() => {
 					logView.open = false;
-				}}>关闭</button
-			>{/snippet}
+				}}
+			/>
+		{/snippet}
 	</MaterialDialog>
 {/if}
 <MaterialDialog open={leaveDialogOpen} title="未保存的更改" onClose={stayOnSettings}>
 	{#snippet children()}<p>
 			设置已修改但尚未保存。选择「取消」将放弃更改并离开；或先保存再离开。
 		</p>{/snippet}
-	{#snippet footer()}<button
-			class="md-btn md-btn--text"
+	{#snippet footer()}
+		<MaterialButton
+			variant="text"
+			label="取消"
 			onclick={leaveWithoutSaving}
-			disabled={leaveSaving}>取消</button
-		><button class="md-btn md-btn--filled" onclick={leaveWithSaving} disabled={leaveSaving}
-			>{leaveSaving ? '保存中…' : '保存并离开'}</button
-		>{/snippet}
+			disabled={leaveSaving}
+		/>
+		<MaterialButton
+			variant="filled"
+			label={leaveSaving ? '保存中…' : '保存并离开'}
+			onclick={leaveWithSaving}
+			disabled={leaveSaving}
+		/>
+	{/snippet}
 </MaterialDialog>
 
 <style>
@@ -1078,7 +1109,7 @@
 			align-items: stretch;
 			flex-direction: column;
 		}
-		.settings-callout .md-btn,
+		.settings-callout :global(.md-btn),
 		.save-actions,
 		.save-actions :global(.md-btn),
 		.save-button-status {

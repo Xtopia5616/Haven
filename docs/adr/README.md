@@ -83,3 +83,5 @@
 - [0080：UI 可展开资源卡片壳层](0080-ui-expandable-resource-card-shell.md)
 - [0081：UI 共享声波条动画原语](0081-ui-shared-voice-bars.md)
 - [0082：删除后端过时兼容层](0082-remove-stale-backend-compat-shims.md)
+- [0083：UI 表单字段与弹窗操作原语](0083-ui-form-field-and-dialog-actions.md)
+- [0084：UI 语义化按钮迁移](0084-ui-semantic-button-migration.md)

@@ -129,6 +129,8 @@
 - 2026-09-05：P2 UI 资源卡片壳层复用：内置工具、技能和 MCP 服务器共享可展开卡片、键盘激活、右键菜单生命周期与卡片结构样式；业务 renderer 继续由各自组件持有（ADR 0080）。
 - 2026-09-05：P2 UI 声波条动画原语复用：LoadingState 与 RecordingIndicator 共享 VoiceBars，业务状态和生命周期仍由各自组件持有（ADR 0081）。
 - 2026-09-05：P1 后端删除已完成拆分后的 `bg` facade、测试专用 `upgrade_tool_rounds` 快照空字段和 memory text-only keyword facade；统一使用当前模块与 typed recall 入口，不改变持久化或 IPC 契约（ADR 0082）。
+- 2026-09-05：P2 UI 表单字段与弹窗操作复用：MCP 表单使用 MaterialField，API Key、回退确认、日期选择器和 MCP 弹窗 footer 复用 MaterialButton（ADR 0083）。
+- 2026-09-05：P2 UI 语义化按钮迁移：工具、任务、记忆、设置、异步状态和懒加载失败态按主要、次要、低强调与危险语义复用 MaterialButton，保留 Tab、列表行、日历和安全确认等专用按钮（ADR 0084）。
 
 ## 完成标准
 

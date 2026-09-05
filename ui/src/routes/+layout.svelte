@@ -41,6 +41,7 @@
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
 	import WorkspaceStatus from '$lib/WorkspaceStatus.svelte';
 
@@ -978,11 +979,11 @@
 							{:else if lazyViewStates.tools === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>工具页面暂时无法加载</span>
-									<button
-										class="md-btn md-btn--outlined"
-										type="button"
-										onclick={() => retryTabView('tools')}>重试</button
-									>
+									<MaterialButton
+										variant="outlined"
+										label="重试"
+										onclick={() => retryTabView('tools')}
+									/>
 								</div>
 							{:else}
 								<LoadingState label="正在加载工具…" detail="正在准备工具列表" />
@@ -1009,11 +1010,11 @@
 							{:else if lazyViewStates.tasks === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>任务中心暂时无法加载</span>
-									<button
-										class="md-btn md-btn--outlined"
-										type="button"
-										onclick={() => retryTabView('tasks')}>重试</button
-									>
+									<MaterialButton
+										variant="outlined"
+										label="重试"
+										onclick={() => retryTabView('tasks')}
+									/>
 								</div>
 							{:else}
 								<LoadingState label="正在加载任务中心…" detail="正在准备任务列表" />
@@ -1026,11 +1027,11 @@
 							{:else if lazyViewStates.memory === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>记忆页面暂时无法加载</span>
-									<button
-										class="md-btn md-btn--outlined"
-										type="button"
-										onclick={() => retryTabView('memory')}>重试</button
-									>
+									<MaterialButton
+										variant="outlined"
+										label="重试"
+										onclick={() => retryTabView('memory')}
+									/>
 								</div>
 							{:else}
 								<LoadingState label="正在加载记忆…" detail="正在准备记忆中心" />
@@ -1043,11 +1044,11 @@
 							{:else if lazyViewStates.settings === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>设置页面暂时无法加载</span>
-									<button
-										class="md-btn md-btn--outlined"
-										type="button"
-										onclick={() => retryTabView('settings')}>重试</button
-									>
+									<MaterialButton
+										variant="outlined"
+										label="重试"
+										onclick={() => retryTabView('settings')}
+									/>
 								</div>
 							{:else}
 								<LoadingState label="正在加载设置…" detail="正在准备设置页面" />

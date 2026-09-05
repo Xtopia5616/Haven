@@ -1,5 +1,6 @@
 <script>
 	import LoadingState from './LoadingState.svelte';
+	import MaterialButton from './MaterialButton.svelte';
 
 	let {
 		state = 'empty',
@@ -24,11 +25,9 @@
 		<span class="async-state__icon" aria-hidden="true">{icons[state] || '•'}</span>
 		<h2>{title}</h2>
 		{#if message}<p>{message}</p>{/if}
-		{#if actionLabel}<button
-				class="md-btn md-btn--filled"
-				type="button"
-				onclick={() => onAction?.()}>{actionLabel}</button
-			>{/if}
+		{#if actionLabel}
+			<MaterialButton variant="filled" label={actionLabel} onclick={() => onAction?.()} />
+		{/if}
 	</section>
 {/if}
 

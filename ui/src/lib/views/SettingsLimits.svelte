@@ -1,5 +1,6 @@
 <script>
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.js';
 
@@ -430,13 +431,15 @@
 		<p class="limits-legend">
 			红色边框为<b>危险项</b>：调大会扩大内存 / 成本 / 攻击面，默认排在每组底部，可折叠。
 		</p>
-		<button
-			class="md-btn md-btn--text limit-toggle-all"
+		<MaterialButton
+			variant="text"
+			className="limit-toggle-all"
+			ariaLabel={allLimitDangerOpen ? '折叠全部危险项' : '展开全部危险项'}
+			ariaExpanded={allLimitDangerOpen}
 			onclick={() => setAllLimitDanger(!allLimitDangerOpen)}
-			aria-expanded={allLimitDangerOpen}
 		>
-			<span class="limit-danger-caret" aria-hidden="true"
-				><svg
+			<span class="limit-danger-caret" aria-hidden="true">
+				<svg
 					width="12"
 					height="12"
 					viewBox="0 0 24 24"
@@ -444,11 +447,13 @@
 					stroke="currentColor"
 					stroke-width="2.5"
 					stroke-linecap="round"
-					stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
-				></span
-			>
-			{allLimitDangerOpen ? '折叠全部危险项' : '展开全部危险项'}
-		</button>
+					stroke-linejoin="round"
+				>
+					<polyline points="6 9 12 15 18 9" />
+				</svg>
+			</span>
+			<span>{allLimitDangerOpen ? '折叠全部危险项' : '展开全部危险项'}</span>
+		</MaterialButton>
 	</div>
 	<div class="limits-grid">
 		{#each limitViews as group}
@@ -584,12 +589,12 @@
 		color: var(--md-sys-color-error, #ba1a1a);
 		transition: transform 0.15s ease;
 	}
-	.limit-toggle-all {
+	:global(.limit-toggle-all) {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
 	}
-	.limit-toggle-all[aria-expanded='false'] .limit-danger-caret {
+	:global(.limit-toggle-all[aria-expanded='false'] .limit-danger-caret) {
 		transform: rotate(-90deg);
 	}
 	.limit-danger-count {

@@ -4,6 +4,7 @@
 	 * IPC; this component only presents task lifecycle and emits user intent.
 	 */
 	import AsyncState from '$lib/AsyncState.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
 
 	let {
@@ -112,9 +113,7 @@
 			<h1 id="task-center-title">任务中心</h1>
 			<p>统一查看会话、后台任务、定时任务和已完成记录。</p>
 		</div>
-		<button class="md-btn md-btn--outlined" type="button" onclick={() => onNewSession?.()}
-			>新建会话</button
-		>
+		<MaterialButton variant="outlined" label="新建会话" onclick={() => onNewSession?.()} />
 	</header>
 
 	<div class="task-toolbar md-toolbar" role="search">
@@ -138,9 +137,7 @@
 			<span class="task-empty-icon" aria-hidden="true">✓</span>
 			<h2>暂无任务</h2>
 			<p>发起一段对话或安排定时任务后，进度和结果会显示在这里。</p>
-			<button class="md-btn md-btn--filled" type="button" onclick={() => onNewSession?.()}
-				>开始新会话</button
-			>
+			<MaterialButton variant="filled" label="开始新会话" onclick={() => onNewSession?.()} />
 		</div>
 	{:else if filteredRows.length === 0}
 		<AsyncState
@@ -230,29 +227,35 @@
 								detail.errorReason ||
 								detail.error}</pre>{/if}
 					<div class="task-actions">
-						{#if selectedRow.sessionId}<button
-								class="md-btn md-btn--outlined"
-								type="button"
+						{#if selectedRow.sessionId}
+							<MaterialButton
+								variant="outlined"
+								label="打开来源会话"
 								onclick={() => onOpenSession?.(selectedRow.sessionId)}
-								>打开来源会话</button
-							>{/if}
-						{#if selectedRow.kind === 'background' && detail.status === 'running'}<button
-								class="md-btn md-btn--danger"
-								type="button"
+							/>
+						{/if}
+						{#if selectedRow.kind === 'background' && detail.status === 'running'}
+							<MaterialButton
+								variant="danger"
+								label="停止任务"
 								onclick={() => onCancel?.(selectedRow.id, 'background')}
-								>停止任务</button
-							>{/if}
-						{#if selectedRow.kind === 'scheduled'}<button
-								class="md-btn md-btn--danger"
-								type="button"
+							/>
+						{/if}
+						{#if selectedRow.kind === 'scheduled'}
+							<MaterialButton
+								variant="danger"
+								label="取消定时任务"
 								onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
-								>取消定时任务</button
-							>{/if}
-						{#if selectedRow.kind !== 'foreground' && selectedRow.status !== 'running'}<button
-								class="md-btn md-btn--text task-delete"
-								type="button"
-								onclick={() => onDeleteHistory?.(selectedRow.id)}>删除记录</button
-							>{/if}
+							/>
+						{/if}
+						{#if selectedRow.kind !== 'foreground' && selectedRow.status !== 'running'}
+							<MaterialButton
+								variant="text"
+								className="task-delete"
+								label="删除记录"
+								onclick={() => onDeleteHistory?.(selectedRow.id)}
+							/>
+						{/if}
 					</div>
 				</article>
 			{/if}
@@ -468,13 +471,13 @@
 		margin-top: var(--md-sys-space-xl);
 		min-width: 0;
 	}
-	.task-actions .md-btn {
+	.task-actions :global(.md-btn) {
 		min-width: 0;
 		max-width: 100%;
 		white-space: normal;
 		overflow-wrap: anywhere;
 	}
-	.task-delete {
+	:global(.task-delete) {
 		color: var(--md-sys-color-error);
 	}
 	.task-empty {
@@ -536,7 +539,7 @@
 			flex-direction: column;
 			align-items: stretch;
 		}
-		.task-actions .md-btn {
+		.task-actions :global(.md-btn) {
 			width: 100%;
 		}
 	}
@@ -567,7 +570,7 @@
 		.task-search {
 			flex: 0 1 auto;
 		}
-		.task-heading .md-btn {
+		.task-heading :global(.md-btn) {
 			width: 100%;
 		}
 	}

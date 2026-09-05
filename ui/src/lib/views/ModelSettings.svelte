@@ -4,6 +4,7 @@
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
@@ -373,13 +374,17 @@
 		<div class="llm-head">
 			<h2>模型配置</h2>
 			<div class="llm-head-actions">
-				<button
-					class="md-btn md-btn--outlined"
+				<MaterialButton
+					variant="outlined"
+					label={refreshingAll ? '刷新中…' : '刷新模型列表'}
 					onclick={() => refreshAllModels()}
-					disabled={refreshingAll}>{refreshingAll ? '刷新中…' : '刷新模型列表'}</button
-				><button class="md-btn md-btn--outlined" onclick={startAddProvider}
-					>添加 Provider</button
-				>
+					disabled={refreshingAll}
+				/>
+				<MaterialButton
+					variant="outlined"
+					label="添加 Provider"
+					onclick={startAddProvider}
+				/>
 			</div>
 		</div>
 		<p class="model-hint">
@@ -408,16 +413,24 @@
 								>{/if}
 						</div>
 						<div class="provider-actions">
-							<button
-								class="md-btn md-btn--xs md-btn--outlined"
-								onclick={() => refreshProviderModels(provider.name)}>刷新</button
-							><button
-								class="md-btn md-btn--xs md-btn--outlined"
-								onclick={() => startEditProvider(idx)}>编辑</button
-							><button
-								class="md-btn md-btn--xs md-btn--outlined"
-								onclick={() => deleteProvider(idx)}>删除</button
-							>
+							<MaterialButton
+								variant="outlined"
+								className="md-btn--xs"
+								label="刷新"
+								onclick={() => refreshProviderModels(provider.name)}
+							/>
+							<MaterialButton
+								variant="outlined"
+								className="md-btn--xs"
+								label="编辑"
+								onclick={() => startEditProvider(idx)}
+							/>
+							<MaterialButton
+								variant="outlined"
+								className="md-btn--xs"
+								label="删除"
+								onclick={() => deleteProvider(idx)}
+							/>
 						</div>
 					</div>{/each}
 			</div>{/if}
@@ -622,12 +635,16 @@
 				</div>
 			</div>
 		{/snippet}
-		{#snippet footer()}<button
-				class="md-btn"
+		{#snippet footer()}
+			<MaterialButton
+				variant="text"
+				label="取消"
 				onclick={() => {
 					providerDialog = { idx: null, form: null };
-				}}>取消</button
-			><button class="md-btn md-btn--filled" onclick={saveProvider}>保存</button>{/snippet}
+				}}
+			/>
+			<MaterialButton variant="filled" label="保存" onclick={saveProvider} />
+		{/snippet}
 	</MaterialDialog>
 {/if}
 
@@ -832,7 +849,7 @@
 		.llm-head-actions {
 			width: 100%;
 		}
-		.llm-head-actions .md-btn {
+		.llm-head-actions :global(.md-btn) {
 			flex: 1 1 auto;
 		}
 		.picker-card {

@@ -18,4 +18,16 @@ describe('MaterialButton', () => {
 		await fireEvent.click(button);
 		expect(onclick).toHaveBeenCalledTimes(1);
 	});
+
+	it('forwards disclosure semantics', () => {
+		render(MaterialButton, {
+			variant: 'text' as const,
+			label: '展开危险项',
+			ariaExpanded: true,
+		} as any);
+
+		expect(
+			screen.getByRole('button', { name: '展开危险项' }).getAttribute('aria-expanded'),
+		).toBe('true');
+	});
 });

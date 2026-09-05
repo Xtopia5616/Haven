@@ -1,5 +1,6 @@
 <script>
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 
@@ -60,11 +61,13 @@
 				options={statusOptions}
 				onChange={handleStatusChange}
 			/>
-			<button class="md-btn md-btn--outlined" onclick={() => onOpenDateFilter()}
-				>{#if startDate || endDate}日期：{startDate ? startDate.replace(/-/g, '/') : '…'} ~ {endDate
-						? endDate.replace(/-/g, '/')
-						: '…'}{:else}日期筛选{/if}</button
-			>
+			<MaterialButton
+				variant="outlined"
+				label={startDate || endDate
+					? `日期：${startDate ? startDate.replace(/-/g, '/') : '…'} ~ ${endDate ? endDate.replace(/-/g, '/') : '…'}`
+					: '日期筛选'}
+				onclick={() => onOpenDateFilter()}
+			/>
 		</div>
 	</div>
 
@@ -195,13 +198,14 @@
 							<div class="session-meta">
 								<span class="meta-date"
 									>{formatMessageTime(session.created_at)}</span
-								><button
-									class="md-btn md-btn--xs md-btn--text delete-btn-meta"
-									onclick={(event) => {
-										event.stopPropagation();
+								><MaterialButton
+									variant="text"
+									className="md-btn--xs delete-btn-meta"
+									label="删除"
+									onclick={() => {
 										onDeleteRequest(session);
-									}}>删除</button
-								>
+									}}
+								/>
 							</div>
 						</div>
 					</div>
@@ -209,11 +213,12 @@
 			{/each}
 		</div>
 		{#if hasMore}<div class="load-more-row">
-				<button
-					class="md-btn md-btn--outlined"
+				<MaterialButton
+					variant="outlined"
+					label={loading ? '加载中…' : '加载更多'}
 					onclick={() => onLoadMore()}
-					disabled={loading}>{loading ? '加载中…' : '加载更多'}</button
-				>
+					disabled={loading}
+				/>
 			</div>{/if}
 	{/if}
 </div>
@@ -244,7 +249,7 @@
 		width: 140px;
 		flex-shrink: 0;
 	}
-	.filter-controls .md-btn--outlined {
+	.filter-controls :global(.md-btn--outlined) {
 		width: 120px;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -371,7 +376,7 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	.delete-btn-meta {
+	:global(.delete-btn-meta) {
 		margin-left: auto;
 	}
 	.session-item-btn {
@@ -424,7 +429,7 @@
 			flex: none;
 		}
 		.filter-controls :global(.md-select-container),
-		.filter-controls .md-btn--outlined {
+		.filter-controls :global(.md-btn--outlined) {
 			width: 100%;
 		}
 		.session-item-main {

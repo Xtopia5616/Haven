@@ -9,6 +9,7 @@
 	 */
 	import ConversationEmptyState from './ConversationEmptyState.svelte';
 	import LoadingState from './LoadingState.svelte';
+	import MaterialButton from './MaterialButton.svelte';
 
 	let { messages = [], loading = false, ...restProps } = $props();
 	/** @type {any} */
@@ -53,7 +54,7 @@
 {:else if timelineLoadState === 'error'}
 	<div class="timeline-placeholder" role="alert">
 		<span>会话内容暂时无法加载</span>
-		<button class="md-btn md-btn--outlined" type="button" onclick={retryTimeline}>重试</button>
+		<MaterialButton variant="outlined" label="重试" onclick={retryTimeline} />
 	</div>
 {:else}
 	<LoadingState label="正在加载会话…" detail="正在准备消息视图" variant="inline" />
