@@ -85,14 +85,14 @@ logger.error('+layout', 'get_settings error', e);
 - 上下文优先用 **tracing 结构化字段**（`session_id = %id`），便于 grep；存量文本内联 ID（`session {}`）保留，新增/修改优先结构化字段。
 - 禁止为打日志而改变函数签名；拿不到 ID 时依赖所在并发边界的 span。
 
-**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`logging.rs`，经 `commands` 再导出），固定输出两行：
+**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`logging.rs`，经 `commands` 再导出），固定输出两行。`{safe_message}` 是单行、限长、已脱敏的公开/日志文本，原始 `Display` 字符串不得跨过该边界：
 
 ```text
 command `{ctx}` failed
-command error: {e}
+command error: {safe_message}
 ```
 
-保留 `command error:` 前缀行是为了让日志采集可稳定 grep。禁止手写 `map_err(|e| e.to_string())` 而不记录日志。
+保留 `command error:` 前缀行是为了让日志采集可稳定 grep。禁止手写 `map_err(|e| e.to_string())` 而不记录日志，也禁止在事件、通知或命令返回值中绕过脱敏辅助函数。
 
 **Panic**：全局 panic hook 已设置，自动输出 `PANIC at {file}:{line}: {msg}` + backtrace；业务代码无需自行处理 panic。
 

@@ -10,7 +10,7 @@
 - `tauri.ts::invoke` 在 IPC 边界记录一次命令失败；已记录的错误由页面 catch 通过 `log: false` 只补用户反馈，避免重复 ERROR。
 - `addNotification` 使用 `NotificationType` 和按语义统一的默认时长（info 3s、success 3s、warning 4s、error 5s）。错误 toast 统一使用 `alert` 语义、48px 最小高度和可换行文本。
 - 根布局注册 `error` 与 `unhandledrejection` 兜底处理，日志上下文固定为 `global`，只显示不泄露内部细节的通用提示。
-- 后端 `log_err` 保留稳定的两行消息前缀，同时增加 `command` / `error` 结构化字段；命令共享辅助路径的失败也必须通过该入口。
+- 后端 `log_err` 保留稳定的两行消息前缀，同时增加 `command` / `error` 结构化字段；返回值和日志字段均使用单行、限长、已脱敏文本，命令共享辅助路径的失败也必须通过该入口。
 
 ## 替代方案
 
