@@ -386,12 +386,18 @@ impl McpClient {
     pub async fn connect(&self) -> anyhow::Result<()> {
         *self.status.lock().await = McpClientStatus::Connecting;
         *self.last_diagnostic.lock().await = None;
+        // A new connection must repopulate this cache from the new server.
+        // Keeping entries from a previous transport would expose tools that
+        // were never confirmed on the current session.
+        *self.tools_cache.lock().await = None;
         let result = self.connect_inner().await;
         if let Err(e) = &result {
-            *self.last_diagnostic.lock().await = Some(format!(
+            let message = format!(
                 "connect failed: {}",
                 haven_common::error::sanitize_error_text(&e.to_string())
-            ));
+            );
+            *self.last_diagnostic.lock().await = Some(message.clone());
+            *self.status.lock().await = McpClientStatus::Offline { error: message };
         }
         result
     }
@@ -480,8 +486,6 @@ impl McpClient {
             );
         }
 
-        *self.status.lock().await = McpClientStatus::Connected;
-
         // Cache tools after successful connection. A successful handshake
         // with zero tools is suspicious (often a client/server SDK protocol
         // mismatch rather than an empty server), so record a diagnostic that
@@ -497,13 +501,20 @@ impl McpClient {
                 }
             }
             Err(e) => {
-                *self.last_diagnostic.lock().await = Some(format!(
-                    "connected, but tools/list failed: {}",
+                let message = format!(
+                    "tools/list failed after handshake: {}",
                     haven_common::error::sanitize_error_text(&e.to_string())
-                ));
+                );
+                *self.tools_cache.lock().await = None;
+                *self.last_diagnostic.lock().await = Some(message.clone());
+                *self.status.lock().await = McpClientStatus::Offline {
+                    error: message.clone(),
+                };
+                anyhow::bail!(message);
             }
         }
 
+        *self.status.lock().await = McpClientStatus::Connected;
         *self.last_error.lock().await = None;
         *self.last_seen_at.lock().await = Some(chrono::Utc::now().timestamp());
 
@@ -595,11 +606,16 @@ impl McpClient {
                             // Refresh tools cache
                             match self.list_tools().await {
                                 Ok(tools) => *self.tools_cache.lock().await = Some(tools),
-                                Err(error) => tracing::warn!(
-                                    "MCP server '{}' tools/list refresh failed: {}",
-                                    self.name,
-                                    haven_common::error::sanitize_error_text(&error.to_string())
-                                ),
+                                Err(error) => {
+                                    *self.tools_cache.lock().await = None;
+                                    tracing::error!(
+                                        "MCP server '{}' tools/list refresh failed; cache cleared: {}",
+                                        self.name,
+                                        haven_common::error::sanitize_error_text(
+                                            &error.to_string()
+                                        )
+                                    );
+                                }
                             }
                         }
                     }
@@ -717,17 +733,6 @@ impl McpClient {
             tracing::warn!("MCP reconnect: shutdown of previous session failed: {}", e);
         }
         self.connect().await?;
-
-        // Refresh tools cache
-        match self.list_tools().await {
-            Ok(tools) => *self.tools_cache.lock().await = Some(tools),
-            Err(e) => {
-                tracing::warn!(
-                    "MCP reconnect: list_tools failed, tool cache stays stale: {}",
-                    e
-                );
-            }
-        }
 
         *self.last_error.lock().await = None;
         *self.last_seen_at.lock().await = Some(chrono::Utc::now().timestamp());

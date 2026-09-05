@@ -24,7 +24,7 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         state: &mut ReActState,
-    ) -> bool {
+    ) -> anyhow::Result<bool> {
         let batch = self
             .context_source
             .assemble_turn_start_context(&ctx.session_id)
@@ -40,7 +40,7 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         state: &mut ReActState,
-    ) -> bool {
+    ) -> anyhow::Result<bool> {
         let batch = self
             .context_source
             .drain_local_context(&ctx.session_id)
@@ -57,7 +57,7 @@ impl ReActEngine {
             clears_ask,
             inbox_claim,
         }: PendingContextBatch,
-    ) -> bool {
+    ) -> anyhow::Result<bool> {
         if clears_ask {
             self.executor
                 .clear_awaiting_answer_persisted(&ctx.session_id)
@@ -81,7 +81,7 @@ impl ReActEngine {
                 .as_ref()
                 .is_some_and(|message_id| !applied_message_ids.insert(message_id.clone()));
             if !already_applied {
-                self.apply_pending_context(ctx, state, item).await;
+                self.apply_pending_context(ctx, state, item).await?;
                 injected = true;
             }
         }
@@ -100,7 +100,7 @@ impl ReActEngine {
             }
         }
 
-        injected
+        Ok(injected)
     }
 
     async fn apply_pending_context(
@@ -108,7 +108,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         state: &mut ReActState,
         context: PendingContext,
-    ) {
+    ) -> anyhow::Result<()> {
         self.apply_transcript(
             ctx,
             TranscriptEvent::UserInject {
@@ -119,7 +119,8 @@ impl ReActEngine {
             },
             state,
         )
-        .await;
+        .await?;
+        Ok(())
     }
 }
 
@@ -275,6 +276,7 @@ mod pending_context_tests {
             !engine
                 .apply_pending_context_batch(&ctx, &mut state, batch)
                 .await
+                .unwrap()
         );
         assert_eq!(state.events.len(), 1);
     }

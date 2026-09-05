@@ -197,23 +197,28 @@ pub struct AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
-    pub fn new(endpoint: ModelEndpoint) -> Self {
-        let client = build_client(&endpoint);
+    pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
+        let client = build_client(&endpoint)?;
         let web_search_mode = resolve_web_search_mode(&endpoint);
-        Self {
+        Ok(Self {
             endpoint,
             client,
             web_search_mode,
-        }
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new(endpoint: ModelEndpoint) -> Self {
+        Self::try_new(endpoint).expect("valid test endpoint")
     }
 
     /// Anthropic authenticates with `x-api-key` (no Bearer prefix). If the
     /// user customized `auth_header_name`/`auth_header_prefix`, respect the
     /// custom scheme instead (for proxies that expect `Authorization: Bearer …`).
-    fn build_headers(&self) -> HeaderMap {
-        let mut headers = build_headers(&self.endpoint, "x-api-key", false);
+    fn build_headers(&self) -> Result<HeaderMap, LlmError> {
+        let mut headers = build_headers(&self.endpoint, "x-api-key", false)?;
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-        headers
+        Ok(headers)
     }
 
     fn messages_url(&self) -> String {
@@ -895,7 +900,7 @@ impl AnthropicAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
@@ -955,7 +960,7 @@ impl AnthropicAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(&body);
         // For streaming, only apply an HTTP-level timeout when explicitly configured.
         // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
@@ -1000,7 +1005,7 @@ impl AnthropicAdapter {
         }
 
         struct UnfoldState {
-            rx: mpsc::UnboundedReceiver<String>,
+            rx: mpsc::UnboundedReceiver<Result<String, LlmError>>,
             done: bool,
             /// Per-content-block streaming state, indexed by Anthropic block index.
             blocks: Vec<BlockState>,
@@ -1038,7 +1043,11 @@ impl AnthropicAdapter {
                     return None;
                 }
                 let data = match state.rx.recv().await {
-                    Some(d) => d,
+                    Some(Ok(d)) => d,
+                    Some(Err(error)) => {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
                     None => {
                         // Open / unfinished tool_use blocks mean the stream
                         // died mid-arguments — treat as truncated.
@@ -1443,7 +1452,7 @@ impl LlmClient for AnthropicAdapter {
         health_check_request(
             &self.client,
             &self.models_url(),
-            self.build_headers(),
+            self.build_headers()?,
             self.endpoint.timeout_secs,
         )
         .await
@@ -1466,7 +1475,7 @@ mod tests {
             ..Default::default()
         };
         let client = AnthropicAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert_eq!(
             headers.get("x-api-key").unwrap().to_str().unwrap(),
             "sk-ant-test"
@@ -1488,7 +1497,7 @@ mod tests {
         };
         // "Bearer" is the default prefix, so it must still use x-api-key.
         let client = AnthropicAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert!(headers.get("x-api-key").is_some());
 
         let ep = ModelEndpoint {
@@ -1498,7 +1507,7 @@ mod tests {
             ..Default::default()
         };
         let client = AnthropicAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert!(headers.get("x-gateway-key").is_some());
         assert!(headers.get("x-api-key").is_none());
     }
@@ -1507,7 +1516,7 @@ mod tests {
     fn build_headers_empty_api_key_skips_auth() {
         let ep = ModelEndpoint::default();
         let client = AnthropicAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert!(headers.contains_key("content-type"));
         assert!(headers.get("x-api-key").is_none());
     }

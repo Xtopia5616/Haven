@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use futures_util::FutureExt;
 use futures_util::Stream;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
@@ -12,10 +11,10 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{
-    WebSearchMode, build_client, build_headers, chat_thinking_extras, health_check_request,
-    normalize_web_search_call_item, reasoning_tail, reasoning_text_from_thinking_blocks,
-    requires_reasoning_echo, resolve_web_search_mode, send_request, stream_header_timeout,
-    xai_search_mode,
+    LineMode, WebSearchMode, build_client, build_headers, chat_thinking_extras,
+    health_check_request, normalize_web_search_call_item, reasoning_tail,
+    reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
+    send_request, spawn_line_reader, stream_header_timeout, xai_search_mode,
 };
 use crate::client::LlmClient;
 #[cfg(test)]
@@ -362,23 +361,36 @@ const PROMPT_CACHE_KEY_ENABLED: u8 = 1;
 const PROMPT_CACHE_KEY_UNSUPPORTED: u8 = 2;
 
 impl OpenAiAdapter {
-    pub fn new(endpoint: ModelEndpoint) -> Self {
-        Self::new_with_style(endpoint, "openai-chat")
+    pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
+        Self::try_new_with_style(endpoint, "openai-chat")
     }
 
-    pub fn new_with_style(endpoint: ModelEndpoint, style: &'static str) -> Self {
-        let client = build_client(&endpoint);
+    pub fn try_new_with_style(
+        endpoint: ModelEndpoint,
+        style: &'static str,
+    ) -> Result<Self, LlmError> {
+        let client = build_client(&endpoint)?;
         let web_search_mode = resolve_web_search_mode(&endpoint);
-        Self {
+        Ok(Self {
             endpoint,
             client,
             style,
             web_search_mode,
             prompt_cache_key_state: AtomicU8::new(PROMPT_CACHE_KEY_UNKNOWN),
-        }
+        })
     }
 
-    fn build_headers(&self) -> HeaderMap {
+    #[cfg(test)]
+    pub fn new(endpoint: ModelEndpoint) -> Self {
+        Self::try_new(endpoint).expect("valid test endpoint")
+    }
+
+    #[cfg(test)]
+    pub fn new_with_style(endpoint: ModelEndpoint, style: &'static str) -> Self {
+        Self::try_new_with_style(endpoint, style).expect("valid test endpoint")
+    }
+
+    fn build_headers(&self) -> Result<HeaderMap, LlmError> {
         build_headers(&self.endpoint, "Authorization", true)
     }
 
@@ -932,7 +944,7 @@ impl OpenAiAdapter {
         let mut req = self
             .client
             .post(url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(body);
         if stream {
             if let Some(timeout) = self.endpoint.timeout_streaming_secs {
@@ -1057,78 +1069,7 @@ impl OpenAiAdapter {
         use tokio::sync::mpsc;
 
         let (chunk_tx, chunk_rx) = mpsc::unbounded_channel();
-        let byte_stream = resp.bytes_stream();
-
-        // Spawn a reader that buffers lines and handles both SSE (data: …)
-        // and raw-JSON-lines streaming formats in one pass.
-        tokio::spawn({
-            let tx = chunk_tx.clone();
-            async move {
-                let result = std::panic::AssertUnwindSafe(async {
-                    let mut buf = String::new();
-                    tokio::pin!(byte_stream);
-                    loop {
-                        let chunk = tokio::select! {
-                            biased;
-                            result = byte_stream.next() => result,
-                        };
-                        match chunk {
-                            Some(Ok(bytes)) => {
-                                buf.push_str(&String::from_utf8_lossy(&bytes));
-                                // Process all complete lines in the buffer.
-                                while let Some(newline) = buf.find('\n') {
-                                    let line = buf[..newline].trim().to_string();
-                                    buf.drain(..=newline);
-                                    if line.is_empty() || line.starts_with(':') {
-                                        continue; // SSE comment or blank line
-                                    }
-                                    // Strip SSE "data: " prefix if present; otherwise
-                                    // treat the raw line as JSON (non-standard providers).
-                                    let payload = if let Some(p) = line.strip_prefix("data: ") {
-                                        p.trim().to_string()
-                                    } else {
-                                        line
-                                    };
-                                    if payload == "[DONE]" || payload.is_empty() {
-                                        continue;
-                                    }
-                                    tracing::trace!(
-                                        "openai stream payload: {} chars",
-                                        payload.len()
-                                    );
-                                    // If the receiver was dropped (consumer cancelled
-                                    // or stream abandoned), stop reading the HTTP
-                                    // response body to avoid wasting bandwidth/CPU.
-                                    if tx.send(payload).is_err() {
-                                        return;
-                                    }
-                                }
-                            }
-                            Some(Err(_)) | None => {
-                                // Flush any remaining buffered data before EOF.
-                                let remaining = buf.trim().to_string();
-                                if !remaining.is_empty() && remaining != "[DONE]" {
-                                    tracing::trace!(
-                                        "openai stream flush: {} chars",
-                                        remaining.len()
-                                    );
-                                    let _ = tx.send(remaining);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                })
-                .catch_unwind()
-                .await;
-                if let Err(panic) = result {
-                    tracing::error!(
-                        "byte stream reader panicked: {:?}",
-                        panic.downcast_ref::<String>().unwrap_or(&"unknown".into())
-                    );
-                }
-            }
-        });
+        spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseOrRaw);
 
         // Merge streaming tool-call deltas by index. Arguments arrive as
         // incremental JSON fragments, so they accumulate as a raw string and
@@ -1165,7 +1106,7 @@ impl OpenAiAdapter {
         }
 
         struct UnfoldState {
-            rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+            rx: tokio::sync::mpsc::UnboundedReceiver<Result<String, LlmError>>,
             done: bool,
             accumulated_text: String,
             tool_calls_acc: Vec<(String, String, String)>,
@@ -1193,7 +1134,11 @@ impl OpenAiAdapter {
                     return None;
                 }
                 let data = match state.rx.recv().await {
-                    Some(d) => d,
+                    Some(Ok(d)) => d,
+                    Some(Err(error)) => {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
                     None => {
                         // Interrupted mid-tool-call (no finish_reason): empty
                         // args after a name, structural-only repair, or
@@ -1442,7 +1387,7 @@ impl LlmClient for OpenAiAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .multipart(form);
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
@@ -1466,7 +1411,7 @@ impl LlmClient for OpenAiAdapter {
     async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
         super::openai_compatible_embed(
             &self.client,
-            self.build_headers(),
+            self.build_headers()?,
             &super::openai_embeddings_url(&self.endpoint.base_url, false),
             &self.endpoint.model_name,
             self.endpoint.timeout_secs,
@@ -1480,7 +1425,7 @@ impl LlmClient for OpenAiAdapter {
         health_check_request(
             &self.client,
             &url,
-            self.build_headers(),
+            self.build_headers()?,
             self.endpoint.timeout_secs,
         )
         .await
@@ -1774,7 +1719,7 @@ mod tests {
             ..Default::default()
         };
         let client = OpenAiAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert!(headers.contains_key("x-api-key"));
         // Empty prefix must send the raw key — never `" sk-test"`.
         assert_eq!(
@@ -1801,7 +1746,7 @@ mod tests {
             ..Default::default()
         };
         let client = OpenAiAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         let val = headers.get("authorization").unwrap().to_str().unwrap();
         assert_eq!(val, "Bearer my-key");
     }
@@ -1814,7 +1759,7 @@ mod tests {
             ..Default::default()
         };
         let client = OpenAiAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         let val = headers.get("authorization").unwrap().to_str().unwrap();
         assert_eq!(val, "Token token123");
     }
@@ -1826,7 +1771,7 @@ mod tests {
             ..Default::default()
         };
         let client = OpenAiAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert!(headers.contains_key("content-type"));
         assert!(!headers.contains_key("authorization"));
     }
@@ -1835,7 +1780,7 @@ mod tests {
     fn build_headers_content_type_is_json() {
         let ep = ModelEndpoint::default();
         let client = OpenAiAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert_eq!(
             headers.get("content-type").unwrap().to_str().unwrap(),
             "application/json"

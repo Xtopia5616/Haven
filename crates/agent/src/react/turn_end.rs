@@ -83,7 +83,7 @@ impl ReActEngine {
                 },
                 state,
             )
-            .await;
+            .await?;
         } else if let Some(ref mid) = persist_text_id {
             // Search context already pushed the ToolCall event; still need the
             // messages projection when Thought did not land one.
@@ -95,13 +95,13 @@ impl ReActEngine {
                 None,
                 Some(mid),
             )
-            .await;
+            .await?;
         }
 
         // Inject AFTER the final so canonical/events order is final → injects.
         // Only local queues are drained here; the inbox was claimed once by
         // the turn-start assembly.
-        if self.inject_turn_end_context(ctx, state).await {
+        if self.inject_turn_end_context(ctx, state).await? {
             self.save_branch_point(&ctx.session_id, state, ctx.step_num, false)
                 .await;
             return Ok(TurnEndOutcome::Continue);

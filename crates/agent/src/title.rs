@@ -104,15 +104,15 @@ mod tests {
         });
         // Real OpenAiAdapter instances fill the other role slots so the
         // router can dispatch them if a test exercises those paths.
-        let default_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
-            haven_common::config::ModelEndpoint::default(),
-        ));
-        let image_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
-            haven_common::config::ModelEndpoint::default(),
-        ));
-        let audio_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
-            haven_common::config::ModelEndpoint::default(),
-        ));
+        let default_client: Arc<dyn LlmClient> = Arc::new(
+            OpenAiAdapter::try_new(haven_common::config::ModelEndpoint::default()).unwrap(),
+        );
+        let image_client: Arc<dyn LlmClient> = Arc::new(
+            OpenAiAdapter::try_new(haven_common::config::ModelEndpoint::default()).unwrap(),
+        );
+        let audio_client: Arc<dyn LlmClient> = Arc::new(
+            OpenAiAdapter::try_new(haven_common::config::ModelEndpoint::default()).unwrap(),
+        );
         let router = Arc::new(LlmRouter::new_with_clients(
             mock.clone(),
             default_client,

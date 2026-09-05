@@ -351,19 +351,24 @@ const DEVELOPER_INPUT_UNKNOWN: u8 = 0;
 const DEVELOPER_INPUT_UNSUPPORTED: u8 = 1;
 
 impl OpenAiResponsesAdapter {
-    pub fn new(endpoint: ModelEndpoint) -> Self {
-        let client = build_client(&endpoint);
+    pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
+        let client = build_client(&endpoint)?;
         let web_search_mode = resolve_web_search_mode(&endpoint);
-        Self {
+        Ok(Self {
             endpoint,
             client,
             web_search_mode,
             prompt_cache_key_state: AtomicU8::new(PROMPT_CACHE_KEY_UNKNOWN),
             developer_input_state: AtomicU8::new(DEVELOPER_INPUT_UNKNOWN),
-        }
+        })
     }
 
-    fn build_headers(&self) -> HeaderMap {
+    #[cfg(test)]
+    pub fn new(endpoint: ModelEndpoint) -> Self {
+        Self::try_new(endpoint).expect("valid test endpoint")
+    }
+
+    fn build_headers(&self) -> Result<HeaderMap, LlmError> {
         build_headers(&self.endpoint, "Authorization", true)
     }
 
@@ -976,7 +981,7 @@ impl OpenAiResponsesAdapter {
         let mut req = self
             .client
             .post(url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(body);
         if stream {
             if let Some(timeout) = self.endpoint.timeout_streaming_secs {
@@ -1194,7 +1199,7 @@ impl OpenAiResponsesAdapter {
         spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseDataOnly);
 
         struct UnfoldState {
-            rx: mpsc::UnboundedReceiver<String>,
+            rx: mpsc::UnboundedReceiver<Result<String, LlmError>>,
             done: bool,
             /// Function calls accumulated per item id; flushed in the final
             /// chunk. Tuple: (lookup key for argument deltas, resolved call
@@ -1235,7 +1240,11 @@ impl OpenAiResponsesAdapter {
                     return None;
                 }
                 let data = match state.rx.recv().await {
-                    Some(d) => d,
+                    Some(Ok(d)) => d,
+                    Some(Err(error)) => {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
                     None => {
                         let unfinished_tools = state.tool_calls.iter().any(|(_, _, name, args)| {
                             CanonicalToolCall::stream_tool_args_unfinished(name, args)
@@ -1616,7 +1625,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         // `/v1/embeddings` path (OpenAI, DeepSeek, and most gateways).
         super::openai_compatible_embed(
             &self.client,
-            self.build_headers(),
+            self.build_headers()?,
             &super::openai_embeddings_url(&self.endpoint.base_url, true),
             &self.endpoint.model_name,
             self.endpoint.timeout_secs,
@@ -1635,7 +1644,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         health_check_request(
             &self.client,
             &url,
-            self.build_headers(),
+            self.build_headers()?,
             self.endpoint.timeout_secs,
         )
         .await
@@ -2439,7 +2448,7 @@ mod tests {
             ..Default::default()
         };
         let client = OpenAiResponsesAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         let val = headers.get("authorization").unwrap().to_str().unwrap();
         assert_eq!(val, "Bearer sk-test");
     }

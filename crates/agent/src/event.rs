@@ -824,7 +824,7 @@ impl EventDispatcher {
         run_id: u64,
         message_id: &str,
         db: &Arc<Database>,
-    ) {
+    ) -> anyhow::Result<()> {
         tracing::debug!(
             "emit_thought: session={} step={} run={} msg={} thought_len={}",
             session_id,
@@ -841,19 +841,11 @@ impl EventDispatcher {
         let sid = session_id.to_string();
         let mid = message_id.to_string();
         let step = step_number;
-        let _ = db
-            .run_blocking(move |db| {
-                if let Err(e) = db.create_thought_step(&sid, step as i32, &mid) {
-                    tracing::warn!(
-                        "create_thought_step failed (session={} step={}): {}",
-                        sid,
-                        step,
-                        e
-                    );
-                }
-                Ok::<(), anyhow::Error>(())
-            })
-            .await;
+        db.run_blocking(move |db| {
+            db.create_thought_step(&sid, step as i32, &mid)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?;
         emitter
             .emit(AgentEvent::Thought {
                 session_id: session_id.into(),
@@ -863,6 +855,7 @@ impl EventDispatcher {
                 message_id: message_id.into(),
             })
             .await;
+        Ok(())
     }
 
     pub async fn emit_compaction_from(
@@ -1253,8 +1246,11 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_event_test_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
+        let session = db.create_session("t", "").unwrap();
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
-        EventDispatcher::emit_thought_from(&bus_dyn, "t", "hello", 1, 1, "msg-t-1", &db).await;
+        EventDispatcher::emit_thought_from(&bus_dyn, &session.id, "hello", 1, 1, "msg-t-1", &db)
+            .await
+            .unwrap();
         assert_eq!(collector.events.lock().unwrap().len(), 1);
         assert!(matches!(
             collector.events.lock().unwrap()[0],

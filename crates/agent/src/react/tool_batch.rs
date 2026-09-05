@@ -46,10 +46,11 @@ impl ToolBatchState {
         ctx: &StepCtx,
         results: ToolBatchResults,
         state: &mut ReActState,
-    ) {
+    ) -> anyhow::Result<()> {
         for result in results.into_ordered() {
-            self.commit_tool_result(engine, ctx, result, state).await;
+            self.commit_tool_result(engine, ctx, result, state).await?;
         }
+        Ok(())
     }
 
     pub(super) async fn commit_tool_result(
@@ -58,7 +59,7 @@ impl ToolBatchState {
         ctx: &StepCtx,
         result: CompletedTool,
         state: &mut ReActState,
-    ) {
+    ) -> anyhow::Result<()> {
         let CompletedTool {
             action,
             tool_name,
@@ -132,7 +133,8 @@ impl ToolBatchState {
                 },
                 state,
             )
-            .await;
+            .await?;
+        Ok(())
     }
 }
 

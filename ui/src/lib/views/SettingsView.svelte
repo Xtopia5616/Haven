@@ -46,7 +46,7 @@
 	let autostartEnabled = $state(false);
 	let defaultShell = $state('powershell');
 	/** @type {Record<string, boolean>} */
-	let shellAvailable = $state({ cmd: true, powershell: true, pwsh: true });
+	let shellAvailable = $state({ cmd: false, powershell: false, pwsh: false });
 	let audio = $state({
 		sample_rate: 16000,
 		channels: 1,
@@ -181,8 +181,9 @@
 				shellAvailable[shell] = !!parseShellAvailability(
 					await invoke('check_shell_available', { shell }),
 				)?.available;
-			} catch {
-				shellAvailable[shell] = true;
+			} catch (e) {
+				shellAvailable[shell] = false;
+				logger.warn('SettingsView', `check_shell_available ${shell} failed`, formatError(e));
 			}
 		}
 	}

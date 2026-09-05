@@ -145,8 +145,8 @@ impl ReActEngine {
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
         message_id: Option<&str>,
-    ) {
-        let result = crate::persist_session_message(
+    ) -> anyhow::Result<()> {
+        let msg = crate::persist_session_message(
             &self.executor,
             session_id,
             role,
@@ -158,21 +158,9 @@ impl ReActEngine {
             tool_call_id,
         )
         .instrument(tracing::info_span!("project", session_id, role))
-        .await;
-        match result {
-            Ok(msg) => {
-                self.note_last_msg_at(session_id, Some(msg.created_at));
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "ReAct: failed to project {} message for session {} (type={:?}): {}",
-                    role,
-                    session_id,
-                    message_type,
-                    e
-                );
-            }
-        }
+        .await?;
+        self.note_last_msg_at(session_id, Some(msg.created_at));
+        Ok(())
     }
 
     /// Recovery-only alias used by `persist_partial_on_error` (intentionally
@@ -186,15 +174,25 @@ impl ReActEngine {
         tool_call_id: Option<&str>,
         message_id: Option<&str>,
     ) {
-        self.project_chat_message(
-            session_id,
-            role,
-            content,
-            message_type,
-            tool_call_id,
-            message_id,
-        )
-        .await;
+        if let Err(error) = self
+            .project_chat_message(
+                session_id,
+                role,
+                content,
+                message_type,
+                tool_call_id,
+                message_id,
+            )
+            .await
+        {
+            tracing::error!(
+                session_id,
+                role,
+                message_type = ?message_type,
+                error = %error,
+                "failed to persist recovery-only session message"
+            );
+        }
     }
 
     /// Persist a compaction summary into episodic long-term memory
@@ -632,7 +630,7 @@ impl ReActEngine {
             )
             .await;
             error_partial_message_ids.push(message_id.clone());
-            EventDispatcher::emit_thought_from(
+            if let Err(error) = EventDispatcher::emit_thought_from(
                 &ctx.emitter,
                 &ctx.session_id,
                 text,
@@ -641,7 +639,15 @@ impl ReActEngine {
                 &message_id,
                 &self.db,
             )
-            .await;
+            .await
+            {
+                tracing::error!(
+                    session_id = %ctx.session_id,
+                    step = ctx.step_num,
+                    error = %error,
+                    "failed to project recovery thought step"
+                );
+            }
         }
         // The branch-point snapshot above is intentionally written before the
         // recovery-only rows. Mark this follow-up write even when no visible

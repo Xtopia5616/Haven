@@ -131,6 +131,7 @@
 - 2026-09-05：P1 后端删除已完成拆分后的 `bg` facade、测试专用 `upgrade_tool_rounds` 快照空字段和 memory text-only keyword facade；统一使用当前模块与 typed recall 入口，不改变持久化或 IPC 契约（ADR 0082）。
 - 2026-09-05：P2 UI 表单字段与弹窗操作复用：MCP 表单使用 MaterialField，API Key、回退确认、日期选择器和 MCP 弹窗 footer 复用 MaterialButton（ADR 0083）。
 - 2026-09-05：P2 UI 语义化按钮迁移：工具、任务、记忆、设置、异步状态和懒加载失败态按主要、次要、低强调与危险语义复用 MaterialButton，保留 Tab、列表行、日历和安全确认等专用按钮（ADR 0084）。
+- 2026-09-05：P1/P2 错误传播边界收口：LLM 传输与流式错误、任务完成通知、ReAct 投影、checkpoint、恢复数据、MCP/VAD 与 UI 刷新均改为显式失败或 fail-closed（ADR 0086）。
 
 ## 完成标准
 

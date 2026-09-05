@@ -536,6 +536,12 @@ pub struct SttResult {
 
 #[derive(Debug, Clone, Error)]
 pub enum LlmError {
+    /// Local provider configuration is invalid or could not be materialized.
+    /// This is deliberately distinct from a request/response failure so the
+    /// router cannot mistake a bad endpoint for an empty/default client.
+    #[error("invalid LLM configuration: {0}")]
+    Configuration(String),
+
     #[error("network timeout: {0}")]
     Timeout(String),
 

@@ -362,12 +362,18 @@ impl BackgroundActions {
         self.persist_terminal(action_id, &state).await;
         let status_json = render_status_json(action_id, &state);
         self.emit("action:finished", status_json.clone());
-        let _ = self.completion_tx.send(BackgroundActionCompletion {
+        if let Err(error) = self.completion_tx.send(BackgroundActionCompletion {
             action_id: action_id.to_string(),
             session_id,
             status: status.to_string(),
             status_json,
-        });
+        }) {
+            tracing::error!(
+                action_id = %action_id,
+                error = %error,
+                "background action completion channel is closed; session auto-injection was not delivered"
+            );
+        }
     }
 
     /// Board view of every action: one entry per action with status, timestamps,

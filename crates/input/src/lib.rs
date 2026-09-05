@@ -208,24 +208,26 @@ impl InputPipeline {
                 }
             }
         }
-        self.ensure_vad_worker();
+        if let Err(error) = self.ensure_vad_worker() {
+            tracing::error!(error = %error, "VAD prewarm failed");
+        }
     }
 
     /// Spawn the VAD worker thread on first use (from `prewarm` or the first
-    /// recording). The engine loads on the worker in the background; a failed
-    /// spawn leaves VAD disabled for this process.
-    fn ensure_vad_worker(&self) -> Option<Arc<VadWorker>> {
+    /// recording). The engine loads on the worker in the background. A failed
+    /// spawn is returned to the recording caller instead of silently disabling
+    /// VAD.
+    fn ensure_vad_worker(&self) -> Result<Arc<VadWorker>> {
         let mut guard = lock_std_or_recover(&self.vad_worker, "vad_worker");
         if guard.is_none() {
-            match VadWorker::spawn() {
-                Ok(w) => {
-                    tracing::debug!("VAD worker spawned");
-                    *guard = Some(w.clone());
-                }
-                Err(e) => tracing::warn!("VAD worker spawn failed, VAD disabled: {e}"),
-            }
+            let worker = VadWorker::spawn()
+                .map_err(|error| anyhow!("failed to spawn VAD worker: {error}"))?;
+            tracing::debug!("VAD worker spawned");
+            *guard = Some(worker);
         }
-        guard.clone()
+        guard
+            .clone()
+            .ok_or_else(|| anyhow!("VAD worker is unavailable"))
     }
 
     pub async fn get_vad_state(&self) -> vad::VadState {
@@ -289,14 +291,31 @@ impl InputPipeline {
             return Err(e);
         }
 
+        let vad_worker = if matches!(mode, LoopMode::Normal) {
+            match self.ensure_vad_worker() {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    handle.stop_and_clear();
+                    *self.state.lock().await = RecordingState::Pending;
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+
         {
             self.vad_detector.lock().await.reset();
             // Reuse the resident VAD worker; the model stays loaded across
             // recordings — graph compilation is the slow part, and a fresh
             // recording only needs the recurrent state reset, queued before
             // any inference on the worker's serialized command channel.
-            if let Some(w) = self.ensure_vad_worker() {
-                w.reset();
+            if let Some(w) = &vad_worker
+                && let Err(error) = w.reset()
+            {
+                handle.stop_and_clear();
+                *self.state.lock().await = RecordingState::Pending;
+                return Err(error);
             }
         }
 
@@ -309,7 +328,7 @@ impl InputPipeline {
         let loop_data = LoopData {
             config: self.config.clone(),
             engine: handle.clone(),
-            vad_worker: lock_std_or_recover(&self.vad_worker, "vad_worker").clone(),
+            vad_worker,
             vad_detector: self.vad_detector.clone(),
             handler: self.handler.snap(),
             failed: handle.stream_failed.clone(),
@@ -449,7 +468,7 @@ impl InputPipeline {
                         // of spawning a blocking session per frame (and locking the
                         // engine). Frames below the energy floor skip the
                         // round-trip entirely — they are silence by definition.
-                        let prob = match &data.vad_worker {
+                        let prob_result = match &data.vad_worker {
                             Some(w) if vad::frame_has_energy(frame) => {
                                 let frame_owned = frame.to_vec();
                                 tokio::select! {
@@ -466,7 +485,21 @@ impl InputPipeline {
                                     }
                                 }
                             }
-                            _ => 0.0,
+                            _ => Ok(0.0),
+                        };
+                        let prob = match prob_result {
+                            Ok(prob) => prob,
+                            Err(error) => {
+                                tracing::error!(error = %error, "VAD worker failed; stopping recording");
+                                let elapsed = start.elapsed();
+                                return RecordingResult {
+                                    pcm: accumulated_pcm,
+                                    reason: RecordingReason::Manual,
+                                    duration_ms: elapsed.as_millis() as u64,
+                                    transcript: None,
+                                    transcript_error: Some(format!("VAD worker failed: {error}")),
+                                };
+                            }
                         };
 
                         let (signal, state) = {
@@ -712,7 +745,7 @@ struct VadWorker {
     cmd_tx: std::sync::mpsc::Sender<VadCmd>,
     /// Mutex-wrapped because only the recording loop consumes replies, and
     /// `recv` needs `&mut`; uncontended (single consumer), cheap.
-    prob_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<(u64, f32)>>,
+    prob_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<(u64, Result<f32, String>)>>,
     /// Monotonic sequence counter shared with the worker: never reused, so a
     /// stale reply can never be mistaken for the current inference.
     seq: AtomicU64,
@@ -723,7 +756,8 @@ impl VadWorker {
     /// the first inference may be delayed but the caller never blocks.
     fn spawn() -> std::io::Result<Arc<Self>> {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        let (prob_tx, prob_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (prob_tx, prob_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(u64, Result<f32, String>)>();
         std::thread::Builder::new()
             .name("vad-worker".into())
             .spawn(move || vad_worker_loop(cmd_rx, prob_tx))?;
@@ -734,23 +768,26 @@ impl VadWorker {
         }))
     }
 
-    fn reset(&self) {
-        let _ = self.cmd_tx.send(VadCmd::Reset);
+    fn reset(&self) -> Result<()> {
+        self.cmd_tx
+            .send(VadCmd::Reset)
+            .map_err(|_| anyhow!("VAD worker command channel is closed"))
     }
 
-    /// Run one inference; returns 0.0 when the worker is gone (VAD disabled).
-    async fn infer(&self, frame: Vec<f32>) -> f32 {
+    /// Run one inference and preserve worker/model failures for the recording
+    /// loop. A failed VAD inference must not become a fabricated silence value.
+    async fn infer(&self, frame: Vec<f32>) -> Result<f32> {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        if self.cmd_tx.send(VadCmd::Infer { seq, frame }).is_err() {
-            return 0.0;
-        }
+        self.cmd_tx
+            .send(VadCmd::Infer { seq, frame })
+            .map_err(|_| anyhow!("VAD worker command channel is closed"))?;
         let mut rx = self.prob_rx.lock().await;
         loop {
             match rx.recv().await {
-                Some((s, prob)) if s == seq => return prob,
+                Some((s, result)) if s == seq => return result.map_err(|error| anyhow!(error)),
                 // Stale reply from a recording cancelled mid-inference.
                 Some(_) => continue,
-                None => return 0.0,
+                None => return Err(anyhow!("VAD worker response channel is closed")),
             }
         }
     }
@@ -758,32 +795,36 @@ impl VadWorker {
 
 fn vad_worker_loop(
     cmd_rx: std::sync::mpsc::Receiver<VadCmd>,
-    prob_tx: tokio::sync::mpsc::UnboundedSender<(u64, f32)>,
+    prob_tx: tokio::sync::mpsc::UnboundedSender<(u64, Result<f32, String>)>,
 ) {
-    let mut engine = match vad::VadEngine::new() {
-        Ok(e) => Some(e),
+    let (mut engine, init_error) = match vad::VadEngine::new() {
+        Ok(e) => (Some(e), None),
         Err(err) => {
-            tracing::warn!("VAD engine init failed, VAD disabled: {err}");
-            None
+            let message = format!("VAD engine initialization failed: {err}");
+            tracing::error!(error = %err, "{message}");
+            (None, Some(message))
         }
     };
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
             VadCmd::Infer { seq, frame } => {
-                // A panicking inference must not kill the worker: degrade to
-                // silence for that frame instead (the reply channel closing
-                // would strand the recording loop on its await).
-                let prob = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match engine
-                    .as_mut()
-                {
-                    Some(e) => e.infer(&frame).unwrap_or_else(|error| {
-                        tracing::warn!(error = %error, "VAD inference failed; treating frame as silence");
-                        0.0
-                    }),
-                    None => 0.0,
-                }))
-                .unwrap_or(0.0);
-                if prob_tx.send((seq, prob)).is_err() {
+                let result = match engine.as_mut() {
+                    Some(engine) => {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            engine.infer(&frame)
+                        })) {
+                            Ok(result) => result.map_err(|error| error.to_string()),
+                            Err(_) => Err("VAD inference panicked".to_string()),
+                        }
+                    }
+                    None => Err(init_error
+                        .clone()
+                        .unwrap_or_else(|| "VAD engine is unavailable".to_string())),
+                };
+                if let Err(error) = &result {
+                    tracing::error!(error = %error, "VAD inference failed");
+                }
+                if prob_tx.send((seq, result)).is_err() {
                     break;
                 }
             }
@@ -791,7 +832,7 @@ fn vad_worker_loop(
                 if let Some(e) = engine.as_mut()
                     && let Err(error) = e.reset()
                 {
-                    tracing::warn!(error = %error, "VAD reset failed; disabling VAD worker");
+                    tracing::error!(error = %error, "VAD reset failed; disabling VAD worker");
                     engine = None;
                 }
             }

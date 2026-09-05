@@ -190,17 +190,33 @@
 		if (providers.length === 0) return;
 		refreshingAll = true;
 		try {
-			if (providers.some((/** @type {any} */ provider) => provider.api_key))
-				await Promise.allSettled(
-					providers.map((/** @type {any} */ provider) =>
-						refreshProviderModels(provider.name),
-					),
+			let failedProviders = [];
+			if (providers.some((/** @type {any} */ provider) => provider.api_key)) {
+				const results = await Promise.all(
+					providers.map(async (/** @type {any} */ provider) => ({
+						name: provider.name,
+						ok: await refreshProviderModels(provider.name),
+					})),
 				);
-			else modelsByProvider = (await invoke('discover_all_models')) || {};
+				failedProviders = results.filter((result) => !result.ok).map((result) => result.name);
+			} else {
+				modelsByProvider = (await invoke('discover_all_models')) || {};
+			}
 			backfillRoleMetaFromDiscovery();
 			if (!silent && Date.now() - lastRefreshNotify > 2500) {
 				lastRefreshNotify = Date.now();
-				addNotification('模型列表已刷新', 'success', 2500);
+				if (failedProviders.length > 0) {
+					const label = failedProviders.join('、');
+					addNotification(
+						failedProviders.length === providers.length
+							? `模型列表刷新失败：${label}`
+							: `部分模型提供商刷新失败：${label}`,
+						failedProviders.length === providers.length ? 'error' : 'warning',
+						4000,
+					);
+				} else {
+					addNotification('模型列表已刷新', 'success', 2500);
+				}
 			}
 		} catch (e) {
 			reportError(e, { context: 'ModelSettings', message: '刷新模型列表失败', log: false });
@@ -211,7 +227,7 @@
 	/** @param {string} providerName */
 	async function refreshProviderModels(providerName) {
 		const provider = providerByName(providerName);
-		if (!provider || !provider.base_url.trim()) return;
+		if (!provider || !provider.base_url.trim()) return false;
 		modelFetching[providerName] = true;
 		try {
 			const list = await invoke('discover_models', {
@@ -223,9 +239,11 @@
 			backfillRoleMetaFromDiscovery();
 		} catch (e) {
 			logger.warn('ModelSettings', `discover_models ${providerName} error`, formatError(e));
+			return false;
 		} finally {
 			modelFetching[providerName] = false;
 		}
+		return true;
 	}
 	let autoRefreshed = $state(false);
 	$effect(() => {

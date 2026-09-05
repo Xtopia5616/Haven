@@ -186,7 +186,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         event: TranscriptEvent,
         state: &mut ReActState,
-    ) {
+    ) -> anyhow::Result<()> {
         let record = event.to_record(ctx.step_num);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
@@ -200,7 +200,7 @@ impl ReActEngine {
                         None,
                         Some(&message_id),
                     )
-                    .await;
+                    .await?;
                 }
                 EventDispatcher::emit_thought_from(
                     &ctx.emitter,
@@ -211,7 +211,7 @@ impl ReActEngine {
                     &message_id,
                     &self.db,
                 )
-                .await;
+                .await?;
                 state.events.push(record);
             }
             TranscriptEvent::Reasoning { text, message_id } => {
@@ -225,7 +225,7 @@ impl ReActEngine {
                         None,
                         Some(&message_id),
                     )
-                    .await;
+                    .await?;
                 }
                 state.events.push(record);
             }
@@ -249,7 +249,7 @@ impl ReActEngine {
                             None,
                             Some(mid),
                         )
-                        .await;
+                        .await?;
                     }
                 }
                 for card in &action_cards {
@@ -314,7 +314,7 @@ impl ReActEngine {
                                 None,
                                 Some(&card.step_id),
                             )
-                            .await;
+                            .await?;
                         }
                     }
                     ctx.emitter
@@ -347,6 +347,25 @@ impl ReActEngine {
                 attachments,
                 message_id,
             } => {
+                // Persist the thought step before notifying the UI. A failed
+                // projection must not produce an event that looks durable.
+                if source != InjectSource::ActionResult {
+                    let step_id = message_id
+                        .clone()
+                        .unwrap_or_else(|| haven_common::types::new_id("step"));
+                    self.db
+                        .run_blocking({
+                            let session_id = ctx.session_id.clone();
+                            let step_id = step_id.clone();
+                            let step_num = ctx.step_num;
+                            move |db| {
+                                db.create_thought_step(&session_id, step_num as i32, &step_id)?;
+                                Ok::<(), anyhow::Error>(())
+                            }
+                        })
+                        .await?;
+                }
+                // Notify the UI only after the durable projection succeeded.
                 // Always notify the UI so auto-wake from a background action is
                 // visible in-chat (not only a toast). ActionResult still skips
                 // the thought-step DB write — it is producer-labelled context,
@@ -360,32 +379,6 @@ impl ReActEngine {
                         inject_source: Some(source),
                     })
                     .await;
-                if source != InjectSource::ActionResult {
-                    let step_id = message_id
-                        .clone()
-                        .unwrap_or_else(|| haven_common::types::new_id("step"));
-                    let _ = self
-                        .db
-                        .run_blocking({
-                            let session_id = ctx.session_id.clone();
-                            let step_id = step_id.clone();
-                            let step_num = ctx.step_num;
-                            move |db| {
-                                if let Err(e) =
-                                    db.create_thought_step(&session_id, step_num as i32, &step_id)
-                                {
-                                    tracing::warn!(
-                                        "create_thought_step failed (session={} step={}): {}",
-                                        session_id,
-                                        step_num,
-                                        e
-                                    );
-                                }
-                                Ok::<(), anyhow::Error>(())
-                            }
-                        })
-                        .await;
-                }
                 state.events.push(record);
                 let mut content = vec![ContentPart::text(text)];
                 content.extend(attachments.iter().map(attachment_to_content_part));
@@ -418,6 +411,7 @@ impl ReActEngine {
                     .await;
             }
         }
+        Ok(())
     }
 }
 
@@ -495,7 +489,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(state.canonical.len(), 1);
         assert_eq!(state.canonical[0].source, Some(InjectSource::Steering));
         let text = match &state.canonical[0].content[0] {
@@ -529,7 +524,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(state.canonical[0].source, Some(InjectSource::ActionResult));
         let text = match &state.canonical[0].content[0] {
             ContentPart::Text(t) => t.as_str(),
@@ -566,7 +562,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         let emitted = recorded.lock().unwrap().clone();
         assert!(
             emitted.iter().any(|e| matches!(
@@ -606,7 +603,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(state.events.len(), 1);
         let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
@@ -642,7 +640,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(state.events.len(), 1);
         assert!(matches!(
             &state.events[0],
@@ -726,7 +725,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(state.canonical.len(), 2);
         // CompactSummary replaces the event log (no pre-compaction growth).
         assert_eq!(state.events.len(), 1);
@@ -796,7 +796,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(state.canonical.len(), 1);
         assert_eq!(state.events.len(), 1);
         let ev = ui_events.lock().unwrap();
@@ -860,7 +861,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(state.canonical.len(), 1);
         let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
@@ -899,7 +901,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         for (id, name) in [("c1", "a"), ("c2", "b")] {
             engine
                 .apply_transcript(
@@ -920,7 +923,8 @@ mod tests {
                     },
                     &mut state,
                 )
-                .await;
+                .await
+                .unwrap();
         }
         let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
@@ -966,7 +970,8 @@ mod tests {
                 },
                 &mut state,
             )
-            .await;
+            .await
+            .unwrap();
         let msgs = db.get_session_messages(&session.id).unwrap();
         assert!(
             msgs.iter()

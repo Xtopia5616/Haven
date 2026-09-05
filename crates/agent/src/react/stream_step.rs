@@ -7,6 +7,14 @@
 use super::*;
 use haven_llm::{EndpointRole, LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
 
+struct CheckpointInflightGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CheckpointInflightGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Streaming session for one step: primary call + empty/cut-off retries.
 /// Owns the effective endpoint role, partial buffers and msg-id reuse; the
 /// loop only matches outcomes.
@@ -295,8 +303,8 @@ impl StreamForwarder {
                     let tid = checkpoint_session.clone();
                     let flag = checkpoint_inflight.clone();
                     let task = tokio::spawn(async move {
+                        let _inflight = CheckpointInflightGuard(flag);
                         store.checkpoint(&tid, gen_id, &snapshot).await;
-                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
                     });
                     checkpoint_tasks_c.lock().unwrap().push(task);
                 }
@@ -399,7 +407,9 @@ impl StreamForwarder {
             std::mem::take(&mut *tasks)
         };
         for task in checkpoint_tasks {
-            let _ = task.await;
+            if let Err(error) = task.await {
+                tracing::error!(error = %error, "stream checkpoint task failed");
+            }
         }
     }
 }
@@ -575,19 +585,44 @@ impl ReActEngine {
                         );
                         // Phase 6.1: CompactSummary via apply (emit + persist + replace).
                         self.reset_token_estimate(&ctx.session_id);
-                        self.apply_transcript(
-                            ctx,
-                            TranscriptEvent::CompactSummary {
-                                compacted: result.compacted,
-                                summary: result.summary,
-                                tokens_before: result.tokens_before,
-                                tokens_after: result.tokens_after,
-                                episode_id: result.episode_id,
-                                degraded: result.degraded,
-                            },
-                            state,
-                        )
-                        .await;
+                        if let Err(error) = self
+                            .apply_transcript(
+                                ctx,
+                                TranscriptEvent::CompactSummary {
+                                    compacted: result.compacted,
+                                    summary: result.summary,
+                                    tokens_before: result.tokens_before,
+                                    tokens_after: result.tokens_after,
+                                    episode_id: result.episode_id,
+                                    degraded: result.degraded,
+                                },
+                                state,
+                            )
+                            .await
+                        {
+                            let err_msg = format!("Failed to persist context compaction: {error}");
+                            tracing::error!(
+                                session_id = %ctx.session_id,
+                                step = ctx.step_num,
+                                error = %error,
+                                "ReAct step cannot continue after compaction projection failure"
+                            );
+                            self.persist_partial_on_error(
+                                ctx,
+                                state,
+                                partial_thought,
+                                partial_reasoning,
+                            )
+                            .await;
+                            EventDispatcher::emit_session_error_from(
+                                &ctx.emitter,
+                                &ctx.session_id,
+                                &err_msg,
+                            )
+                            .await;
+                            self.mark_session_error(&ctx.session_id).await;
+                            return StepCallOutcome::Fatal(err_msg);
+                        }
                         // Retry streams the *compacted* canonical in place; the
                         // role must be re-resolved: summarizing away the last
                         // image-bearing turn changes routing for the retry.
@@ -720,6 +755,19 @@ impl ReActEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn checkpoint_inflight_guard_clears_after_task_panic() {
+        let inflight = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let task_inflight = inflight.clone();
+        let task = tokio::spawn(async move {
+            let _guard = CheckpointInflightGuard(task_inflight);
+            panic!("simulated checkpoint panic");
+        });
+
+        assert!(task.await.is_err());
+        assert!(!inflight.load(std::sync::atomic::Ordering::Acquire));
+    }
     use async_trait::async_trait;
     use futures_util::stream;
     use haven_llm::client::LlmClient;
@@ -951,11 +999,11 @@ impl ReActEngine {
         thought: &Option<String>,
         actions: &[Action],
         state: &mut ReActState,
-    ) -> SearchContextOutcome {
+    ) -> anyhow::Result<SearchContextOutcome> {
         if response.web_search_calls.is_empty() {
-            return SearchContextOutcome::Proceed {
+            return Ok(SearchContextOutcome::Proceed {
                 assistant_already_pushed: false,
-            };
+            });
         }
         let synthesized_final = !actions.is_empty()
             && actions
@@ -963,9 +1011,9 @@ impl ReActEngine {
                 .all(|a| a.is_final && a.tool_call_id.is_none());
         if !(actions.is_empty() || synthesized_final) {
             // Mixed real tools + search: tool_batch pushes the search items.
-            return SearchContextOutcome::Proceed {
+            return Ok(SearchContextOutcome::Proceed {
                 assistant_already_pushed: false,
-            };
+            });
         }
 
         // Text matches Thought projection (trimmed). X12: apply ToolCall so
@@ -990,7 +1038,7 @@ impl ReActEngine {
             },
             state,
         )
-        .await;
+        .await?;
 
         if actions.is_empty() {
             // Search round: no answer yet — keep the turn open and re-request
@@ -1003,13 +1051,13 @@ impl ReActEngine {
                 ctx.session_id,
                 response.web_search_calls.len()
             );
-            return SearchContextOutcome::ContinueWithoutTools;
+            return Ok(SearchContextOutcome::ContinueWithoutTools);
         }
 
         // synthesized_final: answer arrived with the search call — fall
         // through to turn-end; the push above keeps search context alive.
-        SearchContextOutcome::Proceed {
+        Ok(SearchContextOutcome::Proceed {
             assistant_already_pushed: true,
-        }
+        })
     }
 }

@@ -8,7 +8,10 @@ use futures_util::FutureExt;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
+use crate::types::LlmError;
 use crate::types::StreamChunk;
+
+pub(crate) type LinePayload = Result<String, LlmError>;
 
 /// An empty `StreamChunk` — the "no payload" baseline emitted by every
 /// adapter's stream unfolding.
@@ -43,12 +46,13 @@ pub(crate) enum LineMode {
 /// formats in one pass; the interpretation is selected via `mode`.
 pub(crate) fn spawn_line_reader<S>(
     byte_stream: S,
-    tx: mpsc::UnboundedSender<String>,
+    tx: mpsc::UnboundedSender<LinePayload>,
     mode: LineMode,
 ) where
     S: futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
+        let panic_tx = tx.clone();
         let result = std::panic::AssertUnwindSafe(async {
             let mut buf = String::new();
             tokio::pin!(byte_stream);
@@ -72,7 +76,7 @@ pub(crate) fn spawn_line_reader<S>(
                                             continue;
                                         }
                                         tracing::trace!("stream payload: {} chars", payload.len());
-                                        if tx.send(payload).is_err() {
+                                        if tx.send(Ok(payload)).is_err() {
                                             return;
                                         }
                                     }
@@ -88,14 +92,18 @@ pub(crate) fn spawn_line_reader<S>(
                                         continue;
                                     }
                                     tracing::trace!("stream payload: {} chars", payload.len());
-                                    if tx.send(payload).is_err() {
+                                    if tx.send(Ok(payload)).is_err() {
                                         return;
                                     }
                                 }
                             }
                         }
                     }
-                    Some(Err(_)) | None => {
+                    Some(Err(error)) => {
+                        let _ = tx.send(Err(LlmError::from(error)));
+                        break;
+                    }
+                    None => {
                         // Flush any remaining buffered data before EOF.
                         let remaining = buf.trim().to_string();
                         if !remaining.is_empty() && remaining != "[DONE]" {
@@ -108,13 +116,13 @@ pub(crate) fn spawn_line_reader<S>(
                                                 "stream flush: {} chars",
                                                 payload.len()
                                             );
-                                            let _ = tx.send(payload);
+                                            let _ = tx.send(Ok(payload));
                                         }
                                     }
                                 }
                                 LineMode::SseOrRaw => {
                                     tracing::trace!("stream flush: {} chars", remaining.len());
-                                    let _ = tx.send(remaining);
+                                    let _ = tx.send(Ok(remaining));
                                 }
                             }
                         }
@@ -130,6 +138,7 @@ pub(crate) fn spawn_line_reader<S>(
                 "byte stream reader panicked: {:?}",
                 panic.downcast_ref::<String>().unwrap_or(&"unknown".into())
             );
+            let _ = panic_tx.send(Err(LlmError::Unknown("byte stream reader panicked".into())));
         }
     });
 }
@@ -148,7 +157,7 @@ mod tests {
         spawn_line_reader(stream, tx, LineMode::SseDataOnly);
         let mut got = Vec::new();
         while let Some(payload) = rx.recv().await {
-            got.push(payload);
+            got.push(payload.unwrap());
         }
         assert_eq!(got, vec![r#"{"a":1}"#, r#"{"b":2}"#]);
     }
@@ -162,9 +171,28 @@ mod tests {
         spawn_line_reader(stream, tx, LineMode::SseOrRaw);
         let mut got = Vec::new();
         while let Some(payload) = rx.recv().await {
-            got.push(payload);
+            got.push(payload.unwrap());
         }
         assert_eq!(got, vec![r#"{"a":1}"#, r#"{"b":2}"#, r#"{"c":3}"#]);
+    }
+
+    #[tokio::test]
+    async fn forwards_transport_errors_instead_of_treating_them_as_eof() {
+        let error = reqwest::Client::new()
+            .get("http://[::1")
+            .send()
+            .await
+            .expect_err("malformed URL should produce a reqwest error");
+        let stream = futures_util::stream::iter(vec![
+            Ok::<_, reqwest::Error>(bytes::Bytes::from("data: {\"a\":1}\n\n")),
+            Err(error),
+        ]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_line_reader(stream, tx, LineMode::SseDataOnly);
+
+        assert_eq!(rx.recv().await.unwrap().unwrap(), r#"{"a":1}"#);
+        assert!(matches!(rx.recv().await, Some(Err(_))));
+        assert!(rx.recv().await.is_none());
     }
 
     #[test]

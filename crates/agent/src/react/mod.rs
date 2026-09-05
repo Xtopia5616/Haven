@@ -821,9 +821,9 @@ impl ReActEngine {
         has_image: bool,
         tool_defs: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
-    ) -> bool {
+    ) -> anyhow::Result<bool> {
         if state.canonical.len() < 4 {
-            return false;
+            return Ok(false);
         }
         // The compaction window must match the endpoint the next step will
         // use (image-routed steps compact against the image model's budget),
@@ -846,7 +846,7 @@ impl ReActEngine {
             cached_message_tokens,
         );
         if request_tokens <= compactor.threshold_tokens() {
-            return false;
+            return Ok(false);
         }
         match compactor
             .compact(&state.canonical, tool_defs, &router, cancel)
@@ -876,17 +876,17 @@ impl ReActEngine {
                     },
                     state,
                 )
-                .await;
-                true
+                .await?;
+                Ok(true)
             }
-            Ok(None) => false,
-            Err(haven_llm::LlmError::Cancelled) => false,
+            Ok(None) => Ok(false),
+            Err(haven_llm::LlmError::Cancelled) => Ok(false),
             Err(error) => {
                 tracing::warn!(
                     session_id = %ctx.session_id,
                     "compaction cancelled or unavailable: {error}"
                 );
-                false
+                Ok(false)
             }
         }
     }

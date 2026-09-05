@@ -444,7 +444,7 @@ impl ReActEngine {
                 },
                 state,
             )
-            .await;
+            .await?;
         }
 
         self.save_branch_point(session_id, state, step_num, false)
@@ -480,7 +480,7 @@ impl ReActEngine {
         if execution.cancelled || need_confirm.is_empty() {
             batch_state
                 .commit_ordered_results(self, &gate_ctx, execution.results, state)
-                .await;
+                .await?;
         }
 
         if execution.cancelled {
@@ -555,7 +555,7 @@ impl ReActEngine {
             // not enter `react_state.events` or resume would re-feed it).
             let notice = "Waiting for confirmation…";
             self.project_chat_message(session_id, "assistant", notice, Some("text"), None, None)
-                .await;
+                .await?;
             self.pause_turn(PauseTurnInput {
                 session_id,
                 state,
@@ -739,7 +739,7 @@ impl ReActEngine {
         let mut batch_state = ToolBatchState::default();
         batch_state
             .commit_ordered_results(self, &proj_ctx, execution.results, state)
-            .await;
+            .await?;
 
         if execution.cancelled {
             self.executor

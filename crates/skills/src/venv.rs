@@ -43,17 +43,12 @@ impl VenvManager {
         skill_root.join("requirements.txt")
     }
 
-    fn checksum_file(path: &Path) -> String {
-        let content = match std::fs::read(path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("checksum_file: failed to read {}: {}", path.display(), e);
-                Vec::new()
-            }
-        };
+    fn checksum_file(path: &Path) -> anyhow::Result<String> {
+        let content = std::fs::read(path)
+            .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         content.hash(&mut hasher);
-        format!("{:x}", hasher.finish())
+        Ok(format!("{:x}", hasher.finish()))
     }
 
     /// Ensure the venv exists for `skill_name`, optionally installing
@@ -86,8 +81,26 @@ impl VenvManager {
         }
 
         let req_path = Self::requirements_path(skill_root);
-        if req_path.exists() {
-            let new_checksum = Self::checksum_file(&req_path);
+        let requirements_file = match tokio::fs::metadata(&req_path).await {
+            Ok(metadata) if metadata.is_file() => true,
+            Ok(_) => {
+                anyhow::bail!(
+                    "requirements path for skill '{}' is not a file: {}",
+                    skill_name,
+                    req_path.display()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "failed to inspect requirements for skill '{}': {}",
+                    skill_name,
+                    error
+                ));
+            }
+        };
+        if requirements_file {
+            let new_checksum = Self::checksum_file(&req_path)?;
             let changed = {
                 let guard = self.checksums.lock().await;
                 guard

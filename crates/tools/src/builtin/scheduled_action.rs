@@ -221,21 +221,19 @@ impl ScheduledActionCenter {
     /// `ScheduledActionFired` payload, and persist the fired flag. Shared by the
     /// overdue re-arm path (`restore_pending`) and the action-watch timer.
     async fn fire_entry(self: &Arc<Self>, id: &str) {
+        let _mutation = self.mutation_gate.lock().await;
         let entry = {
-            let _mutation = self.mutation_gate.lock().await;
-            let mut scheduled_actions = self.scheduled_actions.write().await;
-            let Some(entry) = scheduled_actions.get_mut(id) else {
+            let scheduled_actions = self.scheduled_actions.read().await;
+            let Some(entry) = scheduled_actions.get(id) else {
                 return;
             };
             if entry.fired {
                 return;
             }
-            entry.fired = true;
             entry.clone()
         };
 
-        self.emit_fired(id, &entry);
-        let _ = self.fired_tx.send(ScheduledActionFired {
+        let payload = ScheduledActionFired {
             action_id: id.to_string(),
             title: entry.title.clone(),
             body: entry.body.clone(),
@@ -244,7 +242,20 @@ impl ScheduledActionCenter {
             tool_name: entry.tool_name.clone(),
             tool_args: entry.tool_args.clone(),
             prompt: entry.prompt.clone(),
-        });
+        };
+        if let Err(error) = self.fired_tx.send(payload) {
+            tracing::error!(
+                action_id = %id,
+                error = %error,
+                "scheduled action completion channel is closed; keeping action pending"
+            );
+            return;
+        }
+        if let Some(current) = self.scheduled_actions.write().await.get_mut(id) {
+            current.fired = true;
+        }
+        drop(_mutation);
+        self.emit_fired(id, &entry);
         if let Some(db) = self.db.read().await.clone() {
             let action_id = id.to_string();
             if let Err(e) = db
@@ -288,16 +299,61 @@ impl ScheduledActionCenter {
             if self.scheduled_actions.read().await.contains_key(&row.id) {
                 continue;
             }
-            let due = chrono::DateTime::parse_from_rfc3339(&row.due_at)
-                .map(|d| d.with_timezone(&chrono::Utc))
-                .unwrap_or(now);
+            let due = match chrono::DateTime::parse_from_rfc3339(&row.due_at) {
+                Ok(due) => due.with_timezone(&chrono::Utc),
+                Err(error) => {
+                    tracing::error!(
+                        action_id = %row.id,
+                        error = %error,
+                        "skipping scheduled action with invalid due_at"
+                    );
+                    continue;
+                }
+            };
             let remaining = (due - now).num_seconds();
-            let mode = ScheduleMode::parse(&row.mode).unwrap_or(ScheduleMode::Tool);
+            let mode = match ScheduleMode::parse(&row.mode) {
+                Some(mode) => mode,
+                None => {
+                    tracing::error!(
+                        action_id = %row.id,
+                        mode = %row.mode,
+                        "skipping scheduled action with invalid mode"
+                    );
+                    continue;
+                }
+            };
             let tool_name = row.tool_name.clone();
-            let tool_args = row
-                .tool_args
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok());
+            let tool_args = match row.tool_args.as_deref() {
+                Some(args) => match serde_json::from_str(args) {
+                    Ok(args) => Some(args),
+                    Err(error) => {
+                        tracing::error!(
+                            action_id = %row.id,
+                            error = %error,
+                            "skipping scheduled action with invalid tool arguments"
+                        );
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            let valid_payload = match mode {
+                ScheduleMode::Tool => tool_name
+                    .as_deref()
+                    .is_some_and(|name| !name.trim().is_empty()),
+                ScheduleMode::Continue => row
+                    .session_id
+                    .as_deref()
+                    .is_some_and(|session_id| !session_id.trim().is_empty()),
+            };
+            if !valid_payload {
+                tracing::error!(
+                    action_id = %row.id,
+                    mode = %mode.as_str(),
+                    "skipping scheduled action with missing mode-specific parameters"
+                );
+                continue;
+            }
             let fired_payload = ScheduledActionFired {
                 action_id: row.id.clone(),
                 title: row.title.clone(),
@@ -322,12 +378,19 @@ impl ScheduledActionCenter {
                     watch_action_id: None,
                     fired: true,
                 };
+                if let Err(error) = self.fired_tx.send(fired_payload) {
+                    tracing::error!(
+                        action_id = %row.id,
+                        error = %error,
+                        "scheduled action completion channel is closed; keeping overdue action pending"
+                    );
+                    continue;
+                }
                 self.scheduled_actions
                     .write()
                     .await
                     .insert(row.id.clone(), entry.clone());
                 self.emit_fired(&row.id, &entry);
-                let _ = self.fired_tx.send(fired_payload);
                 let action_id = row.id.clone();
                 if let Err(e) = db
                     .run_blocking(move |db| db.mark_scheduled_action_fired(&action_id))
@@ -579,20 +642,18 @@ impl ScheduledActionCenter {
                 continue;
             }
             let prompt = action_finished_prompt(action_id, &status);
+            let mutation = self.mutation_gate.lock().await;
             let entry = {
-                let _mutation = self.mutation_gate.lock().await;
-                let mut scheduled_actions = self.scheduled_actions.write().await;
-                let Some(entry) = scheduled_actions.get_mut(&id) else {
+                let scheduled_actions = self.scheduled_actions.read().await;
+                let Some(entry) = scheduled_actions.get(&id) else {
                     return;
                 };
                 if entry.fired {
                     return;
                 }
-                entry.fired = true;
                 entry.clone()
             };
-            self.emit_fired(&id, &entry);
-            let _ = self.fired_tx.send(ScheduledActionFired {
+            let payload = ScheduledActionFired {
                 action_id: id.clone(),
                 title: entry.title.clone(),
                 body: entry.body.clone(),
@@ -601,7 +662,20 @@ impl ScheduledActionCenter {
                 tool_name: None,
                 tool_args: None,
                 prompt: Some(prompt),
-            });
+            };
+            if let Err(error) = self.fired_tx.send(payload) {
+                tracing::error!(
+                    action_id = %id,
+                    error = %error,
+                    "watched scheduled action completion channel is closed; keeping action pending"
+                );
+                return;
+            }
+            if let Some(current) = self.scheduled_actions.write().await.get_mut(&id) {
+                current.fired = true;
+            }
+            drop(mutation);
+            self.emit_fired(&id, &entry);
             return;
         }
     }
@@ -1859,6 +1933,54 @@ mod tests {
 
         // Both are marked fired in the DB; pending list is empty.
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_restore_pending_skips_corrupt_rows_without_defaults() {
+        let (db, _dir) = test_db();
+        let center = Arc::new(ScheduledActionCenter::new());
+        center.set_db(Some(db.clone())).await;
+
+        db.save_scheduled_action(
+            "act-invalid-due",
+            "not-a-timestamp",
+            "Bad due",
+            "must not run",
+            "continue",
+            Some("ses-1"),
+            None,
+            None,
+            Some("prompt"),
+        )
+        .unwrap();
+        db.save_scheduled_action(
+            "act-invalid-mode",
+            &(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            "Bad mode",
+            "must not run",
+            "unknown-mode",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.save_scheduled_action(
+            "act-invalid-args",
+            &(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            "Bad args",
+            "must not run",
+            "tool",
+            None,
+            Some("notify"),
+            Some("{not-json"),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(center.restore_pending().await, 0);
+        assert!(center.list().await.is_empty());
+        assert_eq!(db.list_pending_scheduled_actions().unwrap().len(), 3);
     }
 
     #[tokio::test]

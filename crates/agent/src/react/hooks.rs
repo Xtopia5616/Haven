@@ -82,7 +82,7 @@ pub(crate) trait LoopHooks: Send + Sync {
         ctx: &StepCtx,
         state: &mut ReActState,
         cancel: CancellationToken,
-    );
+    ) -> anyhow::Result<()>;
 
     /// Classify the parsed LLM response (Phase 5 / G3). Default accepts.
     async fn after_llm(
@@ -125,7 +125,8 @@ impl LoopHooks for NoopHooks {
         _ctx: &StepCtx,
         _state: &mut ReActState,
         _cancel: CancellationToken,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -247,7 +248,8 @@ mod tests {
         engine
             .hooks
             .before_step(&engine, &ctx, &mut state, CancellationToken::new())
-            .await;
+            .await
+            .unwrap();
         engine
             .hooks
             .on_pause(&engine, &ctx, PauseReason::TurnEnd)

@@ -23,13 +23,18 @@ pub struct AssemblyAiAdapter {
 }
 
 impl AssemblyAiAdapter {
-    pub fn new(endpoint: ModelEndpoint) -> Self {
-        let client = build_client(&endpoint);
-        Self {
+    pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
+        let client = build_client(&endpoint)?;
+        Ok(Self {
             endpoint,
             client,
             poll_interval: Duration::from_secs(3),
-        }
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new(endpoint: ModelEndpoint) -> Self {
+        Self::try_new(endpoint).expect("valid test endpoint")
     }
 
     fn base_url(&self) -> String {
@@ -40,15 +45,18 @@ impl AssemblyAiAdapter {
         }
     }
 
-    fn auth(&self) -> HeaderMap {
+    fn auth(&self) -> Result<HeaderMap, LlmError> {
         let mut headers = HeaderMap::new();
         let key = self.endpoint.api_key.trim();
-        if !key.is_empty()
-            && let Ok(v) = HeaderValue::from_str(key)
-        {
+        if !key.is_empty() {
+            let v = HeaderValue::from_str(key).map_err(|error| {
+                LlmError::Configuration(format!(
+                    "invalid AssemblyAI authentication header: {error}"
+                ))
+            })?;
             headers.insert("authorization", v);
         }
-        headers
+        Ok(headers)
     }
 }
 
@@ -78,7 +86,7 @@ impl LlmClient for AssemblyAiAdapter {
         let mut upload_req = self
             .client
             .post(format!("{base}/v2/upload"))
-            .headers(self.auth())
+            .headers(self.auth()?)
             .header(CONTENT_TYPE, "application/octet-stream")
             .body(wav_data.to_vec());
         upload_req = upload_req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
@@ -101,7 +109,7 @@ impl LlmClient for AssemblyAiAdapter {
         let mut create_req = self
             .client
             .post(format!("{base}/v2/transcript"))
-            .headers(self.auth())
+            .headers(self.auth()?)
             .json(&create_json);
         create_req = create_req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let create_resp = send_request(create_req, None).await?;
@@ -125,7 +133,7 @@ impl LlmClient for AssemblyAiAdapter {
                     self.endpoint.timeout_secs
                 )));
             }
-            let mut poll_req = self.client.get(&job_url).headers(self.auth());
+            let mut poll_req = self.client.get(&job_url).headers(self.auth()?);
             poll_req = poll_req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
             let poll_resp = send_request(poll_req, None).await?;
             let poll_body = poll_resp

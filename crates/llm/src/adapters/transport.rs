@@ -14,13 +14,13 @@ use crate::types::LlmError;
 
 /// Build the reqwest client with proxy support (§2.5) and connection-pool
 /// tuning (§5.5). Identical for every adapter.
-pub(crate) fn build_client(endpoint: &ModelEndpoint) -> reqwest::Client {
+pub(crate) fn build_client(endpoint: &ModelEndpoint) -> Result<reqwest::Client, LlmError> {
     let mut builder = crate::client::http_client_builder();
 
     // §2.5: proxy support
-    if let Some(ref proxy_url) = endpoint.proxy_url
-        && let Ok(proxy) = reqwest::Proxy::all(proxy_url)
-    {
+    if let Some(ref proxy_url) = endpoint.proxy_url {
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|error| LlmError::Configuration(format!("invalid proxy URL: {error}")))?;
         if let Some(ref no_proxy) = endpoint.no_proxy {
             let proxy = proxy.no_proxy(reqwest::NoProxy::from_string(no_proxy));
             builder = builder.proxy(proxy);
@@ -34,7 +34,9 @@ pub(crate) fn build_client(endpoint: &ModelEndpoint) -> reqwest::Client {
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90));
 
-    builder.build().unwrap_or_default()
+    builder
+        .build()
+        .map_err(|error| LlmError::Configuration(format!("failed to build HTTP client: {error}")))
 }
 /// Shared JSON request headers plus provider auth.
 ///
@@ -51,11 +53,12 @@ pub(crate) fn build_headers(
     endpoint: &ModelEndpoint,
     default_header: &str,
     default_uses_prefix: bool,
-) -> HeaderMap {
+) -> Result<HeaderMap, LlmError> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     if endpoint.api_key.is_empty() {
-        return headers;
+        apply_vendor_request_headers(endpoint, &mut headers);
+        return Ok(headers);
     }
     let customized =
         endpoint.auth_header_name != "Authorization" || endpoint.auth_header_prefix != "Bearer";
@@ -67,27 +70,36 @@ pub(crate) fn build_headers(
         } else {
             format!("{} {}", endpoint.auth_header_prefix, endpoint.api_key)
         };
-        if let Ok(v) = HeaderValue::from_str(&auth) {
-            let name = endpoint
-                .auth_header_name
-                .parse::<reqwest::header::HeaderName>()
-                .unwrap_or(reqwest::header::AUTHORIZATION);
-            headers.insert(name, v);
-        }
+        let value = HeaderValue::from_str(&auth).map_err(|error| {
+            LlmError::Configuration(format!("invalid authentication header value: {error}"))
+        })?;
+        let name = endpoint
+            .auth_header_name
+            .parse::<reqwest::header::HeaderName>()
+            .map_err(|error| {
+                LlmError::Configuration(format!("invalid authentication header name: {error}"))
+            })?;
+        headers.insert(name, value);
     } else {
         let value = if default_uses_prefix {
             format!("Bearer {}", endpoint.api_key)
         } else {
             endpoint.api_key.clone()
         };
-        if let Ok(v) = HeaderValue::from_str(&value)
-            && let Ok(name) = default_header.parse::<reqwest::header::HeaderName>()
-        {
-            headers.insert(name, v);
-        }
+        let value = HeaderValue::from_str(&value).map_err(|error| {
+            LlmError::Configuration(format!("invalid authentication header value: {error}"))
+        })?;
+        let name = default_header
+            .parse::<reqwest::header::HeaderName>()
+            .map_err(|error| {
+                LlmError::Configuration(format!(
+                    "invalid default authentication header name: {error}"
+                ))
+            })?;
+        headers.insert(name, value);
     }
     apply_vendor_request_headers(endpoint, &mut headers);
-    headers
+    Ok(headers)
 }
 
 /// Vendor-specific request headers that are not part of the auth scheme
@@ -164,7 +176,7 @@ pub(crate) async fn send_request(
                 })
                 .map(Duration::from_secs)
         });
-    let txt = resp.text().await.unwrap_or_default();
+    let txt = resp.text().await.map_err(LlmError::from)?;
     Err(http_status_to_error(status, &txt, retry_after))
 }
 

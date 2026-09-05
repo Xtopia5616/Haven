@@ -57,7 +57,7 @@ impl LoopHooks for DefaultHooks {
         ctx: &StepCtx,
         state: &mut ReActState,
         cancel: CancellationToken,
-    ) {
+    ) -> anyhow::Result<()> {
         // M2: after outbox fact writes, surgically refresh MEMORY fence
         // (throttled). It must run before compaction so the budget decision
         // sees the exact system prompt that will be sent to the provider.
@@ -86,18 +86,19 @@ impl LoopHooks for DefaultHooks {
         // deliberately after all context sources and prompt patches have
         // settled, so compaction and the following RequestContext snapshot
         // observe one coherent canonical projection.
-        let _ = engine
+        engine
             .maybe_compact(ctx, state, has_image, &tool_defs, cancel)
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,
                 step_num = ctx.step_num
             ))
-            .await;
+            .await?;
         let interval = engine.limits().fact_infer_interval_steps;
         if ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval) {
             self.call_infer(&ctx.session_id, false);
         }
+        Ok(())
     }
 
     async fn after_llm(

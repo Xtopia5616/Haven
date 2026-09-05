@@ -186,20 +186,25 @@ pub struct GeminiAdapter {
 }
 
 impl GeminiAdapter {
-    pub fn new(endpoint: ModelEndpoint) -> Self {
-        let client = build_client(&endpoint);
+    pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
+        let client = build_client(&endpoint)?;
         let web_search_mode = resolve_web_search_mode(&endpoint);
-        Self {
+        Ok(Self {
             endpoint,
             client,
             web_search_mode,
-        }
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new(endpoint: ModelEndpoint) -> Self {
+        Self::try_new(endpoint).expect("valid test endpoint")
     }
 
     /// Gemini authenticates with `x-goog-api-key`. If the user customized
     /// `auth_header_name`/`auth_header_prefix`, respect the custom scheme
     /// instead (for gateways that expect `Authorization: Bearer …`).
-    fn build_headers(&self) -> HeaderMap {
+    fn build_headers(&self) -> Result<HeaderMap, LlmError> {
         build_headers(&self.endpoint, "x-goog-api-key", false)
     }
 
@@ -687,7 +692,7 @@ impl GeminiAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
@@ -751,7 +756,7 @@ impl GeminiAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(&body);
         // For streaming, only apply an HTTP-level timeout when explicitly configured.
         // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
@@ -776,7 +781,7 @@ impl GeminiAdapter {
         spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseOrRaw);
 
         struct UnfoldState {
-            rx: mpsc::UnboundedReceiver<String>,
+            rx: mpsc::UnboundedReceiver<Result<String, LlmError>>,
             done: bool,
             /// Accumulated text per part index (deltas are emitted as suffixes).
             /// Tracks EVERY part (including `thought: true` reasoning parts) so
@@ -818,7 +823,11 @@ impl GeminiAdapter {
                     return None;
                 }
                 let data = match state.rx.recv().await {
-                    Some(d) => d,
+                    Some(Ok(d)) => d,
+                    Some(Err(error)) => {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
                     None => {
                         // Gemini delivers args as already-parsed JSON; a name
                         // with Null args and no finish means the stream died
@@ -1072,7 +1081,7 @@ impl LlmClient for GeminiAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(&body);
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
@@ -1104,7 +1113,7 @@ impl LlmClient for GeminiAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.build_headers())
+            .headers(self.build_headers()?)
             .json(&body);
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
@@ -1130,7 +1139,7 @@ impl LlmClient for GeminiAdapter {
         health_check_request(
             &self.client,
             &self.models_url(),
-            self.build_headers(),
+            self.build_headers()?,
             self.endpoint.timeout_secs,
         )
         .await
@@ -1201,7 +1210,7 @@ mod tests {
             ..Default::default()
         };
         let client = GeminiAdapter::new(ep);
-        let headers = client.build_headers();
+        let headers = client.build_headers().unwrap();
         assert_eq!(
             headers.get("x-goog-api-key").unwrap().to_str().unwrap(),
             "AIza-test"
@@ -1218,7 +1227,13 @@ mod tests {
             ..Default::default()
         };
         let client = GeminiAdapter::new(ep);
-        assert!(client.build_headers().get("x-goog-api-key").is_some());
+        assert!(
+            client
+                .build_headers()
+                .unwrap()
+                .get("x-goog-api-key")
+                .is_some()
+        );
 
         let ep = ModelEndpoint {
             api_key: "key".into(),
@@ -1227,8 +1242,20 @@ mod tests {
             ..Default::default()
         };
         let client = GeminiAdapter::new(ep);
-        assert!(client.build_headers().get("x-gateway-key").is_some());
-        assert!(client.build_headers().get("x-goog-api-key").is_none());
+        assert!(
+            client
+                .build_headers()
+                .unwrap()
+                .get("x-gateway-key")
+                .is_some()
+        );
+        assert!(
+            client
+                .build_headers()
+                .unwrap()
+                .get("x-goog-api-key")
+                .is_none()
+        );
     }
 
     #[test]

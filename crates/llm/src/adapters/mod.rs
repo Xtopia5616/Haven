@@ -20,6 +20,7 @@ pub use capabilities::{
 pub use openai::OpenAiAdapter;
 
 use crate::client::LlmClient;
+use crate::types::LlmError;
 use haven_common::config::ModelEndpoint;
 use haven_common::types::{ContentPart, InjectSource};
 
@@ -34,6 +35,60 @@ pub(crate) use transport::{
 };
 pub use web_search::web_search_result_of;
 pub(crate) use web_search::{normalize_web_search_call_item, upsert_web_search_call};
+
+/// Adapter returned when endpoint construction fails. Keeping the failure in
+/// the client preserves the router's existing factory API while ensuring the
+/// first operation reports the actual configuration error instead of silently
+/// using reqwest's default client.
+struct UnavailableLlmClient {
+    style: &'static str,
+    error: LlmError,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for UnavailableLlmClient {
+    fn style(&self) -> &'static str {
+        self.style
+    }
+
+    async fn chat(
+        &self,
+        _messages: Vec<haven_common::types::CanonicalMessage>,
+    ) -> Result<crate::types::LlmResponse, LlmError> {
+        Err(self.error.clone())
+    }
+
+    async fn chat_stream(
+        &self,
+        _messages: Vec<haven_common::types::CanonicalMessage>,
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures_util::Stream<Item = Result<crate::types::StreamChunk, LlmError>> + Send,
+            >,
+        >,
+        LlmError,
+    > {
+        Err(self.error.clone())
+    }
+
+    async fn embed(&self, _input: Vec<String>) -> Result<crate::types::Embedding, LlmError> {
+        Err(self.error.clone())
+    }
+
+    async fn transcribe(&self, _wav_data: &[u8]) -> Result<crate::types::SttResult, LlmError> {
+        Err(self.error.clone())
+    }
+
+    async fn health_check(&self) -> Result<(), LlmError> {
+        Err(self.error.clone())
+    }
+}
+
+fn unavailable(style: &'static str, error: LlmError) -> Box<dyn LlmClient> {
+    tracing::error!(adapter = style, error = %error, "LLM adapter construction failed");
+    Box::new(UnavailableLlmClient { style, error })
+}
 
 /// Phase 8 / B3: apply wire-only inject prefix to user content parts.
 ///
@@ -102,18 +157,27 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
 /// - `deepgram` / `assemblyai`: speech-to-text only
 pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
     match normalize_api_style(api_style_for(endpoint)) {
-        "anthropic" => Box::new(anthropic::AnthropicAdapter::new(endpoint.clone())),
-        "gemini" => Box::new(gemini::GeminiAdapter::new(endpoint.clone())),
-        "openai-responses" => Box::new(openai_responses::OpenAiResponsesAdapter::new(
-            endpoint.clone(),
-        )),
-        "deepgram" => Box::new(deepgram::DeepgramAdapter::new(endpoint.clone())),
-        "assemblyai" => Box::new(assemblyai::AssemblyAiAdapter::new(endpoint.clone())),
-        "xai" => Box::new(openai::OpenAiAdapter::new_with_style(
-            endpoint.clone(),
-            "xai",
-        )),
-        _ => Box::new(openai::OpenAiAdapter::new(endpoint.clone())),
+        "anthropic" => anthropic::AnthropicAdapter::try_new(endpoint.clone())
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("anthropic", error)),
+        "gemini" => gemini::GeminiAdapter::try_new(endpoint.clone())
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("gemini", error)),
+        "openai-responses" => openai_responses::OpenAiResponsesAdapter::try_new(endpoint.clone())
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("openai-responses", error)),
+        "deepgram" => deepgram::DeepgramAdapter::try_new(endpoint.clone())
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("deepgram", error)),
+        "assemblyai" => assemblyai::AssemblyAiAdapter::try_new(endpoint.clone())
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("assemblyai", error)),
+        "xai" => openai::OpenAiAdapter::try_new_with_style(endpoint.clone(), "xai")
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("xai", error)),
+        _ => openai::OpenAiAdapter::try_new(endpoint.clone())
+            .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
+            .unwrap_or_else(|error| unavailable("openai-chat", error)),
     }
 }
 
@@ -200,7 +264,7 @@ mod tests {
             ..Default::default()
         };
         assert!(is_openrouter(&ep));
-        let headers = build_headers(&ep, "Authorization", true);
+        let headers = build_headers(&ep, "Authorization", true).unwrap();
         assert_eq!(
             headers.get("X-Title").and_then(|v| v.to_str().ok()),
             Some("Haven")
@@ -218,9 +282,41 @@ mod tests {
         assert!(!is_openrouter(&plain));
         assert!(
             build_headers(&plain, "Authorization", true)
+                .unwrap()
                 .get("X-Title")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn invalid_transport_configuration_is_not_silently_repaired() {
+        let invalid_proxy = ModelEndpoint {
+            proxy_url: Some("not a proxy URL".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            build_client(&invalid_proxy),
+            Err(LlmError::Configuration(_))
+        ));
+
+        let invalid_header = ModelEndpoint {
+            api_key: "key\nwith-control".into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            build_headers(&invalid_header, "Authorization", true),
+            Err(LlmError::Configuration(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn adapter_factory_preserves_construction_failure() {
+        let endpoint = ModelEndpoint {
+            proxy_url: Some("not a proxy URL".into()),
+            ..Default::default()
+        };
+        let error = adapter_for(&endpoint).health_check().await.unwrap_err();
+        assert!(matches!(error, LlmError::Configuration(_)));
     }
 
     #[test]

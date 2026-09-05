@@ -22,9 +22,14 @@ pub struct DeepgramAdapter {
 }
 
 impl DeepgramAdapter {
+    pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
+        let client = build_client(&endpoint)?;
+        Ok(Self { endpoint, client })
+    }
+
+    #[cfg(test)]
     pub fn new(endpoint: ModelEndpoint) -> Self {
-        let client = build_client(&endpoint);
-        Self { endpoint, client }
+        Self::try_new(endpoint).expect("valid test endpoint")
     }
 
     fn model(&self) -> &str {
@@ -50,11 +55,11 @@ impl DeepgramAdapter {
         out
     }
 
-    fn auth_headers(&self) -> HeaderMap {
+    fn auth_headers(&self) -> Result<HeaderMap, LlmError> {
         let mut headers = HeaderMap::new();
         let key = self.endpoint.api_key.trim();
         if key.is_empty() {
-            return headers;
+            return Ok(headers);
         }
         // Normalize to `Token <key>`. Strip a legacy `Deepgram ` scheme if
         // present; keep an already-correct `Token ` prefix as-is.
@@ -71,10 +76,11 @@ impl DeepgramAdapter {
         } else {
             format!("Token {key}")
         };
-        if let Ok(v) = HeaderValue::from_str(&value) {
-            headers.insert(AUTHORIZATION, v);
-        }
-        headers
+        let value = HeaderValue::from_str(&value).map_err(|error| {
+            LlmError::Configuration(format!("invalid Deepgram authentication header: {error}"))
+        })?;
+        headers.insert(AUTHORIZATION, value);
+        Ok(headers)
     }
 }
 
@@ -111,7 +117,7 @@ impl LlmClient for DeepgramAdapter {
         let mut req = self
             .client
             .post(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .header(CONTENT_TYPE, "audio/wav")
             .body(wav_data.to_vec());
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
@@ -154,7 +160,7 @@ mod tests {
             api_key: "abc".into(),
             ..Default::default()
         };
-        let headers = DeepgramAdapter::new(ep).auth_headers();
+        let headers = DeepgramAdapter::new(ep).auth_headers().unwrap();
         assert_eq!(
             headers.get(AUTHORIZATION).unwrap().to_str().unwrap(),
             "Token abc"
@@ -167,7 +173,7 @@ mod tests {
             api_key: "Token xyz".into(),
             ..Default::default()
         };
-        let headers = DeepgramAdapter::new(ep).auth_headers();
+        let headers = DeepgramAdapter::new(ep).auth_headers().unwrap();
         assert_eq!(
             headers.get(AUTHORIZATION).unwrap().to_str().unwrap(),
             "Token xyz"
@@ -190,7 +196,7 @@ mod tests {
             api_key: "Deepgram dg-key".into(),
             ..Default::default()
         };
-        let headers = DeepgramAdapter::new(ep).auth_headers();
+        let headers = DeepgramAdapter::new(ep).auth_headers().unwrap();
         assert_eq!(
             headers.get(AUTHORIZATION).unwrap().to_str().unwrap(),
             "Token dg-key"

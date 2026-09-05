@@ -85,12 +85,12 @@ impl ReActEngine {
         // but they never own queue reads or persistence.
         self.inject_turn_start_context(&ctx, state)
             .instrument(tracing::info_span!("inject", session_id, step_num))
-            .await;
+            .await?;
 
         self.hooks
             .before_step(self, &ctx, state, cancel.clone())
             .instrument(tracing::info_span!("before_step", session_id, step_num))
-            .await;
+            .await?;
 
         // Build one immutable provider projection. Durable canonical state is
         // never used as a scratch buffer by retries or provider repairs.
@@ -206,7 +206,7 @@ impl ReActEngine {
                 },
                 state,
             )
-            .await;
+            .await?;
             // Reconcile streamed reasoning with the final accepted response.
             ctx.emitter
                 .emit(crate::event::AgentEvent::ReasoningChunk {
@@ -242,12 +242,12 @@ impl ReActEngine {
         if let Some(text) = thought.clone() {
             let message_id = self.block_msg_id(session_id, step_num, ctx.run_id, "thought");
             self.apply_transcript(&ctx, TranscriptEvent::Thought { text, message_id }, state)
-                .await;
+                .await?;
         }
 
         let search_pushed = match self
             .prepare_search_context(&ctx, &response, &thought, &actions, state)
-            .await
+            .await?
         {
             SearchContextOutcome::ContinueWithoutTools => return Ok(TurnOutcome::Continue),
             SearchContextOutcome::Proceed {
@@ -281,7 +281,7 @@ impl ReActEngine {
                     None,
                     None,
                 )
-                .await;
+                .await?;
                 self.pause_turn(PauseTurnInput {
                     session_id,
                     state,

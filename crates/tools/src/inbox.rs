@@ -1120,7 +1120,26 @@ impl LockGuard {
                 .open(&path)
             {
                 Ok(mut f) => {
-                    let _ = writeln!(f, "pid={pid}");
+                    if let Err(error) = writeln!(f, "pid={pid}") {
+                        if let Err(cleanup) = remove_lock_file(&path) {
+                            tracing::error!(
+                                path = ?path,
+                                error = %cleanup,
+                                "failed to clean up inbox lock after write failure"
+                            );
+                        }
+                        return Err(error.into());
+                    }
+                    if let Err(error) = f.sync_all() {
+                        if let Err(cleanup) = remove_lock_file(&path) {
+                            tracing::error!(
+                                path = ?path,
+                                error = %cleanup,
+                                "failed to clean up inbox lock after sync failure"
+                            );
+                        }
+                        return Err(error.into());
+                    }
                     return Ok(Self { path });
                 }
                 // Windows quirk: a `create_new` racing with another thread's
@@ -1132,8 +1151,8 @@ impl LockGuard {
                         std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
                     ) =>
                 {
-                    if lock_is_stale(&path) {
-                        let _ = std::fs::remove_file(&path);
+                    if lock_is_stale(&path)? {
+                        remove_lock_file(&path)?;
                         continue;
                     }
                     if SystemTime::now() >= deadline {
@@ -1147,18 +1166,37 @@ impl LockGuard {
     }
 }
 
-fn lock_is_stale(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .is_some_and(|t| t.elapsed().unwrap_or_default() > LOCK_STALE_AFTER)
+fn lock_is_stale(path: &Path) -> anyhow::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.modified()?.elapsed()? > LOCK_STALE_AFTER),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_lock_file(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        let mine = std::fs::read_to_string(&self.path).unwrap_or_default();
-        if mine.trim() == format!("pid={}", std::process::id()) {
-            let _ = std::fs::remove_file(&self.path);
+        match std::fs::read_to_string(&self.path) {
+            Ok(mine) if mine.trim() == format!("pid={}", std::process::id()) => {
+                if let Err(error) = remove_lock_file(&self.path) {
+                    tracing::error!(path = ?self.path, error = %error, "failed to remove inbox lock");
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::error!(
+                path = ?self.path,
+                error = %error,
+                "failed to verify inbox lock owner; leaving lock in place"
+            ),
         }
     }
 }
