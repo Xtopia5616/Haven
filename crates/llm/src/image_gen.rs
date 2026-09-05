@@ -127,16 +127,11 @@ fn imagegen_http_client(timeout: Duration) -> reqwest::Client {
 }
 
 fn imagegen_body_error(kind: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
-    let trimmed = body.trim();
+    let trimmed = haven_common::error::sanitize_error_text(body);
     if trimmed.is_empty() {
         anyhow::anyhow!("{kind} request failed: HTTP {}", status)
     } else {
-        let snippet = if trimmed.len() > 300 {
-            &trimmed[..300]
-        } else {
-            trimmed
-        };
-        anyhow::anyhow!("{kind} request failed (HTTP {}): {}", status, snippet)
+        anyhow::anyhow!("{kind} request failed (HTTP {}): {}", status, trimmed)
     }
 }
 
@@ -168,20 +163,28 @@ async fn openai_image_from_response(
         });
     }
     if let Some(url) = data.get("url").and_then(|u| u.as_str()) {
-        let resp = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("OpenAI image url fetch failed: {e}"))?;
+        let resp = client.get(url).send().await.map_err(|e| {
+            anyhow::anyhow!(
+                "OpenAI image url fetch failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "OpenAI image error response read failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
             return Err(imagegen_body_error("OpenAI image fetch", status, &body));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| anyhow::anyhow!("OpenAI image fetch read failed: {e}"))?;
+        let bytes = resp.bytes().await.map_err(|e| {
+            anyhow::anyhow!(
+                "OpenAI image fetch read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         return Ok(GeneratedImage {
             media_type: "image/png".into(),
             data: bytes.to_vec(),
@@ -274,14 +277,19 @@ impl ImageGenClient for OpenAiImageGenClient {
             .json(&payload)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("OpenAI image request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "OpenAI image request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<String>();
+        let body = resp.text().await.map_err(|e| {
+            anyhow::anyhow!(
+                "OpenAI image response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         if !status.is_success() {
             return Err(imagegen_body_error("OpenAI image", status, &body));
         }
@@ -325,8 +333,8 @@ impl ImageGenClient for GeminiImageGenClient {
             anyhow::bail!("Gemini image generation requires an api_key");
         }
         let url = format!(
-            "{}/v1beta/models/{}:generateContent?key={}",
-            self.base_url, self.model, self.api_key
+            "{}/v1beta/models/{}:generateContent",
+            self.base_url, self.model
         );
         let payload = serde_json::json!({
             "contents": [{"parts": [{"text": prompt}]}],
@@ -335,17 +343,23 @@ impl ImageGenClient for GeminiImageGenClient {
         let resp = self
             .client
             .post(&url)
+            .header("x-goog-api-key", &self.api_key)
             .json(&payload)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Gemini image request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Gemini image request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<String>();
+        let body = resp.text().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Gemini image response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         if !status.is_success() {
             return Err(imagegen_body_error("Gemini image", status, &body));
         }

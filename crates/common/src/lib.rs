@@ -1,5 +1,6 @@
 pub mod config;
 pub mod encoding;
+pub mod error;
 pub mod hooks;
 pub mod prompts;
 pub mod text;

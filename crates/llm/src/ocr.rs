@@ -67,16 +67,11 @@ fn media_http_client(timeout: Duration) -> reqwest::Client {
 /// Error text extraction for media HTTP responses, so upstream error bodies
 /// surface as helpful messages instead of raw HTTP status numbers.
 fn media_error_body(kind: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
-    let trimmed = body.trim();
+    let trimmed = haven_common::error::sanitize_error_text(body);
     if trimmed.is_empty() {
         anyhow::anyhow!("{kind} request failed: HTTP {}", status)
     } else {
-        let snippet = if trimmed.len() > 300 {
-            &trimmed[..300]
-        } else {
-            trimmed
-        };
-        anyhow::anyhow!("{kind} request failed (HTTP {}): {}", status, snippet)
+        anyhow::anyhow!("{kind} request failed (HTTP {}): {}", status, trimmed)
     }
 }
 
@@ -235,23 +230,32 @@ impl BaiduOcrClient {
                 return Ok(token.clone());
             }
         }
-        let url = format!(
-            "https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id={}&client_secret={}",
-            self.api_key, self.api_secret
-        );
+        let url = "https://aip.baidubce.com/oauth/2.0/token";
+        let form = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("grant_type", "client_credentials")
+            .append_pair("client_id", &self.api_key)
+            .append_pair("client_secret", &self.api_secret)
+            .finish();
         let resp = self
             .client
-            .get(&url)
+            .post(url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Baidu token request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Baidu token request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<String>();
+        let body = resp.text().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Baidu token response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         if !status.is_success() {
             return Err(media_error_body("Baidu token", status, &body));
         }
@@ -261,7 +265,10 @@ impl BaiduOcrClient {
             .get("access_token")
             .and_then(|t| t.as_str())
             .ok_or_else(|| {
-                anyhow::anyhow!("Baidu token response missing 'access_token': {body}")
+                anyhow::anyhow!(
+                    "Baidu token response missing 'access_token': {}",
+                    haven_common::error::sanitize_error_text(&body)
+                )
             })?;
         let token = token.to_string();
         *self.token_cache.lock().unwrap() = Some((token.clone(), Instant::now()));
@@ -290,14 +297,19 @@ impl OcrClient for BaiduOcrClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Baidu OCR request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Baidu OCR request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<String>();
+        let body = resp.text().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Baidu OCR response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         if !status.is_success() {
             return Err(media_error_body("Baidu OCR", status, &body));
         }
@@ -345,7 +357,12 @@ impl OcrClient for AzureOcrClient {
             .body(image_bytes.to_vec())
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Azure OCR request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Azure OCR request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
         let body = resp
             .text()
@@ -489,7 +506,12 @@ impl OcrClient for TencentOcrClient {
             .body(payload)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Tencent OCR request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Tencent OCR request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
         let body = resp
             .text()

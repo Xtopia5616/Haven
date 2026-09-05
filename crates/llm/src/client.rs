@@ -164,35 +164,27 @@ pub trait LlmClient: Send + Sync {
 /// JSON schemas: `{"error":{"message":"..."}}`, `{"message":"..."}`,
 /// `{"detail":"..."}`, or fall back to the raw body.
 fn extract_error_body(body: &str) -> String {
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+    let extracted = if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
         // OpenAI: {"error": {"message": "...", "code": "..."}}
         if let Some(msg) = val
             .get("error")
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
-            return msg.to_string();
+            msg.to_string()
+        } else if let Some(msg) = val.get("message").and_then(|m| m.as_str()) {
+            msg.to_string()
+        } else if let Some(msg) = val.get("detail").and_then(|m| m.as_str()) {
+            msg.to_string()
+        } else if let Some(msg) = val.get("error").and_then(|m| m.as_str()) {
+            msg.to_string()
+        } else {
+            serde_json::to_string(&val).unwrap_or_else(|_| "provider returned an error".into())
         }
-        // Generic: {"message": "..."}
-        if let Some(msg) = val.get("message").and_then(|m| m.as_str()) {
-            return msg.to_string();
-        }
-        // Generic: {"detail": "..."}
-        if let Some(msg) = val.get("detail").and_then(|m| m.as_str()) {
-            return msg.to_string();
-        }
-        // Generic: {"error": "..."} (flat)
-        if let Some(msg) = val.get("error").and_then(|m| m.as_str()) {
-            return msg.to_string();
-        }
-        // Fallback: pretty-print the first 500 chars of JSON
-        let s = serde_json::to_string(&val).unwrap_or_default();
-        if s.len() <= 500 {
-            return s;
-        }
-        return s[..500].to_string();
-    }
-    body.to_string()
+    } else {
+        body.to_string()
+    };
+    haven_common::error::sanitize_error_text(&extracted)
 }
 
 /// Shared HTTP status → `LlmError` mapping used by all adapters.
@@ -269,7 +261,7 @@ where
                     "llm retry {} after {:?} (error: {})",
                     attempt,
                     actual_delay,
-                    e
+                    haven_common::error::sanitize_error_text(&e.to_string())
                 );
                 if let Some(cancel) = cancel {
                     tokio::select! {

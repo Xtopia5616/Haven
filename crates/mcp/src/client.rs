@@ -788,15 +788,17 @@ impl McpClient {
                                 break;
                             }
                             Err(e) => {
+                                let safe_error =
+                                    haven_common::error::sanitize_error_text(&e.to_string());
                                 retries += 1;
                                 *self.reconnect_retries.lock().await = retries;
                                 *self.last_error.lock().await =
-                                    Some(format!("reconnect failed: {e}"));
+                                    Some(format!("reconnect failed: {safe_error}"));
                                 backoff = (backoff * 2).min(max_backoff);
                                 let _ = status_tx.send(McpStatusChangeEvent {
                                     name: self.name.clone(),
                                     status: McpClientStatus::Offline {
-                                        error: format!("reconnect failed: {e}"),
+                                        error: format!("reconnect failed: {safe_error}"),
                                     },
                                 });
                             }

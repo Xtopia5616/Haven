@@ -216,17 +216,19 @@ impl McpManager {
                     drop(client);
                 }
                 Ok((name, client, status_tx, Err(e), t0)) => {
+                    let safe_error = haven_common::error::sanitize_error_text(&e.to_string());
                     tracing::warn!(
                         "MCP server '{}' failed to connect after {:?}: {} (will retry later)",
                         name,
                         t0.elapsed(),
-                        e
+                        safe_error
                     );
-                    *client.last_error.lock().await = Some(format!("initial connect failed: {e}"));
+                    *client.last_error.lock().await =
+                        Some(format!("initial connect failed: {safe_error}"));
                     let _ = status_tx.send(McpStatusChangeEvent {
                         name: name.clone(),
                         status: McpClientStatus::Offline {
-                            error: format!("initial connect failed: {e}"),
+                            error: format!("initial connect failed: {safe_error}"),
                         },
                     });
                 }

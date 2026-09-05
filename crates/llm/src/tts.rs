@@ -152,16 +152,28 @@ impl TtsClient for OpenAiTtsClient {
             .json(&payload)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("OpenAI TTS request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "OpenAI TTS request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "OpenAI TTS error response read failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
             return Err(media_body_error("OpenAI TTS", status, &body));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| anyhow::anyhow!("OpenAI TTS response read failed: {e}"))?;
+        let bytes = resp.bytes().await.map_err(|e| {
+            anyhow::anyhow!(
+                "OpenAI TTS response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         Ok(bytes.to_vec())
     }
 }
@@ -212,32 +224,39 @@ impl TtsClient for ElevenLabsTtsClient {
             .json(&payload)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("ElevenLabs TTS request failed: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "ElevenLabs TTS request failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "ElevenLabs TTS error response read failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
             return Err(media_body_error("ElevenLabs TTS", status, &body));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| anyhow::anyhow!("ElevenLabs TTS response read failed: {e}"))?;
+        let bytes = resp.bytes().await.map_err(|e| {
+            anyhow::anyhow!(
+                "ElevenLabs TTS response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         Ok(bytes.to_vec())
     }
 }
 
 /// Error text extraction for media HTTP responses.
 fn media_body_error(kind: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
-    let trimmed = body.trim();
+    let trimmed = haven_common::error::sanitize_error_text(body);
     if trimmed.is_empty() {
         anyhow::anyhow!("{kind} request failed: HTTP {}", status)
     } else {
-        let snippet = if trimmed.len() > 300 {
-            &trimmed[..300]
-        } else {
-            trimmed
-        };
-        anyhow::anyhow!("{kind} request failed (HTTP {}): {}", status, snippet)
+        anyhow::anyhow!("{kind} request failed (HTTP {}): {}", status, trimmed)
     }
 }
 

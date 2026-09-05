@@ -123,8 +123,17 @@ impl HttpInner {
         };
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("MCP HTTP error (status {}): {}", status.as_u16(), body);
+            let body = resp.text().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "MCP HTTP error response read failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
+            anyhow::bail!(
+                "MCP HTTP error (status {}): {}",
+                status.as_u16(),
+                haven_common::error::sanitize_error_text(&body)
+            );
         }
         // Capture/refresh the session id so subsequent requests (and the SSE
         // listener) can attach it.
@@ -175,10 +184,16 @@ impl HttpInner {
         };
         let status = resp.status();
         if !status.is_success() {
+            let body = resp.text().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "MCP HTTP notify error response read failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                )
+            })?;
             anyhow::bail!(
                 "MCP HTTP notify error (status {}): {}",
                 status.as_u16(),
-                resp.text().await.unwrap_or_default()
+                haven_common::error::sanitize_error_text(&body)
             );
         }
         // Drain the body to release the connection for reuse.

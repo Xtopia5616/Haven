@@ -21,6 +21,7 @@ sha2.workspace = true
 chrono.workspace = true
 encoding_rs.workspace = true
 haven-common = { path = "../common" }
+url = "2.5.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "macros", "test-util"] }
