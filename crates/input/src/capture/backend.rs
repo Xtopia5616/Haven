@@ -154,7 +154,9 @@ impl CpalBackend {
         // Pausing then dropping releases the device; in-flight callbacks
         // finish before the stream is torn down, so the ring stays intact.
         if let Some(stream) = self.stream.take() {
-            let _ = stream.pause();
+            if let Err(error) = stream.pause() {
+                tracing::warn!(error = %error, "failed to pause cpal capture stream during stop");
+            }
         }
         self.running = false;
         tracing::debug!("cpal capture stopped");
@@ -306,13 +308,19 @@ fn process_chunk<T: Sample>(
     if peak > SIGNAL_FLOOR {
         signals.has_signal.store(true, Ordering::SeqCst);
     }
-    if let Ok(mut ring) = ring.lock() {
-        ring.push(resampled.as_slice());
-    } else if !diag.poison_logged {
-        // The engine thread panicked and poisoned the ring; audio cannot be
-        // delivered anyway. Log once per stream, not every 10 ms callback.
-        diag.poison_logged = true;
-        tracing::error!("capture ring lock poisoned; dropping audio chunks");
+    match ring.lock() {
+        Ok(mut ring) => ring.push(resampled.as_slice()),
+        Err(poisoned) => {
+            // The engine thread panicked and poisoned the ring. Recover the
+            // guard for teardown, but also stop the recording instead of
+            // silently continuing with a stream whose samples are discarded.
+            signals.stream_failed.store(true, Ordering::SeqCst);
+            if !diag.poison_logged {
+                diag.poison_logged = true;
+                tracing::error!("capture ring lock poisoned; stopping recording");
+            }
+            drop(poisoned);
+        }
     }
 }
 

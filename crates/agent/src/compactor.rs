@@ -3,16 +3,25 @@ use haven_common::prompts::CONVERSATION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::{EndpointRole, LlmError, LlmRouter, ToolDefinition};
 use std::sync::Arc;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 use tiktoken_rs::o200k_base;
 use tokio_util::sync::CancellationToken;
 
-static TOKENIZER: LazyLock<tiktoken_rs::CoreBPE> =
-    LazyLock::new(|| o200k_base().expect("failed to initialize o200k_base tokenizer"));
+static TOKENIZER: LazyLock<Result<tiktoken_rs::CoreBPE, String>> =
+    LazyLock::new(|| o200k_base().map_err(|error| error.to_string()));
+static TOKENIZER_WARNING_LOGGED: OnceLock<()> = OnceLock::new();
 
 /// Token estimation using o200k_base tokenizer for accurate counts.
 pub fn estimate_tokens(text: &str) -> u32 {
-    TOKENIZER.encode_with_special_tokens(text).len() as u32
+    match &*TOKENIZER {
+        Ok(tokenizer) => tokenizer.encode_with_special_tokens(text).len() as u32,
+        Err(error) => {
+            TOKENIZER_WARNING_LOGGED.get_or_init(|| {
+                tracing::error!(error = %error, "failed to initialize tokenizer; using conservative character estimate");
+            });
+            text.chars().count().div_ceil(4) as u32
+        }
+    }
 }
 
 /// Estimate the provider-visible token cost of one canonical message.

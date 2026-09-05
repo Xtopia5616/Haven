@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex as StdMutex;
+use std::sync::{Mutex as StdMutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -108,44 +108,53 @@ pub struct ToolCircuitRegistry {
     breakers: StdMutex<HashMap<String, ToolCircuitBreaker>>,
 }
 
+fn lock_breakers<'a>(
+    lock: &'a StdMutex<HashMap<String, ToolCircuitBreaker>>,
+) -> MutexGuard<'a, HashMap<String, ToolCircuitBreaker>> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        tracing::error!("tool circuit registry lock poisoned; recovering state");
+        poisoned.into_inner()
+    })
+}
+
 impl ToolCircuitRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn allow_request(&self, tool_name: &str) -> bool {
-        let mut breakers = self.breakers.lock().unwrap();
+        let mut breakers = lock_breakers(&self.breakers);
         let breaker = breakers.entry(tool_name.to_string()).or_default();
         breaker.allow_request()
     }
 
     pub fn record_success(&self, tool_name: &str) {
-        let mut breakers = self.breakers.lock().unwrap();
+        let mut breakers = lock_breakers(&self.breakers);
         if let Some(b) = breakers.get_mut(tool_name) {
             b.record_success();
         }
     }
 
     pub fn record_failure(&self, tool_name: &str) {
-        let mut breakers = self.breakers.lock().unwrap();
+        let mut breakers = lock_breakers(&self.breakers);
         let breaker = breakers.entry(tool_name.to_string()).or_default();
         breaker.record_failure()
     }
 
     pub fn is_open(&self, tool_name: &str) -> bool {
-        let breakers = self.breakers.lock().unwrap();
+        let breakers = lock_breakers(&self.breakers);
         breakers.get(tool_name).is_some_and(|b| b.is_open())
     }
 
     pub fn reset(&self, tool_name: &str) {
-        let mut breakers = self.breakers.lock().unwrap();
+        let mut breakers = lock_breakers(&self.breakers);
         if let Some(b) = breakers.get_mut(tool_name) {
             b.record_success();
         }
     }
 
     pub fn reset_all(&self) {
-        let mut breakers = self.breakers.lock().unwrap();
+        let mut breakers = lock_breakers(&self.breakers);
         for b in breakers.values_mut() {
             b.record_success();
         }

@@ -1,11 +1,18 @@
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_memory::Database;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        tracing::error!(lock = name, "agent event lock poisoned; recovering state");
+        poisoned.into_inner()
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
@@ -265,7 +272,7 @@ impl BufferedEmitter {
         let worker = this.clone();
         tokio::spawn(async move {
             loop {
-                let ev = worker.queue.lock().unwrap().pop_front();
+                let ev = lock_or_recover(&worker.queue, "buffered_event_queue").pop_front();
                 match ev {
                     Some(ev) => inner.emit(ev).await,
                     None => {
@@ -276,7 +283,7 @@ impl BufferedEmitter {
                         let notified = worker.notify.notified();
                         tokio::pin!(notified);
                         notified.as_mut().enable();
-                        if worker.queue.lock().unwrap().is_empty() {
+                        if lock_or_recover(&worker.queue, "buffered_event_queue").is_empty() {
                             notified.await;
                         }
                     }
@@ -299,7 +306,7 @@ fn is_chunk_event(event: &AgentEvent) -> bool {
 #[async_trait]
 impl AgentEventEmitter for BufferedEmitter {
     async fn emit(&self, event: AgentEvent) {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = lock_or_recover(&self.queue, "buffered_event_queue");
         if queue.len() >= self.capacity {
             if let Some(pos) = queue.iter().position(is_chunk_event) {
                 queue.remove(pos);
@@ -705,7 +712,7 @@ impl EventDispatcher {
     }
 
     pub fn set_emitter(&self, emitter: Arc<dyn AgentEventEmitter>) {
-        *self.emitter.lock().unwrap() = Some(emitter);
+        *lock_or_recover(&self.emitter, "event_emitter") = Some(emitter);
     }
 
     /// Create an `EventBus`, install it as the active emitter, and return a
@@ -718,7 +725,7 @@ impl EventDispatcher {
     }
 
     pub fn emitter_arc(&self) -> Option<Arc<dyn AgentEventEmitter>> {
-        self.emitter.lock().unwrap().clone()
+        lock_or_recover(&self.emitter, "event_emitter").clone()
     }
 
     pub(crate) fn spawn_chunk_consumer_raw(
@@ -743,7 +750,7 @@ impl EventDispatcher {
     }
 
     pub async fn emit_session_created(&self, session: &SessionInfo) {
-        let emitter = self.emitter.lock().unwrap().clone();
+        let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::SessionCreated(session.clone()))
@@ -752,7 +759,7 @@ impl EventDispatcher {
     }
 
     pub async fn emit_session_completed(&self, session_id: &str, title: &str) {
-        let emitter = self.emitter.lock().unwrap().clone();
+        let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::SessionCompleted {
@@ -769,7 +776,7 @@ impl EventDispatcher {
             session_id,
             status
         );
-        let emitter = self.emitter.lock().unwrap().clone();
+        let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::SessionUpdated {
@@ -781,7 +788,7 @@ impl EventDispatcher {
     }
 
     pub async fn emit_title_updated(&self, session_id: &str, title: &str) {
-        let emitter = self.emitter.lock().unwrap().clone();
+        let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::TitleUpdated {
@@ -795,7 +802,7 @@ impl EventDispatcher {
     /// Surface a user-facing notification (used by fired scheduled_actions, which are
     /// not tied to a session). Same event the `notify` tool produces.
     pub async fn emit_notification(&self, title: &str, body: &str) {
-        let emitter = self.emitter.lock().unwrap().clone();
+        let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::Notification {

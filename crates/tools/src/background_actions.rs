@@ -1,9 +1,19 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::Instrument;
+
+fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        tracing::error!(
+            lock = name,
+            "background action lock poisoned; recovering state"
+        );
+        poisoned.into_inner()
+    })
+}
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
 use crate::process::{kill_process_tree, read_stream_capped, take_tail_if_changed};
@@ -48,11 +58,11 @@ pub(crate) struct EventSinkState(Mutex<Option<EventSink>>);
 
 impl EventSinkState {
     pub(crate) fn set(&self, sink: EventSink) {
-        *self.0.lock().unwrap() = Some(sink);
+        *lock_or_recover(&self.0, "event_sink") = Some(sink);
     }
 
     pub(crate) fn emit(&self, event: &str, payload: Value) {
-        if let Some(sink) = self.0.lock().unwrap().as_ref() {
+        if let Some(sink) = lock_or_recover(&self.0, "event_sink").as_ref() {
             sink(event.to_string(), payload);
         }
     }
@@ -130,7 +140,13 @@ fn terminal_entry_stale(entry: &BackgroundAction, ttl: Duration) -> bool {
             return false;
         }
     };
-    chrono::Utc::now() - finished_ts > chrono::Duration::from_std(ttl).unwrap()
+    let Ok(ttl) = chrono::Duration::from_std(ttl) else {
+        // An unrepresentable duration is effectively infinite from the
+        // action registry's perspective; retain the entry rather than panic
+        // during cleanup.
+        return false;
+    };
+    chrono::Utc::now() - finished_ts > ttl
 }
 
 /// Registry of background tool actions (refine: long-running commands).
@@ -320,7 +336,7 @@ impl BackgroundActions {
     pub fn take_completion_receiver(
         &self,
     ) -> Option<mpsc::UnboundedReceiver<BackgroundActionCompletion>> {
-        self.completion_rx.lock().unwrap().take()
+        lock_or_recover(&self.completion_rx, "completion_receiver").take()
     }
 
     /// Emit a completion notification for a action (if it has a terminal state),
@@ -916,7 +932,7 @@ fn running_status_json(action_id: &str, entry: &BackgroundAction) -> Value {
         v["started_at"] = json!(started_at);
     }
     if let Some(tail) = &entry.tail {
-        let out = tail.lock().unwrap();
+        let out = lock_or_recover(tail, "action_output_tail");
         if !out.is_empty() {
             v["output"] = json!(out.as_str());
         }

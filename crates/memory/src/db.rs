@@ -141,10 +141,22 @@ impl Drop for PooledConnection<'_> {
             // transaction and the held write lock would block the other
             // pooled connections. Fails silently when no transaction is open.
             let _ = conn.execute_batch("ROLLBACK");
-            let mut st = self.pool.state.lock().unwrap();
-            st.idle.push(conn);
-            st.active -= 1;
-            self.pool.cv.notify_one();
+            match self.pool.state.lock() {
+                Ok(mut st) => {
+                    st.idle.push(conn);
+                    st.active -= 1;
+                    self.pool.cv.notify_one();
+                }
+                Err(poisoned) => {
+                    tracing::error!(
+                        "database pool lock poisoned while returning connection; recovering state"
+                    );
+                    let mut st = poisoned.into_inner();
+                    st.idle.push(conn);
+                    st.active = st.active.saturating_sub(1);
+                    self.pool.cv.notify_one();
+                }
+            }
         }
     }
 }

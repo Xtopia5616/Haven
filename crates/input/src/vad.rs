@@ -15,6 +15,9 @@ fn zero_recurrent_state() -> Result<Tensor> {
 
 /// Root-mean-square energy of a frame.
 pub fn frame_energy(frame: &[f32]) -> f32 {
+    if frame.is_empty() {
+        return 0.0;
+    }
     (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt()
 }
 
@@ -74,36 +77,38 @@ impl VadEngine {
     /// the model round-trip; the energy check deliberately lives there —
     /// running it here again would recompute the same sum-of-squares per
     /// frame.
-    pub fn infer(&mut self, frame: &[f32]) -> f32 {
+    pub fn infer(&mut self, frame: &[f32]) -> Result<f32> {
         if frame.len() < FRAME_SIZE {
-            return 0.0;
+            return Ok(0.0);
         }
 
-        let input = Tensor::from_slice(&[1, FRAME_SIZE], &frame[..FRAME_SIZE]).unwrap();
-        let sr = Tensor::from_slice(&[], &[16000i64]).unwrap();
+        let input = Tensor::from_slice(&[1, FRAME_SIZE], &frame[..FRAME_SIZE])?;
+        let sr = Tensor::from_slice(&[], &[16000i64])?;
         let recurrent_state = self.recurrent_state.clone();
 
-        let result = self
-            .execution_state
-            .run([input, sr, recurrent_state])
-            .unwrap();
+        let result = self.execution_state.run([input, sr, recurrent_state])?;
 
-        let prob = result[0]
-            .as_slice::<f32>()
-            .unwrap()
+        let prob = result
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("VAD model returned no probability output"))?
+            .as_slice::<f32>()?
             .iter()
             .copied()
             .next()
-            .unwrap_or(0.0);
+            .ok_or_else(|| anyhow::anyhow!("VAD probability output was empty"))?;
 
-        self.recurrent_state = result[1].clone();
+        self.recurrent_state = result
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("VAD model returned no recurrent state output"))?
+            .clone();
 
-        prob
+        Ok(prob)
     }
 
-    pub fn reset(&mut self) {
-        self.execution_state = self.model.spawn_state().unwrap();
-        self.recurrent_state = zero_recurrent_state().unwrap();
+    pub fn reset(&mut self) -> Result<()> {
+        self.execution_state = self.model.spawn_state()?;
+        self.recurrent_state = zero_recurrent_state()?;
+        Ok(())
     }
 }
 
@@ -259,13 +264,13 @@ mod tests {
         let frame: Vec<f32> = (0..FRAME_SIZE)
             .map(|i| 0.3 * (i as f32 * 0.1).sin())
             .collect();
-        let prob = engine.infer(&frame);
+        let prob = engine.infer(&frame).expect("VAD inference should succeed");
         assert!((0.0..=1.0).contains(&prob), "prob out of range: {prob}");
         // A second inference reuses the updated state without panic.
-        let prob2 = engine.infer(&frame);
+        let prob2 = engine.infer(&frame).expect("VAD inference should succeed");
         assert!((0.0..=1.0).contains(&prob2));
-        engine.reset();
-        let prob3 = engine.infer(&frame);
+        engine.reset().expect("VAD reset should succeed");
+        let prob3 = engine.infer(&frame).expect("VAD inference should succeed");
         assert!((0.0..=1.0).contains(&prob3));
     }
 }

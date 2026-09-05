@@ -101,7 +101,13 @@ impl EngineHandle {
     /// for the engine's command poll. Only the mutex is contended, and only
     /// for the duration of one copy.
     pub fn drain_shared(&self) -> Vec<f32> {
-        self.ring.lock().expect("ring lock poisoned").drain()
+        self.ring
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("capture ring lock poisoned; recovering state");
+                poisoned.into_inner()
+            })
+            .drain()
     }
 
     /// Stop the capture stream (releasing the device), drain the ring and
@@ -109,20 +115,18 @@ impl EngineHandle {
     pub async fn stop_and_drain(&self) -> Result<Vec<f32>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         if self.cmd_tx.send(EngineCommand::StopAndDrain(tx)).is_err() {
-            return Ok(Vec::new());
+            return Err(anyhow!("capture engine is gone while stopping"));
         }
         let data = match tokio::time::timeout(CMD_TIMEOUT, rx).await {
             Ok(Ok(data)) => data,
             Ok(Err(_)) => {
-                tracing::warn!("stop_and_drain: engine dropped the reply channel");
-                Vec::new()
+                return Err(anyhow!("capture engine dropped the stop reply"));
             }
             Err(_) => {
-                tracing::warn!(
-                    "stop_and_drain: engine did not reply within {:?}",
+                return Err(anyhow!(
+                    "capture engine did not reply within {:?}",
                     CMD_TIMEOUT
-                );
-                Vec::new()
+                ));
             }
         };
         Ok(data)
@@ -240,7 +244,13 @@ impl Engine {
             let _ = backend.stop();
         }
         self.signals = Self::new_signals(&self.out_failed);
-        self.ring.lock().expect("ring lock poisoned").clear();
+        self.ring
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("capture ring lock poisoned; recovering state");
+                poisoned.into_inner()
+            })
+            .clear();
         self.out_failed.store(false, Ordering::SeqCst);
         self.out_silent_abort.store(false, Ordering::SeqCst);
 
@@ -271,7 +281,13 @@ impl Engine {
         self.recording = false;
         self.started_at = None;
         self.out_failed.store(false, Ordering::SeqCst);
-        self.ring.lock().expect("ring lock poisoned").drain()
+        self.ring
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("capture ring lock poisoned; recovering state");
+                poisoned.into_inner()
+            })
+            .drain()
     }
 
     fn cmd_stop_and_clear(&mut self) {
@@ -281,7 +297,13 @@ impl Engine {
         self.recording = false;
         self.started_at = None;
         self.out_failed.store(false, Ordering::SeqCst);
-        self.ring.lock().expect("ring lock poisoned").clear();
+        self.ring
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("capture ring lock poisoned; recovering state");
+                poisoned.into_inner()
+            })
+            .clear();
     }
 
     /// Background work between commands: run the silent-capture check. Audio

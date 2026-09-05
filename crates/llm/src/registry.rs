@@ -295,7 +295,9 @@ impl ModelRegistry {
                 break;
             }
         }
-        let resp = resp.expect("model discovery always has at least one URL");
+        let resp = resp.ok_or_else(|| {
+            crate::LlmError::InvalidResponse("model discovery produced no response".into())
+        })?;
 
         if !resp.status().is_success() {
             let code = resp.status().as_u16();

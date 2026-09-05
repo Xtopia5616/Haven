@@ -34,6 +34,19 @@ pub use wav::encode_wav_to_vec;
 const VAD_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
 const RECORDING_LOOP_INTERVAL: Duration = Duration::from_millis(30);
 
+fn lock_std_or_recover<'a, T>(
+    lock: &'a StdMutex<T>,
+    name: &'static str,
+) -> std::sync::MutexGuard<'a, T> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        tracing::error!(
+            lock = name,
+            "input pipeline lock poisoned; recovering state"
+        );
+        poisoned.into_inner()
+    })
+}
+
 /// Unified input-pipeline hook surface. Both methods have no-op defaults, so
 /// an implementation only overrides the hooks it needs.
 #[async_trait]
@@ -150,7 +163,8 @@ impl InputPipeline {
 
     /// Replace the unified context limits (audio ring buffer size).
     pub fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
-        *self.ring_buffer_secs.lock().unwrap() = limits.input_ring_buffer_secs;
+        *lock_std_or_recover(&self.ring_buffer_secs, "ring_buffer_secs") =
+            limits.input_ring_buffer_secs;
     }
 
     /// Install or clear the dedicated STT client (cloud / MCP). Mutually
@@ -180,9 +194,9 @@ impl InputPipeline {
     /// inferences just queue behind the load.
     pub async fn prewarm(&self) {
         {
-            let mut guard = self.engine.lock().expect("engine lock poisoned");
+            let mut guard = lock_std_or_recover(&self.engine, "engine");
             if guard.is_none() {
-                let ring_secs = *self.ring_buffer_secs.lock().unwrap();
+                let ring_secs = *lock_std_or_recover(&self.ring_buffer_secs, "ring_buffer_secs");
                 match capture::spawn_engine(ring_secs) {
                     Ok(h) => {
                         *guard = Some(h);
@@ -201,7 +215,7 @@ impl InputPipeline {
     /// recording). The engine loads on the worker in the background; a failed
     /// spawn leaves VAD disabled for this process.
     fn ensure_vad_worker(&self) -> Option<Arc<VadWorker>> {
-        let mut guard = self.vad_worker.lock().expect("vad_worker lock poisoned");
+        let mut guard = lock_std_or_recover(&self.vad_worker, "vad_worker");
         if guard.is_none() {
             match VadWorker::spawn() {
                 Ok(w) => {
@@ -249,14 +263,15 @@ impl InputPipeline {
 
         // Ensure the engine is running (prewarm may have been skipped).
         let handle = {
-            let existing = self.engine.lock().expect("engine lock poisoned").clone();
+            let existing = lock_std_or_recover(&self.engine, "engine").clone();
             match existing {
                 Some(h) => h,
                 None => {
-                    let ring_secs = *self.ring_buffer_secs.lock().unwrap();
+                    let ring_secs =
+                        *lock_std_or_recover(&self.ring_buffer_secs, "ring_buffer_secs");
                     match capture::spawn_engine(ring_secs) {
                         Ok(h) => {
-                            *self.engine.lock().expect("engine lock poisoned") = Some(h.clone());
+                            *lock_std_or_recover(&self.engine, "engine") = Some(h.clone());
                             h
                         }
                         Err(e) => {
@@ -286,22 +301,15 @@ impl InputPipeline {
         }
 
         let cancel = CancellationToken::new();
-        *self
-            .cancel_token
-            .lock()
-            .expect("cancel_token lock poisoned") = Some(cancel.clone());
+        *lock_std_or_recover(&self.cancel_token, "cancel_token") = Some(cancel.clone());
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        *self.result_rx.lock().expect("result_rx lock poisoned") = Some(rx);
+        *lock_std_or_recover(&self.result_rx, "result_rx") = Some(rx);
 
         let loop_data = LoopData {
             config: self.config.clone(),
             engine: handle.clone(),
-            vad_worker: self
-                .vad_worker
-                .lock()
-                .expect("vad_worker lock poisoned")
-                .clone(),
+            vad_worker: lock_std_or_recover(&self.vad_worker, "vad_worker").clone(),
             vad_detector: self.vad_detector.clone(),
             handler: self.handler.snap(),
             failed: handle.stream_failed.clone(),
@@ -364,7 +372,7 @@ impl InputPipeline {
                     reason: RecordingReason::Manual,
                     duration_ms: elapsed.as_millis() as u64,
                     transcript: None,
-                    transcript_error: None,
+                    transcript_error: Some("录音设备发生错误，请检查麦克风连接后重试".into()),
                 };
             }
 
@@ -379,7 +387,9 @@ impl InputPipeline {
                     reason: RecordingReason::Manual,
                     duration_ms: elapsed.as_millis() as u64,
                     transcript: None,
-                    transcript_error: None,
+                    transcript_error: Some(
+                        "录音没有收到麦克风信号，请检查系统麦克风是否被静音或已禁用".into(),
+                    ),
                 };
             }
 
@@ -512,16 +522,8 @@ impl InputPipeline {
             if *state != RecordingState::Recording && *state != RecordingState::Processing {
                 return Ok(());
             }
-            token = self
-                .cancel_token
-                .lock()
-                .expect("cancel_token lock poisoned")
-                .take();
-            rx = self
-                .result_rx
-                .lock()
-                .expect("result_rx lock poisoned")
-                .take();
+            token = lock_std_or_recover(&self.cancel_token, "cancel_token").take();
+            rx = lock_std_or_recover(&self.result_rx, "result_rx").take();
             *state = RecordingState::Pending;
         }
 
@@ -533,7 +535,7 @@ impl InputPipeline {
             let _ = rx.await;
         }
 
-        if let Some(ref handle) = *self.engine.lock().expect("engine lock poisoned") {
+        if let Some(ref handle) = *lock_std_or_recover(&self.engine, "engine") {
             handle.stop_and_clear();
         }
         // The VAD engine stays resident across recordings (state was reset at
@@ -548,9 +550,9 @@ impl InputPipeline {
     /// Stop the audio capture and return the captured PCM. Runs no STT and
     /// leaves `transcript`/`transcript_error` unset.
     pub async fn stop_capture(&self) -> Result<RecordingResult> {
-        let result = self.stop_capture_inner().await?;
+        let result = self.stop_capture_inner().await;
         *self.state.lock().await = RecordingState::Pending;
-        Ok(result)
+        result
     }
 
     /// Run STT on a previously-captured result, mutating `transcript` /
@@ -638,30 +640,24 @@ impl InputPipeline {
         }
         drop(state);
 
-        let token = self
-            .cancel_token
-            .lock()
-            .expect("cancel_token lock poisoned")
-            .take();
+        let token = lock_std_or_recover(&self.cancel_token, "cancel_token").take();
         if let Some(token) = token {
             token.cancel();
         }
 
         let mut result = {
-            let rx = self
-                .result_rx
-                .lock()
-                .expect("result_rx lock poisoned")
-                .take();
+            let rx = lock_std_or_recover(&self.result_rx, "result_rx").take();
             match rx {
-                Some(rx) => rx.await.unwrap_or(RecordingResult::default()),
-                None => RecordingResult::default(),
+                Some(rx) => rx
+                    .await
+                    .map_err(|_| anyhow!("recording loop terminated without a result"))?,
+                None => return Err(anyhow!("recording result channel was unavailable")),
             }
         };
 
         // Capture the tail that accumulated between the loop's last drain and
         // the stream teardown.
-        let handle = self.engine.lock().expect("engine lock poisoned").clone();
+        let handle = lock_std_or_recover(&self.engine, "engine").clone();
         if let Some(handle) = handle {
             let remaining = handle.stop_and_drain().await?;
             if !remaining.is_empty() {
@@ -780,7 +776,10 @@ fn vad_worker_loop(
                 let prob = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match engine
                     .as_mut()
                 {
-                    Some(e) => e.infer(&frame),
+                    Some(e) => e.infer(&frame).unwrap_or_else(|error| {
+                        tracing::warn!(error = %error, "VAD inference failed; treating frame as silence");
+                        0.0
+                    }),
                     None => 0.0,
                 }))
                 .unwrap_or(0.0);
@@ -790,7 +789,10 @@ fn vad_worker_loop(
             }
             VadCmd::Reset => {
                 if let Some(e) = engine.as_mut() {
-                    e.reset();
+                    if let Err(error) = e.reset() {
+                        tracing::warn!(error = %error, "VAD reset failed; disabling VAD worker");
+                        engine = None;
+                    }
                 }
             }
         }
