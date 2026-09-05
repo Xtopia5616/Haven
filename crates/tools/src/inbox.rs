@@ -768,10 +768,10 @@ impl InboxBus {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        if let Some(env) = last_valid_line(&self.mailbox(name)) {
+        if let Some(env) = last_valid_line(&self.mailbox(name))? {
             return Ok(Some(env));
         }
-        Ok(last_valid_line(&self.archive(name)))
+        last_valid_line(&self.archive(name))
     }
 
     /// Find one envelope by id in this agent's mailbox or archive. Used by
@@ -785,7 +785,8 @@ impl InboxBus {
         for path in [self.mailbox(name), self.archive(name)] {
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
             };
             if let Some(env) =
                 content
@@ -913,12 +914,16 @@ impl InboxBus {
         // Archive (older) first, then the unread mailbox (newer), so the
         // reversal below yields strictly newest-first across both files.
         for path in [self.archive(name), self.mailbox(name)] {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                for line in content.lines() {
-                    if let Ok(env) = serde_json::from_str::<Envelope>(line.trim()) {
-                        entries.push(env);
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    for line in content.lines() {
+                        if let Ok(env) = serde_json::from_str::<Envelope>(line.trim()) {
+                            entries.push(env);
+                        }
                     }
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
         }
         // Mailbox lines are newer than archive lines, so reverse order gives
@@ -955,7 +960,7 @@ impl InboxBus {
     /// Ids of the last messages in the archive, for append deduplication
     /// (crash recovery only; bounded scan keeps this O(1)-ish in practice).
     fn read_archive_tail_ids(&self, name: &str) -> anyhow::Result<HashSet<String>> {
-        Ok(read_tail(&self.archive(name), ARCHIVE_DEDUP_TAIL_BYTES)
+        Ok(read_tail(&self.archive(name), ARCHIVE_DEDUP_TAIL_BYTES)?
             .lines()
             .filter_map(|l| serde_json::from_str::<Envelope>(l.trim()).ok())
             .map(|e| e.id)
@@ -1069,27 +1074,29 @@ fn is_expired(env: &Envelope) -> bool {
         })
 }
 
-/// Read at most the last `max_bytes` of a file as UTF-8 (missing/unreadable
-/// files yield an empty string). Used for tail scans so archive size never
-/// degrades reply resolution or dedup lookups.
-fn read_tail(path: &Path, max_bytes: u64) -> String {
+/// Read at most the last `max_bytes` of a file as UTF-8. Missing files are
+/// treated as empty because an archive/mailbox is created lazily; other I/O
+/// failures propagate so permission/disk errors cannot silently disable reply
+/// resolution or deduplication.
+fn read_tail(path: &Path, max_bytes: u64) -> anyhow::Result<String> {
     let mut f = match File::open(path) {
         Ok(f) => f,
-        Err(_) => return String::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error.into()),
     };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let len = f.metadata()?.len();
     let start = len.saturating_sub(max_bytes);
-    let _ = f.seek(SeekFrom::Start(start));
+    f.seek(SeekFrom::Start(start))?;
     let mut s = String::new();
-    let _ = f.read_to_string(&mut s);
-    s
+    f.read_to_string(&mut s)?;
+    Ok(s)
 }
 
-fn last_valid_line(path: &Path) -> Option<Envelope> {
-    read_tail(path, ARCHIVE_DEDUP_TAIL_BYTES)
+fn last_valid_line(path: &Path) -> anyhow::Result<Option<Envelope>> {
+    Ok(read_tail(path, ARCHIVE_DEDUP_TAIL_BYTES)?
         .lines()
         .rev()
-        .find_map(|l| serde_json::from_str::<Envelope>(l.trim()).ok())
+        .find_map(|l| serde_json::from_str::<Envelope>(l.trim()).ok()))
 }
 
 /// Cross-process file mutex. Acquisition is atomic (`create_new`); stale

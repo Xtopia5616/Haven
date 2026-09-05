@@ -274,11 +274,14 @@ impl ModelRegistry {
         for (index, url) in urls.iter().enumerate() {
             let mut req = client.get(url);
             if let Some((name, value)) = auth_header {
-                if let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                    && let Ok(value) = reqwest::header::HeaderValue::from_str(value)
-                {
-                    req = req.header(name, value);
-                }
+                let name =
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                        crate::LlmError::InvalidResponse("invalid custom auth header name".into())
+                    })?;
+                let value = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+                    crate::LlmError::InvalidResponse("invalid custom auth header value".into())
+                })?;
+                req = req.header(name, value);
             } else if !api_key.is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", api_key));
             }
