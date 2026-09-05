@@ -241,10 +241,13 @@
 	--md-comp-refresh-button-compact-width: 64px;
 	--md-comp-switch-width: 52px;
 	--md-comp-switch-height: 32px;
-	--md-comp-switch-thumb-size: 20px;
-	--md-comp-switch-thumb-offset: 4px;
+	--md-comp-switch-thumb-size: 16px;
+	--md-comp-switch-thumb-selected-size: 24px;
+	--md-comp-switch-thumb-pressed-size: 28px;
+	--md-comp-switch-thumb-offset: 8px;
+	--md-comp-switch-thumb-selected-offset: 24px;
 	--md-comp-switch-state-layer-size: 40px;
-	--md-comp-switch-icon-size: 14px;
+	--md-comp-switch-icon-size: 16px;
 	--md-comp-settings-label-width: 168px;
 	--md-comp-settings-control-width: 280px;
 	--md-comp-settings-number-width: 180px;

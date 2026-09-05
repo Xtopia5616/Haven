@@ -135,12 +135,15 @@
 		color: var(--md-sys-color-on-primary);
 	}
 	.md-switch-input:checked + .md-switch-track::after {
-		left: calc(100% - var(--md-comp-switch-thumb-offset) - var(--md-comp-switch-thumb-size));
+		left: var(--md-comp-switch-thumb-selected-offset);
+		width: var(--md-comp-switch-thumb-selected-size);
+		height: var(--md-comp-switch-thumb-selected-size);
 		background: currentColor;
 	}
 	.md-switch-input:checked + .md-switch-track .md-switch-state-layer {
 		left: calc(
-			100% - var(--md-comp-switch-thumb-offset) - var(--md-comp-switch-thumb-size) / 2 -
+			var(--md-comp-switch-thumb-selected-offset) +
+				var(--md-comp-switch-thumb-selected-size) / 2 -
 				var(--md-comp-switch-state-layer-size) / 2
 		);
 		background: var(--md-sys-color-primary);
@@ -149,7 +152,8 @@
 		position: absolute;
 		top: 50%;
 		left: calc(
-			100% - var(--md-comp-switch-thumb-offset) - var(--md-comp-switch-thumb-size) / 2
+			var(--md-comp-switch-thumb-selected-offset) +
+				var(--md-comp-switch-thumb-selected-size) / 2
 		);
 		width: var(--md-comp-switch-icon-size);
 		height: var(--md-comp-switch-icon-size);
@@ -165,6 +169,24 @@
 	.md-switch-input:checked + .md-switch-track .md-switch-icon {
 		opacity: 1;
 		transform: translate(-50%, -50%) scale(1);
+	}
+	.md-switch-input:not(:disabled):active + .md-switch-track::after {
+		left: calc(
+			var(--md-comp-switch-thumb-offset) -
+				(var(--md-comp-switch-thumb-pressed-size) - var(--md-comp-switch-thumb-size)) / 2
+		);
+		width: var(--md-comp-switch-thumb-pressed-size);
+		height: var(--md-comp-switch-thumb-pressed-size);
+	}
+	.md-switch-input:checked:not(:disabled):active + .md-switch-track::after {
+		left: calc(
+			var(--md-comp-switch-thumb-selected-offset) -
+				(
+					var(--md-comp-switch-thumb-pressed-size) -
+						var(--md-comp-switch-thumb-selected-size)
+				) /
+				2
+		);
 	}
 	.md-switch-input:focus-visible + .md-switch-track {
 		box-shadow: var(--md-sys-focus-ring);
