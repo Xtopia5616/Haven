@@ -70,7 +70,6 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -173,7 +172,6 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -272,7 +270,6 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -361,7 +358,6 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -551,7 +547,6 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -674,7 +669,6 @@ async fn rollback_pause_matches_prefixed_supplement_in_canonical() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db

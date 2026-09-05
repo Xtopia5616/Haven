@@ -193,10 +193,6 @@ pub struct ReActSnapshot {
     /// Last run's effective step budget (R4). Absent before a run starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_budget: Option<RunBudget>,
-    /// Reserved for in-process test fixtures. Snapshot parsing and resume no
-    /// longer use this as an upgrade path.
-    #[serde(skip)]
-    pub upgrade_tool_rounds: Vec<ReActRound>,
 }
 
 impl ReActSnapshot {

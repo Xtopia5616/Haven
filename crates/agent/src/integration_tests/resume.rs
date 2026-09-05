@@ -225,7 +225,6 @@ async fn resume_rejects_legacy_conversation_prefix_snapshot() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -274,7 +273,6 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -349,7 +347,6 @@ async fn resume_keeps_repeated_same_text_turns() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -437,7 +434,6 @@ async fn resume_does_not_recover_messages_before_saved_at() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -533,7 +529,6 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -732,7 +727,6 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db

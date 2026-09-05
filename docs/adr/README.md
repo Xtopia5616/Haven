@@ -82,3 +82,4 @@
 - [0079：统一上下文预算与降级压缩边界](0079-context-compaction-budget-and-degradation.md)
 - [0080：UI 可展开资源卡片壳层](0080-ui-expandable-resource-card-shell.md)
 - [0081：UI 共享声波条动画原语](0081-ui-shared-voice-bars.md)
+- [0082：删除后端过时兼容层](0082-remove-stale-backend-compat-shims.md)

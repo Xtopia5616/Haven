@@ -128,6 +128,7 @@
 - 2026-09-04：P1 Agent/LLM 上下文预算收口：消息、工具 schema、provider overhead 与动态输出上限统一按 token 计算；摘要失败降级为保留 system/最近完整 tool-call 边界并提示 UI；token cache、上游 prompt budget 与 compaction cancellation 一并收口（ADR 0079）。
 - 2026-09-05：P2 UI 资源卡片壳层复用：内置工具、技能和 MCP 服务器共享可展开卡片、键盘激活、右键菜单生命周期与卡片结构样式；业务 renderer 继续由各自组件持有（ADR 0080）。
 - 2026-09-05：P2 UI 声波条动画原语复用：LoadingState 与 RecordingIndicator 共享 VoiceBars，业务状态和生命周期仍由各自组件持有（ADR 0081）。
+- 2026-09-05：P1 后端删除已完成拆分后的 `bg` facade、测试专用 `upgrade_tool_rounds` 快照空字段和 memory text-only keyword facade；统一使用当前模块与 typed recall 入口，不改变持久化或 IPC 契约（ADR 0082）。
 
 ## 完成标准
 

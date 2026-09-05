@@ -1,6 +1,5 @@
 pub mod adapters;
 mod background_actions;
-pub mod bg;
 pub mod builtin;
 pub mod circuit;
 pub mod inbox;

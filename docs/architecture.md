@@ -413,6 +413,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-02 | §2.5 Agent/Tools：以 `MessagingService` 统一 Envelope identity、claim/complete/retry/expiry 与 request/reply/receipt；InboxBus 收窄为 JSONL transport adapter（ADR 0069） |
 | 2026-09-02 | §2.5 Tools：将模型可见的 `haven` 管理入口收窄为六个 capability-scoped admin tools；删除任意 dotted `config_set`，诊断结果增加脱敏与内容边界（ADR 0070） |
 | 2026-09-02 | §3 阶段 B：将 `haven-mcp` 的 protocol、transport、client、manager 与测试从单一 `lib.rs` 拆出，保持 MCP 外部契约不变 |
-| 2026-09-02 | §3 阶段 C：将 `haven-tools` 的 shell runtime、background actions、output/process helpers 从 `bg.rs` 拆出；旧 `bg` 路径仅暂留薄 facade |
+| 2026-09-02 | §3 阶段 C：将 `haven-tools` 的 shell runtime、background actions、output/process helpers 从 `bg.rs` 拆出；旧 `bg` 路径暂留薄 facade |
+| 2026-09-05 | §3 阶段 C 收尾：删除已无 workspace 调用方的旧 `bg` facade，统一使用拆分后的模块与 crate-root 导出（ADR 0082） |
 | 2026-09-02 | §3 阶段 E：将 `haven-app-binary` 的事件桥、宿主 handler 与 Tauri 启动编排从 `lib.rs` 拆至 `event_bridge.rs`、`handlers.rs`、`bootstrap.rs`，保持启动与 IPC 契约不变 |
 | 2026-09-03 | §3 阶段 F：将 Settings/Model/Memory 三个 UI 大视图按 tab 与职责拆至 `SettingsGeneral`、`SettingsLimits`、`MediaSettings`、`SessionHistory`、`LongTermFacts`、`MemoryRecall`，父视图保留唯一状态、IPC、事件与保存边界 |

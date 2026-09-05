@@ -91,7 +91,6 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db
@@ -1286,7 +1285,6 @@ async fn continue_session_resumes_errored_session() {
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     // Add a partial assistant message that should be cleaned up.
     agent
@@ -1381,7 +1379,6 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db

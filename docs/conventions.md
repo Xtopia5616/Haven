@@ -110,7 +110,7 @@ tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.displ
 | Span 名 | 字段 | 位置 | 覆盖范围 |
 |---|---|---|---|
 | `run_session` | `session_id` | `haven_agent::session`（handler `.instrument(span)`） | 整个 ReAct 循环嵌套日志 |
-| `bg_action` | `action_id` | `haven_tools::bg`（runner `.instrument(span)`） | 后台任务运行 / 取消 / 输出写入 |
+| `bg_action` | `action_id` | `haven_tools::background_actions`（runner `.instrument(span)`） | 后台任务运行 / 取消 / 输出写入 |
 | `action_completion` | `action_id`, `session_id` | `haven_agent::layer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
 | `scheduled_action_fired` | `action_id`, `session_id` | `haven_agent::layer` 定时任务 consumer | 定时任务触发与会话恢复 |
 

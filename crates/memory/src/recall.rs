@@ -218,7 +218,7 @@ impl<'db> MemoryRetriever<'db> {
             }
             MemoryKind::Episode => self
                 .db
-                .search_episodes_by_keywords_typed(
+                .search_episodes_by_keywords(
                     &haven_common::text::memory_recall_term_sample(
                         &haven_common::text::memory_recall_terms(&query.text),
                         6,

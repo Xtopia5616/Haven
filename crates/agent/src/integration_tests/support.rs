@@ -634,7 +634,6 @@ pub(super) fn seed_hello_snapshot(
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
-        upgrade_tool_rounds: Vec::new(),
     };
     agent
         .db

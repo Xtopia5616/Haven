@@ -43,7 +43,7 @@
 
 ## 2.2 兼容层与架构妥协审计（2026-09-01）
 
-本次只读审计按“是否为了旧 Haven 内部设计继续存在”来判断，不把第三方协议适配、崩溃恢复和安全降级一律当成技术债。结论是：除 `bg.rs` 外，当前还有几处明确的内部兼容层，以及几处已经让当前数据模型变复杂的旧路径。
+本次只读审计按“是否为了旧 Haven 内部设计继续存在”来判断，不把第三方协议适配、崩溃恢复和安全降级一律当成技术债。`bg.rs` facade 已在本轮删除；除此之外，当前还有几处明确的内部兼容层，以及几处已经让当前数据模型变复杂的旧路径。
 
 ### A. 高置信度的内部兼容层：应在破坏性重构中删除
 
@@ -52,9 +52,9 @@
 | P0 | [`crates/common/src/types.rs`](../crates/common/src/types.rs)、[`crates/agent/src/session/queues.rs`](../crates/agent/src/session/queues.rs)、[`crates/agent/src/session/mod.rs`](../crates/agent/src/session/mod.rs) | `Supplement` 是历史 struct，`FollowUp` 只是 type alias；队列同时保留 `add_supplement*` / `get_supplements` 和 `add_follow_up*` / `get_follow_ups`。生产恢复路径仍调用旧的 `add_supplement_with_attachments`。 | 选择 `FollowUp` 作为唯一类型和队列 API，直接迁移 `resume.rs`、ask 文档、测试与导出，删除旧方法、旧 type alias 和双重 re-export。`AgentEvent::Supplement` / `ProcessResult::Supplemented` 属于跨端事件契约，如要一并改名，单独登记 IPC 破坏性变更，不要靠第二套名字长期兼容。 |
 | P0 | [`crates/app-binary/src/commands/skills.rs`](../crates/app-binary/src/commands/skills.rs) | `execute_skill` 接收 `confirmed: Option<bool>`，但代码明确忽略它；安全授权已经统一由 `SafetyGateway` 决定，当前 UI 也不发送该字段。 | 从 Tauri 命令签名、命令契约和测试中删除 `confirmed`，让 SafetyGateway 成为唯一授权入口。 |
 | P0 | [`crates/app-binary/src/commands/session.rs`](../crates/app-binary/src/commands/session.rs)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | 新的 `effect` + `scope` 已经存在，但 Rust 和 UI 仍保留 `trust_session` / `trustSession`，并在缺少新字段时猜测旧语义。 | 同一轮中迁移所有 UI 调用到 `effect` + `scope`，删除 `trust_session` bridge；下一步可将决定收窄为有类型且必填的 DTO，避免继续允许“缺字段再猜”。 |
-| P1 | [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) | `ReActSnapshot.upgrade_tool_rounds` 已标注“只为进程内测试 fixture 保留”，生产解析和 resume 不再使用，但字段仍存在且大量测试逐个填空 Vec。 | 删除字段，集中更新测试 fixture。快照已明确采取“不支持旧形状、要求 reset”的策略，不需要再为已废弃的升级路径留空壳。 |
+| P1 | [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) | `ReActSnapshot.upgrade_tool_rounds` 只为进程内测试 fixture 保留，生产解析和 resume 不使用。 | **已完成（2026-09-05，ADR 0082）**：删除字段和所有测试 fixture 填充。 |
 | P1 | [`ui/src/lib/ToolResultCard.svelte`](../ui/src/lib/ToolResultCard.svelte) | `toolResultParsing.ts` 已是解析权威，但 `ToolResultCard` 仍通过 `<script module>` re-export `parseToolResult` / `canRenderToolResult`，文档也明确称其为兼容 re-export。生产代码已直接导入新模块，剩余依赖主要在测试。 | 删除 re-export，测试直接从 `toolResultParsing.ts` 导入。保留 `ToolResultCard` 组件本身作为卡片壳，不保留旧模块路径兼容。 |
-| P1 | [`crates/memory/src/embeddings.rs`](../crates/memory/src/embeddings.rs) | `search_episodes_by_keywords` / `_excluding` 是只返回文本的旧 public facade；新的 typed 查询返回 `entity_id + text`，用于正确去重，workspace 没有生产调用旧 facade。 | 迁移或删除旧 text-only 方法和对应测试，统一使用 typed hit，避免调用方继续丢失实体身份。 |
+| P1 | [`crates/memory/src/embeddings.rs`](../crates/memory/src/embeddings.rs) | 旧 text-only keyword facade 没有 workspace 生产调用；typed 查询已返回 `entity_id + text`，用于正确去重。 | **已完成（2026-09-05，ADR 0082）**：删除旧方法，测试统一使用 typed hit，避免调用方丢失实体身份。 |
 | P1 | [`ui/src/lib/sessionStatus.ts`](../ui/src/lib/sessionStatus.ts) | `ACTION_STATUSES = SESSION_STATUSES` 只是旧命名 alias，workspace 生产代码没有使用，只有 alias 自己的测试。 | 删除 alias 和测试，不要继续用 action 术语污染 session 状态模型。 |
 
 ### B. 已经影响当前架构的兼容妥协：先改模型，再删 fallback
@@ -81,7 +81,7 @@
 
 ### D. 建议执行顺序
 
-1. 先删除无生产调用的 alias/空字段：`upgrade_tool_rounds`、`ToolResultCard` parsing re-export、`ACTION_STATUSES`、memory text-only search facade。
+1. 已完成无生产调用的 `upgrade_tool_rounds` 和 memory text-only search facade 删除（ADR 0082）；剩余 `ToolResultCard` parsing re-export、`ACTION_STATUSES` 可按同一原则清理。
 2. 再完成 FollowUp/Supplement、confirmation IPC 和旧 ask/retry signal 的单一命名/单一来源迁移；这些会触及跨 crate 或前端契约，按领域独立提交。
 3. 然后处理 rollback provenance 和 snapshot-less resume。它们涉及数据语义，必须先写 ADR、补身份/重置测试，再删除 fallback。
 4. 最后收敛配置双字段、inbox 双消费路径、scheduled row fallback 和 prompt 旧布局。每项都要明确是否删除旧数据；不要为了“以后可能有旧用户”把临时分支重新留回去。
@@ -173,7 +173,7 @@ InteractionRequest {
 
 ### D. P1：把 background action 与 scheduled action 合并成真正的 `ActionService`
 
-数据库已经用 `actions.kind` 区分 `background` / `scheduled`，但运行时仍是 [`crates/tools/src/bg.rs`](../crates/tools/src/bg.rs) 的 `BackgroundActions` 加上 [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) 的 `ScheduledActionCenter` 两套状态机；它们再通过 `set_actions`、DB setter、事件 sink、agent consumer 和 fired/completion channel 互相接线。
+数据库已经用 `actions.kind` 区分 `background` / `scheduled`，但运行时仍是 [`crates/tools/src/background_actions.rs`](../crates/tools/src/background_actions.rs) 的 `BackgroundActions` 加上 [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) 的 `ScheduledActionCenter` 两套状态机；它们再通过 `set_actions`、DB setter、事件 sink、agent consumer 和 fired/completion channel 互相接线。
 
 建议把 action 统一成一个持久化状态机：
 
@@ -336,7 +336,7 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
    - SQLite 可以继续作为底层 adapter，但不再把 SQLite connection、cache invalidation 和 SQL repository 细节暴露给 agent/tools；如果未来替换数据库，也只替换 store adapter。
    - 必须保留：数据版本边界、可验证 migration/reset、事务一致性、敏感记忆过滤、embedding 生命周期和用户可见数据删除语义。
 
-4. **Windows shell/process：`bg.rs` 与后台进程生命周期**
+4. **Windows shell/process：shell runtime 与后台进程生命周期**
    - 目标：可以重做 command plan、process handle、输出流、取消/终止、超时和 action 状态机，最终与统一 `ActionService` 对接；不把“后台 shell”继续当成一套特殊的内存 registry。
    - 可以删除：当前 `BackgroundActions` 的内部状态组织、事件 sink/channel 交叉接线和与 scheduled action 分离的运行时模型。
    - 必须保留：`CREATE_NO_WINDOW`、PowerShell 编码、GBK/CLIXML 解码、输出上限、进程树终止、取消竞态、超时未知终态和 Windows 负向测试。
@@ -560,7 +560,7 @@ cargo test --locked -p haven-tools --test mcp_integration
 
 ### 阶段 C：拆后台任务与 shell 辅助模块
 
-目标：[crates/tools/src/bg.rs](../crates/tools/src/bg.rs)
+目标：[crates/tools/src/background_actions.rs](../crates/tools/src/background_actions.rs)
 
 - 规模：约 2,658 行，其中约 1,682 行是生产代码。
 - 建议按以下边界拆分：
@@ -568,8 +568,8 @@ cargo test --locked -p haven-tools --test mcp_integration
   - `background_actions.rs`：`BackgroundActions`、状态机、action registry、事件 sink
   - `output.rs`：输出收集、UTF-8/GBK 处理、CLIXML/ANSI 清洗、错误摘要和 Windows 诊断
   - 必要时再把进程树终止和 live tail 读取放到 `process.rs`
-- `bg.rs` facade 只允许作为临时迁移措施，不是目标架构。优先在同一轮中直接迁移所有 `crate::bg::*` 调用点并删除它；只有在拆分过程中确实需要分步编译时，才短暂保留 `bg.rs` 的 `pub use`。
-- 如果暂时保留 `bg.rs`，必须在该提交/ADR 中写明删除条件；不得新增对 facade 的调用，阶段完成前应再次搜索调用点并删除 facade。不能以“兼容性”作为长期保留理由。
+- 旧 `bg.rs` facade 已删除；workspace 调用方直接依赖拆分后的模块或 crate-root 导出，不再新增兼容路径。
+- 若未来出现新的内部模块迁移，必须在同一轮迁移调用点并删除旧入口，不能以“兼容性”作为长期保留理由。
 - 不改变 `CREATE_NO_WINDOW`、PowerShell `-EncodedCommand`、输出容量上限、日志落盘、取消和进程树终止语义。
 - Windows 专属路径必须继续保留对应的条件编译和负向测试。
 
@@ -580,10 +580,10 @@ cargo test --locked -p haven-tools
 cargo clippy --workspace --locked -- -D warnings
 ```
 
-2026-09-02 已完成阶段 C：shell runtime、background actions、output 清洗和进程/流处理
+2026-09-02 已完成阶段 C 的拆分：shell runtime、background actions、output 清洗和进程/流处理
 分别迁入 `shell_runtime.rs`、`background_actions.rs`、`output.rs`、`process.rs`，原有
-测试按职责拆分且数量保持不变。workspace 内调用点已全部离开 `crate::bg`；`bg.rs`
-仅保留旧公共路径的薄 re-export facade，待下游消费者迁移后删除，不再新增调用。
+测试按职责拆分且数量保持不变。workspace 内调用点已全部离开 `crate::bg`。
+2026-09-05 完成阶段 C 收尾：旧公共路径薄 re-export facade 已删除，不再保留过渡模块（ADR 0082）。
 
 ### 阶段 D：拆 Tool contract、registry 和安全网关
 

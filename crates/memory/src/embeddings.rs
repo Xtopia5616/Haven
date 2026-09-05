@@ -15,9 +15,9 @@ pub struct EmbeddedText {
     pub updated_at: String,
 }
 
-/// Stable keyword candidate for an episodic memory item. The public legacy
-/// search facade still returns only text; typed recall uses this identity so
-/// equal summaries from different sessions are not collapsed together.
+/// Stable keyword candidate for an episodic memory item. Typed recall uses
+/// this identity so equal summaries from different sessions are not
+/// collapsed together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EpisodeKeywordHit {
     pub entity_id: String,
@@ -843,35 +843,11 @@ impl Database {
     /// Memory items use unified `memory_fts` (trigram) when available;
     /// Results are ranked by distinct term hits, then recency.
     ///
-    /// When `exclude_session_id` is set (Phase 6 / S2), rows from that session
-    /// are omitted so the current conversation is not recalled as "past".
-    pub fn search_episodes_by_keywords(
-        &self,
-        terms: &[&str],
-        limit: usize,
-    ) -> anyhow::Result<Vec<String>> {
-        self.search_episodes_by_keywords_excluding(terms, limit, None)
-    }
-
-    /// Like [`Self::search_episodes_by_keywords`], with optional same-session exclusion.
-    pub fn search_episodes_by_keywords_excluding(
-        &self,
-        terms: &[&str],
-        limit: usize,
-        exclude_session_id: Option<&str>,
-    ) -> anyhow::Result<Vec<String>> {
-        Ok(self
-            .search_episodes_by_keywords_typed(terms, limit, exclude_session_id)?
-            .into_iter()
-            .map(|hit| hit.text)
-            .collect())
-    }
-
-    /// Typed keyword episode search. Unlike the legacy text-only facade, each
-    /// result carries the owning `memory_items.id`, so hybrid recall can
-    /// deduplicate the same episode across keyword and vector candidates even
-    /// when two summaries have identical text.
-    pub(crate) fn search_episodes_by_keywords_typed(
+    /// Keyword episode search. Each result carries the owning
+    /// `memory_items.id`, so hybrid recall can deduplicate the same episode
+    /// across keyword and vector candidates even when two summaries have
+    /// identical text.
+    pub(crate) fn search_episodes_by_keywords(
         &self,
         terms: &[&str],
         limit: usize,
@@ -1668,10 +1644,10 @@ mod tests {
         db.add_episode(&session.id, "unrelated note about groceries")
             .unwrap();
         let hits = db
-            .search_episodes_by_keywords(&["dark", "theme"], 5)
+            .search_episodes_by_keywords(&["dark", "theme"], 5, None)
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].contains("dark theme preference"));
+        assert!(hits[0].text.contains("dark theme preference"));
     }
 
     #[test]
@@ -1679,7 +1655,11 @@ mod tests {
         let db = db();
         let session = db.create_session("t", "").unwrap();
         db.add_episode(&session.id, "hello world").unwrap();
-        assert!(db.search_episodes_by_keywords(&[], 5).unwrap().is_empty());
+        assert!(
+            db.search_episodes_by_keywords(&[], 5, None)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1692,11 +1672,11 @@ mod tests {
         db.add_episode(&past.id, "I discussed the dark theme last week")
             .unwrap();
         let hits = db
-            .search_episodes_by_keywords_excluding(&["dark", "theme"], 5, Some(&current.id))
+            .search_episodes_by_keywords(&["dark", "theme"], 5, Some(&current.id))
             .unwrap();
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].contains("last week"));
-        assert!(!hits.iter().any(|h| h.contains("this session")));
+        assert!(hits[0].text.contains("last week"));
+        assert!(!hits.iter().any(|h| h.text.contains("this session")));
     }
 
     #[test]
@@ -1715,9 +1695,9 @@ mod tests {
         );
 
         let hits = db
-            .search_episodes_by_keywords(&["dark", "theme"], 5)
+            .search_episodes_by_keywords(&["dark", "theme"], 5, None)
             .unwrap();
-        assert!(hits.iter().any(|h| h.contains("dark theme")));
+        assert!(hits.iter().any(|h| h.text.contains("dark theme")));
 
         db.save_embedding(
             entity_kind::EPISODE,
@@ -1745,9 +1725,11 @@ mod tests {
             &["Dell"],
         )
         .unwrap();
-        let hits = db.search_episodes_by_keywords(&["hardware"], 5).unwrap();
+        let hits = db
+            .search_episodes_by_keywords(&["hardware"], 5, None)
+            .unwrap();
         assert!(
-            hits.iter().any(|h| h.contains("monitors")),
+            hits.iter().any(|h| h.text.contains("monitors")),
             "topic tag must be FTS-visible; got {hits:?}"
         );
     }
