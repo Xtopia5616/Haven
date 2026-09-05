@@ -87,7 +87,13 @@ impl McpManager {
         let mut clients = self.clients.lock().await;
         if let Some(client) = clients.remove(name) {
             client.cancel_token.lock().await.cancel();
-            let _ = client.shutdown().await;
+            if let Err(error) = client.shutdown().await {
+                tracing::warn!(
+                    "MCP server '{}' shutdown reported an error: {}",
+                    name,
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
+            }
         }
     }
 
@@ -384,7 +390,9 @@ impl McpManager {
             }));
         }
         for h in handles {
-            let _ = h.await;
+            if let Err(error) = h.await {
+                tracing::warn!("MCP tools refresh task failed: {}", error);
+            }
         }
     }
 

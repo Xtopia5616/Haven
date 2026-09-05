@@ -62,13 +62,26 @@ impl SseParser {
             }
             consumed = line_end + 1;
 
-            let line = std::str::from_utf8(line).unwrap_or("");
+            let line = match std::str::from_utf8(line) {
+                Ok(line) => line,
+                Err(error) => {
+                    tracing::warn!(
+                        "MCP SSE ignored an invalid UTF-8 line: {}",
+                        haven_common::error::sanitize_error_text(&error.to_string())
+                    );
+                    ""
+                }
+            };
             if line.is_empty() {
                 // Blank line: dispatch the accumulated event.
                 if !data_lines.is_empty() {
                     let data = data_lines.join("\n");
-                    if let Ok(value) = serde_json::from_str(&data) {
-                        events.push(value);
+                    match serde_json::from_str(&data) {
+                        Ok(value) => events.push(value),
+                        Err(error) => tracing::warn!(
+                            "MCP SSE ignored an invalid JSON event: {}",
+                            haven_common::error::sanitize_error_text(&error.to_string())
+                        ),
                     }
                     data_lines.clear();
                 }

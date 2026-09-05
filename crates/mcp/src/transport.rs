@@ -196,8 +196,15 @@ impl HttpInner {
                 haven_common::error::sanitize_error_text(&body)
             );
         }
-        // Drain the body to release the connection for reuse.
-        let _ = resp.bytes().await;
+        // Drain the body to release the connection for reuse. A failed drain
+        // is still a transport failure: otherwise a broken connection is
+        // reported as a successful notification and can poison the pool.
+        resp.bytes().await.map_err(|e| {
+            anyhow::anyhow!(
+                "MCP HTTP notify response read failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            )
+        })?;
         Ok(())
     }
 }
@@ -235,7 +242,12 @@ impl McpClientInner {
 impl Drop for McpClientInner {
     fn drop(&mut self) {
         if let McpClientInner::Stdio(s) = self {
-            let _ = s.child.start_kill();
+            if let Err(error) = s.child.start_kill() {
+                tracing::debug!(
+                    "MCP stdio child cleanup failed: {}",
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
+            }
         }
     }
 }
@@ -246,7 +258,11 @@ fn unpack_jsonrpc(value: Value) -> anyhow::Result<Value> {
     if let Some(err) = value.get("error") {
         let code = err["code"].as_i64().unwrap_or(-1);
         let msg = err["message"].as_str().unwrap_or("unknown error");
-        anyhow::bail!("MCP error ({}): {}", code, msg);
+        anyhow::bail!(
+            "MCP error ({}): {}",
+            code,
+            haven_common::error::sanitize_error_text(msg)
+        );
     }
     Ok(value["result"].clone())
 }
@@ -287,7 +303,9 @@ async fn read_sse_response(
                     if ev.get("id").and_then(|v| v.as_u64()) == Some(id) {
                         return unpack_jsonrpc(ev);
                     }
-                    let _ = tx.send(ev);
+                    if tx.send(ev).is_err() {
+                        anyhow::bail!("MCP HTTP notification channel closed");
+                    }
                 }
             }
             Some(Err(e)) => return Err(e.into()),
@@ -328,7 +346,11 @@ async fn listen_sse(
                 match chunk {
                     Some(Ok(bytes)) => {
                         for ev in parser.feed(&bytes) {
-                            let _ = tx.send(ev);
+                            if tx.send(ev).is_err() {
+                                return Err(anyhow::anyhow!(
+                                    "MCP HTTP notification channel closed"
+                                ));
+                            }
                         }
                     }
                     Some(Err(e)) => return Err(e.into()),

@@ -312,7 +312,12 @@ impl McpClient {
         let mut child =
             spawn_mcp_child(&self.name, &self.command, &self.args, &build).map_err(|e| {
                 let hint = windows_spawn_hint(&self.command, &e);
-                anyhow::anyhow!("failed to spawn MCP server '{}': {}{}", self.name, e, hint)
+                anyhow::anyhow!(
+                    "failed to spawn MCP server '{}': {}{}",
+                    self.name,
+                    haven_common::error::sanitize_error_text(&e.to_string()),
+                    hint
+                )
             })?;
 
         let stdin = child
@@ -383,7 +388,10 @@ impl McpClient {
         *self.last_diagnostic.lock().await = None;
         let result = self.connect_inner().await;
         if let Err(e) = &result {
-            *self.last_diagnostic.lock().await = Some(format!("connect failed: {e}"));
+            *self.last_diagnostic.lock().await = Some(format!(
+                "connect failed: {}",
+                haven_common::error::sanitize_error_text(&e.to_string())
+            ));
         }
         result
     }
@@ -489,8 +497,10 @@ impl McpClient {
                 }
             }
             Err(e) => {
-                *self.last_diagnostic.lock().await =
-                    Some(format!("connected, but tools/list failed: {e}"));
+                *self.last_diagnostic.lock().await = Some(format!(
+                    "connected, but tools/list failed: {}",
+                    haven_common::error::sanitize_error_text(&e.to_string())
+                ));
             }
         }
 
@@ -507,12 +517,32 @@ impl McpClient {
 
         let mut guard = self.inner.lock().await;
         if let Some(inner) = guard.as_mut() {
-            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-            let _ = inner.request(id, "shutdown", None).await;
             if let McpClientInner::Stdio(s) = inner {
-                let _ = s.notify("exit", None).await;
-                let _ = s.child.start_kill();
-                let _ = s.child.wait().await;
+                let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+                if let Err(error) = s.request(id, "shutdown", None).await {
+                    tracing::debug!(
+                        "MCP stdio shutdown request failed: {}",
+                        haven_common::error::sanitize_error_text(&error.to_string())
+                    );
+                }
+                if let Err(error) = s.notify("exit", None).await {
+                    tracing::debug!(
+                        "MCP stdio exit notification failed: {}",
+                        haven_common::error::sanitize_error_text(&error.to_string())
+                    );
+                }
+                if let Err(error) = s.child.start_kill() {
+                    tracing::debug!(
+                        "MCP stdio child kill failed: {}",
+                        haven_common::error::sanitize_error_text(&error.to_string())
+                    );
+                }
+                if let Err(error) = s.child.wait().await {
+                    tracing::debug!(
+                        "MCP stdio child wait failed: {}",
+                        haven_common::error::sanitize_error_text(&error.to_string())
+                    );
+                }
             }
         }
         *guard = None;
@@ -565,8 +595,13 @@ impl McpClient {
                         if method == Some("notifications/tools/list_changed") {
                             on_tool_list_changed(&self.name);
                             // Refresh tools cache
-                            if let Ok(tools) = self.list_tools().await {
-                                *self.tools_cache.lock().await = Some(tools);
+                            match self.list_tools().await {
+                                Ok(tools) => *self.tools_cache.lock().await = Some(tools),
+                                Err(error) => tracing::warn!(
+                                    "MCP server '{}' tools/list refresh failed: {}",
+                                    self.name,
+                                    haven_common::error::sanitize_error_text(&error.to_string())
+                                ),
                             }
                         }
                     }
