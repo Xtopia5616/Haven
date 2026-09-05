@@ -95,6 +95,9 @@
 		color: var(--md-sys-color-on-surface-variant);
 		width: var(--md-comp-icon-button-compact-size);
 		height: var(--md-comp-icon-button-compact-size);
+		min-width: var(--md-comp-icon-button-compact-size);
+		min-height: var(--md-comp-icon-button-compact-size);
+		flex-shrink: 0;
 		border-radius: var(--md-comp-button-radius);
 		cursor: pointer;
 		font-size: 14px;
