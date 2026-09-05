@@ -196,7 +196,7 @@ Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界�
 DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 `ui/src/lib/contracts/app.ts`、`ui/src/lib/contracts/agent.ts`，只能通过
 `appEventListeners` / `agentEventListeners` 进入路由。`scripts/check-ipc-events.ps1`
-会比较两侧的全部 40 个 channel，防止新增事件只改一侧。
+会比较两侧的全部 39 个 channel，防止新增事件只改一侧。
 
 | 事件 | Rust DTO（wire） | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|

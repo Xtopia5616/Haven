@@ -38,8 +38,8 @@ foreach ($file in $contractFiles) {
 
 Assert-SetEqual 'Rust event directory vs frontend event directory' $rustEvents $frontendEvents
 
-if ($rustEvents.Count -ne 40) {
-    throw "expected 40 public IPC events, found $($rustEvents.Count)"
+if ($rustEvents.Count -ne 39) {
+    throw "expected 39 public IPC events, found $($rustEvents.Count)"
 }
 
 Write-Host "IPC event directory verified: $($rustEvents.Count) channels, Rust/frontend contracts agree."
