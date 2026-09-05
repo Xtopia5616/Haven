@@ -161,7 +161,7 @@ impl Default for ModelEndpoint {
 /// by `name`. The model library is no longer a manually-maintained list — it
 /// is the union of each provider's `/models` fetch. Roles reference a provider
 /// by name and pick a model id from that provider's fetched list; the router
-/// materializes the six role endpoints from providers + role slots whenever it
+/// materializes the five role endpoints from providers + role slots whenever it
 /// is built or hot-swapped (see [`LlmConfig::materialize`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -228,7 +228,7 @@ impl Default for ProviderConfig {
     }
 }
 
-/// Role→(provider, model) assignment for one of the six model slots
+/// Role→(provider, model) assignment for one of the five model slots
 /// ([`EndpointRole`]). `role` holds the canonical slot name (stamped by
 /// [`LlmConfig::set_role`]); `provider` names a [`ProviderConfig`]; `model` is
 /// a model id on that provider. All tuning fields are optional overrides:
@@ -280,15 +280,14 @@ impl RoleConfig {
     }
 }
 
-/// The six model slots (roles) served by the router. Canonical role names
+/// The five model slots (roles) served by the router. Canonical role names
 /// (`as_str`) are used in TOML, the frontend protocol, and the model
 /// commands; [`LlmConfig::role`] / [`RouterConfig::endpoint`] map a role to
-/// its slot, so the 6-arm role match lives in exactly one place.
+/// its slot, so the role match lives in exactly one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointRole {
     SmallModel,
     DefaultModel,
-    BalancedModel,
     ImageModel,
     AudioModel,
     EmbeddingModel,
@@ -301,7 +300,6 @@ impl EndpointRole {
         match self {
             Self::SmallModel => "small_model",
             Self::DefaultModel => "default_model",
-            Self::BalancedModel => "balanced_model",
             Self::ImageModel => "image_model",
             Self::AudioModel => "audio_model",
             Self::EmbeddingModel => "embedding_model",
@@ -315,7 +313,6 @@ impl EndpointRole {
         Some(match s {
             "small_model" => Self::SmallModel,
             "default_model" => Self::DefaultModel,
-            "balanced_model" => Self::BalancedModel,
             "image_model" => Self::ImageModel,
             "audio_model" => Self::AudioModel,
             "embedding_model" => Self::EmbeddingModel,
@@ -328,7 +325,6 @@ impl EndpointRole {
     pub const ALL: &'static [EndpointRole] = &[
         Self::SmallModel,
         Self::DefaultModel,
-        Self::BalancedModel,
         Self::ImageModel,
         Self::AudioModel,
         Self::EmbeddingModel,
@@ -367,10 +363,6 @@ pub struct LlmConfig {
     /// retried; invalid requests, authentication, billing, and cancellation
     /// always fail immediately.
     pub retry_max_retries: u32,
-    /// Retry attempts for the balanced-model fallback after its initial
-    /// request. This is intentionally lower than the primary budget so an
-    /// outage does not multiply a single user turn into many requests.
-    pub fallback_retry_max_retries: u32,
     pub retry_base_secs: u64,
     pub retry_factor: u32,
     pub retry_max_secs: u64,
@@ -400,7 +392,6 @@ impl Default for LlmConfig {
             max_total_duration_secs: 180,
             stream_idle_timeout_secs: 20,
             retry_max_retries: 2,
-            fallback_retry_max_retries: 1,
             retry_base_secs: 2,
             retry_factor: 2,
             retry_max_secs: 30,
@@ -544,14 +535,12 @@ impl LlmConfig {
         let mut cap = RouterConfig {
             small_model: self.materialize_endpoint(EndpointRole::SmallModel),
             default_model: self.materialize_endpoint(EndpointRole::DefaultModel),
-            balanced_model: self.materialize_endpoint(EndpointRole::BalancedModel),
             image_model: self.materialize_endpoint(EndpointRole::ImageModel),
             audio_model: self.materialize_endpoint(EndpointRole::AudioModel),
             embedding_model: self.materialize_endpoint(EndpointRole::EmbeddingModel),
             max_total_duration_secs: self.max_total_duration_secs,
             stream_idle_timeout_secs: self.stream_idle_timeout_secs,
             retry_max_retries: self.retry_max_retries,
-            fallback_retry_max_retries: self.fallback_retry_max_retries,
             retry_base_secs: self.retry_base_secs,
             retry_factor: self.retry_factor,
             retry_max_secs: self.retry_max_secs,
@@ -728,7 +717,7 @@ fn wire_provider_hint(provider_hint: &str, api_style: &Option<String>) -> String
     }
 }
 
-/// The fully materialized router configuration: six role endpoints plus the
+/// The fully materialized router configuration: five role endpoints plus the
 /// router-level tuning knobs. Built from [`LlmConfig`] (providers + role
 /// slots) via [`LlmConfig::materialize`] whenever the router is constructed
 /// or hot-swapped — this is exactly the shape [`LlmRouter`] stores and reads,
@@ -738,14 +727,12 @@ fn wire_provider_hint(provider_hint: &str, api_style: &Option<String>) -> String
 pub struct RouterConfig {
     pub small_model: ModelEndpoint,
     pub default_model: ModelEndpoint,
-    pub balanced_model: ModelEndpoint,
     pub image_model: ModelEndpoint,
     pub audio_model: ModelEndpoint,
     pub embedding_model: ModelEndpoint,
     pub max_total_duration_secs: u64,
     pub stream_idle_timeout_secs: u64,
     pub retry_max_retries: u32,
-    pub fallback_retry_max_retries: u32,
     pub retry_base_secs: u64,
     pub retry_factor: u32,
     pub retry_max_secs: u64,
@@ -760,14 +747,12 @@ impl Default for RouterConfig {
         Self {
             small_model: ModelEndpoint::default(),
             default_model: ModelEndpoint::default(),
-            balanced_model: ModelEndpoint::default(),
             image_model: ModelEndpoint::default(),
             audio_model: ModelEndpoint::default(),
             embedding_model: ModelEndpoint::default(),
             max_total_duration_secs: 180,
             stream_idle_timeout_secs: 20,
             retry_max_retries: 2,
-            fallback_retry_max_retries: 1,
             retry_base_secs: 2,
             retry_factor: 2,
             retry_max_secs: 30,
@@ -787,7 +772,6 @@ impl RouterConfig {
         match role {
             EndpointRole::SmallModel => &self.small_model,
             EndpointRole::DefaultModel => &self.default_model,
-            EndpointRole::BalancedModel => &self.balanced_model,
             EndpointRole::ImageModel => &self.image_model,
             EndpointRole::AudioModel => &self.audio_model,
             EndpointRole::EmbeddingModel => &self.embedding_model,
@@ -799,7 +783,6 @@ impl RouterConfig {
         match role {
             EndpointRole::SmallModel => &mut self.small_model,
             EndpointRole::DefaultModel => &mut self.default_model,
-            EndpointRole::BalancedModel => &mut self.balanced_model,
             EndpointRole::ImageModel => &mut self.image_model,
             EndpointRole::AudioModel => &mut self.audio_model,
             EndpointRole::EmbeddingModel => &mut self.embedding_model,
@@ -813,13 +796,12 @@ impl RouterConfig {
         endpoint_credentials_ready(self.endpoint(role))
     }
 
-    /// Owned iteration over every role slot in canonical order (a fixed 6
+    /// Owned iteration over every role slot in canonical order (a fixed 5
     /// elements), used by transforms that apply a value to all endpoints.
     pub fn endpoints_mut(&mut self) -> impl Iterator<Item = &mut ModelEndpoint> {
         [
             &mut self.small_model,
             &mut self.default_model,
-            &mut self.balanced_model,
             &mut self.image_model,
             &mut self.audio_model,
             &mut self.embedding_model,
@@ -932,11 +914,9 @@ mod tests {
     fn materialize_preserves_retry_budgets() {
         let llm = LlmConfig {
             retry_max_retries: 4,
-            fallback_retry_max_retries: 2,
             ..Default::default()
         };
         let config = llm.materialize(None, None);
         assert_eq!(config.retry_max_retries, 4);
-        assert_eq!(config.fallback_retry_max_retries, 2);
     }
 }

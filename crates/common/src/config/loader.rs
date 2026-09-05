@@ -331,9 +331,12 @@ impl AppConfig {
                 prov.api_key = prev.api_key.clone();
             }
         }
-        // Drop unassigned role slots (empty provider) so the on-disk config
-        // stays lean; `#[serde(default)]` refills any missing slot on load.
-        llm.roles.retain(|r| r.is_assigned());
+        // Drop unassigned role slots (empty provider) and roles removed from
+        // the supported endpoint set so the on-disk config stays lean and
+        // stale role assignments are not written back. `#[serde(default)]`
+        // refills missing supported slots on load.
+        llm.roles
+            .retain(|r| r.is_assigned() && EndpointRole::from_str(&r.role).is_some());
         self.llm = llm;
 
         self.default_shell = settings.default_shell;
@@ -631,6 +634,12 @@ mod tests {
             model: "new-model".into(),
             ..Default::default()
         });
+        settings.llm.roles.push(RoleConfig {
+            role: "retired_model".into(),
+            provider: "openai".into(),
+            model: "old-model".into(),
+            ..Default::default()
+        });
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
@@ -654,6 +663,14 @@ mod tests {
                 .unwrap()
                 .model,
             "new-model"
+        );
+        assert!(
+            !loader
+                .config()
+                .llm
+                .roles
+                .iter()
+                .any(|role| role.role == "retired_model")
         );
     }
 

@@ -32,7 +32,6 @@ async fn restore_per_session_tools_rebuilds_from_history() {
         client.clone(),
         client.clone(),
         client.clone(),
-        client.clone(),
         client,
     ));
     let agent = Arc::new(AgentLayer::new(

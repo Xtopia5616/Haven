@@ -13,7 +13,6 @@ fn agent_new_constructor_works() {
         client.clone(),
         client.clone(),
         client.clone(),
-        client.clone(),
         client,
     ));
     let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
@@ -57,7 +56,6 @@ async fn replace_router_and_router_work() {
         client_a.clone(),
         client_a.clone(),
         client_a.clone(),
-        client_a.clone(),
         client_a,
     ));
     let agent = Arc::new(AgentLayer::new(
@@ -71,7 +69,6 @@ async fn replace_router_and_router_work() {
     // Create a new router via the same mock client factory
     let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router_b = Arc::new(LlmRouter::new_with_clients(
-        client_b.clone(),
         client_b.clone(),
         client_b.clone(),
         client_b.clone(),

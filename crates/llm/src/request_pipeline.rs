@@ -49,21 +49,6 @@ impl RequestPolicy {
             total_timeout_secs: config.max_total_duration_secs,
         }
     }
-
-    /// Policy for the balanced fallback endpoint. The total request deadline
-    /// remains the router-wide deadline; only the retry budget changes.
-    pub(crate) fn fallback(config: &RouterConfig) -> Self {
-        Self {
-            retry: RetryPolicy {
-                max_retries: config.fallback_retry_max_retries,
-                base_secs: config.retry_base_secs,
-                factor: config.retry_factor,
-                max_secs: config.retry_max_secs,
-                jitter: config.retry_jitter,
-            },
-            total_timeout_secs: config.max_total_duration_secs,
-        }
-    }
 }
 
 /// Execute one provider operation using a captured retry policy.
@@ -111,11 +96,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn primary_and_fallback_snapshot_their_distinct_retry_budgets() {
+    fn primary_snapshots_the_retry_budget() {
         let config = RouterConfig {
             max_total_duration_secs: 77,
             retry_max_retries: 2,
-            fallback_retry_max_retries: 4,
             retry_base_secs: 3,
             retry_factor: 2,
             retry_max_secs: 19,
@@ -135,16 +119,6 @@ mod tests {
                 },
                 total_timeout_secs: 77,
             }
-        );
-        assert_eq!(
-            RequestPolicy::fallback(&config).retry.max_retries,
-            4,
-            "fallback keeps its own retry budget"
-        );
-        assert_eq!(
-            RequestPolicy::fallback(&config).total_timeout_secs,
-            77,
-            "fallback shares the logical request deadline"
         );
     }
 

@@ -57,8 +57,8 @@ fn classify_by_extension(path: &str) -> (&'static str, &'static str) {
 
 /// Send an image file to the `image_model` (vision-capable) endpoint and
 /// return the model's description / extracted text. Routes through the shared
-/// LlmRouter so image_model failures fall back to balanced_model. Returns
-/// a `ToolResult` even on failure so the agent can reason about partial results.
+/// LlmRouter. Returns a `ToolResult` even on failure so the agent can reason
+/// about partial results.
 async fn understand_image(
     path: &str,
     focus: Option<&str>,
@@ -533,7 +533,7 @@ pub struct FilesTool {
     /// (transient state during startup). When present, the `summary` and image
     /// understanding operations route through `router.chat(...)`: image
     /// understanding uses the image_model role, text summarization uses
-    /// small_model. The router handles retries and the balanced-model fallback.
+    /// small_model. The router handles retries for each selected endpoint.
     summarizer: Option<Arc<LlmRouter>>,
     /// Output cap (chars) for file reads.
     max_output_chars: usize,

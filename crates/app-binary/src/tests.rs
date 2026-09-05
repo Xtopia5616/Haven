@@ -112,13 +112,6 @@ fn channel_maps_every_variant_to_expected_channel() {
             "session:title-updated",
         ),
         (
-            AgentEvent::BalancedModelActivated {
-                session_id: "t".into(),
-                reason: "r".into(),
-            },
-            "agent:balanced_model",
-        ),
-        (
             AgentEvent::ThoughtChunk {
                 session_id: "t".into(),
                 delta: "d".into(),

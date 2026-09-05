@@ -169,7 +169,7 @@ AgentEvent / 其它后端事件
 | `warning` | 3000–4000 | |
 | `error` | 4000–5000 | 上限 5s；需长时间阅读也不超过 5s |
 
-- **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`Balanced Model`、`MCP`、产品名 `Haven`）可保留英文。
+- **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`MCP`、产品名 `Haven`）可保留英文。
 - `error` 类型自动 `logger.error('notification', msg)`，调用方不再重复记日志。
 
 ```ts
@@ -275,7 +275,6 @@ try {
 | `notification:show` | info toast（title 为默认 `Haven` 时只显示 body；5s）+ Windows 桌面通知 |
 | `mcp:status_change` | Connected→success（冷启动跳过）/ Disconnected→warning / Offline→error |
 | `hotkey:conflict` | error toast：`热键冲突: …`（5s） |
-| `agent:balanced_model` | warning toast + 状态芯片（仅当前会话） |
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
 | `action:finished`（后台任务，非当前会话） | success/error：`后台任务完成/失败: {action_id}`（4s） |
 | 命令 invoke 失败 | error toast（`e.message` 或兜底，4s） |

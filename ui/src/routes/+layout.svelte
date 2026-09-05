@@ -796,13 +796,6 @@
 					},
 				}),
 				...agentEventListeners({
-					'agent:balanced_model': (event) => {
-						const data = event.payload;
-						const activeId = get(activeSessionIdStore);
-						if (data.sessionId && activeId && data.sessionId !== activeId) return;
-						updateModelState('balanced_model');
-						addNotification(`Balanced Model: ${data.reason}`, 'warning');
-					},
 					'agent:stream_stalled': (event) => {
 						// Provider stream went silent while the step is still in flight
 						// (first-chunk wait or mid-step gap). Show the factual waiting

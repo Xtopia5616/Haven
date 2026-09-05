@@ -57,7 +57,7 @@
 | P1 | [`crates/memory/src/embeddings.rs`](../crates/memory/src/embeddings.rs) | 旧 text-only keyword facade 没有 workspace 生产调用；typed 查询已返回 `entity_id + text`，用于正确去重。 | **已完成（2026-09-05，ADR 0082）**：删除旧方法，测试统一使用 typed hit，避免调用方丢失实体身份。 |
 | P1 | [`ui/src/lib/sessionStatus.ts`](../ui/src/lib/sessionStatus.ts) | `ACTION_STATUSES = SESSION_STATUSES` 只是旧命名 alias，workspace 生产代码没有使用，只有 alias 自己的测试。 | 删除 alias 和测试，不要继续用 action 术语污染 session 状态模型。 |
 
-### B. 已经影响当前架构的兼容妥协：先改模型，再删 fallback
+### B. 已经影响当前架构的兼容妥协
 
 | 优先级 | 位置 | 为什么不是简单删一行 | 目标架构 |
 |---|---|---|---|
@@ -211,9 +211,9 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 ### G. P1：模型路由从固定角色改成 capability/request policy
 
-当前 [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) 和 [`crates/llm/src/router.rs`](../crates/llm/src/router.rs) 固定 six slots：small/default/balanced/image/audio/embedding，再用 `api_style`、provider hint、`stt_use_audio_model`、`vision_use_image_model` 和 balanced fallback 叠加语义。它能工作，但新增能力时会继续增加 slot、布尔开关和特判。
+当前 [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) 固定 five slots：small/default/image/audio/embedding，再用 `api_style`、provider hint、`stt_use_audio_model` 和 `vision_use_image_model` 叠加语义。它能工作，但新增能力时会继续增加 slot、布尔开关和特判。
 
-更清晰的模型是：请求声明 `RequestKind` / `Capability`（chat、fast_chat、vision、transcription、embedding、image_generation、speech_synthesis），配置声明 provider capability 和有序 fallback policy，router 只执行 policy。`balanced` 不再是隐藏的全局逃生出口，而是一个显式 fallback chain；provider identity、wire protocol、model capability 也分别建模。
+更清晰的模型是：请求声明 `RequestKind` / `Capability`（chat、fast_chat、vision、transcription、embedding、image_generation、speech_synthesis），配置声明 provider capability，router 只执行显式请求策略；provider identity、wire protocol、model capability 也分别建模。
 
 此项不要求重写 provider adapter。adapter 仍保留为外部 wire compatibility；推翻的是 Haven 内部配置和路由语义，目标是让“能不能做、用哪个模型、失败后是否回退”成为可观察的策略，而不是六个字段和多个 bool 的组合。
 

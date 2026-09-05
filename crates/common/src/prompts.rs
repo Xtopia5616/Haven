@@ -162,7 +162,7 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 /// Conversation title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";
 
-/// User fact extraction (balanced_model). Expects a JSON array in response.
+/// User fact extraction (small_model). Expects a JSON array in response.
 /// The user content lists already-stored facts and a numbered conversation
 /// transcript (`[N] role: ...`); facts reference the supporting message by number.
 /// Short user confirmations may be paired with the preceding assistant question.
@@ -184,7 +184,7 @@ Only extract clear facts the user stated or confirmed. Transcript lines are labe
 \n\
 If no facts found, return []. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
 
-/// Maintenance-time predicate alias merge (balanced_model). Input lists free
+/// Maintenance-time predicate alias merge (small_model). Input lists free
 /// predicate spellings with row counts; output is a JSON array of merge
 /// proposals so maintenance can collapse split keys onto canonical ones.
 /// Canonical key list is injected from

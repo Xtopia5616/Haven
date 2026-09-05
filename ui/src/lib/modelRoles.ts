@@ -3,10 +3,9 @@
 // here renders its card everywhere without touching per-card markup.
 // STT / OCR live on the Voice / Image input cards, not on role pickers.
 
-/** The six role keys, in the backend's canonical order. */
+/** The five role keys, in the backend's canonical order. */
 export const ROLE_KEYS = [
 	'default_model',
-	'balanced_model',
 	'small_model',
 	'image_model',
 	'embedding_model',
@@ -44,7 +43,6 @@ export function ensureRoleSlots(roles: { role: string }[]) {
 /** Single source of truth for the LLM endpoint cards. */
 export const modelCards = [
 	{ key: 'default_model', label: 'Default Model', hint: 'Primary reasoning & tool-use agent', prefix: 'dm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },
-	{ key: 'balanced_model', label: 'Balanced Model', hint: 'Used when Default Model is unavailable', prefix: 'bm', basePlaceholder: 'http://localhost:11434', group: 'core' },
 	{ key: 'small_model', label: 'Small Model', hint: 'Title generation & lightweight reasoning', prefix: 'sm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },
 	{ key: 'image_model', label: 'Image Model', hint: 'Vision + OCR fallback（理解与文字提取）', prefix: 'im', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
 	{ key: 'audio_model', label: 'Audio Model', hint: 'STT 首选端点（Whisper / Gemini / Deepgram / AssemblyAI，或 multimodal chat）', prefix: 'au', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },

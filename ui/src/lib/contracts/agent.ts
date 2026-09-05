@@ -6,7 +6,6 @@ export const AGENT_EVENT_NAMES = [
 	'agent:thought',
 	'agent:action',
 	'agent:observation',
-	'agent:balanced_model',
 	'agent:thought_chunk',
 	'agent:reasoning_chunk',
 	'agent:stream_reset',
@@ -53,11 +52,6 @@ export interface AgentObservationPayload {
 	actionIndex: number;
 	askOptions: string[];
 	stepId: string;
-}
-
-export interface AgentBalancedModelPayload {
-	sessionId: string;
-	reason: string;
 }
 
 export interface AgentChunkPayload {
@@ -152,7 +146,6 @@ export interface AgentEventPayloadMap {
 	'agent:thought': AgentThoughtPayload;
 	'agent:action': AgentActionPayload;
 	'agent:observation': AgentObservationPayload;
-	'agent:balanced_model': AgentBalancedModelPayload;
 	'agent:thought_chunk': AgentChunkPayload;
 	'agent:reasoning_chunk': AgentChunkPayload;
 	'agent:stream_reset': AgentStreamResetPayload;
@@ -199,7 +192,6 @@ interface AgentObservationWirePayload {
 	step_id: string;
 }
 
-interface AgentBalancedModelWirePayload { session_id: string; reason: string; }
 interface AgentChunkWirePayload {
 	session_id: string;
 	delta: string;
@@ -278,7 +270,6 @@ interface AgentWirePayloadMap {
 	'agent:thought': AgentThoughtWirePayload;
 	'agent:action': AgentActionWirePayload;
 	'agent:observation': AgentObservationWirePayload;
-	'agent:balanced_model': AgentBalancedModelWirePayload;
 	'agent:thought_chunk': AgentChunkWirePayload;
 	'agent:reasoning_chunk': AgentChunkWirePayload;
 	'agent:stream_reset': AgentStreamResetWirePayload;
@@ -335,13 +326,6 @@ export function mapAgentEvent<K extends AgentEventName>(
 				actionIndex: payload.action_index,
 				askOptions: payload.ask_options,
 				stepId: payload.step_id,
-			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
-		}
-		case 'agent:balanced_model': {
-			const payload = p as AgentBalancedModelWirePayload;
-			return { ...event, payload: {
-				sessionId: payload.session_id,
-				reason: payload.reason,
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:thought_chunk':

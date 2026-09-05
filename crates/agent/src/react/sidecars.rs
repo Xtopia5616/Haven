@@ -559,35 +559,6 @@ impl Default for ContextWindowCache {
     }
 }
 
-/// Per-session dedup for balanced-model-activated notifications.
-pub(crate) struct BalancedModelNotifier {
-    notified: Mutex<HashSet<String>>,
-}
-
-impl BalancedModelNotifier {
-    pub(crate) fn new() -> Self {
-        Self {
-            notified: Mutex::new(HashSet::new()),
-        }
-    }
-
-    /// Mark `session_id` as notified. Returns `true` when this is the first
-    /// mark (caller should emit).
-    pub(super) fn try_mark(&self, session_id: &str) -> bool {
-        self.notified.lock().unwrap().insert(session_id.to_string())
-    }
-
-    pub(super) fn clear(&self, session_id: &str) {
-        self.notified.lock().unwrap().remove(session_id);
-    }
-}
-
-impl Default for BalancedModelNotifier {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -63,7 +63,7 @@ describe('agent IPC contract', () => {
 				context_window: 128000,
 				step_number: 3,
 				duration_ms: 42,
-				role: 'balanced',
+				role: 'default_model',
 				has_cost: false,
 			},
 		});

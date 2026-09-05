@@ -1091,7 +1091,6 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         client.clone(),
         client.clone(),
         client.clone(),
-        client.clone(),
         client,
     ));
     let agent = Arc::new(AgentLayer::new(

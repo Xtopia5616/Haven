@@ -944,7 +944,6 @@ mod tests {
             failing.clone(),
             failing.clone(),
             failing.clone(),
-            failing.clone(),
             failing,
         ));
         let compactor = ContextCompactor::new(100, 20);

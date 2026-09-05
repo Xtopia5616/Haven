@@ -25,8 +25,8 @@ const FIRST_CHUNK_GRACE: Duration = Duration::from_secs(60);
 /// Providers decode against the whole context: on long conversations the
 /// gap between deltas legitimately grows (server-side thinking, slow
 /// decode), so a fixed `stream_idle_timeout_secs` aborts slow-but-alive
-/// streams mid-answer — the router fails over, the step re-runs and the UI
-/// looks frozen ("streaming stuck"). The idle window is therefore scaled
+/// streams mid-answer and the UI looks frozen ("streaming stuck"). The idle
+/// window is therefore scaled
 /// with the request size and capped so a genuinely dead stream still
 /// surfaces within a bounded window.
 const IDLE_EXTRA_SECS_PER_1K_TOKENS: u64 = 2;
@@ -34,7 +34,7 @@ const IDLE_EXTRA_SECS_PER_1K_TOKENS: u64 = 2;
 /// Hard cap on the scaled data-gap idle window (base + context extra).
 pub(crate) const IDLE_SCALE_CAP_SECS: u64 = 90;
 
-/// Conversation data shared by the primary and fallback streaming attempts.
+/// Conversation data shared by repeated streaming attempts.
 #[derive(Clone, Copy)]
 pub(crate) struct StreamContext<'a> {
     pub(crate) messages: &'a [CanonicalMessage],

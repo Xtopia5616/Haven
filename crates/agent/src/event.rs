@@ -63,10 +63,6 @@ pub enum AgentEvent {
         session_id: String,
         error: String,
     },
-    BalancedModelActivated {
-        session_id: String,
-        reason: String,
-    },
     ThoughtChunk {
         session_id: String,
         delta: String,
@@ -858,19 +854,6 @@ impl EventDispatcher {
                 step_number,
                 run_id,
                 message_id: message_id.into(),
-            })
-            .await;
-    }
-
-    pub async fn emit_balanced_model_activated_from(
-        emitter: &Arc<dyn AgentEventEmitter>,
-        session_id: &str,
-        reason: &str,
-    ) {
-        emitter
-            .emit(AgentEvent::BalancedModelActivated {
-                session_id: session_id.into(),
-                reason: reason.into(),
             })
             .await;
     }

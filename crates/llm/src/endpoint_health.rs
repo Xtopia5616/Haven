@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use haven_common::config::EndpointRole;
 
-pub(crate) const ENDPOINT_COUNT: usize = 6;
+pub(crate) const ENDPOINT_COUNT: usize = 5;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CircuitState {
@@ -137,7 +137,6 @@ pub(crate) fn new_endpoint_health_slots() -> EndpointHealthSlots {
         EndpointHealth::new(),
         EndpointHealth::new(),
         EndpointHealth::new(),
-        EndpointHealth::new(),
     ]
 }
 
@@ -145,9 +144,8 @@ pub(crate) fn health_index(role: &EndpointRole) -> usize {
     match role {
         EndpointRole::SmallModel => 0,
         EndpointRole::DefaultModel => 1,
-        EndpointRole::BalancedModel => 2,
-        EndpointRole::ImageModel => 3,
-        EndpointRole::AudioModel => 4,
-        EndpointRole::EmbeddingModel => 5,
+        EndpointRole::ImageModel => 2,
+        EndpointRole::AudioModel => 3,
+        EndpointRole::EmbeddingModel => 4,
     }
 }

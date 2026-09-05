@@ -119,7 +119,6 @@ impl TauriEmitter {
             AgentEvent::SessionError { .. } => SESSION_ERROR_EVENT,
             AgentEvent::Notification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::TitleUpdated { .. } => SESSION_TITLE_UPDATED_EVENT,
-            AgentEvent::BalancedModelActivated { .. } => AGENT_BALANCED_MODEL_EVENT,
             AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
             AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
             AgentEvent::StreamReset { .. } => AGENT_STREAM_RESET_EVENT,
@@ -219,12 +218,6 @@ impl TauriEmitter {
                 session_id: session_id.clone(),
                 error: error.clone(),
             }),
-            AgentEvent::BalancedModelActivated { session_id, reason } => {
-                serialize(AgentBalancedModelEvent {
-                    session_id: session_id.clone(),
-                    reason: reason.clone(),
-                })
-            }
             AgentEvent::ThoughtChunk {
                 session_id,
                 delta,

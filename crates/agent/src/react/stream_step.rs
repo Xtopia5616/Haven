@@ -552,14 +552,6 @@ impl ReActEngine {
             .await
         {
             Ok((resp, duration_ms)) => {
-                if router.balanced_model_active() {
-                    self.emit_balanced_model(
-                        &ctx.emitter,
-                        &ctx.session_id,
-                        "switching to balanced model",
-                    )
-                    .await;
-                }
                 self.record_step_usage(ctx, *role, &resp, duration_ms).await;
                 StepCallOutcome::Response(Box::new(resp))
             }
@@ -707,7 +699,7 @@ impl ReActEngine {
             }
             Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
             Err(e) => {
-                let err_msg = format!("Both default model and balanced model failed: {}", e);
+                let err_msg = format!("Model request failed: {}", e);
                 tracing::error!(
                     "ReAct step {} session {} fatal: {}",
                     ctx.step_num,
@@ -874,13 +866,12 @@ mod tests {
         let image_client = Arc::new(ProbeClient::new(vec![ProbeResponse::Error(
             LlmError::ContextLengthExceeded,
         )]));
-        let fallback_client = Arc::new(ProbeClient::new(Vec::new()));
+        let auxiliary_client = Arc::new(ProbeClient::new(Vec::new()));
         let router = Arc::new(LlmRouter::new_with_clients(
-            fallback_client.clone(),
+            auxiliary_client.clone(),
             default_client.clone(),
-            fallback_client.clone(),
             image_client.clone(),
-            fallback_client,
+            auxiliary_client,
         ));
         let engine = ReActEngine::new(
             router.clone(),

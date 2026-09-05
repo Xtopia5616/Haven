@@ -30,7 +30,7 @@ use crate::memory_index::MemoryEmbeddingIndex;
 pub struct InferenceEngine {
     db: Arc<Database>,
     router: Arc<LlmRouter>,
-    /// Cap (chars) for transcripts sent to the BalancedModel for fact
+    /// Cap (chars) for transcripts sent to the SmallModel for fact
     /// extraction. Prevents unbounded token cost on long conversations.
     max_transcript_chars: usize,
     /// Max known facts listed in the extraction prompt as context.
@@ -42,7 +42,7 @@ pub struct InferenceEngine {
     /// (time-based throttle, complements the step-based react gate).
     fact_extraction_min_interval_secs: u64,
     /// Limits concurrent LLM fact-extraction calls to avoid overwhelming
-    /// the BalancedModel endpoint when multiple sessions complete in rapid
+    /// the SmallModel endpoint when multiple sessions complete in rapid
     /// succession.
     inference_semaphore: Arc<Semaphore>,
     /// Pending extraction jobs keyed by session_id. Value is
@@ -198,7 +198,7 @@ impl InferenceEngine {
     /// `last_seen_at` refreshes only when it is actually re-observed, not when
     /// the same old messages are re-scanned.
     ///
-    /// Tries LLM-assisted extraction via the BalancedModel first. On any
+    /// Tries LLM-assisted extraction via the SmallModel. On any
     /// failure (network error, circuit breaker open, bad JSON) the extraction
     /// is skipped for this window with a non-fatal warning — nothing is
     /// persisted, and the cursor stays put so a later run can retry the same
@@ -942,7 +942,7 @@ impl InferenceEngine {
         .map_err(|error| anyhow::anyhow!("fact batch persistence failed: {error}"))
     }
 
-    /// Send the conversation transcript to the BalancedModel and ask it to
+    /// Send the conversation transcript to the SmallModel and ask it to
     /// extract user facts as a JSON array. The transcript numbers each user
     /// message (`[N] ...`) and is prefixed with the already-stored facts, so
     /// the model can re-confirm or update existing memory instead of only
@@ -971,12 +971,12 @@ impl InferenceEngine {
         let response = self
             .router
             .chat_with_prompt(
-                EndpointRole::BalancedModel,
+                EndpointRole::SmallModel,
                 FACT_EXTRACTION_SYSTEM_PROMPT,
                 &user_content,
             )
             .await
-            .map_err(|e| anyhow::anyhow!("balanced model chat failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("small model chat failed: {}", e))?;
 
         if response.text.trim().is_empty() {
             tracing::debug!("LLM fact extraction: empty model response, treating as no facts");
@@ -1148,7 +1148,7 @@ impl InferenceEngine {
             return SummaryExtractOutcome::Done;
         }
         // Share the wall-clock throttle with normal extraction so compaction
-        // cannot bypass the interval and spam the balanced model.
+        // cannot bypass the interval and spam the small model.
         if self.fact_extraction_min_interval_secs > 0 {
             let last_key = format!("fact_extraction_last_run.{}", session_id);
             let last_run = match self
@@ -1335,7 +1335,6 @@ mod tests {
             reply: reply.to_string(),
         });
         Arc::new(LlmRouter::new_with_clients_full(
-            client.clone(),
             client.clone(),
             client.clone(),
             client.clone(),
@@ -2027,7 +2026,7 @@ mod tests {
 
     #[tokio::test]
     async fn infer_facts_llm_failure_keeps_cursor_for_retry() {
-        // Balanced model reply is not valid JSON -> extraction fails. The
+        // Small model reply is not valid JSON -> extraction fails. The
         // failure is non-fatal, but the cursor stays behind so a later run can
         // retry instead of silently losing the message window.
         let db = temp_db();

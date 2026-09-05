@@ -167,7 +167,6 @@ fn stt_key_configured(stt: &haven_common::config::SttConfig, providers: &[Provid
 pub struct ApiKeyStatus {
     pub small_model: bool,
     pub default_model: bool,
-    pub balanced_model: bool,
     pub image_model: bool,
     pub audio_model: bool,
     pub embedding_model: bool,
@@ -185,7 +184,6 @@ fn api_key_status(cfg: &AppConfig) -> ApiKeyStatus {
     ApiKeyStatus {
         small_model: cfg.llm.is_configured(EndpointRole::SmallModel),
         default_model: cfg.llm.is_configured(EndpointRole::DefaultModel),
-        balanced_model: cfg.llm.is_configured(EndpointRole::BalancedModel),
         image_model: cfg.llm.is_configured(EndpointRole::ImageModel),
         audio_model: cfg.llm.is_configured(EndpointRole::AudioModel),
         embedding_model: cfg.llm.is_configured(EndpointRole::EmbeddingModel),

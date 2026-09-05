@@ -219,7 +219,6 @@ mod tests {
             client.clone(),
             client.clone(),
             client.clone(),
-            client.clone(),
             client,
         ));
         let limits = haven_common::config::ContextLimitsConfig::default();
@@ -357,7 +356,6 @@ mod tests {
             let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
             let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
             let router = Arc::new(LlmRouter::new_with_clients(
-                client.clone(),
                 client.clone(),
                 client.clone(),
                 client.clone(),

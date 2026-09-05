@@ -20,7 +20,6 @@
 		if (overlay.processing) return '转写中';
 		if (modelState === 'streaming') return '生成中';
 		if (modelState === 'tool') return '工具调用';
-		if (modelState === 'balanced_model') return '备用模型';
 		if (modelState === 'stalled' || modelState === 'waiting') return '等待响应';
 		if (busySessions.size > 0) return `${busySessions.size} 个会话运行中`;
 		if (awaitingBackgroundActive) return `等待${taskKindLabel('background')}`;

@@ -432,7 +432,6 @@ mod tests {
             client.clone(),
             client.clone(),
             client.clone(),
-            client.clone(),
             client,
         ))
     }
@@ -491,7 +490,6 @@ mod tests {
             err: LlmError::RequestFailed(err_body.into()),
         });
         let router = Arc::new(LlmRouter::new_with_clients(
-            client.clone(),
             client.clone(),
             client.clone(),
             client.clone(),

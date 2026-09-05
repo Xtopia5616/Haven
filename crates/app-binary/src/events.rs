@@ -52,7 +52,6 @@ pub(crate) const LLM_CONFIG_CHANGED_EVENT: &str = "llm:config_changed";
 pub(crate) const AGENT_THOUGHT_EVENT: &str = "agent:thought";
 pub(crate) const AGENT_ACTION_EVENT: &str = "agent:action";
 pub(crate) const AGENT_OBSERVATION_EVENT: &str = "agent:observation";
-pub(crate) const AGENT_BALANCED_MODEL_EVENT: &str = "agent:balanced_model";
 pub(crate) const AGENT_THOUGHT_CHUNK_EVENT: &str = "agent:thought_chunk";
 pub(crate) const AGENT_REASONING_CHUNK_EVENT: &str = "agent:reasoning_chunk";
 pub(crate) const AGENT_STREAM_RESET_EVENT: &str = "agent:stream_reset";
@@ -376,12 +375,6 @@ pub(crate) struct AgentObservationEvent {
     pub action_index: u32,
     pub ask_options: Vec<String>,
     pub step_id: String,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct AgentBalancedModelEvent {
-    pub session_id: String,
-    pub reason: String,
 }
 
 #[derive(Clone, Serialize)]

@@ -23,7 +23,6 @@ export interface ShellAvailability {
 export interface ApiKeyStatus {
 	small_model: boolean;
 	default_model: boolean;
-	balanced_model: boolean;
 	image_model: boolean;
 	audio_model: boolean;
 	embedding_model: boolean;
@@ -67,7 +66,6 @@ export function parseApiKeyStatus(value: unknown): ApiKeyStatus {
 	const requiredFlags = [
 		'small_model',
 		'default_model',
-		'balanced_model',
 		'image_model',
 		'audio_model',
 		'embedding_model',
@@ -86,7 +84,6 @@ export function parseApiKeyStatus(value: unknown): ApiKeyStatus {
 	return {
 		small_model: value.small_model as boolean,
 		default_model: value.default_model as boolean,
-		balanced_model: value.balanced_model as boolean,
 		image_model: value.image_model as boolean,
 		audio_model: value.audio_model as boolean,
 		embedding_model: value.embedding_model as boolean,

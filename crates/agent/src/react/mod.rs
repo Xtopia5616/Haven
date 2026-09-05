@@ -45,8 +45,8 @@ pub(crate) use r#loop::RunInput;
 pub use r#loop::{LoopExit, PauseReason};
 pub(crate) use request_context::RequestContext;
 use sidecars::{
-    BalancedModelNotifier, ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs,
-    TokenEstimateCache, ToolDefCache, UsageTracker,
+    ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs, TokenEstimateCache,
+    ToolDefCache, UsageTracker,
 };
 pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ObservationCard, TranscriptEvent};
@@ -159,8 +159,6 @@ pub struct ReActEngine {
     snapshot_store: Mutex<snapshot_io::SnapshotStore>,
     /// Per-role context-window cache keyed by router instance pointer.
     context_windows: ContextWindowCache,
-    /// Per-session dedup for balanced-model-activated notifications.
-    balanced_model: BalancedModelNotifier,
     /// Minted streaming-message ids (Phase 6 / I3).
     identity: IdentityMap,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
@@ -222,7 +220,6 @@ impl ReActEngine {
             snapshot_bufs: SnapshotBufs::new(),
             snapshot_store: Mutex::new(snapshot_io::SnapshotStore::default()),
             context_windows: ContextWindowCache::new(),
-            balanced_model: BalancedModelNotifier::new(),
             identity: IdentityMap::new(),
             hooks: default_hooks(),
             inference: None,
@@ -894,19 +891,7 @@ impl ReActEngine {
         }
     }
 
-    /// Emit balanced model activated with per-session deduplication.
-    pub(super) async fn emit_balanced_model(
-        &self,
-        emitter: &Arc<dyn AgentEventEmitter>,
-        session_id: &str,
-        reason: &str,
-    ) {
-        if self.balanced_model.try_mark(session_id) {
-            EventDispatcher::emit_balanced_model_activated_from(emitter, session_id, reason).await;
-        }
-    }
-
-    /// Emit session error and clean up balanced model dedup state.
+    /// Emit session error and clean up per-session state.
     pub(super) async fn emit_error(
         &self,
         emitter: &Arc<dyn AgentEventEmitter>,
@@ -914,7 +899,6 @@ impl ReActEngine {
         error: &str,
     ) {
         tracing::error!("ReAct session {} error: {}", session_id, error);
-        self.balanced_model.clear(session_id);
         EventDispatcher::emit_session_error_from(emitter, session_id, error).await;
         self.reset_cumulative_usage(session_id);
     }
@@ -997,13 +981,7 @@ mod tests {
 
     fn mock_router() -> LlmRouter {
         let client: Arc<dyn LlmClient> = Arc::new(MockLlm);
-        LlmRouter::new_with_clients(
-            client.clone(),
-            client.clone(),
-            client.clone(),
-            client.clone(),
-            client,
-        )
+        LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client)
     }
 
     // ── failure classification & retry nudge (G5: nudge text only; attach

@@ -110,7 +110,6 @@ pub(super) fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
         client.clone(),
         client.clone(),
         client.clone(),
-        client.clone(),
         client,
     ));
     let agent = Arc::new(AgentLayer::new(
@@ -176,7 +175,6 @@ pub(super) fn make_test_agent_with(
     let db = Arc::new(Database::open(&p).unwrap());
     let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
     let router = Arc::new(LlmRouter::new_with_clients(
-        client.clone(),
         client.clone(),
         client.clone(),
         client.clone(),

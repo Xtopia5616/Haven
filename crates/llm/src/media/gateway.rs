@@ -410,7 +410,6 @@ mod tests {
             client.clone(),
             client.clone(),
             client.clone(),
-            client.clone(),
             client,
         ))
     }

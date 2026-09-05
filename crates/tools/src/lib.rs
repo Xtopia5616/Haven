@@ -147,8 +147,7 @@ pub struct ToolsManager {
     /// Shared LlmRouter. Tools that need a model (currently the file `summary`
     /// and image-understanding operations) call `router.chat(...)` — text
     /// summarization uses the SmallModel role, image understanding uses the
-    /// ImageModel role; the router handles retries and the balanced-model
-    /// fallback.
+    /// ImageModel role; the router handles retries for the selected endpoint.
     router: RwLock<Option<Arc<LlmRouter>>>,
     /// Registry of background actions (shell with background: true).
     pub background_actions: Arc<BackgroundActions>,

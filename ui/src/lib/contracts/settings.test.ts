@@ -43,7 +43,6 @@ describe('settings command contracts', () => {
 		const status = parseApiKeyStatus({
 			small_model: false,
 			default_model: true,
-			balanced_model: false,
 			image_model: false,
 			audio_model: false,
 			embedding_model: false,

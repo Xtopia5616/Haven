@@ -1153,7 +1153,7 @@ struct GeminiEmbedResponse {
 fn parse_gemini_embed_response(
     body: &str,
     requested: usize,
-    fallback_model: &str,
+    requested_model: &str,
 ) -> Result<Embedding, LlmError> {
     let json: GeminiEmbedResponse =
         serde_json::from_str(body).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
@@ -1180,7 +1180,7 @@ fn parse_gemini_embed_response(
     }
     Ok(Embedding {
         vectors,
-        model: Some(fallback_model.to_string()),
+        model: Some(requested_model.to_string()),
         usage: Usage::default(),
     })
 }

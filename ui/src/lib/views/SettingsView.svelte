@@ -32,7 +32,6 @@
 	let keyConfigured = $state({
 		small_model: false,
 		default_model: false,
-		balanced_model: false,
 		image_model: false,
 		audio_model: false,
 		embedding_model: false,

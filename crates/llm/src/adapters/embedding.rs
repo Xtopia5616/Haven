@@ -59,7 +59,7 @@ pub(crate) fn openai_embeddings_url(base_url: &str, ensure_v1: bool) -> String {
 pub(crate) fn parse_openai_embed_response(
     body: &str,
     requested: usize,
-    fallback_model: &str,
+    requested_model: &str,
 ) -> Result<Embedding, LlmError> {
     let json: OpenAiEmbedResponse =
         serde_json::from_str(body).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
@@ -77,7 +77,7 @@ pub(crate) fn parse_openai_embed_response(
     }
     items.sort_by_key(|item| item.index);
     let vectors: Vec<Vec<f32>> = items.into_iter().map(|item| item.embedding).collect();
-    let model = json.model.clone().or(Some(fallback_model.to_string()));
+    let model = json.model.clone().or(Some(requested_model.to_string()));
     let usage = json
         .usage
         .map(|u| {
@@ -172,7 +172,7 @@ mod tests {
             "model": "text-embedding-3-small",
             "usage": {"prompt_tokens": 4, "total_tokens": 4}
         }"#;
-        let emb = parse_openai_embed_response(body, 2, "fallback").unwrap();
+        let emb = parse_openai_embed_response(body, 2, "requested-model").unwrap();
         assert_eq!(emb.vectors, vec![vec![1.0, 2.0], vec![3.0]]);
         assert_eq!(emb.model.as_deref(), Some("text-embedding-3-small"));
         assert_eq!(emb.usage.prompt_tokens, 4);

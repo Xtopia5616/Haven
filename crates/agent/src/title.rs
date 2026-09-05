@@ -102,13 +102,9 @@ mod tests {
             result: Mutex::new(result),
             calls: Mutex::new(Vec::new()),
         });
-        // Real OpenAiAdapter for default_model, balanced_model, and
-        // image_model slots so the router can dispatch them if a test ever
-        // exercises the fallback chain.
+        // Real OpenAiAdapter instances fill the other role slots so the
+        // router can dispatch them if a test exercises those paths.
         let default_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
-            haven_common::config::ModelEndpoint::default(),
-        ));
-        let balanced_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
             haven_common::config::ModelEndpoint::default(),
         ));
         let image_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
@@ -120,7 +116,6 @@ mod tests {
         let router = Arc::new(LlmRouter::new_with_clients(
             mock.clone(),
             default_client,
-            balanced_client,
             image_client,
             audio_client,
         ));

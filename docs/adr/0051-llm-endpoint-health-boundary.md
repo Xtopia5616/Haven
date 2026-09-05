@@ -9,9 +9,9 @@
 ## 决定
 
 - 新增内部 `crates/llm/src/endpoint_health.rs`，集中承载 `CircuitBreaker`、
-  `EndpointHealth`、role 索引与六个 endpoint 健康槽位的初始化。
+  `EndpointHealth`、role 索引与五个 endpoint 健康槽位的初始化。
 - `LlmRouter` 继续拥有健康状态的并发存储、请求前检查和成功/失败时机；通过内部
-  API 调用健康模块，不改变 endpoint 选择、fallback、重试、限流冷却或流式逻辑。
+  API 调用健康模块，不改变 endpoint 选择、重试、限流冷却或流式逻辑。
 - 保持连续失败阈值、30 秒冷却、HalfOpen 探测、并发旧请求成功不提前关闭熔断器等
   既有语义；不改变公开 API、provider 协议、配置格式或持久化行为。
 
@@ -19,11 +19,11 @@
 
 - 继续把熔断器和健康状态留在 `router.rs`：会延续路由与健康策略混合，拒绝。
 - 引入第三方熔断 crate：会改变时间/状态语义并增加依赖，拒绝。
-- 把整个请求 permit、限流和 fallback 一起下沉：边界过大且会混合不同策略，暂不采用。
+- 把整个请求 permit、限流和流式策略一起下沉：边界过大且会混合不同策略，暂不采用。
 
 ## 影响
 
-这是 `haven-llm` 内部运行时边界拆分。`LlmRouter` 对外行为与六角色槽位顺序保持
+这是 `haven-llm` 内部运行时边界拆分。`LlmRouter` 对外行为与五角色槽位顺序保持
 不变，不需要配置、数据库或缓存重置。
 
 ## 验证
