@@ -83,7 +83,6 @@
 		border-left: 3px solid var(--toast-accent);
 		background: var(--toast-background);
 		color: var(--toast-foreground);
-		min-height: 48px;
 	}
 	.toast-icon {
 		display: flex;

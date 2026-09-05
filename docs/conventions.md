@@ -174,7 +174,7 @@ AgentEvent / 其它后端事件
 - **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`MCP`、产品名 `Haven`）可保留英文。
 - `error` 类型自动 `logger.error('notification', msg)`，调用方不再重复记日志。
 - 默认时长固定为 info 3s、success 3s、warning 4s、error 5s；错误上报统一使用 error 5s。
-- `NotificationToast` 统一使用语义色板、错误 `alert` 语义、48px 最小高度和可换行文本。
+- `NotificationToast` 统一使用语义色板、错误 `alert` 语义、内容驱动高度和可换行文本；单行通知不额外占用多行通知的高度。
 
 ```ts
 import { addNotification } from '$lib/stores.ts';
