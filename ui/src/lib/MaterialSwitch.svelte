@@ -112,11 +112,8 @@
 		transform: translateY(-50%);
 		transition:
 			left var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
-			width var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
-			height var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
 			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+				var(--md-sys-motion-easing-standard);
 	}
 	.md-switch-input:checked + .md-switch-track {
 		background: var(--md-sys-color-primary);
@@ -124,15 +121,13 @@
 		color: var(--md-sys-color-on-primary);
 	}
 	.md-switch-input:checked + .md-switch-track::after {
-		left: var(--md-comp-switch-thumb-selected-offset);
-		width: var(--md-comp-switch-thumb-selected-size);
-		height: var(--md-comp-switch-thumb-selected-size);
+		left: calc(100% - var(--md-comp-switch-thumb-size));
 		background: currentColor;
 	}
 	.md-switch-icon {
 		position: absolute;
 		top: 50%;
-		left: calc(100% - var(--md-comp-switch-thumb-selected-size) / 2);
+		left: calc(100% - var(--md-comp-switch-thumb-size) / 2);
 		width: var(--md-comp-switch-icon-size);
 		height: var(--md-comp-switch-icon-size);
 		z-index: 2;
