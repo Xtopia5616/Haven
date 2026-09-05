@@ -39,6 +39,20 @@ pub enum ActionStepOutcome {
     Unknown,
 }
 
+#[derive(Clone, Copy)]
+struct ActionStepFields<'a> {
+    id: &'a str,
+    session_id: &'a str,
+    step_number: i32,
+    action_index: i32,
+    tool_name: &'a str,
+    tool_input: &'a str,
+    tool_call_id: Option<&'a str>,
+    is_high_risk: bool,
+    silent: bool,
+    confirmed: Option<bool>,
+}
+
 impl ActionStepOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -51,6 +65,90 @@ impl ActionStepOutcome {
 }
 
 impl Database {
+    fn insert_action_step(
+        &self,
+        fields: ActionStepFields<'_>,
+        ignore_existing: bool,
+    ) -> anyhow::Result<String> {
+        let now = now_rfc3339_millis();
+        let conn = self.conn();
+        let sql = if ignore_existing {
+            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)"
+        } else {
+            "INSERT INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)"
+        };
+        conn.execute(
+            sql,
+            rusqlite::params![
+                fields.id,
+                fields.session_id,
+                fields.step_number,
+                fields.action_index,
+                fields.tool_name,
+                fields.tool_input,
+                fields.tool_call_id,
+                fields.is_high_risk as i32,
+                now,
+                fields.silent as i32,
+                fields.confirmed.map(|confirmed| confirmed as i32),
+            ],
+        )?;
+        Ok(now)
+    }
+
+    fn action_step_from_fields(fields: ActionStepFields<'_>, created_at: String) -> SessionStep {
+        SessionStep {
+            id: fields.id.into(),
+            session_id: fields.session_id.into(),
+            step_number: fields.step_number,
+            action_index: fields.action_index,
+            thought: None,
+            action_tool: Some(fields.tool_name.into()),
+            action_input: Some(fields.tool_input.into()),
+            tool_call_id: fields.tool_call_id.map(String::from),
+            observation: None,
+            status: "pending".into(),
+            is_high_risk: fields.is_high_risk,
+            confirmed: fields.confirmed,
+            silent: fields.silent,
+            started_at: None,
+            completed_at: None,
+            created_at,
+        }
+    }
+
+    fn update_pending_confirmation(
+        conn: &rusqlite::Connection,
+        id: &str,
+        confirmed: Option<bool>,
+    ) -> anyhow::Result<()> {
+        if let Some(confirmed) = confirmed {
+            conn.execute(
+                "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = 'pending'",
+                rusqlite::params![confirmed as i32, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn ensure_action_step_record(
+        &self,
+        fields: ActionStepFields<'_>,
+        refresh_identity: bool,
+    ) -> anyhow::Result<()> {
+        self.insert_action_step(fields, true)?;
+        let conn = self.conn();
+        if refresh_identity {
+            conn.execute(
+                "UPDATE session_steps SET action_index = COALESCE(action_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = 'pending'",
+                rusqlite::params![fields.action_index, fields.tool_call_id, fields.id],
+            )?;
+        }
+        Self::update_pending_confirmation(&conn, fields.id, fields.confirmed)
+    }
+
     /// Create a thought-only step row under a PRE-MINTED id.
     ///
     /// The row is the execution-state anchor of a streamed thought (or a user
@@ -115,41 +213,20 @@ impl Database {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("step"));
-        let now = now_rfc3339_millis();
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                id,
-                session_id,
-                step_number,
-                tool_name,
-                tool_input,
-                is_high_risk as i32,
-                now,
-                silent as i32,
-                confirmed.map(|c| c as i32)
-            ],
-        )?;
-        Ok(SessionStep {
-            id,
-            session_id: session_id.into(),
+        let fields = ActionStepFields {
+            id: &id,
+            session_id,
             step_number,
             action_index: 0,
-            thought: None,
-            action_tool: Some(tool_name.into()),
-            action_input: Some(tool_input.into()),
+            tool_name,
+            tool_input,
             tool_call_id: None,
-            observation: None,
-            status: "pending".into(),
             is_high_risk,
-            confirmed,
             silent,
-            started_at: None,
-            completed_at: None,
-            created_at: now,
-        })
+            confirmed,
+        };
+        let created_at = self.insert_action_step(fields, false)?;
+        Ok(Self::action_step_from_fields(fields, created_at))
     }
 
     /// Create an action step with the durable invocation identity.
@@ -170,43 +247,20 @@ impl Database {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("step"));
-        let now = now_rfc3339_millis();
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)",
-            rusqlite::params![
-                id,
-                session_id,
-                step_number,
-                action_index,
-                tool_name,
-                tool_input,
-                tool_call_id,
-                is_high_risk as i32,
-                now,
-                silent as i32,
-                confirmed.map(|c| c as i32)
-            ],
-        )?;
-        Ok(SessionStep {
-            id,
-            session_id: session_id.into(),
+        let fields = ActionStepFields {
+            id: &id,
+            session_id,
             step_number,
             action_index,
-            thought: None,
-            action_tool: Some(tool_name.into()),
-            action_input: Some(tool_input.into()),
-            tool_call_id: tool_call_id.map(String::from),
-            observation: None,
-            status: "pending".into(),
+            tool_name,
+            tool_input,
+            tool_call_id,
             is_high_risk,
-            confirmed,
             silent,
-            started_at: None,
-            completed_at: None,
-            created_at: now,
-        })
+            confirmed,
+        };
+        let created_at = self.insert_action_step(fields, false)?;
+        Ok(Self::action_step_from_fields(fields, created_at))
     }
 
     /// Ensure a pending action step row exists under the pre-minted `step-*`
@@ -228,30 +282,21 @@ impl Database {
         confirmed: Option<bool>,
         id: &str,
     ) -> anyhow::Result<()> {
-        let now = now_rfc3339_millis();
-        let conn = self.conn();
-        conn.execute(
-            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7, ?8, ?9)",
-            rusqlite::params![
+        self.ensure_action_step_record(
+            ActionStepFields {
                 id,
                 session_id,
                 step_number,
+                action_index: 0,
                 tool_name,
                 tool_input,
-                is_high_risk as i32,
-                now,
-                silent as i32,
-                confirmed.map(|c| c as i32)
-            ],
-        )?;
-        if confirmed.is_some() {
-            conn.execute(
-                "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = 'pending'",
-                rusqlite::params![confirmed.map(|c| c as i32), id],
-            )?;
-        }
-        Ok(())
+                tool_call_id: None,
+                is_high_risk,
+                silent,
+                confirmed,
+            },
+            false,
+        )
     }
 
     /// Ensure an action step exists while retaining its stable invocation
@@ -270,12 +315,8 @@ impl Database {
         confirmed: Option<bool>,
         id: &str,
     ) -> anyhow::Result<()> {
-        let now = now_rfc3339_millis();
-        let conn = self.conn();
-        conn.execute(
-            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, action_index, tool_name, input, action_tool, action_input, tool_call_id, status, is_high_risk, created_at, silent, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)",
-            rusqlite::params![
+        self.ensure_action_step_record(
+            ActionStepFields {
                 id,
                 session_id,
                 step_number,
@@ -283,23 +324,12 @@ impl Database {
                 tool_name,
                 tool_input,
                 tool_call_id,
-                is_high_risk as i32,
-                now,
-                silent as i32,
-                confirmed.map(|c| c as i32)
-            ],
-        )?;
-        conn.execute(
-            "UPDATE session_steps SET action_index = COALESCE(action_index, ?1), tool_call_id = COALESCE(tool_call_id, ?2) WHERE id = ?3 AND status = 'pending'",
-            rusqlite::params![action_index, tool_call_id, id],
-        )?;
-        if confirmed.is_some() {
-            conn.execute(
-                "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = 'pending'",
-                rusqlite::params![confirmed.map(|c| c as i32), id],
-            )?;
-        }
-        Ok(())
+                is_high_risk,
+                silent,
+                confirmed,
+            },
+            true,
+        )
     }
 
     /// Complete an action step by recording its observation.

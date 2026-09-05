@@ -39,7 +39,68 @@ fn action_step_outcome(result: &ToolResult) -> ActionStepOutcome {
     }
 }
 
+struct ActionStepRequest<'a> {
+    session_id: &'a str,
+    tool_name: &'a str,
+    input: &'a Value,
+    step_num: u32,
+    action_index: u32,
+    tool_call_id: Option<&'a str>,
+    step_id: &'a str,
+}
+
+struct ActionStepContext {
+    session_id: String,
+    step_number: i32,
+    action_index: i32,
+    tool_name: String,
+    tool_input: String,
+    tool_call_id: Option<String>,
+    is_high_risk: bool,
+    silent: bool,
+    step_id: String,
+}
+
+impl ActionStepContext {
+    fn new(request: ActionStepRequest<'_>, risk_level: RiskLevel) -> Self {
+        Self {
+            session_id: request.session_id.into(),
+            step_number: request.step_num as i32,
+            action_index: request.action_index as i32,
+            tool_name: request.tool_name.into(),
+            tool_input: request.input.to_string(),
+            tool_call_id: request.tool_call_id.map(str::to_string),
+            is_high_risk: risk_level != RiskLevel::Safe,
+            silent: is_silent_action(request.tool_name, request.input),
+            step_id: request.step_id.into(),
+        }
+    }
+
+    fn ensure(&self, db: &Database, confirmed: Option<bool>) -> anyhow::Result<()> {
+        db.ensure_action_step_with_identity(
+            &self.session_id,
+            self.step_number,
+            self.action_index,
+            &self.tool_name,
+            &self.tool_input,
+            self.tool_call_id.as_deref(),
+            self.is_high_risk,
+            self.silent,
+            confirmed,
+            &self.step_id,
+        )
+    }
+}
+
 impl SessionExecutor {
+    async fn action_step_context(&self, request: ActionStepRequest<'_>) -> ActionStepContext {
+        let risk_level = self
+            .tools
+            .get_risk_level(Some(request.session_id), request.tool_name, request.input)
+            .await;
+        ActionStepContext::new(request, risk_level)
+    }
+
     /// Persist a pending `session_steps` row under the pre-minted `step-*` id
     /// at Action-emit time — before the tool runs. Interrupted / cancelled
     /// tools never reach `execute_step`'s post-completion write, so without
@@ -70,36 +131,28 @@ impl SessionExecutor {
         tool_call_id: Option<&str>,
         step_id: &str,
     ) {
-        let risk_level = self
-            .tools
-            .get_risk_level(Some(session_id), tool_name, input)
+        let context = self
+            .action_step_context(ActionStepRequest {
+                session_id,
+                tool_name,
+                input,
+                step_num,
+                action_index,
+                tool_call_id,
+                step_id,
+            })
             .await;
-        let silent = is_silent_action(tool_name, input);
-        let step_number = step_num as i32;
-        let session_id = session_id.to_string();
-        let tool_name = tool_name.to_string();
-        let tool_input = input.to_string();
-        let tool_call_id = tool_call_id.map(str::to_string);
-        let step_id_owned = step_id.to_string();
+        let step_id_for_log = context.step_id.clone();
         if let Err(e) = self
             .db
-            .run_blocking(move |db| {
-                db.ensure_action_step_with_identity(
-                    &session_id,
-                    step_number,
-                    action_index as i32,
-                    &tool_name,
-                    &tool_input,
-                    tool_call_id.as_deref(),
-                    risk_level != RiskLevel::Safe,
-                    silent,
-                    None,
-                    &step_id_owned,
-                )
-            })
+            .run_blocking(move |db| context.ensure(db, None))
             .await
         {
-            tracing::warn!("begin_action_step failed for step {}: {}", step_id, e);
+            tracing::warn!(
+                "begin_action_step failed for step {}: {}",
+                step_id_for_log,
+                e
+            );
         }
     }
 
@@ -145,40 +198,30 @@ impl SessionExecutor {
         observation: &str,
         outcome: ActionStepOutcome,
     ) {
-        let risk_level = self
-            .tools
-            .get_risk_level(Some(session_id), tool_name, input)
+        let context = self
+            .action_step_context(ActionStepRequest {
+                session_id,
+                tool_name,
+                input,
+                step_num,
+                action_index,
+                tool_call_id,
+                step_id,
+            })
             .await;
-        let silent = is_silent_action(tool_name, input);
-        let step_number = step_num as i32;
-        let session_id = session_id.to_string();
-        let tool_name = tool_name.to_string();
-        let tool_input = input.to_string();
-        let tool_call_id = tool_call_id.map(str::to_string);
-        let step_id_owned = step_id.to_string();
+        let step_id_for_log = context.step_id.clone();
         let observation = observation.to_string();
         if let Err(e) = self
             .db
             .run_blocking(move |db| {
-                db.ensure_action_step_with_identity(
-                    &session_id,
-                    step_number,
-                    action_index as i32,
-                    &tool_name,
-                    &tool_input,
-                    tool_call_id.as_deref(),
-                    risk_level != RiskLevel::Safe,
-                    silent,
-                    None,
-                    &step_id_owned,
-                )?;
-                db.finish_action_step(&step_id_owned, &observation, outcome)
+                context.ensure(db, None)?;
+                db.finish_action_step(&context.step_id, &observation, outcome)
             })
             .await
         {
             tracing::warn!(
                 "finish_step_with_outcome failed for step {}: {}",
-                step_id,
+                step_id_for_log,
                 e
             );
         }
@@ -238,36 +281,31 @@ impl SessionExecutor {
         tool_call_id: Option<&str>,
         step_id: &str,
     ) {
-        let risk_level = self
-            .tools
-            .get_risk_level(Some(session_id), tool_name, input)
+        let context = self
+            .action_step_context(ActionStepRequest {
+                session_id,
+                tool_name,
+                input,
+                step_num,
+                action_index,
+                tool_call_id,
+                step_id,
+            })
             .await;
-        let silent = is_silent_action(tool_name, input);
-        let session_id = session_id.to_string();
-        let tool_name = tool_name.to_string();
-        let tool_input = input.to_string();
-        let tool_call_id = tool_call_id.map(str::to_string);
-        let step_id = step_id.to_string();
+        let step_id_for_log = context.step_id.clone();
         if let Err(e) = self
             .db
             .run_blocking(move |db| {
-                db.ensure_action_step_with_identity(
-                    &session_id,
-                    step_num as i32,
-                    action_index as i32,
-                    &tool_name,
-                    &tool_input,
-                    tool_call_id.as_deref(),
-                    risk_level != RiskLevel::Safe,
-                    silent,
-                    None,
-                    &step_id,
-                )?;
-                db.start_action_step(&step_id)
+                context.ensure(db, None)?;
+                db.start_action_step(&context.step_id)
             })
             .await
         {
-            tracing::warn!("start_action_step failed for step: {}", e);
+            tracing::warn!(
+                "start_action_step failed for step {}: {}",
+                step_id_for_log,
+                e
+            );
         }
     }
 
@@ -579,24 +617,22 @@ impl SessionExecutor {
         }
         // Row was normally created at Action emit; ensure + complete covers
         // direct execute_step callers (tests) and races where begin failed.
-        let session_id_owned = session_id.to_string();
-        let tool_input = input.to_string();
-        let silent = is_silent_action(tool_name, &input);
+        let action_step = ActionStepContext::new(
+            ActionStepRequest {
+                session_id,
+                tool_name,
+                input: &input,
+                step_num,
+                action_index,
+                tool_call_id: tool_call_id.as_deref(),
+                step_id,
+            },
+            risk_level,
+        );
         self.db
             .run_blocking(move |db| {
-                db.ensure_action_step_with_identity(
-                    &session_id_owned,
-                    step_number,
-                    action_index as i32,
-                    &tool_name_owned,
-                    &tool_input,
-                    tool_call_id.as_deref(),
-                    risk_level != RiskLevel::Safe,
-                    silent,
-                    confirmed,
-                    &persist_step_id,
-                )?;
-                db.finish_action_step(&persist_step_id, &obs, step_outcome)
+                action_step.ensure(db, confirmed)?;
+                db.finish_action_step(&action_step.step_id, &obs, step_outcome)
             })
             .await
             .map_err(|error| anyhow::Error::new(ActionStepPersistenceError(error)))?;
