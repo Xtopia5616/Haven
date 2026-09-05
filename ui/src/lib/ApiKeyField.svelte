@@ -32,9 +32,7 @@
 	let showKey = $state(false);
 
 	/** @type {string} */
-	let editPlaceholder = $derived(
-		configured && !value ? MASK : placeholder,
-	);
+	let editPlaceholder = $derived(configured && !value ? MASK : placeholder);
 
 	function handleEdit() {
 		if (disabled) return;
@@ -47,17 +45,39 @@
 		class="api-key-badge"
 		class:configured
 		class:empty={!configured}
-		title={configured ? 'Configured' : 'Not Configured'}
+		title={configured ? 'API Key 已配置' : 'API Key 未配置'}
+		aria-label={configured ? 'API Key 已配置' : 'API Key 未配置'}
 	>
-		<span class="api-key-badge-mask">{MASK.slice(0, 8)}</span>
+		{#if configured}
+			<svg
+				class="api-key-badge-icon"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2.5"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
+			>
+		{:else}
+			<svg
+				class="api-key-badge-icon"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				aria-hidden="true"
+				><circle cx="7.5" cy="15.5" r="3.5" /><path d="m10 13 8-8 3 3-2 2" /><path
+					d="m16 7 2 2"
+				/></svg
+			>
+		{/if}
 		<span class="api-key-badge-label">{configured ? '已配置' : '未配置'}</span>
 	</span>
 {:else if mode === 'edit'}
-	<div
-		class="api-key-field"
-		class:empty={!configured && !value}
-		class:disabled
-	>
+	<div class="api-key-field" class:empty={!configured && !value} class:disabled>
 		<input
 			{id}
 			type={showKey ? 'text' : 'password'}
@@ -74,29 +94,55 @@
 			class="api-key-icon-btn"
 			aria-label={showKey ? 'Hide API key' : 'Show API key'}
 			title={showKey ? 'Hide API key' : 'Show API key'}
-			disabled={disabled}
-			onclick={() => { showKey = !showKey; }}
+			{disabled}
+			onclick={() => {
+				showKey = !showKey;
+			}}
 		>
 			{#if showKey}
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true"
+					><path
+						d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
+					/><line x1="1" y1="1" x2="23" y2="23" /></svg
+				>
 			{:else}
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true"
+					><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle
+						cx="12"
+						cy="12"
+						r="3"
+					/></svg
+				>
 			{/if}
 		</button>
 	</div>
 {:else}
-	<div
-		class="api-key-field"
-		class:empty={!configured}
-		class:disabled
-	>
+	<div class="api-key-field" class:empty={!configured} class:disabled>
 		<button
 			type="button"
 			class="api-key-display"
 			{id}
 			title={configured ? 'Configured' : 'Not Configured'}
 			aria-label={configured ? 'Change API key' : 'Set API key'}
-			disabled={disabled}
+			{disabled}
 			onclick={handleEdit}
 		>
 			<span class="api-key-mask" class:grey={!configured}>{MASK}</span>
@@ -104,7 +150,7 @@
 		<button
 			type="button"
 			class="api-key-action"
-			disabled={disabled}
+			{disabled}
 			title={configured ? 'Configured' : 'Not Configured'}
 			onclick={handleEdit}
 		>
@@ -124,8 +170,8 @@
 		background: transparent;
 		overflow: hidden;
 		box-sizing: border-box;
-		transition: border-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.api-key-field:hover:not(.disabled) {
@@ -225,8 +271,8 @@
 		align-items: center;
 		justify-content: center;
 		cursor: pointer;
-		transition: background-color var(--md-sys-motion-duration-fast)
-				var(--md-sys-motion-easing-standard),
+		transition:
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	.api-key-icon-btn:hover:not(:disabled) {
@@ -237,10 +283,10 @@
 	.api-key-badge {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
-		height: 22px;
-		padding: 0 8px;
-		border-radius: 999px;
+		gap: var(--md-sys-space-xs);
+		height: 24px;
+		padding: 0 var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-full);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		background: var(--md-sys-color-surface-container);
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -249,17 +295,22 @@
 		max-width: 100%;
 	}
 	.api-key-badge.configured {
-		border-color: color-mix(in srgb, var(--md-sys-color-success) 45%, var(--md-sys-color-outline-variant));
-		background: color-mix(in srgb, var(--md-sys-color-success) 12%, var(--md-sys-color-surface-container));
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-success) 45%,
+			var(--md-sys-color-outline-variant)
+		);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-success) 12%,
+			var(--md-sys-color-surface-container)
+		);
 		color: var(--md-sys-color-on-surface);
 	}
-	.api-key-badge-mask {
-		font-family: var(--md-sys-typescale-mono);
-		letter-spacing: 0.1em;
-		opacity: 0.75;
-	}
-	.api-key-badge.empty .api-key-badge-mask {
-		opacity: 0.45;
+	.api-key-badge-icon {
+		width: 14px;
+		height: 14px;
+		flex: 0 0 auto;
 	}
 	.api-key-badge-label {
 		font-weight: 600;

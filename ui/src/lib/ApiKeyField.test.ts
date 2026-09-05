@@ -28,6 +28,8 @@ describe('ApiKeyField', () => {
 		});
 		expect(container.querySelector('.api-key-badge.configured')).toBeTruthy();
 		expect(getByText('已配置')).toBeTruthy();
+		expect(container.querySelector('.api-key-badge-mask')).toBeNull();
+		expect(container.querySelector('.api-key-badge-icon')).toBeTruthy();
 	});
 
 	it('renders an editable password field', () => {

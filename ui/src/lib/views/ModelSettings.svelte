@@ -429,12 +429,16 @@
 									configured={isProviderKeyConfigured(provider)}
 								/>
 							</div>
-							<span class="provider-desc"
-								>{apiStyleLabel(provider)} · {provider.base_url}</span
-							>{#if modelsByProvider[provider.name]?.length}<span
-									class="provider-models"
-									>{modelsByProvider[provider.name].length} 个模型</span
-								>{/if}
+							<div class="provider-meta">
+								<span class="provider-type">{apiStyleLabel(provider)}</span>
+								<span class="provider-endpoint" title={provider.base_url}
+									>{provider.base_url}</span
+								>
+								{#if modelsByProvider[provider.name]?.length}<span
+										class="provider-models"
+										>{modelsByProvider[provider.name].length} 个模型</span
+									>{/if}
+							</div>
 						</div>
 						<div class="provider-actions">
 							<RefreshButton
@@ -729,6 +733,9 @@
 		width: 100%;
 		min-width: 0;
 	}
+	.provider-actions {
+		justify-self: end;
+	}
 	.model-list {
 		margin-top: var(--md-sys-space-lg);
 	}
@@ -754,9 +761,9 @@
 		margin-top: var(--md-sys-space-md);
 	}
 	.provider-card {
-		display: flex;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
 		align-items: center;
-		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -790,18 +797,44 @@
 	.provider-title :global(.api-key-badge) {
 		flex: 0 0 auto;
 	}
-	.provider-desc {
+	.provider-meta {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		min-width: 0;
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		white-space: nowrap;
 		overflow: hidden;
+	}
+	.provider-type {
+		flex: 0 0 auto;
+		padding: 2px var(--md-sys-space-xs);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface-variant);
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.provider-endpoint {
+		min-width: 0;
+		flex: 1 1 auto;
+		overflow: hidden;
 		text-overflow: ellipsis;
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
+		white-space: nowrap;
 	}
 	.provider-models {
+		flex: 0 0 auto;
+		padding-left: var(--md-sys-space-xs);
+		border-left: 1px solid var(--md-sys-color-outline-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-primary);
+		white-space: nowrap;
 	}
 	.lib-form {
 		display: flex;
@@ -898,9 +931,15 @@
 			grid-template-columns: 1fr;
 			gap: var(--md-sys-space-md);
 		}
+	}
+	@media (max-width: 455px) {
 		.provider-card {
-			align-items: flex-start;
-			flex-direction: column;
+			grid-template-columns: 1fr;
+			align-items: start;
+		}
+		.provider-actions {
+			width: 100%;
+			justify-content: flex-end;
 		}
 	}
 </style>
