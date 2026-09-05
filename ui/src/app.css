@@ -237,6 +237,15 @@
 	--md-comp-icon-button-compact-size: 32px;
 	--md-comp-icon-button-touch: 48px;
 	--md-sys-icon-size: 20px;
+	--md-comp-refresh-button-width: 128px;
+	--md-comp-refresh-button-compact-width: 64px;
+	--md-comp-switch-width: 52px;
+	--md-comp-switch-height: 32px;
+	--md-comp-switch-thumb-size: 16px;
+	--md-comp-switch-thumb-selected-size: 24px;
+	--md-comp-settings-label-width: 168px;
+	--md-comp-settings-control-width: 280px;
+	--md-comp-settings-number-width: 180px;
 
 	/* ---------- State-layer opacity (M3 spec) ---------- */
 	--md-sys-state-hover-opacity: 0.08;
@@ -957,48 +966,6 @@ select.md-select {
 		width: 16px;
 		height: 16px;
 	}
-}
-
-/*---------- Toggle / Switch (M3) ---------- */
-.md-switch {
-	--_switch-track: var(--md-sys-color-surface-container-highest);
-	--_switch-thumb: var(--md-sys-color-outline);
-	position: relative;
-	display: inline-block;
-	width: 52px;
-	height: 32px;
-	border: 2px solid var(--_switch-thumb);
-	border-radius: var(--md-sys-shape-small);
-	background: var(--_switch-track);
-	cursor: pointer;
-	transition:
-		background var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-		border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	flex-shrink: 0;
-}
-.md-switch::after {
-	content: '';
-	position: absolute;
-	top: 50%;
-	left: 8px;
-	width: 16px;
-	height: 16px;
-	border-radius: 50%;
-	background: var(--_switch-thumb);
-	transform: translateY(-50%);
-	transition:
-		left var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
-		width var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
-		background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-}
-.md-switch--on {
-	--_switch-track: var(--md-sys-color-primary);
-	--_switch-thumb: var(--md-sys-color-on-primary);
-	border-color: transparent;
-}
-.md-switch--on::after {
-	left: 24px;
-	width: 24px;
 }
 
 /*---------- Snackbar/Toast container default ---------- */

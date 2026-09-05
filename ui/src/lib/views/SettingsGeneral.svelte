@@ -361,12 +361,14 @@
 				<span class="switch-label">{ev.label}</span>
 				<MaterialSwitch
 					checked={notification[ev.key].in_app}
+					ariaLabel={`${ev.label}应用内提示`}
 					onChange={withBooleanValue((v) => {
 						notification[ev.key].in_app = v;
 					})}
 				/>
 				<MaterialSwitch
 					checked={notification[ev.key].windows}
+					ariaLabel={`${ev.label} Windows 通知`}
 					onChange={withBooleanValue((v) => {
 						notification[ev.key].windows = v;
 					})}
@@ -391,6 +393,7 @@
 		<div class="form-row switch-row">
 			<span class="switch-label">文件日志</span><MaterialSwitch
 				checked={log.file_enabled}
+				ariaLabel="切换文件日志"
 				onChange={withBooleanValue((v) => {
 					log.file_enabled = v;
 				})}
@@ -423,6 +426,7 @@
 		<div class="form-row autostart-row">
 			<span class="autostart-label">开机时启动 Haven</span><MaterialSwitch
 				checked={autostartEnabled}
+				ariaLabel="切换开机启动 Haven"
 				onChange={withBooleanValue((v) => onAutostartChange(v))}
 			/>
 		</div>
@@ -470,11 +474,18 @@
 	}
 	.form-row label,
 	.form-row .form-label {
-		width: 168px;
+		width: var(--md-comp-settings-label-width);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		flex-shrink: 0;
+	}
+	.form-row > :global(.md-number-field),
+	.form-row > :global(.md-select-container),
+	.form-row > :global(.hotkey-input-wrap) {
+		width: min(100%, var(--md-comp-settings-control-width));
+		flex: 0 1 var(--md-comp-settings-control-width);
+		min-width: 0;
 	}
 	.switch-row,
 	.autostart-section .autostart-row {
@@ -565,7 +576,9 @@
 	.notify-grid-header,
 	.notify-grid-row {
 		display: grid;
-		grid-template-columns: 1fr auto auto;
+		grid-template-columns: minmax(0, 1fr) var(--md-comp-switch-width) var(
+				--md-comp-switch-width
+			);
 		gap: var(--md-sys-space-md);
 		align-items: center;
 		margin-bottom: var(--md-sys-space-sm);
@@ -633,6 +646,12 @@
 		.form-row .form-label {
 			width: auto;
 			flex-shrink: 1;
+		}
+		.form-row > :global(.md-number-field),
+		.form-row > :global(.md-select-container),
+		.form-row > :global(.hotkey-input-wrap) {
+			width: min(100%, var(--md-comp-settings-control-width));
+			flex: 0 1 auto;
 		}
 		.switch-row {
 			align-items: flex-start;

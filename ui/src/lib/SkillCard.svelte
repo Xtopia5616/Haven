@@ -106,7 +106,11 @@
 		</div>
 	{/snippet}
 	{#snippet actions()}
-		<MaterialSwitch checked={skill.enabled} onChange={handleToggle} />
+		<MaterialSwitch
+			checked={skill.enabled}
+			ariaLabel={`切换技能 ${skill.name}`}
+			onChange={handleToggle}
+		/>
 	{/snippet}
 	{#snippet children()}
 		<p class="desc">{skill.description || 'No description'}</p>

@@ -34,7 +34,9 @@ describe('ToolsView toolbar actions', () => {
 		const mcpToolbar = addButton.closest('.toolbar-actions');
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
 		const openFolderButton = screen.getByRole('button', { name: '打开文件夹' });
-		const skillToolbarButtons = Array.from(document.querySelectorAll('.toolbar-actions .md-btn'));
+		const skillToolbarButtons = Array.from(
+			document.querySelectorAll('.toolbar-actions .md-btn'),
+		);
 		const skillToolbar = openFolderButton.closest('.toolbar-actions');
 
 		expect(addButton.querySelector('svg')).toBeNull();
@@ -46,5 +48,69 @@ describe('ToolsView toolbar actions', () => {
 		for (const button of [...mcpToolbarButtons, ...skillToolbarButtons]) {
 			expect(button.classList.contains('md-btn')).toBe(true);
 		}
+	});
+
+	it('locks the MCP refresh action until reconciliation finishes', async () => {
+		let finishRefresh: ((value: unknown) => void) | undefined;
+		invoke.mockImplementation((command: string) => {
+			if (command === 'get_tools') return Promise.resolve({ tools: [] });
+			if (command === 'list_mcp_tools') return Promise.resolve([]);
+			if (command === 'list_skills') return Promise.resolve([]);
+			if (command === 'refresh_mcp_servers') {
+				return new Promise((resolve) => {
+					finishRefresh = resolve;
+				});
+			}
+			return Promise.resolve(undefined);
+		});
+
+		render(ToolsView);
+		await waitFor(() => expect(screen.getByRole('tab', { name: 'MCP' })).toBeTruthy());
+		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
+		const refreshButton = screen.getByRole('button', { name: '刷新' });
+
+		await fireEvent.click(refreshButton);
+		await waitFor(() => {
+			expect(screen.getByRole('button', { name: '刷新中…' })).toHaveProperty(
+				'disabled',
+				true,
+			);
+		});
+
+		finishRefresh?.({ added: [], removed: [], updated: [], failed: [] });
+		await waitFor(() =>
+			expect(screen.getByRole('button', { name: '刷新' })).toHaveProperty('disabled', false),
+		);
+	});
+
+	it('uses the same loading contract for skill refreshes', async () => {
+		let finishRefresh: (() => void) | undefined;
+		invoke.mockImplementation((command: string) => {
+			if (command === 'get_tools') return Promise.resolve({ tools: [] });
+			if (command === 'list_mcp_tools') return Promise.resolve([]);
+			if (command === 'list_skills') return Promise.resolve([]);
+			if (command === 'refresh_skills') {
+				return new Promise<void>((resolve) => {
+					finishRefresh = resolve;
+				});
+			}
+			return Promise.resolve(undefined);
+		});
+
+		render(ToolsView);
+		await waitFor(() => expect(screen.getByRole('tab', { name: '技能' })).toBeTruthy());
+		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
+		await fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+		await waitFor(() => {
+			expect(screen.getByRole('button', { name: '刷新中…' })).toHaveProperty(
+				'disabled',
+				true,
+			);
+		});
+
+		finishRefresh?.();
+		await waitFor(() =>
+			expect(screen.getByRole('button', { name: '刷新' })).toHaveProperty('disabled', false),
+		);
 	});
 });

@@ -9,6 +9,8 @@
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
+	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import RefreshButton from '$lib/RefreshButton.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import MediaSettings from './MediaSettings.svelte';
 	import { emptyRoleSlot, ensureRoleSlots, modelCards } from '$lib/modelRoles.ts';
@@ -184,6 +186,7 @@
 	let refreshingAll = $state(false);
 	let lastRefreshNotify = $state(0);
 	async function refreshAllModels(silent = false) {
+		if (refreshingAll) return;
 		const providers = /** @type {any[]} */ (llmConfig.providers || []).filter(
 			(/** @type {any} */ provider) => provider.base_url.trim(),
 		);
@@ -198,7 +201,9 @@
 						ok: await refreshProviderModels(provider.name),
 					})),
 				);
-				failedProviders = results.filter((result) => !result.ok).map((result) => result.name);
+				failedProviders = results
+					.filter((result) => !result.ok)
+					.map((result) => result.name);
 			} else {
 				modelsByProvider = (await invoke('discover_all_models')) || {};
 			}
@@ -228,6 +233,7 @@
 	async function refreshProviderModels(providerName) {
 		const provider = providerByName(providerName);
 		if (!provider || !provider.base_url.trim()) return false;
+		if (modelFetching[providerName]) return false;
 		modelFetching[providerName] = true;
 		try {
 			const list = await invoke('discover_models', {
@@ -392,11 +398,11 @@
 		<div class="llm-head">
 			<h2>模型配置</h2>
 			<div class="llm-head-actions">
-				<MaterialButton
-					variant="outlined"
-					label={refreshingAll ? '刷新中…' : '刷新模型列表'}
+				<RefreshButton
+					label="刷新模型列表"
+					loading={refreshingAll}
 					onclick={() => refreshAllModels()}
-					disabled={refreshingAll}
+					disabled={(llmConfig.providers || []).length === 0}
 				/>
 				<MaterialButton
 					variant="outlined"
@@ -431,22 +437,24 @@
 								>{/if}
 						</div>
 						<div class="provider-actions">
-							<MaterialButton
-								variant="outlined"
-								className="md-btn--xs"
-								label="刷新"
+							<RefreshButton
+								compact
+								iconOnly
+								loading={refreshingAll || !!modelFetching[provider.name]}
+								title="刷新模型列表"
 								onclick={() => refreshProviderModels(provider.name)}
 							/>
-							<MaterialButton
-								variant="outlined"
-								className="md-btn--xs"
+							<MaterialIconButton
+								icon="edit"
 								label="编辑"
+								title="编辑 Provider"
 								onclick={() => startEditProvider(idx)}
 							/>
-							<MaterialButton
-								variant="outlined"
-								className="md-btn--xs"
+							<MaterialIconButton
+								variant="danger"
+								icon="delete"
 								label="删除"
+								title="删除 Provider"
 								onclick={() => deleteProvider(idx)}
 							/>
 						</div>
@@ -706,9 +714,19 @@
 	.llm-head-actions,
 	.provider-actions {
 		display: flex;
+		align-items: center;
 		gap: var(--md-sys-space-sm);
 		flex-shrink: 0;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
+	}
+	.llm-head-actions {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		width: min(100%, 360px);
+	}
+	.llm-head-actions :global(.md-btn) {
+		width: 100%;
+		min-width: 0;
 	}
 	.model-list {
 		margin-top: var(--md-sys-space-lg);
@@ -802,7 +820,7 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: var(--md-sys-space-xs);
 	}
 	.model-field .md-input {
 		width: 100%;
@@ -866,9 +884,6 @@
 		}
 		.llm-head-actions {
 			width: 100%;
-		}
-		.llm-head-actions :global(.md-btn) {
-			flex: 1 1 auto;
 		}
 		.picker-card {
 			grid-template-columns: 1fr;

@@ -50,7 +50,11 @@
 		</div>
 	{/snippet}
 	{#snippet actions()}
-		<MaterialSwitch checked={tool.enabled} onChange={handleToggle} />
+		<MaterialSwitch
+			checked={tool.enabled}
+			ariaLabel={`切换工具 ${tool.name}`}
+			onChange={handleToggle}
+		/>
 	{/snippet}
 	{#snippet children()}
 		<p class="desc">{tool.desc || 'No description'}</p>

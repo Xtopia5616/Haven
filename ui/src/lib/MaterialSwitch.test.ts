@@ -21,4 +21,11 @@ describe('MaterialSwitch', () => {
 		await fireEvent.click(input());
 		expect(onChange).toHaveBeenCalledWith(true);
 	});
+
+	it('forwards the accessible name and disabled state', () => {
+		render(MaterialSwitch, { ariaLabel: '切换文件日志', disabled: true } as any);
+
+		expect(input().getAttribute('aria-label')).toBe('切换文件日志');
+		expect(input()).toHaveProperty('disabled', true);
+	});
 });

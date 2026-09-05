@@ -7,6 +7,7 @@
 	 * @prop {boolean} disabled
 	 * @prop {string} title — optional native tooltip
 	 * @prop {string} ariaLabel — optional accessible name when content is not enough
+	 * @prop {boolean | undefined} ariaBusy — optional busy state for async actions
 	 * @prop {boolean | undefined} ariaExpanded — optional expanded state for disclosure actions
 	 * @prop {string | undefined} role — optional semantic role for specialized controls
 	 * @prop {string} className — additional class names for layout/state styling
@@ -18,6 +19,7 @@
 		disabled = false,
 		title = '',
 		ariaLabel = '',
+		ariaBusy = undefined,
 		ariaExpanded = undefined,
 		role = undefined,
 		className = '',
@@ -28,6 +30,7 @@
 <button
 	class="md-btn md-btn--{variant} {className}"
 	aria-label={ariaLabel || undefined}
+	aria-busy={ariaBusy === undefined ? undefined : ariaBusy}
 	aria-expanded={ariaExpanded === undefined ? undefined : ariaExpanded}
 	{role}
 	title={title || undefined}

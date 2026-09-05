@@ -1,5 +1,6 @@
 <script>
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import RefreshButton from '$lib/RefreshButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
@@ -131,32 +132,33 @@
 		{/if}
 	{/snippet}
 	{#snippet actions()}
-		<MaterialSwitch checked={server.enabled} onChange={handleToggle} />
-		<MaterialIconButton
-			variant="primary"
-			label="Refresh"
+		<MaterialSwitch
+			checked={server.enabled}
+			ariaLabel={`切换 ${server.name}`}
+			onChange={handleToggle}
+		/>
+		<RefreshButton
+			compact
+			iconOnly
+			label="刷新"
+			loadingLabel="刷新中…"
+			loading={refreshing}
+			title="刷新 MCP 连接"
 			onclick={handleReconnect}
-			disabled={refreshing}
-		>
-			<svg
-				class:spin={refreshing}
-				width="16"
-				height="16"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-			>
-				<polyline points="23 4 23 10 17 10" />
-				<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-			</svg>
-		</MaterialIconButton>
-		<MaterialIconButton label="Edit" onclick={() => onEdit?.(server)}>✎</MaterialIconButton>
-		<MaterialIconButton variant="danger" label="Remove" onclick={() => onRemove?.(server.name)}
-			>✕</MaterialIconButton
-		>
+		/>
+		<MaterialIconButton
+			icon="edit"
+			label="编辑"
+			title="编辑 MCP 服务器"
+			onclick={() => onEdit?.(server)}
+		/>
+		<MaterialIconButton
+			variant="danger"
+			icon="delete"
+			label="移除"
+			title="移除 MCP 服务器"
+			onclick={() => onRemove?.(server.name)}
+		/>
 	{/snippet}
 	{#snippet children()}
 		<h4>Tools</h4>
@@ -338,16 +340,5 @@
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		white-space: pre-wrap;
 		word-break: break-word;
-	}
-	:global(.expandable-context-card[data-card-kind='mcp-server'] .card-actions svg.spin) {
-		animation: md-icon-spin 0.9s linear infinite;
-	}
-	@keyframes md-icon-spin {
-		from {
-			transform: rotate(0deg);
-		}
-		to {
-			transform: rotate(360deg);
-		}
 	}
 </style>

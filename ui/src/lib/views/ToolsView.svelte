@@ -25,6 +25,7 @@
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import RefreshButton from '$lib/RefreshButton.svelte';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -32,6 +33,8 @@
 	let unlistenMcp;
 	/** @type {ReturnType<typeof setTimeout> | null} */
 	let mcpRefreshTimer = null;
+	let mcpRefreshing = $state(false);
+	let skillsRefreshing = $state(false);
 
 	/** @param {Record<string, any>} item */
 	function matchesResource(item) {
@@ -131,6 +134,8 @@
 	}
 
 	async function refreshMcpList() {
+		if (mcpRefreshing) return;
+		mcpRefreshing = true;
 		// Diff-only refresh: check the persisted config against the live
 		// clients and reconcile additions/removals/changed-config reconnects.
 		// Already-connected servers with an unchanged config keep their live
@@ -169,6 +174,8 @@
 			}
 		} catch (e) {
 			reportError(e, { context: 'ToolsView', message: '刷新 MCP 服务器失败', log: false });
+		} finally {
+			mcpRefreshing = false;
 		}
 	}
 
@@ -215,12 +222,16 @@
 	}
 
 	async function refreshSkills() {
+		if (skillsRefreshing) return;
+		skillsRefreshing = true;
 		try {
 			await invoke('refresh_skills');
 			await refreshSkillList();
 			addNotification('技能已刷新', 'success', 2000);
 		} catch (e) {
 			reportError(e, { context: 'ToolsView', message: '刷新技能失败', log: false });
+		} finally {
+			skillsRefreshing = false;
 		}
 	}
 
@@ -409,7 +420,7 @@
 			<div class="toolbar md-toolbar">
 				<h2>MCP 服务器</h2>
 				<div class="toolbar-actions toolbar-actions--paired">
-					<MaterialButton variant="outlined" label="刷新" onclick={refreshMcpList} />
+					<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
 					<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
 				</div>
 			</div>
@@ -441,7 +452,7 @@
 			<div class="toolbar md-toolbar">
 				<h2>技能</h2>
 				<div class="toolbar-actions toolbar-actions--paired">
-					<MaterialButton variant="outlined" label="刷新" onclick={refreshSkills} />
+					<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
 					<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />
 				</div>
 			</div>
@@ -609,6 +620,7 @@
 		}
 		.toolbar-actions :global(.md-btn) {
 			width: 100%;
+			flex: 0 0 var(--md-comp-button-small-height);
 		}
 	}
 </style>

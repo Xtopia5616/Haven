@@ -200,6 +200,7 @@
 							<span class="switch-label">录音转写使用专用音频模型</span
 							><MaterialSwitch
 								checked={llmConfig.stt_use_audio_model}
+								ariaLabel="切换专用音频模型"
 								onChange={withBooleanValue((v) => {
 									llmConfig.stt_use_audio_model = v;
 								})}
@@ -436,6 +437,7 @@
 							<span class="switch-label">图片理解使用专用视觉模型</span
 							><MaterialSwitch
 								checked={llmConfig.vision_use_image_model}
+								ariaLabel="切换专用视觉模型"
 								onChange={withBooleanValue((v) => {
 									llmConfig.vision_use_image_model = v;
 								})}
@@ -687,10 +689,11 @@
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.media-section {
-		max-width: 640px;
+		max-width: 760px;
 	}
 	.media-section .form-row :global(.md-number-field) {
-		width: 200px;
+		width: min(100%, var(--md-comp-settings-number-width));
+		flex: 0 1 var(--md-comp-settings-number-width);
 	}
 	.card-list {
 		display: flex;
@@ -735,7 +738,7 @@
 		gap: var(--md-sys-space-md);
 	}
 	.form-row label {
-		width: 120px;
+		width: var(--md-comp-settings-label-width);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
@@ -771,7 +774,7 @@
 	}
 	.stt-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 		gap: var(--md-sys-space-md);
 		align-items: end;
 	}
@@ -779,7 +782,7 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: var(--md-sys-space-xs);
 	}
 	.model-field .md-input {
 		width: 100%;
@@ -861,6 +864,10 @@
 			flex-direction: column;
 			align-items: stretch;
 			gap: var(--md-sys-space-xs);
+		}
+		.media-section .form-row :global(.md-number-field) {
+			width: min(100%, var(--md-comp-settings-number-width));
+			flex: 0 1 auto;
 		}
 		.form-row label {
 			width: auto;

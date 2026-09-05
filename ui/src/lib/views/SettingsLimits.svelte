@@ -633,7 +633,14 @@
 	.limit-input {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: var(--md-sys-space-sm);
+		width: min(100%, var(--md-comp-settings-number-width));
+		flex: 0 1 var(--md-comp-settings-number-width);
+		min-width: 0;
+	}
+	.limit-input :global(.md-number-field) {
+		min-width: 0;
+		flex: 1 1 auto;
 	}
 	.limit-unit {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -668,6 +675,8 @@
 		}
 		.limit-input {
 			justify-content: space-between;
+			width: min(100%, var(--md-comp-settings-number-width));
+			flex: 0 1 auto;
 		}
 		.format-card {
 			padding: var(--md-sys-space-sm);

@@ -101,7 +101,7 @@
 	.card-header {
 		display: flex;
 		justify-content: space-between;
-		align-items: center;
+		align-items: flex-start;
 		padding: var(--md-sys-space-lg) var(--md-sys-space-xl);
 		cursor: pointer;
 		user-select: none;
@@ -112,10 +112,11 @@
 	}
 	.card-actions {
 		display: flex;
-		gap: var(--md-sys-space-xs);
+		gap: var(--md-sys-space-sm);
 		align-items: center;
 		flex-shrink: 0;
 		margin-left: var(--md-sys-space-md);
+		padding-top: var(--md-sys-space-2xs);
 	}
 	.card-body {
 		padding: 0 var(--md-sys-space-xl) var(--md-sys-space-lg);
