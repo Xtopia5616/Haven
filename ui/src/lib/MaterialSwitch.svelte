@@ -21,20 +21,15 @@
 		type="checkbox"
 		class="md-switch-input"
 		{checked}
+		role="switch"
 		aria-label={ariaLabel || undefined}
 		{disabled}
 		onchange={handleChange}
 	/>
-	<span class="md-switch-track">
-		<svg
-			class="md-switch-icon"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="3"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			aria-hidden="true"><path d="m5 12 4 4L19 7" /></svg
+	<span class="md-switch-track" aria-hidden="true">
+		<span class="md-switch-state-layer"></span>
+		<svg class="md-switch-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
+			><path d="M9.55 18.2 3.65 12.3 5.275 10.675 9.55 14.95 18.725 5.775 20.35 7.4Z" /></svg
 		>
 	</span>
 </label>
@@ -51,34 +46,20 @@
 		user-select: none;
 		color: var(--md-sys-color-on-surface);
 	}
-	.md-switch-label::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		border-radius: var(--md-sys-shape-full);
-		background: currentColor;
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-	}
-	.md-switch-label:hover::before {
-		opacity: var(--md-sys-state-hover-opacity);
-	}
-	.md-switch-label:active::before {
-		opacity: var(--md-sys-state-pressed-opacity);
-	}
 	.md-switch-label.disabled {
 		cursor: default;
 	}
-	.md-switch-label.disabled::before {
-		display: none;
-	}
 	.md-switch-input {
 		position: absolute;
+		inset: 0;
+		z-index: 3;
+		width: 100%;
+		height: 100%;
+		margin: 0;
 		opacity: 0;
-		inline-size: 1px;
-		block-size: 1px;
-		pointer-events: none;
+		cursor: inherit;
+		appearance: none;
+		outline: none;
 	}
 	.md-switch-track {
 		position: relative;
@@ -87,51 +68,93 @@
 		box-sizing: border-box;
 		width: var(--md-comp-switch-width);
 		height: var(--md-comp-switch-height);
-		border: 2px solid var(--md-sys-color-outline);
 		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-surface-container-high);
+		background: transparent;
 		color: var(--md-sys-color-outline);
-		cursor: pointer;
+		flex-shrink: 0;
+		pointer-events: none;
+	}
+	.md-switch-track::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		box-sizing: border-box;
+		border: 2px solid var(--md-sys-color-outline);
+		border-radius: inherit;
+		background: var(--md-sys-color-surface-container-highest);
 		transition:
 			background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-		flex-shrink: 0;
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.md-switch-state-layer {
+		position: absolute;
+		z-index: 1;
+		top: 50%;
+		left: calc(
+			var(--md-comp-switch-thumb-offset) + var(--md-comp-switch-thumb-size) / 2 -
+				var(--md-comp-switch-state-layer-size) / 2
+		);
+		width: var(--md-comp-switch-state-layer-size);
+		height: var(--md-comp-switch-state-layer-size);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-on-surface);
+		opacity: 0;
+		transform: translateY(-50%);
+		transition:
+			left var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
+			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.md-switch-label:hover .md-switch-state-layer {
+		opacity: var(--md-sys-state-hover-opacity);
+	}
+	.md-switch-label:active .md-switch-state-layer {
+		opacity: var(--md-sys-state-pressed-opacity);
 	}
 	.md-switch-track::after {
 		content: '';
 		position: absolute;
+		z-index: 2;
 		top: 50%;
 		left: var(--md-comp-switch-thumb-offset);
 		width: var(--md-comp-switch-thumb-size);
 		height: var(--md-comp-switch-thumb-size);
 		border-radius: var(--md-sys-shape-full);
 		background: currentColor;
-		box-shadow: var(--md-sys-elevation-1);
 		transform: translateY(-50%);
 		transition:
 			left var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
-			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard);
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
-	.md-switch-input:checked + .md-switch-track {
+	.md-switch-input:checked + .md-switch-track::before {
 		background: var(--md-sys-color-primary);
 		border-color: transparent;
+	}
+	.md-switch-input:checked + .md-switch-track {
 		color: var(--md-sys-color-on-primary);
 	}
 	.md-switch-input:checked + .md-switch-track::after {
-		left: calc(100% - var(--md-comp-switch-thumb-size));
+		left: calc(100% - var(--md-comp-switch-thumb-offset) - var(--md-comp-switch-thumb-size));
 		background: currentColor;
+	}
+	.md-switch-input:checked + .md-switch-track .md-switch-state-layer {
+		left: calc(
+			100% - var(--md-comp-switch-thumb-offset) - var(--md-comp-switch-thumb-size) / 2 -
+				var(--md-comp-switch-state-layer-size) / 2
+		);
+		background: var(--md-sys-color-primary);
 	}
 	.md-switch-icon {
 		position: absolute;
 		top: 50%;
-		left: calc(100% - var(--md-comp-switch-thumb-size) / 2);
+		left: calc(
+			100% - var(--md-comp-switch-thumb-offset) - var(--md-comp-switch-thumb-size) / 2
+		);
 		width: var(--md-comp-switch-icon-size);
 		height: var(--md-comp-switch-icon-size);
-		z-index: 2;
-		color: var(--md-sys-color-primary);
+		z-index: 3;
+		color: var(--md-sys-color-on-primary-container);
 		opacity: 0;
 		pointer-events: none;
 		transform: translate(-50%, -50%) scale(0.7);
@@ -151,8 +174,9 @@
 		cursor: default;
 	}
 	@media (prefers-reduced-motion: reduce) {
-		.md-switch-label::before,
 		.md-switch-track,
+		.md-switch-track::before,
+		.md-switch-state-layer,
 		.md-switch-track::after,
 		.md-switch-icon {
 			transition-duration: 1ms;

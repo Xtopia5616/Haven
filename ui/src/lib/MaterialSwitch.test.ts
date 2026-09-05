@@ -13,6 +13,7 @@ describe('MaterialSwitch', () => {
 	it('reflects the checked prop', () => {
 		render(MaterialSwitch, { checked: true, onChange: vi.fn() });
 		expect(input().checked).toBe(true);
+		expect(input().getAttribute('role')).toBe('switch');
 	});
 
 	it('emits the new checked state on change', async () => {
