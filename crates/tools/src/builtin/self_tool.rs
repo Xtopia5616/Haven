@@ -261,7 +261,7 @@ impl SelfTool {
         match self.read_config() {
             Ok(loader) => {
                 out["config_path"] = loader.path().to_string_lossy().to_string().into();
-                let mut settings = serde_json::to_value(loader.settings()).unwrap_or_default();
+                let mut settings = serde_json::to_value(loader.settings())?;
                 mask_sensitive_config(&mut settings);
                 out["settings"] = settings;
             }
@@ -297,7 +297,12 @@ impl SelfTool {
         out["tools"] = serde_json::json!({ "count": schemas.len(), "names": names });
 
         // MCP servers.
-        out["mcp"] = self.mcp_status().await;
+        match self.mcp_status().await {
+            Ok(mcp) => out["mcp"] = mcp,
+            Err(error) => {
+                out["mcp_error"] = sanitize_diagnostic(&error.to_string()).into();
+            }
+        }
 
         // Skills.
         let skills: Vec<Value> = self
@@ -354,7 +359,7 @@ impl SelfTool {
         let loader = self.read_config()?;
         let Some(path) = params.path.as_deref().filter(|p| !p.is_empty()) else {
             // Full view with API keys masked.
-            let mut settings = serde_json::to_value(loader.settings()).unwrap_or_default();
+            let mut settings = serde_json::to_value(loader.settings())?;
             mask_sensitive_config(&mut settings);
             return Ok(settings);
         };
@@ -415,7 +420,13 @@ impl SelfTool {
         }) {
             // `set_enabled` is in-memory; restore it when durable config
             // persistence fails so the two views cannot diverge.
-            let _ = self.skills_engine.set_enabled(name, !enabled).await;
+            if let Err(rollback) = self.skills_engine.set_enabled(name, !enabled).await {
+                tracing::error!(
+                    skill = name,
+                    error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
+                    "skill enable rollback failed after config persistence error"
+                );
+            }
             return Err(error);
         }
         Ok(serde_json::json!({
@@ -563,7 +574,12 @@ impl SelfTool {
                     "skill creation rollback failed after config persistence error"
                 );
             }
-            let _ = self.skills_engine.refresh_from_disk().await;
+            if let Err(refresh_error) = self.skills_engine.refresh_from_disk().await {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&refresh_error.to_string()),
+                    "skill catalog refresh failed while rolling back skill creation"
+                );
+            }
             return Err(error);
         }
 
@@ -575,7 +591,7 @@ impl SelfTool {
         }))
     }
 
-    async fn mcp_status(&self) -> Value {
+    async fn mcp_status(&self) -> anyhow::Result<Value> {
         let servers: Vec<McpServerConfig> = {
             let configs = self.server_configs.read().await;
             if !configs.is_empty() {
@@ -585,9 +601,7 @@ impl SelfTool {
                 // first config load): fall back to the persisted config so
                 // `mcp_list` / `status` never report an empty server list
                 // while servers exist in config.toml.
-                self.read_config()
-                    .map(|loader| loader.config().mcp_servers.clone())
-                    .unwrap_or_default()
+                self.read_config()?.config().mcp_servers.clone()
             }
         };
 
@@ -623,11 +637,11 @@ impl SelfTool {
                 "diagnostic": diagnostic,
             }));
         }
-        Value::Array(out)
+        Ok(Value::Array(out))
     }
 
     async fn op_mcp_list(&self) -> anyhow::Result<Value> {
-        Ok(serde_json::json!({ "servers": self.mcp_status().await }))
+        Ok(serde_json::json!({ "servers": self.mcp_status().await? }))
     }
 
     async fn op_mcp_connect(&self, params: &SelfParams) -> anyhow::Result<Value> {
@@ -662,9 +676,6 @@ impl SelfTool {
             .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to disconnect)"))?;
-        if let Some(client) = self.mcp_manager.get_client(name).await {
-            let _ = client.shutdown().await;
-        }
         self.mcp_manager.remove_client(name).await;
         Ok(serde_json::json!({ "name": name, "connected": false }))
     }
@@ -937,12 +948,18 @@ impl SelfTool {
             if let Err(e) = self.mcp_manager.connect_server(new_config).await {
                 // Roll back so runtime state matches the unchanged config.
                 if old_config.enabled {
-                    let _ = self.mcp_manager.connect_server(old_config).await;
+                    if let Err(rollback) = self.mcp_manager.connect_server(old_config).await {
+                        tracing::error!(
+                            server = name,
+                            error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
+                            "MCP reconnect rollback failed after config update failure"
+                        );
+                    }
                 }
                 anyhow::bail!(
                     "MCP server '{}' not connected; config left unchanged: {}",
                     name,
-                    e
+                    sanitize_diagnostic(&e.to_string())
                 );
             }
         } else if !new_config.enabled {
@@ -971,7 +988,13 @@ impl SelfTool {
             // back so it keeps matching the unchanged config.
             self.mcp_manager.remove_client(&name).await;
             if old_config.enabled {
-                let _ = self.mcp_manager.connect_server(old_config).await;
+                if let Err(rollback) = self.mcp_manager.connect_server(old_config).await {
+                    tracing::error!(
+                        server = name,
+                        error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
+                        "MCP reconnect rollback failed after config persistence error"
+                    );
+                }
             }
             return Err(e);
         }
