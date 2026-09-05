@@ -4,7 +4,7 @@
 	 * The three bars are the small voice pattern from Haven's mark.
 	 * @prop {string} label — accessible loading message
 	 * @prop {string} detail — optional accessible supporting message
-	 * @prop {'page'|'inline'} variant — full-page or compact inline layout
+	 * @prop {'page'|'inline'} variant — content-area or compact inline layout
 	 */
 	let { label = '正在加载…', detail = '', variant = 'page' } = $props();
 	let accessibleLabel = $derived(detail ? `${label}，${detail}` : label);
@@ -31,11 +31,12 @@
 		min-height: calc(var(--md-sys-space-4xl) * 5);
 		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
 	}
-	/* Match the pre-hydration loader in app.html: page-level loaders are
-	 * centered in the viewport, independent of the page shell's width/padding. */
+	/* Page-level loaders cover the workspace content only. Keeping the chrome
+	 * outside this layer lets the titlebar and workspace navigation remain
+	 * visible and usable while the first view or a lazy view is loading. */
 	.loading-state--page {
 		position: fixed;
-		inset: 0;
+		inset: calc(var(--md-comp-titlebar-height) + var(--md-comp-tab-container-height)) 0 0;
 		box-sizing: border-box;
 		z-index: var(--md-sys-z-drawer);
 		min-height: 0;

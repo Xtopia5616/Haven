@@ -56,6 +56,13 @@
 		</script>
 		<style>
 			:root,
+			[data-theme='light'],
+			[data-theme='dark'] {
+				/* Keep the pre-hydration content boundary aligned with AppShell. */
+				--md-comp-titlebar-height: 56px;
+				--md-comp-tab-container-height: 56px;
+			}
+			:root,
 			[data-theme='light'] {
 				--md-sys-color-background: #f7f8fc;
 				--md-sys-color-primary: var(--md-accent-hex, #2c5090);
@@ -76,7 +83,10 @@
 			}
 			#haven-boot {
 				position: fixed;
-				inset: 0;
+				/* Keep the server-rendered titlebar and workspace tabs visible while
+				   the hydrated app is still completing its first load. */
+				inset: calc(var(--md-comp-titlebar-height) + var(--md-comp-tab-container-height)) 0
+					0;
 				z-index: 9999;
 				display: grid;
 				place-items: center;
