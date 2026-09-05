@@ -1,6 +1,7 @@
 use crate::db::Database;
 use chrono::{SecondsFormat, Utc};
 use haven_common::types::MessageAttachment;
+use rusqlite::OptionalExtension;
 
 /// Milliseconds-precision RFC3339: rows written within the same second must
 /// remain distinguishable for the resume timeline rebuild (the messages and
@@ -380,19 +381,22 @@ impl Database {
     }
 
     /// `created_at` of the most recent user-role message for a session, or
-    /// `None` if the session has no user messages yet. Implemented in SQL so
+    /// `None` if the session has no user messages yet. Database failures are
+    /// returned instead of being treated as an empty session. Implemented in SQL so
     /// rollback does not have to load the entire message list just to find
     /// the trailing user-input timestamp.
-    pub fn last_user_message_ts(&self, session_id: &str) -> Option<String> {
+    pub fn last_user_message_ts(&self, session_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
-        conn.query_row(
-            "SELECT created_at FROM messages
+        let value = conn
+            .query_row(
+                "SELECT created_at FROM messages
              WHERE session_id = ?1 AND role = 'user'
              ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            rusqlite::params![session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
+                rusqlite::params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(value)
     }
 
     /// Drop every message **and** ses-step whose `created_at` is strictly

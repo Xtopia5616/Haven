@@ -91,7 +91,16 @@ impl SessionExecutor {
             // Pick up sessions that were still Pending when the app stopped so
             // queued work survives a restart instead of being stranded in
             // the DB (the in-memory working set is empty on a fresh start).
-            let reloaded = exec.load_pending_sessions().await;
+            let reloaded = match exec.load_pending_sessions().await {
+                Ok(count) => count,
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        "dispatcher startup aborted: pending sessions could not be loaded"
+                    );
+                    return;
+                }
+            };
             if reloaded > 0 {
                 tracing::info!(
                     "dispatcher reloaded {} pending session(s) from previous run",
@@ -167,9 +176,16 @@ impl SessionExecutor {
                     };
                     if let Some(reason) = failed {
                         tracing::error!(session_id = %session_id, "dispatcher session {} {}", session_id, reason);
-                        let _ = exec_inner
+                        if let Err(error) = exec_inner
                             .update_session_status(&session_id, SessionStatus::Error)
-                            .await;
+                            .await
+                        {
+                            tracing::error!(
+                                session_id = %session_id,
+                                error = %error,
+                                "dispatcher failed to persist terminal error status"
+                            );
+                        }
                         // The ReAct loop errored out: kill any background actions
                         // the session spawned so their children cannot leak.
                         exec_inner.cancel_session_actions(&session_id).await;

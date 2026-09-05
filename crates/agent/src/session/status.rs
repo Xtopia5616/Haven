@@ -238,24 +238,43 @@ impl SessionExecutor {
         let parent = parent_session_id.to_string();
         let descendants = match tokio::task::spawn_blocking({
             let parent = parent.clone();
-            move || {
+            move || -> anyhow::Result<Vec<String>> {
                 let messaging = haven_tools::MessagingService::default_root();
-                let kids = messaging.list_descendants(&parent).unwrap_or_default();
+                let kids = messaging.list_descendants(&parent)?;
                 for child in &kids {
-                    let _ = messaging.deliver_system_notice(
+                    if let Err(error) = messaging.deliver_system_notice(
                         &parent,
                         child,
                         "Parent session ended; stop work and finish this delegated task.",
-                    );
+                    ) {
+                        tracing::warn!(
+                            parent_session_id = %parent,
+                            child_session_id = %child,
+                            error = %error,
+                            "cascade_end_children: failed to deliver stop notice"
+                        );
+                    }
                 }
-                kids
+                Ok(kids)
             }
         })
         .await
         {
-            Ok(v) => v,
+            Ok(Ok(v)) => v,
+            Ok(Err(error)) => {
+                tracing::error!(
+                    parent_session_id = %parent,
+                    error = %error,
+                    "cascade_end_children: failed to enumerate descendants"
+                );
+                return;
+            }
             Err(e) => {
-                tracing::debug!("cascade_end_children join failed for {parent}: {e}");
+                tracing::error!(
+                    parent_session_id = %parent,
+                    error = %e,
+                    "cascade_end_children: worker join failed"
+                );
                 return;
             }
         };
@@ -276,8 +295,11 @@ impl SessionExecutor {
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(
-                        "cascade_end_children: end_session({child_id}) after parent {parent}: {e}"
+                    tracing::error!(
+                        parent_session_id = %parent,
+                        child_session_id = %child_id,
+                        error = %e,
+                        "cascade_end_children: failed to end child session"
                     );
                 }
             }
@@ -637,18 +659,17 @@ impl SessionExecutor {
     /// in-memory working set and wake the dispatcher. Called at dispatcher
     /// startup so queued work from a previous run is picked up after an app
     /// restart. Returns the number of sessions reloaded.
-    pub async fn load_pending_sessions(&self) -> usize {
-        let pending =
-            match self
-                .db
-                .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!("load_pending_sessions: pending-session query failed: {}", e);
-                    Vec::new()
-                }
-            };
+    pub async fn load_pending_sessions(&self) -> anyhow::Result<usize> {
+        let pending = self
+            .db
+            .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    "load_pending_sessions: pending-session query failed"
+                );
+                e
+            })?;
         let mut loaded = 0;
         let mut queued = Vec::new();
         {
@@ -676,7 +697,7 @@ impl SessionExecutor {
         if loaded > 0 {
             self.wake_dispatcher();
         }
-        loaded
+        Ok(loaded)
     }
 
     /// Current in-memory status of a session, or `None` when the session is not in

@@ -96,7 +96,7 @@ impl AgentLayer {
                     let target = self
                         .db
                         .get_session_messages(session_id)
-                        .unwrap_or_default()
+                        ?
                         .into_iter()
                         .find(|m| m.id == id)
                         .ok_or_else(|| {
@@ -106,13 +106,13 @@ impl AgentLayer {
                                 id
                             )
                         })?;
-                    let _ = self.db.delete_messages_from(session_id, &target.created_at);
-                    let _ = self
-                        .db
-                        .delete_llm_usage_from(session_id, &target.created_at);
-                    let _ = self.db.rebuild_session_usage_from_calls(session_id);
-                } else if let Some(ts) = self.db.last_user_message_ts(session_id) {
-                    let _ = self.db.truncate_session_after(session_id, &ts, false);
+                    self.db
+                        .delete_messages_from(session_id, &target.created_at)?;
+                    self.db
+                        .delete_llm_usage_from(session_id, &target.created_at)?;
+                    self.db.rebuild_session_usage_from_calls(session_id)?;
+                } else if let Some(ts) = self.db.last_user_message_ts(session_id)? {
+                    self.db.truncate_session_after(session_id, &ts, false)?;
                 }
                 // After truncation (and after any in-flight run join above):
                 // drop the cutoff cache so a late persist cannot repopulate
@@ -154,7 +154,7 @@ impl AgentLayer {
             // user message for user-rollback (pause=true), or the last user
             // message for agent-rollback too (delete the partial output after
             // it).
-            let cutoff_ts = self.db.last_user_message_ts(session_id);
+            let cutoff_ts = self.db.last_user_message_ts(session_id)?;
             BranchPoint {
                 event_cursor: snapshot.events.len(),
                 step_number: target_step,
@@ -376,24 +376,24 @@ impl AgentLayer {
         // boundary for this error (after an app restart it can be several
         // completed steps old). Only an explicit failed-stream marker makes
         // this attempt's branch point safe to truncate.
-        if let Ok(Some(state_json)) = self.db.get_react_state(session_id)
-            && let Ok(snapshot) = ReActSnapshot::from_json(&state_json)
-            && let Some(error_partial_message_ids) = snapshot.error_partial_message_ids
-        {
-            if let Some(cutoff) = snapshot
-                .branch_points
-                .get(&snapshot.step_number)
-                .and_then(|bp| bp.last_msg_at.as_deref())
-            {
-                // The marker is saved immediately after save_branch_point
-                // in persist_partial_on_error, so this range belongs to
-                // the known failed attempt, including its step projection.
-                self.db.truncate_session_after(session_id, cutoff, false)?;
-            } else {
-                // A partially persisted error snapshot may lack a branch
-                // point. Its explicit recovery IDs are still safe.
-                self.db
-                    .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
+        if let Some(state_json) = self.db.get_react_state(session_id)? {
+            let snapshot = ReActSnapshot::from_json(&state_json)?;
+            if let Some(error_partial_message_ids) = snapshot.error_partial_message_ids {
+                if let Some(cutoff) = snapshot
+                    .branch_points
+                    .get(&snapshot.step_number)
+                    .and_then(|bp| bp.last_msg_at.as_deref())
+                {
+                    // The marker is saved immediately after save_branch_point
+                    // in persist_partial_on_error, so this range belongs to
+                    // the known failed attempt, including its step projection.
+                    self.db.truncate_session_after(session_id, cutoff, false)?;
+                } else {
+                    // A partially persisted error snapshot may lack a branch
+                    // point. Its explicit recovery IDs are still safe.
+                    self.db
+                        .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
+                }
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a

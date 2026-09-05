@@ -1042,7 +1042,7 @@ mod tests {
         // working set. The pending session must be reloaded and dispatchable.
         let exec2 = SessionExecutor::new(db.clone(), tools, 3);
         assert!(exec2.list_sessions().await.is_empty());
-        let loaded = exec2.load_pending_sessions().await;
+        let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 1);
 
         let claimed = exec2.try_claim_pending().await;
@@ -1067,7 +1067,7 @@ mod tests {
 
         // Restart: only the still-pending session is reloaded.
         let exec2 = SessionExecutor::new(db, tools, 3);
-        let loaded = exec2.load_pending_sessions().await;
+        let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 0);
         assert!(exec2.list_sessions().await.is_empty());
     }
