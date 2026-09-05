@@ -1,6 +1,7 @@
 <script>
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import MaterialButton from './MaterialButton.svelte';
 
 	let { value = '', onChange, id = undefined, min = '', max = '' } = $props();
 
@@ -12,8 +13,18 @@
 
 	const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 	const MONTHS = [
-		'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-		'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+		'Jan',
+		'Feb',
+		'Mar',
+		'Apr',
+		'May',
+		'Jun',
+		'Jul',
+		'Aug',
+		'Sep',
+		'Oct',
+		'Nov',
+		'Dec',
 	];
 
 	let displayValue = $derived(value ? formatDisplay(value) : '');
@@ -87,7 +98,10 @@
 		for (let i = 0; i < fd; i++) row.push(null);
 		for (let d = 1; d <= dim; d++) {
 			row.push(d);
-			if (row.length === 7) { w.push(row); row = []; }
+			if (row.length === 7) {
+				w.push(row);
+				row = [];
+			}
 		}
 		if (row.length > 0) {
 			while (row.length < 7) row.push(null);
@@ -97,13 +111,17 @@
 	});
 
 	function prevMonth() {
-		if (viewMonth === 0) { viewMonth = 11; viewYear--; }
-		else viewMonth--;
+		if (viewMonth === 0) {
+			viewMonth = 11;
+			viewYear--;
+		} else viewMonth--;
 	}
 
 	function nextMonth() {
-		if (viewMonth === 11) { viewMonth = 0; viewYear++; }
-		else viewMonth++;
+		if (viewMonth === 11) {
+			viewMonth = 0;
+			viewYear++;
+		} else viewMonth++;
 	}
 
 	/**
@@ -172,8 +190,9 @@
 	 */
 	function handleKeydown(e) {
 		if (e.key === 'Escape') {
-			if (view === 'year') { view = 'calendar'; }
-			else cancel();
+			if (view === 'year') {
+				view = 'calendar';
+			} else cancel();
 		}
 	}
 
@@ -213,19 +232,20 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="md-datepicker-container">
-	<button
-		{id}
-		class="md-datepicker-trigger"
-		onclick={openPicker}
-		type="button"
-	>
+	<button {id} class="md-datepicker-trigger" onclick={openPicker} type="button">
 		<span class="md-datepicker-value" class:placeholder={!value}>
 			{value ? displayValue : 'yyyy/mm/dd'}
 		</span>
 		<svg
 			class="md-datepicker-icon"
-			width="20" height="20" viewBox="0 0 24 24" fill="none"
-			stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+			width="20"
+			height="20"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
 		>
 			<rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
 			<line x1="16" y1="2" x2="16" y2="6" />
@@ -245,26 +265,68 @@
 		onkeydown={handleNonInteractiveKeydown}
 		in:fade={{ duration: 300, easing: cubicOut }}
 	>
-		<div class="md-datepicker-dialog" in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
+		<div
+			class="md-datepicker-dialog"
+			in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}
+		>
 			<div class="md-datepicker-header">
 				<span class="md-datepicker-header-label">{headerLabel()}</span>
-				<button class="md-datepicker-header-year" onclick={goToYearView} type="button" aria-label="Switch to year view">
+				<button
+					class="md-datepicker-header-year"
+					onclick={goToYearView}
+					type="button"
+					aria-label="Switch to year view"
+				>
 					{headerYear()}
 				</button>
 			</div>
 
 			{#if view === 'calendar'}
 				<div class="md-datepicker-nav">
-					<button class="md-datepicker-nav-btn" onclick={prevMonth} type="button" aria-label="Previous month">
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<button
+						class="md-datepicker-nav-btn"
+						onclick={prevMonth}
+						type="button"
+						aria-label="Previous month"
+					>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
 							<path d="M15 18l-6-6 6-6" />
 						</svg>
 					</button>
-					<button class="md-datepicker-nav-label" onclick={goToYearView} type="button" aria-label="Switch to year view">
-						{MONTHS[viewMonth]} {viewYear}
+					<button
+						class="md-datepicker-nav-label"
+						onclick={goToYearView}
+						type="button"
+						aria-label="Switch to year view"
+					>
+						{MONTHS[viewMonth]}
+						{viewYear}
 					</button>
-					<button class="md-datepicker-nav-btn" onclick={nextMonth} type="button" aria-label="Next month">
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<button
+						class="md-datepicker-nav-btn"
+						onclick={nextMonth}
+						type="button"
+						aria-label="Next month"
+					>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
 							<path d="M9 18l6-6-6-6" />
 						</svg>
 					</button>
@@ -279,9 +341,19 @@
 						{#each week as day}
 							{@const t = todayDate()}
 							{@const sel = tempDateObj()}
-							{@const isToday = day !== null && viewYear === t.y && viewMonth === t.m && day === t.d}
-							{@const isSel = day !== null && sel !== null && viewYear === sel.y && viewMonth === sel.m && day === sel.d}
-							{@const isDisabled = day !== null && isDateDisabled(viewYear, viewMonth, day)}
+							{@const isToday =
+								day !== null &&
+								viewYear === t.y &&
+								viewMonth === t.m &&
+								day === t.d}
+							{@const isSel =
+								day !== null &&
+								sel !== null &&
+								viewYear === sel.y &&
+								viewMonth === sel.m &&
+								day === sel.d}
+							{@const isDisabled =
+								day !== null && isDateDisabled(viewYear, viewMonth, day)}
 							{#if day !== null}
 								<button
 									class="md-datepicker-day"
@@ -303,24 +375,53 @@
 				</div>
 			{:else}
 				<div class="md-datepicker-nav">
-					<button class="md-datepicker-nav-btn" onclick={prevYearPage} type="button" aria-label="Previous year range">
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<button
+						class="md-datepicker-nav-btn"
+						onclick={prevYearPage}
+						type="button"
+						aria-label="Previous year range"
+					>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
 							<path d="M15 18l-6-6 6-6" />
 						</svg>
 					</button>
 					<span class="md-datepicker-nav-label">
 						{yearGrid.start} – {yearGrid.start + 11}
 					</span>
-					<button class="md-datepicker-nav-btn" onclick={nextYearPage} type="button" aria-label="Next year range">
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<button
+						class="md-datepicker-nav-btn"
+						onclick={nextYearPage}
+						type="button"
+						aria-label="Next year range"
+					>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
 							<path d="M9 18l6-6-6-6" />
 						</svg>
 					</button>
 				</div>
 				<div class="md-datepicker-year-grid">
 					{#each yearGrid.years as y}
-						{@const isCurrent = (new Date()).getFullYear() === y}
-						{@const isSel = tempValue && new Date(tempValue + 'T00:00:00').getFullYear() === y}
+						{@const isCurrent = new Date().getFullYear() === y}
+						{@const isSel =
+							tempValue && new Date(tempValue + 'T00:00:00').getFullYear() === y}
 						{@const isView = viewYear === y}
 						<button
 							class="md-datepicker-year-btn"
@@ -336,8 +437,13 @@
 			{/if}
 
 			<div class="md-datepicker-footer">
-				<button class="md-btn md-btn--text" onclick={cancel}>Cancel</button>
-				<button class="md-btn md-btn--filled" onclick={confirm} disabled={!tempValue}>OK</button>
+				<MaterialButton variant="text" label="Cancel" onclick={cancel} />
+				<MaterialButton
+					variant="filled"
+					label="OK"
+					onclick={confirm}
+					disabled={!tempValue}
+				/>
 			</div>
 		</div>
 	</div>
@@ -366,7 +472,8 @@
 		border-radius: var(--md-comp-textfield-corner);
 		cursor: pointer;
 		text-align: left;
-		transition: border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			border-width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
 	}
 	.md-datepicker-trigger:hover {
@@ -461,7 +568,8 @@
 		font-family: inherit;
 		padding: 4px 8px;
 		border-radius: var(--md-sys-shape-small);
-		transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		transition: background-color var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
 	}
 	.md-datepicker-nav-label:hover {
 		background: var(--md-sys-color-surface-container-highest);
@@ -477,7 +585,9 @@
 		border-radius: var(--md-sys-shape-full);
 		color: var(--md-sys-color-on-surface-variant);
 		cursor: pointer;
-		transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.md-datepicker-nav-btn:hover {
@@ -522,7 +632,9 @@
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
-		transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 		width: 40px;
 		height: 40px;
@@ -575,7 +687,9 @@
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 		cursor: pointer;
-		transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.md-datepicker-year-btn:hover {

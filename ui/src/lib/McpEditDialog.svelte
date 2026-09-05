@@ -1,5 +1,7 @@
 <script>
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialField from '$lib/MaterialField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { withStringValue } from '$lib/typedCallbacks.js';
 
@@ -104,7 +106,7 @@
 
 	/** @param {KeyboardEvent} e */
 	function handleKeydown(e) {
-		if (e.key === 'Enter' && (/** @type {HTMLElement} */ (e.target)).tagName !== 'TEXTAREA') {
+		if (e.key === 'Enter' && /** @type {HTMLElement} */ (e.target).tagName !== 'TEXTAREA') {
 			e.preventDefault();
 			handleSave();
 		}
@@ -116,112 +118,126 @@
 	}
 </script>
 
-<MaterialDialog open={true} onClose={onClose} title={isEdit ? 'Edit MCP Server' : 'Add MCP Server'}>
+<MaterialDialog open={true} {onClose} title={isEdit ? 'Edit MCP Server' : 'Add MCP Server'}>
 	{#snippet footer()}
-		<button class="md-btn md-btn--tonal" onclick={onClose}>Cancel</button>
-		<button class="md-btn md-btn--filled" onclick={handleSave} disabled={saving}>
-			{saving ? 'Saving...' : isEdit ? 'Update' : 'Add'}
-		</button>
+		<MaterialButton variant="tonal" label="Cancel" onclick={onClose} />
+		<MaterialButton
+			variant="filled"
+			label={saving ? 'Saving...' : isEdit ? 'Update' : 'Add'}
+			onclick={handleSave}
+			disabled={saving}
+		/>
 	{/snippet}
 	<div class="dialog-content" onkeydown={handleKeydown} role="presentation">
-		<label>
-			<span>Name</span>
-			<input
-				type="text"
-				class="md-input"
-				bind:value={name}
-				placeholder="my-server"
-				disabled={isEdit}
-				autocomplete="off"
-				class:input-error={fieldErrors.name}
-			/>
-			{#if fieldErrors.name}
-				<span class="field-error">{fieldErrors.name}</span>
-			{/if}
-		</label>
-		<div class="field">
-			<span>Transport</span>
-			<MaterialSelect value={transport} options={transportOptions} onChange={withStringValue(function handleTransportChange(v) { transport = v; })} />
-		</div>
+		<MaterialField label="Name" forId="mcp-name" error={fieldErrors.name}>
+			{#snippet children()}
+				<input
+					id="mcp-name"
+					type="text"
+					class="md-input"
+					bind:value={name}
+					placeholder="my-server"
+					disabled={isEdit}
+					autocomplete="off"
+					class:input-error={fieldErrors.name}
+				/>
+			{/snippet}
+		</MaterialField>
+		<MaterialField label="Transport">
+			{#snippet children()}
+				<MaterialSelect
+					value={transport}
+					options={transportOptions}
+					onChange={withStringValue(function handleTransportChange(v) {
+						transport = v;
+					})}
+				/>
+			{/snippet}
+		</MaterialField>
 
 		{#if isHttp()}
-			<label>
-				<span>URL</span>
-				<input
-					type="text"
-					class="md-input"
-					bind:value={url}
-					placeholder="http://localhost:3001/mcp"
-					autocomplete="off"
-					class:input-error={fieldErrors.url}
-				/>
-				{#if fieldErrors.url}
-					<span class="field-error">{fieldErrors.url}</span>
-				{/if}
-			</label>
-			<label>
-				<span>Headers (KEY=VALUE, one per line)</span>
-				<textarea
-					class="md-textarea"
-					bind:value={envText}
-					rows="3"
-					placeholder="AUTHORIZATION=Bearer abc123"
-					autocomplete="off"
-					class:input-error={fieldErrors.env}
-				></textarea>
-				{#if fieldErrors.env}
-					<span class="field-error">{fieldErrors.env}</span>
-				{/if}
-			</label>
+			<MaterialField label="URL" forId="mcp-url" error={fieldErrors.url}>
+				{#snippet children()}
+					<input
+						id="mcp-url"
+						type="text"
+						class="md-input"
+						bind:value={url}
+						placeholder="http://localhost:3001/mcp"
+						autocomplete="off"
+						class:input-error={fieldErrors.url}
+					/>
+				{/snippet}
+			</MaterialField>
+			<MaterialField
+				label="Headers (KEY=VALUE, one per line)"
+				forId="mcp-headers"
+				error={fieldErrors.env}
+			>
+				{#snippet children()}
+					<textarea
+						id="mcp-headers"
+						class="md-textarea"
+						bind:value={envText}
+						rows="3"
+						placeholder="AUTHORIZATION=Bearer abc123"
+						autocomplete="off"
+						class:input-error={fieldErrors.env}></textarea>
+				{/snippet}
+			</MaterialField>
 		{:else}
-			<label>
-				<span>Command</span>
-				<input
-					type="text"
-					class="md-input"
-					bind:value={command}
-					placeholder="python"
-					autocomplete="off"
-					class:input-error={fieldErrors.command}
-				/>
-				{#if fieldErrors.command}
-					<span class="field-error">{fieldErrors.command}</span>
-				{/if}
-			</label>
-			<label>
-				<span>CWD (optional)</span>
-				<input
-					type="text"
-					class="md-input"
-					bind:value={cwd}
-					placeholder="C:\path\to\server"
-					autocomplete="off"
-				/>
-			</label>
-			<label>
-				<span>Args (one per line)</span>
-				<textarea
-					class="md-textarea"
-					bind:value={argsText}
-					rows="3"
-					placeholder="-m&#10;mcp_server"
-					autocomplete="off"
-				></textarea>
-			</label>
-			<label>
-				<span>Env (KEY=VALUE, one per line)</span>
-				<textarea
-					class="md-textarea"
-					bind:value={envText}
-					rows="3"
-					placeholder="API_KEY=abc123"
-					autocomplete="off"
-					class:input-error={fieldErrors.env}
-				></textarea>
-				{#if fieldErrors.env}
-					<span class="field-error">{fieldErrors.env}</span>
-				{/if}
-			</label>
+			<MaterialField label="Command" forId="mcp-command" error={fieldErrors.command}>
+				{#snippet children()}
+					<input
+						id="mcp-command"
+						type="text"
+						class="md-input"
+						bind:value={command}
+						placeholder="python"
+						autocomplete="off"
+						class:input-error={fieldErrors.command}
+					/>
+				{/snippet}
+			</MaterialField>
+			<MaterialField label="CWD (optional)" forId="mcp-cwd">
+				{#snippet children()}
+					<input
+						id="mcp-cwd"
+						type="text"
+						class="md-input"
+						bind:value={cwd}
+						placeholder="C:\path\to\server"
+						autocomplete="off"
+					/>
+				{/snippet}
+			</MaterialField>
+			<MaterialField label="Args (one per line)" forId="mcp-args">
+				{#snippet children()}
+					<textarea
+						id="mcp-args"
+						class="md-textarea"
+						bind:value={argsText}
+						rows="3"
+						placeholder="-m&#10;mcp_server"
+						autocomplete="off"></textarea>
+				{/snippet}
+			</MaterialField>
+			<MaterialField
+				label="Env (KEY=VALUE, one per line)"
+				forId="mcp-env"
+				error={fieldErrors.env}
+			>
+				{#snippet children()}
+					<textarea
+						id="mcp-env"
+						class="md-textarea"
+						bind:value={envText}
+						rows="3"
+						placeholder="API_KEY=abc123"
+						autocomplete="off"
+						class:input-error={fieldErrors.env}></textarea>
+				{/snippet}
+			</MaterialField>
 		{/if}
 	</div>
 </MaterialDialog>
@@ -232,22 +248,7 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-md);
 	}
-	.dialog-content label,
-	.dialog-content .field {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-xs);
-	}
-	.dialog-content label > span:first-child,
-	.dialog-content .field > span:first-child {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		color: var(--md-sys-color-on-surface-variant);
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.dialog-content input[type="text"],
+	.dialog-content input[type='text'],
 	.dialog-content textarea {
 		background: var(--md-sys-color-surface-container-lowest);
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -274,10 +275,5 @@
 		font-family: var(--md-sys-typescale-mono);
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);
-	}
-	.field-error {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-error);
 	}
 </style>

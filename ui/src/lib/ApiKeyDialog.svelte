@@ -1,5 +1,6 @@
 <script>
 	import MaterialDialog from './MaterialDialog.svelte';
+	import MaterialButton from './MaterialButton.svelte';
 	import ApiKeyField from './ApiKeyField.svelte';
 
 	/**
@@ -30,7 +31,7 @@
 </script>
 
 <MaterialDialog
-	open={open}
+	{open}
 	onClose={close}
 	title={configured ? `Change ${label || 'API Key'}` : `Set ${label || 'API Key'}`}
 >
@@ -39,8 +40,13 @@
 		<ApiKeyField mode="edit" bind:value={newKeyValue} placeholder="sk-..." />
 	{/snippet}
 	{#snippet footer()}
-		<button class="md-btn md-btn--text" onclick={close}>Cancel</button>
-		<button class="md-btn md-btn--filled" onclick={confirm} disabled={!newKeyValue.trim()}>Confirm</button>
+		<MaterialButton variant="text" label="Cancel" onclick={close} />
+		<MaterialButton
+			variant="filled"
+			label="Confirm"
+			onclick={confirm}
+			disabled={!newKeyValue.trim()}
+		/>
 	{/snippet}
 </MaterialDialog>
 
