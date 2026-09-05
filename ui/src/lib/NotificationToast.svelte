@@ -75,7 +75,7 @@
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		box-shadow: var(--md-sys-elevation-2);
-		width: min(360px, calc(100vw - 2 * var(--md-sys-content-gutter)));
+		width: min(320px, calc(100vw - 2 * var(--md-sys-content-gutter)));
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
