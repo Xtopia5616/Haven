@@ -767,7 +767,7 @@
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
+		border-radius: var(--md-sys-shape-medium);
 		background: var(--md-sys-color-surface-container-low);
 	}
 	.provider-main {

@@ -98,7 +98,7 @@
 		min-width: var(--md-comp-icon-button-compact-size);
 		min-height: var(--md-comp-icon-button-compact-size);
 		flex-shrink: 0;
-		border-radius: var(--md-comp-button-radius);
+		border-radius: var(--md-sys-shape-small);
 		cursor: pointer;
 		font-size: 14px;
 		display: inline-flex;
