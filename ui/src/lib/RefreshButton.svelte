@@ -1,4 +1,4 @@
-	<script>
+<script>
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 
@@ -47,7 +47,7 @@
 		title={title || currentLabel}
 		ariaBusy={loading}
 		disabled={disabled || loading}
-		onclick={onclick}
+		{onclick}
 	/>
 {:else}
 	<MaterialButton

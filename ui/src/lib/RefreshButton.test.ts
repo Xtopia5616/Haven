@@ -21,4 +21,14 @@ describe('RefreshButton', () => {
 		await fireEvent.click(screen.getByRole('button', { name: '刷新模型列表' }));
 		expect(onclick).toHaveBeenCalledTimes(1);
 	});
+
+	it('renders compact refresh actions as a shared icon button', () => {
+		render(RefreshButton, { compact: true, iconOnly: true, title: '刷新 MCP 连接' } as any);
+
+		const button = screen.getByRole('button', { name: '刷新' });
+		expect(button.classList.contains('md-icon-btn')).toBe(true);
+		expect(button.classList.contains('refresh-button--compact')).toBe(true);
+		expect(button.querySelector('svg')).toBeTruthy();
+		expect(button.getAttribute('title')).toBe('刷新 MCP 连接');
+	});
 });

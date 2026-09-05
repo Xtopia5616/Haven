@@ -4,8 +4,10 @@
 	 * @prop {string} label — aria-label
 	 * @prop {'default'|'ghost'|'danger'|'danger-outline'|'primary'|'tonal'} variant
 	 * @prop {'default'|'toolbar'} size — visual size used by the surrounding layout
+	 * @prop {'refresh'|'edit'|'delete'|undefined} icon — optional shared action icon
 	 * @prop {function} onclick
 	 * @prop {boolean} disabled
+	 * @prop {boolean | undefined} ariaBusy — optional busy state for async actions
 	 * @prop {string} title — optional native tooltip
 	 * @prop {string} className — additional class names for layout positioning
 	 */
@@ -13,11 +15,13 @@
 		label = '',
 		variant = 'default',
 		size = 'default',
+		icon = undefined,
 		onclick,
 		disabled = false,
+		ariaBusy = undefined,
 		title = '',
 		className = '',
-		children,
+		children = undefined,
 	} = $props();
 </script>
 
@@ -26,6 +30,7 @@
 	data-variant={variant}
 	data-size={size}
 	aria-label={label}
+	aria-busy={ariaBusy === undefined ? undefined : ariaBusy}
 	{title}
 	{disabled}
 	type="button"
@@ -34,7 +39,52 @@
 		onclick?.();
 	}}
 >
-	{@render children?.()}
+	{#if icon === 'refresh'}
+		<svg
+			width="20"
+			height="20"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+			><polyline points="23 4 23 10 17 10" /><path
+				d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"
+			/></svg
+		>
+	{:else if icon === 'edit'}
+		<svg
+			width="20"
+			height="20"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+			><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg
+		>
+	{:else if icon === 'delete'}
+		<svg
+			width="20"
+			height="20"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			aria-hidden="true"
+			><polyline points="3 6 5 6 21 6" /><path
+				d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+			/><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg
+		>
+	{:else}
+		{@render children?.()}
+	{/if}
 </button>
 
 <style>
