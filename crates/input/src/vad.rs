@@ -89,7 +89,7 @@ impl VadEngine {
         let result = self.execution_state.run([input, sr, recurrent_state])?;
 
         let prob = result
-            .get(0)
+            .first()
             .ok_or_else(|| anyhow::anyhow!("VAD model returned no probability output"))?
             .as_slice::<f32>()?
             .iter()

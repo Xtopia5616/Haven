@@ -754,13 +754,13 @@ fn init_app_state(
     config_loader: haven_common::config::ConfigLoader,
 ) -> AppState {
     let db_path = haven_common::config::ConfigLoader::data_dir().join("haven.db");
-    if let Some(parent) = db_path.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            tracing::warn!(
-                error = %sanitize_error_text(&error.to_string()),
-                "failed to create application data directory"
-            );
-        }
+    if let Some(parent) = db_path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(
+            error = %sanitize_error_text(&error.to_string()),
+            "failed to create application data directory"
+        );
     }
     let fh = filter_handles.clone();
     tokio::task::block_in_place(|| {

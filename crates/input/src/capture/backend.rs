@@ -153,10 +153,10 @@ impl CpalBackend {
         }
         // Pausing then dropping releases the device; in-flight callbacks
         // finish before the stream is torn down, so the ring stays intact.
-        if let Some(stream) = self.stream.take() {
-            if let Err(error) = stream.pause() {
-                tracing::warn!(error = %error, "failed to pause cpal capture stream during stop");
-            }
+        if let Some(stream) = self.stream.take()
+            && let Err(error) = stream.pause()
+        {
+            tracing::warn!(error = %error, "failed to pause cpal capture stream during stop");
         }
         self.running = false;
         tracing::debug!("cpal capture stopped");

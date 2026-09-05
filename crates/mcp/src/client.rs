@@ -516,33 +516,31 @@ impl McpClient {
         self.cancel_token.lock().await.cancel();
 
         let mut guard = self.inner.lock().await;
-        if let Some(inner) = guard.as_mut() {
-            if let McpClientInner::Stdio(s) = inner {
-                let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-                if let Err(error) = s.request(id, "shutdown", None).await {
-                    tracing::debug!(
-                        "MCP stdio shutdown request failed: {}",
-                        haven_common::error::sanitize_error_text(&error.to_string())
-                    );
-                }
-                if let Err(error) = s.notify("exit", None).await {
-                    tracing::debug!(
-                        "MCP stdio exit notification failed: {}",
-                        haven_common::error::sanitize_error_text(&error.to_string())
-                    );
-                }
-                if let Err(error) = s.child.start_kill() {
-                    tracing::debug!(
-                        "MCP stdio child kill failed: {}",
-                        haven_common::error::sanitize_error_text(&error.to_string())
-                    );
-                }
-                if let Err(error) = s.child.wait().await {
-                    tracing::debug!(
-                        "MCP stdio child wait failed: {}",
-                        haven_common::error::sanitize_error_text(&error.to_string())
-                    );
-                }
+        if let Some(McpClientInner::Stdio(s)) = guard.as_mut() {
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            if let Err(error) = s.request(id, "shutdown", None).await {
+                tracing::debug!(
+                    "MCP stdio shutdown request failed: {}",
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
+            }
+            if let Err(error) = s.notify("exit", None).await {
+                tracing::debug!(
+                    "MCP stdio exit notification failed: {}",
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
+            }
+            if let Err(error) = s.child.start_kill() {
+                tracing::debug!(
+                    "MCP stdio child kill failed: {}",
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
+            }
+            if let Err(error) = s.child.wait().await {
+                tracing::debug!(
+                    "MCP stdio child wait failed: {}",
+                    haven_common::error::sanitize_error_text(&error.to_string())
+                );
             }
         }
         *guard = None;

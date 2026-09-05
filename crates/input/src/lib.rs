@@ -788,11 +788,11 @@ fn vad_worker_loop(
                 }
             }
             VadCmd::Reset => {
-                if let Some(e) = engine.as_mut() {
-                    if let Err(error) = e.reset() {
-                        tracing::warn!(error = %error, "VAD reset failed; disabling VAD worker");
-                        engine = None;
-                    }
+                if let Some(e) = engine.as_mut()
+                    && let Err(error) = e.reset()
+                {
+                    tracing::warn!(error = %error, "VAD reset failed; disabling VAD worker");
+                    engine = None;
                 }
             }
         }

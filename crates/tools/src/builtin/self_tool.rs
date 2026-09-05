@@ -947,14 +947,14 @@ impl SelfTool {
             self.mcp_manager.remove_client(&name).await;
             if let Err(e) = self.mcp_manager.connect_server(new_config).await {
                 // Roll back so runtime state matches the unchanged config.
-                if old_config.enabled {
-                    if let Err(rollback) = self.mcp_manager.connect_server(old_config).await {
-                        tracing::error!(
-                            server = name,
-                            error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
-                            "MCP reconnect rollback failed after config update failure"
-                        );
-                    }
+                if old_config.enabled
+                    && let Err(rollback) = self.mcp_manager.connect_server(old_config).await
+                {
+                    tracing::error!(
+                        server = name,
+                        error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
+                        "MCP reconnect rollback failed after config update failure"
+                    );
                 }
                 anyhow::bail!(
                     "MCP server '{}' not connected; config left unchanged: {}",
@@ -987,14 +987,14 @@ impl SelfTool {
             // Save failed after a successful connect: roll the live client
             // back so it keeps matching the unchanged config.
             self.mcp_manager.remove_client(&name).await;
-            if old_config.enabled {
-                if let Err(rollback) = self.mcp_manager.connect_server(old_config).await {
-                    tracing::error!(
-                        server = name,
-                        error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
-                        "MCP reconnect rollback failed after config persistence error"
-                    );
-                }
+            if old_config.enabled
+                && let Err(rollback) = self.mcp_manager.connect_server(old_config).await
+            {
+                tracing::error!(
+                    server = name,
+                    error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
+                    "MCP reconnect rollback failed after config persistence error"
+                );
             }
             return Err(e);
         }
