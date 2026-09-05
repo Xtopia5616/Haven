@@ -653,11 +653,17 @@
 			width: min(100%, var(--md-comp-settings-control-width));
 			flex: 0 1 auto;
 		}
-		.switch-row {
-			align-items: flex-start;
+		.switch-row,
+		.autostart-section .autostart-row {
+			flex-direction: row;
+			align-items: center;
+			justify-content: space-between;
 		}
-		.switch-label {
-			padding-top: 6px;
+		.switch-label,
+		.autostart-label {
+			flex: 1;
+			min-width: 0;
+			padding-top: 0;
 		}
 	}
 </style>

@@ -243,6 +243,9 @@
 	--md-comp-switch-height: 32px;
 	--md-comp-switch-thumb-size: 16px;
 	--md-comp-switch-thumb-selected-size: 24px;
+	--md-comp-switch-thumb-offset: 6px;
+	--md-comp-switch-thumb-selected-offset: 24px;
+	--md-comp-switch-icon-size: 14px;
 	--md-comp-settings-label-width: 168px;
 	--md-comp-settings-control-width: 280px;
 	--md-comp-settings-number-width: 180px;

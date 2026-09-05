@@ -873,5 +873,14 @@
 			width: auto;
 			flex-shrink: 1;
 		}
+		.switch-row {
+			flex-direction: row;
+			align-items: center;
+			justify-content: space-between;
+		}
+		.switch-label {
+			flex: 1;
+			min-width: 0;
+		}
 	}
 </style>
