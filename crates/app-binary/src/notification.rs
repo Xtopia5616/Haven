@@ -5,6 +5,7 @@
 //! See `docs/conventions.md` §2.
 
 use crate::app_state::AppState;
+use crate::logging::sanitize_error_text;
 use haven_agent::AgentEvent;
 use haven_common::config::NotificationConfig;
 use std::collections::HashMap;
@@ -48,13 +49,19 @@ impl DesktopNotifications {
     }
 
     fn show_windows_toast(&self, title: &str, body: impl AsRef<str>) {
-        let _ = self
+        if let Err(error) = self
             .handle
             .notification()
             .builder()
             .title(title)
             .body(body.as_ref())
-            .show();
+            .show()
+        {
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to show Windows notification"
+            );
+        }
     }
 
     fn cache_title(&self, session_id: &str, title: impl Into<String>) {
@@ -72,19 +79,28 @@ impl DesktopNotifications {
         {
             return title.clone();
         }
-        let resolved = self
+        let resolved = match self
             .handle
             .state::<Arc<AppState>>()
             .db
             .get_session(session_id)
-            .ok()
-            .flatten()
-            .and_then(|t| {
-                t.title
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| (!t.input_text.is_empty()).then_some(t.input_text))
-            })
-            .unwrap_or_else(|| session_id.to_string());
+        {
+            Ok(session) => session,
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    error = %sanitize_error_text(&error.to_string()),
+                    "failed to resolve session title for notification"
+                );
+                None
+            }
+        }
+        .and_then(|t| {
+            t.title
+                .filter(|s| !s.is_empty())
+                .or_else(|| (!t.input_text.is_empty()).then_some(t.input_text))
+        })
+        .unwrap_or_else(|| session_id.to_string());
         self.cache_title(session_id, resolved.clone());
         resolved
     }
@@ -167,7 +183,10 @@ impl DesktopNotifications {
                 if !self.windows_enabled(|n| n.session_error.windows, true) {
                     return;
                 }
-                self.show_windows_toast("Haven", format!("会话出错: {}", error));
+                self.show_windows_toast(
+                    "Haven",
+                    format!("会话出错: {}", sanitize_error_text(error)),
+                );
             }
             AgentEvent::SessionUpdated { session_id, status }
                 if status == "paused"

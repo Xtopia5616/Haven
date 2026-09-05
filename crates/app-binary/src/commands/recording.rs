@@ -7,6 +7,7 @@ use crate::events::{
     TranscriptionStartedEvent,
 };
 use haven_common::config::ContextLimitsConfig;
+use haven_common::error::sanitize_error_text;
 use haven_input::{RecordingReason, RecordingResult};
 use serde::Serialize;
 use std::sync::Arc;
@@ -94,13 +95,19 @@ pub(crate) fn emit_recording_stopped(
 /// Emit `recording:error` with a freshly generated session id and the
 /// user-facing error message.
 pub(crate) fn emit_recording_error(app: &tauri::AppHandle, error: impl Into<String>) {
-    let _ = app.emit(
+    let error = sanitize_error_text(&error.into());
+    if let Err(emit_error) = app.emit(
         RECORDING_ERROR_EVENT,
         RecordingErrorEvent {
             session_id: haven_common::types::new_id("rec").into(),
-            error: error.into(),
+            error,
         },
-    );
+    ) {
+        tracing::warn!(
+            error = %sanitize_error_text(&emit_error.to_string()),
+            "failed to emit recording error"
+        );
+    }
 }
 
 /// Transcribe a captured recording and emit `transcription:result` /
@@ -160,7 +167,7 @@ pub(crate) async fn finalize_transcription(
                     TRANSCRIPTION_ERROR_EVENT,
                     TranscriptionErrorEvent {
                         session_id: session_id.clone(),
-                        error: err,
+                        error: sanitize_error_text(&err),
                     },
                 );
             } else {

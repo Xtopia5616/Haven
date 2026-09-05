@@ -1,6 +1,7 @@
 //! Agent event to Tauri IPC bridge.
 
 use crate::events::*;
+use crate::logging::sanitize_error_text;
 use crate::notification::DesktopNotifications;
 use haven_agent::{AgentEvent, AgentEventEmitter};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -100,7 +101,13 @@ impl AgentEventEmitter for TauriEmitter {
             payload["title"] =
                 serde_json::json!(self.notifications.session_display_title(session_id));
         }
-        let _ = self.handle.emit(channel, payload);
+        if let Err(error) = self.handle.emit(channel, payload) {
+            tracing::warn!(
+                channel,
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to emit agent event"
+            );
+        }
         self.emit_secondary(&event);
         self.notifications.maybe_show_toast(&event);
     }
@@ -135,7 +142,16 @@ impl TauriEmitter {
     /// extension point: tool input, web-search result, and usage diagnostics.
     pub(crate) fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
         fn serialize<T: serde::Serialize>(payload: T) -> serde_json::Value {
-            serde_json::to_value(payload).expect("Tauri event DTO is serializable")
+            match serde_json::to_value(payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(
+                        error = %sanitize_error_text(&error.to_string()),
+                        "failed to serialize Tauri event DTO"
+                    );
+                    serde_json::Value::Null
+                }
+            }
         }
 
         match event {
@@ -216,7 +232,7 @@ impl TauriEmitter {
             }),
             AgentEvent::SessionError { session_id, error } => serialize(SessionErrorEvent {
                 session_id: session_id.clone(),
-                error: error.clone(),
+                error: sanitize_error_text(error),
             }),
             AgentEvent::ThoughtChunk {
                 session_id,
@@ -492,7 +508,13 @@ impl TauriEmitter {
                     status: "completed".into(),
                     title: Some(title.clone()),
                 })
-                .expect("session lifecycle event is serializable")
+                .unwrap_or_else(|error| {
+                    tracing::error!(
+                        error = %sanitize_error_text(&error.to_string()),
+                        "failed to serialize session lifecycle event"
+                    );
+                    serde_json::Value::Null
+                })
             }
             AgentEvent::SessionError { session_id, .. } => {
                 serde_json::to_value(SessionLifecycleEvent {
@@ -500,10 +522,21 @@ impl TauriEmitter {
                     status: "error".into(),
                     title: Some(self.notifications.session_display_title(session_id)),
                 })
-                .expect("session lifecycle event is serializable")
+                .unwrap_or_else(|error| {
+                    tracing::error!(
+                        error = %sanitize_error_text(&error.to_string()),
+                        "failed to serialize session lifecycle event"
+                    );
+                    serde_json::Value::Null
+                })
             }
             _ => return,
         };
-        let _ = self.handle.emit(SESSION_UPDATED_EVENT, payload);
+        if let Err(error) = self.handle.emit(SESSION_UPDATED_EVENT, payload) {
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to emit secondary session lifecycle event"
+            );
+        }
     }
 }

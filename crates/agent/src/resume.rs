@@ -94,10 +94,17 @@ impl AgentLayer {
         // emit `running` so the UI busy chip tracks a real transition instead of
         // treating Pending as a stand-in for Running.
         if self.executor.get_session_state(session_id).await == Some(SessionStatus::Pending) {
-            let _ = self
+            if let Err(error) = self
                 .executor
                 .update_session_status(session_id, SessionStatus::Running)
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    session_id,
+                    error = %error,
+                    "failed to persist session running status before resume"
+                );
+            }
         }
         if self.executor.get_session_state(session_id).await == Some(SessionStatus::Running) {
             self.events

@@ -43,30 +43,39 @@ impl desktop::ShellHandler for HavenShellHandler {
         // capture first and notify the UI, then run STT in the background.
         // Without this, VAD-triggered auto-stops would also keep the
         // "recording" overlay visible for the duration of the STT call.
-        let result = self.pipeline.stop_capture().await;
-        if let Ok(result) = result {
-            crate::commands::emit_recording_stopped(
-                &self.app_h,
-                crate::commands::recording_reason_str(result.reason),
-                Some(result.duration_ms),
-            );
-            if matches!(
-                result.reason,
-                haven_input::RecordingReason::Silence | haven_input::RecordingReason::MaxDuration
-            ) {
-                self.shell_arc.reset_toggle_on_auto_stop().await;
+        let result = match self.pipeline.stop_capture().await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!("pipeline stop_capture failed: {error}");
+                self.shell_arc.stop_recording().await;
+                crate::commands::emit_recording_error(
+                    &self.app_h,
+                    format!("录音停止失败: {error}"),
+                );
+                return;
             }
-
-            // Same finalize path as the `stop_recording` Tauri command: run
-            // STT and emit `transcription:result` / `transcription:error`.
-            // The frontend then submits the transcript through
-            // `process_transcript` like a typed message, so voice input
-            // continues the open conversation. Without this, hotkey / VAD-
-            // triggered stops silently dropped the transcript — the text
-            // never reached the chat UI nor the agent.
-            let state = self.app_h.state::<Arc<AppState>>();
-            crate::commands::finalize_transcription(state.inner(), &self.app_h, result).await;
+        };
+        crate::commands::emit_recording_stopped(
+            &self.app_h,
+            crate::commands::recording_reason_str(result.reason),
+            Some(result.duration_ms),
+        );
+        if matches!(
+            result.reason,
+            haven_input::RecordingReason::Silence | haven_input::RecordingReason::MaxDuration
+        ) {
+            self.shell_arc.reset_toggle_on_auto_stop().await;
         }
+
+        // Same finalize path as the `stop_recording` Tauri command: run
+        // STT and emit `transcription:result` / `transcription:error`.
+        // The frontend then submits the transcript through
+        // `process_transcript` like a typed message, so voice input
+        // continues the open conversation. Without this, hotkey / VAD-
+        // triggered stops silently dropped the transcript — the text
+        // never reached the chat UI nor the agent.
+        let state = self.app_h.state::<Arc<AppState>>();
+        crate::commands::finalize_transcription(state.inner(), &self.app_h, result).await;
     }
 
     fn on_tray_status(&self, status: TrayStatus) {

@@ -421,14 +421,15 @@ fn html_to_text(html: &str) -> String {
 }
 
 fn map_reqwest_error(e: reqwest::Error) -> anyhow::Error {
+    let detail = haven_common::error::sanitize_error_text(&e.to_string());
     if e.is_timeout() {
-        anyhow::anyhow!("request timed out: {}", e)
+        anyhow::anyhow!("request timed out: {}", detail)
     } else if e.is_connect() {
-        anyhow::anyhow!("connection failed: {}", e)
+        anyhow::anyhow!("connection failed: {}", detail)
     } else if e.is_status() {
-        anyhow::anyhow!("HTTP error: {}", e)
+        anyhow::anyhow!("HTTP error: {}", detail)
     } else {
-        anyhow::anyhow!("request failed: {}", e)
+        anyhow::anyhow!("request failed: {}", detail)
     }
 }
 

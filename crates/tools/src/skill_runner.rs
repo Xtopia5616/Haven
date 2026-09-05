@@ -1,6 +1,7 @@
 use crate::tool_contract::ToolResult;
 use haven_common::config::SkillsExecConfig;
 use haven_common::encoding;
+use haven_common::error::sanitize_error_text;
 use haven_skills::{Skill, VenvManager};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
@@ -54,6 +55,7 @@ impl SkillRunner {
         tokio::fs::create_dir_all(work_dir).await?;
 
         let input_json = serde_json::to_string(params)?;
+        let pid_label = skill.name().to_string();
 
         let mut cmd = tokio::process::Command::new(&python);
         cmd.arg(&entry)
@@ -77,21 +79,38 @@ impl SkillRunner {
             cmd.env("COMSPEC", std::env::var("COMSPEC").unwrap_or_default());
         }
 
-        let mut child = cmd
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn skill '{}': {}", skill.name(), e))?;
+        let mut child = cmd.kill_on_drop(true).spawn().map_err(|e| {
+            anyhow::anyhow!(
+                "failed to spawn skill '{}': {}",
+                pid_label,
+                sanitize_error_text(&e.to_string())
+            )
+        })?;
 
         // Write params as JSON to stdin, then close it.
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(input_json.as_bytes()).await;
-            let _ = stdin.shutdown().await;
+            stdin
+                .write_all(input_json.as_bytes())
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to write params to skill '{}': {}",
+                        pid_label,
+                        sanitize_error_text(&error.to_string())
+                    )
+                })?;
+            stdin.shutdown().await.map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to close stdin for skill '{}': {}",
+                    pid_label,
+                    sanitize_error_text(&error.to_string())
+                )
+            })?;
         }
 
         let max_lines = self.config.max_output_lines;
         let timeout_dur = std::time::Duration::from_secs(self.config.timeout_secs);
-        let pid_label = skill.name().to_string();
 
         // Wait for the child with a wall-clock timeout using `wait(&mut self)`
         // which does not consume `child`, so the timeout branch can still kill it.
@@ -99,18 +118,28 @@ impl SkillRunner {
             result = child.wait() => {
                 match result {
                     Ok(status) => Some(status),
-                    Err(e) => return Err(anyhow::anyhow!("skill '{}' wait error: {}", pid_label, e)),
+                    Err(e) => {
+                        return Err(anyhow::anyhow!(
+                            "skill '{}' wait error: {}",
+                            pid_label,
+                            sanitize_error_text(&e.to_string())
+                        ));
+                    }
                 }
             }
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
+                if let Err(error) = child.kill().await {
+                    tracing::warn!(skill = %pid_label, error = %sanitize_error_text(&error.to_string()), "failed to stop cancelled skill");
+                }
                 return Ok(ToolResult::cancelled(format!(
                     "skill '{}' cancelled",
                     pid_label
                 )));
             }
             _ = tokio::time::sleep(timeout_dur) => {
-                let _ = child.kill().await;
+                if let Err(error) = child.kill().await {
+                    tracing::warn!(skill = %pid_label, error = %sanitize_error_text(&error.to_string()), "failed to stop timed-out skill");
+                }
                 return Ok(ToolResult::timed_out(
                     crate::ToolExecutionOutcome::TimedOutUnknown,
                     format!("skill '{}' timed out after {}s", pid_label, self.config.timeout_secs),
@@ -129,10 +158,22 @@ impl SkillRunner {
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         if let Some(mut out) = child.stdout.take() {
-            let _ = out.read_to_end(&mut stdout_buf).await;
+            out.read_to_end(&mut stdout_buf).await.map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to read stdout from skill '{}': {}",
+                    pid_label,
+                    sanitize_error_text(&error.to_string())
+                )
+            })?;
         }
         if let Some(mut err) = child.stderr.take() {
-            let _ = err.read_to_end(&mut stderr_buf).await;
+            err.read_to_end(&mut stderr_buf).await.map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to read stderr from skill '{}': {}",
+                    pid_label,
+                    sanitize_error_text(&error.to_string())
+                )
+            })?;
         }
 
         let stdout = encoding::decode_lossy(&stdout_buf);
@@ -142,7 +183,7 @@ impl SkillRunner {
         let out_lines: Vec<&str> = stdout.lines().take(max_lines).collect();
         let err_lines: Vec<&str> = stderr.lines().take(max_lines).collect();
         let out_text = out_lines.join("\n");
-        let err_text = err_lines.join("\n");
+        let err_text = sanitize_error_text(&err_lines.join("\n"));
 
         if exit_code != 0 || !err_text.is_empty() {
             Ok(ToolResult::failed(
@@ -153,8 +194,13 @@ impl SkillRunner {
                 ),
             ))
         } else {
-            let output: Value = serde_json::from_str(&out_text)
-                .unwrap_or_else(|_| serde_json::json!({ "result": out_text }));
+            let output: Value = serde_json::from_str(&out_text).map_err(|error| {
+                anyhow::anyhow!(
+                    "skill '{}' returned invalid JSON: {}",
+                    pid_label,
+                    sanitize_error_text(&error.to_string())
+                )
+            })?;
             Ok(ToolResult::ok(output))
         }
     }

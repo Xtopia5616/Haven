@@ -10,6 +10,7 @@ use crate::handlers::{HavenInputHandler, HavenShellHandler, make_tray_icon};
 use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
 use haven_common::config::LogConfig;
+use haven_common::error::sanitize_error_text;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tauri::Emitter;
@@ -28,12 +29,30 @@ pub(crate) fn run() {
     debug_assert_eq!(commands::contracts::COMMAND_CONTRACTS.len(), 68);
 
     // Load config early so we can initialize tracing with the right level
-    let config_loader = haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
-        haven_common::config::ConfigLoader::load_from(
-            &haven_common::config::ConfigLoader::default_path(),
-        )
-        .unwrap()
-    });
+    let config_loader = match haven_common::config::ConfigLoader::load() {
+        Ok(loader) => loader,
+        Err(primary_error) => {
+            let default_path = haven_common::config::ConfigLoader::default_path();
+            match haven_common::config::ConfigLoader::load_from(&default_path) {
+                Ok(loader) => {
+                    eprintln!(
+                        "Haven config load fell back to defaults: {}",
+                        sanitize_error_text(&primary_error.to_string())
+                    );
+                    loader
+                }
+                Err(fallback_error) => {
+                    eprintln!(
+                        "Haven cannot start because configuration is unavailable: {}",
+                        sanitize_error_text(&format!(
+                            "primary: {primary_error}; fallback: {fallback_error}"
+                        ))
+                    );
+                    return;
+                }
+            }
+        }
+    };
     let log_cfg = config_loader.config().log.clone();
 
     // Initialize tracing subscriber (console + optional file output)
@@ -228,7 +247,7 @@ pub(crate) fn run() {
                 },
             ));
 
-            let cfg = state.config_service.snapshot().unwrap().config;
+            let cfg = state.config_service.snapshot()?.config;
             let is_hold = cfg.hotkey.mode == haven_common::types::HotkeyMode::Hold;
             let key_binding = cfg.hotkey.key_binding.clone();
 
@@ -546,7 +565,13 @@ pub(crate) fn run() {
             commands::log::read_log_tail,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Haven app")
+        .unwrap_or_else(|error| {
+            tracing::error!(
+                error = %sanitize_error_text(&error.to_string()),
+                "error while building Haven app"
+            );
+            std::process::exit(1);
+        })
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 tracing::info!("Haven app exit requested");
@@ -556,10 +581,17 @@ pub(crate) fn run() {
                 // would be flipped to `error` at the next startup by
                 // `finalize_orphaned_running_sessions` (which only intends to
                 // catch crash leftovers).
-                if let Ok(n) = state.db.pause_running_sessions()
-                    && n > 0
-                {
-                    tracing::info!("paused {} running session(s) on exit", n);
+                match state.db.pause_running_sessions() {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("paused {} running session(s) on exit", n);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(
+                            error = %sanitize_error_text(&error.to_string()),
+                            "failed to pause running sessions on exit"
+                        );
+                    }
                 }
             }
         });
@@ -684,7 +716,10 @@ fn init_app_state(
         // No degraded fallback: a failed backend is not usable, so exit with
         // a clear error (e.g. an old-version haven.db rejected by the schema
         // check tells the user to delete the file and rebuild).
-        tracing::error!("failed to initialize application state: {}", e);
+        tracing::error!(
+            error = %sanitize_error_text(&e.to_string()),
+            "failed to initialize application state"
+        );
         std::process::exit(1);
     })
 }

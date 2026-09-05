@@ -73,13 +73,17 @@ impl AppState {
             // never resume — mark it errored immediately so the user sees the
             // interrupted state and can retry via the continue flow. This runs
             // before any UI fetches the session list.
-            if let Ok(n) = db_finalize.finalize_orphaned_running_sessions()
-                && n > 0
-            {
-                tracing::info!(
-                    "finalized {} orphaned running session(s) from previous run",
-                    n
-                );
+            match db_finalize.finalize_orphaned_running_sessions() {
+                Ok(n) if n > 0 => {
+                    tracing::info!(
+                        "finalized {} orphaned running session(s) from previous run",
+                        n
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(error = %error, "failed to finalize orphaned running sessions");
+                }
             }
         });
 
