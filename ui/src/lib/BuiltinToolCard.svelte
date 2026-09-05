@@ -1,35 +1,22 @@
 <script>
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
-	import ContextMenu from '$lib/ContextMenu.svelte';
+	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
 	let { tool, onToggle } = $props();
-	let expanded = $state(false);
-
-	function toggleExpand() {
-		expanded = !expanded;
-	}
 
 	/** @param {boolean} checked */
 	function handleToggle(checked) {
 		onToggle?.(tool.name, checked);
 	}
 
-	let ctxMenu = $state({ open: false, x: 0, y: 0 });
-
-	/** @param {MouseEvent} e */
-	function handleContextMenu(e) {
-		e.preventDefault();
-		e.stopPropagation();
-		ctxMenu = { open: true, x: e.clientX, y: e.clientY };
-	}
-
-	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0 };
-	}
-
-	let ctxMenuItems = $derived([
-		{ id: 'copyName', label: '复制名称', icon: 'copy', action: () => copyText(tool.name, '名称') },
+	let contextMenuItems = $derived([
+		{
+			id: 'copyName',
+			label: '复制名称',
+			icon: 'copy',
+			action: () => copyText(tool.name, '名称'),
+		},
 		{
 			id: 'copySchema',
 			label: '复制 Schema',
@@ -37,91 +24,44 @@
 			action: () => copyText(JSON.stringify(tool.schema, null, 2), 'Schema'),
 		},
 		tool.enabled
-			? { id: 'disable', label: '禁用', icon: 'power', action: () => onToggle?.(tool.name, false) }
-			: { id: 'enable', label: '启用', icon: 'power', action: () => onToggle?.(tool.name, true) },
+			? {
+					id: 'disable',
+					label: '禁用',
+					icon: 'power',
+					action: () => onToggle?.(tool.name, false),
+				}
+			: {
+					id: 'enable',
+					label: '启用',
+					icon: 'power',
+					action: () => onToggle?.(tool.name, true),
+				},
 	]);
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="tool-card" class:expanded oncontextmenu={handleContextMenu}>
-	<div
-		class="card-header"
-		onclick={toggleExpand}
-		role="button"
-		tabindex="0"
-		onkeydown={(e) => e.key === 'Enter' && toggleExpand()}
-	>
-		<div class="card-info">
-			<div class="card-name">{tool.name}</div>
-			<div class="card-meta">
-				<span class="risk-badge risk-{tool.risk}">Risk: {tool.risk}</span>
-				<span
-					class="enabled-badge"
-					class:enabled={tool.enabled}
-					class:disabled={!tool.enabled}
-				>
-					{tool.enabled ? 'Enabled' : 'Disabled'}
-				</span>
-			</div>
+<ExpandableContextCard cardKind="builtin-tool" {contextMenuItems}>
+	{#snippet header()}
+		<div class="card-name">{tool.name}</div>
+		<div class="card-meta">
+			<span class="risk-badge risk-{tool.risk}">Risk: {tool.risk}</span>
+			<span class="enabled-badge" class:enabled={tool.enabled} class:disabled={!tool.enabled}>
+				{tool.enabled ? 'Enabled' : 'Disabled'}
+			</span>
 		</div>
-		<div
-			class="card-actions"
-			onclick={(e) => e.stopPropagation()}
-			onkeydown={() => {}}
-			role="presentation"
-		>
-			<MaterialSwitch checked={tool.enabled} onChange={handleToggle} />
-		</div>
-	</div>
-	{#if expanded}
-		<div class="card-body">
-			<p class="desc">{tool.desc || 'No description'}</p>
-			{#if tool.schema && Object.keys(tool.schema).length > 0}
-				<h4>Input Schema</h4>
-				<pre>{JSON.stringify(tool.schema, null, 2)}</pre>
-			{/if}
-		</div>
-	{/if}
-
-	<ContextMenu
-		open={ctxMenu.open}
-		x={ctxMenu.x}
-		y={ctxMenu.y}
-		items={ctxMenuItems}
-		onClose={closeCtxMenu}
-	/>
-</div>
+	{/snippet}
+	{#snippet actions()}
+		<MaterialSwitch checked={tool.enabled} onChange={handleToggle} />
+	{/snippet}
+	{#snippet children()}
+		<p class="desc">{tool.desc || 'No description'}</p>
+		{#if tool.schema && Object.keys(tool.schema).length > 0}
+			<h4>Input Schema</h4>
+			<pre>{JSON.stringify(tool.schema, null, 2)}</pre>
+		{/if}
+	{/snippet}
+</ExpandableContextCard>
 
 <style>
-	.tool-card {
-		background: var(--md-sys-color-surface-container-low);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		margin-bottom: var(--md-sys-space-sm);
-		overflow: hidden;
-		transition:
-			border-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard);
-	}
-	.tool-card:hover {
-		border-color: var(--md-sys-color-outline);
-	}
-	.tool-card.expanded {
-		border-color: var(--md-sys-color-primary);
-		box-shadow: var(--md-sys-elevation-1);
-	}
-	.card-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: var(--md-sys-space-lg) var(--md-sys-space-xl);
-		cursor: pointer;
-		user-select: none;
-	}
-	.card-info {
-		flex: 1;
-		min-width: 0;
-	}
 	.card-name {
 		font-size: var(--md-sys-typescale-body-large-size);
 		font-weight: 700;
@@ -178,33 +118,13 @@
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
 	}
-	.card-actions {
-		display: flex;
-		gap: var(--md-sys-space-xs);
-		align-items: center;
-		flex-shrink: 0;
-		margin-left: var(--md-sys-space-md);
-	}
-	.card-body {
-		padding: 0 var(--md-sys-space-xl) var(--md-sys-space-lg);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-	}
-	.card-body h4 {
-		font-size: var(--md-sys-typescale-label-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		text-transform: uppercase;
-		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		margin: var(--md-sys-space-md) 0 var(--md-sys-space-sm);
-		font-weight: 700;
-	}
 	.desc {
 		font-size: var(--md-sys-typescale-body-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		margin: var(--md-sys-space-md) 0;
 		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
-	.card-body pre {
+	:global(.expandable-context-card[data-card-kind='builtin-tool'] .card-body pre) {
 		margin-top: var(--md-sys-space-xs);
 		padding: var(--md-sys-space-sm);
 		background: var(--md-sys-color-surface-container-highest);

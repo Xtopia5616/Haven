@@ -126,6 +126,7 @@
 
 - 2026-09-02：P1 Tools 契约首条迁移：haven_config 使用 TypedToolOperation，由 typed operation 统一提供 args/output/error 与风险、幂等、取消/超时和并发 metadata；其余 admin domain 仍列为后续切片（ADR 0071）。
 - 2026-09-04：P1 Agent/LLM 上下文预算收口：消息、工具 schema、provider overhead 与动态输出上限统一按 token 计算；摘要失败降级为保留 system/最近完整 tool-call 边界并提示 UI；token cache、上游 prompt budget 与 compaction cancellation 一并收口（ADR 0079）。
+- 2026-09-05：P2 UI 资源卡片壳层复用：内置工具、技能和 MCP 服务器共享可展开卡片、键盘激活、右键菜单生命周期与卡片结构样式；业务 renderer 继续由各自组件持有（ADR 0080）。
 
 ## 完成标准
 

@@ -2,11 +2,10 @@
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
-	import ContextMenu from '$lib/ContextMenu.svelte';
+	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
 	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
-	let expanded = $state(false);
 	let refreshing = $state(false);
 
 	async function handleReconnect() {
@@ -17,10 +16,6 @@
 		} finally {
 			refreshing = false;
 		}
-	}
-
-	function toggleExpand() {
-		expanded = !expanded;
 	}
 
 	/** @param {boolean} checked */
@@ -58,25 +53,22 @@
 		return s === 'Connecting' || (typeof s === 'object' && 'Connecting' in s);
 	}
 
-	let ctxMenu = $state({ open: false, x: 0, y: 0 });
-
-	/** @param {MouseEvent} e */
-	function handleContextMenu(e) {
-		e.preventDefault();
-		e.stopPropagation();
-		ctxMenu = { open: true, x: e.clientX, y: e.clientY };
-	}
-
-	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0 };
-	}
-
-	let ctxMenuItems = $derived.by(() => {
+	let contextMenuItems = $derived.by(() => {
 		const items = [];
 		items.push(
 			server.enabled
-				? { id: 'disable', label: '禁用', icon: 'power', action: () => onToggle?.(server.name, false) }
-				: { id: 'enable', label: '启用', icon: 'power', action: () => onToggle?.(server.name, true) },
+				? {
+						id: 'disable',
+						label: '禁用',
+						icon: 'power',
+						action: () => onToggle?.(server.name, false),
+					}
+				: {
+						id: 'enable',
+						label: '启用',
+						icon: 'power',
+						action: () => onToggle?.(server.name, true),
+					},
 		);
 		items.push({
 			id: 'reconnect',
@@ -102,133 +94,101 @@
 	});
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="server-card" class:expanded oncontextmenu={handleContextMenu}>
-	<div class="card-header" onclick={toggleExpand} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && toggleExpand()}>
-		<div class="card-info">
-			<div class="card-name">
-				<span class="card-name-text">{server.name}</span>
-				<span class="tool-count">{server.tools?.length || 0} tools</span>
-			</div>
-			<div class="card-meta">
-				<span class="transport-badge">{server.transport || 'stdio'}</span>
-				{#if server.url}
-					<span class="endpoint">{server.url}</span>
-				{/if}
-				<span
-					class="enabled-badge"
-					class:enabled={server.enabled}
-					class:disabled={!server.enabled}
-				>
-					{server.enabled ? 'Enabled' : 'Disabled'}
-				</span>
-				<span class="status-badge" class:connected={isConnected()} class:offline={isOffline()} class:connecting={isConnecting()}>
-					{statusLabel(server.status)}
-				</span>
-				{#if server.last_seen_at}
-					<span class="last-seen">Last seen: {new Date(server.last_seen_at * 1000).toLocaleTimeString()}</span>
-				{/if}
-			</div>
-			{#if server.last_error}
-				<div class="error-msg">{server.last_error}</div>
-			{/if}
+<ExpandableContextCard cardKind="mcp-server" {contextMenuItems}>
+	{#snippet header()}
+		<div class="card-name">
+			<span class="card-name-text">{server.name}</span>
+			<span class="tool-count">{server.tools?.length || 0} tools</span>
 		</div>
-		<div class="card-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="presentation">
-			<MaterialSwitch checked={server.enabled} onChange={handleToggle} />
-			<MaterialIconButton
-				variant="primary"
-				label="Refresh"
-				onclick={handleReconnect}
-				disabled={refreshing}
+		<div class="card-meta">
+			<span class="transport-badge">{server.transport || 'stdio'}</span>
+			{#if server.url}
+				<span class="endpoint">{server.url}</span>
+			{/if}
+			<span
+				class="enabled-badge"
+				class:enabled={server.enabled}
+				class:disabled={!server.enabled}
 			>
-				<svg
-					class:spin={refreshing}
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
+				{server.enabled ? 'Enabled' : 'Disabled'}
+			</span>
+			<span
+				class="status-badge"
+				class:connected={isConnected()}
+				class:offline={isOffline()}
+				class:connecting={isConnecting()}
+			>
+				{statusLabel(server.status)}
+			</span>
+			{#if server.last_seen_at}
+				<span class="last-seen"
+					>Last seen: {new Date(server.last_seen_at * 1000).toLocaleTimeString()}</span
 				>
-					<polyline points="23 4 23 10 17 10" />
-					<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-				</svg>
-			</MaterialIconButton>
-			<MaterialIconButton label="Edit" onclick={() => onEdit?.(server)}>✎</MaterialIconButton>
-			<MaterialIconButton variant="danger" label="Remove" onclick={() => onRemove?.(server.name)}>✕</MaterialIconButton>
-		</div>
-	</div>
-	{#if expanded}
-		<div class="card-body">
-			<h4>Tools</h4>
-			{#if server.tools && server.tools.length > 0}
-				<div class="tool-list">
-					{#each server.tools as tool}
-						<div class="tool-item">
-							<div class="tool-item-name">{tool.name}</div>
-							<div class="tool-item-desc">{tool.description || 'No description'}</div>
-							{#if tool.input_schema && Object.keys(tool.input_schema).length > 0}
-								<div class="schema-details">
-									<MaterialCollapsible>
-										{#snippet header()}
-											<span class="schema-label">Input Schema</span>
-										{/snippet}
-										<pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
-									</MaterialCollapsible>
-								</div>
-							{/if}
-						</div>
-					{/each}
-				</div>
-			{:else}
-				<p class="no-tools">No tools available</p>
-				{#if server.diagnostic}
-					<p class="diag-msg">{server.diagnostic}</p>
-				{/if}
 			{/if}
 		</div>
-	{/if}
-
-	<ContextMenu
-		open={ctxMenu.open}
-		x={ctxMenu.x}
-		y={ctxMenu.y}
-		items={ctxMenuItems}
-		onClose={closeCtxMenu}
-	/>
-</div>
+		{#if server.last_error}
+			<div class="error-msg">{server.last_error}</div>
+		{/if}
+	{/snippet}
+	{#snippet actions()}
+		<MaterialSwitch checked={server.enabled} onChange={handleToggle} />
+		<MaterialIconButton
+			variant="primary"
+			label="Refresh"
+			onclick={handleReconnect}
+			disabled={refreshing}
+		>
+			<svg
+				class:spin={refreshing}
+				width="16"
+				height="16"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			>
+				<polyline points="23 4 23 10 17 10" />
+				<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+			</svg>
+		</MaterialIconButton>
+		<MaterialIconButton label="Edit" onclick={() => onEdit?.(server)}>✎</MaterialIconButton>
+		<MaterialIconButton variant="danger" label="Remove" onclick={() => onRemove?.(server.name)}
+			>✕</MaterialIconButton
+		>
+	{/snippet}
+	{#snippet children()}
+		<h4>Tools</h4>
+		{#if server.tools && server.tools.length > 0}
+			<div class="tool-list">
+				{#each server.tools as tool}
+					<div class="tool-item">
+						<div class="tool-item-name">{tool.name}</div>
+						<div class="tool-item-desc">{tool.description || 'No description'}</div>
+						{#if tool.input_schema && Object.keys(tool.input_schema).length > 0}
+							<div class="schema-details">
+								<MaterialCollapsible>
+									{#snippet header()}
+										<span class="schema-label">Input Schema</span>
+									{/snippet}
+									<pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
+								</MaterialCollapsible>
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="no-tools">No tools available</p>
+			{#if server.diagnostic}
+				<p class="diag-msg">{server.diagnostic}</p>
+			{/if}
+		{/if}
+	{/snippet}
+</ExpandableContextCard>
 
 <style>
-	.server-card {
-		background: var(--md-sys-color-surface-container-low);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		margin-bottom: var(--md-sys-space-sm);
-		overflow: hidden;
-		transition: border-color var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
-	}
-	.server-card:hover {
-		border-color: var(--md-sys-color-outline);
-	}
-	.server-card.expanded {
-		border-color: var(--md-sys-color-primary);
-		box-shadow: var(--md-sys-elevation-1);
-	}
-	.card-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: var(--md-sys-space-lg) var(--md-sys-space-xl);
-		cursor: pointer;
-		user-select: none;
-	}
-	.card-info {
-		flex: 1;
-		min-width: 0;
-	}
 	.card-name {
 		display: flex;
 		align-items: center;
@@ -319,24 +279,6 @@
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-error);
 	}
-	.card-actions {
-		display: flex;
-		gap: var(--md-sys-space-xs);
-		align-items: center;
-	}
-	.card-body {
-		padding: 0 var(--md-sys-space-xl) var(--md-sys-space-lg);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-	}
-	.card-body h4 {
-		font-size: var(--md-sys-typescale-label-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		text-transform: uppercase;
-		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		margin: var(--md-sys-space-md) 0 var(--md-sys-space-sm);
-		font-weight: 700;
-	}
 	.tool-list {
 		display: flex;
 		flex-direction: column;
@@ -397,7 +339,7 @@
 		white-space: pre-wrap;
 		word-break: break-word;
 	}
-	.card-actions svg.spin {
+	:global(.expandable-context-card[data-card-kind='mcp-server'] .card-actions svg.spin) {
 		animation: md-icon-spin 0.9s linear infinite;
 	}
 	@keyframes md-icon-spin {
