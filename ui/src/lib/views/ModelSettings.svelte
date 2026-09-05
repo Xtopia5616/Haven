@@ -427,10 +427,10 @@
 								<span class="provider-name">{provider.name}</span><ApiKeyField
 									mode="badge"
 									configured={isProviderKeyConfigured(provider)}
+									badgePrefix={apiStyleLabel(provider)}
 								/>
 							</div>
 							<div class="provider-meta">
-								<span class="provider-type">{apiStyleLabel(provider)}</span>
 								<span class="provider-endpoint" title={provider.base_url}
 									>{provider.base_url}</span
 								>
@@ -807,15 +807,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		white-space: nowrap;
 		overflow: hidden;
-	}
-	.provider-type {
-		flex: 0 0 auto;
-		padding: 2px var(--md-sys-space-xs);
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		font-weight: 600;
-		white-space: nowrap;
 	}
 	.provider-endpoint {
 		min-width: 0;

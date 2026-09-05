@@ -24,9 +24,10 @@ describe('ApiKeyField', () => {
 
 	it('renders a status badge', () => {
 		const { container, getByText } = render(ApiKeyField, {
-			props: { mode: 'badge', configured: true },
+			props: { mode: 'badge', configured: true, badgePrefix: 'OpenAI Chat' },
 		});
 		expect(container.querySelector('.api-key-badge.configured')).toBeTruthy();
+		expect(getByText('OpenAI Chat')).toBeTruthy();
 		expect(getByText('已配置')).toBeTruthy();
 		expect(container.querySelector('.api-key-badge-mask')).toBeNull();
 		expect(container.querySelector('.api-key-badge-icon')).toBeTruthy();

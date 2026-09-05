@@ -9,6 +9,7 @@
 	 *
 	 * @prop {'stored'|'edit'|'badge'} [mode='stored']
 	 * @prop {boolean} [configured=false]
+	 * @prop {string} [badgePrefix=''] — optional leading label in badge mode
 	 * @prop {string} [value=''] — bindable in edit mode
 	 * @prop {string} [id]
 	 * @prop {string} [placeholder='sk-...']
@@ -19,6 +20,7 @@
 	let {
 		mode = 'stored',
 		configured = false,
+		badgePrefix = '',
 		value = $bindable(''),
 		id = undefined,
 		placeholder = 'sk-...',
@@ -45,9 +47,13 @@
 		class="api-key-badge"
 		class:configured
 		class:empty={!configured}
-		title={configured ? 'API Key 已配置' : 'API Key 未配置'}
-		aria-label={configured ? 'API Key 已配置' : 'API Key 未配置'}
+		title={`${badgePrefix ? `${badgePrefix} · ` : ''}API Key ${configured ? '已配置' : '未配置'}`}
+		aria-label={`${badgePrefix ? `${badgePrefix} · ` : ''}API Key ${configured ? '已配置' : '未配置'}`}
 	>
+		{#if badgePrefix}
+			<span class="api-key-badge-prefix">{badgePrefix}</span>
+			<span class="api-key-badge-divider" aria-hidden="true">·</span>
+		{/if}
 		{#if configured}
 			<svg
 				class="api-key-badge-icon"
@@ -311,6 +317,18 @@
 		width: 14px;
 		height: 14px;
 		flex: 0 0 auto;
+	}
+	.api-key-badge-prefix {
+		min-width: 0;
+		max-width: 14rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+	.api-key-badge-divider {
+		flex: 0 0 auto;
+		opacity: 0.55;
 	}
 	.api-key-badge-label {
 		font-weight: 600;
