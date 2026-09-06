@@ -25,6 +25,7 @@
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 
 	/** @type {{ dispose: () => void }} */
@@ -47,6 +48,11 @@
 			.join(' ')
 			.toLocaleLowerCase();
 		return text.includes(query);
+	}
+
+	/** @param {string} value */
+	function handleEnabledFilterChange(value) {
+		enabledFilter = value;
 	}
 
 	const visibleBuiltinTools = $derived(builtinTools.filter(matchesResource));
@@ -377,14 +383,19 @@
 				placeholder="搜索名称、描述或地址"
 			/>
 		</label>
-		<label class="resource-filter">
-			<span class="sr-only">启用状态</span>
-			<select class="md-select" bind:value={enabledFilter}>
-				<option value="all">全部状态</option>
-				<option value="enabled">仅启用</option>
-				<option value="disabled">仅禁用</option>
-			</select>
-		</label>
+		<div class="resource-filter">
+			<MaterialSelect
+				id="resource-enabled-filter"
+				value={enabledFilter}
+				ariaLabel="启用状态"
+				options={[
+					{ value: 'all', label: '全部状态' },
+					{ value: 'enabled', label: '仅启用' },
+					{ value: 'disabled', label: '仅禁用' },
+				]}
+				onChange={handleEnabledFilterChange}
+			/>
+		</div>
 		<span class="resource-count" aria-live="polite">{activeResourceCount} 项</span>
 	</div>
 

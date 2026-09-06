@@ -2,7 +2,7 @@
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 
-	let { value = '', options = [], onChange, id = undefined } = $props();
+	let { value = '', options = [], onChange, id = undefined, ariaLabel = '' } = $props();
 
 	let open = $state(false);
 	let selectedLabel = $derived(options.find((o) => o.value === value)?.label || value);
@@ -56,6 +56,7 @@
 		{id}
 		class="md-select-trigger"
 		class:open
+		aria-label={ariaLabel || undefined}
 		onclick={toggle}
 		onblur={handleBlur}
 		type="button"
@@ -63,13 +64,27 @@
 		aria-expanded={open}
 	>
 		<span class="md-select-value">{selectedLabel}</span>
-		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="md-select-arrow">
-			<path d="M6 9l6 6 6-6"/>
+		<svg
+			width="20"
+			height="20"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			class="md-select-arrow"
+		>
+			<path d="M6 9l6 6 6-6" />
 		</svg>
 	</button>
 
 	{#if open}
-		<div class="md-select-menu" role="listbox" in:fly={{ y: -4, duration: 300, easing: cubicOut }}>
+		<div
+			class="md-select-menu"
+			role="listbox"
+			in:fly={{ y: -4, duration: 300, easing: cubicOut }}
+		>
 			{#each menuRows as row}
 				{#if row.kind === 'group'}
 					<div class="md-select-group" role="presentation">{row.label}</div>
@@ -112,7 +127,8 @@
 		border-radius: var(--md-comp-textfield-corner);
 		cursor: pointer;
 		text-align: left;
-		transition: border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			border-width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
 		position: relative;
 	}
@@ -134,7 +150,8 @@
 	.md-select-arrow {
 		flex-shrink: 0;
 		color: var(--md-sys-color-on-surface-variant);
-		transition: transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		transition: transform var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
 		margin-left: var(--md-sys-space-sm);
 	}
 	.md-select-trigger.open .md-select-arrow {
@@ -177,7 +194,8 @@
 		border: none;
 		cursor: pointer;
 		text-align: left;
-		transition: background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: background-color var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
 		position: relative;
 	}
 	.md-select-option:hover {

@@ -1,5 +1,12 @@
 <script>
-	let { value = 0, min = undefined, max = undefined, step = 1, onChange, id = undefined } = $props();
+	let {
+		value = 0,
+		min = undefined,
+		max = undefined,
+		step = 1,
+		onChange,
+		id = undefined,
+	} = $props();
 
 	let stepDecimals = $derived(String(step).split('.')[1]?.length ?? 0);
 
@@ -35,25 +42,34 @@
 </script>
 
 <div class="md-number-field">
-	<input
-		{id}
-		type="number"
-		class="md-input"
-		{min}
-		{max}
-		{step}
-		value={value}
-		oninput={handleInput}
-	/>
+	<input {id} type="number" class="md-input" {min} {max} {step} {value} oninput={handleInput} />
 	<div class="stepper">
-		<button class="stepper-btn" onclick={increment} aria-label="Increase">
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M18 15l-6-6-6 6"/>
+		<button class="stepper-btn" type="button" onclick={increment} aria-label="增加">
+			<svg
+				width="16"
+				height="16"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			>
+				<path d="M18 15l-6-6-6 6" />
 			</svg>
 		</button>
-		<button class="stepper-btn" onclick={decrement} aria-label="Decrease">
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M6 9l6 6 6-6"/>
+		<button class="stepper-btn" type="button" onclick={decrement} aria-label="减少">
+			<svg
+				width="16"
+				height="16"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			>
+				<path d="M6 9l6 6 6-6" />
 			</svg>
 		</button>
 	</div>
@@ -65,6 +81,7 @@
 		align-items: stretch;
 		width: 100%;
 		position: relative;
+		border-radius: var(--md-comp-textfield-corner);
 	}
 	.md-number-field :global(.md-input) {
 		border-top-right-radius: 0;
@@ -78,6 +95,25 @@
 	.md-number-field :global(.md-input::-webkit-outer-spin-button) {
 		-webkit-appearance: none;
 		margin: 0;
+	}
+	.md-number-field :global(.md-input:focus) {
+		border-top-width: 2px;
+		border-right: none;
+		border-bottom-width: 2px;
+		border-left-width: 2px;
+		padding: 0 calc(var(--md-sys-space-lg) - 1px);
+	}
+	.md-number-field:focus-within {
+		box-shadow: var(--md-sys-focus-ring);
+	}
+	.md-number-field:focus-within :global(.md-input),
+	.md-number-field:focus-within .stepper {
+		border-color: var(--md-sys-color-primary);
+	}
+	.md-number-field :global(.md-input:focus-visible),
+	.stepper-btn:focus-visible {
+		outline: none;
+		box-shadow: none;
 	}
 	.stepper {
 		display: flex;
@@ -99,7 +135,8 @@
 		color: var(--md-sys-color-on-surface-variant);
 		cursor: pointer;
 		position: relative;
-		transition: background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: background-color var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
 	}
 	.stepper-btn:first-child {
 		border-bottom: 1px solid var(--md-sys-color-outline);

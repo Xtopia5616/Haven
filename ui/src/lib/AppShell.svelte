@@ -27,7 +27,15 @@
 <div class="app-shell">
 	<header class="titlebar md-toolbar">
 		<div class="titlebar-left">
-			<Logo size={22} withText={true} />
+			<button
+				class="titlebar-logo"
+				type="button"
+				aria-label="回到对话"
+				title="回到对话"
+				onclick={() => onNavigate('chat')}
+			>
+				<Logo size={22} withText={true} />
+			</button>
 		</div>
 		<div class="titlebar-right">
 			{@render status?.()}
@@ -39,13 +47,23 @@
 				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
 			>
 				{#if theme === 'dark'}
-					<svg class="theme-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+					<svg
+						class="theme-icon"
+						viewBox="0 0 24 24"
+						fill="currentColor"
+						aria-hidden="true"
+					>
 						<path
 							d="M12 7a5 5 0 100 10 5 5 0 000-10zm0-5a1 1 0 011 1v2a1 1 0 11-2 0V3a1 1 0 011-1zm0 17a1 1 0 011 1v2a1 1 0 11-2 0v-2a1 1 0 011-1zM4.2 4.2a1 1 0 011.4 0l1.5 1.5A1 1 0 015.7 7.1L4.2 5.6a1 1 0 010-1.4zm12.7 12.7a1 1 0 011.4 0l1.5 1.5a1 1 0 11-1.4 1.4l-1.5-1.5a1 1 0 010-1.4zM2 12a1 1 0 011-1h2a1 1 0 110 2H3a1 1 0 01-1-1zm17 0a1 1 0 011-1h2a1 1 0 110 2h-2a1 1 0 01-1-1zM4.2 19.8a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0zm12.7-12.7a1 1 0 010-1.4l1.5-1.5a1 1 0 111.4 1.4l-1.5 1.5a1 1 0 01-1.4 0z"
 						/>
 					</svg>
 				{:else}
-					<svg class="theme-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+					<svg
+						class="theme-icon"
+						viewBox="0 0 24 24"
+						fill="currentColor"
+						aria-hidden="true"
+					>
 						<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />
 					</svg>
 				{/if}
@@ -53,7 +71,7 @@
 		</div>
 	</header>
 
-	<WorkspaceNav {tabs} {activeTab} onNavigate={onNavigate} />
+	<WorkspaceNav {tabs} {activeTab} {onNavigate} />
 
 	<main class="content" class:content--chat={activeTab === 'chat'} use:dragScroll={{ axis: 'y' }}>
 		{@render content?.()}
@@ -95,6 +113,27 @@
 	.titlebar-right {
 		display: flex;
 		align-items: center;
+	}
+	.titlebar-logo {
+		display: inline-flex;
+		align-items: center;
+		padding: var(--md-sys-space-2xs) var(--md-sys-space-xs);
+		border: 0;
+		border-radius: var(--md-sys-shape-medium);
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+		-webkit-app-region: no-drag;
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
+	}
+	.titlebar-logo:hover {
+		background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent);
+	}
+	.titlebar-logo:active {
+		transform: scale(0.97);
 	}
 	.titlebar-right {
 		gap: var(--md-sys-space-sm);

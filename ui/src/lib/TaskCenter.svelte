@@ -5,6 +5,7 @@
 	 */
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
 
 	let {
@@ -105,6 +106,11 @@
 	function selectRow(row) {
 		selectedTaskId = row.id;
 	}
+
+	/** @param {string} value */
+	function handleFilterChange(value) {
+		filter = value;
+	}
 </script>
 
 <section class="task-center" aria-labelledby="task-center-title">
@@ -121,15 +127,20 @@
 			<span class="sr-only">搜索任务</span>
 			<input class="md-input" type="search" placeholder="搜索任务或会话" bind:value={query} />
 		</label>
-		<label class="task-filter">
-			<span class="sr-only">任务类型</span>
-			<select class="md-select" bind:value={filter}>
-				<option value="all">全部类型</option>
-				<option value="foreground">会话</option>
-				<option value="background">后台任务</option>
-				<option value="scheduled">定时任务</option>
-			</select>
-		</label>
+		<div class="task-filter">
+			<MaterialSelect
+				id="task-filter"
+				value={filter}
+				ariaLabel="任务类型"
+				options={[
+					{ value: 'all', label: '全部类型' },
+					{ value: 'foreground', label: '会话' },
+					{ value: 'background', label: '后台任务' },
+					{ value: 'scheduled', label: '定时任务' },
+				]}
+				onChange={handleFilterChange}
+			/>
+		</div>
 	</div>
 
 	{#if taskRows.length === 0}

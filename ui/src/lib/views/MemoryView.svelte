@@ -481,10 +481,16 @@
 					/>
 					<MaterialButton variant="text" label="取消" onclick={cancelSelectMode} />
 				{:else}
-					<MaterialButton variant="outlined" label="导出" onclick={enterSelectMode} />
+					<MaterialButton
+						variant="outlined"
+						className="memory-header-action"
+						label="导出"
+						onclick={enterSelectMode}
+					/>
 					{#if sessions.length > 0}
 						<MaterialButton
 							variant="danger"
+							className="memory-header-action"
 							label="清空会话"
 							onclick={() => (showClearDialog = true)}
 						/>
@@ -665,6 +671,10 @@
 		gap: var(--md-sys-space-sm);
 		margin-left: auto;
 	}
+	.header-actions :global(.memory-header-action) {
+		flex: 0 0 112px;
+		width: 112px;
+	}
 	.count-badge {
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
@@ -741,7 +751,9 @@
 			margin-left: 0;
 		}
 		.header-actions :global(.md-btn) {
-			flex: 1 1 auto;
+			flex: 1 1 0;
+			width: 0;
+			min-width: 0;
 		}
 		.date-input-row {
 			flex-direction: column;
