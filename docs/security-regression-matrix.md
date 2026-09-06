@@ -12,15 +12,15 @@
 |---|---|---|---|---|---|
 | `audio` | `play`, `volume_get`, `mute_get` | `record`, `volume_set`, `mute_set` = medium | `audio` 或操作 key | `play.file_path` 与文件工具一样受 `allowed_paths` 约束；录音设备由 input 管线管理 | 录音取消清理 recording id |
 | `ask` | 全部 | 无系统副作用 = safe | `ask` | 无本地路径 | 不得静默跳过用户问题 |
-| `files` | `read`, `list`, 普通 `search` | `write`, `edit`, `copy`, `move` = medium；`delete` = high；内容搜索 = medium | `files`, `files:<operation>` | `path`, `paths`, `source`, `destination`, `file`, `dir`, `directory`；源和目标逐一校验 | 失败不得部分放宽；重试沿用同一 gate |
+| `files` | `read`, `list`, 普通 `search` | `write`, `edit`, `copy`, `move`, `create_dir` = medium；`delete` = high；内容搜索 = medium | `files`, `files:<operation>` | `path`, `paths`, `source`, `destination`, `file`, `dir`, `directory`；源和目标逐一校验 | 失败不得部分放宽；重试沿用同一 gate |
 | `process` | `list` = low | `kill` = high | `process`, `process:<operation>` | 无路径参数；进程启动统一走 `shell.background` | kill 支持 token；取消不得继续执行 |
 | `clipboard` | `read`, `history` = low | `write` = medium | `clipboard`, `clipboard:<operation>` | 无路径；文本长度受限 | 失败不重放写入 |
 | `shell` | 无 | 所有命令 = high | `shell` | `cwd` 必须纳入路径校验；命令不通过 shell 拼接绕过 | 取消终止受管子进程；unsafe 重试默认关闭 |
-| `actions` | 列表/查看 = safe | 无 | `actions` | 仅本地任务投影 | 任务取消必须幂等 |
+| `actions` | 列表/查看 = safe | `cancel` = medium | `actions`, `actions:cancel` | 仅本地任务投影；取消按 session 归属校验 | 任务取消必须幂等 |
 | `input` | `move`, `scroll` = low | `click`, `type`, `key` = medium | `input`, `input:<operation>` | 无路径 | 取消不得继续发送输入事件 |
 | `schedule` | `list`, `cancel` = safe | `set` = low | `schedule`, `schedule:set` | 被调工具在设定时校验风险，触发时再次 gate | 定时任务取消和会话结束都必须阻断后续触发 |
-| `system` | `info`, `display`, `power:status` = safe | env 写操作、registry 写操作 = high；registry 读 = medium；power lock/sleep = high；hibernate = critical | `system:<scope>[:operation]` | 注册表、电源、环境变量不接受路径绕过 | 取消只允许在操作未提交前生效 |
-| `window` | `list`, `foreground`, `screenshot`, `ui_tree`, `wait` = low | `focus` = medium；`close`, `ocr` = high | `window`, `window:<operation>` | OCR 上传前仍需 high gate；不得泄漏完整屏幕到错误文案 | wait/ocr 支持取消，不得后台继续轮询 |
+| `system` | `info`, `display`, `power:status` = safe | env 写操作、registry 写操作 = high；registry 读 = medium；power lock/sleep = high；hibernate = critical | `system:<scope>[:operation]` | env list 只返回名称，credential-like get 脱敏且 set 不回显；注册表、电源、环境变量不接受路径绕过 | 取消只允许在操作未提交前生效 |
+| `window` | `list`, `foreground`, `screenshot`, `ui_tree`, `wait` = low | `focus` = medium；`close`, `ocr` = high | `window`, `window:<operation>` | focus/close 可按 title 或 pid 定位；OCR 上传前仍需 high gate；不得泄漏完整屏幕到错误文案 | wait/ocr 支持取消，不得后台继续轮询 |
 | `http` | 无 | 请求 = medium | `http` | URL/headers/body 是网络边界；不把 HTTP 当作本地路径 | timeout/cancel 后不得自动升级重试 |
 | `notify` | 全部 = safe | 无 | `notify` | UI 文本按纯文本处理 | 重复通知可丢弃/幂等 |
 | `agent` | list/profile/mail/poll = safe | `spawn` = medium | `agent`, `agent:spawn` | peer bus 路径固定在受管 root | request 等待取消必须释放 waiter |

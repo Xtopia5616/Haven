@@ -90,3 +90,5 @@
 - [0087：工作区 Tab 切换动效](0087-ui-tab-transition-motion.md)
 - [0088：工作区次级状态动效](0088-ui-secondary-motion.md)
 - [0089：内置工具契约名称与进程启动边界](0089-tool-contract-name-and-process-boundary.md)
+- [0090：内置工具边界与注册表安全契约](0090-tool-name-boundaries-and-security-contract.md)
+- [0091：内置工具面精简与本机操作补齐](0091-builtin-tool-surface-cleanup.md)

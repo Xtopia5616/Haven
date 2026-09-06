@@ -44,6 +44,7 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("files", "copy", Medium),
     security_case!("files", "move", Medium),
     security_case!("files", "delete", High),
+    security_case!("files", "create_dir", Medium),
     security_case!("files", "list", Low),
     security_case!("files", "summary", Low),
     security_case!("files", "search", Low),
@@ -55,6 +56,7 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("clipboard", "history", Low),
     security_case!("shell", "execute", High),
     security_case!("actions", "list", Safe),
+    security_case!("actions", "cancel", Medium),
     security_case!("input", "type", Medium),
     security_case!("input", "key", Medium),
     security_case!("input", "click", Medium),
@@ -1095,6 +1097,9 @@ mod tests {
             return serde_json::json!({"operation": "search", "mode": "content"});
         }
         match case.tool_name {
+            "actions" if case.operation == "cancel" => {
+                serde_json::json!({"operation": "cancel"})
+            }
             "ask" | "actions" | "shell" | "http" | "notify" | "load_skill" | "load_mcp" => {
                 serde_json::json!({})
             }

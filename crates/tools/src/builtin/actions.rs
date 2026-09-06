@@ -6,6 +6,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{BackgroundActions, Tool, ToolConcurrency, ToolResult};
 
+/// Explicit mutating operation supported by the background-action board.
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionsOperation {
+    Cancel,
+}
+
 /// Background-action board for the current session.
 ///
 /// - Without `action_id`: list all (optional `status` filter).
@@ -25,6 +32,10 @@ pub struct ActionsParams {
     /// When set, return this single action's status instead of the board.
     #[serde(default)]
     pub action_id: Option<String>,
+    /// Optional mutating operation. Listing and inspection retain their
+    /// compact legacy shapes; cancellation is explicit.
+    #[serde(default)]
+    pub operation: Option<ActionsOperation>,
     /// Optional filter when listing: only actions in this state.
     #[serde(default)]
     pub status: Option<String>,
@@ -45,6 +56,24 @@ impl ActionsTool {
         let session_id = params
             .session_id
             .ok_or_else(|| anyhow::anyhow!("actions requires a session context"))?;
+
+        if matches!(params.operation, Some(ActionsOperation::Cancel)) {
+            let action_id = params
+                .action_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
+            let cancelled = self
+                .actions
+                .cancel_for_session(action_id, &session_id)
+                .await;
+            return Ok(ToolResult::ok(serde_json::json!({
+                "operation": "cancel",
+                "action_id": action_id,
+                "cancelled": cancelled,
+            })));
+        }
 
         if let Some(action_id) = params
             .action_id
@@ -92,15 +121,23 @@ impl Tool for ActionsTool {
         "actions".into()
     }
     fn description(&self) -> String {
-        "List background actions of the current session (action_id, status, timestamps, output preview), or pass action_id to inspect one. One-shot awareness only — never poll in a wait loop. While actions are still running and you have no other foreground work, end your turn; completion results are auto-pushed and the session is auto-woken.".into()
+        "List or inspect background actions of the current session, or cancel one with operation=cancel and action_id. One-shot awareness only — never poll in a wait loop. While actions are still running and you have no other foreground work, end your turn; completion results are auto-pushed and the session is auto-woken.".into()
     }
 
-    fn risk_level(&self, _input: &Value) -> RiskLevel {
-        RiskLevel::Safe
+    fn risk_level(&self, input: &Value) -> RiskLevel {
+        if input["operation"].as_str() == Some("cancel") {
+            RiskLevel::Medium
+        } else {
+            RiskLevel::Safe
+        }
     }
 
-    fn concurrency(&self, _input: &Value) -> ToolConcurrency {
-        ToolConcurrency::SharedResource("actions".into())
+    fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        if input["operation"].as_str() == Some("cancel") {
+            ToolConcurrency::Resource("actions".into())
+        } else {
+            ToolConcurrency::SharedResource("actions".into())
+        }
     }
 
     /// Needs the private `_session_id` input so the action board is scoped to the
@@ -118,6 +155,11 @@ impl Tool for ActionsTool {
                     "minLength": 1,
                     "description": "Inspect this single background action instead of listing"
                 },
+                "operation": {
+                    "type": "string",
+                    "enum": ["cancel"],
+                    "description": "Cancel a running background action owned by this session"
+                },
                 "status": {
                     "type": "string",
                     "enum": ["running", "completed", "failed", "cancelled"],
@@ -130,6 +172,15 @@ impl Tool for ActionsTool {
                     "additionalProperties": false,
                     "properties": { "action_id": { "type": "string", "minLength": 1 } },
                     "required": ["action_id"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "cancel" },
+                        "action_id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation", "action_id"]
                 },
                 {
                     "type": "object",
@@ -171,6 +222,10 @@ mod tests {
             actions: Arc::new(BackgroundActions::new()),
         };
         assert_eq!(tool.risk_level(&json!({})), RiskLevel::Safe);
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "cancel"})),
+            RiskLevel::Medium
+        );
     }
 
     #[test]
@@ -180,6 +235,7 @@ mod tests {
         };
         let schema = tool.input_schema();
         assert!(schema["properties"]["action_id"].is_object());
+        assert_eq!(schema["properties"]["operation"]["enum"], json!(["cancel"]));
         let filter = &schema["properties"]["status"]["enum"];
         assert!(filter.is_array());
     }
@@ -245,6 +301,7 @@ mod tests {
                 ActionsParams {
                     session_id: Some("ses-x".into()),
                     action_id: None,
+                    operation: None,
                     status: None,
                 },
                 CancellationToken::new(),
@@ -253,5 +310,24 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["actions"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn test_actions_tool_cancels_only_owned_running_action() {
+        let actions = Arc::new(BackgroundActions::new());
+        let tool = ActionsTool { actions };
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "cancel",
+                    "action_id": "act-nope",
+                    "_session_id": "ses-x"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["operation"], "cancel");
+        assert_eq!(result.output["cancelled"], false);
     }
 }

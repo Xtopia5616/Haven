@@ -1169,7 +1169,17 @@ impl LockGuard {
 fn lock_is_stale(path: &Path) -> anyhow::Result<bool> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.modified()?.elapsed()? > LOCK_STALE_AFTER),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        // A just-deleted Windows lock can remain delete-pending briefly;
+        // metadata then reports access denied even though the contender must
+        // simply retry the create_new operation.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            Ok(false)
+        }
         Err(error) => Err(error.into()),
     }
 }

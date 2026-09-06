@@ -4,9 +4,31 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ToolResult;
 
+const MASKED_ENV_VALUE: &str = "[masked]";
+
 pub struct EnvTool {
     /// Output cap (chars) for environment listings.
     pub max_output_chars: usize,
+}
+
+fn is_sensitive_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    [
+        "API_KEY",
+        "APIKEY",
+        "AUTH_KEY",
+        "AUTH_SECRET",
+        "AUTH_TOKEN",
+        "AUTHORIZATION",
+        "CLIENT_SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "PRIVATE_KEY",
+        "SECRET",
+        "TOKEN",
+    ]
+    .iter()
+    .any(|marker| upper.contains(marker))
 }
 
 /// Environment operation.
@@ -49,12 +71,17 @@ impl EnvTool {
                     .name
                     .ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
                 match env::var(&name) {
-                    Ok(val) => Ok(ToolResult::ok(
-                        serde_json::json!({"name": name, "value": val}),
-                    )),
+                    Ok(val) => {
+                        let masked = is_sensitive_env_name(&name);
+                        Ok(ToolResult::ok(serde_json::json!({
+                            "name": name,
+                            "value": if masked { MASKED_ENV_VALUE } else { &val },
+                            "masked": masked,
+                        })))
+                    }
                     Err(env::VarError::NotPresent) => Ok(ToolResult {
                         success: true,
-                        output: serde_json::json!({"name": name, "value": null}),
+                        output: serde_json::json!({"name": name, "value": null, "masked": false}),
                         error: None,
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::Succeeded,
@@ -74,9 +101,11 @@ impl EnvTool {
                 unsafe {
                     env::set_var(&name, &value);
                 }
-                Ok(ToolResult::ok(
-                    serde_json::json!({"set": true, "name": name, "value": value}),
-                ))
+                // Never echo a value back through the model-facing result.
+                Ok(ToolResult::ok(serde_json::json!({
+                    "set": true,
+                    "name": name,
+                })))
             }
             EnvOperation::Unset => {
                 let name = params
@@ -103,7 +132,7 @@ impl EnvTool {
                             .map(|p| k.to_ascii_uppercase().starts_with(p.as_str()))
                             .unwrap_or(true)
                     })
-                    .map(|(k, v)| serde_json::json!({"name": k, "value": v}))
+                    .map(|(k, _)| serde_json::json!({"name": k}))
                     .collect();
                 vars.sort_by(|a, b| {
                     a["name"]
@@ -172,6 +201,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_sensitive_env_name_detection() {
+        assert!(is_sensitive_env_name("OPENAI_API_KEY"));
+        assert!(is_sensitive_env_name("service_password"));
+        assert!(is_sensitive_env_name("MY_AUTH_TOKEN"));
+        assert!(!is_sensitive_env_name("HAVEN_TEST_MODE"));
+    }
+
+    #[tokio::test]
+    async fn test_env_get_masks_sensitive_value() {
+        let name = format!("{}_API_TOKEN", unique_var_name("MASK"));
+        unsafe {
+            env::set_var(&name, "do-not-leak");
+        }
+        let result = EnvTool::default()
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Get),
+                    name: Some(name.clone()),
+                    value: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["value"], MASKED_ENV_VALUE);
+        assert_eq!(result.output["masked"], true);
+        unsafe {
+            env::remove_var(&name);
+        }
+    }
+
     #[tokio::test]
     async fn test_env_get_missing_returns_null() {
         let name = unique_var_name("MISSING");
@@ -224,6 +285,7 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["set"], true);
+        assert!(result.output.get("value").is_none());
         assert_eq!(env::var(&name).unwrap(), "v1");
         unsafe {
             env::remove_var(&name);
@@ -284,7 +346,7 @@ mod tests {
         let vars = result.output["variables"].as_array().unwrap();
         assert!(!vars.is_empty());
         assert!(vars[0]["name"].as_str().is_some());
-        assert!(vars[0]["value"].as_str().is_some());
+        assert!(vars[0].get("value").is_none());
     }
 
     #[tokio::test]

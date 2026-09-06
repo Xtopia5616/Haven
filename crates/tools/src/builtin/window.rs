@@ -129,18 +129,20 @@ impl WindowTool {
                 Ok(with_operation(ToolResult::ok(fg), "foreground"))
             }
             WindowOperation::Focus => {
-                let t = title.ok_or_else(|| anyhow::anyhow!("title is required for focus"))?;
-                imp::focus_window_by_title(&t)?;
-                Ok(ToolResult::ok(
-                    serde_json::json!({"operation": "focus", "focused": t}),
-                ))
+                let target = title.as_deref().filter(|t| !t.trim().is_empty());
+                if target.is_none() && filter_pid.is_none() {
+                    anyhow::bail!("title or pid is required for focus");
+                }
+                imp::focus_window(target, filter_pid)?;
+                Ok(window_target_result("focus", target, filter_pid))
             }
             WindowOperation::Close => {
-                let t = title.ok_or_else(|| anyhow::anyhow!("title is required for close"))?;
-                imp::close_window_by_title(&t)?;
-                Ok(ToolResult::ok(
-                    serde_json::json!({"operation": "close", "closed": t}),
-                ))
+                let target = title.as_deref().filter(|t| !t.trim().is_empty());
+                if target.is_none() && filter_pid.is_none() {
+                    anyhow::bail!("title or pid is required for close");
+                }
+                imp::close_window(target, filter_pid)?;
+                Ok(window_target_result("close", target, filter_pid))
             }
             WindowOperation::Screenshot => {
                 let path = params
@@ -373,6 +375,21 @@ impl WindowTool {
     }
 }
 
+fn window_target_result(operation: &str, title: Option<&str>, pid: Option<u32>) -> ToolResult {
+    let mut output = serde_json::json!({"operation": operation});
+    if let Some(title) = title {
+        output[if operation == "focus" {
+            "focused"
+        } else {
+            "closed"
+        }] = serde_json::json!(title);
+    }
+    if let Some(pid) = pid {
+        output["pid"] = serde_json::json!(pid);
+    }
+    ToolResult::ok(output)
+}
+
 fn with_operation(mut result: ToolResult, operation: &str) -> ToolResult {
     if let Some(object) = result.output.as_object_mut() {
         object.insert("operation".into(), Value::String(operation.into()));
@@ -451,8 +468,20 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
+                    "properties": { "operation": { "const": "focus" }, "pid": { "type": "integer", "minimum": 1 } },
+                    "required": ["operation", "pid"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
                     "properties": { "operation": { "const": "close" }, "title": { "type": "string", "minLength": 1 } },
                     "required": ["operation", "title"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "close" }, "pid": { "type": "integer", "minimum": 1 } },
+                    "required": ["operation", "pid"]
                 },
                 {
                     "type": "object",
@@ -590,61 +619,52 @@ mod imp {
         }
     }
 
-    pub fn focus_window_by_title(title: &str) -> anyhow::Result<()> {
+    pub fn focus_window(title: Option<&str>, pid: Option<u32>) -> anyhow::Result<()> {
+        let hwnd = find_window(title, pid)?.ok_or_else(|| window_not_found(title, pid))?;
         unsafe {
-            let hwnd = find_window_by_title(title)?;
-            if hwnd.is_null() {
-                anyhow::bail!("no window found matching '{}'", title);
-            }
             SetForegroundWindow(hwnd);
-            Ok(())
         }
+        Ok(())
     }
 
-    pub fn close_window_by_title(title: &str) -> anyhow::Result<()> {
+    pub fn close_window(title: Option<&str>, pid: Option<u32>) -> anyhow::Result<()> {
+        let hwnd = find_window(title, pid)?.ok_or_else(|| window_not_found(title, pid))?;
         unsafe {
-            let hwnd = find_window_by_title(title)?;
-            if hwnd.is_null() {
-                anyhow::bail!("no window found matching '{}'", title);
-            }
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            Ok(())
+        }
+        Ok(())
+    }
+
+    fn find_window(title: Option<&str>, pid: Option<u32>) -> anyhow::Result<Option<HWND>> {
+        let windows = enumerate_windows(pid)?;
+        let window = windows.iter().find(|window| {
+            title
+                .map(|needle| {
+                    window["title"]
+                        .as_str()
+                        .map(|value| value.contains(needle))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        });
+        Ok(window
+            .and_then(|window| window["hwnd"].as_u64())
+            .map(|hwnd| hwnd as usize as HWND))
+    }
+
+    fn window_not_found(title: Option<&str>, pid: Option<u32>) -> anyhow::Error {
+        match (title, pid) {
+            (Some(title), Some(pid)) => {
+                anyhow::anyhow!("no window found matching title '{}' for pid {}", title, pid)
+            }
+            (Some(title), None) => anyhow::anyhow!("no window found matching '{}'", title),
+            (None, Some(pid)) => anyhow::anyhow!("no window found for pid {}", pid),
+            (None, None) => anyhow::anyhow!("a title or pid is required"),
         }
     }
 
-    unsafe fn find_window_by_title(substring: &str) -> anyhow::Result<HWND> {
-        let mut found: HWND = std::ptr::null_mut();
-        let substr_wide: Vec<u16> = substring.encode_utf16().chain(std::iter::once(0)).collect();
-
-        extern "system" fn search_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            unsafe {
-                let (found_ptr, substr_ptr) = *(lparam as *mut (*mut HWND, *const u16));
-                let Some(title) = visible_window_title(hwnd) else {
-                    return TRUE;
-                };
-
-                let substr = String::from_utf16_lossy(std::slice::from_raw_parts(substr_ptr, {
-                    let mut i = 0;
-                    while *substr_ptr.add(i) != 0 {
-                        i += 1;
-                    }
-                    i
-                }));
-
-                if title.contains(&substr) {
-                    *found_ptr = hwnd;
-                    return FALSE;
-                }
-                TRUE
-            }
-        }
-
-        let mut pair = (&mut found as *mut HWND, substr_wide.as_ptr());
-        unsafe {
-            EnumWindows(Some(search_callback), &mut pair as *mut _ as LPARAM);
-        }
-
-        Ok(found)
+    fn find_window_by_title(title: &str) -> anyhow::Result<HWND> {
+        find_window(Some(title), None)?.ok_or_else(|| window_not_found(Some(title), None))
     }
 
     pub fn any_title_contains(needle: &str) -> anyhow::Result<bool> {
@@ -929,7 +949,7 @@ mod imp {
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
         let target_hwnd: HWND = if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
-            let hwnd = unsafe { find_window_by_title(t.trim())? };
+            let hwnd = find_window_by_title(t.trim())?;
             if hwnd.is_null() {
                 anyhow::bail!("no window found matching '{}'", t);
             }
@@ -1004,7 +1024,7 @@ mod imp {
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
         let target_hwnd: HWND = if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
-            let hwnd = unsafe { find_window_by_title(t.trim())? };
+            let hwnd = find_window_by_title(t.trim())?;
             if hwnd.is_null() {
                 return Ok(false);
             }
@@ -1058,11 +1078,11 @@ mod imp {
         Ok(serde_json::json!({"available": false, "note": "window operations require Windows"}))
     }
 
-    pub fn focus_window_by_title(_title: &str) -> anyhow::Result<()> {
+    pub fn focus_window(_title: Option<&str>, _pid: Option<u32>) -> anyhow::Result<()> {
         anyhow::bail!("window operations require Windows")
     }
 
-    pub fn close_window_by_title(_title: &str) -> anyhow::Result<()> {
+    pub fn close_window(_title: Option<&str>, _pid: Option<u32>) -> anyhow::Result<()> {
         anyhow::bail!("window operations require Windows")
     }
 
@@ -1146,6 +1166,16 @@ mod tests {
                 .as_array()
                 .is_some()
         );
+        assert!(
+            tool()
+                .validate_input(&json!({"operation": "focus", "pid": 1}))
+                .is_ok()
+        );
+        assert!(
+            tool()
+                .validate_input(&json!({"operation": "close", "pid": 1}))
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -1221,7 +1251,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_window_execute_focus_requires_title() {
+    async fn test_window_execute_focus_requires_target() {
         let result = tool()
             .execute(json!({"operation": "focus"}), CancellationToken::new())
             .await;

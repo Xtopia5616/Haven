@@ -583,6 +583,7 @@ impl Default for FilesTool {
 pub enum FilesOperation {
     Read,
     Write,
+    CreateDir,
     Edit,
     Copy,
     Move,
@@ -738,6 +739,15 @@ impl FilesTool {
                 }
                 Ok(ToolResult::ok(
                     serde_json::json!({"written": true, "path": path}),
+                ))
+            }
+            FilesOperation::CreateDir => {
+                tokio::fs::create_dir_all(&path).await?;
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                Ok(ToolResult::ok(
+                    serde_json::json!({"created": true, "path": path}),
                 ))
             }
             FilesOperation::Edit => {
@@ -923,13 +933,15 @@ impl Tool for FilesTool {
         "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, edit, copy, move, delete, list, summarize, or search files (text files; images via vision)".into()
+        "Read, write, create directories, edit, copy, move, delete, list, summarize, or search files (text files; images via vision)".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("delete") => RiskLevel::High,
-            Some("edit") | Some("copy") | Some("write") | Some("move") => RiskLevel::Medium,
+            Some("edit") | Some("copy") | Some("write") | Some("create_dir") | Some("move") => {
+                RiskLevel::Medium
+            }
             Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
             _ => RiskLevel::Low,
         }
@@ -951,7 +963,7 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; all other operations use path." }
+                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; all other operations use path." }
             },
             "required": ["operation"],
             "oneOf": [
@@ -978,6 +990,15 @@ impl Tool for FilesTool {
                         "content": { "type": "string", "description": "Complete file content; an empty string is allowed" }
                     },
                     "required": ["operation", "path", "content"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "create_dir" },
+                        "path": { "type": "string", "minLength": 1, "description": "Directory path to create, including missing parents" }
+                    },
+                    "required": ["operation", "path"]
                 },
                 {
                     "type": "object",
@@ -1375,6 +1396,10 @@ mod tests {
             RiskLevel::Medium
         );
         assert_eq!(
+            FilesTool::default().risk_level(&json!({"operation": "create_dir"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(
             FilesTool::default().risk_level(&json!({"operation": "edit"})),
             RiskLevel::Medium
         );
@@ -1417,13 +1442,14 @@ mod tests {
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(ops.contains(&"read"));
         assert!(ops.contains(&"write"));
+        assert!(ops.contains(&"create_dir"));
         assert!(ops.contains(&"edit"));
         assert!(ops.contains(&"copy"));
         assert!(ops.contains(&"move"));
         assert!(ops.contains(&"delete"));
         assert!(ops.contains(&"list"));
         assert!(ops.contains(&"search"));
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 7);
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 8);
     }
 
     #[test]
@@ -1920,6 +1946,22 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.output["truncated"], true);
         assert_eq!(result.output["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_create_dir() {
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp.path().join("one").join("two");
+        let result = FilesTool::default()
+            .execute(
+                json!({"operation": "create_dir", "path": nested.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["created"], true);
+        assert!(nested.is_dir());
     }
 
     #[tokio::test]

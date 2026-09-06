@@ -230,6 +230,7 @@ pub fn canonical_legacy_permission_key(key: &str) -> Option<String> {
 /// Other tools (MCP/skills/arbitrary args) use the bare tool name so a random
 /// `operation` field in args cannot fragment grants.
 const ROUTING_PARAM_TOOLS: &[&str] = &[
+    "actions",
     "files",
     "process",
     "window",
@@ -238,9 +239,14 @@ const ROUTING_PARAM_TOOLS: &[&str] = &[
     "input",
     "audio",
     "memory",
-    "messaging",
-    "haven",
+    "agent",
     "schedule",
+    "haven_diagnostics",
+    "haven_config",
+    "haven_skills",
+    "haven_tools",
+    "haven_mcp",
+    "haven_session_diagnostics",
 ];
 
 /// Default `operation` when a routing tool omits it — must match execution
@@ -1324,6 +1330,21 @@ mod tests {
         assert_eq!(
             permission_key("schedule", &serde_json::json!({"operation": "set"})),
             "schedule:set"
+        );
+        assert_eq!(
+            permission_key("actions", &serde_json::json!({"operation": "cancel"})),
+            "actions:cancel"
+        );
+        assert_eq!(
+            permission_key("agent", &serde_json::json!({"operation": "spawn"})),
+            "agent:spawn"
+        );
+        assert_eq!(
+            permission_key(
+                "haven_config",
+                &serde_json::json!({"operation": "logs_level"})
+            ),
+            "haven_config:logs_level"
         );
         assert_eq!(
             permission_key(
