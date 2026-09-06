@@ -373,7 +373,7 @@
 		{/each}
 	</div>
 
-	<div class="resource-toolbar md-toolbar" role="search" aria-label="筛选工具资源">
+	<div class="resource-toolbar workspace-filter-bar" role="search" aria-label="筛选工具资源">
 		<label class="resource-search">
 			<span class="sr-only">搜索工具资源</span>
 			<input
@@ -396,7 +396,7 @@
 				onChange={handleEnabledFilterChange}
 			/>
 		</div>
-		<span class="resource-count" aria-live="polite">{activeResourceCount} 项</span>
+		<span class="resource-count md-chip" aria-live="polite">{activeResourceCount} 项</span>
 	</div>
 
 	{#if activeTab === 'builtin'}
@@ -506,10 +506,6 @@
 		margin-bottom: var(--md-sys-space-2xl);
 	}
 	.resource-toolbar {
-		display: flex;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: var(--md-comp-toolbar-gap);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.resource-search {
@@ -521,10 +517,8 @@
 	}
 	.resource-count {
 		flex: 0 0 auto;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
 		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 	}
 	.section {
 		background: var(--md-sys-color-surface-container-low);
@@ -568,12 +562,15 @@
 		gap: var(--md-sys-space-sm);
 	}
 	.toolbar-actions--paired {
-		flex: 0 1 30%;
+		flex: 0 0 auto;
 	}
 	.toolbar-actions--paired :global(.md-btn) {
 		flex: 1 1 0;
 		min-width: 0;
 		white-space: nowrap;
+	}
+	.toolbar-actions--paired :global(.refresh-button) {
+		flex: 0 0 var(--md-comp-refresh-button-width);
 	}
 	.sr-only {
 		position: absolute;
@@ -606,6 +603,9 @@
 		}
 		.toolbar-actions--paired {
 			flex: 0 0 100%;
+		}
+		.toolbar-actions--paired :global(.refresh-button) {
+			flex: 1 1 0;
 		}
 		.toolbar-actions :global(.md-btn) {
 			flex: 1 1 0;

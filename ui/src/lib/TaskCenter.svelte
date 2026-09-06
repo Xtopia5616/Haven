@@ -124,7 +124,7 @@
 		</div>
 	</header>
 
-	<div class="task-toolbar md-toolbar" role="search">
+	<div class="task-toolbar workspace-filter-bar" role="search">
 		<label class="task-search">
 			<span class="sr-only">搜索任务</span>
 			<input class="md-input" type="search" placeholder="搜索任务或会话" bind:value={query} />
@@ -146,12 +146,12 @@
 	</div>
 
 	{#if taskRows.length === 0}
-		<div class="task-empty md-card" data-state="empty">
-			<span class="task-empty-icon" aria-hidden="true">✓</span>
-			<h2>暂无任务</h2>
-			<p>发起一段对话或安排定时任务后，进度和结果会显示在这里。</p>
-			<MaterialButton variant="filled" label="开始新会话" onclick={() => onNewSession?.()} />
-		</div>
+		<AsyncState
+			title="暂无任务"
+			message="发起一段对话或安排定时任务后，进度和结果会显示在这里。"
+			actionLabel="开始新会话"
+			onAction={() => onNewSession?.()}
+		/>
 	{:else if filteredRows.length === 0}
 		<AsyncState
 			title="没有匹配的任务"
@@ -164,25 +164,35 @@
 		/>
 	{:else}
 		<div class="task-layout">
-			<div class="task-list" aria-label="任务列表">
-				{#each filteredRows as row (row.id)}
-					<button
-						class="task-row"
-						class:selected={selectedRow?.id === row.id}
-						type="button"
-						onclick={() => selectRow(row)}
-					>
-						<span class="task-row-indicator" data-tone={rowTone(row)} aria-hidden="true"
-						></span>
-						<span class="task-row-main">
-							<strong>{row.title}</strong>
-							<span>{row.subtitle}</span>
-						</span>
-						<span class="task-row-status" data-tone={rowTone(row)}
-							>{rowStatus(row)}</span
+			<div class="task-list-panel">
+				<div class="task-list-heading">
+					<div>
+						<h2>任务列表</h2>
+						<span class="task-list-count">{filteredRows.length} 项</span>
+					</div>
+					<span class="task-list-hint">选择一项查看详情</span>
+				</div>
+				<div class="task-list" aria-label="任务列表">
+					{#each filteredRows as row (row.id)}
+						<button
+							class="task-row"
+							class:selected={selectedRow?.id === row.id}
+							aria-pressed={selectedRow?.id === row.id}
+							type="button"
+							onclick={() => selectRow(row)}
 						>
-					</button>
-				{/each}
+							<span class="task-row-indicator" data-tone={rowTone(row)} aria-hidden="true"
+							></span>
+							<span class="task-row-main">
+								<strong>{row.title}</strong>
+								<span>{row.subtitle}</span>
+							</span>
+							<span class="task-row-status" data-tone={rowTone(row)}
+								>{rowStatus(row)}</span
+							>
+						</button>
+					{/each}
+				</div>
 			</div>
 
 			{#if selectedRow}
@@ -242,7 +252,7 @@
 					<div class="task-actions">
 						{#if selectedRow.sessionId}
 							<MaterialButton
-								variant="outlined"
+								variant="filled"
 								label="打开来源会话"
 								onclick={() => onOpenSession?.(selectedRow.sessionId)}
 							/>
@@ -284,10 +294,6 @@
 		container-type: inline-size;
 	}
 	.task-toolbar {
-		display: flex;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: var(--md-comp-toolbar-gap);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.task-search {
@@ -300,15 +306,53 @@
 	}
 	.task-layout {
 		display: grid;
-		grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr);
+		grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.35fr);
 		gap: var(--md-sys-space-lg);
 		align-items: start;
+	}
+	.task-list-panel {
+		min-width: 0;
+		padding: var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-large);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.task-list-heading {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+		padding: 0 var(--md-sys-space-xs) var(--md-sys-space-md);
+	}
+	.task-list-heading > div {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-sm);
+		min-width: 0;
+	}
+	.task-list-heading h2 {
+		margin: 0;
+		font-size: var(--md-sys-typescale-title-medium-size);
+		line-height: var(--md-sys-typescale-title-medium-line-height);
+	}
+	.task-list-count,
+	.task-list-hint {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.task-list-hint {
+		white-space: nowrap;
 	}
 	.task-list {
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
 		min-width: 0;
+		max-height: min(520px, calc(100vh - 320px));
+		overflow-y: auto;
+		scrollbar-gutter: stable;
+		padding-right: var(--md-sys-space-xs);
 	}
 	.task-row {
 		display: grid;
@@ -401,6 +445,8 @@
 	}
 	.task-detail {
 		min-width: 0;
+		position: sticky;
+		top: var(--md-sys-space-lg);
 	}
 	.task-detail-heading {
 		display: flex;
@@ -486,32 +532,6 @@
 	:global(.task-delete) {
 		color: var(--md-sys-color-error);
 	}
-	.task-empty {
-		display: grid;
-		justify-items: center;
-		gap: var(--md-sys-space-md);
-		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
-		text-align: center;
-	}
-	.task-empty h2 {
-		font-size: var(--md-sys-typescale-headline-medium-size);
-		line-height: var(--md-sys-typescale-headline-medium-line-height);
-	}
-	.task-empty p {
-		max-width: 420px;
-		color: var(--md-sys-color-on-surface-variant);
-		overflow-wrap: anywhere;
-	}
-	.task-empty-icon {
-		display: grid;
-		place-items: center;
-		width: 48px;
-		height: 48px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
-		font-size: 24px;
-	}
 	.sr-only {
 		position: absolute;
 		width: 1px;
@@ -527,8 +547,14 @@
 		.task-layout {
 			grid-template-columns: 1fr;
 		}
+		.task-list {
+			max-height: none;
+			overflow: visible;
+			padding-right: 0;
+		}
 		.task-detail {
 			order: -1;
+			position: static;
 		}
 	}
 	@container (max-width: 520px) {
@@ -544,6 +570,14 @@
 		.task-actions {
 			flex-direction: column;
 			align-items: stretch;
+		}
+		.task-list-panel {
+			padding: var(--md-sys-space-sm);
+		}
+		.task-list-heading {
+			align-items: flex-start;
+			flex-direction: column;
+			padding-inline: var(--md-sys-space-xs);
 		}
 		.task-actions :global(.md-btn) {
 			width: 100%;

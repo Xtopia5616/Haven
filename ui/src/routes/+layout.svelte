@@ -1030,7 +1030,7 @@
 					{:else if tab.id === 'memory'}
 						<div class="page-shell">
 							{#if lazyViewComponents.memory}
-								<TabComponent />
+								<TabComponent onNewSession={startNewSessionFromTasks} />
 							{:else if lazyViewStates.memory === 'error'}
 								<div class="lazy-view-placeholder" role="alert">
 									<span>记忆页面暂时无法加载</span>

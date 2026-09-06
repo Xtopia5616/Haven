@@ -29,6 +29,8 @@
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
 
+	let { onNewSession = () => {} } = $props();
+
 	/** @type {MemorySession[]} */
 	let sessions = $state([]);
 	let searchQuery = $state('');
@@ -487,12 +489,18 @@
 						<MaterialButton variant="text" label="取消" onclick={cancelSelectMode} />
 					{:else}
 						<MaterialButton
-							variant="outlined"
+							variant="filled"
 							className="memory-header-action"
-							label="导出"
-							onclick={enterSelectMode}
+							label="新建会话"
+							onclick={() => onNewSession?.()}
 						/>
 						{#if sessions.length > 0}
+							<MaterialButton
+								variant="outlined"
+								className="memory-header-action"
+								label="导出"
+								onclick={enterSelectMode}
+							/>
 							<MaterialButton
 								variant="danger"
 								className="memory-header-action"
@@ -537,6 +545,7 @@
 			onToggleSelectAll={toggleSelectAll}
 			onToggleSelect={toggleSelect}
 			onResume={resumeSession}
+			onNewSession={onNewSession}
 			onStartEdit={startEdit}
 			onRenameValueChange={handleRenameValueChange}
 			onRenameKeydown={handleRenameKeydown}

@@ -25,6 +25,7 @@
 		onToggleSelectAll = () => {},
 		onToggleSelect = () => {},
 		onResume = () => {},
+		onNewSession = () => {},
 		onStartEdit = () => {},
 		onRenameValueChange = () => {},
 		onRenameKeydown = () => {},
@@ -36,6 +37,21 @@
 		statusVariant = () => 'neutral',
 		formatMessageTime = (/** @type {string} */ value) => value,
 	} = $props();
+	/** @type {Record<string, string>} */
+	const statusLabels = {
+		pending: '排队中',
+		running: '运行中',
+		paused: '已暂停',
+		paused_awaiting_answer: '等待回答',
+		paused_awaiting_confirm: '等待确认',
+		completed: '已完成',
+		error: '错误',
+		failed: '失败',
+	};
+	/** @param {string} status */
+	function sessionStatusLabel(status) {
+		return statusLabels[status] || status;
+	}
 	/** @param {string} value */
 	function handleStatusChange(value) {
 		onStatusFilterChange(value);
@@ -43,10 +59,11 @@
 </script>
 
 <div class="history-view">
-	<div class="filter-bar md-toolbar">
+	<div class="filter-bar workspace-filter-bar" role="search" aria-label="筛选会话">
 		<input
 			class="md-input"
 			type="text"
+			aria-label="搜索会话"
 			placeholder="搜索会话"
 			value={searchQuery}
 			oninput={(event) => {
@@ -58,6 +75,7 @@
 		<div class="filter-controls">
 			<MaterialSelect
 				value={statusFilter}
+				ariaLabel="会话状态"
 				options={statusOptions}
 				onChange={handleStatusChange}
 			/>
@@ -89,6 +107,8 @@
 			message={loading
 				? '会话记录加载完成后会显示在这里。'
 				: '开始一段对话后，会话记录会自动保存在这里。'}
+			actionLabel={loading ? '' : '开始新会话'}
+			onAction={onNewSession}
 		/>
 	{:else}
 		<div class="session-list">
@@ -108,10 +128,10 @@
 									></div>
 								</div>
 								<div class="session-title-row">
-									<span class="session-title">{displayTitle(session)}</span
-									><MaterialBadge
-										variant={statusVariant(session.status)}
-										text={session.status}
+										<span class="session-title">{displayTitle(session)}</span
+										><MaterialBadge
+											variant={statusVariant(session.status)}
+											text={sessionStatusLabel(session.status)}
 									/>
 								</div>
 							</div>
@@ -189,7 +209,7 @@
 								{/if}
 								<MaterialBadge
 									variant={statusVariant(session.status)}
-									text={session.status}
+									text={sessionStatusLabel(session.status)}
 								/>
 							</div>
 							{#if session.transcript}<div class="session-message">
@@ -198,14 +218,22 @@
 							<div class="session-meta">
 								<span class="meta-date"
 									>{formatMessageTime(session.created_at)}</span
-								><MaterialButton
-									variant="text"
-									className="md-btn--xs delete-btn-meta"
-									label="删除"
-									onclick={() => {
-										onDeleteRequest(session);
-									}}
-								/>
+								><span class="session-actions">
+									<MaterialButton
+										variant="tonal"
+										className="open-session-btn"
+										label="打开"
+										onclick={() => onResume(session)}
+									/>
+									<MaterialButton
+										variant="text"
+										className="delete-btn-meta"
+										label="删除"
+										onclick={() => {
+											onDeleteRequest(session);
+										}}
+									/>
+								</span>
 							</div>
 						</div>
 					</div>
@@ -225,19 +253,7 @@
 
 <style>
 	.filter-bar {
-		display: flex;
-		align-items: center;
-		min-width: 0;
-		gap: var(--md-comp-toolbar-gap);
 		margin-bottom: var(--md-sys-space-lg);
-		padding: var(--md-sys-space-sm);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		background: var(--md-sys-color-surface-container-low);
-	}
-	.filter-bar > .md-input {
-		flex: 1 1 auto;
-		min-width: 0;
 	}
 	.filter-controls {
 		display: flex;
@@ -276,7 +292,7 @@
 	.session-list {
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-md);
+		gap: var(--md-sys-space-sm);
 	}
 	.session-item {
 		background: var(--md-sys-color-surface-container-low);
@@ -306,7 +322,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-lg);
+		padding: var(--md-sys-space-md);
 		cursor: pointer;
 	}
 	.session-top-row,
@@ -339,16 +355,17 @@
 		opacity: 1;
 	}
 	.title-edit-icon {
-		opacity: 0;
+		opacity: 0.45;
 		flex-shrink: 0;
 		color: var(--md-sys-color-on-surface-variant);
-		transition: opacity 0.15s;
+		transition: opacity var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
 	}
 	.title-input {
 		font-size: var(--md-sys-typescale-body-medium-size);
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-body-medium-line-height);
-		padding: 2px 6px;
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		width: 280px;
 	}
 	.session-message {
@@ -371,13 +388,19 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		opacity: 0.75;
 	}
+	.session-actions {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		margin-left: auto;
+	}
+	.session-actions :global(.md-btn) {
+		min-width: 0;
+	}
 	.meta-date {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	:global(.delete-btn-meta) {
-		margin-left: auto;
 	}
 	.session-item-btn {
 		width: 100%;
@@ -434,6 +457,13 @@
 		}
 		.session-item-main {
 			padding: var(--md-sys-space-md);
+		}
+		.session-meta {
+			flex-wrap: wrap;
+		}
+		.session-actions {
+			width: 100%;
+			margin-left: 0;
 		}
 	}
 </style>

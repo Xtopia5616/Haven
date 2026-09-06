@@ -862,6 +862,25 @@ select.md-select {
 	margin-left: auto;
 }
 
+/* Shared surface for page-level search and filter controls. Keeping the
+ * container geometry in one place prevents the task, history, and tools
+ * workspaces from looking like separate products. */
+.workspace-filter-bar {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	gap: var(--md-comp-toolbar-gap);
+	padding: var(--md-sys-space-sm);
+	border: 1px solid var(--md-sys-color-outline-variant);
+	border-radius: var(--md-sys-shape-large);
+	background: var(--md-sys-color-surface-container-low);
+}
+
+.workspace-filter-bar > .md-input {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
 @media (max-width: 640px) {
 	.page-heading {
 		align-items: flex-start;
@@ -870,6 +889,17 @@ select.md-select {
 		width: 100%;
 		justify-content: flex-start;
 		margin-left: 0;
+	}
+}
+
+@media (max-width: 700px) {
+	.workspace-filter-bar {
+		align-items: stretch;
+		flex-direction: column;
+	}
+
+	.workspace-filter-bar > .md-input {
+		flex: none;
 	}
 }
 
