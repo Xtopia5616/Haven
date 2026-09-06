@@ -468,36 +468,43 @@
 </script>
 
 <div class="memory-page">
-	<div class="header-row">
-		<h1>记忆</h1>
-		{#if activeTab === 'sessions'}<span class="count-badge">已显示 {totalCount} 条</span>
-			<div class="header-actions">
-				{#if selectMode}
-					<MaterialButton
-						variant="filled"
-						label={`导出选中（${selectedIds.size}）`}
-						onclick={exportSelected}
-						disabled={selectedIds.size === 0}
-					/>
-					<MaterialButton variant="text" label="取消" onclick={cancelSelectMode} />
-				{:else}
-					<MaterialButton
-						variant="outlined"
-						className="memory-header-action"
-						label="导出"
-						onclick={enterSelectMode}
-					/>
-					{#if sessions.length > 0}
+	<header class="page-heading">
+		<div class="page-heading-content">
+			<h1>记忆</h1>
+			<p>查看和管理历史会话与长期记忆。</p>
+		</div>
+		{#if activeTab === 'sessions'}
+			<div class="page-heading-actions">
+				<span class="count-badge">已显示 {totalCount} 条</span>
+				<div class="header-actions">
+					{#if selectMode}
 						<MaterialButton
-							variant="danger"
-							className="memory-header-action"
-							label="清空会话"
-							onclick={() => (showClearDialog = true)}
+							variant="filled"
+							label={`导出选中（${selectedIds.size}）`}
+							onclick={exportSelected}
+							disabled={selectedIds.size === 0}
 						/>
+						<MaterialButton variant="text" label="取消" onclick={cancelSelectMode} />
+					{:else}
+						<MaterialButton
+							variant="outlined"
+							className="memory-header-action"
+							label="导出"
+							onclick={enterSelectMode}
+						/>
+						{#if sessions.length > 0}
+							<MaterialButton
+								variant="danger"
+								className="memory-header-action"
+								label="清空会话"
+								onclick={() => (showClearDialog = true)}
+							/>
+						{/if}
 					{/if}
-				{/if}
-			</div>{/if}
-	</div>
+				</div>
+			</div>
+		{/if}
+	</header>
 	<div class="md-tabs memory-tabs" role="tablist">
 		{#each memoryTabs as tab}<button
 				class="md-tab"
@@ -648,28 +655,10 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 	}
-	.header-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-md);
-		margin-bottom: var(--md-sys-space-xl);
-	}
-	h1 {
-		font-family: var(--md-ref-typeface-brand);
-		font-size: var(--md-sys-typescale-headline-large-size);
-		font-weight: 700;
-		letter-spacing: 0;
-		line-height: var(--md-sys-typescale-headline-large-line-height);
-		color: var(--md-sys-color-on-surface);
-		margin: 0;
-	}
 	.header-actions {
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
-		margin-left: auto;
 	}
 	.header-actions :global(.memory-header-action) {
 		flex: 0 0 112px;
@@ -683,8 +672,7 @@
 		background: var(--md-sys-color-surface-container);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-left: auto;
-		margin-right: var(--md-sys-space-md);
+		white-space: nowrap;
 	}
 	.memory-tabs {
 		margin-bottom: var(--md-sys-space-xl);
@@ -739,16 +727,8 @@
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	@media (max-width: 700px) {
-		.header-row {
-			align-items: flex-start;
-			gap: var(--md-sys-space-sm);
-		}
-		.count-badge {
-			margin-left: 0;
-		}
 		.header-actions {
 			width: 100%;
-			margin-left: 0;
 		}
 		.header-actions :global(.md-btn) {
 			flex: 1 1 0;

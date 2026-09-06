@@ -114,12 +114,14 @@
 </script>
 
 <section class="task-center" aria-labelledby="task-center-title">
-	<header class="page-heading task-heading">
-		<div>
+	<header class="page-heading">
+		<div class="page-heading-content">
 			<h1 id="task-center-title">任务中心</h1>
 			<p>统一查看会话、后台任务、定时任务和已完成记录。</p>
 		</div>
-		<MaterialButton variant="outlined" label="新建会话" onclick={() => onNewSession?.()} />
+		<div class="page-heading-actions">
+			<MaterialButton variant="outlined" label="新建会话" onclick={() => onNewSession?.()} />
+		</div>
 	</header>
 
 	<div class="task-toolbar md-toolbar" role="search">
@@ -280,13 +282,6 @@
 		min-width: 0;
 		min-height: 100%;
 		container-type: inline-size;
-	}
-	.task-heading {
-		align-items: center;
-		flex-wrap: wrap;
-	}
-	.task-heading > div {
-		min-width: 0;
 	}
 	.task-toolbar {
 		display: flex;
@@ -568,12 +563,13 @@
 		}
 	}
 	@media (max-width: 455px) {
-		.task-heading,
+		.page-heading,
 		.task-toolbar {
 			align-items: stretch;
 			flex-direction: column;
 		}
-		.task-heading > div,
+		.page-heading-content,
+		.page-heading-actions,
 		.task-search,
 		.task-filter {
 			width: 100%;
@@ -581,7 +577,7 @@
 		.task-search {
 			flex: 0 1 auto;
 		}
-		.task-heading :global(.md-btn) {
+		.page-heading-actions :global(.md-btn) {
 			width: 100%;
 		}
 	}

@@ -353,7 +353,7 @@
 
 <div class="tools-page">
 	<div class="page-heading">
-		<div>
+		<div class="page-heading-content">
 			<h1>工具</h1>
 			<p>管理 Haven 可调用的工具、MCP 服务与技能。</p>
 		</div>
@@ -501,14 +501,6 @@
 		width: 100%;
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
-	}
-	h1 {
-		font-family: var(--md-ref-typeface-brand);
-		font-size: var(--md-sys-typescale-headline-large-size);
-		font-weight: 700;
-		letter-spacing: 0;
-		line-height: var(--md-sys-typescale-headline-large-line-height);
-		color: var(--md-sys-color-on-surface);
 	}
 	.md-tabs {
 		margin-bottom: var(--md-sys-space-2xl);

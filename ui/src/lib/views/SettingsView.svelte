@@ -836,7 +836,7 @@
 
 <div class="settings-page">
 	<div class="page-heading">
-		<div>
+		<div class="page-heading-content">
 			<h1>设置</h1>
 			<p>调整 Haven 的模型、语音、性能与安全行为。</p>
 		</div>
@@ -1001,14 +1001,6 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: var(--md-sys-space-xl);
-	}
-	.settings-page h1 {
-		font-family: var(--md-ref-typeface-brand);
-		font-size: var(--md-sys-typescale-headline-large-size);
-		font-weight: 700;
-		letter-spacing: 0;
-		line-height: var(--md-sys-typescale-headline-large-line-height);
-		color: var(--md-sys-color-on-surface);
 	}
 	.settings-tabs {
 		margin-bottom: var(--md-sys-space-2xl);
