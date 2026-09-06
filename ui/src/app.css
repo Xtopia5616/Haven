@@ -223,7 +223,7 @@
 	--md-comp-toolbar-height: var(--md-comp-button-small-height);
 	--md-comp-toolbar-gap: var(--md-sys-space-sm);
 	--md-comp-titlebar-height: 56px;
-	--md-comp-status-height: var(--md-comp-titlebar-height);
+	--md-comp-status-height: var(--md-comp-button-small-height);
 	--md-comp-status-padding-inline: var(--md-sys-space-md);
 	--md-comp-status-radius: var(--md-sys-shape-medium);
 	--md-comp-textfield-container-height: 40px;
@@ -233,7 +233,7 @@
 	--md-comp-tab-indicator-height: 3px;
 	--md-comp-tab-indicator-min-width: 24px;
 	--md-comp-tab-indicator-bottom: 3px;
-	--md-comp-icon-button-size: var(--md-comp-toolbar-height);
+	--md-comp-icon-button-size: 40px;
 	--md-comp-icon-button-compact-size: 32px;
 	--md-comp-icon-button-touch: 48px;
 	--md-sys-icon-size: 20px;

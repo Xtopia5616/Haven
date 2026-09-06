@@ -40,7 +40,6 @@
 		<div class="titlebar-right">
 			{@render status?.()}
 			<MaterialIconButton
-				className="theme-toggle"
 				size="toolbar"
 				variant="ghost"
 				onclick={() => onToggleTheme?.()}
@@ -118,7 +117,8 @@
 	.titlebar-logo {
 		display: inline-flex;
 		align-items: center;
-		padding: var(--md-sys-space-2xs) var(--md-sys-space-xs);
+		height: var(--md-comp-toolbar-height);
+		padding: 0 var(--md-sys-space-xs);
 		border: 0;
 		border-radius: var(--md-sys-shape-medium);
 		background: transparent;
@@ -144,12 +144,6 @@
 		display: block;
 		width: 18px;
 		height: 18px;
-	}
-	:global(.theme-toggle) {
-		width: var(--md-comp-titlebar-height);
-		height: var(--md-comp-titlebar-height);
-		min-width: var(--md-comp-titlebar-height);
-		min-height: var(--md-comp-titlebar-height);
 	}
 	.content {
 		flex: 1;
