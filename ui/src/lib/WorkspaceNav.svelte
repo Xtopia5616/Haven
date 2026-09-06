@@ -1,15 +1,77 @@
 <script>
+	import { onMount, tick } from 'svelte';
+
 	let { tabs = [], activeTab = 'chat', onNavigate = () => {} } = $props();
+	/** @type {HTMLDivElement | undefined} */
+	let navElement;
+	/** @type {Record<string, HTMLButtonElement>} */
+	let tabElements = $state({});
+	let indicator = $state({ x: 0, width: 24, visible: false });
+	/** @type {ResizeObserver | undefined} */
+	let resizeObserver;
+
+	function updateIndicator() {
+		const activeElement = tabElements[activeTab];
+		if (!navElement || !activeElement) return;
+
+		const navRect = navElement.getBoundingClientRect();
+		const tabRect = activeElement.getBoundingClientRect();
+		const width =
+			Number.parseFloat(
+				getComputedStyle(navElement).getPropertyValue('--md-comp-tab-indicator-min-width'),
+			) || 24;
+
+		if (tabRect.width <= 0) {
+			indicator.visible = false;
+			return;
+		}
+
+		indicator = {
+			x: tabRect.left - navRect.left + (tabRect.width - width) / 2,
+			width,
+			visible: true,
+		};
+	}
+
+	$effect(() => {
+		activeTab;
+		tabs;
+		void tick().then(updateIndicator);
+	});
+
+	onMount(() => {
+		const handleResize = () => updateIndicator();
+		window.addEventListener('resize', handleResize);
+		if (typeof ResizeObserver !== 'undefined' && navElement) {
+			const observer = new ResizeObserver(handleResize);
+			resizeObserver = observer;
+			observer.observe(navElement);
+			Object.values(tabElements).forEach((element) => observer.observe(element));
+		}
+		updateIndicator();
+
+		return () => {
+			window.removeEventListener('resize', handleResize);
+			resizeObserver?.disconnect();
+		};
+	});
 </script>
 
 <nav aria-label="工作区导航">
-	<div class="workspace-nav md-tabs" role="tablist">
+	<div
+		bind:this={navElement}
+		class="workspace-nav md-tabs"
+		class:workspace-nav--indicator-ready={indicator.visible}
+		style={`--md-tab-indicator-x: ${indicator.x}px; --md-tab-indicator-width: ${indicator.width}px;`}
+		role="tablist"
+	>
 		{#each tabs as tab (tab.id)}
 			<button
 				type="button"
 				id="workspace-tab-{tab.id}"
 				class="md-tab"
 				class:active={activeTab === tab.id}
+				bind:this={tabElements[tab.id]}
 				aria-selected={activeTab === tab.id}
 				aria-controls="workspace-tabpanel-{tab.id}"
 				role="tab"
@@ -84,5 +146,6 @@
 				<span>{tab.label}</span>
 			</button>
 		{/each}
+		<span class="workspace-nav__indicator" aria-hidden="true"></span>
 	</div>
 </nav>

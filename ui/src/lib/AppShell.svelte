@@ -189,6 +189,34 @@
 		display: flex;
 		flex-direction: column;
 	}
+	:global(.tab-view-surface) {
+		width: 100%;
+	}
+	:global(.content--chat .tab-view-surface) {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	:global(.tab-view-surface--entering) {
+		animation: haven-tab-surface-enter var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-decelerated) both;
+	}
+	@keyframes haven-tab-surface-enter {
+		from {
+			opacity: 0;
+			transform: translateY(6px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		:global(.tab-view-surface--entering) {
+			animation: none;
+		}
+	}
 	:global(.content:not(.content--chat) .page-shell) {
 		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
 		min-width: 0;

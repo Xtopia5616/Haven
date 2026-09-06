@@ -126,13 +126,28 @@
 	// stale ?tab=chat and mis-fires the leave-settings bounce (settings
 	// appears unopenable; other tabs self-heal when the URL catches up).
 	let applyingTab = false;
+	// Keep-alive views remain mounted, so this separate state replays the short
+	// entry motion each time a workspace is shown without resetting its data.
+	let enteringTab = /** @type {string | null} */ ($state(null));
+
+	/** @param {string} id */
+	function activateTab(id) {
+		activeTab = id;
+		visited[id] = true;
+		enteringTab = id;
+		loadTabView(id);
+	}
+
+	/** @param {string} id @param {Event} event */
+	function finishTabEntry(id, event) {
+		if (event.target !== event.currentTarget || enteringTab !== id) return;
+		enteringTab = null;
+	}
 
 	/** @param {string} id */
 	function applyTab(id) {
 		applyingTab = true;
-		activeTab = id;
-		visited[id] = true;
-		loadTabView(id);
+		activateTab(id);
 		void goto('/?tab=' + id, { replaceState: true }).finally(() => {
 			applyingTab = false;
 		});
@@ -320,9 +335,7 @@
 				});
 			return;
 		}
-		activeTab = t;
-		visited[t] = true;
-		loadTabView(t);
+		activateTab(t);
 	});
 
 	/** @param {object} patch */
@@ -976,15 +989,30 @@
 				{#if visited[tab.id]}
 					{@const TabComponent = lazyViewComponents[tab.id]}
 					{#if tab.id === 'chat'}
-						<div class="page-shell">
+						<div
+							class="page-shell tab-view-surface"
+							class:tab-view-surface--entering={enteringTab === tab.id}
+							onanimationend={(event) => finishTabEntry(tab.id, event)}
+						>
 							{@render children()}
 						</div>
 					{:else if tab.id === 'tools'}
 						<div class="page-shell">
 							{#if lazyViewComponents.tools}
-								<TabComponent />
+								<div
+									class="tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								>
+									<TabComponent />
+								</div>
 							{:else if lazyViewStates.tools === 'error'}
-								<div class="lazy-view-placeholder" role="alert">
+								<div
+									class="lazy-view-placeholder tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+									role="alert"
+								>
 									<span>工具页面暂时无法加载</span>
 									<MaterialButton
 										variant="outlined"
@@ -999,23 +1027,34 @@
 					{:else if tab.id === 'tasks'}
 						<div class="page-shell">
 							{#if lazyViewComponents.tasks}
-								<TabComponent
-									{runningSessions}
-									{runningBackgroundActions}
-									{pendingScheduledActions}
-									{completedActions}
-									{actionStatusLabel}
-									{sessionTitleFor}
-									{actionDuration}
-									{scheduledActionCountdown}
-									{formatHistoryTime}
-									onOpenSession={openTaskSession}
-									onCancel={handleCancelAction}
-									onDeleteHistory={handleDeleteHistory}
-									onNewSession={startNewSessionFromTasks}
-								/>
+								<div
+									class="tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								>
+									<TabComponent
+										{runningSessions}
+										{runningBackgroundActions}
+										{pendingScheduledActions}
+										{completedActions}
+										{actionStatusLabel}
+										{sessionTitleFor}
+										{actionDuration}
+										{scheduledActionCountdown}
+										{formatHistoryTime}
+										onOpenSession={openTaskSession}
+										onCancel={handleCancelAction}
+										onDeleteHistory={handleDeleteHistory}
+										onNewSession={startNewSessionFromTasks}
+									/>
+								</div>
 							{:else if lazyViewStates.tasks === 'error'}
-								<div class="lazy-view-placeholder" role="alert">
+								<div
+									class="lazy-view-placeholder tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+									role="alert"
+								>
 									<span>任务中心暂时无法加载</span>
 									<MaterialButton
 										variant="outlined"
@@ -1030,9 +1069,20 @@
 					{:else if tab.id === 'memory'}
 						<div class="page-shell">
 							{#if lazyViewComponents.memory}
-								<TabComponent onNewSession={startNewSessionFromTasks} />
+								<div
+									class="tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								>
+									<TabComponent onNewSession={startNewSessionFromTasks} />
+								</div>
 							{:else if lazyViewStates.memory === 'error'}
-								<div class="lazy-view-placeholder" role="alert">
+								<div
+									class="lazy-view-placeholder tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+									role="alert"
+								>
 									<span>记忆页面暂时无法加载</span>
 									<MaterialButton
 										variant="outlined"
@@ -1047,9 +1097,20 @@
 					{:else if tab.id === 'settings'}
 						<div class="page-shell">
 							{#if lazyViewComponents.settings}
-								<TabComponent />
+								<div
+									class="tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								>
+									<TabComponent />
+								</div>
 							{:else if lazyViewStates.settings === 'error'}
-								<div class="lazy-view-placeholder" role="alert">
+								<div
+									class="lazy-view-placeholder tab-view-surface"
+									class:tab-view-surface--entering={enteringTab === tab.id}
+									onanimationend={(event) => finishTabEntry(tab.id, event)}
+									role="alert"
+								>
 									<span>设置页面暂时无法加载</span>
 									<MaterialButton
 										variant="outlined"

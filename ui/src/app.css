@@ -1002,7 +1002,55 @@ select.md-select {
 	border-radius: var(--md-sys-shape-full);
 	background: var(--md-sys-color-primary);
 	pointer-events: none;
+	animation: md-tab-indicator-in var(--md-sys-motion-duration-fast)
+		var(--md-sys-motion-easing-decelerated) both;
 }
+
+@keyframes md-tab-indicator-in {
+	from {
+		opacity: 0;
+		transform: translateX(-50%) scaleX(0.55);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(-50%) scaleX(1);
+	}
+}
+
+.workspace-nav {
+	position: relative;
+}
+.workspace-nav .md-tab.active::before {
+	display: none;
+}
+.workspace-nav__indicator {
+	position: absolute;
+	left: 0;
+	bottom: var(--md-comp-tab-indicator-bottom);
+	width: var(--md-tab-indicator-width);
+	height: var(--md-comp-tab-indicator-height);
+	border-radius: var(--md-sys-shape-full);
+	background: var(--md-sys-color-primary);
+	transform: translate3d(var(--md-tab-indicator-x), 0, 0);
+	transform-origin: center;
+	opacity: 0;
+	pointer-events: none;
+	transition:
+		transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+}
+.workspace-nav--indicator-ready .workspace-nav__indicator {
+	opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.md-tab.active::before,
+	.workspace-nav__indicator {
+		animation: none;
+		transition: none;
+	}
+}
+
 .md-tab__icon {
 	display: inline-flex;
 	width: 17px;
