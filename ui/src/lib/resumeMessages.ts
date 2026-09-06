@@ -4,6 +4,7 @@
 
 import { formatMessageTime } from '$lib/stores.ts';
 import { isPausedStatus } from '$lib/sessionStatus.ts';
+import { canonicalToolName, isUnrecoverableHistoricalTool } from '$lib/toolNames.ts';
 
 // Sentinel the backend used to persist in `messages.tool_call_id` for
 // assistant messages carrying an `ask` question text. New records no
@@ -28,6 +29,8 @@ interface ResumeMessage {
 	toolName?: string;
 	/** JSON tool-call arguments from `session_steps.action_input`. */
 	toolArgs?: unknown;
+	/** Historical operation has no safe current-tool equivalent. */
+	unrecoverable?: boolean;
 	/** Live-only mid-turn anchor marking a user message as steering; the DB
 	 * has no such flag (agent:supplement clears it on the live entry). */
 	steering?: boolean;
@@ -94,7 +97,10 @@ interface ResumeData {
  * @param {Array<object>} dbMessages   buildResumeMessages() result
  * @param {Array<object>} existing     current sessionMessages entry
  */
-export function mergeLiveStreaming(dbMessages: ResumeMessage[], existing: ResumeMessage[]): ResumeMessage[] {
+export function mergeLiveStreaming(
+	dbMessages: ResumeMessage[],
+	existing: ResumeMessage[],
+): ResumeMessage[] {
 	// Awaiting live ask cards carry quick-reply options the DB build may lack
 	// (the pause status can land after the observation). Prefer EVERY
 	// awaiting card over its DB copy so all questions in a batched step stay
@@ -126,9 +132,7 @@ export function mergeLiveStreaming(dbMessages: ResumeMessage[], existing: Resume
 		} else {
 			// DB has no `steering`; keep the live mid-turn anchor until
 			// agent:supplement clears it.
-			out.push(
-				m.role === 'user' && liveSteeringIds.has(m.id) ? { ...m, steering: true } : m,
-			);
+			out.push(m.role === 'user' && liveSteeringIds.has(m.id) ? { ...m, steering: true } : m);
 			emitted.add(m.id);
 		}
 		const existingIdx = existingIdxOf.get(m.id);
@@ -208,6 +212,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		if (msg.tool_call_id === ASK_MSG_TOOL_CALL_ID) continue;
 		const step = stepById.get(msg.id);
 		const isToolObservation = msg.role === 'tool' || msg.message_type === 'observation';
+		const persistedToolName = canonicalToolName(step?.action_tool);
 		items.push({
 			id: msg.id,
 			// Tool observations are rendered as assistant-side cards in chat, even
@@ -221,7 +226,10 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 					: msg.message_type || undefined,
 			...(isToolObservation
 				? {
-						toolName: step?.action_tool || 'tool',
+						toolName: persistedToolName || 'tool',
+						...(isUnrecoverableHistoricalTool(step?.action_tool)
+							? { unrecoverable: true }
+							: {}),
 						...(step?.action_input != null && step.action_input !== ''
 							? { toolArgs: step.action_input }
 							: {}),
@@ -248,10 +256,12 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		const stepId = step.id;
 		if (!step.action_tool) continue;
 		if (msgIds.has(stepId) && step.action_tool !== 'ask') continue;
+		const toolName = canonicalToolName(step.action_tool);
+		const unrecoverable = isUnrecoverableHistoricalTool(step.action_tool);
 		// Silent tool steps (input `"silent": true`) are hidden in the live
 		// chat; keep them hidden here so resume matches the live view.
 		if (step.silent) continue;
-		const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
+		const obs = step.observation && step.observation !== '{}' ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card
 		// under the step row's id (matching the live card). New records keep
 		// the question text in the message row persisted under that id (the
@@ -279,7 +289,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 					}
 					if (Array.isArray(parsed.options)) {
 						askOptions = parsed.options.map((o: unknown) =>
-							typeof o === 'string' ? o : String((o as { answer?: unknown } | null)?.answer ?? o ?? '')
+							typeof o === 'string'
+								? o
+								: String((o as { answer?: unknown } | null)?.answer ?? o ?? ''),
 						);
 					}
 				} catch {
@@ -305,7 +317,8 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 					(item) =>
 						item.role === 'assistant' &&
 						((item.content || '') === askText ||
-							(item.type == null && (item.content || '').startsWith(`${askText}\n\n`))),
+							(item.type == null &&
+								(item.content || '').startsWith(`${askText}\n\n`))),
 				);
 				if (matchIdx >= 0) items.splice(matchIdx, 1);
 			}
@@ -330,7 +343,8 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			role: 'assistant',
 			content: obs || '',
 			type: 'tool',
-			toolName: step.action_tool,
+			toolName,
+			...(unrecoverable ? { unrecoverable: true } : {}),
 			...(step.action_input != null && step.action_input !== ''
 				? { toolArgs: step.action_input }
 				: {}),
@@ -361,8 +375,11 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		const thoughtTrimmed = step.thought.trim();
 		if (!thoughtTrimmed) continue;
 		for (const item of items) {
-			if ((item.role === 'assistant' || item.role === 'user') && item.stepNumber == null
-				&& (item.content || '').trim() === thoughtTrimmed) {
+			if (
+				(item.role === 'assistant' || item.role === 'user') &&
+				item.stepNumber == null &&
+				(item.content || '').trim() === thoughtTrimmed
+			) {
 				item.stepNumber = step.step_number;
 				break;
 			}

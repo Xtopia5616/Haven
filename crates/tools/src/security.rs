@@ -9,9 +9,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tokio::sync::RwLock;
 
-/// Representative operation/risk rows used by the local-tool security
-/// regression matrix. Keep this list in the tools crate so the documented
-/// matrix has an executable source of truth for every builtin tool family.
+/// Expected operation/risk rows used by the local-tool security regression
+/// matrix. The registry-driven test below verifies that this contract covers
+/// every operation actually advertised by every builtin tool, so schema and
+/// risk-level changes cannot silently leave the matrix stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalToolSecurityCase {
     pub tool_name: &'static str,
@@ -19,207 +20,109 @@ pub struct LocalToolSecurityCase {
     pub risk_level: RiskLevel,
 }
 
+macro_rules! security_case {
+    ($tool:literal, $operation:literal, $risk:ident) => {
+        LocalToolSecurityCase {
+            tool_name: $tool,
+            operation: $operation,
+            risk_level: RiskLevel::$risk,
+        }
+    };
+}
+
 pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
-    LocalToolSecurityCase {
-        tool_name: "audio",
-        operation: "play",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "audio",
-        operation: "record",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "ask",
-        operation: "ask",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "files",
-        operation: "read",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "files",
-        operation: "search:content",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "files",
-        operation: "write",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "files",
-        operation: "delete",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "process",
-        operation: "list",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "process",
-        operation: "kill",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "clipboard",
-        operation: "read",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "clipboard",
-        operation: "write",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "shell",
-        operation: "execute",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "actions",
-        operation: "list",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "input",
-        operation: "move",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "input",
-        operation: "click",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "schedule",
-        operation: "set",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "system",
-        operation: "info",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "system",
-        operation: "env:set",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "system",
-        operation: "registry:set",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "system",
-        operation: "power:lock",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "system",
-        operation: "power:hibernate",
-        risk_level: RiskLevel::Critical,
-    },
-    LocalToolSecurityCase {
-        tool_name: "window",
-        operation: "list",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "window",
-        operation: "focus",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "window",
-        operation: "close",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "window",
-        operation: "ocr",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "http",
-        operation: "request",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "notify",
-        operation: "notify",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "agent",
-        operation: "list",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "agent",
-        operation: "spawn",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "load_skill",
-        operation: "load",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "load_mcp",
-        operation: "load",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "memory",
-        operation: "search",
-        risk_level: RiskLevel::Safe,
-    },
-    LocalToolSecurityCase {
-        tool_name: "memory",
-        operation: "remember",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "memory",
-        operation: "forget",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "haven_diagnostics",
-        operation: "status",
-        risk_level: RiskLevel::Low,
-    },
-    LocalToolSecurityCase {
-        tool_name: "haven_config",
-        operation: "logs_level",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "haven_skills",
-        operation: "skill_create",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "haven_tools",
-        operation: "tool_disable",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "haven_mcp",
-        operation: "mcp_remove",
-        risk_level: RiskLevel::High,
-    },
-    LocalToolSecurityCase {
-        tool_name: "haven_session_diagnostics",
-        operation: "errors",
-        risk_level: RiskLevel::Low,
-    },
+    security_case!("audio", "play", Low),
+    security_case!("audio", "record", Medium),
+    security_case!("audio", "volume_get", Low),
+    security_case!("audio", "volume_set", Medium),
+    security_case!("audio", "mute_get", Low),
+    security_case!("audio", "mute_set", Medium),
+    security_case!("ask", "ask", Safe),
+    security_case!("files", "read", Low),
+    security_case!("files", "write", Medium),
+    security_case!("files", "edit", Medium),
+    security_case!("files", "copy", Medium),
+    security_case!("files", "move", Medium),
+    security_case!("files", "delete", High),
+    security_case!("files", "list", Low),
+    security_case!("files", "summary", Low),
+    security_case!("files", "search", Low),
+    security_case!("files", "search:content", Medium),
+    security_case!("process", "list", Low),
+    security_case!("process", "kill", High),
+    security_case!("clipboard", "read", Low),
+    security_case!("clipboard", "write", Medium),
+    security_case!("clipboard", "history", Low),
+    security_case!("shell", "execute", High),
+    security_case!("actions", "list", Safe),
+    security_case!("input", "type", Medium),
+    security_case!("input", "key", Medium),
+    security_case!("input", "click", Medium),
+    security_case!("input", "move", Low),
+    security_case!("input", "scroll", Low),
+    security_case!("schedule", "set", Low),
+    security_case!("schedule", "list", Safe),
+    security_case!("schedule", "cancel", Safe),
+    security_case!("system", "info", Safe),
+    security_case!("system", "overview", Safe),
+    security_case!("system", "display", Safe),
+    security_case!("system", "displays", Safe),
+    security_case!("system", "env:list", High),
+    security_case!("system", "env:get", Low),
+    security_case!("system", "env:set", High),
+    security_case!("system", "env:unset", High),
+    security_case!("system", "registry:list", Medium),
+    security_case!("system", "registry:get", Medium),
+    security_case!("system", "registry:set", High),
+    security_case!("system", "registry:delete", High),
+    security_case!("system", "power:status", Safe),
+    security_case!("system", "power:lock", High),
+    security_case!("system", "power:sleep", High),
+    security_case!("system", "power:hibernate", Critical),
+    security_case!("window", "list", Low),
+    security_case!("window", "foreground", Low),
+    security_case!("window", "focus", Medium),
+    security_case!("window", "close", High),
+    security_case!("window", "screenshot", Low),
+    security_case!("window", "ocr", High),
+    security_case!("window", "ui_tree", Low),
+    security_case!("window", "wait", Low),
+    security_case!("http", "request", Medium),
+    security_case!("notify", "notify", Safe),
+    security_case!("agent", "list", Safe),
+    security_case!("agent", "send", Safe),
+    security_case!("agent", "inbox", Safe),
+    security_case!("agent", "reply", Safe),
+    security_case!("agent", "profile", Safe),
+    security_case!("agent", "request", Safe),
+    security_case!("agent", "spawn", Medium),
+    security_case!("load_skill", "load", Safe),
+    security_case!("load_mcp", "load", Safe),
+    security_case!("memory", "search", Safe),
+    security_case!("memory", "list", Safe),
+    security_case!("memory", "remember", Medium),
+    security_case!("memory", "forget", Medium),
+    security_case!("memory", "recall", Safe),
+    security_case!("haven_diagnostics", "status", Low),
+    security_case!("haven_diagnostics", "logs_tail", Low),
+    security_case!("haven_config", "config_get", Low),
+    security_case!("haven_config", "logs_level", Medium),
+    security_case!("haven_skills", "skills_list", Low),
+    security_case!("haven_skills", "skill_enable", Medium),
+    security_case!("haven_skills", "skill_disable", Medium),
+    security_case!("haven_skills", "skill_create", High),
+    security_case!("haven_tools", "tool_enable", Medium),
+    security_case!("haven_tools", "tool_disable", Medium),
+    security_case!("haven_mcp", "mcp_list", Low),
+    security_case!("haven_mcp", "mcp_connect", Medium),
+    security_case!("haven_mcp", "mcp_disconnect", Medium),
+    security_case!("haven_mcp", "mcp_add", High),
+    security_case!("haven_mcp", "mcp_update", High),
+    security_case!("haven_mcp", "mcp_toggle", High),
+    security_case!("haven_mcp", "mcp_remove", High),
+    security_case!("haven_mcp", "mcp_reload", Medium),
+    security_case!("haven_session_diagnostics", "sessions", Low),
+    security_case!("haven_session_diagnostics", "errors", Low),
 ];
 
 /// Check an absolute local path without applying a tool-specific allowlist.
@@ -1067,8 +970,9 @@ mod tests {
     async fn test_local_tool_security_matrix_gates_every_risk_bearing_case() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
         for case in LOCAL_TOOL_SECURITY_MATRIX {
+            let input = matrix_input(case);
             let result = gw
-                .check(None, case.tool_name, &json!({}), case.risk_level)
+                .check(None, case.tool_name, &input, case.risk_level)
                 .await;
             if case.risk_level >= RiskLevel::Medium {
                 assert!(
@@ -1085,6 +989,234 @@ mod tests {
                     case.operation
                 );
             }
+        }
+    }
+
+    /// Extract the routing fields from the operation branches of a tool
+    /// schema. This intentionally inspects the provider-facing schema rather
+    /// than duplicating each tool's operation list in the test.
+    fn schema_route_inputs(schema: &Value) -> Vec<Value> {
+        let mut local_variants = vec![serde_json::Map::new()];
+        for field in ["scope", "operation"] {
+            let Some(property) = schema.get("properties").and_then(|p| p.get(field)) else {
+                continue;
+            };
+            let values = if let Some(value) = property.get("const") {
+                vec![value.clone()]
+            } else {
+                property
+                    .get("enum")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            if values.is_empty() {
+                continue;
+            }
+            let mut expanded = Vec::new();
+            for variant in local_variants {
+                for value in &values {
+                    let mut next = variant.clone();
+                    next.insert(field.to_string(), value.clone());
+                    expanded.push(next);
+                }
+            }
+            local_variants = expanded;
+        }
+
+        if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
+            let mut routes = Vec::new();
+            for branch in branches {
+                routes.extend(schema_route_inputs(branch));
+            }
+            // A top-level schema often carries a broad operation enum while
+            // its oneOf branches carry the authoritative route. Nested
+            // oneOf branches (for example schedule.set's timing alternatives)
+            // may carry no routing fields; in that case retain the local
+            // const/enum route instead of producing a spurious empty route.
+            if routes.iter().any(route_has_selector) {
+                return dedupe_json(routes);
+            }
+        }
+        dedupe_json(local_variants.into_iter().map(Value::Object).collect())
+    }
+
+    fn route_has_selector(value: &Value) -> bool {
+        value.get("scope").is_some() || value.get("operation").is_some()
+    }
+
+    fn dedupe_json(values: Vec<Value>) -> Vec<Value> {
+        let mut seen = HashSet::new();
+        values
+            .into_iter()
+            .filter(|value| seen.insert(value.to_string()))
+            .collect()
+    }
+
+    fn route_label(tool_name: &str, input: &Value) -> String {
+        if tool_name == "system" {
+            let scope = input["scope"].as_str().unwrap_or("info");
+            return match input["operation"].as_str() {
+                Some(operation) => format!("{scope}:{operation}"),
+                None => scope.to_string(),
+            };
+        }
+        if tool_name == "files"
+            && input["operation"].as_str() == Some("search")
+            && input["mode"].as_str() == Some("content")
+        {
+            return "search:content".into();
+        }
+        input["operation"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| match tool_name {
+                "ask" => "ask".into(),
+                "actions" => "list".into(),
+                "shell" => "execute".into(),
+                "http" => "request".into(),
+                "notify" => "notify".into(),
+                "load_skill" | "load_mcp" => "load".into(),
+                other => other.to_string(),
+            })
+    }
+
+    fn matrix_input(case: &LocalToolSecurityCase) -> Value {
+        if case.tool_name == "system" {
+            let mut parts = case.operation.split(':');
+            let scope = parts.next().unwrap();
+            let mut input = serde_json::json!({"scope": scope});
+            if let Some(operation) = parts.next() {
+                input["operation"] = Value::String(operation.into());
+            }
+            return input;
+        }
+        if case.operation == "search:content" {
+            return serde_json::json!({"operation": "search", "mode": "content"});
+        }
+        match case.tool_name {
+            "ask" | "actions" | "shell" | "http" | "notify" | "load_skill" | "load_mcp" => {
+                serde_json::json!({})
+            }
+            _ => serde_json::json!({"operation": case.operation}),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_builtin_registry_security_contract_covers_every_route() {
+        use crate::ToolsManager;
+        use crate::builtin::SelfToolContext;
+        use haven_common::config::{ConfigLoader, ConfigService};
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let manager = ToolsManager::new();
+        manager
+            .set_admin_context(SelfToolContext {
+                config_service: Some(Arc::new(ConfigService::new(loader))),
+                db: None,
+                router: None,
+                log_path: None,
+                set_log_level: None,
+                tools_weak: None,
+            })
+            .await;
+
+        let tools = manager.registry.list().await;
+        let matrix_names: HashSet<_> = LOCAL_TOOL_SECURITY_MATRIX
+            .iter()
+            .map(|case| case.tool_name)
+            .collect();
+        let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
+        assert_eq!(
+            registry_names,
+            matrix_names
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+            "security matrix tool families must match the actual builtin registry"
+        );
+
+        let gateway = SafetyGateway::new(RiskLevel::Medium);
+        let mut seen = HashSet::new();
+        for tool in tools {
+            let name = tool.name();
+            let mut inputs = schema_route_inputs(&tool.input_schema());
+            // `files:search` has a mode-dependent risk level. The schema
+            // operation is one route, but both risk-bearing modes need a
+            // contract assertion.
+            if name == "files" {
+                let content_search = serde_json::json!({
+                    "operation": "search",
+                    "mode": "content"
+                });
+                if !inputs.iter().any(|input| input == &content_search) {
+                    inputs.push(content_search);
+                }
+            }
+            assert!(!inputs.is_empty(), "{name} must expose a contract route");
+
+            for mut input in inputs {
+                if name == "haven_config" && input["operation"].as_str() == Some("logs_level") {
+                    // TypedToolAdapter parses the full operation args before
+                    // consulting metadata, so provide the smallest valid
+                    // non-routing field for this route.
+                    input["level"] = Value::String("info".into());
+                }
+                let operation = route_label(&name, &input);
+                let case = LOCAL_TOOL_SECURITY_MATRIX
+                    .iter()
+                    .find(|case| case.tool_name == name && case.operation == operation)
+                    .unwrap_or_else(|| {
+                        panic!("missing security matrix row for {name}:{operation}")
+                    });
+                let reported_risk = tool.risk_level(&input);
+                assert_eq!(
+                    reported_risk, case.risk_level,
+                    "risk level drift for {name}:{operation}"
+                );
+
+                let key = permission_key(&name, &input);
+                assert!(
+                    !key.is_empty(),
+                    "empty permission key for {name}:{operation}"
+                );
+                assert_eq!(
+                    permission_key_candidates(&key).last().copied(),
+                    Some(name.as_str()),
+                    "permission key must remain rooted at the registered tool"
+                );
+                assert_eq!(
+                    key,
+                    permission_key(&name, &matrix_input(case)),
+                    "permission key drift for {name}:{operation}"
+                );
+
+                let decision = gateway.check(None, &name, &input, reported_risk).await;
+                if reported_risk >= RiskLevel::Medium {
+                    assert!(
+                        matches!(decision, ConfirmationResult::RequiresConfirmation { .. }),
+                        "{name}:{operation} with {reported_risk:?} must be gated"
+                    );
+                } else {
+                    assert!(
+                        matches!(decision, ConfirmationResult::AutoApproved),
+                        "{name}:{operation} with {reported_risk:?} must be automatic"
+                    );
+                }
+                seen.insert((name.clone(), operation));
+            }
+        }
+
+        for case in LOCAL_TOOL_SECURITY_MATRIX {
+            assert!(
+                seen.contains(&(case.tool_name.to_string(), case.operation.to_string())),
+                "matrix row is not advertised by the builtin registry: {}:{}",
+                case.tool_name,
+                case.operation
+            );
         }
     }
 

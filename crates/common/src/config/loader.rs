@@ -185,18 +185,24 @@ fn migrate_legacy_tool_names(value: &mut toml::Value) {
         return;
     };
 
+    let legacy_tool_settings_name = "file";
     if let Some(tool_settings) = root
         .get_mut("tool_settings")
         .and_then(toml::Value::as_table_mut)
-        && let Some(legacy) = tool_settings.remove("file")
+        && let Some(canonical_name) = crate::types::canonical_tool_name(legacy_tool_settings_name)
+        && let Some(legacy) = tool_settings.remove(legacy_tool_settings_name)
     {
-        if tool_settings.contains_key("files") {
+        if tool_settings.contains_key(canonical_name) {
             tracing::warn!(
                 "ignoring legacy [tool_settings.file] because [tool_settings.files] is present"
             );
         } else {
-            tool_settings.insert("files".into(), legacy);
-            tracing::info!("migrated [tool_settings.file] to [tool_settings.files]");
+            tool_settings.insert(canonical_name.into(), legacy);
+            tracing::info!(
+                legacy_name = legacy_tool_settings_name,
+                canonical_name,
+                "migrated legacy tool-settings name"
+            );
         }
     }
 
@@ -206,64 +212,51 @@ fn migrate_legacy_tool_names(value: &mut toml::Value) {
         .and_then(|security| security.get_mut("permissions"))
         .and_then(toml::Value::as_array_mut)
     {
-        let current_keys: Vec<String> = permissions
+        // Current keys win over a legacy spelling. Use a single pass over the
+        // array so `file`, `file:<operation>`, and `scheduled_action:*` all
+        // follow the same collision and duplicate rules.
+        let current_keys: std::collections::HashSet<String> = permissions
             .iter()
             .filter_map(|permission| {
                 permission
                     .get("key")
                     .and_then(toml::Value::as_str)
-                    .filter(|key| {
-                        *key != "scheduled_action" && !key.starts_with("scheduled_action:")
-                    })
+                    .filter(|key| crate::types::canonical_legacy_permission_key(key).is_none())
                     .map(str::to_owned)
             })
             .collect();
-        let mut migrated_keys = Vec::new();
-        let mut discarded_keys = Vec::new();
-        for permission in permissions.iter() {
+        let mut seen_keys = current_keys.clone();
+        let mut retained = Vec::with_capacity(permissions.len());
+        for mut permission in std::mem::take(permissions) {
             let Some(old_key) = permission
                 .get("key")
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned)
             else {
+                retained.push(permission);
                 continue;
             };
-            let Some(suffix) = old_key
-                .strip_prefix("scheduled_action")
-                .filter(|suffix| suffix.is_empty() || suffix.starts_with(':'))
-            else {
+            let Some(new_key) = crate::types::canonical_legacy_permission_key(&old_key) else {
+                retained.push(permission);
                 continue;
             };
-            let new_key = format!("schedule{suffix}");
-            if current_keys.iter().any(|key| key == &new_key) {
-                discarded_keys.push(old_key);
-            } else {
-                migrated_keys.push((old_key, new_key));
+            if !seen_keys.insert(new_key.clone()) {
+                tracing::warn!(
+                    old_key,
+                    new_key,
+                    "discarding legacy permission because current key already exists"
+                );
+                continue;
             }
+            let Some(permission_table) = permission.as_table_mut() else {
+                retained.push(permission);
+                continue;
+            };
+            permission_table.insert("key".into(), toml::Value::String(new_key.clone()));
+            tracing::info!(old_key, new_key, "migrated legacy permission key");
+            retained.push(permission);
         }
-        permissions.retain(|permission| {
-            permission
-                .get("key")
-                .and_then(toml::Value::as_str)
-                .is_none_or(|key| !discarded_keys.iter().any(|old| old == key))
-        });
-        for permission in permissions {
-            let Some(permission) = permission.as_table_mut() else {
-                continue;
-            };
-            let Some(old_key) = permission
-                .get("key")
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            let Some((_, new_key)) = migrated_keys.iter().find(|(old, _)| old == &old_key) else {
-                continue;
-            };
-            permission.insert("key".into(), toml::Value::String(new_key.clone()));
-            tracing::info!(old_key, new_key, "migrated legacy schedule permission key");
-        }
+        *permissions = retained;
     }
 }
 
@@ -966,6 +959,14 @@ timeout_secs = 60
 [[security.permissions]]
 key = "scheduled_action:set"
 effect = "allow"
+
+[[security.permissions]]
+key = "file:write"
+effect = "allow"
+
+[[security.permissions]]
+key = "file"
+effect = "allow"
 "#,
         )
         .unwrap();
@@ -981,6 +982,8 @@ effect = "allow"
             Some(60)
         );
         assert_eq!(loader.config().security.permissions[0].key, "schedule:set");
+        assert_eq!(loader.config().security.permissions[1].key, "files:write");
+        assert_eq!(loader.config().security.permissions[2].key, "files");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1005,6 +1008,14 @@ effect = "allow"
 [[security.permissions]]
 key = "schedule:set"
 effect = "deny"
+
+[[security.permissions]]
+key = "file:write"
+effect = "allow"
+
+[[security.permissions]]
+key = "files:write"
+effect = "deny"
 "#,
         )
         .unwrap();
@@ -1018,10 +1029,15 @@ effect = "deny"
                 .and_then(|config| config.timeout_secs),
             Some(120)
         );
-        assert_eq!(loader.config().security.permissions.len(), 1);
+        assert_eq!(loader.config().security.permissions.len(), 2);
         assert_eq!(loader.config().security.permissions[0].key, "schedule:set");
         assert_eq!(
             loader.config().security.permissions[0].effect,
+            crate::types::PermissionEffect::Deny
+        );
+        assert_eq!(loader.config().security.permissions[1].key, "files:write");
+        assert_eq!(
+            loader.config().security.permissions[1].effect,
             crate::types::PermissionEffect::Deny
         );
         let _ = std::fs::remove_dir_all(&dir);

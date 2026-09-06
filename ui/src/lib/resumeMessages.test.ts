@@ -51,6 +51,34 @@ describe('buildResumeMessages', () => {
 		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'files', content: '{"ok":true}' });
 	});
 
+	it('normalizes safe legacy tool names for history renderers', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [],
+			steps: [
+				{ id: 'step-file', action_tool: 'file', observation: '{"content":"old"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 'step-search', action_tool: 'file_search', observation: '{"results":[]}', thought: null, step_number: 2, created_at: '2026-08-01T10:02:00Z' },
+				{ id: 'step-schedule', action_tool: 'scheduled_action', observation: '{"scheduled_actions":[]}', thought: null, step_number: 3, created_at: '2026-08-01T10:03:00Z' },
+			],
+		});
+		expect(items.map((item) => item.toolName)).toEqual(['files', 'files', 'schedule']);
+		expect(items.every((item) => !item.unrecoverable)).toBe(true);
+	});
+
+	it('marks removed process.launch history calls as unrecoverable', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [],
+			steps: [
+				{ id: 'step-launch', action_tool: 'process.launch', observation: '{"pid":1}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		expect(items[0]).toMatchObject({
+			toolName: 'process.launch',
+			unrecoverable: true,
+		});
+	});
+
 	it('normalizes persisted tool-role observations into tool cards', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,

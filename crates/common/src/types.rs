@@ -190,6 +190,42 @@ pub enum PermissionScope {
     Always,
 }
 
+/// Return the current public name for a tool name written by an older Haven
+/// boundary. `None` means the name is either current or intentionally has no
+/// automatic migration (for example `process.launch`, whose old operation no
+/// longer has a safe equivalent).
+///
+/// Keep this map small and explicit: it is shared by config migration and the
+/// history/UI boundary, so a legacy spelling cannot silently become a new
+/// production tool name in only one layer.
+pub fn canonical_tool_name(name: &str) -> Option<&'static str> {
+    match name {
+        "file" | "file_search" => Some("files"),
+        "scheduled_action" => Some("schedule"),
+        _ => None,
+    }
+}
+
+/// Return the current permission key for a legacy key, preserving its
+/// operation suffix. Only aliases with an unambiguous permission contract are
+/// migrated. Historical `file_search:*` keys are deliberately left alone:
+/// the old search operation did not map one-to-one to today's `files` routes.
+pub fn canonical_legacy_permission_key(key: &str) -> Option<String> {
+    let (root, suffix) = key
+        .split_once(':')
+        .map_or((key, ""), |(root, suffix)| (root, suffix));
+    let canonical_root = match root {
+        "file" => "files",
+        "scheduled_action" => "schedule",
+        _ => return None,
+    };
+    if suffix.is_empty() {
+        Some(canonical_root.to_string())
+    } else {
+        Some(format!("{canonical_root}:{suffix}"))
+    }
+}
+
 /// Tools whose Haven routing uses `scope` / `operation` params in the key.
 /// Other tools (MCP/skills/arbitrary args) use the bare tool name so a random
 /// `operation` field in args cannot fragment grants.
@@ -1332,6 +1368,33 @@ mod tests {
             vec!["system:power:lock", "system:power", "system"]
         );
         assert_eq!(permission_key_candidates("shell"), vec!["shell"]);
+    }
+
+    #[test]
+    fn canonical_tool_names_cover_only_safe_history_aliases() {
+        assert_eq!(canonical_tool_name("file"), Some("files"));
+        assert_eq!(canonical_tool_name("file_search"), Some("files"));
+        assert_eq!(canonical_tool_name("scheduled_action"), Some("schedule"));
+        assert_eq!(canonical_tool_name("files"), None);
+        assert_eq!(canonical_tool_name("process.launch"), None);
+    }
+
+    #[test]
+    fn canonical_legacy_permission_keys_preserve_operation_suffixes() {
+        assert_eq!(
+            canonical_legacy_permission_key("file"),
+            Some("files".into())
+        );
+        assert_eq!(
+            canonical_legacy_permission_key("file:write"),
+            Some("files:write".into())
+        );
+        assert_eq!(
+            canonical_legacy_permission_key("scheduled_action:set"),
+            Some("schedule:set".into())
+        );
+        assert_eq!(canonical_legacy_permission_key("file_search:content"), None);
+        assert_eq!(canonical_legacy_permission_key("process.launch"), None);
     }
 
     #[test]

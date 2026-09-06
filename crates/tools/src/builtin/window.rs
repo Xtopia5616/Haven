@@ -803,7 +803,7 @@ mod imp {
                 "width": width,
                 "height": height,
                 "format": "png",
-                "hint": "Open the image with the file tool (read) to view it.",
+                "hint": "Open the image with the files tool (read) to view it.",
             }))
         }
     }

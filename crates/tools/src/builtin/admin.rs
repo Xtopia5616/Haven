@@ -19,6 +19,31 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// The model may toggle ordinary execution tools, but not progressive loaders
+/// or any admin capability. Keeping this an explicit allowlist means a newly
+/// added management/security surface is protected until it is reviewed here.
+const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
+    "audio",
+    "ask",
+    "files",
+    "process",
+    "clipboard",
+    "shell",
+    "actions",
+    "input",
+    "schedule",
+    "system",
+    "window",
+    "http",
+    "notify",
+    "agent",
+    "memory",
+];
+
+fn is_model_toggleable_tool(name: &str) -> bool {
+    MODEL_TOGGLEABLE_TOOL_NAMES.contains(&name)
+}
+
 /// The narrow administration capabilities exposed to the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminCapability {
@@ -179,6 +204,7 @@ impl AdminCapability {
                     "name".into(),
                     serde_json::json!({
                         "type": "string",
+                        "enum": MODEL_TOGGLEABLE_TOOL_NAMES,
                         "description": "Builtin tool name"
                     }),
                 );
@@ -192,7 +218,11 @@ impl AdminCapability {
             "type": "object",
             "additionalProperties": false,
             "properties": properties,
-            "required": ["operation"]
+            "required": if matches!(self, Self::Tools) {
+                serde_json::json!(["operation", "name"])
+            } else {
+                serde_json::json!(["operation"])
+            }
         })
     }
 }
@@ -620,6 +650,19 @@ impl Tool for AdminCapabilityTool {
                 self.name()
             );
         }
+        if self.capability == AdminCapability::Tools {
+            let name = params
+                .name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("name is required for tool toggles"))?;
+            if !is_model_toggleable_tool(name) {
+                anyhow::bail!(
+                    "tool '{}' cannot be changed through the model administration surface",
+                    name
+                );
+            }
+        }
         self.surface
             .run(params, cancel)
             .await
@@ -694,6 +737,14 @@ mod tests {
                 .unwrap()
                 .retryable
         );
+
+        let tool_schema = AdminCapability::Tools.schema();
+        let tool_names = tool_schema["properties"]["name"]["enum"]
+            .as_array()
+            .expect("tool toggle allowlist");
+        assert!(tool_names.iter().any(|name| name == "files"));
+        assert!(!tool_names.iter().any(|name| name == "haven_tools"));
+        assert!(!tool_names.iter().any(|name| name == "load_mcp"));
     }
 
     #[tokio::test]
@@ -712,6 +763,25 @@ mod tests {
                 .to_string()
                 .contains("not available through haven_diagnostics")
         );
+    }
+
+    #[tokio::test]
+    async fn model_tool_toggle_rejects_admin_and_loader_targets() {
+        let (surface, _dir) = test_surface();
+        let tools = AdminCapabilityTool::new(surface, AdminCapability::Tools);
+        for name in ["haven_tools", "haven_config", "load_skill", "load_mcp"] {
+            let error = tools
+                .execute(
+                    serde_json::json!({ "operation": "tool_disable", "name": name }),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("cannot be changed"),
+                "unexpected error for {name}: {error}"
+            );
+        }
     }
 
     fn config_tool() -> (ConfigAdminTool, Arc<ConfigService>, TempDir) {

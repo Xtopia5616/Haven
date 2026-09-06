@@ -23,6 +23,7 @@
 	let {
 		type = 'tool',
 		toolName = '',
+		unrecoverable = false,
 		content = '',
 		options = [],
 		awaiting = false,
@@ -539,6 +540,12 @@
 				<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
 				{#if showFallbackIntent}<span class="tool-intent">{TOOL_INTENT_FALLBACK}</span>{/if}
 				<span class="tool-card-label" title={toolName}>{displayName}</span>
+				{#if unrecoverable}
+					<span
+						class="tool-unrecoverable"
+						title="该历史操作已移除，不能从当前工具目录恢复">历史操作不可恢复</span
+					>
+				{/if}
 				{#if usage}
 					<span
 						class="usage-chip"
@@ -651,6 +658,13 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.tool-unrecoverable {
+		flex: none;
+		color: var(--md-sys-color-error);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.tool-source {

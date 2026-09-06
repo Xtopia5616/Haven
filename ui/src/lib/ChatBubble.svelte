@@ -20,6 +20,7 @@
 		voice = false,
 		streaming = false,
 		toolName = '',
+		unrecoverable = false,
 		messageId = '',
 		stepNumber = null,
 		usage = null,
@@ -390,6 +391,7 @@
 		{:else if msgType === 'tool'}
 			<ToolResultCard
 				{toolName}
+				{unrecoverable}
 				{content}
 				{streaming}
 				{actionId}
