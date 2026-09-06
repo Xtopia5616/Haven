@@ -115,7 +115,7 @@
 			{#each sessions as session (session.id)}
 				{#if selectMode}
 					<button
-						class="session-item session-item-btn"
+						class="session-item session-item-btn motion-list-item"
 						class:selected={selectedIds.has(session.id)}
 						onclick={() => onToggleSelect(session.id)}
 					>
@@ -147,7 +147,7 @@
 					</button>
 				{:else}
 					<div
-						class="session-item"
+						class="session-item motion-list-item"
 						class:selected={selectedIds.has(session.id)}
 						role="button"
 						tabindex="0"

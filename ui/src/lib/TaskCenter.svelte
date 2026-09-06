@@ -175,7 +175,7 @@
 				<div class="task-list" aria-label="任务列表">
 					{#each filteredRows as row (row.id)}
 						<button
-							class="task-row"
+							class="task-row motion-list-item"
 							class:selected={selectedRow?.id === row.id}
 							aria-pressed={selectedRow?.id === row.id}
 							type="button"
@@ -197,7 +197,11 @@
 
 			{#if selectedRow}
 				{@const detail = selectedRow.value}
-				<article class="task-detail md-card" aria-labelledby="task-detail-title">
+				{#key selectedRow.id}
+				<article
+					class="task-detail md-card motion-surface-enter"
+					aria-labelledby="task-detail-title"
+				>
 					<div class="task-detail-heading">
 						<div>
 							<span class="task-kicker"
@@ -281,6 +285,7 @@
 						{/if}
 					</div>
 				</article>
+				{/key}
 			{/if}
 		</div>
 	{/if}

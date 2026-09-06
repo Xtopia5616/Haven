@@ -86,3 +86,6 @@
 - [0083：UI 表单字段与弹窗操作原语](0083-ui-form-field-and-dialog-actions.md)
 - [0084：UI 语义化按钮迁移](0084-ui-semantic-button-migration.md)
 - [0085：统一错误上报、日志与前端通知](0085-unified-error-reporting.md)
+- [0086：错误传播边界](0086-error-propagation-boundaries.md)
+- [0087：工作区 Tab 切换动效](0087-ui-tab-transition-motion.md)
+- [0088：工作区次级状态动效](0088-ui-secondary-motion.md)

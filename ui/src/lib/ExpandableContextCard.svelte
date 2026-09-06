@@ -1,5 +1,7 @@
 <script>
 	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { slide } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 
 	/**
 	 * Shared expandable card shell for resource cards with a context menu.
@@ -13,6 +15,12 @@
 	let { cardKind = '', contextMenuItems = [], header, actions, children } = $props();
 	let expanded = $state(false);
 	let contextMenu = $state({ open: false, x: 0, y: 0 });
+
+	/** @param {number} duration */
+	function motionDuration(duration) {
+		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return duration;
+		return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration;
+	}
 
 	function toggleExpand() {
 		expanded = !expanded;
@@ -39,7 +47,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="expandable-context-card"
+	class="expandable-context-card motion-list-item"
 	data-card-kind={cardKind || undefined}
 	class:expanded
 	oncontextmenu={handleContextMenu}
@@ -67,7 +75,7 @@
 		{/if}
 	</div>
 	{#if expanded}
-		<div class="card-body">
+		<div class="card-body" transition:slide={{ duration: motionDuration(180), easing: cubicOut }}>
 			{@render children?.()}
 		</div>
 	{/if}

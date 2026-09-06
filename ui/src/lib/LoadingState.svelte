@@ -13,7 +13,7 @@
 </script>
 
 <div
-	class="loading-state loading-state--{variant}"
+	class="loading-state loading-state--{variant} motion-surface-enter"
 	role="status"
 	aria-live="polite"
 	aria-busy="true"

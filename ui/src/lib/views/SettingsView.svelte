@@ -842,7 +842,7 @@
 		</div>
 	</div>
 	{#if settingsLoaded && settingsTab !== 'models' && llmConfig.providers.length === 0}
-		<div class="settings-callout" data-state="unconfigured" role="status">
+		<div class="settings-callout motion-surface-enter" data-state="unconfigured" role="status">
 			<div>
 				<strong>模型尚未配置</strong>
 				<p>
@@ -869,8 +869,10 @@
 				<small>{tab.hint}</small>
 			</button>{/each}
 	</div>
+	{#key settingsTab}
 	<div
 		id="settings-panel"
+		class="motion-surface-enter"
 		role="tabpanel"
 		aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}
 	>
@@ -917,8 +919,9 @@
 			<SettingsLimits {contextLimits} />
 		{/if}
 	</div>
+	{/key}
 	{#if settingsDirty}
-		<div class="save-bar md-toolbar">
+		<div class="save-bar md-toolbar motion-surface-enter">
 			<div class="save-actions">
 				<MaterialButton
 					variant="outlined"

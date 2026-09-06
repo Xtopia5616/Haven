@@ -522,6 +522,8 @@
 				onclick={() => (activeTab = tab.id)}>{tab.label}</button
 			>{/each}
 	</div>
+	{#key activeTab}
+	<div class="memory-panel motion-surface-enter">
 	{#if activeTab === 'sessions'}
 		<SessionHistory
 			{sessions}
@@ -576,6 +578,8 @@
 			onRunRecall={runRecall}
 		/>
 	{/if}
+	</div>
+	{/key}
 </div>
 
 <MaterialDialog open={showDateFilter} onClose={() => (showDateFilter = false)} title="日期筛选">

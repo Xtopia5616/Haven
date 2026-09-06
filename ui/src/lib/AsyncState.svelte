@@ -18,7 +18,7 @@
 	<LoadingState label={title || '正在加载…'} detail={message} />
 {:else}
 	<section
-		class="async-state md-card"
+		class="async-state md-card motion-surface-enter"
 		data-state={state}
 		aria-live={state === 'error' ? 'assertive' : 'polite'}
 	>

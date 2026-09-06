@@ -400,7 +400,7 @@
 	</div>
 
 	{#if activeTab === 'builtin'}
-		<div class="section">
+		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>内置工具</h2>
 				<div class="toolbar-actions">
@@ -427,7 +427,7 @@
 			{/if}
 		</div>
 	{:else if activeTab === 'mcp'}
-		<div class="section">
+		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>MCP 服务器</h2>
 				<div class="toolbar-actions toolbar-actions--paired">
@@ -459,7 +459,7 @@
 			{/if}
 		</div>
 	{:else}
-		<div class="section">
+		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>技能</h2>
 				<div class="toolbar-actions toolbar-actions--paired">

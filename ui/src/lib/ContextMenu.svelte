@@ -100,7 +100,7 @@
 	<!-- onclick stopPropagation: the menu may live inside a clickable parent
 		(e.g. SessionCard), and item clicks must not bubble into it. -->
 	<div
-		class="ctx-menu"
+		class="ctx-menu motion-menu-enter"
 		bind:this={menuEl}
 		style="left: {pos.x}px; top: {pos.y}px;"
 		role="menu"

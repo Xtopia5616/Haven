@@ -562,6 +562,67 @@ samp {
 	contain-intrinsic-size: auto 120px;
 }
 
+/* Short, one-shot motion for surfaces that enter because the user changed a
+ * filter, selected a row, or moved between async states. Keeping these
+ * utilities global makes the timing and reduced-motion behavior consistent
+ * across workspace views. */
+@keyframes haven-surface-enter {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes haven-list-item-enter {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes haven-menu-enter {
+	from {
+		opacity: 0;
+		transform: translateY(-4px) scale(0.98);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
+
+.motion-surface-enter {
+	animation: haven-surface-enter var(--md-sys-motion-duration-short)
+		var(--md-sys-motion-easing-decelerated) both;
+}
+
+.motion-list-item {
+	animation: haven-list-item-enter var(--md-sys-motion-duration-short)
+		var(--md-sys-motion-easing-decelerated) both;
+}
+
+.motion-menu-enter {
+	animation: haven-menu-enter var(--md-sys-motion-duration-fast)
+		var(--md-sys-motion-easing-emphasized) both;
+	transform-origin: top left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.motion-surface-enter,
+	.motion-list-item,
+	.motion-menu-enter {
+		animation: none;
+	}
+}
+
 /* Scrollbars — hidden globally */
 * {
 	scrollbar-width: none;
