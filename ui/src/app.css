@@ -222,9 +222,8 @@
 	--md-comp-button-pressed-radius: var(--md-sys-shape-medium);
 	--md-comp-toolbar-height: var(--md-comp-button-small-height);
 	--md-comp-toolbar-gap: var(--md-sys-space-sm);
-	/* Keep the application chrome on one shared vertical rhythm. */
-	--md-comp-titlebar-height: var(--md-comp-toolbar-height);
-	--md-comp-status-height: var(--md-comp-toolbar-height);
+	--md-comp-titlebar-height: 56px;
+	--md-comp-status-height: var(--md-comp-titlebar-height);
 	--md-comp-status-padding-inline: var(--md-sys-space-md);
 	--md-comp-status-radius: var(--md-sys-shape-medium);
 	--md-comp-textfield-container-height: 40px;
