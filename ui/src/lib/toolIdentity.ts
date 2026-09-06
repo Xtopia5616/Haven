@@ -4,14 +4,11 @@ export type ToolSource = 'builtin' | 'skill' | 'mcp';
 
 /** @type {Record<string, string>} */
 export const TOOL_LABELS: Record<string, string> = {
-	search: '文件搜索',
-	file_search: '文件搜索',
+	files: '文件与搜索',
 	process: '进程列表',
 	window: '窗口列表',
 	actions: '后台任务',
 	schedule: '定时任务',
-	file: '文件操作',
-	files: '文件与搜索',
 	http: 'HTTP 请求',
 	clipboard: '剪贴板',
 	system: '系统',

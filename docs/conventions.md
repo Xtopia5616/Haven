@@ -347,7 +347,7 @@ try {
 | 域 | 大小写 | 示例 |
 |---|---|---|
 | 窗口标题 / 托盘 tooltip / 系统通知标题 | `Haven` | `tauri.conf.json` `productName`、`app-binary` 通知与托盘文案 |
-| 通知默认标题（`notify` / `scheduled_action` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `scheduled_action.rs` 默认 title |
+| 通知默认标题（`notify` / `schedule` 工具） | `Haven` | `tool_contract.rs` / `notify.rs` / `scheduled_action.rs` 默认 title |
 | 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
 | Windows 计划任务名（Action Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `ACTION_NAME` |
 | 数据目录 / 临时工作目录 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_work_dir()`、`haven.log` |

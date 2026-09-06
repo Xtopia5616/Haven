@@ -539,7 +539,7 @@ mod tests {
             step_number: 0,
             action_index: 0,
             thought: Some("查找文件".into()),
-            action_tool: Some("file".into()),
+            action_tool: Some("files".into()),
             action_input: Some("{\"path\":\"C:/tmp\"}".into()),
             tool_call_id: None,
             observation: Some("found 3 files".into()),

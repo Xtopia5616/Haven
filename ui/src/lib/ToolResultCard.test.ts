@@ -9,7 +9,7 @@ describe('canRenderToolResult', () => {
 	it('accepts search with a results array', () => {
 		expect(canRenderToolResult('files', searchJson([{ path: 'a.rs' }]))).toBe(true);
 	});
-	it('accepts system, process, window, actions, schedule, file, http, clipboard', () => {
+	it('accepts system, process, window, actions, schedule, files, http, clipboard', () => {
 		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
 			true,
 		);
@@ -25,7 +25,7 @@ describe('canRenderToolResult', () => {
 			true,
 		);
 		expect(canRenderToolResult('system', JSON.stringify({ variables: [] }))).toBe(true);
-		expect(canRenderToolResult('file', JSON.stringify({ written: true, path: 'x' }))).toBe(
+		expect(canRenderToolResult('files', JSON.stringify({ written: true, path: 'x' }))).toBe(
 			true,
 		);
 		expect(canRenderToolResult('http', JSON.stringify({ status: 200 }))).toBe(true);
@@ -555,10 +555,10 @@ describe('ToolResultCard actions', () => {
 	});
 });
 
-describe('ToolResultCard file', () => {
+describe('ToolResultCard files', () => {
 	it('renders write / delete results', () => {
 		render(ToolResultCard, {
-			toolName: 'file',
+			toolName: 'files',
 			content: JSON.stringify({ written: true, path: 'C:\\tmp\\out.txt' }),
 		});
 		expect(screen.getByText('已写入')).toBeTruthy();
@@ -567,7 +567,7 @@ describe('ToolResultCard file', () => {
 
 	it('renders directory listing entries', () => {
 		render(ToolResultCard, {
-			toolName: 'file',
+			toolName: 'files',
 			content: JSON.stringify({ entries: ['a.txt', 'b.rs'], count: 2 }),
 		});
 		expect(screen.getByText('2 项')).toBeTruthy();

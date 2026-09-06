@@ -176,6 +176,97 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         .map(|_| "removed [tool_settings] entry")
 }
 
+/// Normalize the small set of builtin tool names that changed before the
+/// current config contract was frozen. The migration happens on the parsed
+/// TOML value, so the old names never enter the runtime config or get written
+/// back by a later save. When both names exist, the current name wins.
+fn migrate_legacy_tool_names(value: &mut toml::Value) {
+    let Some(root) = value.as_table_mut() else {
+        return;
+    };
+
+    if let Some(tool_settings) = root
+        .get_mut("tool_settings")
+        .and_then(toml::Value::as_table_mut)
+        && let Some(legacy) = tool_settings.remove("file")
+    {
+        if tool_settings.contains_key("files") {
+            tracing::warn!(
+                "ignoring legacy [tool_settings.file] because [tool_settings.files] is present"
+            );
+        } else {
+            tool_settings.insert("files".into(), legacy);
+            tracing::info!("migrated [tool_settings.file] to [tool_settings.files]");
+        }
+    }
+
+    if let Some(permissions) = root
+        .get_mut("security")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|security| security.get_mut("permissions"))
+        .and_then(toml::Value::as_array_mut)
+    {
+        let current_keys: Vec<String> = permissions
+            .iter()
+            .filter_map(|permission| {
+                permission
+                    .get("key")
+                    .and_then(toml::Value::as_str)
+                    .filter(|key| {
+                        *key != "scheduled_action" && !key.starts_with("scheduled_action:")
+                    })
+                    .map(str::to_owned)
+            })
+            .collect();
+        let mut migrated_keys = Vec::new();
+        let mut discarded_keys = Vec::new();
+        for permission in permissions.iter() {
+            let Some(old_key) = permission
+                .get("key")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let Some(suffix) = old_key
+                .strip_prefix("scheduled_action")
+                .filter(|suffix| suffix.is_empty() || suffix.starts_with(':'))
+            else {
+                continue;
+            };
+            let new_key = format!("schedule{suffix}");
+            if current_keys.iter().any(|key| key == &new_key) {
+                discarded_keys.push(old_key);
+            } else {
+                migrated_keys.push((old_key, new_key));
+            }
+        }
+        permissions.retain(|permission| {
+            permission
+                .get("key")
+                .and_then(toml::Value::as_str)
+                .is_none_or(|key| !discarded_keys.iter().any(|old| old == key))
+        });
+        for permission in permissions {
+            let Some(permission) = permission.as_table_mut() else {
+                continue;
+            };
+            let Some(old_key) = permission
+                .get("key")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let Some((_, new_key)) = migrated_keys.iter().find(|(old, _)| old == &old_key) else {
+                continue;
+            };
+            permission.insert("key".into(), toml::Value::String(new_key.clone()));
+            tracing::info!(old_key, new_key, "migrated legacy schedule permission key");
+        }
+    }
+}
+
 impl ConfigLoader {
     /// Returns the default config path: `%APPDATA%/haven/config.toml` on Windows.
     pub fn default_path() -> PathBuf {
@@ -226,6 +317,8 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path)?;
         let config: AppConfig = match toml::from_str::<toml::Value>(&content) {
             Ok(value) => {
+                let mut value = value;
+                migrate_legacy_tool_names(&mut value);
                 if let Some(entry) = removed_config_entry(&value) {
                     backup_unparsable_config(path, &format!("removed configuration: {entry}"));
                     AppConfig::default()
@@ -508,18 +601,18 @@ mod tests {
         // must deserialize to `true` (tool stays enabled), never to the
         // `bool::default()` of false.
         let toml_str = r#"
-            [tool_settings.file]
+            [tool_settings.files]
             timeout_secs = 60
         "#;
         let cfg: AppConfig = toml::from_str(toml_str).unwrap();
-        let file = cfg.tool_settings.get("file").unwrap();
-        assert!(file.enabled);
-        assert_eq!(file.timeout_secs, Some(60));
-        assert_eq!(file.max_retries, None);
-        assert_eq!(file.retry_backoff_secs, None);
+        let files = cfg.tool_settings.get("files").unwrap();
+        assert!(files.enabled);
+        assert_eq!(files.timeout_secs, Some(60));
+        assert_eq!(files.max_retries, None);
+        assert_eq!(files.retry_backoff_secs, None);
         // Per-tool output cap defaults to None → inherits the global
         // `context_limits.max_observation_chars`.
-        assert_eq!(file.max_output_chars, None);
+        assert_eq!(files.max_output_chars, None);
     }
 
     #[test]
@@ -720,7 +813,7 @@ mod tests {
         cfg.skills.enabled = Some(vec!["echo".into()]);
         cfg.skills_exec.work_dir = "C:\\skills_work".into();
         cfg.tool_settings.insert(
-            "file".into(),
+            "files".into(),
             ToolConfig {
                 timeout_secs: Some(60),
                 ..Default::default()
@@ -856,6 +949,81 @@ mod tests {
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config().media.audio.sample_rate, 44100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_migrates_legacy_tool_and_permission_names() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[tool_settings.file]
+timeout_secs = 60
+
+[[security.permissions]]
+key = "scheduled_action:set"
+effect = "allow"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert!(loader.config().tool_settings.get("file").is_none());
+        assert_eq!(
+            loader
+                .config()
+                .tool_settings
+                .get("files")
+                .and_then(|config| config.timeout_secs),
+            Some(60)
+        );
+        assert_eq!(loader.config().security.permissions[0].key, "schedule:set");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_prefers_current_tool_and_permission_names() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[tool_settings.file]
+timeout_secs = 60
+
+[tool_settings.files]
+timeout_secs = 120
+
+[[security.permissions]]
+key = "scheduled_action:set"
+effect = "allow"
+
+[[security.permissions]]
+key = "schedule:set"
+effect = "deny"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(
+            loader
+                .config()
+                .tool_settings
+                .get("files")
+                .and_then(|config| config.timeout_secs),
+            Some(120)
+        );
+        assert_eq!(loader.config().security.permissions.len(), 1);
+        assert_eq!(loader.config().security.permissions[0].key, "schedule:set");
+        assert_eq!(
+            loader.config().security.permissions[0].effect,
+            crate::types::PermissionEffect::Deny
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

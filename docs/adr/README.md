@@ -89,3 +89,4 @@
 - [0086：错误传播边界](0086-error-propagation-boundaries.md)
 - [0087：工作区 Tab 切换动效](0087-ui-tab-transition-motion.md)
 - [0088：工作区次级状态动效](0088-ui-secondary-motion.md)
+- [0089：内置工具契约名称与进程启动边界](0089-tool-contract-name-and-process-boundary.md)

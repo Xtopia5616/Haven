@@ -62,11 +62,6 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     },
     LocalToolSecurityCase {
         tool_name: "process",
-        operation: "launch",
-        risk_level: RiskLevel::Medium,
-    },
-    LocalToolSecurityCase {
-        tool_name: "process",
         operation: "kill",
         risk_level: RiskLevel::High,
     },
@@ -101,7 +96,7 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
         risk_level: RiskLevel::Medium,
     },
     LocalToolSecurityCase {
-        tool_name: "scheduled_action",
+        tool_name: "schedule",
         operation: "set",
         risk_level: RiskLevel::Low,
     },
@@ -565,6 +560,7 @@ fn collect_path_params(params: &Value) -> Vec<PathBuf> {
         "target",
         "cwd",
         "file",
+        "file_path",
         "dir",
         "directory",
     ];
@@ -1144,7 +1140,7 @@ mod tests {
             "shell",
             "actions",
             "input",
-            "scheduled_action",
+            "schedule",
             "system",
             "window",
             "http",
@@ -1227,6 +1223,35 @@ mod tests {
                     "destination": outside.path().join("destination.txt"),
                 }),
                 RiskLevel::Medium,
+            )
+            .await;
+        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_path_sandbox_checks_audio_file_path() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut settings = HashMap::new();
+        settings.insert(
+            "audio".into(),
+            ToolConfig {
+                allowed_paths: vec![allowed.path().to_string_lossy().into_owned()],
+                ..ToolConfig::default()
+            },
+        );
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.set_tool_settings(settings).await;
+
+        let result = gw
+            .check(
+                None,
+                "audio",
+                &json!({
+                    "operation": "play",
+                    "file_path": outside.path().join("outside.wav"),
+                }),
+                RiskLevel::Low,
             )
             .await;
         assert!(matches!(result, ConfirmationResult::Blocked { .. }));

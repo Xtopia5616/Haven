@@ -32,8 +32,14 @@ export function getToolResultRenderer(
 	_data: unknown = null,
 ) {
 	if (kind === 'custom' && toolName === 'agent') return ToolAgentResult;
-	if (kind === 'custom' && toolName === 'file') return ToolFileResult;
-	if (kind === 'custom' && toolName === 'file_search') return ToolFileSearchResult;
+	if (
+		kind === 'custom' &&
+		toolName === 'files' &&
+		typeof _data === 'object' &&
+		_data !== null &&
+		!('results' in _data)
+	)
+		return ToolFileResult;
 	if (
 		kind === 'custom' &&
 		toolName === 'files' &&

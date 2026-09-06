@@ -41,7 +41,7 @@
 
 	// Pending non-image file attachments: [{ media_type, data, filename, size }].
 	// Read as base64 when picked, persisted by the backend to disk and handed
-	// to the agent as a path the file tool can read.
+	// to the agent as a path the files tool can read.
 	/** @type {any[]} */
 	let pendingFiles = $state([]);
 	// Single hidden picker for both images and files; the picked items are

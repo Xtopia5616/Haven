@@ -44,11 +44,11 @@ describe('buildResumeMessages', () => {
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 'step-s1', action_tool: 'file', observation: '{"ok":true}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 'step-s1', action_tool: 'files', observation: '{"ok":true}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
 			],
 		});
 		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'file', content: '{"ok":true}' });
+		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'files', content: '{"ok":true}' });
 	});
 
 	it('normalizes persisted tool-role observations into tool cards', () => {
@@ -558,7 +558,7 @@ describe('formatMessageTime', () => {
 describe('mergeLiveStreaming', () => {
 	const dbMessages = [
 		{ id: 'm1', role: 'user', content: 'hi' },
-		{ id: 'step-s1', type: 'tool', toolName: 'file', stepNumber: 1 },
+		{ id: 'step-s1', type: 'tool', toolName: 'files', stepNumber: 1 },
 	];
 
 	it('merges DB messages with no streaming tail', () => {
@@ -591,10 +591,10 @@ describe('mergeLiveStreaming', () => {
 		// never show a card plus a badge for one step.
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'step-1', type: 'tool', toolName: 'file', stepNumber: 1, streaming: false },
+			{ id: 'step-1', type: 'tool', toolName: 'files', stepNumber: 1, streaming: false },
 		];
 		const existing = [
-			{ id: 'step-1', type: 'tool', toolName: 'file', stepNumber: 1, streaming: true },
+			{ id: 'step-1', type: 'tool', toolName: 'files', stepNumber: 1, streaming: true },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-1']);

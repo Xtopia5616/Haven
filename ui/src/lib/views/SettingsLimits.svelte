@@ -51,7 +51,7 @@
 					label: '工具观察字符上限',
 					unit: 'chars',
 					danger: true,
-					hint: '工具结果进入对话的最大字符数，也是 shell/file/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。',
+				hint: '工具结果进入对话的最大字符数，也是 shell/files/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。',
 				},
 				{
 					key: 'max_tools_per_request',

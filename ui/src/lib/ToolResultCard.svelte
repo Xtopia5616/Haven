@@ -371,7 +371,7 @@
 							stroke-linecap="round"
 							stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
 						>
-					{:else if toolName === 'file_search' || toolName === 'files'}
+					{:else if toolName === 'files'}
 						<svg
 							width="12"
 							height="12"
@@ -460,7 +460,7 @@
 								d="M13.73 21a2 2 0 0 1-3.46 0"
 							/></svg
 						>
-					{:else if toolName === 'file' || (toolName === 'files' && !Array.isArray(data.results))}
+					{:else if toolName === 'files' && !Array.isArray(data.results)}
 						<svg
 							width="12"
 							height="12"

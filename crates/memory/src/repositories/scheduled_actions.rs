@@ -329,7 +329,7 @@ mod tests {
             "backup",
             "tool",
             Some("ses-7"),
-            Some("file"),
+            Some("files"),
             Some(r#"{"operation":"read","path":"C:\\x"}"#),
             None,
         )
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(pending[1].prompt, None);
         assert_eq!(pending[2].id, "action-3");
         assert_eq!(pending[2].mode, "tool");
-        assert_eq!(pending[2].tool_name.as_deref(), Some("file"));
+        assert_eq!(pending[2].tool_name.as_deref(), Some("files"));
         assert!(pending[2].tool_args.as_deref().unwrap().contains("read"));
         assert!(!pending[0].fired);
     }

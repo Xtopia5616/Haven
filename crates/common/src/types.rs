@@ -204,7 +204,7 @@ const ROUTING_PARAM_TOOLS: &[&str] = &[
     "memory",
     "messaging",
     "haven",
-    "scheduled_action",
+    "schedule",
 ];
 
 /// Default `operation` when a routing tool omits it — must match execution
@@ -1284,6 +1284,10 @@ mod tests {
         assert_eq!(
             permission_key("files", &serde_json::json!({"operation": "delete"})),
             "files:delete"
+        );
+        assert_eq!(
+            permission_key("schedule", &serde_json::json!({"operation": "set"})),
+            "schedule:set"
         );
         assert_eq!(
             permission_key(

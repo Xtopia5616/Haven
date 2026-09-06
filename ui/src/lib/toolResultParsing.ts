@@ -64,7 +64,6 @@ export function parseToolResult(toolName: string, content: string): ParsedToolRe
 /** Match a JSON observation against a dedicated renderer shape. */
 function customShape(toolName: string, data: ToolResultObject): ToolResultObject | null {
 	switch (toolName) {
-		case 'file_search':
 		case 'files':
 			if (Array.isArray(data.results)) return data;
 			if (
@@ -110,17 +109,6 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				: null;
 		case 'schedule':
 			return Array.isArray(data.scheduled_actions) || (data.id && data.mode) ? data : null;
-		case 'file':
-			return data.written ||
-				data.edited ||
-				data.copied ||
-				data.moved ||
-				data.deleted ||
-				Array.isArray(data.entries) ||
-				'content' in data ||
-				'size' in data
-				? data
-				: null;
 		case 'http':
 			return typeof data.status === 'number' ? data : null;
 		case 'clipboard':

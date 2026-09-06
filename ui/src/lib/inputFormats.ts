@@ -27,7 +27,7 @@ export const inputFormats = [
 	{
 		id: 'file',
 		label: '文件 File',
-		hint: '附件以 base64 上传，后端落盘后由 agent 通过 file 工具读取，无需额外 Provider。',
+		hint: '附件以 base64 上传，后端落盘后由 agent 通过 files 工具读取，无需额外 Provider。',
 	},
 	{
 		id: 'text',

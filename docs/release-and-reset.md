@@ -8,9 +8,11 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 `ask`、`paranoid`、`autopilot`。旧配置会被备份为 `config.toml.*.bak` 并以安全默认值启动；请在
 备份中将该字段改为 `ask` 后再手工合并，或按下文完整重置。
 
-本版本同样不再迁移顶层 `[audio]`、已删除的 `[tool_settings.*]` 名称，或数据库中待执行
-定时任务的旧工具名。前两类配置会备份后以默认值启动；任一类旧数据存在时，建议按下文完整重置，
-再在新设置界面重新配置并创建任务。
+本版本同样不再迁移顶层 `[audio]` 或已删除的 `[tool_settings.*]` 名称；这两类配置会备份后以默认值启动。
+仍受支持的历史工具别名只做一次性加载迁移：`[tool_settings.file]` 转为
+`[tool_settings.files]`，`scheduled_action[:operation]` 权限键转为
+`schedule[:operation]`，若新旧配置同时存在则新名称优先，后续保存不会写回旧名称。
+数据库中待执行定时任务若仍引用已经删除的旧工具名不会自动改写，需取消并重新创建，或按下文完整重置。
 
 旧 Phase-7 ReAct 快照（包括未压缩的旧 `react_state` 行）以及直接在 `[media.stt]`、`[media.tts]`、`[media.image_gen]` 中使用
 旧 provider 名和本地凭据的配置也不再兼容。加载器会为检测到的旧媒体 provider 名或凭据生成

@@ -419,14 +419,14 @@ mod tests {
     #[test]
     fn action_serde_roundtrip() {
         let action = Action {
-            tool_name: "file".into(),
+            tool_name: "files".into(),
             tool_input: serde_json::json!({"path": "C:/tmp/a.txt"}),
             is_final: false,
             tool_call_id: Some("call_1".into()),
         };
         let json = serde_json::to_string(&action).unwrap();
         let back: Action = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.tool_name, "file");
+        assert_eq!(back.tool_name, "files");
         assert_eq!(back.tool_input, serde_json::json!({"path": "C:/tmp/a.txt"}));
         assert!(!back.is_final);
         assert_eq!(back.tool_call_id.as_deref(), Some("call_1"));

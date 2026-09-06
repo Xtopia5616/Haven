@@ -15,7 +15,6 @@ pub struct ProcessTool {
 #[serde(rename_all = "snake_case")]
 pub enum ProcessOperation {
     List,
-    Launch,
     Kill,
 }
 
@@ -26,16 +25,9 @@ pub struct ProcessParams {
     /// Operation to perform; defaults to `list`.
     #[serde(default)]
     pub operation: Option<ProcessOperation>,
-    /// Command to run for the launch operation.
-    #[serde(default)]
-    pub command: Option<String>,
     /// Process id for the kill operation.
     #[serde(default)]
     pub pid: Option<i64>,
-    /// Working directory for the launched command. Defaults to the shared
-    /// Temp working directory.
-    #[serde(default)]
-    pub cwd: Option<String>,
 }
 
 impl ProcessTool {
@@ -94,41 +86,6 @@ impl ProcessTool {
                 }
                 Ok(ToolResult::ok(output))
             }
-            ProcessOperation::Launch => {
-                if cancel.is_cancelled() {
-                    anyhow::bail!("cancelled");
-                }
-                let cmd = params.command.unwrap_or_default();
-                if cmd.is_empty() {
-                    anyhow::bail!("command is required for launch");
-                }
-                // Fire-and-forget: no kill_on_drop (dropping the Child would
-                // terminate the launched process).
-                let mut child = tokio::process::Command::new("cmd");
-                child.args(["/c", &cmd]);
-                // Default to the shared Temp working directory so launched
-                // commands do not execute in the app's own working directory.
-                child.current_dir(haven_common::default_work_dir());
-                if let Some(cwd) = params.cwd.filter(|s| !s.is_empty()) {
-                    child.current_dir(cwd);
-                }
-                // Route launched commands through a locally detected proxy
-                // (same detection as the shell tool).
-                for (key, val) in crate::proxy_env_vars() {
-                    if std::env::var_os(&key).is_none() {
-                        child.env(key, val);
-                    }
-                }
-                // Hide the console window when spawning GUI-less commands.
-                #[cfg(windows)]
-                {
-                    child.creation_flags(crate::CREATE_NO_WINDOW);
-                }
-                child.spawn()?;
-                Ok(ToolResult::ok(
-                    serde_json::json!({"operation": "launch", "launched": cmd}),
-                ))
-            }
             ProcessOperation::Kill => {
                 let raw_pid = params.pid.unwrap_or(0);
                 if raw_pid <= 0 {
@@ -179,13 +136,12 @@ impl Tool for ProcessTool {
         "process".into()
     }
     fn description(&self) -> String {
-        "List, launch, or kill processes".into()
+        "List or kill processes".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("kill") => RiskLevel::High,
-            Some("launch") => RiskLevel::Medium,
             _ => RiskLevel::Low,
         }
     }
@@ -201,7 +157,7 @@ impl Tool for ProcessTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["list", "launch", "kill"] }
+                "operation": { "type": "string", "enum": ["list", "kill"] }
             },
             "required": ["operation"],
             "oneOf": [
@@ -210,16 +166,6 @@ impl Tool for ProcessTool {
                     "additionalProperties": false,
                     "properties": { "operation": { "const": "list" } },
                     "required": ["operation"]
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "operation": { "const": "launch" },
-                        "command": { "type": "string", "minLength": 1 },
-                        "cwd": { "type": "string", "minLength": 1, "description": "Working directory; defaults to Haven's temporary working directory" }
-                    },
-                    "required": ["operation", "command"]
                 },
                 {
                     "type": "object",
@@ -265,10 +211,6 @@ mod tests {
             ProcessTool::default().risk_level(&json!({"operation": "list"})),
             RiskLevel::Low
         );
-        assert_eq!(
-            ProcessTool::default().risk_level(&json!({"operation": "launch"})),
-            RiskLevel::Medium
-        );
     }
 
     #[test]
@@ -280,7 +222,6 @@ mod tests {
             .unwrap();
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(ops.contains(&"list"));
-        assert!(ops.contains(&"launch"));
         assert!(ops.contains(&"kill"));
     }
 
@@ -299,30 +240,6 @@ mod tests {
             assert!(p["cpu"].is_number());
             assert!(p["status"].is_string());
         }
-    }
-
-    #[tokio::test]
-    async fn test_process_execute_launch() {
-        let result = ProcessTool::default()
-            .execute(
-                json!({"operation": "launch", "command": "echo hello"}),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.output["launched"], "echo hello");
-    }
-
-    #[tokio::test]
-    async fn test_process_execute_launch_requires_command() {
-        let result = ProcessTool::default()
-            .execute(
-                json!({"operation": "launch", "command": ""}),
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -360,22 +277,5 @@ mod tests {
             .execute(json!({"operation": "list"}), cancel)
             .await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_process_native_entry_lands_in_run() {
-        let result = ProcessTool::default()
-            .run(
-                ProcessParams {
-                    operation: Some(ProcessOperation::Launch),
-                    command: Some("echo hello".into()),
-                    pid: None,
-                    cwd: None,
-                },
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(result.output["launched"], "echo hello");
     }
 }

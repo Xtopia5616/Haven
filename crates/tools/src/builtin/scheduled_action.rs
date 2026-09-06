@@ -534,7 +534,7 @@ impl ScheduledActionCenter {
             scheduled_actions.retain(|_, e| !e.fired);
             if scheduled_actions.len() >= max_scheduled_actions {
                 anyhow::bail!(
-                    "too many pending scheduled_actions (limit {}); cancel some first",
+                    "too many pending scheduled tasks (limit {}); cancel some first",
                     max_scheduled_actions
                 );
             }
@@ -572,7 +572,7 @@ impl ScheduledActionCenter {
                 )
             })
             .await
-            .map_err(|e| anyhow::anyhow!("failed to persist scheduled_action '{}': {e}", id))?;
+            .map_err(|e| anyhow::anyhow!("failed to persist scheduled task '{}': {e}", id))?;
         }
         {
             let mut scheduled_actions = self.scheduled_actions.write().await;
@@ -917,7 +917,7 @@ impl ScheduledActionTool {
                 let mode = params.mode.unwrap_or(ScheduleMode::Tool);
                 if watch.is_some() && mode != ScheduleMode::Continue {
                     anyhow::bail!(
-                        "watch_action_id requires mode 'continue' (the scheduled_action fires by resuming the session with the action result)"
+                        "watch_action_id requires mode 'continue' (the schedule action fires by resuming the session with the action result)"
                     );
                 }
                 // `_session_id` is injected privately by ToolsManager::execute_tool
@@ -989,12 +989,12 @@ impl ScheduledActionTool {
                     "mode": mode.as_str(),
                     "fires_at": fires_at,
                     "wakes_session": mode == ScheduleMode::Continue,
-                    "note": "The scheduled_action fires while the app is running; overdue ones fire on next startup.",
+                    "note": "The schedule action fires while the app is running; overdue ones fire on next startup.",
                 });
                 if let Some(action_id) = &watch_action_id {
                     output["watch_action_id"] = serde_json::json!(action_id);
                     output["note"] = serde_json::json!(format!(
-                        "Fires when background action {action_id} finishes or fails, resuming this session with the action's result. Action-watch scheduled_actions are in-memory only (the watched action cannot survive a restart)."
+                        "Fires when background action {action_id} finishes or fails, resuming this session with the action's result. Action-watch schedule actions are in-memory only (the watched action cannot survive a restart)."
                     ));
                 }
                 if let Some(risk) = risk_level {
@@ -1034,7 +1034,7 @@ impl ScheduledActionTool {
                         serde_json::json!({ "operation": "cancel", "cancelled": id }),
                     ))
                 } else {
-                    anyhow::bail!("scheduled_action '{}' not found or already fired", id)
+                    anyhow::bail!("schedule action '{}' not found or already fired", id)
                 }
             }
         }
@@ -1308,7 +1308,7 @@ mod tests {
                     "delay_secs": 3600,
                     "body": "x",
                     "mode": "tool",
-                    "tool_name": "file",
+                    "tool_name": "files",
                     "tool_args": {"operation": "read", "path": "C:/x"}
                 }),
                 CancellationToken::new(),
@@ -1718,7 +1718,7 @@ mod tests {
                 body: "running backup".into(),
                 mode: ScheduleMode::Tool,
                 session_id: Some("ses-1".into()),
-                tool_name: Some("file".into()),
+                tool_name: Some("files".into()),
                 tool_args: Some(json!({"operation": "read", "path": "C:/x"})),
                 prompt: None,
             })
@@ -1728,7 +1728,7 @@ mod tests {
         // Persisted with the tool payload.
         let pending = db.list_pending_scheduled_actions().unwrap();
         assert_eq!(pending[0].mode, "tool");
-        assert_eq!(pending[0].tool_name.as_deref(), Some("file"));
+        assert_eq!(pending[0].tool_name.as_deref(), Some("files"));
         assert!(pending[0].tool_args.as_deref().unwrap().contains("C:/x"));
 
         // Fires with the payload attached.
@@ -1738,7 +1738,7 @@ mod tests {
             .expect("channel closed");
         assert_eq!(fired.action_id, id);
         assert_eq!(fired.mode, ScheduleMode::Tool);
-        assert_eq!(fired.tool_name.as_deref(), Some("file"));
+        assert_eq!(fired.tool_name.as_deref(), Some("files"));
         assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
         assert_eq!(fired.tool_args.as_ref().unwrap()["path"], "C:/x");
     }

@@ -527,7 +527,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 			newToolMessage({
 				id: 'step-tool-1',
 				stepNumber: 1,
-				toolName: 'file',
+				toolName: 'files',
 				content: '',
 				streaming: true,
 			}),
@@ -821,12 +821,12 @@ describe('dropStreamedThought', () => {
 
 describe('newToolMessage', () => {
 	it('builds a plain tool message', () => {
-		const msg = newToolMessage({ id: 'step-1', stepNumber: 1, toolName: 'file', time: '10:00' });
+		const msg = newToolMessage({ id: 'step-1', stepNumber: 1, toolName: 'files', time: '10:00' });
 		expect(msg).toEqual({
 			id: 'step-1',
 			role: 'assistant',
 			content: '',
-			toolName: 'file',
+			toolName: 'files',
 			type: 'tool',
 			voice: false,
 			stepNumber: 1,
@@ -849,7 +849,7 @@ describe('newToolMessage', () => {
 	});
 
 	it('omits time when falsy so observation fills preserve the placeholder timestamp', () => {
-		const msg = newToolMessage({ id: 'x', stepNumber: 1, toolName: 'file', content: 'ok' });
+		const msg = newToolMessage({ id: 'x', stepNumber: 1, toolName: 'files', content: 'ok' });
 		expect('time' in msg).toBe(false);
 	});
 

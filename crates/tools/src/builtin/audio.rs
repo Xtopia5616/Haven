@@ -19,9 +19,7 @@ const MAX_RECORD_SECS: f64 = 60.0;
 ///
 /// `record` captures through the shared input pipeline (same engine/STT as
 /// user voice input) and returns the transcription.
-/// `play` plays a `.wav` via WinMM `PlaySoundW`. TTS via `text` is not wired
-/// into this tool (no App `media.tts` config is available here) and returns a
-/// clear error.
+/// `play` plays a `.wav` via WinMM `PlaySoundW`.
 pub struct AudioTool {
     /// Shared capture/STT pipeline. `None` in headless/test contexts where
     /// recording is unavailable; the `record` operation then fails cleanly.
@@ -52,9 +50,6 @@ pub struct AudioParams {
     /// Recording duration in seconds (default 10, max 60).
     #[serde(default)]
     pub duration: Option<f64>,
-    /// Text to synthesize for TTS (`play`). Not wired without App TTS config.
-    #[serde(default)]
-    pub text: Option<String>,
     /// Master volume scalar in `[0.0, 1.0]` for `volume_set`.
     #[serde(default)]
     pub volume: Option<f64>,
@@ -142,7 +137,7 @@ impl Tool for AudioTool {
     fn description(&self) -> String {
         "Play or record audio and control system volume/mute: `record` captures \
          through the microphone and returns an STT transcript; `play` plays a \
-         `.wav` file (TTS via `text` is not available in this tool); \
+         `.wav` file; \
          `volume_get`/`volume_set` (0.0–1.0) and `mute_get`/`mute_set` control \
          the default playback endpoint."
             .into()
@@ -292,30 +287,12 @@ impl AudioTool {
     }
 
     async fn play(&self, params: &AudioParams) -> anyhow::Result<ToolResult> {
-        if let Some(text) = params
-            .text
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
-            let _ = text;
-            return Err(anyhow::anyhow!(
-                "audio tool: TTS play via `text` is not wired here — AudioTool has no App \
-                 media.tts config. Use a .wav file_path, or synthesize audio elsewhere and \
-                 pass the .wav path."
-            ));
-        }
-
         let path = params
             .file_path
             .as_deref()
             .map(str::trim)
             .filter(|p| !p.is_empty())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "audio tool: file_path (.wav) is required for play when text is unset"
-                )
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("audio tool: file_path (.wav) is required for play"))?;
 
         let lower = path.to_ascii_lowercase();
         if !lower.ends_with(".wav") {
@@ -511,15 +488,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_audio_execute_play_tts_not_wired() {
+    async fn test_audio_execute_play_rejects_removed_text_param() {
         let result = AudioTool::new(None)
             .execute(
                 json!({"operation": "play", "text": "hello"}),
                 CancellationToken::new(),
             )
             .await;
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("TTS"));
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -559,7 +535,6 @@ mod tests {
                     operation: AudioOperation::Record,
                     file_path: None,
                     duration: None,
-                    text: None,
                     volume: None,
                     muted: None,
                 },
