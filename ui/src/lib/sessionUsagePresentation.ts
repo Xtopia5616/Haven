@@ -40,6 +40,28 @@ export interface SessionTokenStats {
 	restored?: boolean;
 }
 
+export interface StepUsageMessage {
+	type?: string | null;
+	stepNumber?: number | null;
+}
+
+/**
+ * A ReAct step can contain several parallel tool cards, but the provider
+ * reports one usage record for the model response that produced the batch.
+ * Render that step aggregate on the first visible tool card only; repeating
+ * it on every sibling makes one request look like several charges.
+ */
+export function isFirstToolForStep(
+	messages: StepUsageMessage[],
+	index: number,
+): boolean {
+	const current = messages[index];
+	if (current?.type !== 'tool' || current.stepNumber == null) return false;
+	return messages.findIndex(
+		(message) => message.type === 'tool' && message.stepNumber === current.stepNumber,
+	) === index;
+}
+
 /**
  * Aggregate persisted per-call usage for one ReAct step. The optional cache
  * lets the chat page avoid rebuilding the same tooltip data on every render.

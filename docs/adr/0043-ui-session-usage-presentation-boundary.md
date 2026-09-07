@@ -9,6 +9,9 @@ token tooltip，导致持久化用量数据与展示格式化职责重新耦合�
 
 - 新增 `ui/src/lib/sessionUsagePresentation.ts`，集中承载每步用量聚合、缓存命中率、
   token tooltip 和对应的展示类型。
+- 一个 ReAct step 可能产生多个并行工具卡，但 provider 只返回该模型响应的一笔
+  用量；该 step 的 aggregate 只显示在第一个工具卡上，避免让用户误以为同一笔
+  请求被重复计费。
 - 路由页保留响应式 store 同步与 context budget 派生，只通过轻量适配函数把当前
   `llmUsage` 传给展示模块；工具栏继续通过 props 接收展示回调。
 - 保持多次调用合并、inclusive/exclusive cache accounting、恢复态/估算态、费用和
@@ -22,8 +25,8 @@ token tooltip，导致持久化用量数据与展示格式化职责重新耦合�
 
 ## 影响
 
-这是 UI 内部纯计算边界拆分。token 卡片、工具气泡和 tooltip 的展示保持不变，不需要
-数据或配置迁移。
+这是 UI 内部纯计算边界拆分。token 卡片、工具气泡和 tooltip 不改变 usage 数据或
+计费口径；并行工具卡只调整 aggregate 的展示位置，不需要数据或配置迁移。
 
 ## 验证
 

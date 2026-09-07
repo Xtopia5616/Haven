@@ -4,6 +4,7 @@
 	import Logo from '$lib/Logo.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
+	import { isFirstToolForStep } from '$lib/sessionUsagePresentation.ts';
 
 	let {
 		messages = [],
@@ -33,6 +34,7 @@
 			{@const showFallbackIntent =
 				msg.type === 'tool' &&
 				(msg.showFallbackIntent ?? !hasToolPreambleBefore(messages, index))}
+			{@const showStepUsage = isFirstToolForStep(messages, index)}
 			<ChatBubble
 				role={msg.role}
 				content={msg.content}
@@ -44,7 +46,7 @@
 				unrecoverable={!!msg.unrecoverable}
 				messageId={msg.id}
 				stepNumber={msg.stepNumber}
-				usage={msg.type === 'tool' ? stepUsage(msg.stepNumber) : null}
+				usage={showStepUsage ? stepUsage(msg.stepNumber) : null}
 				toolArgs={msg.toolArgs ?? null}
 				attachments={msg.attachments}
 				{showFallbackIntent}
