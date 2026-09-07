@@ -15,9 +15,9 @@ use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
 
 /// Cold-start progress exposed to the UI status chip.
-/// `loading` while MCP/skills/audio prewarm finish in the background;
-/// `ready` once that deferred work completes (or immediately when there is
-/// nothing deferred).
+/// `loading` while the backend dispatcher is starting; `ready` once the
+/// dispatcher can accept sessions. MCP/skills catalog work may continue in
+/// the background after the bounded startup window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapStatus {
     Loading,
@@ -393,6 +393,14 @@ impl AppState {
             Ok(snapshot) => snapshot.config,
             Err(error) => {
                 tracing::error!("cannot read config for background init: {error}");
+                // Deferred catalog setup cannot proceed, but the core agent
+                // dispatcher is still usable and must not leave the UI in an
+                // unbounded loading state.
+                agent.start();
+                bootstrap_ready.store(true, Ordering::Release);
+                emit(AppBootstrapEvent {
+                    status: BootstrapStatus::Ready.as_str().to_string(),
+                });
                 return;
             }
         };
@@ -428,6 +436,8 @@ impl AppState {
 
             // Head-start window: prefer a live catalog for restore, then start
             // the dispatcher regardless so pending sessions are not stuck idle.
+            // A slow MCP server must not keep the whole app looking as though
+            // the backend is still unavailable after the dispatcher is ready.
             let catalog_finished = tokio::select! {
                 r = &mut catalog => {
                     if let Err(e) = r {
@@ -445,8 +455,15 @@ impl AppState {
 
             agent.start();
 
-            if !catalog_finished && let Err(e) = catalog.await {
-                tracing::warn!("bootstrap catalog task panicked: {e}");
+            if !catalog_finished {
+                // Let the catalog finish independently. Its result only
+                // affects tool availability; it is no longer part of the
+                // backend-readiness gate.
+                tokio::spawn(async move {
+                    if let Err(e) = catalog.await {
+                        tracing::warn!("bootstrap catalog task panicked: {e}");
+                    }
+                });
             }
 
             bootstrap_ready.store(true, Ordering::Release);
@@ -511,5 +528,31 @@ mod tests {
                 .max_steps,
             42
         );
+    }
+
+    #[tokio::test]
+    async fn background_init_marks_dispatcher_ready_for_the_ui() {
+        let dir = tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let db_path = dir.path().join("test.db");
+        let loader = ConfigLoader::load_from(&cfg_path).unwrap();
+        let state = AppState::new(&db_path, vec![], loader).await.unwrap();
+        let (ready_tx, mut ready_rx) = tokio::sync::watch::channel(None::<String>);
+
+        state.spawn_background_init(move |payload| {
+            let _ = ready_tx.send(Some(payload.status));
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if ready_rx.borrow().as_deref() == Some("ready") {
+                    break;
+                }
+                ready_rx.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("background init should emit ready");
+        assert_eq!(state.bootstrap_status(), BootstrapStatus::Ready);
     }
 }

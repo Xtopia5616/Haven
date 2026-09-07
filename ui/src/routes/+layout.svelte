@@ -200,9 +200,9 @@
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
 	// can still be waiting for Rust startup.
 	let runtime = $state('unknown');
-	// Cold-start gate: false until MCP/skills/audio prewarm finish (or the
-	// get_bootstrap_status probe says ready). Keeps the chip on 加载中 so the
-	// UI can paint before deferred backend work completes.
+	// Cold-start gate: false until the backend dispatcher is ready (or the
+	// get_bootstrap_status probe says ready). MCP/skills catalog work may keep
+	// running in the background without keeping the status chip on 加载中.
 	let bootstrapReady = $state(false);
 	// Whether ANY session is busy (pending/running). The model-state events only
 	// fire while chunks flow; a session whose LLM call is stuck (idle timeout,

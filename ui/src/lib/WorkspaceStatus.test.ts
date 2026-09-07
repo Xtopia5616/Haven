@@ -10,4 +10,14 @@ describe('WorkspaceStatus', () => {
 		expect(status).toBeTruthy();
 		expect(status.getAttribute('title')).toContain('Rust/Tauri 后端未启动');
 	});
+
+	it('shows readiness once backend bootstrap has completed', () => {
+		render(WorkspaceStatus, {
+			runtime: 'tauri',
+			bootstrapReady: true,
+			llmConnected: 'ready',
+		});
+
+		expect(screen.getByRole('button', { name: /就绪/ })).toBeTruthy();
+	});
 });
