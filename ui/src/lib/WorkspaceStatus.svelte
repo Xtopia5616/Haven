@@ -7,6 +7,7 @@
 		overlay = {},
 		modelState = 'ready',
 		busySessions = new Set(),
+		runtime = 'tauri',
 		bootstrapReady = true,
 		llmConnected = null,
 		awaitingBackgroundActive = false,
@@ -16,6 +17,7 @@
 	} = $props();
 
 	const statusLabel = $derived.by(() => {
+		if (runtime === 'browser') return '浏览器预览';
 		if (overlay.isRecording) return '录音中';
 		if (overlay.processing) return '转写中';
 		if (modelState === 'streaming') return '生成中';
@@ -32,6 +34,7 @@
 	});
 
 	const statusColor = $derived.by(() => {
+		if (runtime === 'browser') return 'outline';
 		if (overlay.isRecording) return 'error';
 		if (
 			overlay.processing ||
@@ -47,6 +50,9 @@
 	});
 
 	const statusTitle = $derived.by(() => {
+		if (runtime === 'browser') {
+			return '当前是浏览器预览，Rust/Tauri 后端未启动；运行 cargo tauri dev 启动桌面应用';
+		}
 		const parts = [];
 		if (runningActionCount > 0) {
 			parts.push(`${runningActionCount} 个${taskKindLabel('background')}运行中`);
@@ -68,7 +74,12 @@
 	>
 		<StatusDot
 			color={statusColor}
-			animate={statusLabel !== '就绪' && statusLabel !== '未配置' && statusLabel !== '已断开'}
+			animate={
+				statusLabel !== '就绪' &&
+				statusLabel !== '未配置' &&
+				statusLabel !== '已断开' &&
+				statusLabel !== '浏览器预览'
+			}
 		/>
 		<span class:recording-text={overlay.isRecording} class="status-text">{statusLabel}</span>
 		{#if runningActionCount > 0 || pendingScheduledActions.length > 0}

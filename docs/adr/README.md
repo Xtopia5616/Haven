@@ -96,3 +96,4 @@
 - [0093：Provider 工具 schema 投影与 OpenAI-compatible 网关审查](0093-provider-tool-schema-projections.md)
 - [0094：模型 provider wire 协议规范化](0094-provider-wire-protocol-normalization.md)
 - [0095：OpenAI-compatible 工具 schema 的 object-root 投影](0095-openai-compatible-object-root-tool-schema.md)
+- [0096：幂等启动开发服务器](0096-idempotent-dev-server-launch.md)

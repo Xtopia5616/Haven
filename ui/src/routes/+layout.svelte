@@ -196,6 +196,10 @@
 	let durationTimer = /** @type {ReturnType<typeof setInterval> | null} */ (null);
 	let processingTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 	let modelState = $state('ready'); // synced from modelStateStore on mount
+	// Runtime mode is intentionally separate from backend bootstrap state:
+	// browser Vite preview has no Tauri backend at all, while a Tauri webview
+	// can still be waiting for Rust startup.
+	let runtime = $state('unknown');
 	// Cold-start gate: false until MCP/skills/audio prewarm finish (or the
 	// get_bootstrap_status probe says ready). Keeps the chip on 加载中 so the
 	// UI can paint before deferred backend work completes.
@@ -549,6 +553,7 @@
 	let removeGlobalErrorHandlers = () => {};
 
 	onMount(async () => {
+		runtime = isTauri() ? 'tauri' : 'browser';
 		removeGlobalErrorHandlers = installGlobalErrorHandlers();
 		// Keep the static shell above the live DOM until it has had a paint pass.
 		// This avoids exposing a partially hydrated layout for one frame, while
@@ -968,6 +973,7 @@
 			{overlay}
 			{modelState}
 			{busySessions}
+			{runtime}
 			{bootstrapReady}
 			{llmConnected}
 			{awaitingBackgroundActive}

@@ -27,11 +27,18 @@ cargo fetch --locked
 corepack pnpm --dir ui run dev
 ```
 
+浏览器预览中的状态按钮会明确显示“浏览器预览”；这是正常的无后端模式，不能调用
+Tauri 命令。需要完整功能时请运行下面的桌面开发命令。
+
 桌面开发推荐使用根目录的一键命令，它会同时启动 Vite 前端和 Rust/Tauri 后端：
 
 ```powershell
 corepack pnpm run dev
 ```
+
+桌面开发命令会由 Tauri 负责启动 Rust 后端，并通过同一个 `4721` 端口使用 Vite。
+如果浏览器预览已经先启动，UI 入口会复用现有的 Haven Vite 进程，不会再启动第二个
+前端服务；如果端口被其它程序占用，会给出明确错误。
 
 也可以直接使用 Tauri CLI。若尚未安装，可执行 `cargo install tauri-cli --version "^2"`，随后运行：
 
@@ -40,7 +47,9 @@ cargo tauri dev
 cargo tauri build
 ```
 
-`cargo tauri build` 会先执行 `corepack pnpm --dir ui run build`，产物在 `target/release/bundle/`。请勿把 API 密钥提交到仓库；应用配置保存在用户数据目录。
+`cargo tauri build` 会先执行 `corepack pnpm --dir ui run build`，不依赖开发服务器；可在
+Vite 开发服务器运行时执行。产物在 `target/release/bundle/`。请勿把 API 密钥提交到仓库；
+应用配置保存在用户数据目录。
 
 ## 质量检查
 
