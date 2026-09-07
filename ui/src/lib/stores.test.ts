@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
+
+vi.mock('./tauri.ts', () => ({
+	invoke: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { invoke } from './tauri.ts';
 import {
 	sessionMessagesStore,
 	setSessionMessages,
@@ -121,6 +127,7 @@ describe('addNotification', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		notificationStore.set([]);
+		vi.mocked(invoke).mockClear();
 	});
 	afterEach(() => {
 		vi.useRealTimers();
@@ -172,6 +179,20 @@ describe('addNotification', () => {
 		expect(errorCalls[0][0]).toContain('notification');
 		expect(errorCalls[0][0]).toContain('boom');
 		spy.mockRestore();
+	});
+
+	it('mirrors error notifications to the backend log', () => {
+		addNotification('回退失败: target message not found', 'error');
+
+		expect(invoke).toHaveBeenCalledWith('log_frontend_error', {
+			message: '回退失败: target message not found',
+		});
+	});
+
+	it('does not mirror non-error notifications to the backend log', () => {
+		addNotification('正在加载…', 'info');
+
+		expect(invoke).not.toHaveBeenCalled();
 	});
 });
 

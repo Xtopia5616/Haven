@@ -13,6 +13,11 @@ import { canonicalToolName, isUnrecoverableHistoricalTool } from '$lib/toolNames
 // the message. Legacy rows still carry the sentinel — kept for them.
 export const ASK_MSG_TOOL_CALL_ID = '__ask__';
 
+/** A resume-only bubble shown when a session has no persisted message rows. */
+export function isDisplayOnlyMessageId(id: unknown): boolean {
+	return typeof id === 'string' && id.startsWith('placeholder-');
+}
+
 interface ResumeMessage {
 	id: string;
 	role?: string;

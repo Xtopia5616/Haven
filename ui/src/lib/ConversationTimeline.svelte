@@ -60,7 +60,7 @@
 		<MaterialButton variant="outlined" label="重试" onclick={retryTimeline} />
 	</div>
 {:else}
-	<LoadingState label="正在加载会话…" detail="正在准备消息视图" variant="inline" />
+	<LoadingState label="正在加载会话…" detail="正在准备消息视图" />
 {/if}
 
 <style>

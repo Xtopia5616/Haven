@@ -173,6 +173,21 @@ pub fn read_log_tail(
     })
 }
 
+/// Mirror a user-visible renderer error into the backend log. The renderer
+/// already normalized the text for the toast; sanitize again at this trust
+/// boundary so provider-controlled paths, URLs, and secrets never enter the
+/// persistent log verbatim.
+#[tauri::command]
+pub fn log_frontend_error(message: String) -> Result<(), String> {
+    let safe = crate::logging::sanitize_error_text(&message);
+    tracing::error!(
+        source = "frontend_notification",
+        "frontend error notification: {}",
+        safe
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

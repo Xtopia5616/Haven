@@ -31,6 +31,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	export_history: { request: 'HistoryExportRequest', response: 'string', boundary: 'read', security: 'export contains persisted history only' },
 	get_log_info: { request: '-', response: 'LogInfo', boundary: 'read', security: 'path is optional; no environment details' },
 	read_log_tail: { request: 'ReadLogTailRequest', response: 'LogTail', boundary: 'read', security: 'bounded tail; file logging must be enabled' },
+	log_frontend_error: { request: 'FrontendErrorRequest', response: 'void', boundary: 'mutate', security: 'sanitized user-visible error mirrored into the backend log' },
 	list_mcp_tools: { request: '-', response: 'McpServerSnapshot[]', boundary: 'read', security: 'snapshot only; invocation remains gated' },
 	reconnect_mcp: { request: 'McpNameRequest', response: 'void', boundary: 'execute', security: 'server name selects an existing configured client' },
 	refresh_mcp_servers: { request: '-', response: 'McpRefreshResult', boundary: 'execute', security: 'reconcile configured clients; no renderer command' },

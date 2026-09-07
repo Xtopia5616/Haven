@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildResumeMessages, mergeLiveStreaming, ASK_MSG_TOOL_CALL_ID } from './resumeMessages.ts';
+import {
+	buildResumeMessages,
+	mergeLiveStreaming,
+	ASK_MSG_TOOL_CALL_ID,
+	isDisplayOnlyMessageId,
+} from './resumeMessages.ts';
 import { formatMessageTime } from './stores.ts';
 
 const sampleSession = {
@@ -8,6 +13,14 @@ const sampleSession = {
 	input_text: '打开记事本',
 	created_at: '2026-08-01T10:00:00.000Z',
 };
+
+describe('resume-only message ids', () => {
+	it('recognizes display-only placeholders as non-persisted messages', () => {
+		expect(isDisplayOnlyMessageId('placeholder-ses-1')).toBe(true);
+		expect(isDisplayOnlyMessageId('msg-1')).toBe(false);
+		expect(isDisplayOnlyMessageId(null)).toBe(false);
+	});
+});
 
 describe('buildResumeMessages', () => {
 	it('carries durable unknown tool outcomes into history cards', () => {

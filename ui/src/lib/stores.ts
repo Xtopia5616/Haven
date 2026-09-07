@@ -232,6 +232,13 @@ export function addNotification(
 	if (type === 'error' && options.logError !== false) {
 		logger.error('notification', msg);
 	}
+	if (type === 'error') {
+		// Error toasts are also mirrored into the Rust file log so the Settings
+		// log viewer contains the same user-visible failure. This is best effort:
+		// the notification must remain usable when running outside Tauri or when
+		// the diagnostic command is unavailable during an upgrade.
+		void invoke('log_frontend_error', { message: msg }).catch(() => {});
+	}
 	let id: string | null = null;
 	notificationStore.update((n) => {
 		if (n.some((x) => x.msg === msg && x.type === type)) {

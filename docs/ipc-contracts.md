@@ -31,6 +31,7 @@
 | `export_history` | `HistoryExportRequest` | `string` | read | 仅导出持久化历史 |
 | `get_log_info` | `-` | `LogInfo` | read | 不返回环境详情 |
 | `read_log_tail` | `ReadLogTailRequest` | `LogTail` | read | 尾部长度受限 |
+| `log_frontend_error` | `FrontendErrorRequest` | `()` | mutate | 脱敏后写入后端日志 |
 | `list_mcp_tools` | `-` | `McpServerSnapshot[]` | read | 快照不执行工具，env 值统一遮蔽 |
 | `reconnect_mcp` | `McpNameRequest` | `()` | execute | 只能选择已配置客户端 |
 | `refresh_mcp_servers` | `-` | `McpRefreshResult` | execute | 只重 reconcile 配置客户端 |
@@ -154,6 +155,7 @@ exit_code?, preview? }`。它不包含动态 `tool_args`、续接 `prompt`、`to
 |---|---|---|---|
 | `get_log_info` | 无 | `LogInfo` | 返回文件日志开关、级别和当前日志路径；路径可能为 `null`。 |
 | `read_log_tail` | `{ max_lines? }` | `LogTail` | 返回当前日志文件路径和受上限约束的尾部文本。文件日志关闭或文件不存在时返回命令错误。 |
+| `log_frontend_error` | `{ message }` | `()` | 将脱敏后的用户可见前端错误写入后端文件日志；失败不影响前端 toast。 |
 | `check_shell_available` | `{ shell }` | `ShellAvailability` | 返回指定 shell 是否可用；不会返回 PATH 或进程探测细节。 |
 
 上述命令的 Rust 响应均为命名 DTO，前端由 `ui/src/lib/contracts/settings.ts` 在消费前校验。

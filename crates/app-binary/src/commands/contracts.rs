@@ -141,6 +141,13 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Read,
         security: "bounded tail; file logging must be enabled",
     },
+    CommandContract {
+        name: "log_frontend_error",
+        request: "FrontendErrorRequest",
+        response: "()",
+        boundary: CommandBoundary::Mutate,
+        security: "sanitized user-visible error mirrored into the backend log",
+    },
     // mcp
     CommandContract {
         name: "list_mcp_tools",
@@ -590,7 +597,7 @@ mod tests {
     #[test]
     fn command_registry_is_unique_and_covers_the_current_handler_set() {
         assert_eq!(IPC_CONTRACT_VERSION, 1);
-        assert_eq!(COMMAND_CONTRACTS.len(), 68);
+        assert_eq!(COMMAND_CONTRACTS.len(), 69);
         let names: HashSet<_> = COMMAND_CONTRACTS
             .iter()
             .map(|contract| contract.name)

@@ -21,6 +21,18 @@ describe('InputRouter context menu', () => {
 		expect(screen.getByRole('button', { name: '发送' }).getAttribute('data-variant')).toBe(
 			'primary',
 		);
+		expect(screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder')).toContain(
+			'录音',
+		);
+	});
+
+	it('keeps the recording shortcut in the active-session placeholder', () => {
+		render(InputRouter, { activeSessionId: 'ses-1', hotkeyBinding: 'Alt+Space', onsubmit: vi.fn() });
+
+		expect(screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder')).toBe(
+			'追加指令，Enter 发送，Shift+Enter 换行；按 Alt+Space 录音',
+		);
+		expect(document.querySelector('.input-meta')).toBeNull();
 	});
 
 	it('uses the same shared toolbar control for interrupting active output', () => {

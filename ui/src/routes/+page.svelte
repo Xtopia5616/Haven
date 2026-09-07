@@ -2,7 +2,11 @@
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
+	import {
+		buildResumeMessages,
+		mergeLiveStreaming,
+		isDisplayOnlyMessageId,
+	} from '$lib/resumeMessages.ts';
 	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
@@ -413,6 +417,10 @@
 	}
 
 	function handleCtxRollback() {
+		if (isDisplayOnlyMessageId(ctxMenu.msgId)) {
+			closeCtxMenu();
+			return;
+		}
 		const step = getStepForCtxMenu();
 		if (step == null) {
 			addNotification('无法确定此消息对应的步骤', 'error', 3000);
@@ -457,7 +465,9 @@
 	}
 
 	let ctxMenuItems = $derived([
-		{ id: 'rollback', label: '回退到此消息', icon: 'rollback', action: handleCtxRollback },
+		...(isDisplayOnlyMessageId(ctxMenu.msgId)
+			? []
+			: [{ id: 'rollback', label: '回退到此消息', icon: 'rollback', action: handleCtxRollback }]),
 		{ id: 'copy', label: '复制', icon: 'copy', action: handleCtxCopy },
 	]);
 

@@ -51,11 +51,11 @@
 
 **唯一入口**：`logger.debug / logger.info / logger.warn / logger.error(context, msg, ...args)`。
 
-可恢复错误的组合入口是 `reportError(error, { context, message })`：它负责把错误归一成单行、限长的用户文案，同时写一条带 UI 上下文的 ERROR 日志并投递 error toast。底层边界（当前是 `tauri.ts::invoke`）已经记录过的错误，页面 catch 传 `log: false`，避免同一失败重复记日志。
+可恢复错误的组合入口是 `reportError(error, { context, message })`：它负责把错误归一成单行、限长的用户文案，同时写一条带 UI 上下文的 ERROR 日志并投递 error toast；`addNotification(..., 'error')` 还会将同一条脱敏文案镜像到 Rust 文件日志。底层边界（当前是 `tauri.ts::invoke`）已经记录过的错误，页面 catch 传 `log: false`，避免同一失败重复记日志。
 
 - **`context`**：模块短名，小驼峰。常用：`stores`、`events`、`invoke`、`notification`、`tauri`、`+layout`、页面/组件短名。
 - **级别门控**：`currentLevel` 在 DEV 为 `debug`，生产为 `info`；`debug` 只在开发环境输出。
-- **与 toast 的关系**：普通 `addNotification(..., 'error')` 仍会自动 `logger.error('notification', msg)`；统一异常走 `reportError`，由 `reportError` 负责日志，toast 通过内部 `logError: false` 选项避免重复记录。
+- **与 toast 的关系**：普通 `addNotification(..., 'error')` 仍会自动 `logger.error('notification', msg)`，并通过 `log_frontend_error` 镜像到 Rust 文件日志；统一异常走 `reportError`，由 `reportError` 负责日志，toast 通过内部 `logError: false` 选项避免重复记录。
 - **invoke 失败**：`tauri.ts::invoke` 已在抛出前 `logger.error('invoke', ...)`；页面 `catch` 只负责用户提示，不再记日志。
 
 ```ts
@@ -172,7 +172,7 @@ AgentEvent / 其它后端事件
 | `error` | 4000–5000 | 上限 5s；需长时间阅读也不超过 5s |
 
 - **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`MCP`、产品名 `Haven`）可保留英文。
-- `error` 类型自动 `logger.error('notification', msg)`，调用方不再重复记日志。
+- `error` 类型自动 `logger.error('notification', msg)`，并通过 `log_frontend_error` 镜像到 Rust 文件日志；调用方不再重复记日志。
 - 默认时长固定为 info 3s、success 3s、warning 4s、error 5s；错误上报统一使用 error 5s。
 - `NotificationToast` 统一使用语义色板、错误 `alert` 语义、内容驱动高度和可换行文本；单行通知不额外占用多行通知的高度。
 

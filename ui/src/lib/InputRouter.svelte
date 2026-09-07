@@ -542,31 +542,14 @@
 			id="chat-input"
 			rows="1"
 			placeholder={activeSessionId
-				? '追加指令，Enter 发送，Shift+Enter 换行'
+				? `追加指令，Enter 发送，Shift+Enter 换行；按 ${hotkeyBinding} 录音`
 				: `输入指令，Enter 发送，或按 ${hotkeyBinding} 录音`}
 			bind:value={transcriptInput}
 			onkeydown={handleKeydown}
 			onpaste={handlePaste}
 			oncontextmenu={handleContextMenu}
 			class="md-input chat-input"
-			aria-describedby="chat-input-hint"
 			autocomplete="off"></textarea>
-	</div>
-	<div class="input-meta" id="chat-input-hint" aria-live="polite">
-		<span>
-			{#if recordingState.isRecording}
-				正在录音…
-			{:else if stopMode}
-				生成中 · 可继续输入，或点击停止
-			{:else}
-				Enter 发送 · Shift+Enter 换行
-			{/if}
-		</span>
-		{#if pendingImages.length + pendingFiles.length > 0}
-			<span class="input-attachment-count">
-				已添加 {pendingImages.length + pendingFiles.length} 个附件
-			</span>
-		{/if}
 	</div>
 	<div class="toolbar-row md-toolbar">
 		<div class="toolbar-left">
@@ -823,21 +806,6 @@
 		align-items: flex-end;
 		min-width: 0;
 	}
-	.input-meta {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--md-sys-space-sm);
-		padding: 0 var(--md-sys-space-sm);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.input-attachment-count {
-		color: var(--md-sys-color-primary);
-		font-weight: 600;
-		white-space: nowrap;
-	}
 	.sr-only {
 		position: absolute;
 		width: 1px;
@@ -937,9 +905,6 @@
 			/* Keep the four action buttons as one compact cluster on narrow
 			 * windows instead of stretching them across the whole row. */
 			justify-content: flex-end;
-		}
-		.input-meta {
-			font-size: var(--md-sys-typescale-label-small-size);
 		}
 	}
 </style>

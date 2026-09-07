@@ -8,6 +8,9 @@
 
 - 前端以 `errorHandling.ts::reportError` 作为可恢复错误的组合入口：`formatError` 负责单行、限长文案，`logger` 负责带上下文的日志，`addNotification` 负责 error toast。
 - `tauri.ts::invoke` 在 IPC 边界记录一次命令失败；已记录的错误由页面 catch 通过 `log: false` 只补用户反馈，避免重复 ERROR。
+- `addNotification(..., 'error')` 在保留前端 toast 与 renderer 日志的同时，以 best-effort 调用
+  `log_frontend_error`；Rust 端再次脱敏后写入文件日志，使设置页诊断日志包含相同的用户可见错误。
+  非错误通知不镜像，镜像失败也不影响 toast 展示。
 - `addNotification` 使用 `NotificationType` 和按语义统一的默认时长（info 3s、success 3s、warning 4s、error 5s）。错误 toast 统一使用 `alert` 语义、内容驱动高度和可换行文本。
 - 根布局注册 `error` 与 `unhandledrejection` 兜底处理，日志上下文固定为 `global`，只显示不泄露内部细节的通用提示。
 - 后端 `log_err` 保留稳定的两行消息前缀，同时增加 `command` / `error` 结构化字段；返回值和日志字段均使用单行、限长、已脱敏文本，命令共享辅助路径的失败也必须通过该入口。
@@ -20,7 +23,7 @@
 
 ## 影响与回滚
 
-本次改变错误 toast 的默认时长、可访问语义、长文案布局和前端日志上下文，不改变 IPC 成功载荷、数据库或用户配置，不需要数据重置。回滚代码与本 ADR 即可恢复旧的分散处理方式。
+本次改变错误 toast 的默认时长、可访问语义、长文案布局和前端日志上下文，并新增仅用于诊断的前端错误日志镜像命令；不改变业务 IPC 成功载荷、数据库或用户配置，不需要数据重置。回滚代码与本 ADR 即可恢复旧的分散处理方式。
 
 ## 验证
 

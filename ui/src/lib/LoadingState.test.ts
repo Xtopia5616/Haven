@@ -19,7 +19,7 @@ describe('LoadingState', () => {
 		expect(document.querySelector('.loading-state--page')).toBeTruthy();
 	});
 
-	it('supports the compact inline layout used by the conversation timeline', () => {
+	it('supports the compact inline layout for opt-in embedded surfaces', () => {
 		render(LoadingState, { variant: 'inline' });
 
 		expect(document.querySelector('.loading-state--inline')).toBeTruthy();
