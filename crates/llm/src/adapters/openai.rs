@@ -401,6 +401,22 @@ impl OpenAiAdapter {
         requires_reasoning_echo(&self.endpoint)
     }
 
+    /// xAI keeps the OpenAI chat wire format, but its tool validator rejects
+    /// root-level JSON Schema unions. Provider identity and the canonical API
+    /// host must therefore enable the same projection as the explicit `xai`
+    /// wire style, even when a legacy/custom config says `openai-chat`.
+    fn uses_xai_tool_schema_projection(&self) -> bool {
+        self.style == "xai"
+            || matches!(
+                self.endpoint.provider.trim().to_ascii_lowercase().as_str(),
+                "xai" | "grok"
+            )
+            || url::Url::parse(&self.endpoint.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .is_some_and(|host| host.eq_ignore_ascii_case("api.x.ai"))
+    }
+
     /// Derive a compact, deterministic cache routing key from the stable part
     /// of a ReAct conversation. The dynamic session-context suffix is
     /// intentionally excluded so identical agent instructions and tool schemas
@@ -445,8 +461,11 @@ impl OpenAiAdapter {
         // Hash the exact provider tool projection, not the canonical
         // ToolDefinition. This keeps the routing key aligned with the wire
         // schema after recursive JSON canonicalization.
-        let tool_value =
-            serde_json::to_value(Self::convert_tools(tools.to_vec(), self.style == "xai")).ok()?;
+        let tool_value = serde_json::to_value(Self::convert_tools(
+            tools.to_vec(),
+            self.uses_xai_tool_schema_projection(),
+        ))
+        .ok()?;
         hasher.update(crate::types::stable_json_bytes(&tool_value));
 
         let digest = hasher.finalize();
@@ -783,7 +802,10 @@ impl OpenAiAdapter {
             temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
             tools: if has_tools {
-                Some(Self::convert_tools(tools, self.style == "xai"))
+                Some(Self::convert_tools(
+                    tools,
+                    self.uses_xai_tool_schema_projection(),
+                ))
             } else {
                 None
             },
@@ -2755,6 +2777,74 @@ mod tests {
             parameters["properties"]["operation"]["enum"],
             serde_json::json!(["set", "list"])
         );
+    }
+
+    #[test]
+    fn xai_provider_projects_schedule_style_schema_when_wire_style_is_openai_chat() {
+        let endpoint = ModelEndpoint {
+            provider: "xai".into(),
+            api_style: Some("openai-chat".into()),
+            base_url: "https://api.x.ai/v1".into(),
+            ..Default::default()
+        };
+        let client = OpenAiAdapter::new(endpoint);
+        let schedule = ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "schedule".into(),
+                description: "schedule an action".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "operation": { "type": "string", "enum": ["set", "list", "cancel"] },
+                        "delay_secs": { "type": "integer", "minimum": 1 },
+                        "due_at": { "type": "string", "minLength": 1 },
+                        "body": { "type": "string", "minLength": 1 },
+                        "action_id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["operation"],
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": { "operation": { "const": "list" } },
+                            "required": ["operation"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "operation": { "const": "cancel" },
+                                "action_id": { "type": "string", "minLength": 1 }
+                            },
+                            "required": ["operation", "action_id"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "operation": { "const": "set" },
+                                "delay_secs": { "type": "integer", "minimum": 1 },
+                                "due_at": { "type": "string", "minLength": 1 },
+                                "body": { "type": "string", "minLength": 1 }
+                            },
+                            "required": ["operation", "body"],
+                            "oneOf": [
+                                { "required": ["delay_secs"] },
+                                { "required": ["due_at"] }
+                            ]
+                        }
+                    ]
+                }),
+            },
+        };
+
+        let body = client.build_request_body(vec![], vec![schedule], false);
+        let parameters = &body.tools.unwrap()[0].function.parameters;
+        assert_eq!(parameters["type"], "object");
+        assert!(parameters.get("oneOf").is_none());
+        assert_eq!(
+            parameters["properties"]["operation"]["enum"],
+            serde_json::json!(["set", "list", "cancel"])
+        );
+        assert_eq!(parameters["properties"]["action_id"]["type"], "string");
     }
 
     #[test]

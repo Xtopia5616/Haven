@@ -15,6 +15,8 @@ xAI/Grok 的工具 schema 校验拒绝根级 `anyOf`、`oneOf` 或 `allOf`，即
    为了 provider 兼容而削弱执行边界。
 2. `haven-llm` 的 xAI chat adapter 在发送工具前，把根级 union 投影为普通 object：
    合并分支属性、保留所有分支共同必填字段，并合并 discriminator 的 `const`/`enum`。
+   即使配置显式选择 `openai-chat`，只要 provider 是 xAI/Grok 或 endpoint 主机是
+   `api.x.ai`，仍启用该投影。
 3. 该投影只作用于 xAI wire 请求；普通 OpenAI-compatible chat、OpenAI Responses、
    Anthropic 和 Gemini 保留原始 schema。对象属性内部的 union 不做改写。
 4. Prompt cache key 使用与实际请求相同的 provider 投影，避免 schema 与缓存路由键
