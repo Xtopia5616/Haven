@@ -26,8 +26,9 @@ use haven_common::types::{ContentPart, InjectSource};
 
 pub(crate) use embedding::{openai_compatible_embed, openai_embeddings_url};
 pub(crate) use provider_features::{
-    chat_thinking_extras, is_openrouter, reasoning_tail, reasoning_text_from_thinking_blocks,
-    requires_reasoning_echo, responses_reasoning_config,
+    chat_thinking_extras, is_deepseek, is_openrouter, reasoning_tail,
+    reasoning_text_from_thinking_blocks, requires_reasoning_echo, responses_output_config,
+    responses_reasoning_config,
 };
 pub(crate) use stream::{LineMode, empty_chunk, spawn_line_reader};
 pub(crate) use transport::{

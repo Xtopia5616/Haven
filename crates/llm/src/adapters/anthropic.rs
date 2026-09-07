@@ -43,6 +43,7 @@ struct AnthropicRequest {
     /// Plain string or array of `{type:text, text, cache_control?}` blocks.
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
@@ -56,6 +57,12 @@ struct AnthropicRequest {
     tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<Value>,
+    /// Claude 4.6+ uses adaptive thinking; earlier thinking-capable Claude
+    /// models use the fixed `budget_tokens` form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<Value>,
     stream: bool,
     #[serde(skip)]
     cache_diagnostics: CacheDiagnostics,
@@ -379,7 +386,18 @@ impl AnthropicAdapter {
         content: &[ContentPart],
         tool_calls: Option<Vec<CanonicalToolCall>>,
     ) -> Vec<Value> {
-        let mut blocks = captured;
+        // `thinking_blocks` is a provider-opaque field on the canonical
+        // message. Gemini stores its `thoughtSignature` echo markers there;
+        // Anthropic must only receive its own signed content blocks.
+        let mut blocks: Vec<Value> = captured
+            .into_iter()
+            .filter(|block| {
+                matches!(
+                    block.get("type").and_then(Value::as_str),
+                    Some("thinking") | Some("redacted_thinking")
+                )
+            })
+            .collect();
         blocks.extend(Self::content_to_blocks(content));
         if let Some(calls) = tool_calls {
             for tc in calls {
@@ -471,7 +489,14 @@ impl AnthropicAdapter {
                     // blocks (position does not affect signature validation).
                     let calls = m.tool_calls;
                     let mut captured = m.thinking_blocks;
-                    let blocks = match Self::split_layout(&mut captured) {
+                    let layout = Self::split_layout(&mut captured);
+                    captured.retain(|block| {
+                        matches!(
+                            block.get("type").and_then(Value::as_str),
+                            Some("thinking") | Some("redacted_thinking")
+                        )
+                    });
+                    let blocks = match layout {
                         Some(layout) => {
                             match Self::rebuild_ordered_blocks(
                                 &m.content,
@@ -638,6 +663,66 @@ impl AnthropicAdapter {
         )
     }
 
+    fn thinking_config(
+        max_tokens: u32,
+        model_name: &str,
+        effort: Option<&str>,
+    ) -> (Option<Value>, Option<Value>) {
+        let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) else {
+            return (None, None);
+        };
+        let effort = effort.to_ascii_lowercase();
+        let model = model_name.to_ascii_lowercase();
+        let adaptive = [
+            "4-6",
+            "4.6",
+            "4-7",
+            "4.7",
+            "4-8",
+            "4.8",
+            "opus-5",
+            "sonnet-5",
+            "fable-5",
+            "mythos-5",
+            "mythos-preview",
+        ]
+        .iter()
+        .any(|part| model.contains(part));
+        let manual = ["3-7", "3.7", "4-5", "4.5"]
+            .iter()
+            .any(|part| model.contains(part));
+
+        if matches!(effort.as_str(), "none" | "off" | "disabled") {
+            return if adaptive || manual {
+                (Some(json!({"type": "disabled"})), None)
+            } else {
+                (None, None)
+            };
+        }
+        if adaptive {
+            return (
+                Some(json!({"type": "adaptive"})),
+                Some(json!({"effort": effort})),
+            );
+        }
+        if manual && max_tokens > 1024 {
+            let ratio = match effort.as_str() {
+                "low" => 0.25,
+                "medium" => 0.40,
+                "max" => 0.80,
+                _ => 0.60,
+            };
+            let budget = ((max_tokens as f32 * ratio).round() as u32)
+                .max(1024)
+                .min(max_tokens - 1);
+            return (
+                Some(json!({"type": "enabled", "budget_tokens": budget})),
+                None,
+            );
+        }
+        (None, None)
+    }
+
     #[cfg(test)]
     fn build_request_body_with_mode(
         &self,
@@ -703,12 +788,22 @@ impl AnthropicAdapter {
         }
         let mut messages = messages;
         Self::apply_messages_cache_breakpoint(&mut messages);
+        let (thinking, output_config) = Self::thinking_config(
+            max_tokens,
+            &self.endpoint.model_name,
+            self.endpoint.reasoning_effort.as_deref(),
+        );
+        let thinking_active = thinking
+            .as_ref()
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str)
+            .is_some_and(|kind| matches!(kind, "adaptive" | "enabled"));
         AnthropicRequest {
             model: self.endpoint.model_name.clone(),
             max_tokens,
             messages,
             system: Self::system_with_cache_control(system),
-            temperature: Some(self.endpoint.temperature),
+            temperature: (!thinking_active).then_some(self.endpoint.temperature),
             top_p: self.endpoint.top_p,
             top_k: self.endpoint.top_k,
             stop_sequences: self.endpoint.stop.clone(),
@@ -718,6 +813,8 @@ impl AnthropicAdapter {
                 Some(tools_json)
             },
             tool_choice,
+            thinking,
+            output_config,
             stream,
             cache_diagnostics,
         }
@@ -2025,6 +2122,37 @@ mod tests {
         assert!(body.stream);
         assert!(body.tools.is_none());
         assert!(body.system.is_none());
+    }
+
+    #[test]
+    fn build_request_body_uses_adaptive_thinking_for_claude_46() {
+        let ep = ModelEndpoint {
+            model_name: "claude-sonnet-4-6".into(),
+            max_tokens: 4096,
+            reasoning_effort: Some("medium".into()),
+            temperature: 0.4,
+            ..Default::default()
+        };
+        let body = AnthropicAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert_eq!(body.thinking, Some(json!({"type": "adaptive"})));
+        assert_eq!(body.output_config, Some(json!({"effort": "medium"})));
+        assert!(body.temperature.is_none());
+    }
+
+    #[test]
+    fn build_request_body_uses_manual_budget_for_claude_37() {
+        let ep = ModelEndpoint {
+            model_name: "claude-3-7-sonnet-20250219".into(),
+            max_tokens: 4096,
+            reasoning_effort: Some("low".into()),
+            ..Default::default()
+        };
+        let body = AnthropicAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert_eq!(
+            body.thinking,
+            Some(json!({"type": "enabled", "budget_tokens": 1024}))
+        );
+        assert!(body.output_config.is_none());
     }
 
     #[test]

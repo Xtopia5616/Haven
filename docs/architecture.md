@@ -376,6 +376,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.2 LLM：将 OpenAI-compatible embedding 的请求/响应规范化收口到 `adapters/embedding.rs`，保持 provider wire 契约不变（ADR 0026） |
 | 2026-08-30 | §2.2 LLM：将内置 web search call 规范化、citation 结果和按 id 去重收口到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027） |
 | 2026-08-30 | §2.2 LLM：将 vendor 检测、thinking/reasoning 映射、echo 判定与长度限制收口到 `adapters/provider_features.rs`，保持 Chat/Responses wire 契约不变（ADR 0028） |
+| 2026-09-07 | §2.2 LLM：按官方协议规范化 Gemini、Anthropic、DeepSeek 与 Responses 的请求字段、thinking state、工具调用 ID 和流式终止事件（ADR 0094） |
 | 2026-08-30 | §2.4 Agent：将事实抽取 DTO、字段 coercion、标签/谓词规范化、prompt 清洗与 JSON array 提取收口到 `fact_extraction.rs`，保持抽取与持久化语义不变（ADR 0029） |
 | 2026-08-30 | §2.6 UI：将会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重收口到 `ui/src/lib/sessionMessages.ts`（ADR 0030） |
 | 2026-08-30 | §2.6 UI：将会话 token usage、LLM 调用明细、恢复/清理与用量格式化收口到 `ui/src/lib/sessionUsage.ts`（ADR 0031） |

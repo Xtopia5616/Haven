@@ -465,13 +465,10 @@ pub struct CanonicalMessage {
     /// context from them). Never parsed or rewritten.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_search_calls: Vec<serde_json::Value>,
-    /// Raw Anthropic `thinking` content blocks (`{"type":"thinking",
-    /// "thinking":…, "signature":…}`). Carried verbatim so tool-use turns can
-    /// echo them back: Anthropic validates thinking blocks against their
-    /// signature and 400s a follow-up request that omits or rewrites them.
-    /// The Anthropic adapter appends an internal `__layout` marker entry that
-    /// records each block's original position; the adapter strips it before
-    /// the echo. Other consumers treat the list as opaque.
+    /// Provider-opaque thinking state. Anthropic stores signed `thinking` /
+    /// `redacted_thinking` blocks here; Gemini stores `thoughtSignature`
+    /// markers. Adapters echo only the representation accepted by their own
+    /// provider on the next stateless request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking_blocks: Vec<serde_json::Value>,
     /// Structured inject origin (Phase 6 / B3). Skipped on the wire by

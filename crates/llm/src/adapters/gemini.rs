@@ -33,12 +33,16 @@ use haven_common::prompts::{STT_SYSTEM_PROMPT, split_system_prompt_cache_boundar
 struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "inlineData", skip_serializing_if = "Option::is_none")]
     inline_data: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "functionCall", skip_serializing_if = "Option::is_none")]
     function_call: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "functionResponse", skip_serializing_if = "Option::is_none")]
     function_response: Option<Value>,
+    /// Opaque Gemini thought signature that must be echoed on the same Part
+    /// in a later stateless request.
+    #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,9 +64,11 @@ struct GeminiFunctionDeclaration {
 #[serde(untagged)]
 enum GeminiTool {
     Functions {
+        #[serde(rename = "functionDeclarations")]
         function_declarations: Vec<GeminiFunctionDeclaration>,
     },
     GoogleSearch {
+        #[serde(rename = "googleSearch")]
         google_search: Value,
     },
 }
@@ -70,23 +76,24 @@ enum GeminiTool {
 #[derive(Debug, Serialize)]
 struct GeminiGenerationConfig {
     temperature: f32,
+    #[serde(rename = "maxOutputTokens")]
     max_output_tokens: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "topP", skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "topK", skip_serializing_if = "Option::is_none")]
     top_k: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "stopSequences", skip_serializing_if = "Option::is_none")]
     stop_sequences: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
 struct GeminiRequest {
     contents: Vec<GeminiContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
     system_instruction: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<GeminiTool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
     #[serde(skip)]
     cache_diagnostics: CacheDiagnostics,
@@ -96,9 +103,9 @@ struct GeminiRequest {
 #[derive(Debug, Deserialize)]
 struct GeminiResponse {
     candidates: Option<Vec<GeminiCandidate>>,
-    #[serde(default)]
+    #[serde(rename = "usageMetadata", alias = "usage_metadata", default)]
     usage_metadata: Option<GeminiUsage>,
-    #[serde(default)]
+    #[serde(rename = "modelVersion", alias = "model_version", default)]
     model_version: Option<String>,
 }
 
@@ -123,16 +130,22 @@ struct GeminiResponseContent {
 struct GeminiResponsePart {
     #[serde(default)]
     text: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "functionCall", alias = "function_call", default)]
     function_call: Option<GeminiFunctionCall>,
     /// Gemini thinking-mode marker: parts carrying `"thought": true` hold the
     /// model's internal reasoning and MUST NOT be shown as assistant text.
     #[serde(default)]
     thought: Option<bool>,
+    /// Opaque signature returned by Gemini for thought-bearing parts and
+    /// function calls. It must be echoed verbatim in the next request.
+    #[serde(rename = "thoughtSignature", alias = "thought_signature", default)]
+    thought_signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GeminiFunctionCall {
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -222,7 +235,7 @@ impl GeminiAdapter {
         format!(
             "{}/models/{}:generateContent",
             self.api_base(),
-            self.endpoint.model_name
+            self.model_id()
         )
     }
 
@@ -230,8 +243,12 @@ impl GeminiAdapter {
         format!(
             "{}/models/{}:streamGenerateContent?alt=sse",
             self.api_base(),
-            self.endpoint.model_name
+            self.model_id()
         )
+    }
+
+    fn model_id(&self) -> &str {
+        self.endpoint.model_name.trim_start_matches("models/")
     }
 
     fn models_url(&self) -> String {
@@ -248,6 +265,64 @@ impl GeminiAdapter {
             self.api_base(),
             self.embed_model_id()
         )
+    }
+
+    const THOUGHT_SIGNATURE_TYPE: &'static str = "gemini_thought_signature";
+
+    fn thought_signature_marker(part_type: &str, name: Option<&str>, signature: &str) -> Value {
+        let mut marker = json!({
+            "type": Self::THOUGHT_SIGNATURE_TYPE,
+            "part_type": part_type,
+            "signature": signature,
+        });
+        if let Some(name) = name {
+            marker["name"] = json!(name);
+        }
+        marker
+    }
+
+    fn take_thought_signature(
+        blocks: &[Value],
+        used: &mut Vec<usize>,
+        part_type: &str,
+        name: Option<&str>,
+    ) -> Option<String> {
+        let index = blocks.iter().enumerate().find_map(|(idx, block)| {
+            if used.contains(&idx)
+                || block.get("type").and_then(Value::as_str) != Some(Self::THOUGHT_SIGNATURE_TYPE)
+                || block.get("part_type").and_then(Value::as_str) != Some(part_type)
+            {
+                return None;
+            }
+            let marker_name = block.get("name").and_then(Value::as_str);
+            if name.is_some() && marker_name != name {
+                return None;
+            }
+            block.get("signature").and_then(Value::as_str).map(|_| idx)
+        })?;
+        used.push(index);
+        blocks[index]
+            .get("signature")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    fn capture_thought_signature(
+        blocks: &mut Vec<Value>,
+        part: &GeminiResponsePart,
+        function_name: Option<&str>,
+    ) {
+        if let Some(signature) = part.thought_signature.as_deref() {
+            let part_type = if function_name.is_some() {
+                "function_call"
+            } else {
+                "content"
+            };
+            let marker = Self::thought_signature_marker(part_type, function_name, signature);
+            if !blocks.iter().any(|existing| existing == &marker) {
+                blocks.push(marker);
+            }
+        }
     }
 
     /// Convert provider-neutral messages into Gemini contents. System prompts
@@ -317,19 +392,37 @@ impl GeminiAdapter {
                         &call_id_to_name,
                     );
                     let mut parts = Self::content_to_parts(&m.content);
+                    let mut used_signatures = Vec::new();
+                    if let Some(signature) = Self::take_thought_signature(
+                        &m.thinking_blocks,
+                        &mut used_signatures,
+                        "content",
+                        None,
+                    ) && let Some(part) = parts.last_mut()
+                    {
+                        part.thought_signature = Some(signature);
+                    }
                     if let Some(calls) = &m.tool_calls {
                         declared_order.clear();
                         for tc in calls {
                             call_id_to_name.insert(tc.id.clone(), tc.name.clone());
                             declared_order.push(tc.id.clone());
+                            let thought_signature = Self::take_thought_signature(
+                                &m.thinking_blocks,
+                                &mut used_signatures,
+                                "function_call",
+                                Some(&tc.name),
+                            );
                             parts.push(GeminiPart {
                                 text: None,
                                 inline_data: None,
                                 function_call: Some(json!({
+                                    "id": tc.id,
                                     "name": tc.name,
                                     "args": tc.arguments
                                 })),
                                 function_response: None,
+                                thought_signature,
                             });
                         }
                     }
@@ -402,10 +495,17 @@ impl GeminiAdapter {
                     text: None,
                     inline_data: None,
                     function_call: None,
-                    function_response: Some(json!({
-                        "name": name,
-                        "response": {"result": text}
-                    })),
+                    function_response: Some({
+                        let mut response = json!({
+                            "name": name,
+                            "response": {"result": text}
+                        });
+                        if !call_id.is_empty() {
+                            response["id"] = json!(call_id);
+                        }
+                        response
+                    }),
+                    thought_signature: None,
                 }],
             });
         }
@@ -431,28 +531,31 @@ impl GeminiAdapter {
                     inline_data: None,
                     function_call: None,
                     function_response: None,
+                    thought_signature: None,
                 },
                 ContentPart::Image {
                     media_type, data, ..
                 } => GeminiPart {
                     text: None,
                     inline_data: Some(json!({
-                        "mime_type": media_type,
+                        "mimeType": media_type,
                         "data": data
                     })),
                     function_call: None,
                     function_response: None,
+                    thought_signature: None,
                 },
                 ContentPart::Audio {
                     media_type, data, ..
                 } => GeminiPart {
                     text: None,
                     inline_data: Some(json!({
-                        "mime_type": media_type,
+                        "mimeType": media_type,
                         "data": data
                     })),
                     function_call: None,
                     function_response: None,
+                    thought_signature: None,
                 },
             })
             .collect()
@@ -575,6 +678,7 @@ impl GeminiAdapter {
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
+        let mut thinking_blocks = Vec::new();
         let mut finish_reason = None;
         if let Some(candidate) = json.candidates.and_then(|c| c.into_iter().next()) {
             finish_reason = candidate
@@ -583,6 +687,16 @@ impl GeminiAdapter {
                 .and_then(Self::finish_reason_of);
             if let Some(content) = candidate.content {
                 for part in content.parts {
+                    let function_name = part
+                        .function_call
+                        .as_ref()
+                        .and_then(|fc| fc.name.as_deref())
+                        .map(str::to_string);
+                    Self::capture_thought_signature(
+                        &mut thinking_blocks,
+                        &part,
+                        function_name.as_deref(),
+                    );
                     if part.thought == Some(true) {
                         // Thinking-mode parts are internal reasoning, not
                         // assistant output: route to `reasoning` (displayed as
@@ -597,7 +711,9 @@ impl GeminiAdapter {
                         && let Some(name) = fc.name
                     {
                         tool_calls.push(CanonicalToolCall {
-                            id: format!("call_{}", tool_calls.len()),
+                            id: fc
+                                .id
+                                .unwrap_or_else(|| format!("call_{}", tool_calls.len())),
                             name,
                             arguments: fc.args.unwrap_or_default(),
                         });
@@ -633,7 +749,7 @@ impl GeminiAdapter {
                 Some(reasoning)
             },
             web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
+            thinking_blocks,
         })
     }
 
@@ -794,6 +910,9 @@ impl GeminiAdapter {
             reasoning_parts: Vec<String>,
             /// Accumulated tool calls per functionCall part index.
             tool_calls_acc: Vec<CanonicalToolCall>,
+            /// Gemini thought signatures captured from response Parts. These
+            /// are opaque provider state and are echoed on the next turn.
+            thinking_blocks: Vec<Value>,
             accumulated_text: String,
             last_model: Option<String>,
             finish_reason: Option<FinishReason>,
@@ -812,6 +931,7 @@ impl GeminiAdapter {
                 part_texts: Vec::new(),
                 reasoning_parts: Vec::new(),
                 tool_calls_acc: Vec::new(),
+                thinking_blocks: Vec::new(),
                 accumulated_text: String::new(),
                 last_model: None,
                 finish_reason: None,
@@ -846,6 +966,7 @@ impl GeminiAdapter {
                         } else {
                             let tool_calls = std::mem::take(&mut state.tool_calls_acc)
                                 .into_iter()
+                                .filter(|tc| !tc.name.is_empty())
                                 .map(|mut tc| {
                                     if tc.arguments.is_null() {
                                         tc.arguments = serde_json::json!({});
@@ -865,7 +986,7 @@ impl GeminiAdapter {
                                 reasoning: None,
                                 web_search: None,
                                 web_search_calls: std::mem::take(&mut state.web_search_calls),
-                                thinking_blocks: Vec::new(),
+                                thinking_blocks: std::mem::take(&mut state.thinking_blocks),
                             })
                         };
                         state.done = true;
@@ -904,6 +1025,16 @@ impl GeminiAdapter {
                             }
                             if let Some(content) = candidate.content {
                                 for (idx, part) in content.parts.into_iter().enumerate() {
+                                    let function_name = part
+                                        .function_call
+                                        .as_ref()
+                                        .and_then(|fc| fc.name.as_deref())
+                                        .map(str::to_string);
+                                    Self::capture_thought_signature(
+                                        &mut state.thinking_blocks,
+                                        &part,
+                                        function_name.as_deref(),
+                                    );
                                     if let Some(t) = part.text {
                                         // Previous text is always a prefix of
                                         // the new text; emit only the delta.
@@ -918,10 +1049,7 @@ impl GeminiAdapter {
                                         } else {
                                             state.part_texts[idx] = t;
                                         }
-                                        if delta.is_empty() {
-                                            continue;
-                                        }
-                                        if part.thought == Some(true) {
+                                        if !delta.is_empty() && part.thought == Some(true) {
                                             // Thinking-mode part: reasoning
                                             // delta, never visible assistant
                                             // text. Mirror the text-delta
@@ -949,7 +1077,7 @@ impl GeminiAdapter {
                                                     chunk.reasoning.get_or_insert_with(String::new);
                                                 r.push_str(&rdelta);
                                             }
-                                        } else {
+                                        } else if !delta.is_empty() {
                                             state.accumulated_text.push_str(&delta);
                                             let c = chunk.text.get_or_insert_with(String::new);
                                             c.push_str(&delta);
@@ -964,6 +1092,9 @@ impl GeminiAdapter {
                                                 name: String::new(),
                                                 arguments: Value::Null,
                                             });
+                                        }
+                                        if let Some(id) = fc.id {
+                                            state.tool_calls_acc[idx].id = id;
                                         }
                                         state.tool_calls_acc[idx].name = name;
                                         if let Some(args) = fc.args {
@@ -1577,6 +1708,34 @@ mod tests {
     }
 
     #[test]
+    fn convert_contents_echoes_function_call_thought_signature() {
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::text("checking")],
+            tool_call_id: None,
+            tool_calls: Some(vec![CanonicalToolCall {
+                id: "fc_1".into(),
+                name: "file".into(),
+                arguments: json!({"operation": "read"}),
+            }]),
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: vec![json!({
+                "type": "gemini_thought_signature",
+                "part_type": "function_call",
+                "name": "file",
+                "signature": "sig_1"
+            })],
+            source: None,
+            id: None,
+        }];
+        let (contents, _) = GeminiAdapter::convert_contents(msgs);
+        let wire = serde_json::to_value(&contents[0]).unwrap();
+        assert_eq!(wire["parts"][1]["functionCall"]["id"], "fc_1");
+        assert_eq!(wire["parts"][1]["thoughtSignature"], "sig_1");
+    }
+
+    #[test]
     fn convert_contents_image_and_audio_inline_data() {
         let msgs = vec![CanonicalMessage {
             role: CanonicalRole::User,
@@ -1602,10 +1761,10 @@ mod tests {
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         let inline = contents[0].parts[0].inline_data.as_ref().unwrap();
-        assert_eq!(inline["mime_type"], "image/png");
+        assert_eq!(inline["mimeType"], "image/png");
         assert_eq!(inline["data"], "aGVsbG8=");
         let inline = contents[0].parts[1].inline_data.as_ref().unwrap();
-        assert_eq!(inline["mime_type"], "audio/wav");
+        assert_eq!(inline["mimeType"], "audio/wav");
         assert_eq!(inline["data"], "d3d3");
     }
 
@@ -1621,11 +1780,13 @@ mod tests {
                             text: Some("I should read the file first.".into()),
                             function_call: None,
                             thought: Some(true),
+                            thought_signature: None,
                         },
                         GeminiResponsePart {
                             text: Some("Final answer.".into()),
                             function_call: None,
                             thought: Some(false),
+                            thought_signature: None,
                         },
                     ],
                 }),
@@ -1785,14 +1946,17 @@ mod tests {
                             text: Some("checking".into()),
                             function_call: None,
                             thought: None,
+                            thought_signature: None,
                         },
                         GeminiResponsePart {
                             text: None,
                             function_call: Some(GeminiFunctionCall {
+                                id: None,
                                 name: Some("file".into()),
                                 args: Some(json!({"operation": "read"})),
                             }),
                             thought: None,
+                            thought_signature: None,
                         },
                     ],
                 }),
@@ -1819,6 +1983,72 @@ mod tests {
         assert_eq!(resp.finish_reason, Some(FinishReason::Stop));
         assert_eq!(resp.usage.total_tokens, 15);
         assert_eq!(resp.model.as_deref(), Some("gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn parse_response_captures_official_function_call_signature_and_id() {
+        let raw = json!({
+            "candidates": [{
+                "content": {"parts": [{
+                    "functionCall": {
+                        "id": "fc_1",
+                        "name": "file",
+                        "args": {"operation": "read"}
+                    },
+                    "thoughtSignature": "sig_1"
+                }]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 3, "totalTokenCount": 5},
+            "modelVersion": "gemini-3.7-flash"
+        });
+        let response: GeminiResponse = serde_json::from_value(raw).unwrap();
+        let client = GeminiAdapter::new(ModelEndpoint::default());
+        let parsed = client
+            .parse_response(response, Some("gemini-3.7-flash".into()))
+            .unwrap();
+        assert_eq!(parsed.tool_calls[0].id, "fc_1");
+        assert_eq!(parsed.thinking_blocks[0]["signature"], "sig_1");
+        assert_eq!(parsed.model.as_deref(), Some("gemini-3.7-flash"));
+    }
+
+    #[test]
+    fn serialized_request_uses_gemini_rest_wire_names() {
+        let client = GeminiAdapter::new(ModelEndpoint {
+            model_name: "gemini-3.7-flash".into(),
+            ..Default::default()
+        });
+        let body = client.build_request_body(
+            vec![CanonicalMessage::user_text("hello")],
+            vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "file".into(),
+                    description: "read a file".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            }],
+            false,
+        );
+        let wire = serde_json::to_value(body).unwrap();
+        assert!(wire["generationConfig"]["maxOutputTokens"].is_number());
+        assert!(wire["generationConfig"].get("max_output_tokens").is_none());
+        assert!(wire["tools"][0]["functionDeclarations"].is_array());
+        assert!(wire["tools"][0].get("function_declarations").is_none());
+        assert!(wire["systemInstruction"].is_null());
+    }
+
+    #[test]
+    fn generate_url_strips_models_prefix() {
+        let client = GeminiAdapter::new(ModelEndpoint {
+            model_name: "models/gemini-3.7-flash".into(),
+            ..Default::default()
+        });
+        assert!(
+            client
+                .generate_url()
+                .ends_with("/models/gemini-3.7-flash:generateContent")
+        );
     }
 
     #[test]

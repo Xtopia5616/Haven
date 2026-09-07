@@ -146,6 +146,23 @@ pub(crate) fn responses_reasoning_config(endpoint: &ModelEndpoint) -> Option<Val
     Some(serde_json::json!({ "effort": effort }))
 }
 
+/// DeepSeek's Responses API keeps thinking-mode effort in a separate
+/// `output_config` object. `reasoning.effort` is still required to toggle the
+/// mode (and is retained by `responses_reasoning_config`).
+pub(crate) fn responses_output_config(endpoint: &ModelEndpoint) -> Option<Value> {
+    let effort = endpoint
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    if !is_deepseek(endpoint) || is_thinking_disabled(effort) {
+        return None;
+    }
+    Some(serde_json::json!({
+        "effort": map_deepseek_effort(effort)
+    }))
+}
+
 /// True when the endpoint's thinking mode requires the assistant's reasoning
 /// to be echoed back on every request that carries tool-call history
 /// (chat-completions: `reasoning_content`; Responses compat: `reasoning_text`).

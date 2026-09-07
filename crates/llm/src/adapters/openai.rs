@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::adapters::{
     LineMode, WebSearchMode, build_client, build_headers, chat_thinking_extras,
-    health_check_request, normalize_web_search_call_item, reasoning_tail,
+    health_check_request, is_deepseek, normalize_web_search_call_item, reasoning_tail,
     reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
     send_request, spawn_line_reader, stream_header_timeout, xai_search_mode,
 };
@@ -781,6 +781,15 @@ impl OpenAiAdapter {
             CacheDiagnostics::for_request(prompt_cache_key.is_some(), system_split);
         let (thinking, reasoning_effort) = chat_thinking_extras(&self.endpoint);
         let omit_temperature = reasoning_effort.is_some() || thinking.is_some();
+        // DeepSeek explicitly documents these sampling parameters as
+        // unsupported in thinking mode. Omit them instead of relying on the
+        // compatibility behavior that silently ignores them.
+        let deepseek_thinking = is_deepseek(&self.endpoint)
+            && thinking
+                .as_ref()
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str)
+                == Some("enabled");
         let search_parameters = if self.style == "xai" {
             xai_search_mode(web_search_mode).map(|mode| {
                 serde_json::json!({
@@ -818,10 +827,16 @@ impl OpenAiAdapter {
             } else {
                 None
             },
-            top_p: self.endpoint.top_p,
+            top_p: (!deepseek_thinking)
+                .then_some(self.endpoint.top_p)
+                .flatten(),
             top_k: self.endpoint.top_k,
-            frequency_penalty: self.endpoint.frequency_penalty,
-            presence_penalty: self.endpoint.presence_penalty,
+            frequency_penalty: (!deepseek_thinking)
+                .then_some(self.endpoint.frequency_penalty)
+                .flatten(),
+            presence_penalty: (!deepseek_thinking)
+                .then_some(self.endpoint.presence_penalty)
+                .flatten(),
             stop: self.endpoint.stop.clone(),
             seed: self.endpoint.seed,
             response_format: self.endpoint.response_format.clone(),
@@ -2253,6 +2268,24 @@ mod tests {
         assert_eq!(body.thinking, Some(serde_json::json!({"type": "enabled"})));
         assert_eq!(body.reasoning_effort.as_deref(), Some("high"));
         assert!(body.temperature.is_none());
+    }
+
+    #[test]
+    fn build_request_body_deepseek_thinking_omits_unsupported_sampling_fields() {
+        let ep = ModelEndpoint {
+            provider: "deepseek".into(),
+            base_url: "https://api.deepseek.com".into(),
+            model_name: "deepseek-v4-pro".into(),
+            top_p: Some(0.8),
+            frequency_penalty: Some(0.2),
+            presence_penalty: Some(0.1),
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert!(body.top_p.is_none());
+        assert!(body.frequency_penalty.is_none());
+        assert!(body.presence_penalty.is_none());
     }
 
     #[test]

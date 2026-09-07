@@ -94,3 +94,4 @@
 - [0091：内置工具面精简与本机操作补齐](0091-builtin-tool-surface-cleanup.md)
 - [0092：严格 OpenAI-compatible provider 的工具 schema 投影](0092-xai-tool-schema-projection.md)
 - [0093：Provider 工具 schema 投影与 OpenAI-compatible 网关审查](0093-provider-tool-schema-projections.md)
+- [0094：模型 provider wire 协议规范化](0094-provider-wire-protocol-normalization.md)

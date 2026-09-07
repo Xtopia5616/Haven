@@ -12,9 +12,10 @@ use sha2::{Digest, Sha256};
 
 use crate::adapters::{
     LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
-    normalize_web_search_call_item, reasoning_tail, reasoning_text_from_thinking_blocks,
-    requires_reasoning_echo, resolve_web_search_mode, responses_reasoning_config, send_request,
-    spawn_line_reader, stream_header_timeout, upsert_web_search_call, web_search_result_of,
+    is_deepseek, normalize_web_search_call_item, reasoning_tail,
+    reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
+    responses_output_config, responses_reasoning_config, send_request, spawn_line_reader,
+    stream_header_timeout, upsert_web_search_call, web_search_result_of,
 };
 use crate::client::LlmClient;
 #[cfg(test)]
@@ -86,6 +87,8 @@ struct ResponsesRequest {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Value>>,
@@ -94,6 +97,13 @@ struct ResponsesRequest {
     /// OpenAI / DeepSeek Responses reasoning config: `{ "effort": "…" }`.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
+    /// DeepSeek Responses uses `output_config.effort` for thinking depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<Value>,
+    /// Responses structured-output configuration is nested under `text`;
+    /// Haven's endpoint config stores the inner `format` object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<Value>,
     /// Stable routing hint for Responses-compatible prompt caches. Unsupported
     /// gateways are detected and retried once without this optional field.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -261,6 +271,10 @@ enum ResponsesStreamEvent {
     },
     #[serde(rename = "response.completed")]
     Completed {
+        response: Option<ResponsesStreamResponse>,
+    },
+    #[serde(rename = "response.incomplete")]
+    Incomplete {
         response: Option<ResponsesStreamResponse>,
     },
     #[serde(rename = "response.failed")]
@@ -851,7 +865,11 @@ impl OpenAiResponsesAdapter {
         web_search_mode: WebSearchMode,
         max_output_tokens: u32,
     ) -> ResponsesRequest {
-        let prompt_cache_key = self.prompt_cache_key(&messages, &tools, web_search_mode);
+        // DeepSeek's official Responses contract ignores `prompt_cache_key`;
+        // do not advertise an optional OpenAI extension to that endpoint.
+        let prompt_cache_key = (!is_deepseek(&self.endpoint))
+            .then(|| self.prompt_cache_key(&messages, &tools, web_search_mode))
+            .flatten();
         let cache_diagnostics = Self::cache_diagnostics(&messages, prompt_cache_key.is_some());
         let max_reasoning_echo_chars = self
             .endpoint
@@ -896,12 +914,25 @@ impl OpenAiResponsesAdapter {
         } else {
             Some(self.endpoint.temperature)
         };
+        let top_p = if reasoning.is_some() {
+            None
+        } else {
+            self.endpoint.top_p
+        };
+        let text = self.endpoint.response_format.clone().map(|format| {
+            if format.get("format").is_some() {
+                format
+            } else {
+                json!({"format": format})
+            }
+        });
         ResponsesRequest {
             model: self.endpoint.model_name.clone(),
             instructions,
             input,
             max_output_tokens: Some(max_output_tokens),
             temperature,
+            top_p,
             stream,
             tools: if tools_json.is_empty() {
                 None
@@ -910,6 +941,8 @@ impl OpenAiResponsesAdapter {
             },
             tool_choice,
             reasoning,
+            output_config: responses_output_config(&self.endpoint),
+            text,
             prompt_cache_key,
             cache_diagnostics,
         }
@@ -1373,6 +1406,35 @@ impl OpenAiResponsesAdapter {
                         if let Some(item) = item
                             && let Some(item_type) = item.item_type.as_deref()
                         {
+                            if item_type == "function_call" {
+                                if let Some(item_id) = item.id.clone() {
+                                    let call_id =
+                                        item.call_id.clone().unwrap_or_else(|| item_id.clone());
+                                    if let Some((_, resolved_id, name, args)) = state
+                                        .tool_calls
+                                        .iter_mut()
+                                        .find(|(lookup_id, _, _, _)| lookup_id == &item_id)
+                                    {
+                                        *resolved_id = call_id;
+                                        if let Some(item_name) = item.name {
+                                            *name = item_name;
+                                        }
+                                        if let Some(arguments) = item.arguments {
+                                            *args = arguments;
+                                        }
+                                    } else {
+                                        state.tool_calls.push((
+                                            item_id,
+                                            call_id,
+                                            item.name.unwrap_or_default(),
+                                            item.arguments.unwrap_or_default(),
+                                        ));
+                                    }
+                                }
+                                let mut chunk = empty_chunk();
+                                chunk.model = state.last_model.clone();
+                                return Some((Ok(chunk), state));
+                            }
                             // The authoritative `web_search_call` payload
                             // (`action`/`queries`): replace the in-progress
                             // skeleton captured from `output_item.added`, or
@@ -1477,7 +1539,16 @@ impl OpenAiResponsesAdapter {
                         }
                         Some((Ok(chunk), state))
                     }
-                    Ok(ResponsesStreamEvent::Completed { response }) => {
+                    Ok(
+                        event @ (ResponsesStreamEvent::Completed { .. }
+                        | ResponsesStreamEvent::Incomplete { .. }),
+                    ) => {
+                        let incomplete = matches!(&event, ResponsesStreamEvent::Incomplete { .. });
+                        let response = match event {
+                            ResponsesStreamEvent::Completed { response }
+                            | ResponsesStreamEvent::Incomplete { response } => response,
+                            _ => unreachable!("guarded response terminal event"),
+                        };
                         state.saw_completed = true;
                         let mut completed_text = None;
                         if let Some(resp) = response {
@@ -1498,7 +1569,11 @@ impl OpenAiResponsesAdapter {
                             }
                             if let Some(status) = resp.status.as_deref() {
                                 state.finish_reason = Self::finish_reason_of(status);
+                            } else if incomplete {
+                                state.finish_reason = Some(FinishReason::Length);
                             }
+                        } else if incomplete {
+                            state.finish_reason = Some(FinishReason::Length);
                         }
                         state.done = true;
                         let final_chunk = StreamChunk {
@@ -2068,6 +2143,36 @@ mod tests {
     }
 
     #[test]
+    fn build_request_body_maps_top_p_and_nested_text_format() {
+        let ep = ModelEndpoint {
+            model_name: "gpt-5".into(),
+            top_p: Some(0.8),
+            response_format: Some(json!({"type": "json_object"})),
+            ..Default::default()
+        };
+        let body = OpenAiResponsesAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert_eq!(body.top_p, Some(0.8));
+        assert_eq!(body.text, Some(json!({"format": {"type": "json_object"}})));
+    }
+
+    #[test]
+    fn build_request_body_maps_deepseek_effort_to_output_config() {
+        let ep = ModelEndpoint {
+            provider: "deepseek".into(),
+            base_url: "https://api.deepseek.com".into(),
+            model_name: "deepseek-v4-pro".into(),
+            top_p: Some(0.8),
+            reasoning_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        let body = OpenAiResponsesAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert_eq!(body.reasoning, Some(json!({"effort": "high"})));
+        assert_eq!(body.output_config, Some(json!({"effort": "high"})));
+        assert!(body.top_p.is_none());
+        assert!(body.prompt_cache_key.is_none());
+    }
+
+    #[test]
     fn build_request_body_skips_temperature_one() {
         let ep = ModelEndpoint {
             temperature: 1.0,
@@ -2411,6 +2516,15 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(completed, ResponsesStreamEvent::Completed { .. }));
+
+        let incomplete: ResponsesStreamEvent = serde_json::from_str(
+            r#"{"type":"response.incomplete","response":{"status":"incomplete","model":"deepseek-v4-pro"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            incomplete,
+            ResponsesStreamEvent::Incomplete { .. }
+        ));
 
         let other: ResponsesStreamEvent =
             serde_json::from_str(r#"{"type":"response.in_progress"}"#).unwrap();
