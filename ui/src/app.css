@@ -566,25 +566,24 @@ samp {
  * filter, selected a row, or moved between async states. Keeping these
  * utilities global makes the timing and reduced-motion behavior consistent
  * across workspace views. */
+/* Surface entry animations stay transform-free because fixed overlays and
+ * context menus can be rendered inside these surfaces. A transformed
+ * ancestor changes their containing block from the application viewport. */
 @keyframes haven-surface-enter {
 	from {
 		opacity: 0;
-		transform: translateY(6px);
 	}
 	to {
 		opacity: 1;
-		transform: translateY(0);
 	}
 }
 
 @keyframes haven-list-item-enter {
 	from {
 		opacity: 0;
-		transform: translateY(4px);
 	}
 	to {
 		opacity: 1;
-		transform: translateY(0);
 	}
 }
 

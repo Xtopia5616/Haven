@@ -202,14 +202,14 @@
 		animation: haven-tab-surface-enter var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-decelerated) both;
 	}
+	/* Keep the tab surface free of transforms so fixed dialogs remain
+	 * viewport-relative while still mounted below the keep-alive panels. */
 	@keyframes haven-tab-surface-enter {
 		from {
 			opacity: 0;
-			transform: translateY(6px);
 		}
 		to {
 			opacity: 1;
-			transform: translateY(0);
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {

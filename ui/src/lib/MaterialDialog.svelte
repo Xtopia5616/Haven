@@ -23,7 +23,7 @@
 	 * @param {KeyboardEvent} e
 	 */
 	function handleKeydown(e) {
-		if (e.key === 'Escape') onClose?.();
+		if (open && e.key === 'Escape') onClose?.();
 	}
 
 	/**
@@ -33,24 +33,14 @@
 		if (e.key === 'Escape') onClose?.();
 	}
 
-	// A tab surface uses a short transform animation when it becomes visible.
-	// A transformed ancestor changes the containing block of `position: fixed`,
-	// which otherwise makes the dialog center against that surface instead of
-	// the application window. Moving the overlay to <body> keeps dialog geometry
-	// viewport-relative regardless of where the component is rendered.
-	/** @param {HTMLElement} node */
-	function portal(node) {
-		if (typeof document !== 'undefined' && node.parentNode !== document.body) {
-			document.body.appendChild(node);
-		}
-	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
+<!-- Keep the overlay in the logical tree: Svelte's delegated events and
+	 teardown must continue to follow the component that owns the dialog. -->
 {#if open}
 	<div
-		use:portal
 		class="md-dialog-overlay"
 		onclick={handleOverlayClick}
 		onkeydown={handleOverlayKeydown}
