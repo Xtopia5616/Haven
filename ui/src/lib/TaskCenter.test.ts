@@ -16,8 +16,9 @@ describe('TaskCenter', () => {
 		const onNewSession = vi.fn();
 		render(TaskCenter, { ...commonProps, onNewSession });
 
-		expect(screen.getByRole('heading', { name: '任务中心' })).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '任务' })).toBeTruthy();
 		expect(screen.getByText('暂无任务')).toBeTruthy();
+		expect(screen.getByText('任务负责执行与进度')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: '开始新会话' }));
 		expect(onNewSession).toHaveBeenCalledTimes(1);
 	});
@@ -42,6 +43,7 @@ describe('TaskCenter', () => {
 		});
 
 		expect(screen.getByRole('heading', { name: '调用工具' })).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '后台与定时任务' })).toBeTruthy();
 		expect(screen.getByText('整理下载目录')).toBeTruthy();
 		expect(screen.getAllByText('研究会话').length).toBeGreaterThan(0);
 		await fireEvent.click(screen.getByRole('button', { name: '打开来源会话' }));
@@ -57,6 +59,8 @@ describe('TaskCenter', () => {
 			completedActions: [{ id: 'act-fired', kind: 'scheduled', body: '已经触发' }],
 		});
 
+		expect(screen.getByRole('heading', { name: '后台与定时任务' })).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '执行记录' })).toBeTruthy();
 		expect(screen.getAllByText('待执行').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('已执行').length).toBeGreaterThan(0);
 	});

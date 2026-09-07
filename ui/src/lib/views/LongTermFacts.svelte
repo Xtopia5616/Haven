@@ -29,7 +29,7 @@
 
 <div class="section facts-view">
 	<div class="toolbar md-toolbar">
-		<h2>长期事实</h2>
+		<h2>长期记忆</h2>
 		<div class="toolbar-actions">
 			<MaterialSelect
 				value={factSourceFilter}

@@ -49,7 +49,7 @@ export function scheduleModeLabel(mode: unknown): string {
 }
 
 /**
- * Resolve the title shown in the task center.
+ * Resolve the title shown in the task workspace.
  *
  * User-provided title/body wins. A background action without that context
  * uses the same generic tool-call fallback as the chat card; a scheduled

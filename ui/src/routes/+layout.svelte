@@ -1055,7 +1055,7 @@
 									onanimationend={(event) => finishTabEntry(tab.id, event)}
 									role="alert"
 								>
-									<span>任务中心暂时无法加载</span>
+									<span>任务暂时无法加载</span>
 									<MaterialButton
 										variant="outlined"
 										label="重试"
@@ -1063,7 +1063,7 @@
 									/>
 								</div>
 							{:else}
-								<LoadingState label="正在加载任务中心…" detail="正在准备任务列表" />
+								<LoadingState label="正在加载任务…" detail="正在准备任务列表" />
 							{/if}
 						</div>
 					{:else if tab.id === 'memory'}

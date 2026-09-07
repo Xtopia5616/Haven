@@ -54,7 +54,7 @@
 		if (pendingScheduledActions.length > 0) {
 			parts.push(`${pendingScheduledActions.length} 条${taskKindLabel('scheduled')}`);
 		}
-		return parts.length > 0 ? `任务中心：${parts.join('，')}` : '打开任务中心查看任务状态';
+		return parts.length > 0 ? `任务：${parts.join('，')}` : '打开任务查看任务状态';
 	});
 </script>
 
@@ -64,7 +64,7 @@
 		className="status-chip"
 		onclick={() => onOpenTasks?.()}
 		title={statusTitle}
-		ariaLabel={`应用状态：${statusLabel}，打开任务中心`}
+		ariaLabel={`应用状态：${statusLabel}，打开任务`}
 	>
 		<StatusDot
 			color={statusColor}

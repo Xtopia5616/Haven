@@ -28,6 +28,7 @@
 	import SessionHistory from './SessionHistory.svelte';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
+	import WorkspaceScopeNote from '$lib/WorkspaceScopeNote.svelte';
 
 	let { onNewSession = () => {} } = $props();
 
@@ -58,9 +59,9 @@
 	let ctxMenu = $state({ open: false, x: 0, y: 0, session: null });
 	let activeTab = $state('sessions');
 	const memoryTabs = [
-		{ id: 'sessions', label: '会话' },
-		{ id: 'facts', label: '事实' },
-		{ id: 'recall', label: '检索' },
+		{ id: 'sessions', label: '会话历史' },
+		{ id: 'facts', label: '长期记忆' },
+		{ id: 'recall', label: '记忆检索' },
 	];
 	let memoryRecall = $state({
 		query: '',
@@ -473,11 +474,11 @@
 	<header class="page-heading">
 		<div class="page-heading-content">
 			<h1>记忆</h1>
-			<p>查看和管理历史会话与长期记忆。</p>
+			<p>回顾历史会话，管理长期记忆和检索结果。</p>
 		</div>
 		{#if activeTab === 'sessions'}
 			<div class="page-heading-actions">
-				<span class="count-badge">已显示 {totalCount} 条</span>
+				<span class="count-badge">共 {totalCount} 条历史</span>
 				<div class="header-actions">
 					{#if selectMode}
 						<MaterialButton
@@ -513,6 +514,10 @@
 			</div>
 		{/if}
 	</header>
+	<WorkspaceScopeNote
+		title="记忆负责保存与回顾"
+		message="会话历史用于回看和继续，长期记忆用于跨会话保留；正在执行或待执行的工作请到“任务”。"
+	/>
 	<div class="md-tabs memory-tabs" role="tablist">
 		{#each memoryTabs as tab}<button
 				class="md-tab"
@@ -523,62 +528,62 @@
 			>{/each}
 	</div>
 	{#key activeTab}
-	<div class="memory-panel motion-surface-enter">
-	{#if activeTab === 'sessions'}
-		<SessionHistory
-			{sessions}
-			{searchQuery}
-			{statusFilter}
-			{statusOptions}
-			{startDate}
-			{endDate}
-			{selectMode}
-			{selectedIds}
-			{loading}
-			{hasMore}
-			{editingTitle}
-			{renameValue}
-			onSearchQueryChange={setSearchQuery}
-			onSearchInput={handleSearchInput}
-			onStatusFilterChange={handleStatusFilterChange}
-			onOpenDateFilter={() => {
-				showDateFilter = true;
-			}}
-			onToggleSelectAll={toggleSelectAll}
-			onToggleSelect={toggleSelect}
-			onResume={resumeSession}
-			onNewSession={onNewSession}
-			onStartEdit={startEdit}
-			onRenameValueChange={handleRenameValueChange}
-			onRenameKeydown={handleRenameKeydown}
-			onSaveTitle={saveTitle}
-			onContextMenu={openCtxMenu}
-			onDeleteRequest={requestDelete}
-			onLoadMore={loadMore}
-			{displayTitle}
-			{statusVariant}
-			{formatMessageTime}
-		/>
-	{:else if activeTab === 'facts'}
-		<LongTermFacts
-			{facts}
-			{factsLoaded}
-			{factSourceFilter}
-			{factSourceOptions}
-			{newFact}
-			{addingFact}
-			onFactSourceFilterChange={handleFactSourceFilterChange}
-			onAddFact={addFact}
-			onDeleteFact={deleteFact}
-		/>
-	{:else}
-		<MemoryRecall
-			{memoryRecall}
-			onRecallKindChange={handleRecallKindChange}
-			onRunRecall={runRecall}
-		/>
-	{/if}
-	</div>
+		<div class="memory-panel motion-surface-enter">
+			{#if activeTab === 'sessions'}
+				<SessionHistory
+					{sessions}
+					{searchQuery}
+					{statusFilter}
+					{statusOptions}
+					{startDate}
+					{endDate}
+					{selectMode}
+					{selectedIds}
+					{loading}
+					{hasMore}
+					{editingTitle}
+					{renameValue}
+					onSearchQueryChange={setSearchQuery}
+					onSearchInput={handleSearchInput}
+					onStatusFilterChange={handleStatusFilterChange}
+					onOpenDateFilter={() => {
+						showDateFilter = true;
+					}}
+					onToggleSelectAll={toggleSelectAll}
+					onToggleSelect={toggleSelect}
+					onResume={resumeSession}
+					{onNewSession}
+					onStartEdit={startEdit}
+					onRenameValueChange={handleRenameValueChange}
+					onRenameKeydown={handleRenameKeydown}
+					onSaveTitle={saveTitle}
+					onContextMenu={openCtxMenu}
+					onDeleteRequest={requestDelete}
+					onLoadMore={loadMore}
+					{displayTitle}
+					{statusVariant}
+					{formatMessageTime}
+				/>
+			{:else if activeTab === 'facts'}
+				<LongTermFacts
+					{facts}
+					{factsLoaded}
+					{factSourceFilter}
+					{factSourceOptions}
+					{newFact}
+					{addingFact}
+					onFactSourceFilterChange={handleFactSourceFilterChange}
+					onAddFact={addFact}
+					onDeleteFact={deleteFact}
+				/>
+			{:else}
+				<MemoryRecall
+					{memoryRecall}
+					onRecallKindChange={handleRecallKindChange}
+					onRunRecall={runRecall}
+				/>
+			{/if}
+		</div>
 	{/key}
 </div>
 

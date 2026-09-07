@@ -7,6 +7,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
+	import WorkspaceScopeNote from '$lib/WorkspaceScopeNote.svelte';
 
 	let {
 		runningSessions = [],
@@ -82,6 +83,34 @@
 		filteredRows.find((row) => row.id === selectedTaskId) || filteredRows[0] || null,
 	);
 
+	/** @param {any} row */
+	function isLiveAction(row) {
+		return row.status === 'running' || row.status === 'scheduled';
+	}
+
+	const taskGroups = $derived.by(() => {
+		return [
+			{
+				id: 'session',
+				label: '当前会话',
+				description: '正在运行、排队或等待继续的会话。',
+				rows: filteredRows.filter((row) => row.kind === 'foreground'),
+			},
+			{
+				id: 'actions',
+				label: '后台与定时任务',
+				description: '可取消的后台执行，以及尚未触发的定时任务。',
+				rows: filteredRows.filter((row) => row.kind !== 'foreground' && isLiveAction(row)),
+			},
+			{
+				id: 'history',
+				label: '执行记录',
+				description: '已完成、失败或已取消的任务结果。',
+				rows: filteredRows.filter((row) => row.kind !== 'foreground' && !isLiveAction(row)),
+			},
+		].filter((group) => group.rows.length > 0);
+	});
+
 	$effect(() => {
 		if (selectedRow && selectedTaskId !== selectedRow.id) selectedTaskId = selectedRow.id;
 		if (!selectedRow) selectedTaskId = null;
@@ -116,18 +145,28 @@
 <section class="task-center" aria-labelledby="task-center-title">
 	<header class="page-heading">
 		<div class="page-heading-content">
-			<h1 id="task-center-title">任务中心</h1>
-			<p>统一查看会话、后台任务、定时任务和已完成记录。</p>
+			<h1 id="task-center-title">任务</h1>
+			<p>查看正在执行、待执行和已完成的工作。</p>
 		</div>
 		<div class="page-heading-actions">
-			<MaterialButton variant="outlined" label="新建会话" onclick={() => onNewSession?.()} />
+			<MaterialButton variant="outlined" label="新对话" onclick={() => onNewSession?.()} />
 		</div>
 	</header>
+
+	<WorkspaceScopeNote
+		title="任务负责执行与进度"
+		message="在这里查看状态、取消任务和追踪结果；完整的会话历史与长期记忆请到“记忆”。"
+	/>
 
 	<div class="task-toolbar workspace-filter-bar" role="search">
 		<label class="task-search">
 			<span class="sr-only">搜索任务</span>
-			<input class="md-input" type="search" placeholder="搜索任务或会话" bind:value={query} />
+			<input
+				class="md-input"
+				type="search"
+				placeholder="搜索任务标题、来源或命令"
+				bind:value={query}
+			/>
 		</label>
 		<div class="task-filter">
 			<MaterialSelect
@@ -136,7 +175,7 @@
 				ariaLabel="任务类型"
 				options={[
 					{ value: 'all', label: '全部类型' },
-					{ value: 'foreground', label: '会话' },
+					{ value: 'foreground', label: '当前会话' },
 					{ value: 'background', label: '后台任务' },
 					{ value: 'scheduled', label: '定时任务' },
 				]}
@@ -148,7 +187,7 @@
 	{#if taskRows.length === 0}
 		<AsyncState
 			title="暂无任务"
-			message="发起一段对话或安排定时任务后，进度和结果会显示在这里。"
+			message="开始对话或安排后台、定时任务后，执行状态和结果会显示在这里。"
 			actionLabel="开始新会话"
 			onAction={() => onNewSession?.()}
 		/>
@@ -172,25 +211,41 @@
 					</div>
 					<span class="task-list-hint">选择一项查看详情</span>
 				</div>
-				<div class="task-list" aria-label="任务列表">
-					{#each filteredRows as row (row.id)}
-						<button
-							class="task-row motion-list-item"
-							class:selected={selectedRow?.id === row.id}
-							aria-pressed={selectedRow?.id === row.id}
-							type="button"
-							onclick={() => selectRow(row)}
-						>
-							<span class="task-row-indicator" data-tone={rowTone(row)} aria-hidden="true"
-							></span>
-							<span class="task-row-main">
-								<strong>{row.title}</strong>
-								<span>{row.subtitle}</span>
-							</span>
-							<span class="task-row-status" data-tone={rowTone(row)}
-								>{rowStatus(row)}</span
-							>
-						</button>
+				<div class="task-groups" aria-label="按生命周期分组的任务列表">
+					{#each taskGroups as group (group.id)}
+						<section class="task-group" aria-labelledby={`task-group-${group.id}`}>
+							<div class="task-group-heading">
+								<div>
+									<h3 id={`task-group-${group.id}`}>{group.label}</h3>
+									<span class="task-list-count">{group.rows.length} 项</span>
+								</div>
+								<p>{group.description}</p>
+							</div>
+							<div class="task-list">
+								{#each group.rows as row (row.id)}
+									<button
+										class="task-row motion-list-item"
+										class:selected={selectedRow?.id === row.id}
+										aria-pressed={selectedRow?.id === row.id}
+										type="button"
+										onclick={() => selectRow(row)}
+									>
+										<span
+											class="task-row-indicator"
+											data-tone={rowTone(row)}
+											aria-hidden="true"
+										></span>
+										<span class="task-row-main">
+											<strong>{row.title}</strong>
+											<span>{row.subtitle}</span>
+										</span>
+										<span class="task-row-status" data-tone={rowTone(row)}
+											>{rowStatus(row)}</span
+										>
+									</button>
+								{/each}
+							</div>
+						</section>
 					{/each}
 				</div>
 			</div>
@@ -198,93 +253,102 @@
 			{#if selectedRow}
 				{@const detail = selectedRow.value}
 				{#key selectedRow.id}
-				<article
-					class="task-detail md-card motion-surface-enter"
-					aria-labelledby="task-detail-title"
-				>
-					<div class="task-detail-heading">
-						<div>
-							<span class="task-kicker"
-								>{selectedRow.kind === 'foreground'
-									? taskKindLabel('foreground')
-									: selectedRow.kind === 'background'
-										? taskKindLabel('background')
-										: taskKindLabel('scheduled')}</span
+					<article
+						class="task-detail md-card motion-surface-enter"
+						aria-labelledby="task-detail-title"
+					>
+						<div class="task-detail-heading">
+							<div>
+								<span class="task-kicker"
+									>{selectedRow.kind === 'foreground'
+										? taskKindLabel('foreground')
+										: selectedRow.kind === 'background'
+											? taskKindLabel('background')
+											: taskKindLabel('scheduled')}</span
+								>
+								<h2 id="task-detail-title">{selectedRow.title}</h2>
+							</div>
+							<span class="md-badge" data-variant={rowTone(selectedRow)}
+								>{rowStatus(selectedRow)}</span
 							>
-							<h2 id="task-detail-title">{selectedRow.title}</h2>
 						</div>
-						<span class="md-badge" data-variant={rowTone(selectedRow)}
-							>{rowStatus(selectedRow)}</span
-						>
-					</div>
-					<dl class="task-facts">
-						<div>
-							<dt>来源会话</dt>
-							<dd>
-								{selectedRow.sessionId
-									? sessionTitleFor({ sessionId: selectedRow.sessionId }) ||
-										selectedRow.sessionId
-									: '无关联会话'}
-							</dd>
+						<dl class="task-facts">
+							<div>
+								<dt>
+									{selectedRow.kind === 'foreground' ? '会话编号' : '来源会话'}
+								</dt>
+								<dd>
+									{selectedRow.kind === 'foreground'
+										? selectedRow.sessionId
+										: selectedRow.sessionId
+											? sessionTitleFor({
+													sessionId: selectedRow.sessionId,
+												}) || selectedRow.sessionId
+											: '无关联会话'}
+								</dd>
+							</div>
+							<div>
+								<dt>
+									{selectedRow.kind === 'foreground' ? '运行编号' : '任务编号'}
+								</dt>
+								<dd>{selectedRow.id}</dd>
+							</div>
+							{#if selectedRow.kind === 'background'}<div>
+									<dt>耗时</dt>
+									<dd>{actionDuration(detail)}</dd>
+								</div>{/if}
+							{#if selectedRow.kind === 'background' && detail.command}<div>
+									<dt>执行命令</dt>
+									<dd><code class="task-command">{detail.command}</code></dd>
+								</div>{/if}
+							{#if selectedRow.kind === 'scheduled'}<div>
+									<dt>执行时间</dt>
+									<dd>{scheduledActionCountdown(detail.dueAt)}</dd>
+								</div>{/if}
+							{#if selectedRow.kind !== 'foreground' && detail.finishedAt}<div>
+									<dt>完成时间</dt>
+									<dd>{formatHistoryTime(detail)}</dd>
+								</div>{/if}
+						</dl>
+						{#if detail.body}<p class="task-detail-copy">{detail.body}</p>{/if}
+						{#if detail.output || detail.errorReason || detail.error}<pre
+								class="task-output">{detail.output ||
+									detail.errorReason ||
+									detail.error}</pre>{/if}
+						<div class="task-actions">
+							{#if selectedRow.sessionId}
+								<MaterialButton
+									variant="filled"
+									label={selectedRow.kind === 'foreground'
+										? '打开会话'
+										: '打开来源会话'}
+									onclick={() => onOpenSession?.(selectedRow.sessionId)}
+								/>
+							{/if}
+							{#if selectedRow.kind === 'background' && detail.status === 'running'}
+								<MaterialButton
+									variant="danger"
+									label="停止任务"
+									onclick={() => onCancel?.(selectedRow.id, 'background')}
+								/>
+							{/if}
+							{#if selectedRow.kind === 'scheduled'}
+								<MaterialButton
+									variant="danger"
+									label="取消定时任务"
+									onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
+								/>
+							{/if}
+							{#if selectedRow.kind !== 'foreground' && selectedRow.status !== 'running'}
+								<MaterialButton
+									variant="text"
+									className="task-delete"
+									label="删除记录"
+									onclick={() => onDeleteHistory?.(selectedRow.id)}
+								/>
+							{/if}
 						</div>
-						<div>
-							<dt>任务编号</dt>
-							<dd>{selectedRow.id}</dd>
-						</div>
-						{#if selectedRow.kind === 'background'}<div>
-								<dt>耗时</dt>
-								<dd>{actionDuration(detail)}</dd>
-							</div>{/if}
-						{#if selectedRow.kind === 'background' && detail.command}<div>
-								<dt>执行命令</dt>
-								<dd><code class="task-command">{detail.command}</code></dd>
-							</div>{/if}
-						{#if selectedRow.kind === 'scheduled'}<div>
-								<dt>执行时间</dt>
-								<dd>{scheduledActionCountdown(detail.dueAt)}</dd>
-							</div>{/if}
-						{#if selectedRow.kind !== 'foreground' && detail.finishedAt}<div>
-								<dt>完成时间</dt>
-								<dd>{formatHistoryTime(detail)}</dd>
-							</div>{/if}
-					</dl>
-					{#if detail.body}<p class="task-detail-copy">{detail.body}</p>{/if}
-					{#if detail.output || detail.errorReason || detail.error}<pre
-							class="task-output">{detail.output ||
-								detail.errorReason ||
-								detail.error}</pre>{/if}
-					<div class="task-actions">
-						{#if selectedRow.sessionId}
-							<MaterialButton
-								variant="filled"
-								label="打开来源会话"
-								onclick={() => onOpenSession?.(selectedRow.sessionId)}
-							/>
-						{/if}
-						{#if selectedRow.kind === 'background' && detail.status === 'running'}
-							<MaterialButton
-								variant="danger"
-								label="停止任务"
-								onclick={() => onCancel?.(selectedRow.id, 'background')}
-							/>
-						{/if}
-						{#if selectedRow.kind === 'scheduled'}
-							<MaterialButton
-								variant="danger"
-								label="取消定时任务"
-								onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
-							/>
-						{/if}
-						{#if selectedRow.kind !== 'foreground' && selectedRow.status !== 'running'}
-							<MaterialButton
-								variant="text"
-								className="task-delete"
-								label="删除记录"
-								onclick={() => onDeleteHistory?.(selectedRow.id)}
-							/>
-						{/if}
-					</div>
-				</article>
+					</article>
 				{/key}
 			{/if}
 		</div>
@@ -348,6 +412,43 @@
 	}
 	.task-list-hint {
 		white-space: nowrap;
+	}
+	.task-groups {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-xl);
+	}
+	.task-group {
+		min-width: 0;
+	}
+	.task-group + .task-group {
+		padding-top: var(--md-sys-space-lg);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.task-group-heading {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		margin: 0 var(--md-sys-space-xs) var(--md-sys-space-sm);
+	}
+	.task-group-heading > div {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-sm);
+		min-width: 0;
+	}
+	.task-group-heading h3 {
+		margin: 0;
+		font-size: var(--md-sys-typescale-title-medium-size);
+		line-height: var(--md-sys-typescale-title-medium-line-height);
+	}
+	.task-group-heading p {
+		margin: 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		text-align: right;
 	}
 	.task-list {
 		display: flex;
@@ -583,6 +684,13 @@
 			align-items: flex-start;
 			flex-direction: column;
 			padding-inline: var(--md-sys-space-xs);
+		}
+		.task-group-heading {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.task-group-heading p {
+			text-align: left;
 		}
 		.task-actions :global(.md-btn) {
 			width: 100%;
