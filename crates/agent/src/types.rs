@@ -88,8 +88,11 @@ pub enum TranscriptRecord {
     },
 }
 
-/// Branch point saved before tool execution (§2 / Phase 8 F4).
-/// Stores only an index into the parent snapshot's `events` — no Arc Vec copies.
+/// Rollback point saved before tool execution (§2 / Phase 8 F4).
+///
+/// Haven currently implements rollback as an overwrite of the active timeline,
+/// not as a user-visible branch tree. Stores only an index into the snapshot's
+/// `events` — no Arc Vec copies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BranchPoint {
@@ -173,7 +176,7 @@ pub struct RunBudget {
 pub struct ReActSnapshot {
     pub events: Vec<TranscriptRecord>,
     pub step_number: u32,
-    /// Branch points keyed by step number for tree-structured rollback (§2).
+    /// Rollback points keyed by step number for overwrite rollback (§2).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub branch_points: HashMap<u32, BranchPoint>,
     /// Legacy wall-clock checkpoint retained for backward compatibility with

@@ -11,13 +11,13 @@
 		onClose,
 	} = $props();
 
-	let title = $derived(isUserMessage ? '回退并编辑消息' : '回退到上一步');
+	let title = $derived(isUserMessage ? '回退并覆盖当前时间线' : '回退并覆盖当前时间线');
 	let message = $derived(
 		isUserMessage
-			? `确定要回退到这条消息吗？消息内容将回到输入框，你可以编辑后重新发送。`
-			: `确定要回退到第 ${stepNumber} 步吗？会话状态将回到该步骤，后续步骤将被丢弃。`,
+			? `确定要回退到这条消息吗？当前消息及其后续内容会被删除，消息会回到输入框供你编辑后重新发送。`
+			: `确定要回退到第 ${stepNumber} 步吗？当前时间线的后续步骤会被删除，回退后不会保留可切换的分支。`,
 	);
-	let confirmLabel = $derived(loading ? '处理中...' : '确认回退');
+	let confirmLabel = $derived(loading ? '处理中...' : '确认回退并覆盖');
 </script>
 
 <MaterialDialog {open} onClose={loading ? undefined : onClose} {title}>

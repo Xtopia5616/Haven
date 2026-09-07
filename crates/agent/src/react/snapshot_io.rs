@@ -458,7 +458,7 @@ impl ReActEngine {
         }
     }
 
-    /// Save snapshot including branch points for tree-structured rollback (§2).
+    /// Save snapshot including rollback points for overwrite rollback (§2).
     ///
     /// Serializes a borrowed view of the ReAct state (no per-step deep copies
     /// of events/branch_points — those clones were O(n²) over a long session)

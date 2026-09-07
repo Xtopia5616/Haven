@@ -10,7 +10,7 @@ use crate::AgentLayer;
 use crate::lifecycle::{LifecycleOp, LifecycleWindow, decide};
 use crate::rollback_support::truncate_at_user_message;
 use crate::session::SessionStatus;
-use crate::types::{BranchPoint, ReActSnapshot};
+use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
 
 impl AgentLayer {
     /// Roll back a session to a specific branch point. The session is rewound
@@ -133,6 +133,25 @@ impl AgentLayer {
             }
         };
         let mut snapshot = ReActSnapshot::from_json(&state_json)?;
+
+        // Compaction replaces the pre-compaction event prefix and clears its
+        // rollback points. Refuse to pretend those old messages are still
+        // restorable: rollback is an overwrite operation, not a branch tree,
+        // and silently falling back to the compacted head would target the
+        // wrong timeline.
+        if target_step < snapshot.step_number
+            && snapshot
+                .events
+                .first()
+                .is_some_and(|event| matches!(event, TranscriptRecord::CompactSummary { .. }))
+            && !snapshot.branch_points.contains_key(&target_step)
+        {
+            return Err(anyhow::anyhow!(
+                "rollback_session {}: step {} is before the current compaction boundary and is no longer restorable",
+                session_id,
+                target_step
+            ));
+        }
 
         // If no branch_point exists at the target step, the step likely
         // failed before save_branch_point was called (e.g. LLM error
