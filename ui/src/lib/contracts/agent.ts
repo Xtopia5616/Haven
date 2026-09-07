@@ -39,6 +39,7 @@ export interface AgentActionPayload {
 	stepId: string;
 	suppressStreamedThought: boolean;
 	silent: boolean;
+	eventSeq?: number;
 }
 
 export interface AgentObservationPayload {
@@ -55,6 +56,7 @@ export interface AgentObservationPayload {
 	outcome: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'unknown' | string;
 	idempotency: 'idempotent' | 'non_idempotent' | 'unknown' | string;
 	operationScope: 'global' | 'session' | string;
+	eventSeq?: number;
 }
 
 export interface AgentChunkPayload {
@@ -96,6 +98,7 @@ export interface AgentSupplementPayload {
 	messageId?: string;
 	supplementId: string;
 	injectSource?: string;
+	eventSeq?: number;
 }
 
 export interface AgentCompactionPayload {
@@ -182,6 +185,7 @@ interface AgentActionWirePayload {
 	step_id: string;
 	suppress_streamed_thought: boolean;
 	silent: boolean;
+	event_seq?: number;
 }
 
 interface AgentObservationWirePayload {
@@ -198,6 +202,7 @@ interface AgentObservationWirePayload {
 	outcome: string;
 	idempotency: string;
 	operation_scope: string;
+	event_seq?: number;
 }
 
 interface AgentChunkWirePayload {
@@ -233,6 +238,7 @@ interface AgentSupplementWirePayload {
 	message_id?: string;
 	supplement_id: string;
 	inject_source?: string;
+	event_seq?: number;
 }
 interface AgentCompactionWirePayload {
 	session_id: string;
@@ -320,7 +326,8 @@ export function mapAgentEvent<K extends AgentEventName>(
 				actionIndex: payload.action_index,
 				stepId: payload.step_id,
 				suppressStreamedThought: payload.suppress_streamed_thought,
-				silent: payload.silent,
+					silent: payload.silent,
+				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:observation': {
@@ -339,6 +346,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				outcome: payload.outcome,
 				idempotency: payload.idempotency,
 				operationScope: payload.operation_scope,
+				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:thought_chunk':
@@ -390,6 +398,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				...(payload.message_id !== undefined ? { messageId: payload.message_id } : {}),
 				supplementId: payload.supplement_id,
 				...(payload.inject_source !== undefined ? { injectSource: payload.inject_source } : {}),
+				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:compaction': {

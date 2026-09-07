@@ -12,6 +12,7 @@ use super::tool_batch::{
     ToolBatchOutcome, ToolBatchResults, ToolBatchState, execute_tool_action,
 };
 use super::tool_batch_plan::ToolBatchPlan;
+use super::tool_batch_policy::ToolRetryBudget;
 use super::*;
 use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
 use futures_util::StreamExt;
@@ -386,6 +387,7 @@ impl ReActEngine {
         response: &haven_llm::LlmResponse,
         cancel_res: &tokio_util::sync::CancellationToken,
         allow_tool_retry: bool,
+        tool_retry_budget: &mut ToolRetryBudget,
     ) -> anyhow::Result<ToolBatchOutcome> {
         // Build the plan first. Every later identity/index lookup is derived
         // from it; validation only reports tool-schema failures against the
@@ -496,14 +498,43 @@ impl ReActEngine {
         // pause for confirm: it would be baked into the paused snapshot ahead
         // of the user's real answer / decision. Phase 7 / G5: append onto the
         // last failed tool observation — never a synthetic User message.
+        let mut admitted_failures = Vec::new();
+        let mut exhausted_failure = None;
+        if allow_tool_retry {
+            for signal in &batch_state.failure_signals {
+                if tool_retry_budget.admit(signal) {
+                    admitted_failures.push(signal);
+                } else if exhausted_failure.is_none() {
+                    exhausted_failure = Some(signal);
+                }
+            }
+        }
         if batch_state.retryable_failure
             && batch_state.asked_questions.is_empty()
             && need_confirm.is_empty()
-            && allow_tool_retry
+            && !admitted_failures.is_empty()
         {
-            let nudge = Self::build_failure_nudge(&batch_state.failure_signals);
-            if let Some(tool_call_id) = batch_state.last_retryable_failed_tool_call_id.clone() {
+            let failures: Vec<_> = admitted_failures
+                .iter()
+                .map(|signal| (signal.tool_name.clone(), signal.error.clone()))
+                .collect();
+            let nudge = Self::build_failure_nudge(&failures);
+            if let Some(tool_call_id) = admitted_failures
+                .last()
+                .and_then(|signal| signal.tool_call_id.clone())
+                .or_else(|| batch_state.last_retryable_failed_tool_call_id.clone())
+            {
                 state.stage_retry_nudge(tool_call_id, nudge);
+            }
+        } else if let Some(signal) = exhausted_failure
+            && batch_state.asked_questions.is_empty()
+            && need_confirm.is_empty()
+        {
+            if let Some(tool_call_id) = signal.tool_call_id.clone() {
+                state.stage_retry_nudge(
+                    tool_call_id,
+                    "The automatic retry budget for this exact tool operation and failure kind is exhausted. Do not repeat the same call; change the approach or ask the user for guidance.".into(),
+                );
             }
         }
 

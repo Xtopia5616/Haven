@@ -8,6 +8,7 @@
 //! tool-batch outcomes.
 
 use super::tool_batch::ToolBatchOutcome;
+use super::tool_batch_policy::ToolRetryBudget;
 use super::turn::{TurnInput, TurnOutcome};
 use super::*;
 use crate::types::RunBudget;
@@ -145,6 +146,7 @@ impl ReActEngine {
         }
 
         let mut cut_off_retries = 0u32;
+        let mut tool_retry_budget = ToolRetryBudget::default();
         let mut last_step = start_step.saturating_sub(1);
         for step_num in budget.start_step..=budget.effective_max {
             last_step = step_num;
@@ -175,6 +177,7 @@ impl ReActEngine {
                     // representation. This keeps tool execution independent
                     // from run accounting and fixes resumed-run boundaries.
                     allow_tool_retry: budget.allows_tool_retry(step_num),
+                    tool_retry_budget: &mut tool_retry_budget,
                     cut_off_retries: &mut cut_off_retries,
                 })
                 .instrument(tracing::info_span!("turn", session_id, step_num))

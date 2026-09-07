@@ -361,6 +361,8 @@ pub(crate) struct AgentActionEvent {
     pub step_id: String,
     pub suppress_streamed_thought: bool,
     pub silent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -378,6 +380,8 @@ pub(crate) struct AgentObservationEvent {
     pub outcome: String,
     pub idempotency: String,
     pub operation_scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -439,6 +443,8 @@ pub(crate) struct AgentSupplementEvent {
     pub supplement_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inject_source: Option<haven_common::types::InjectSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]

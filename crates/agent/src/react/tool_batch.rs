@@ -8,7 +8,7 @@ use super::snapshot_io::PauseTurnInput;
 #[cfg(test)]
 use super::tool_batch_policy::FailureKind;
 use super::tool_batch_policy::{
-    empty_inbox_output, is_agent_inbox_call, is_retryable_failure_outcome,
+    ToolFailureSignal, empty_inbox_output, is_agent_inbox_call, is_retryable_failure_outcome,
 };
 use super::*;
 use crate::session::ActionStepPersistenceError;
@@ -32,7 +32,7 @@ pub(super) const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
 #[derive(Default)]
 pub(super) struct ToolBatchState {
     pub(super) retryable_failure: bool,
-    pub(super) failure_signals: Vec<(String, String)>,
+    pub(super) failure_signals: Vec<ToolFailureSignal>,
     pub(super) last_retryable_failed_tool_call_id: Option<String>,
     pub(super) asked_questions: Vec<String>,
     pub(super) ask_step_ids: Vec<String>,
@@ -102,7 +102,12 @@ impl ToolBatchState {
             self.last_retryable_failed_tool_call_id = action.tool_call_id.clone();
             if self.failure_signals.len() < 3 {
                 let cap: String = step_result.chars().take(600).collect();
-                self.failure_signals.push((tool_name.clone(), cap));
+                self.failure_signals.push(ToolFailureSignal {
+                    tool_name: tool_name.clone(),
+                    tool_input: action.tool_input.clone(),
+                    error: cap,
+                    tool_call_id: action.tool_call_id.clone(),
+                });
             }
         }
         if let (Some(title), Some(body)) = (&notify_title, &notify_body) {

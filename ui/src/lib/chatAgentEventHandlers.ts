@@ -316,6 +316,7 @@ export function createChatAgentEventHandlers({
 					toolName: data.toolName,
 					content: data.observation,
 					askOptions: data.askOptions || [],
+					outcome: data.outcome,
 					actionId,
 					showFallbackIntent,
 				});

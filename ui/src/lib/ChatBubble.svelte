@@ -21,6 +21,7 @@
 		streaming = false,
 		toolName = '',
 		unrecoverable = false,
+		outcome = null,
 		messageId = '',
 		stepNumber = null,
 		usage = null,
@@ -340,8 +341,7 @@
 	class:assistant={role === 'assistant' || isPeerKickoff}
 	class:thinking={msgType === 'thought' || msgType === 'reasoning'}
 	class:streaming
-	role="button"
-	tabindex="0"
+	role="article"
 	oncontextmenu={handleContextMenu}
 	in:fly={{ y: 4, duration: 300, easing: cubicOut }}
 >
@@ -392,6 +392,7 @@
 			<ToolResultCard
 				{toolName}
 				{unrecoverable}
+				{outcome}
 				{content}
 				{streaming}
 				{actionId}

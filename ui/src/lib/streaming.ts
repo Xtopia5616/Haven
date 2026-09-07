@@ -176,6 +176,7 @@ export function newToolMessage({
 	actionId = null,
 	toolArgs = undefined,
 	showFallbackIntent = undefined,
+	outcome = undefined,
 }: {
 	id: string;
 	stepNumber: number;
@@ -189,6 +190,7 @@ export function newToolMessage({
 	 * so the placeholder's args are preserved via object spread. */
 	toolArgs?: unknown;
 	showFallbackIntent?: boolean | undefined;
+	outcome?: string | null | undefined;
 }) {
 	const isAsk = toolName === 'ask';
 	return {
@@ -202,6 +204,7 @@ export function newToolMessage({
 		...(time ? { time } : {}),
 		streaming,
 		...(showFallbackIntent !== undefined ? { showFallbackIntent } : {}),
+		...(outcome ? { outcome } : {}),
 		...(actionId ? { actionId } : {}),
 		...(toolArgs !== undefined ? { toolArgs } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),

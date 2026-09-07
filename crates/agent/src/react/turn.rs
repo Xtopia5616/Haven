@@ -9,6 +9,7 @@ use super::response_cycle::{AcceptedResponse, ResponseCycleOutcome};
 use super::snapshot_io::PauseTurnInput;
 use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
+use super::tool_batch_policy::ToolRetryBudget;
 use super::turn_end::{TurnEndInput, TurnEndOutcome};
 use super::*;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub(super) struct TurnInput<'a> {
     /// Whether this turn may stage a tool-failure retry for another turn.
     /// Computed by the run driver from the absolute run end.
     pub(super) allow_tool_retry: bool,
+    pub(super) tool_retry_budget: &'a mut ToolRetryBudget,
     pub(super) cut_off_retries: &'a mut u32,
 }
 
@@ -75,6 +77,7 @@ impl ReActEngine {
             state,
             cancel,
             allow_tool_retry,
+            tool_retry_budget,
             cut_off_retries,
         } = input;
         let session_id = &ctx.session_id;
@@ -359,6 +362,7 @@ impl ReActEngine {
                 &response,
                 &cancel,
                 allow_tool_retry,
+                tool_retry_budget,
             )
             .instrument(tracing::info_span!("tools", session_id, step_num))
             .await?

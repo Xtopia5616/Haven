@@ -25,6 +25,7 @@
 		type = 'tool',
 		toolName = '',
 		unrecoverable = false,
+		outcome = null,
 		content = '',
 		options = [],
 		awaiting = false,
@@ -44,6 +45,13 @@
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
 	let displayName = $derived(toolDisplayName(toolName));
 	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
+	const outcomeLabels = /** @type {Record<string, string>} */ ({
+			failed: '执行失败',
+			cancelled: '已取消',
+			timed_out: '执行超时',
+			unknown: '结果未知，可能已执行',
+	});
+	let outcomeLabel = $derived(outcomeLabels[outcome || ''] || '');
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
 	// chat input submits (page composes selected options + any typed text).
@@ -271,7 +279,7 @@
 	<div class="tool-card" role="status" oncontextmenu={handleContextMenu}>
 		<div class="tool-card-header">
 			<span class="tool-card-icon" aria-hidden="true">&#63;</span>
-			<span class="tool-card-label">Haven 需要你确认</span>
+			<span class="tool-card-label">Haven 需要你的回答</span>
 		</div>
 		{#if content}
 			<p class="ask-question">{content}</p>
@@ -550,6 +558,14 @@
 						title="该历史操作已移除，不能从当前工具目录恢复">历史操作不可恢复</span
 					>
 				{/if}
+				{#if outcomeLabel}
+					<span
+						class="tool-outcome"
+						data-outcome={outcome}
+						title={outcome === 'unknown' ? '该操作可能已经产生副作用，禁止自动重试' : undefined}
+						>{outcomeLabel}</span
+					>
+				{/if}
 				{#if usage}
 					<span
 						class="usage-chip"
@@ -635,7 +651,7 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		width: 420px;
+		width: min(42rem, 100%);
 		max-width: 100%;
 		box-sizing: border-box;
 		margin-top: var(--md-sys-space-xs);
@@ -677,6 +693,13 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.tool-unrecoverable {
+		flex: none;
+		color: var(--md-sys-color-error);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.tool-outcome {
 		flex: none;
 		color: var(--md-sys-color-error);
 		font-size: var(--md-sys-typescale-label-small-size);

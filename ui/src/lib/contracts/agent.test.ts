@@ -96,6 +96,33 @@ describe('agent IPC contract', () => {
 		});
 	});
 
+	it('maps outcome and event sequence for ordered tool observations', () => {
+		const event = mapAgentEvent({
+			event: 'agent:observation',
+			id: 6,
+			payload: {
+				session_id: 'ses-1',
+				observation: 'timeout',
+				tool_name: 'messaging',
+				step_number: 3,
+				run_id: 2,
+				silent: false,
+				tool_call_id: 'call-1',
+				action_index: 0,
+				ask_options: [],
+				step_id: 'step-1',
+				outcome: 'unknown',
+				idempotency: 'unknown',
+				operation_scope: 'global',
+				event_seq: 17,
+			},
+		});
+
+		expect(event.payload.outcome).toBe('unknown');
+		expect(event.payload.operationScope).toBe('global');
+		expect(event.payload.eventSeq).toBe(17);
+	});
+
 	it('maps degraded compaction and keeps legacy payloads compatible', () => {
 		const degraded = mapAgentEvent({
 			event: 'agent:compaction',

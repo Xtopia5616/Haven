@@ -205,6 +205,7 @@ pub(crate) fn run() {
             let emitter = Arc::new(TauriEmitter {
                 handle: handle.clone(),
                 chunk_seq: AtomicU64::new(0),
+                event_seq: AtomicU64::new(0),
                 notifications: DesktopNotifications::new(handle.clone()),
             });
             // Decouple the agent loops from the Tauri IPC subscriber chain:

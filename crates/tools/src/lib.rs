@@ -882,11 +882,18 @@ impl ToolsManager {
         let idempotency = tool.idempotency(&exec_input);
         drop(settings);
 
-        let max_attempts = 1 + max_retries;
+        // Keep tool-local retries bounded even when a persisted settings file
+        // contains an accidentally large value. Agent-level retries have a
+        // separate budget in haven-agent.
+        let max_attempts = 1 + max_retries.min(8);
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                let delay = Duration::from_secs(
-                    backoff_secs.saturating_mul(2u64.saturating_pow(attempt - 1)),
+                let delay = tool_retry_delay(tool_name, backoff_secs, attempt);
+                tracing::debug!(
+                    tool = %tool_name,
+                    attempt,
+                    delay_ms = delay.as_millis() as u64,
+                    "waiting before idempotent tool retry"
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
@@ -1032,6 +1039,25 @@ impl ToolsManager {
             .unwrap_or(limits.max_observation_chars);
         result.observation_text(cap)
     }
+}
+
+const MAX_TOOL_RETRY_DELAY: Duration = Duration::from_secs(30);
+
+/// Exponential delay with a small deterministic jitter and a hard ceiling.
+/// Deterministic jitter avoids synchronizing repeated calls from the same
+/// process without introducing a new random source into the tool crate.
+fn tool_retry_delay(tool_name: &str, base_secs: u64, attempt: u32) -> Duration {
+    if base_secs == 0 {
+        return Duration::ZERO;
+    }
+    let exponential_secs = base_secs.saturating_mul(2u64.saturating_pow(attempt - 1));
+    let base = Duration::from_secs(exponential_secs).min(MAX_TOOL_RETRY_DELAY);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    tool_name.hash(&mut hasher);
+    attempt.hash(&mut hasher);
+    let jitter_ms = hasher.finish() % 250;
+    (base + Duration::from_millis(jitter_ms)).min(MAX_TOOL_RETRY_DELAY)
 }
 
 /// Retry only failures that are known to be transient. Unknown/cancelled

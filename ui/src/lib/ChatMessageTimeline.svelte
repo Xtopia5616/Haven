@@ -44,6 +44,7 @@
 				streaming={!!msg.streaming}
 				toolName={msg.toolName ?? ''}
 				unrecoverable={!!msg.unrecoverable}
+				outcome={msg.outcome ?? null}
 				messageId={msg.id}
 				stepNumber={msg.stepNumber}
 				usage={showStepUsage ? stepUsage(msg.stepNumber) : null}

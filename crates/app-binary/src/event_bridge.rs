@@ -10,6 +10,7 @@ use tauri::Emitter;
 pub(crate) struct TauriEmitter {
     pub(crate) handle: tauri::AppHandle,
     pub(crate) chunk_seq: AtomicU64,
+    pub(crate) event_seq: AtomicU64,
     pub(crate) notifications: DesktopNotifications,
 }
 
@@ -91,10 +92,14 @@ impl AgentEventEmitter for TauriEmitter {
             }
             _ => None,
         };
+        let event_seq = match &event {
+            AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. } => None,
+            _ => Some(self.event_seq.fetch_add(1, Ordering::Relaxed)),
+        };
         // Cache titles from create/rename/complete before any path that may
         // resolve a display title (SessionUpdated fill, toasts, secondary).
         self.notifications.remember_session_status(&event);
-        let mut payload = Self::payload(&event, chunk_seq);
+        let mut payload = Self::payload_with_event_seq(&event, chunk_seq, event_seq);
         // SessionUpdated wire historically sent title:""; fill a safe display
         // title so in-app toast matches Windows (never raw input).
         if let AgentEvent::SessionUpdated { session_id, .. } = &event {
@@ -141,6 +146,14 @@ impl TauriEmitter {
     /// `Value` fields remain only where they are part of an intentional
     /// extension point: tool input, web-search result, and usage diagnostics.
     pub(crate) fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
+        Self::payload_with_event_seq(event, chunk_seq, None)
+    }
+
+    fn payload_with_event_seq(
+        event: &AgentEvent,
+        chunk_seq: Option<u64>,
+        event_seq: Option<u64>,
+    ) -> serde_json::Value {
         fn serialize<T: serde::Serialize>(payload: T) -> serde_json::Value {
             match serde_json::to_value(payload) {
                 Ok(value) => value,
@@ -189,6 +202,7 @@ impl TauriEmitter {
                 step_id: step_id.clone(),
                 suppress_streamed_thought: *suppress_streamed_thought,
                 silent: haven_tools::is_silent_action(tool_name, input),
+                event_seq,
             }),
             AgentEvent::Observation {
                 session_id,
@@ -218,6 +232,7 @@ impl TauriEmitter {
                 outcome: outcome.clone(),
                 idempotency: idempotency.clone(),
                 operation_scope: operation_scope.clone(),
+                event_seq,
             }),
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
                 session_id: session.id.clone(),
@@ -317,6 +332,7 @@ impl TauriEmitter {
                 message_id: message_id.clone(),
                 supplement_id: supplement_id.clone(),
                 inject_source: *inject_source,
+                event_seq,
             }),
             AgentEvent::Compaction {
                 session_id,

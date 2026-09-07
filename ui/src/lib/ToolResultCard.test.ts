@@ -125,7 +125,7 @@ describe('ToolResultCard ask', () => {
 			messageId: 'ask-1',
 		});
 		expect(container.querySelector('.tool-card')).toBeTruthy();
-		expect(screen.getByText('Haven 需要你确认')).toBeTruthy();
+		expect(screen.getByText('Haven 需要你的回答')).toBeTruthy();
 		expect(screen.getByText('你想怎么做？')).toBeTruthy();
 		expect(screen.getByText('选择后回车提交')).toBeTruthy();
 		expect(screen.getByText('方案 A')).toBeTruthy();
@@ -212,6 +212,19 @@ describe('ToolResultCard ask', () => {
 		});
 		expect(screen.getByText('已忽略')).toBeTruthy();
 		expect(container.querySelector('.ask-ignore')).toBeNull();
+	});
+});
+
+describe('ToolResultCard outcomes', () => {
+	it('surfaces unknown side-effect state instead of implying a safe retry', () => {
+		render(ToolResultCard, {
+			type: 'tool',
+			toolName: 'messaging',
+			content: 'request timed out',
+			outcome: 'unknown',
+		});
+		expect(screen.getByText('结果未知，可能已执行')).toBeTruthy();
+		expect(screen.getByTitle('该操作可能已经产生副作用，禁止自动重试')).toBeTruthy();
 	});
 });
 

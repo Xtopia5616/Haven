@@ -10,7 +10,7 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{OperationIdempotency, ToolExecutionOutcome};
 
 /// Failure classification used to shape the post-failure retry nudge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum FailureKind {
     /// The environment cannot run the approach: missing command, wrong shell,
     /// network/proxy trouble, bad paths. The approach itself may be sound.
@@ -19,6 +19,48 @@ pub(crate) enum FailureKind {
     Logic,
     /// Cannot tell from the error text.
     Unknown,
+}
+
+/// A concrete failed invocation used by the run-scoped agent retry budget.
+/// Keeping the normalized input in the key prevents a model from consuming
+/// the same retry allowance by alternating irrelevant JSON field order or
+/// switching to a different operation.
+#[derive(Debug, Clone)]
+pub(super) struct ToolFailureSignal {
+    pub(super) tool_name: String,
+    pub(super) tool_input: serde_json::Value,
+    pub(super) error: String,
+    pub(super) tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct ToolRetryBudget {
+    attempts: std::collections::HashMap<(String, String, FailureKind), u8>,
+}
+
+const MAX_AGENT_RETRIES_PER_FAILURE: u8 = 2;
+
+impl ToolRetryBudget {
+    /// Record one model-level retry. Returns false after the bounded retry
+    /// allowance is exhausted; tool-internal retries remain a separate policy
+    /// owned by `ToolsManager`.
+    pub(super) fn admit(&mut self, signal: &ToolFailureSignal) -> bool {
+        let key = (
+            signal.tool_name.clone(),
+            normalize_tool_input(&signal.tool_input),
+            ReActEngine::classify_tool_failure(&signal.tool_name, &signal.error),
+        );
+        let attempts = self.attempts.entry(key).or_default();
+        if *attempts >= MAX_AGENT_RETRIES_PER_FAILURE {
+            return false;
+        }
+        *attempts += 1;
+        true
+    }
+}
+
+fn normalize_tool_input(input: &serde_json::Value) -> String {
+    serde_json::to_string(input).unwrap_or_else(|_| "<invalid-json>".into())
 }
 
 /// `agent` operation=inbox result is an empty poll (`count: 0`): nothing for
@@ -202,5 +244,25 @@ mod tests {
             ToolExecutionOutcome::Failed,
             OperationIdempotency::NonIdempotent,
         ));
+    }
+
+    #[test]
+    fn agent_retry_budget_is_scoped_by_tool_input_and_failure_kind() {
+        let mut budget = super::ToolRetryBudget::default();
+        let signal = super::ToolFailureSignal {
+            tool_name: "files".into(),
+            tool_input: serde_json::json!({"path":"a.txt", "operation":"read"}),
+            error: "not found in file".into(),
+            tool_call_id: Some("call-1".into()),
+        };
+        assert!(budget.admit(&signal));
+        assert!(budget.admit(&signal));
+        assert!(!budget.admit(&signal));
+
+        let different_input = super::ToolFailureSignal {
+            tool_input: serde_json::json!({"path":"b.txt", "operation":"read"}),
+            ..signal
+        };
+        assert!(budget.admit(&different_input));
     }
 }
