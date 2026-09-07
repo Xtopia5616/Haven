@@ -624,8 +624,9 @@
 			<MaterialIconButton
 				size="toolbar"
 				variant={stopMode ? 'danger' : 'primary'}
-				label={hasInput ? '发送' : interrupting ? '正在停止' : stopMode ? '中断输出' : '发送'}
-				title={hasInput ? '发送' : interrupting ? '正在停止当前输出' : stopMode ? '中断当前输出' : '发送'}
+				label={hasInput ? '发送' : stopMode ? '中断输出' : '发送'}
+				title={hasInput ? '发送' : stopMode ? '中断当前输出' : '发送'}
+				ariaBusy={interrupting}
 				disabled={interrupting || (!hasInput && !isGenerating && !sessionRunning)}
 				onclick={stopMode ? () => onstop?.() : handleSubmit}
 			>

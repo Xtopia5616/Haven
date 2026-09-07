@@ -48,6 +48,14 @@ describe('InputRouter context menu', () => {
 		expect(onstop).toHaveBeenCalledTimes(1);
 	});
 
+	it('keeps the interrupt label stable while the stop request is in flight', () => {
+		render(InputRouter, { isGenerating: true, interrupting: true });
+
+		const button = screen.getByRole('button', { name: '中断输出' });
+		expect((button as HTMLButtonElement).disabled).toBe(true);
+		expect(button.getAttribute('aria-busy')).toBe('true');
+	});
+
 	it('opens a copy menu on the input and copies the draft', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', {

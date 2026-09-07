@@ -746,6 +746,7 @@
 		interruptPending = true;
 		try {
 			await invoke('interrupt_session', { sessionId: activeSessionId });
+			addNotification('输出已中断，可继续生成', 'info', 2000);
 		} catch (e) {
 			reportError(e, { context: '+page', message: '中断输出失败', log: false });
 		} finally {
