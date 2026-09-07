@@ -19,5 +19,9 @@ describe('ConversationTimeline', () => {
 		});
 
 		expect(screen.getByRole('button', { name: '继续生成' })).toBeTruthy();
+		expect(document.querySelector('.continue-action')).toBeTruthy();
+		expect(
+			screen.getByRole('button', { name: '继续生成' }).classList.contains('md-btn--outlined'),
+		).toBe(true);
 	});
 });

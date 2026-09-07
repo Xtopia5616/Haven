@@ -71,6 +71,35 @@
 			/>
 		{/each}
 	</div>
+	{#if showContinueButton}
+		<div class="continue-action" in:fly={{ y: 6, duration: 240 }}>
+			<MaterialButton
+				variant="outlined"
+				className="continue-btn"
+				ariaLabel="继续生成"
+				ariaBusy={continueBusy}
+				disabled={continueDisabled}
+				title={continueDisabled ? '当前会话尚未进入可恢复状态' : '从上一条消息继续生成'}
+				onclick={() => onContinue()}
+			>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true"
+				>
+					<path d="M20 11a8 8 0 1 0 2 5.3" />
+					<polyline points="20 4 20 11 13 11" />
+				</svg>
+				<span>继续生成</span>
+			</MaterialButton>
+		</div>
+	{/if}
 {/if}
 
 {#if awaitingBackground && !activeSessionError}
@@ -79,33 +108,6 @@
 		<span class="awaiting-bg-text">
 			等待后台任务结果{#if awaitingBackgroundCount > 1}（{awaitingBackgroundCount}）{/if}，完成后将自动继续
 		</span>
-	</div>
-{/if}
-
-{#if showContinueButton}
-	<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
-		<MaterialButton
-			variant="filled"
-			className="continue-btn"
-			ariaLabel="继续生成"
-			ariaBusy={continueBusy}
-			disabled={continueDisabled}
-			title={continueDisabled ? '当前会话尚未进入可恢复状态' : '从上一条消息继续生成'}
-			onclick={() => onContinue()}
-		>
-			<svg
-				width="16"
-				height="16"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				aria-hidden="true"
-			>
-				<polygon points="5 3 19 12 5 21 5 3" />
-			</svg>
-			<span>继续生成</span>
-		</MaterialButton>
 	</div>
 {/if}
 
@@ -174,32 +176,13 @@
 		gap: var(--md-sys-space-md);
 	}
 
-	.continue-banner {
+	.continue-action {
 		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: var(--md-sys-space-md);
-		position: sticky;
-		bottom: 0;
-		z-index: 2;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md) var(--md-sys-space-md);
-		max-width: min(800px, 100%);
-		margin: 0 auto;
-		width: 100%;
-		pointer-events: none;
-		background: linear-gradient(
-			to bottom,
-			color-mix(in srgb, var(--md-sys-color-surface) 0%, transparent),
-			var(--md-sys-color-surface) 45%
-		);
+		justify-content: flex-end;
+		padding-top: var(--md-sys-space-xs);
 	}
 	:global(.continue-btn) {
-		pointer-events: auto;
-		min-width: 148px;
 		gap: var(--md-sys-space-xs);
-		font-size: var(--md-sys-typescale-label-large-size);
-		line-height: var(--md-sys-typescale-label-large-line-height);
-		box-shadow: var(--md-sys-elevation-2);
 	}
 
 	.awaiting-bg-banner {
