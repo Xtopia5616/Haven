@@ -452,14 +452,21 @@
 
 <style>
 	.bubble {
-		max-width: 88%;
+		width: 100%;
+		max-width: 100%;
 		min-width: 0;
 		min-inline-size: 0;
-		width: fit-content;
+		box-sizing: border-box;
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
 		border-radius: var(--md-sys-shape-large);
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
+		overflow-wrap: anywhere;
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	/* The global long-conversation optimization may skip off-screen bubbles;
 	 * the active stream is the exception because its newest text must paint
@@ -468,53 +475,80 @@
 		content-visibility: visible;
 	}
 	.bubble.thinking {
-		width: 88%;
-		max-width: 88%;
-		padding-block: var(--md-sys-space-sm);
+		width: 100%;
+		max-width: 100%;
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		background: transparent;
+		border-color: transparent;
+		box-shadow: none;
 	}
 	.bubble.tool {
 		width: 100%;
 		max-width: 100%;
-		padding: var(--md-sys-space-xs) 0;
+		padding: 0;
 		background: transparent;
 		border: none;
 		border-radius: 0;
+		box-shadow: none;
 	}
 	.bubble.user {
 		margin-left: auto;
-		max-width: 82%;
+		width: var(--md-sys-chat-user-max-width);
+		max-width: var(--md-sys-chat-user-max-width);
 		background: color-mix(
 			in srgb,
-			var(--md-sys-color-primary) 78%,
+			var(--md-sys-color-primary) 84%,
 			var(--md-sys-color-surface)
 		);
 		color: var(--md-sys-color-on-primary);
-		border: none;
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 55%, transparent);
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
+		box-shadow: var(--md-sys-elevation-1);
 	}
 	.bubble.assistant {
 		margin-right: auto;
+		width: 100%;
+		max-width: 100%;
 		background: color-mix(
 			in srgb,
-			var(--md-sys-color-primary-container) 20%,
-			var(--md-sys-color-surface)
+			var(--md-sys-color-primary-container) 18%,
+			var(--md-sys-color-surface-container-low)
 		);
-		color: var(--md-sys-color-on-primary-container);
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent);
+		color: var(--md-sys-color-on-surface);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-outline-variant));
+		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-primary) 72%, transparent);
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small);
+		box-shadow: var(--md-sys-elevation-1);
+	}
+	.bubble.assistant.thinking {
+		background: transparent;
+		border-color: transparent;
+		box-shadow: none;
 	}
 	.bubble.tool.assistant {
 		background: transparent;
 		border: none;
+		box-shadow: none;
+	}
+	.bubble.user .bubble-role {
+		color: color-mix(in srgb, var(--md-sys-color-on-primary) 88%, var(--md-sys-color-primary));
+	}
+	.bubble.assistant .bubble-role {
+		color: var(--md-sys-color-primary);
+	}
+	.bubble-content {
+		min-width: 0;
+		width: 100%;
 	}
 	.bubble-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		gap: var(--md-sys-space-md);
-		margin-bottom: var(--md-sys-space-xs);
+		margin-bottom: var(--md-sys-space-sm);
 	}
 	.bubble-role {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -524,6 +558,15 @@
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 	}
+	.bubble-role::before {
+		content: '';
+		width: var(--md-sys-space-sm);
+		height: var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-full);
+		background: currentColor;
+		opacity: 0.78;
+		flex: none;
+	}
 	.mic-icon {
 		font-size: 12px;
 		filter: grayscale(0.3);
@@ -532,6 +575,9 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: color-mix(in srgb, var(--md-sys-color-on-primary) 80%, var(--md-sys-color-primary));
+	}
+	.bubble.user .received-tag {
+		color: color-mix(in srgb, var(--md-sys-color-on-primary) 82%, var(--md-sys-color-primary));
 	}
 	.bubble-time {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -548,6 +594,13 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
+		font-style: italic;
+		opacity: 0.88;
+	}
+	.bubble-content > p {
+		margin: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
 	.streaming-preview {
 		margin: 0;
@@ -1001,7 +1054,14 @@
 		font-size: var(--md-sys-typescale-body-medium-size);
 	}
 	.reasoning-block {
-		background: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary-container) 24%,
+			var(--md-sys-color-surface-container-low)
+		);
+		border: 1px dashed
+			color-mix(in srgb, var(--md-sys-color-primary) 35%, var(--md-sys-color-outline-variant));
+		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-primary) 62%, transparent);
 		border-radius: var(--md-sys-shape-small);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		font-size: var(--md-sys-typescale-body-small-size);
@@ -1019,15 +1079,18 @@
 	}
 	@media (max-width: 640px) {
 		.bubble {
-			max-width: 94%;
 			padding-inline: var(--md-sys-space-md);
 		}
-		.bubble.user,
-		.bubble.thinking {
+		.bubble.user {
+			width: 94%;
 			max-width: 94%;
 		}
 		.bubble.tool {
+			width: 100%;
 			max-width: 100%;
+		}
+		.bubble.thinking {
+			padding-inline: var(--md-sys-space-xs);
 		}
 	}
 </style>

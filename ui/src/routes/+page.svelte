@@ -467,7 +467,14 @@
 	let ctxMenuItems = $derived([
 		...(isDisplayOnlyMessageId(ctxMenu.msgId)
 			? []
-			: [{ id: 'rollback', label: '回退到此消息', icon: 'rollback', action: handleCtxRollback }]),
+			: [
+					{
+						id: 'rollback',
+						label: '回退到此消息',
+						icon: 'rollback',
+						action: handleCtxRollback,
+					},
+				]),
 		{ id: 'copy', label: '复制', icon: 'copy', action: handleCtxCopy },
 	]);
 
@@ -1639,10 +1646,8 @@
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
-		/* Chat content has its own narrower reading-friendly cap; the
-		 * layout shell handles the wider-page case so we only need to
-		 * keep messages from getting too narrow on small viewports. */
-		max-width: min(800px, 100%);
+		/* Assistant messages and tool cards share the same reading column. */
+		max-width: var(--md-sys-chat-max-width);
 		margin: 0 auto;
 		width: 100%;
 	}

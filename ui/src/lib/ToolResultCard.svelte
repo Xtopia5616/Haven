@@ -678,20 +678,28 @@
 	.tool-card {
 		background: color-mix(
 			in srgb,
-			var(--md-sys-color-secondary-container) 45%,
-			var(--md-sys-color-surface)
+			var(--md-sys-color-secondary-container) 30%,
+			var(--md-sys-color-surface-container-low)
 		);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		padding: var(--md-sys-space-md);
-		width: min(42rem, 100%);
+		border: 1px solid
+			color-mix(
+				in srgb,
+				var(--md-sys-color-secondary) 22%,
+				var(--md-sys-color-outline-variant)
+			);
+		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-secondary) 65%, transparent);
+		border-radius: var(--md-sys-shape-large);
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+		width: 100%;
 		max-width: 100%;
 		box-sizing: border-box;
-		margin-top: var(--md-sys-space-xs);
+		margin-top: 0;
+		box-shadow: var(--md-sys-elevation-1);
 		transition:
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard);
+				var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.tool-card[data-state='running'] {
 		border-color: color-mix(
@@ -699,11 +707,13 @@
 			var(--md-sys-color-tertiary) 60%,
 			var(--md-sys-color-outline-variant)
 		);
+		border-left-color: var(--md-sys-color-tertiary);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-tertiary-container) 28%,
 			var(--md-sys-color-surface)
 		);
+		box-shadow: var(--md-sys-elevation-2);
 	}
 	.tool-card[data-state='failed'],
 	.tool-card[data-state='cancelled'],
@@ -714,6 +724,7 @@
 			var(--md-sys-color-error) 45%,
 			var(--md-sys-color-outline-variant)
 		);
+		border-left-color: var(--md-sys-color-error);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-error-container) 22%,
@@ -731,11 +742,12 @@
 			var(--md-sys-color-warning-container) 28%,
 			var(--md-sys-color-surface)
 		);
+		border-left-color: var(--md-sys-color-warning);
 	}
 	.tool-card-header {
 		display: flex;
 		align-items: center;
-		gap: var(--md-sys-space-xs);
+		gap: var(--md-sys-space-sm);
 		margin-bottom: var(--md-sys-space-xs);
 		min-width: 0;
 	}
@@ -743,11 +755,11 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 20px;
-		height: 20px;
-		border-radius: 50%;
-		background: var(--md-sys-color-secondary);
-		color: var(--md-sys-color-on-secondary);
+		width: 28px;
+		height: 28px;
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-secondary-container);
+		color: var(--md-sys-color-on-secondary-container);
 		font-size: 12px;
 		font-weight: 700;
 		flex: none;

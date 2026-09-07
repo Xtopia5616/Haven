@@ -275,6 +275,10 @@
 	 * scales with viewport width but never grows past this cap. */
 	--md-sys-content-max-width: 960px;
 	--md-sys-content-gutter: clamp(16px, 3.5vw, 32px);
+	/* One reading width for assistant messages and tool cards. User messages
+	 * can stay compact while keeping the same surface geometry. */
+	--md-sys-chat-max-width: 800px;
+	--md-sys-chat-user-max-width: 82%;
 	--md-sys-focus-ring: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 
 	/* ---------- Motion (expressive spring-like) ---------- */

@@ -173,6 +173,8 @@
 	.message-list {
 		display: flex;
 		flex-direction: column;
+		align-items: stretch;
+		width: 100%;
 		gap: var(--md-sys-space-md);
 	}
 
