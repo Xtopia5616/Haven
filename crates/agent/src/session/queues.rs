@@ -54,7 +54,10 @@ mod tests {
             }],
         };
 
-        executor.request_confirm_batch(&session.id, pending).await;
+        executor
+            .request_confirm_batch(&session.id, pending)
+            .await
+            .unwrap();
         assert!(executor.get_awaiting_confirm(&session.id).await.is_some());
     }
 }
@@ -416,18 +419,14 @@ impl SessionExecutor {
 
     /// Clear the in-memory ask gate and rewrite `react_state` so a crash
     /// after inject cannot resurrect `awaiting_answer` from a stale snapshot.
-    pub async fn clear_awaiting_answer_persisted(&self, session_id: &str) {
-        self.clear_awaiting_answer(session_id).await;
+    pub async fn clear_awaiting_answer_persisted(&self, session_id: &str) -> anyhow::Result<()> {
         let sid = session_id.to_string();
-        let _ = self
-            .db
+        self.db
             .run_blocking(move |db| {
                 let Some(json) = db.get_react_state(&sid)? else {
                     return Ok(());
                 };
-                let Ok(mut snapshot) = crate::types::ReActSnapshot::from_json(&json) else {
-                    return Ok(());
-                };
+                let mut snapshot = crate::types::ReActSnapshot::from_json(&json)?;
                 if snapshot.awaiting_answer.take().is_none() {
                     return Ok(());
                 }
@@ -435,7 +434,9 @@ impl SessionExecutor {
                 db.save_react_state(&sid, &rewritten)?;
                 Ok(())
             })
-            .await;
+            .await?;
+        self.clear_awaiting_answer(session_id).await;
+        Ok(())
     }
 
     pub async fn set_awaiting_confirm(
@@ -468,18 +469,14 @@ impl SessionExecutor {
     /// Clear the in-memory confirm gate and rewrite `react_state` so a crash
     /// after continuation cannot resurrect `awaiting_confirm` from a stale
     /// snapshot (Phase 5 / E3).
-    pub async fn clear_awaiting_confirm_persisted(&self, session_id: &str) {
-        self.clear_awaiting_confirm(session_id).await;
+    pub async fn clear_awaiting_confirm_persisted(&self, session_id: &str) -> anyhow::Result<()> {
         let sid = session_id.to_string();
-        let _ = self
-            .db
+        self.db
             .run_blocking(move |db| {
                 let Some(json) = db.get_react_state(&sid)? else {
                     return Ok(());
                 };
-                let Ok(mut snapshot) = crate::types::ReActSnapshot::from_json(&json) else {
-                    return Ok(());
-                };
+                let mut snapshot = crate::types::ReActSnapshot::from_json(&json)?;
                 if snapshot.awaiting_confirm.take().is_none() {
                     return Ok(());
                 }
@@ -487,7 +484,9 @@ impl SessionExecutor {
                 db.save_react_state(&sid, &rewritten)?;
                 Ok(())
             })
-            .await;
+            .await?;
+        self.clear_awaiting_confirm(session_id).await;
+        Ok(())
     }
 
     /// Record a pause-based confirm decision. When every tool in the batch
@@ -497,39 +496,51 @@ impl SessionExecutor {
         &self,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
-    ) -> Option<crate::session::ConfirmResolution> {
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let confirm_key = step_id.to_string();
         let mut map = self.awaiting_confirm.lock().await;
         let mut found: Option<crate::session::ConfirmResolution> = None;
         let mut persist: Option<(String, crate::types::ConfirmPending)> = None;
+        let mut previous: Option<(String, crate::types::ConfirmPending)> = None;
         let mut wake_sid: Option<String> = None;
         for (session_id, pending) in map.iter_mut() {
-            if let Some(tool) = pending
+            let Some(tool_index) = pending
                 .tools
-                .iter_mut()
-                .find(|t| t.confirm_id == confirm_key)
-            {
-                // One-shot: ignore late/duplicate resolves so reject→approve
-                // cannot flip a denied gated tool back to runnable.
-                if tool.decision.is_some() {
-                    return None;
-                }
-                tool.decision = Some(confirmed);
-                found = Some(crate::session::ConfirmResolution {
-                    session_id: Some(session_id.clone()),
-                    tool_name: tool.tool_name.clone(),
-                    tool_input: tool.tool_input.clone(),
-                });
-                persist = Some((session_id.clone(), pending.clone()));
-                if pending.all_decided() {
-                    wake_sid = Some(session_id.clone());
-                }
-                break;
+                .iter()
+                .position(|t| t.confirm_id == confirm_key)
+            else {
+                continue;
+            };
+            // One-shot: ignore late/duplicate resolves so reject→approve
+            // cannot flip a denied gated tool back to runnable.
+            if pending.tools[tool_index].decision.is_some() {
+                return Ok(None);
             }
+            previous = Some((session_id.clone(), pending.clone()));
+            let tool = &mut pending.tools[tool_index];
+            tool.decision = Some(confirmed);
+            found = Some(crate::session::ConfirmResolution {
+                session_id: Some(session_id.clone()),
+                tool_name: tool.tool_name.clone(),
+                tool_input: tool.tool_input.clone(),
+            });
+            persist = Some((session_id.clone(), pending.clone()));
+            if pending.all_decided() {
+                wake_sid = Some(session_id.clone());
+            }
+            break;
         }
         drop(map);
         if let Some((sid, pending)) = persist {
-            self.persist_awaiting_confirm(&sid, &pending).await;
+            if let Err(error) = self.persist_awaiting_confirm(&sid, &pending).await {
+                if let Some((restore_sid, restore_pending)) = previous {
+                    self.awaiting_confirm
+                        .lock()
+                        .await
+                        .insert(restore_sid, restore_pending);
+                }
+                return Err(error);
+            }
         }
         if let Some(sid) = wake_sid {
             // Wake the dispatcher: continuation runs approved tools.
@@ -544,7 +555,7 @@ impl SessionExecutor {
                 );
             }
         }
-        found
+        Ok(found)
     }
 
     /// Rewrite `react_state.awaiting_confirm` so confirm decisions survive
@@ -553,24 +564,21 @@ impl SessionExecutor {
         &self,
         session_id: &str,
         pending: &crate::types::ConfirmPending,
-    ) {
+    ) -> anyhow::Result<()> {
         let sid = session_id.to_string();
         let pending = pending.clone();
-        let _ = self
-            .db
+        self.db
             .run_blocking(move |db| {
                 let Some(json) = db.get_react_state(&sid)? else {
                     return Ok(());
                 };
-                let Ok(mut snapshot) = crate::types::ReActSnapshot::from_json(&json) else {
-                    return Ok(());
-                };
+                let mut snapshot = crate::types::ReActSnapshot::from_json(&json)?;
                 snapshot.awaiting_confirm = Some(pending);
                 let rewritten = serde_json::to_string(&snapshot)?;
                 db.save_react_state(&sid, &rewritten)?;
                 Ok(())
             })
-            .await;
+            .await
     }
 
     /// Request confirmations for a gated batch without blocking (Phase 5 / E3).
@@ -579,7 +587,7 @@ impl SessionExecutor {
         &self,
         session_id: &str,
         pending: crate::types::ConfirmPending,
-    ) {
+    ) -> anyhow::Result<()> {
         // Establish the lifecycle state before exposing any confirm id to the
         // UI. A callback can synchronously trigger an IPC resolve; that
         // resolver must observe a real paused session and a registered gate.
@@ -587,11 +595,7 @@ impl SessionExecutor {
             .update_session_status(session_id, SessionStatus::PausedAwaitingConfirm)
             .await
         {
-            tracing::warn!(
-                "request_confirm_batch: failed to pause session {} before notification: {}",
-                session_id,
-                error
-            );
+            return Err(error);
         }
         self.set_awaiting_confirm(session_id, Some(pending.clone()))
             .await;
@@ -611,5 +615,6 @@ impl SessionExecutor {
                 );
             }
         }
+        Ok(())
     }
 }

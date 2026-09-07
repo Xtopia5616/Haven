@@ -201,6 +201,9 @@ impl TauriEmitter {
                 action_index,
                 ask_options,
                 step_id,
+                outcome,
+                idempotency,
+                operation_scope,
             } => serialize(AgentObservationEvent {
                 session_id: session_id.clone(),
                 observation: observation.clone(),
@@ -212,6 +215,9 @@ impl TauriEmitter {
                 action_index: *action_index,
                 ask_options: ask_options.clone(),
                 step_id: step_id.clone(),
+                outcome: outcome.clone(),
+                idempotency: idempotency.clone(),
+                operation_scope: operation_scope.clone(),
             }),
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
                 session_id: session.id.clone(),
@@ -300,12 +306,16 @@ impl TauriEmitter {
                 additional_context,
                 step_number,
                 run_id,
+                message_id,
+                supplement_id,
                 inject_source,
             } => serialize(AgentSupplementEvent {
                 session_id: session_id.clone(),
                 additional_context: additional_context.clone(),
                 step_number: *step_number,
                 run_id: *run_id,
+                message_id: message_id.clone(),
+                supplement_id: supplement_id.clone(),
                 inject_source: *inject_source,
             }),
             AgentEvent::Compaction {

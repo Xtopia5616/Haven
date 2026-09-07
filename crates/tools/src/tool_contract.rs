@@ -22,12 +22,34 @@ pub enum ToolExecutionOutcome {
     TimedOutUnknown,
 }
 
+impl ToolExecutionOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::TimedOutAndTerminated => "timed_out",
+            Self::TimedOutUnknown => "unknown",
+        }
+    }
+}
+
 /// Whether replaying the same operation is safe after a transient failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationIdempotency {
     Idempotent,
     NonIdempotent,
     Unknown,
+}
+
+impl OperationIdempotency {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idempotent => "idempotent",
+            Self::NonIdempotent => "non_idempotent",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -89,6 +111,15 @@ pub enum ToolConcurrency {
 pub enum ToolOperationScope {
     Global,
     Session,
+}
+
+impl ToolOperationScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Session => "session",
+        }
+    }
 }
 
 /// How an operation responds to cancellation and the outer timeout. The
@@ -356,6 +387,13 @@ pub trait Tool: Send + Sync {
         OperationIdempotency::Unknown
     }
 
+    /// Scope of the operation represented by this invocation.  The agent
+    /// records this beside the outcome so an unknown result can be reviewed
+    /// with enough context to decide whether a replay is safe.
+    fn operation_scope(&self, _input: &Value) -> ToolOperationScope {
+        ToolOperationScope::Session
+    }
+
     /// Whether an outer timeout can establish that this invocation stopped.
     /// Tools backed by child processes or remote servers should return
     /// `TimedOutUnknown` unless they can prove termination.
@@ -570,6 +608,13 @@ where
             .ok()
             .map(|args| self.operation.metadata(&args).idempotency)
             .unwrap_or(OperationIdempotency::Unknown)
+    }
+
+    fn operation_scope(&self, input: &Value) -> ToolOperationScope {
+        serde_json::from_value::<O::Args>(input.clone())
+            .ok()
+            .map(|args| self.operation.metadata(&args).scope)
+            .unwrap_or(ToolOperationScope::Session)
     }
 
     fn timeout_outcome(&self) -> ToolExecutionOutcome {

@@ -61,7 +61,7 @@ impl ReActEngine {
         if clears_ask {
             self.executor
                 .clear_awaiting_answer_persisted(&ctx.session_id)
-                .await;
+                .await?;
         }
         let mut applied_message_ids: std::collections::HashSet<String> = state
             .events

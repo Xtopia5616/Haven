@@ -7,7 +7,7 @@
 
 use super::*;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_tools::ToolExecutionOutcome;
+use haven_tools::{OperationIdempotency, ToolExecutionOutcome};
 
 /// Failure classification used to shape the post-failure retry nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,11 +38,15 @@ pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Valu
 /// Only terminal failures with a known, completed outcome may produce an
 /// agent-level retry nudge. `Cancelled` and `TimedOutUnknown` are deliberately
 /// excluded because the external operation may still be in flight.
-pub(super) fn is_retryable_failure_outcome(outcome: ToolExecutionOutcome) -> bool {
-    matches!(
-        outcome,
-        ToolExecutionOutcome::Failed | ToolExecutionOutcome::TimedOutAndTerminated
-    )
+pub(super) fn is_retryable_failure_outcome(
+    outcome: ToolExecutionOutcome,
+    idempotency: OperationIdempotency,
+) -> bool {
+    matches!(idempotency, OperationIdempotency::Idempotent)
+        && matches!(
+            outcome,
+            ToolExecutionOutcome::Failed | ToolExecutionOutcome::TimedOutAndTerminated
+        )
 }
 
 impl ReActEngine {
@@ -174,19 +178,29 @@ impl ReActEngine {
 #[cfg(test)]
 mod tests {
     use super::is_retryable_failure_outcome;
-    use haven_tools::ToolExecutionOutcome;
+    use haven_tools::{OperationIdempotency, ToolExecutionOutcome};
 
     #[test]
     fn unknown_and_cancelled_outcomes_never_request_retry() {
         assert!(!is_retryable_failure_outcome(
-            ToolExecutionOutcome::Cancelled
+            ToolExecutionOutcome::Cancelled,
+            OperationIdempotency::Idempotent,
         ));
         assert!(!is_retryable_failure_outcome(
-            ToolExecutionOutcome::TimedOutUnknown
+            ToolExecutionOutcome::TimedOutUnknown,
+            OperationIdempotency::Idempotent,
         ));
-        assert!(is_retryable_failure_outcome(ToolExecutionOutcome::Failed));
         assert!(is_retryable_failure_outcome(
-            ToolExecutionOutcome::TimedOutAndTerminated
+            ToolExecutionOutcome::Failed,
+            OperationIdempotency::Idempotent,
+        ));
+        assert!(is_retryable_failure_outcome(
+            ToolExecutionOutcome::TimedOutAndTerminated,
+            OperationIdempotency::Idempotent,
+        ));
+        assert!(!is_retryable_failure_outcome(
+            ToolExecutionOutcome::Failed,
+            OperationIdempotency::NonIdempotent,
         ));
     }
 }

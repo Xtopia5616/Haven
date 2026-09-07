@@ -113,11 +113,11 @@ impl SessionExecutor {
         input: &Value,
         step_num: u32,
         step_id: &str,
-    ) {
+    ) -> anyhow::Result<()> {
         self.begin_action_step_with_identity(
             session_id, tool_name, input, step_num, 0, None, step_id,
         )
-        .await;
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -130,7 +130,7 @@ impl SessionExecutor {
         action_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
-    ) {
+    ) -> anyhow::Result<()> {
         let context = self
             .action_step_context(ActionStepRequest {
                 session_id,
@@ -143,17 +143,17 @@ impl SessionExecutor {
             })
             .await;
         let step_id_for_log = context.step_id.clone();
-        if let Err(e) = self
-            .db
+        self.db
             .run_blocking(move |db| context.ensure(db, None))
             .await
-        {
-            tracing::warn!(
-                "begin_action_step failed for step {}: {}",
-                step_id_for_log,
-                e
-            );
-        }
+            .map_err(|e| {
+                tracing::error!(
+                    "begin_action_step failed for step {}: {}",
+                    step_id_for_log,
+                    e
+                );
+                anyhow::anyhow!("failed to persist pending tool intent {step_id_for_log}: {e}")
+            })
     }
 
     /// Persist an Interrupted observation onto the pending step row (creating
@@ -263,11 +263,11 @@ impl SessionExecutor {
         input: &Value,
         step_num: u32,
         step_id: &str,
-    ) {
+    ) -> anyhow::Result<()> {
         self.start_action_step_with_identity(
             session_id, tool_name, input, step_num, 0, None, step_id,
         )
-        .await;
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -280,7 +280,7 @@ impl SessionExecutor {
         action_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
-    ) {
+    ) -> anyhow::Result<()> {
         let context = self
             .action_step_context(ActionStepRequest {
                 session_id,
@@ -293,20 +293,21 @@ impl SessionExecutor {
             })
             .await;
         let step_id_for_log = context.step_id.clone();
-        if let Err(e) = self
-            .db
+        self.db
             .run_blocking(move |db| {
                 context.ensure(db, None)?;
                 db.start_action_step(&context.step_id)
             })
             .await
-        {
-            tracing::warn!(
-                "start_action_step failed for step {}: {}",
-                step_id_for_log,
-                e
-            );
-        }
+            .map(|_| ())
+            .map_err(|e| {
+                tracing::error!(
+                    "start_action_step failed for step {}: {}",
+                    step_id_for_log,
+                    e
+                );
+                anyhow::anyhow!("failed to mark tool intent running {step_id_for_log}: {e}")
+            })
     }
 
     pub async fn tool_concurrency(
@@ -317,6 +318,28 @@ impl SessionExecutor {
     ) -> haven_tools::ToolConcurrency {
         self.tools
             .get_concurrency(Some(session_id), tool_name, input)
+            .await
+    }
+
+    pub async fn tool_idempotency(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+    ) -> haven_tools::OperationIdempotency {
+        self.tools
+            .get_idempotency(Some(session_id), tool_name, input)
+            .await
+    }
+
+    pub async fn tool_operation_scope(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+    ) -> haven_tools::ToolOperationScope {
+        self.tools
+            .get_operation_scope(Some(session_id), tool_name, input)
             .await
     }
 
@@ -486,7 +509,7 @@ impl SessionExecutor {
             tool_call_id.as_deref(),
             step_id,
         )
-        .await;
+        .await?;
         let gated = match self
             .execute_gated(
                 Some(session_id),
@@ -823,7 +846,7 @@ impl SessionExecutor {
         }
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
-        if let Some(resolution) = self.resolve_confirm_pause(step_id, confirmed).await {
+        if let Some(resolution) = self.resolve_confirm_pause(step_id, confirmed).await? {
             return Ok(Some(resolution));
         }
         Ok(None)

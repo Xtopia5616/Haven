@@ -157,8 +157,9 @@ export function createChatAgentEventHandlers({
 			const context = (data.additionalContext || '').trim();
 			if (!sessionId || !context) return;
 			const source = data.injectSource;
+			const supplementId = data.supplementId || `supplement-${data.stepNumber ?? 0}-${data.runId ?? 0}`;
 			if (source === 'cross_session') {
-				const cardId = `peer-mail-${data.stepNumber ?? 0}-${data.runId ?? 0}-${context.length}`;
+				const cardId = `peer-mail-${supplementId}`;
 				const content = JSON.stringify({ operation: 'inbox', auto: true, text: context });
 				updateSessionMessages(sessionId, (messages) => {
 					if (
@@ -185,7 +186,7 @@ export function createChatAgentEventHandlers({
 			if (source === 'action_result') {
 				const parsed = parseActionResultInject(context);
 				const actionId = parsed?.action_id || 'unknown';
-				const cardId = `action-result-${actionId}-${data.stepNumber ?? 0}-${data.runId ?? 0}`;
+				const cardId = `action-result-${supplementId}-${actionId}`;
 				const content = JSON.stringify(
 					parsed || {
 						operation: 'result_injected',
@@ -210,6 +211,15 @@ export function createChatAgentEventHandlers({
 				return;
 			}
 			updateSessionMessages(sessionId, (messages) => {
+				const messageId = data.messageId;
+				if (messageId) {
+					const index = messages.findIndex((message) => message.id === messageId);
+					if (index >= 0) {
+						const next = [...messages];
+						next[index] = { ...next[index], received: true, steering: false };
+						return next;
+					}
+				}
 				let marked = false;
 				const next = [...messages];
 				for (let index = next.length - 1; index >= 0; index -= 1) {

@@ -833,7 +833,7 @@ impl ToolsManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
 
-        // Private fields (`_session_id` / `_step_id`) are never trusted from
+        // Private fields (`_session_id` / `_step_id` / `_idempotency_key`) are never trusted from
         // the LLM or scheduled tool_args: always strip first, validate the
         // LLM-facing input, then re-inject only caller-supplied values.
         // Declared via `Tool::requires_session_id` / `supports_live_output`.
@@ -841,6 +841,7 @@ impl ToolsManager {
         if let Some(obj) = exec_input.as_object_mut() {
             obj.remove("_session_id");
             obj.remove("_step_id");
+            obj.remove("_idempotency_key");
         }
         tool.validate_input(&exec_input)?;
         if let Some(obj) = exec_input.as_object_mut() {
@@ -853,6 +854,12 @@ impl ToolsManager {
                 && let Some(sid) = step_id.filter(|s| !s.is_empty())
             {
                 obj.insert("_step_id".into(), serde_json::json!(sid));
+            }
+            // Every tool invocation receives the durable step identity. Tools
+            // that call an external API can forward it as their idempotency
+            // key; tools that do not need it simply ignore this private field.
+            if let Some(sid) = step_id.filter(|s| !s.is_empty()) {
+                obj.insert("_idempotency_key".into(), serde_json::json!(sid));
             }
         }
         let settings = self.tool_settings.read().await;
@@ -983,6 +990,34 @@ impl ToolsManager {
             .await
             .map(|tool| tool.concurrency(input))
             .unwrap_or(ToolConcurrency::Exclusive)
+    }
+
+    /// Return the replay policy for one concrete tool invocation.  The agent
+    /// uses this after execution to decide whether a failed result may safely
+    /// be nudged back to the model for an automatic retry.
+    pub async fn get_idempotency(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> OperationIdempotency {
+        self.get_tool_for_session(session_id, tool_name)
+            .await
+            .map(|tool| tool.idempotency(input))
+            .unwrap_or(OperationIdempotency::Unknown)
+    }
+
+    /// Return the durable scope for one concrete tool invocation.
+    pub async fn get_operation_scope(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> ToolOperationScope {
+        self.get_tool_for_session(session_id, tool_name)
+            .await
+            .map(|tool| tool.operation_scope(input))
+            .unwrap_or(ToolOperationScope::Session)
     }
 
     /// Apply the configured per-tool/global observation cap to the stable

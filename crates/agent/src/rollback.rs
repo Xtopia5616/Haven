@@ -415,12 +415,12 @@ impl AgentLayer {
         if matches!(state, Some(SessionStatus::PausedAwaitingAnswer)) {
             self.executor
                 .clear_awaiting_answer_persisted(session_id)
-                .await;
+                .await?;
         }
         if matches!(state, Some(SessionStatus::PausedAwaitingConfirm)) {
             self.executor
                 .clear_awaiting_confirm_persisted(session_id)
-                .await;
+                .await?;
         }
 
         // Set to Pending for the dispatcher to pick up.

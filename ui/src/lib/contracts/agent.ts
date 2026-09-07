@@ -52,6 +52,9 @@ export interface AgentObservationPayload {
 	actionIndex: number;
 	askOptions: string[];
 	stepId: string;
+	outcome: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'unknown' | string;
+	idempotency: 'idempotent' | 'non_idempotent' | 'unknown' | string;
+	operationScope: 'global' | 'session' | string;
 }
 
 export interface AgentChunkPayload {
@@ -90,6 +93,8 @@ export interface AgentSupplementPayload {
 	additionalContext: string;
 	stepNumber: number;
 	runId: number;
+	messageId?: string;
+	supplementId: string;
 	injectSource?: string;
 }
 
@@ -190,6 +195,9 @@ interface AgentObservationWirePayload {
 	action_index: number;
 	ask_options: string[];
 	step_id: string;
+	outcome: string;
+	idempotency: string;
+	operation_scope: string;
 }
 
 interface AgentChunkWirePayload {
@@ -222,6 +230,8 @@ interface AgentSupplementWirePayload {
 	additional_context: string;
 	step_number: number;
 	run_id: number;
+	message_id?: string;
+	supplement_id: string;
 	inject_source?: string;
 }
 interface AgentCompactionWirePayload {
@@ -326,6 +336,9 @@ export function mapAgentEvent<K extends AgentEventName>(
 				actionIndex: payload.action_index,
 				askOptions: payload.ask_options,
 				stepId: payload.step_id,
+				outcome: payload.outcome,
+				idempotency: payload.idempotency,
+				operationScope: payload.operation_scope,
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:thought_chunk':
@@ -374,6 +387,8 @@ export function mapAgentEvent<K extends AgentEventName>(
 				additionalContext: payload.additional_context,
 				stepNumber: payload.step_number,
 				runId: payload.run_id,
+				...(payload.message_id !== undefined ? { messageId: payload.message_id } : {}),
+				supplementId: payload.supplement_id,
 				...(payload.inject_source !== undefined ? { injectSource: payload.inject_source } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}

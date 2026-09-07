@@ -83,7 +83,7 @@ impl<'a> StreamSession<'a> {
     pub(super) async fn retry(
         &self,
         request_context: &RequestContext,
-    ) -> Result<LlmResponse, haven_llm::LlmError> {
+    ) -> Result<(LlmResponse, u64), haven_llm::LlmError> {
         self.engine
             .stream_llm_call(
                 self.ctx,
@@ -97,7 +97,11 @@ impl<'a> StreamSession<'a> {
                 self.partial_reasoning,
             )
             .await
-            .map(|(response, _)| response)
+            .map(|(response, duration_ms)| (response, duration_ms))
+    }
+
+    pub(super) fn role(&self) -> EndpointRole {
+        self.role
     }
 }
 
@@ -510,7 +514,7 @@ impl ReActEngine {
         }
     }
 
-    async fn record_step_usage(
+    pub(super) async fn record_step_usage(
         &self,
         ctx: &StepCtx,
         role: EndpointRole,
@@ -960,7 +964,7 @@ mod tests {
         assert!(matches!(outcome, StepCallOutcome::Response(_)));
 
         let retry_context = RequestContext::from_state(&state, None);
-        let retry = stream.retry(&retry_context).await.unwrap();
+        let (retry, _duration_ms) = stream.retry(&retry_context).await.unwrap();
         assert_eq!(retry.text, "Finished.");
         assert_eq!(image_client.stream_calls.load(Ordering::Relaxed), 1);
         assert_eq!(

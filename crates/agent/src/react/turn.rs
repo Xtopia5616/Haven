@@ -194,6 +194,13 @@ impl ReActEngine {
                     self.exit_cancelled(session_id, state, step_num).await,
                 ));
             }
+            ResponseCycleOutcome::RetryableError(message) => {
+                self.emit_error(&ctx.emitter, session_id, &message).await;
+                self.executor
+                    .update_session_status(session_id, SessionStatus::Error)
+                    .await?;
+                return Err(anyhow::anyhow!(message));
+            }
         };
 
         if let Some(reasoning) = response.reasoning.clone() {

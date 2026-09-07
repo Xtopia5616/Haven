@@ -26,6 +26,25 @@ pub(super) struct AcceptedResponse {
 pub(super) enum ResponseCycleOutcome {
     Accepted(Box<AcceptedResponse>),
     Cancelled,
+    /// The provider could not complete a response-policy retry. The original
+    /// cut-off text is not promoted to a final answer; the session remains
+    /// continuable from its clean pre-response checkpoint.
+    RetryableError(String),
+}
+
+fn response_candidate_has_payload(
+    response: &LlmResponse,
+    thought: &Option<String>,
+    actions: &[Action],
+) -> bool {
+    thought.as_ref().is_some_and(|text| !text.trim().is_empty())
+        || !actions.is_empty()
+        || !response.web_search_calls.is_empty()
+        || response
+            .reasoning
+            .as_ref()
+            .is_some_and(|text| !text.trim().is_empty())
+        || !response.thinking_blocks.is_empty()
 }
 
 impl ReActEngine {
@@ -102,13 +121,24 @@ impl ReActEngine {
                     }
 
                     match stream.retry(&retry_context).await {
-                        Ok(retry_response) => {
+                        Ok((retry_response, duration_ms)) => {
                             let (retry_thought, retry_actions) =
                                 ReActEngine::parse_default_model_response(
                                     &retry_response,
                                     ctx.step_num,
                                 );
-                            if retry_thought.is_some() || !retry_actions.is_empty() {
+                            self.record_step_usage(
+                                ctx,
+                                stream.role(),
+                                &retry_response,
+                                duration_ms,
+                            )
+                            .await;
+                            if response_candidate_has_payload(
+                                &retry_response,
+                                &retry_thought,
+                                &retry_actions,
+                            ) {
                                 thought = retry_thought;
                                 actions = retry_actions;
                                 response = retry_response;
@@ -118,29 +148,46 @@ impl ReActEngine {
                             return ResponseCycleOutcome::Cancelled;
                         }
                         Err(error) => {
+                            if matches!(&error, haven_llm::LlmError::Cancelled) {
+                                return ResponseCycleOutcome::Cancelled;
+                            }
                             tracing::warn!(
                                 session_id = %ctx.session_id,
                                 step_number = ctx.step_num,
                                 error = %error,
                                 "empty-response retry failed"
                             );
+                            return ResponseCycleOutcome::RetryableError(format!(
+                                "empty-response retry failed: {error}"
+                            ));
                         }
                     }
                 }
                 AfterLlmAction::RetryCutOff { .. } => {
                     *cut_off_retries += 1;
                     match stream.retry(&retry_context).await {
-                        Ok(retry_response) => {
+                        Ok((retry_response, duration_ms)) => {
                             let (retry_thought, retry_actions) =
                                 ReActEngine::parse_default_model_response(
                                     &retry_response,
                                     ctx.step_num,
                                 );
-                            if retry_thought.is_some() || !retry_actions.is_empty() {
+                            self.record_step_usage(
+                                ctx,
+                                stream.role(),
+                                &retry_response,
+                                duration_ms,
+                            )
+                            .await;
+                            if response_candidate_has_payload(
+                                &retry_response,
+                                &retry_thought,
+                                &retry_actions,
+                            ) {
                                 thought = retry_thought;
                                 actions = retry_actions;
                                 response = retry_response;
-                            } else {
+                            } else if *cut_off_retries >= limits.cut_off_retries {
                                 return ResponseCycleOutcome::Accepted(Box::new(
                                     AcceptedResponse {
                                         response,
@@ -149,24 +196,28 @@ impl ReActEngine {
                                         empty_retries_remaining,
                                     },
                                 ));
+                            } else {
+                                return ResponseCycleOutcome::RetryableError(
+                                    "cut-off retry returned no usable response".into(),
+                                );
                             }
                         }
                         Err(haven_llm::LlmError::Cancelled) => {
                             return ResponseCycleOutcome::Cancelled;
                         }
                         Err(error) => {
+                            if matches!(&error, haven_llm::LlmError::Cancelled) {
+                                return ResponseCycleOutcome::Cancelled;
+                            }
                             tracing::warn!(
                                 session_id = %ctx.session_id,
                                 step_number = ctx.step_num,
                                 error = %error,
                                 "cut-off retry failed"
                             );
-                            return ResponseCycleOutcome::Accepted(Box::new(AcceptedResponse {
-                                response,
-                                thought,
-                                actions,
-                                empty_retries_remaining,
-                            }));
+                            return ResponseCycleOutcome::RetryableError(format!(
+                                "cut-off retry failed: {error}"
+                            ));
                         }
                     }
                 }

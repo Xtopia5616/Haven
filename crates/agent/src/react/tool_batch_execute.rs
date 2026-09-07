@@ -550,7 +550,7 @@ impl ReActEngine {
             };
             self.executor
                 .request_confirm_batch(session_id, pending)
-                .await;
+                .await?;
             // UI-only waiting notice in `messages` (not an LLM event — must
             // not enter `react_state.events` or resume would re-feed it).
             let notice = "Waiting for confirmation…";
@@ -744,7 +744,7 @@ impl ReActEngine {
         if execution.cancelled {
             self.executor
                 .clear_awaiting_confirm_persisted(session_id)
-                .await;
+                .await?;
             return Ok(ToolBatchOutcome::Done(
                 self.exit_cancelled(session_id, state, step_num).await,
             ));
@@ -762,7 +762,7 @@ impl ReActEngine {
         }
         self.executor
             .clear_awaiting_confirm_persisted(session_id)
-            .await;
+            .await?;
 
         let pending_ask = if !batch_state.asked_questions.is_empty() {
             Some(crate::types::AskPending {

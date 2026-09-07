@@ -375,6 +375,9 @@ pub(crate) struct AgentObservationEvent {
     pub action_index: u32,
     pub ask_options: Vec<String>,
     pub step_id: String,
+    pub outcome: String,
+    pub idempotency: String,
+    pub operation_scope: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -431,6 +434,9 @@ pub(crate) struct AgentSupplementEvent {
     pub additional_context: String,
     pub step_number: u32,
     pub run_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    pub supplement_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inject_source: Option<haven_common::types::InjectSource>,
 }

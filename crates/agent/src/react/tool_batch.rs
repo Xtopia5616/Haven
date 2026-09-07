@@ -15,7 +15,10 @@ use crate::session::ActionStepPersistenceError;
 use crate::types::Action;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_tools::{ToolConcurrency, ToolExecutionOutcome, is_silent_action};
+use haven_tools::{
+    OperationIdempotency, ToolConcurrency, ToolExecutionOutcome, ToolOperationScope,
+    is_silent_action,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
@@ -63,9 +66,11 @@ impl ToolBatchState {
         let CompletedTool {
             action,
             tool_name,
-            step_result,
+            mut step_result,
             is_error,
             outcome,
+            idempotency,
+            operation_scope,
             ask_question,
             ask_options,
             notify_title,
@@ -74,7 +79,25 @@ impl ToolBatchState {
             action_index,
         } = result;
 
-        if is_error && is_retryable_failure_outcome(outcome) {
+        if is_error
+            && !matches!(idempotency, OperationIdempotency::Idempotent)
+            && matches!(
+                outcome,
+                ToolExecutionOutcome::Failed
+                    | ToolExecutionOutcome::TimedOutAndTerminated
+                    | ToolExecutionOutcome::TimedOutUnknown
+            )
+        {
+            let scope = match operation_scope {
+                ToolOperationScope::Global => "global",
+                ToolOperationScope::Session => "session",
+            };
+            step_result.push_str(&format!(
+                "\n\n[needs_user_decision] This {scope}-scoped operation is not proven safe to replay (idempotency={idempotency:?}). Do not retry it automatically; ask the user whether to verify or perform it again."
+            ));
+        }
+
+        if is_error && is_retryable_failure_outcome(outcome, idempotency) {
             self.retryable_failure = true;
             self.last_retryable_failed_tool_call_id = action.tool_call_id.clone();
             if self.failure_signals.len() < 3 {
@@ -129,6 +152,9 @@ impl ToolBatchState {
                         action_index,
                         silent,
                         ask_options,
+                        outcome,
+                        idempotency,
+                        operation_scope,
                     }),
                 },
                 state,
@@ -203,6 +229,8 @@ pub(super) struct CompletedTool {
     step_result: String,
     is_error: bool,
     pub(super) outcome: ToolExecutionOutcome,
+    pub(super) idempotency: OperationIdempotency,
+    pub(super) operation_scope: ToolOperationScope,
     ask_question: Option<String>,
     ask_options: Vec<String>,
     notify_title: Option<String>,
@@ -225,6 +253,8 @@ impl CompletedTool {
             step_result,
             is_error: !matches!(outcome, ToolExecutionOutcome::Succeeded),
             outcome,
+            idempotency: OperationIdempotency::Unknown,
+            operation_scope: ToolOperationScope::Session,
             ask_question: None,
             ask_options: Vec::new(),
             notify_title: None,
@@ -349,12 +379,21 @@ pub(super) async fn execute_tool_action(
             }
         };
 
+    let idempotency = executor
+        .tool_idempotency(&session_id, &tool_name, &action.tool_input)
+        .await;
+    let operation_scope = executor
+        .tool_operation_scope(&session_id, &tool_name, &action.tool_input)
+        .await;
+
     CompletedTool {
         action,
         tool_name,
         step_result,
         is_error,
         outcome,
+        idempotency,
+        operation_scope,
         ask_question,
         ask_options,
         notify_title,

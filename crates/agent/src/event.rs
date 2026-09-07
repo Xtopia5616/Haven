@@ -60,6 +60,12 @@ pub enum AgentEvent {
         /// Same `step-*` id the matching `Action` event carried, so the live
         /// tool card keeps one id through placeholder → fill → DB badge.
         step_id: String,
+        /// Durable terminal execution outcome for the tool card.
+        outcome: String,
+        /// Replay policy of the concrete operation, not just its tool name.
+        idempotency: String,
+        /// Whether the operation targets session-local or global state.
+        operation_scope: String,
     },
     SessionCreated(SessionInfo),
     SessionCompleted {
@@ -130,6 +136,12 @@ pub enum AgentEvent {
         additional_context: String,
         step_number: u32,
         run_id: u64,
+        /// User message id when the supplement came from persisted ingress.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        /// Stable identity for every live supplement, including action-result
+        /// and cross-session context that has no user message row.
+        supplement_id: String,
         /// Structured inject origin so the UI can render peer mail as an
         /// `agent` tool card, background-action auto-wake as an `actions`
         /// card, and still mark human steering as received.

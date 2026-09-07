@@ -25,6 +25,7 @@ use super::*;
 use crate::types::{Action, TranscriptRecord};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
+use haven_tools::{OperationIdempotency, ToolExecutionOutcome, ToolOperationScope};
 use serde_json::Value;
 
 /// Pending Action card (+ step row) emitted from [`TranscriptEvent::ToolCall`].
@@ -48,6 +49,9 @@ pub(super) struct ObservationCard {
     pub action_index: u32,
     pub silent: bool,
     pub ask_options: Vec<String>,
+    pub outcome: ToolExecutionOutcome,
+    pub idempotency: OperationIdempotency,
+    pub operation_scope: ToolOperationScope,
 }
 
 /// Runtime transcript event (UI cards + serializable payload).
@@ -187,6 +191,23 @@ impl ReActEngine {
         event: TranscriptEvent,
         state: &mut ReActState,
     ) -> anyhow::Result<()> {
+        // Action-result context has no user message row, but it still needs a
+        // durable identity so live supplement cards can be de-duplicated on a
+        // reconnect. Store the generated id in the event record itself.
+        let event = match event {
+            TranscriptEvent::UserInject {
+                source: InjectSource::ActionResult,
+                text,
+                attachments,
+                message_id: None,
+            } => TranscriptEvent::UserInject {
+                source: InjectSource::ActionResult,
+                text,
+                attachments,
+                message_id: Some(haven_common::types::new_id("msg")),
+            },
+            event => event,
+        };
         let record = event.to_record(ctx.step_num);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
@@ -263,7 +284,7 @@ impl ReActEngine {
                             card.tool_call_id.as_deref(),
                             &card.step_id,
                         )
-                        .await;
+                        .await?;
                     ctx.emitter
                         .emit(crate::event::AgentEvent::Action {
                             session_id: ctx.session_id.clone(),
@@ -329,6 +350,9 @@ impl ReActEngine {
                             ask_options: card.ask_options.clone(),
                             step_id: card.step_id.clone(),
                             action_index: card.action_index,
+                            outcome: card.outcome.as_str().into(),
+                            idempotency: card.idempotency.as_str().into(),
+                            operation_scope: card.operation_scope.as_str().into(),
                         })
                         .await;
                 }
@@ -376,6 +400,10 @@ impl ReActEngine {
                         additional_context: text.clone(),
                         step_number: ctx.step_num,
                         run_id: ctx.run_id,
+                        message_id: message_id.clone(),
+                        supplement_id: message_id
+                            .clone()
+                            .unwrap_or_else(|| haven_common::types::new_id("msg")),
                         inject_source: Some(source),
                     })
                     .await;
@@ -857,6 +885,9 @@ mod tests {
                         action_index: 0,
                         silent: false,
                         ask_options: vec![],
+                        outcome: haven_tools::ToolExecutionOutcome::Succeeded,
+                        idempotency: haven_tools::OperationIdempotency::Idempotent,
+                        operation_scope: haven_tools::ToolOperationScope::Session,
                     }),
                 },
                 &mut state,
@@ -966,6 +997,9 @@ mod tests {
                         action_index: 0,
                         silent: false,
                         ask_options: vec!["A".into(), "B".into()],
+                        outcome: haven_tools::ToolExecutionOutcome::Succeeded,
+                        idempotency: haven_tools::OperationIdempotency::Idempotent,
+                        operation_scope: haven_tools::ToolOperationScope::Session,
                     }),
                 },
                 &mut state,
