@@ -32,13 +32,39 @@
 	function handleOverlayKeydown(e) {
 		if (e.key === 'Escape') onClose?.();
 	}
+
+	// A tab surface uses a short transform animation when it becomes visible.
+	// A transformed ancestor changes the containing block of `position: fixed`,
+	// which otherwise makes the dialog center against that surface instead of
+	// the application window. Moving the overlay to <body> keeps dialog geometry
+	// viewport-relative regardless of where the component is rendered.
+	/** @param {HTMLElement} node */
+	function portal(node) {
+		if (typeof document !== 'undefined' && node.parentNode !== document.body) {
+			document.body.appendChild(node);
+		}
+	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
-	<div class="md-dialog-overlay" onclick={handleOverlayClick} onkeydown={handleOverlayKeydown} role="dialog" aria-modal="true" tabindex={-1} in:fade={{ duration: 300, easing: cubicOut }}>
-		<div class="md-dialog {dialogClass}" role="presentation" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
+	<div
+		use:portal
+		class="md-dialog-overlay"
+		onclick={handleOverlayClick}
+		onkeydown={handleOverlayKeydown}
+		role="dialog"
+		aria-modal="true"
+		tabindex={-1}
+		in:fade={{ duration: 300, easing: cubicOut }}
+	>
+		<div
+			class="md-dialog {dialogClass}"
+			role="presentation"
+			onclick={(e) => e.stopPropagation()}
+			in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}
+		>
 			{#if title}
 				<div class="md-dialog-header">
 					<h3>{title}</h3>
@@ -102,7 +128,9 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.md-dialog-close:hover {

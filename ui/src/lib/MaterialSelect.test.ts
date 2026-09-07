@@ -23,4 +23,16 @@ describe('MaterialSelect', () => {
 		expect(onChange).toHaveBeenCalledWith('background');
 		expect(screen.queryByRole('listbox')).toBeNull();
 	});
+
+	it('keeps an option click alive when the trigger blurs first', async () => {
+		const onChange = vi.fn();
+		render(MaterialSelect, { value: 'all', options, onChange });
+
+		const trigger = screen.getByRole('button');
+		await fireEvent.click(trigger);
+		fireEvent.blur(trigger, { relatedTarget: null });
+		await fireEvent.click(screen.getByRole('option', { name: '后台任务' }));
+
+		expect(onChange).toHaveBeenCalledWith('background');
+	});
 });

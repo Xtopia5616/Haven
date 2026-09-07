@@ -33,8 +33,8 @@
 	 * @param {any} val
 	 */
 	function select(val) {
-		onChange?.(val);
 		open = false;
+		onChange?.(val);
 	}
 
 	/**
@@ -44,12 +44,23 @@
 		if (e.key === 'Escape') open = false;
 	}
 
-	function handleBlur() {
-		open = false;
+	/** @param {FocusEvent} e */
+	function handleBlur(e) {
+		// The option is inside the same control. Defer the close until focus has
+		// settled so a pointer click cannot lose its target between blur and click.
+		if (e.relatedTarget && dropdownRef?.contains(/** @type {Node} */ (e.relatedTarget))) return;
+		setTimeout(() => {
+			if (!dropdownRef?.contains(document.activeElement)) open = false;
+		}, 0);
+	}
+
+	/** @param {PointerEvent} e */
+	function handleWindowPointerdown(e) {
+		if (open && !dropdownRef?.contains(/** @type {Node} */ (e.target))) open = false;
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onpointerdown={handleWindowPointerdown} />
 
 <div class="md-select-container" bind:this={dropdownRef}>
 	<button

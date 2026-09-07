@@ -335,22 +335,27 @@
 	// (matching the placeholder); multi-line content uses a fixed padding.
 	const CHAT_INPUT_MIN_H = 48;
 	const CHAT_INPUT_BASE_PAD = 10;
-	const CHAT_INPUT_LINE_H = 21.7; // 14px font-size × 1.55 line-height
 	function autoGrowInput() {
 		const el = transcriptTextarea;
 		if (!el) return;
 		el.style.height = 'auto';
-		el.style.paddingTop = '';
-		el.style.paddingBottom = '';
+		el.style.paddingTop = CHAT_INPUT_BASE_PAD + 'px';
+		el.style.paddingBottom = CHAT_INPUT_BASE_PAD + 'px';
 		const contentH = el.scrollHeight;
-		const singleLine = contentH <= CHAT_INPUT_MIN_H;
+		const singleLine = !transcriptInput.includes('\n') && contentH <= CHAT_INPUT_MIN_H;
 		el.style.height = Math.max(CHAT_INPUT_MIN_H, contentH) + 'px';
 		if (singleLine) {
-			// Balance the vertical padding against the inner height (border
-			// excluded) so the single line of text sits exactly centered.
-			const innerH = el.clientHeight;
-			const totalPad = Math.max(0, innerH - CHAT_INPUT_LINE_H);
-			const pad = Math.floor(totalPad / 2);
+			// Use the computed line height instead of a hard-coded font metric. The
+			// input font falls back to a CJK system font on Windows, so its actual
+			// line box can differ from the Latin token by a fraction of a pixel.
+			const computed = getComputedStyle(el);
+			const lineHeight = Number.parseFloat(computed.lineHeight);
+			const borderHeight =
+				Number.parseFloat(computed.borderTopWidth) +
+				Number.parseFloat(computed.borderBottomWidth);
+			const innerH = Math.max(0, el.clientHeight - borderHeight);
+			const totalPad = Math.max(0, innerH - (Number.isFinite(lineHeight) ? lineHeight : 0));
+			const pad = totalPad / 2;
 			el.style.paddingTop = pad + 'px';
 			el.style.paddingBottom = totalPad - pad + 'px';
 			el.style.setProperty('--chat-pad', pad + 'px');

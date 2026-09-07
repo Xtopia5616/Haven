@@ -77,4 +77,24 @@ describe('InputRouter context menu', () => {
 		await fireEvent.click(screen.getByText('清空'));
 		expect(textarea.value).toBe('');
 	});
+
+	it('balances a single-line draft with the computed line height', async () => {
+		const { container } = render(InputRouter, { onsubmit: vi.fn() });
+		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+		Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 48 });
+		Object.defineProperty(textarea, 'clientHeight', { configurable: true, value: 48 });
+		const getComputedStyleSpy = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+			lineHeight: '30px',
+			borderTopWidth: '1px',
+			borderBottomWidth: '1px',
+		} as CSSStyleDeclaration);
+
+		try {
+			await fireEvent.input(textarea, { target: { value: 'center me' } });
+			expect(textarea.style.paddingTop).toBe('8px');
+			expect(textarea.style.paddingBottom).toBe('8px');
+		} finally {
+			getComputedStyleSpy.mockRestore();
+		}
+	});
 });
