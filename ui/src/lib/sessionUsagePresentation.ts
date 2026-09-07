@@ -45,6 +45,62 @@ export interface StepUsageMessage {
 	stepNumber?: number | null;
 }
 
+export interface ToolDataUsage {
+	args: number;
+	result: number;
+	total: number;
+}
+
+/**
+ * Estimate the token footprint of one tool card's own data. Provider usage is
+ * reported for the whole model response, so it cannot be split precisely
+ * between parallel tool calls; this estimate keeps the per-tool view useful
+ * without presenting it as billable provider usage.
+ */
+export function estimateToolDataTokens(
+	toolName: string,
+	toolArgs: unknown,
+	toolResult: unknown,
+): ToolDataUsage | null {
+	const argsText = stringifyForTokenEstimate(toolArgs);
+	const inputText = [toolName, argsText].filter(Boolean).join('\n');
+	const resultText = stringifyForTokenEstimate(toolResult);
+	const args = estimateTextTokens(inputText);
+	const result = estimateTextTokens(resultText);
+	if (args === 0 && result === 0) return null;
+	return { args, result, total: args + result };
+}
+
+function stringifyForTokenEstimate(value: unknown): string {
+	if (value == null || value === '') return '';
+	if (typeof value === 'string') return value;
+	try {
+		return JSON.stringify(value) ?? '';
+	} catch {
+		return String(value);
+	}
+}
+
+/**
+ * Browser-side approximation: CJK characters are counted individually and
+ * other text is grouped at roughly four characters per token. The exact
+ * provider tokenizer is model-specific and intentionally stays out of this
+ * presentation-only estimate.
+ */
+function estimateTextTokens(value: string): number {
+	if (!value) return 0;
+	let cjk = 0;
+	let other = 0;
+	for (const character of value) {
+		if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(character)) {
+			cjk += 1;
+		} else {
+			other += 1;
+		}
+	}
+	return cjk + (other > 0 ? Math.ceil(other / 4) : 0);
+}
+
 /**
  * A ReAct step can contain several parallel tool cards, but the provider
  * reports one usage record for the model response that produced the batch.

@@ -12,6 +12,9 @@ token tooltip，导致持久化用量数据与展示格式化职责重新耦合�
 - 一个 ReAct step 可能产生多个并行工具卡，但 provider 只返回该模型响应的一笔
   用量；该 step 的 aggregate 只显示在第一个工具卡上，避免让用户误以为同一笔
   请求被重复计费。
+- 每个工具卡额外显示自己的“工具数据 token”估算，按该卡的调用参数和返回结果
+  计算；这是浏览器侧展示估算，不是 provider 返回的计费用量，也不把一个模型
+  响应的真实 token 强行拆分到各个并行工具。
 - 路由页保留响应式 store 同步与 context budget 派生，只通过轻量适配函数把当前
   `llmUsage` 传给展示模块；工具栏继续通过 props 接收展示回调。
 - 保持多次调用合并、inclusive/exclusive cache accounting、恢复态/估算态、费用和
@@ -25,8 +28,9 @@ token tooltip，导致持久化用量数据与展示格式化职责重新耦合�
 
 ## 影响
 
-这是 UI 内部纯计算边界拆分。token 卡片、工具气泡和 tooltip 不改变 usage 数据或
-计费口径；并行工具卡只调整 aggregate 的展示位置，不需要数据或配置迁移。
+这是 UI 内部纯计算边界拆分。模型 usage 数据和计费口径保持不变；工具卡新增的
+数据 token 只用于比较各工具的数据规模，不代表额外计费或精确 tokenizer 结果。
+并行工具卡只调整 aggregate 的展示位置，不需要数据或配置迁移。
 
 ## 验证
 

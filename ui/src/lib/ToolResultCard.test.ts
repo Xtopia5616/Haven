@@ -293,6 +293,20 @@ describe('ToolResultCard usage', () => {
 		});
 		expect(screen.getByText('1.23K tokens')).toBeTruthy();
 	});
+
+	it('shows an independent estimated data-token chip for each tool', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			toolArgs: { command: 'dir' },
+			content: 'file.txt',
+		});
+
+		const chip = container.querySelector('.tool-data-usage-chip') as HTMLElement;
+		expect(chip).toBeTruthy();
+		expect(chip.textContent).toContain('工具数据');
+		expect(chip.getAttribute('title')).toContain('工具数据 token（估算）');
+		expect(chip.getAttribute('title')).toContain('不等于模型计费 token');
+	});
 });
 
 describe('ToolResultCard source + args', () => {

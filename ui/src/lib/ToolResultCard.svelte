@@ -12,6 +12,7 @@
 	import { copyText } from '$lib/clipboard.ts';
 	import { actionStore, toolOutputPreviewStore } from '$lib/stores.ts';
 	import { formatTokenCount } from '$lib/sessionUsage.ts';
+	import { estimateToolDataTokens } from '$lib/sessionUsagePresentation.ts';
 	import {
 		classifyToolSource,
 		parseToolArgs,
@@ -128,6 +129,9 @@
 		}
 		return content;
 	});
+	let toolDataUsage = $derived(
+		type === 'tool' ? estimateToolDataTokens(toolName, toolArgs, displayContent) : null,
+	);
 
 	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, displayContent) : null);
 
@@ -570,6 +574,20 @@
 						{formatTokenCount(usage.total)} tokens
 					</span>
 				{/if}
+				{#if toolDataUsage}
+					<span
+						class="tool-data-usage-chip"
+						title={[
+							'工具数据 token（估算）',
+							`调用参数 ${formatTokenCount(toolDataUsage.args)}`,
+							`返回结果 ${formatTokenCount(toolDataUsage.result)}`,
+							`合计 ${formatTokenCount(toolDataUsage.total)} tokens`,
+							'不等于模型计费 token',
+						].join('\n')}
+					>
+						工具数据 {formatTokenCount(toolDataUsage.total)} tokens
+					</span>
+				{/if}
 			{/snippet}
 
 			{#if cardOpen && hasToolArgs}
@@ -800,6 +818,21 @@
 		background: color-mix(in srgb, var(--md-sys-color-tertiary) 14%, transparent);
 		color: var(--md-sys-color-on-surface-variant);
 		border: 1px solid color-mix(in srgb, var(--md-sys-color-tertiary) 30%, transparent);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 600;
+		font-family: var(--md-sys-typescale-mono);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		white-space: nowrap;
+		cursor: default;
+	}
+	.tool-data-usage-chip {
+		display: inline-block;
+		flex: none;
+		padding: 1px 8px;
+		border-radius: var(--md-sys-shape-full);
+		background: color-mix(in srgb, var(--md-sys-color-secondary) 14%, transparent);
+		color: var(--md-sys-color-on-surface-variant);
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-secondary) 30%, transparent);
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
 		font-family: var(--md-sys-typescale-mono);
