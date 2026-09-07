@@ -97,3 +97,4 @@
 - [0094：模型 provider wire 协议规范化](0094-provider-wire-protocol-normalization.md)
 - [0095：OpenAI-compatible 工具 schema 的 object-root 投影](0095-openai-compatible-object-root-tool-schema.md)
 - [0096：幂等启动开发服务器](0096-idempotent-dev-server-launch.md)
+- [0097：首次对话不等待工具目录启动](0097-first-turn-dispatcher-startup.md)

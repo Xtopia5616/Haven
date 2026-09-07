@@ -135,19 +135,6 @@ pub(crate) fn run() {
             let state = app.state::<Arc<AppState>>();
             let shell = &state.shell;
 
-            // Deferred cold-start work (MCP connect, skills scan, audio
-            // prewarm) runs after the window exists so the UI can paint a
-            // 加载中 chip instead of sitting on a black webview.
-            {
-                let emit_handle = handle.clone();
-                state.spawn_background_init(move |payload: AppBootstrapEvent| {
-                    log_ignored_result!(
-                        "event.app_bootstrap",
-                        emit_handle.emit(APP_BOOTSTRAP_EVENT, payload)
-                    );
-                });
-            }
-
             // Forward MCP status broadcasts to the webview. Startup connects
             // and health-monitor reconnects previously only updated the
             // internal channel — ToolsView / toasts never saw them until a
@@ -217,6 +204,21 @@ pub(crate) fn run() {
                 let rt = tokio::runtime::Handle::current();
                 rt.block_on(bus.subscribe("tauri", buffered));
             });
+
+            // Deferred cold-start work (MCP connect, skills scan, audio
+            // prewarm) runs after the window exists so the UI can paint a
+            // 加载中 chip instead of sitting on a black webview. The event bus
+            // is installed first so a fresh conversation can be dispatched
+            // immediately while catalog discovery continues in the background.
+            {
+                let emit_handle = handle.clone();
+                state.spawn_background_init(move |payload: AppBootstrapEvent| {
+                    log_ignored_result!(
+                        "event.app_bootstrap",
+                        emit_handle.emit(APP_BOOTSTRAP_EVENT, payload)
+                    );
+                });
+            }
 
             // Project tool-internal lifecycle JSON into the explicit action IPC
             // DTO before it reaches the frontend.  Background and scheduled

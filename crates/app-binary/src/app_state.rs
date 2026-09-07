@@ -280,9 +280,9 @@ impl AppState {
         });
 
         // Pre-warm LLM HTTP pools in the background so the first chat request
-        // does not pay TCP+TLS. The session dispatcher is started later from
-        // `spawn_background_init` only after MCP/skills are loaded — otherwise
-        // pending-session resume can race an empty MCP catalog.
+        // does not pay TCP+TLS. The session dispatcher is started from
+        // `spawn_background_init` as soon as the event bus is installed; only
+        // durable pending-session recovery waits for the MCP/Skills catalog.
         let router_warm = router.clone();
         tokio::spawn(async move {
             // Bound the prewarm: a slow/unreachable endpoint's health check
@@ -378,7 +378,9 @@ impl AppState {
     }
 
     /// Run MCP discover + skills scan + audio prewarm off the critical path
-    /// that blocks window creation, then start the session dispatcher.
+    /// that blocks window creation. The dispatcher starts before that work so
+    /// fresh conversations do not wait for the catalog; durable pending
+    /// sessions are reloaded after the catalog is ready.
     /// Emits typed `app:bootstrap` (`loading` / `ready`) payloads so the status
     /// chip can track progress even when the frontend mounts mid-flight.
     pub fn spawn_background_init<F>(&self, emit: F)
@@ -426,8 +428,11 @@ impl AppState {
                 tools_bg.rebuild_catalog().await;
             });
 
-            // Head-start window: prefer a live catalog for restore, then start
-            // the dispatcher regardless so pending sessions are not stuck idle.
+            // Start new conversations immediately. Recovery of sessions left
+            // Pending by a previous process is deferred until the catalog is
+            // ready below, so restart semantics do not race an empty catalog.
+            agent.clone().start_without_pending_recovery();
+
             let catalog_finished = tokio::select! {
                 r = &mut catalog => {
                     if let Err(e) = r {
@@ -443,10 +448,22 @@ impl AppState {
                 }
             };
 
-            agent.start();
-
             if !catalog_finished && let Err(e) = catalog.await {
                 tracing::warn!("bootstrap catalog task panicked: {e}");
+            }
+
+            match agent.recover_pending_sessions().await {
+                Ok(reloaded) if reloaded > 0 => {
+                    tracing::info!(
+                        "deferred dispatcher recovery reloaded {} pending session(s)",
+                        reloaded
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => tracing::error!(
+                    error = %error,
+                    "deferred dispatcher recovery failed: pending sessions could not be loaded"
+                ),
             }
 
             bootstrap_ready.store(true, Ordering::Release);

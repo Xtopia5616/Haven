@@ -86,25 +86,46 @@ impl SessionExecutor {
     /// and a `Pending` session exists, the dispatcher calls `handler(session_id)`.
     /// The handler must perform the ReAct loop and finalize the session status.
     pub fn start_dispatcher(self: Arc<Self>, handler: RunHandler) {
+        self.start_dispatcher_inner(handler, true);
+    }
+
+    /// Spawn the dispatcher without reloading durable pending sessions yet.
+    ///
+    /// This is used during desktop cold start: a new session can run while the
+    /// MCP/Skills catalog is still warming, but sessions left pending by a
+    /// previous process are deliberately reloaded only after that catalog is
+    /// ready. That keeps startup recovery's tool visibility deterministic
+    /// without putting a multi-second gate in front of a fresh conversation.
+    pub fn start_dispatcher_without_recovery(self: Arc<Self>, handler: RunHandler) {
+        self.start_dispatcher_inner(handler, false);
+    }
+
+    fn start_dispatcher_inner(self: Arc<Self>, handler: RunHandler, recover_pending: bool) {
         let exec = self.clone();
         tokio::spawn(async move {
             // Pick up sessions that were still Pending when the app stopped so
             // queued work survives a restart instead of being stranded in
             // the DB (the in-memory working set is empty on a fresh start).
-            let reloaded = match exec.load_pending_sessions().await {
-                Ok(count) => count,
-                Err(error) => {
-                    tracing::error!(
-                        error = %error,
-                        "dispatcher startup aborted: pending sessions could not be loaded"
+            if recover_pending {
+                let reloaded = match exec.load_pending_sessions().await {
+                    Ok(count) => count,
+                    Err(error) => {
+                        tracing::error!(
+                            error = %error,
+                            "dispatcher startup aborted: pending sessions could not be loaded"
+                        );
+                        return;
+                    }
+                };
+                if reloaded > 0 {
+                    tracing::info!(
+                        "dispatcher reloaded {} pending session(s) from previous run",
+                        reloaded
                     );
-                    return;
                 }
-            };
-            if reloaded > 0 {
-                tracing::info!(
-                    "dispatcher reloaded {} pending session(s) from previous run",
-                    reloaded
+            } else {
+                tracing::debug!(
+                    "dispatcher started without pending-session recovery; recovery is deferred"
                 );
             }
             // Subscribe BEFORE the first claim so a Pending transition that

@@ -248,13 +248,35 @@ impl AgentLayer {
     /// Spawn the SessionExecutor dispatcher with a runner wired to this
     /// AgentLayer. Must be called exactly once after construction.
     pub fn start(self: Arc<Self>) {
+        self.start_inner(true);
+    }
+
+    /// Start the dispatcher immediately, but defer recovery of sessions that
+    /// were already pending before process startup. The desktop uses this
+    /// during cold start so a fresh conversation is not blocked by MCP/Skills
+    /// discovery; it calls `load_pending_sessions` once that catalog is ready.
+    pub fn start_without_pending_recovery(self: Arc<Self>) {
+        self.start_inner(false);
+    }
+
+    /// Reload sessions that were left Pending by a previous process after the
+    /// desktop has finished warming its tool catalog.
+    pub async fn recover_pending_sessions(&self) -> anyhow::Result<usize> {
+        self.executor.load_pending_sessions().await
+    }
+
+    fn start_inner(self: Arc<Self>, recover_pending: bool) {
         let agent = self.clone();
         let executor = self.executor.clone();
         let handler: RunHandler = Arc::new(move |session_id: String| {
             let agent = agent.clone();
             Box::pin(async move { agent.run_session_from_id(&session_id).await.map(|_| ()) })
         });
-        executor.start_dispatcher(handler);
+        if recover_pending {
+            executor.start_dispatcher(handler);
+        } else {
+            executor.start_dispatcher_without_recovery(handler);
+        }
 
         self.executor
             .set_notification_summary_chars(self.limits().notification_summary_chars);

@@ -1054,6 +1054,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatcher_can_defer_pending_recovery_until_catalog_ready() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = Arc::new(SessionExecutor::new(db.clone(), tools.clone(), 1));
+        let session = exec.create_session("queued before catalog").await.unwrap();
+        let exec2 = Arc::new(SessionExecutor::new(db, tools, 1));
+        let handled = Arc::new(AtomicU32::new(0));
+        let handled_by_runner = handled.clone();
+        let exec_for_runner = exec2.clone();
+        let handler: RunHandler = Arc::new(move |session_id: String| {
+            let handled = handled_by_runner.clone();
+            let exec = exec_for_runner.clone();
+            Box::pin(async move {
+                handled.fetch_add(1, Ordering::SeqCst);
+                exec.update_session_status(&session_id, SessionStatus::Completed)
+                    .await?;
+                Ok(())
+            })
+        });
+
+        exec2.clone().start_dispatcher_without_recovery(handler);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(handled.load(Ordering::SeqCst), 0);
+        assert!(exec2.list_sessions().await.is_empty());
+        assert_eq!(
+            exec2
+                .db
+                .get_session(&session.id)
+                .unwrap()
+                .map(|record| record.status),
+            Some("pending".into())
+        );
+
+        assert_eq!(exec2.load_pending_sessions().await.unwrap(), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while handled.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("deferred recovery should dispatch after loading pending sessions");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while exec2.get_session_state(&session.id).await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("deferred recovery should release the completed session");
+    }
+
+    #[tokio::test]
     async fn load_pending_actions_skips_non_pending() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
