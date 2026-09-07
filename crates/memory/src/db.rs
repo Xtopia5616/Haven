@@ -516,6 +516,7 @@ mod tests {
             tool_call_id: None,
             attachments: vec![],
             voice: false,
+            ingress_seq: 0,
         }
     }
 

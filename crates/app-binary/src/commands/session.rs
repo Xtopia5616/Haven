@@ -532,6 +532,7 @@ mod tests {
             tool_call_id: None,
             attachments: vec![MessageAttachment::new("image/png", "aGVsbG8=")],
             voice: false,
+            ingress_seq: 0,
         };
         let step = SessionStep {
             id: "s1".into(),
@@ -572,6 +573,7 @@ mod tests {
             tool_call_id: None,
             attachments: vec![],
             voice: false,
+            ingress_seq: 0,
         };
         let latin = Message {
             id: "m2".into(),
@@ -583,6 +585,7 @@ mod tests {
             tool_call_id: None,
             attachments: vec![],
             voice: false,
+            ingress_seq: 0,
         };
         let u1 = estimate_session_usage(&[cjk], &[]);
         let u2 = estimate_session_usage(&[latin], &[]);

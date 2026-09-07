@@ -20,8 +20,8 @@ pub fn undelivered_recovery_since() -> String {
     (Utc::now() - UNDELIVERED_RECOVERY_MAX_AGE).to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Map a `messages` row (9 columns: id, session_id, role, content, message_type,
-/// created_at, tool_call_id, attachments, voice) into a `Message`. Shared by
+/// Map a `messages` row (10 columns: id, session_id, role, content, message_type,
+/// created_at, tool_call_id, attachments, voice, ingress_seq) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
 fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
     Ok(Message {
@@ -34,6 +34,7 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
         tool_call_id: row.get(6)?,
         attachments: Database::parse_attachments(row.get(7)?),
         voice: row.get::<_, i32>(8)? != 0,
+        ingress_seq: row.get(9)?,
     })
 }
 
@@ -52,6 +53,10 @@ pub struct Message {
     /// in the UI survives reloads). Assistant/tool messages are always false.
     #[serde(default)]
     pub voice: bool,
+    /// Durable per-session ingress order. This is intentionally omitted from
+    /// the IPC JSON surface; it is a recovery cursor, not user-visible data.
+    #[serde(skip)]
+    pub ingress_seq: i64,
 }
 
 impl Database {
@@ -102,21 +107,48 @@ impl Database {
             _ => now,
         };
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                id,
-                session_id,
-                role,
-                content,
-                message_type,
-                created_at,
-                tool_call_id,
-                Self::serialize_attachments(attachments),
-                voice,
-            ],
-        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<i64> {
+            conn.execute(
+                "INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
+                 VALUES (?1, 1)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                     last_ingress_seq = message_ingress_cursors.last_ingress_seq + 1",
+                rusqlite::params![session_id],
+            )?;
+            let ingress_seq = conn.query_row(
+                "SELECT last_ingress_seq FROM message_ingress_cursors WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice, ingress_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    id,
+                    session_id,
+                    role,
+                    content,
+                    message_type,
+                    created_at,
+                    tool_call_id,
+                    Self::serialize_attachments(attachments),
+                    voice,
+                    ingress_seq,
+                ],
+            )?;
+            Ok(ingress_seq)
+        })();
+        let ingress_seq = match result {
+            Ok(ingress_seq) => {
+                conn.execute_batch("COMMIT")?;
+                ingress_seq
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        };
         drop(conn);
         self.cache_invalidate_messages(session_id);
         Ok(Message {
@@ -129,6 +161,7 @@ impl Database {
             tool_call_id: tool_call_id.map(String::from),
             attachments: attachments.to_vec(),
             voice,
+            ingress_seq,
         })
     }
 
@@ -168,7 +201,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice
+                    attachments, voice, ingress_seq
              FROM messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], map_message_row)?;
@@ -188,7 +221,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice
+                    attachments, voice, ingress_seq
              FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text' OR message_type = 'peer_kickoff')
               ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
@@ -214,9 +247,32 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice
+                    attachments, voice, ingress_seq
              FROM messages WHERE session_id = ?1 AND created_at > ?2
              ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![session_id, since], map_message_row)?;
+        let mut msgs = Vec::new();
+        for row in rows {
+            msgs.push(row?);
+        }
+        Ok(msgs)
+    }
+
+    /// Return every message persisted after a durable ingress cursor.
+    /// Unlike timestamp recovery, this remains correct when the wall clock
+    /// moves backwards or multiple writes share the same millisecond.
+    pub fn get_session_messages_since_ingress_seq(
+        &self,
+        session_id: &str,
+        since: i64,
+    ) -> anyhow::Result<Vec<Message>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
+                    attachments, voice, ingress_seq
+             FROM messages WHERE session_id = ?1 AND ingress_seq > ?2
+             ORDER BY ingress_seq ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id, since], map_message_row)?;
         let mut msgs = Vec::new();
@@ -254,7 +310,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
-                    m.tool_call_id, m.attachments, m.voice
+                    m.tool_call_id, m.attachments, m.voice, m.ingress_seq
              FROM messages m
              WHERE m.session_id = ?1
                AND m.role = 'user'
@@ -269,7 +325,7 @@ impl Database {
                    SELECT 1 FROM session_steps st
                    WHERE st.session_id = m.session_id AND st.id = m.id
                )
-             ORDER BY m.created_at ASC, m.rowid ASC",
+             ORDER BY m.ingress_seq ASC, m.rowid ASC",
         )?;
         let rows = stmt.query_map(
             rusqlite::params![session_id, since_created_at],
@@ -293,6 +349,18 @@ impl Database {
             |row| row.get::<_, String>(0),
         )
         .ok()
+    }
+
+    /// Return the highest durable ingress cursor for a session.
+    pub fn get_last_message_ingress_seq(&self, session_id: &str) -> i64 {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT COALESCE(last_ingress_seq, 0)
+             FROM message_ingress_cursors WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
     }
 
     /// Delete a single message by its primary key. Used to remove a user
@@ -453,6 +521,41 @@ mod tests {
         let msgs = db.get_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
+        assert_eq!(msgs[0].ingress_seq, 1);
+    }
+
+    #[test]
+    fn ingress_cursor_recovers_rows_without_timestamp_comparison() {
+        let db = test_db();
+        let tid = test_session(&db);
+        let first = db.add_message(&tid, "user", "first", None, None).unwrap();
+        let second = db.add_message(&tid, "user", "second", None, None).unwrap();
+
+        assert_eq!(first.ingress_seq, 1);
+        assert_eq!(second.ingress_seq, 2);
+        let recovered = db
+            .get_session_messages_since_ingress_seq(&tid, first.ingress_seq)
+            .unwrap();
+        assert_eq!(
+            recovered.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            [second.id.as_str()]
+        );
+    }
+
+    #[test]
+    fn ingress_cursor_does_not_reuse_sequence_after_message_delete() {
+        let db = test_db();
+        let tid = test_session(&db);
+        let first = db.add_message(&tid, "user", "first", None, None).unwrap();
+        let second = db.add_message(&tid, "user", "second", None, None).unwrap();
+        db.delete_message_by_id(&tid, &second.id).unwrap();
+
+        let replacement = db
+            .add_message(&tid, "user", "replacement", None, None)
+            .unwrap();
+        assert_eq!(first.ingress_seq, 1);
+        assert_eq!(replacement.ingress_seq, 3);
+        assert_eq!(db.get_last_message_ingress_seq(&tid), 3);
     }
 
     #[test]
@@ -617,6 +720,7 @@ mod tests {
             tool_call_id: None,
             attachments: vec![MessageAttachment::new("image/jpeg", "abc")],
             voice: true,
+            ingress_seq: 0,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: Message = serde_json::from_str(&json).unwrap();

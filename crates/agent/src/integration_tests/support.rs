@@ -628,6 +628,7 @@ pub(super) fn seed_hello_snapshot(
         step_number: 1,
         branch_points,
         saved_at: None,
+        last_ingress_seq: None,
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,

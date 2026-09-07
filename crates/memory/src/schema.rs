@@ -23,7 +23,7 @@ use migrations::{MIGRATIONS, SCHEMA_VERSION, apply_migrations, set_user_version,
 #[cfg(test)]
 use migrations::{
     Migration, migrate_v10_llm_usage_cache_accounting, migrate_v11_usage_cache_diagnostics,
-    migrate_v12_session_steps,
+    migrate_v12_session_steps, migrate_v13_message_ingress_seq,
 };
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
@@ -47,7 +47,12 @@ const SCHEMA_SQL: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         tool_call_id TEXT,
         attachments TEXT,
-        voice INTEGER NOT NULL DEFAULT 0
+        voice INTEGER NOT NULL DEFAULT 0,
+        ingress_seq INTEGER NOT NULL DEFAULT 0
+    )",
+    "CREATE TABLE IF NOT EXISTS message_ingress_cursors (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        last_ingress_seq INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE TABLE IF NOT EXISTS session_steps (
         id TEXT PRIMARY KEY,
@@ -728,6 +733,7 @@ mod tests {
             "memory_embeddings",
             "memory_items",
             "memory_nodes",
+            "message_ingress_cursors",
             "messages",
             "partial_messages",
             "session_steps",
@@ -923,6 +929,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "unknown");
+    }
+
+    #[test]
+    fn v13_migration_backfills_message_ingress_sequence() {
+        let conn = create_test_conn();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY);
+             INSERT INTO sessions (id) VALUES ('ses-old');
+             CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                message_type TEXT,
+                created_at TEXT NOT NULL,
+                tool_call_id TEXT,
+                attachments TEXT,
+                voice INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO messages (id, session_id, role, content, created_at)
+             VALUES ('msg-2', 'ses-old', 'user', 'later', '2026-01-02'),
+                    ('msg-1', 'ses-old', 'user', 'earlier', '2026-01-01');",
+        )
+        .unwrap();
+
+        migrate_v13_message_ingress_seq(&conn).unwrap();
+        migrate_v13_message_ingress_seq(&conn).unwrap();
+        let rows: Vec<(String, i64)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, ingress_seq FROM messages ORDER BY ingress_seq")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(rows, vec![("msg-1".into(), 1), ("msg-2".into(), 2)]);
+        assert!(column_exists(&conn, "messages", "ingress_seq").unwrap());
     }
 
     #[test]

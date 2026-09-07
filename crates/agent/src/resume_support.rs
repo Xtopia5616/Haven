@@ -15,7 +15,7 @@ use serde_json::Value;
 /// Merge the two durable recovery scans in their read order and deduplicate by
 /// the persisted message id.
 ///
-/// The first scan contains rows newer than the snapshot's `saved_at`; the
+/// The first scan contains rows newer than the snapshot's ingress cursor; the
 /// second contains recent anchor-less rows. A row can occur in both scans, so
 /// resume must enqueue it once without comparing message text. Non-user rows
 /// are intentionally ignored here because only user input can be re-queued.
@@ -23,10 +23,15 @@ pub(crate) fn merge_recovery_candidates(
     post_snapshot: Vec<Message>,
     undelivered: Vec<Message>,
 ) -> Vec<Message> {
+    let mut candidates: Vec<_> = post_snapshot.into_iter().chain(undelivered).collect();
+    candidates.sort_by(|left, right| {
+        left.ingress_seq
+            .cmp(&right.ingress_seq)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     let mut seen = HashSet::new();
-    post_snapshot
+    candidates
         .into_iter()
-        .chain(undelivered)
         .filter(|message| message.role == "user" && seen.insert(message.id.clone()))
         .collect()
 }
@@ -127,6 +132,7 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             voice: false,
+            ingress_seq: 0,
         }
     }
 

@@ -67,11 +67,12 @@ struct SnapshotView<'a> {
     step_number: u32,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     branch_points: &'a HashMap<u32, BranchPoint>,
-    /// `saved_at` is written at serialization time: resume uses it to recover
-    /// messages persisted after this snapshot by timestamp (see
-    /// `ReActSnapshot::saved_at`).
+    /// `saved_at` is retained for old snapshots and diagnostics. New resume
+    /// logic uses the durable ingress cursor below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saved_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_ingress_seq: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error_partial_message_ids: Option<&'a [String]>,
     /// Explicit ask-awaiting flag (Phase 4 / C5); see `ReActSnapshot`.
@@ -521,11 +522,31 @@ impl ReActEngine {
             self.executor.get_awaiting_confirm(session_id).await
         };
         let run_budget = self.current_run_budget(session_id);
+        let last_ingress_seq = match self
+            .db
+            .clone()
+            .run_blocking({
+                let session_id = session_id.to_string();
+                move |db| Ok(db.get_last_message_ingress_seq(&session_id))
+            })
+            .await
+        {
+            Ok(cursor) => Some(cursor),
+            Err(error) => {
+                tracing::warn!(
+                    "failed to read message ingress cursor for snapshot {}: {}",
+                    session_id,
+                    error
+                );
+                return false;
+            }
+        };
         let view = SnapshotView {
             events: &state.events,
             step_number,
             branch_points: &state.branch_points,
             saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            last_ingress_seq,
             error_partial_message_ids,
             awaiting_answer: awaiting.as_ref(),
             awaiting_confirm: awaiting_confirm.as_ref(),

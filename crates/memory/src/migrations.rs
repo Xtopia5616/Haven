@@ -6,7 +6,7 @@
 //! reviewable without mixing it with the current table definition.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-pub(super) const SCHEMA_VERSION: i32 = 12;
+pub(super) const SCHEMA_VERSION: i32 = 13;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -41,6 +41,8 @@ pub(super) struct Migration {
 /// - v11: cache miss totals and non-sensitive per-call cache diagnostics.
 /// - v12: stable action ordering/provider tool-call identity plus explicit
 ///   cancelled/unknown action outcomes on `session_steps`.
+/// - v13: monotonic per-session message ingress sequence used as the durable
+///   resume cursor, independent of wall-clock timestamps.
 pub(super) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -85,6 +87,10 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 12,
         apply: migrate_v12_session_steps,
+    },
+    Migration {
+        version: 13,
+        apply: migrate_v13_message_ingress_seq,
     },
 ];
 
@@ -162,6 +168,55 @@ pub(super) fn migrate_v12_session_steps(conn: &rusqlite::Connection) -> anyhow::
     let restore = conn.execute_batch("PRAGMA foreign_keys=ON");
     rebuild?;
     restore?;
+    Ok(())
+}
+
+/// Add a durable, monotonic ingress cursor to message rows. Existing rows are
+/// numbered in their historical `(created_at, rowid)` order. New writes use a
+/// separate cursor row inside the same transaction; deleting messages during
+/// rollback therefore cannot make a future input reuse an old sequence.
+pub(super) fn migrate_v13_message_ingress_seq(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS message_ingress_cursors (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            last_ingress_seq INTEGER NOT NULL DEFAULT 0
+        )",
+    )?;
+    if !table_exists(conn, "messages")? {
+        return Ok(());
+    }
+    if !column_exists(conn, "messages", "ingress_seq")? {
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN ingress_seq INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        r#"
+        WITH ordered AS (
+            SELECT rowid AS message_rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY session_id
+                       ORDER BY created_at ASC, rowid ASC
+                   ) AS seq
+            FROM messages
+        )
+        UPDATE messages
+           SET ingress_seq = (
+               SELECT seq FROM ordered
+                WHERE ordered.message_rowid = messages.rowid
+           );
+        CREATE INDEX IF NOT EXISTS idx_messages_session_ingress_seq
+            ON messages(session_id, ingress_seq);
+        INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
+        SELECT session_id, MAX(ingress_seq)
+          FROM messages
+         GROUP BY session_id
+        ON CONFLICT(session_id) DO UPDATE SET
+            last_ingress_seq = MAX(message_ingress_cursors.last_ingress_seq,
+                                   excluded.last_ingress_seq);
+        "#,
+    )?;
     Ok(())
 }
 

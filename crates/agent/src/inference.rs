@@ -1211,6 +1211,7 @@ impl InferenceEngine {
             tool_call_id: None,
             attachments: vec![],
             voice: false,
+            ingress_seq: 0,
         };
 
         match self
@@ -1361,6 +1362,7 @@ mod tests {
             tool_call_id: None,
             attachments: vec![],
             voice: false,
+            ingress_seq: 0,
         }
     }
 
@@ -1590,6 +1592,7 @@ mod tests {
             tool_call_id: None,
             attachments: vec![],
             voice: false,
+            ingress_seq: 0,
         }
     }
 

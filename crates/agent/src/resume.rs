@@ -22,7 +22,7 @@
 //! ## Queue durability (Phase 7 / D2)
 //!
 //! RAM follow-up / steering queues are a same-process cache. Durability is
-//! DB messages + snapshot `saved_at` + undelivered scan. Resume re-queues by
+//! DB messages + snapshot ingress cursor + undelivered scan. Resume re-queues by
 //! `message_id` and is idempotent (duplicate id is skipped).
 
 use crate::AgentLayer;
@@ -446,15 +446,14 @@ impl AgentLayer {
         // Phase 7 / D2 — post-snapshot recovery (durability ≠ RAM queues):
         //
         // RAM follow-up / steering queues are a same-process cache only.
-        // Durability = DB user messages + snapshot `saved_at` + undelivered
+        // Durability = DB user messages + snapshot ingress cursor + undelivered
         // (anchor-less) scan. Replay is idempotent by `message_id`
         // (`push_follow_up` / steering skip duplicates).
         //
-        // By TIMESTAMP instead of content matching: any message persisted
-        // after `saved_at` cannot be in the restored events, so it is
-        // unambiguously new — supplements, steering and `ask` answers that
-        // arrived while paused, or were persisted before a crash and lost
-        // from the in-memory queues. The events snapshot is the single
+        // By ingress sequence instead of timestamps or content matching: any
+        // message persisted after the snapshot cursor cannot be in the
+        // restored events, even when the wall clock moves backwards or two
+        // writes share a millisecond. The events snapshot is the single
         // authority for everything older.
         //
         // This alone misses inputs that PREDATE the snapshot yet were never
@@ -473,15 +472,22 @@ impl AgentLayer {
         {
             // Bound the anchor-less scan to the recovery window so ancient
             // false positives (legacy missing anchors) are never re-injected
-            // on first post-upgrade resume. Rows newer than `saved_at` are
+            // on first post-upgrade resume. Rows after the ingress cursor are
             // already covered by `pending` above.
             let since = haven_memory::repositories::messages::undelivered_recovery_since();
             let db = self.db.clone();
             let sid = session_id.to_string();
             let saved_at_for_query = saved_at.to_string();
+            let ingress_cursor = snapshot.last_ingress_seq;
             let (pending, undelivered) = db
                 .run_blocking(move |db| {
-                    let pending = db.get_session_messages_since(&sid, &saved_at_for_query)?;
+                    let pending = match ingress_cursor {
+                        Some(cursor) => db.get_session_messages_since_ingress_seq(&sid, cursor)?,
+                        // Snapshots written before ingress cursors are retained
+                        // for compatibility and use the old timestamp bound
+                        // exactly once; all new snapshots take the cursor path.
+                        None => db.get_session_messages_since(&sid, &saved_at_for_query)?,
+                    };
                     let undelivered =
                         db.get_undelivered_user_messages_since(&sid, Some(since.as_str()))?;
                     Ok((pending, undelivered))
@@ -524,9 +530,10 @@ impl AgentLayer {
             }
             if restored > 0 {
                 tracing::info!(
-                    "run_session_resumed: recovered {} post-snapshot input(s) for session {} (saved_at {})",
+                    "run_session_resumed: recovered {} post-snapshot input(s) for session {} (ingress_seq {:?}, saved_at {})",
                     restored,
                     session_id,
+                    snapshot.last_ingress_seq,
                     saved_at
                 );
             }

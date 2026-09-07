@@ -176,10 +176,14 @@ pub struct ReActSnapshot {
     /// Branch points keyed by step number for tree-structured rollback (§2).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub branch_points: HashMap<u32, BranchPoint>,
-    /// Wall-clock time the snapshot was written. Resume recovers messages
-    /// submitted AFTER this by timestamp.
+    /// Legacy wall-clock checkpoint retained for backward compatibility with
+    /// old snapshots. New resume logic uses `last_ingress_seq`.
     #[serde(default)]
     pub saved_at: Option<String>,
+    /// Highest durable message ingress sequence included when this snapshot
+    /// was written. Resume recovers rows strictly after this cursor.
+    #[serde(default)]
+    pub last_ingress_seq: Option<i64>,
     /// Present only when the ReAct loop itself recorded a failed LLM stream.
     /// Continue may then use this step's branch point to replace the failed
     /// attempt. A normal periodic snapshot leaves this `None`, so an app or

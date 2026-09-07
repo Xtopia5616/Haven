@@ -175,6 +175,7 @@ fn push_turn_context(
                 tool_call_id: None,
                 attachments: vec![],
                 voice: false,
+                ingress_seq: 0,
             });
         }
         tools.reverse();
