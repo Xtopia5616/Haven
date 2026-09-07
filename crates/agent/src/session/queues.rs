@@ -531,16 +531,16 @@ impl SessionExecutor {
             break;
         }
         drop(map);
-        if let Some((sid, pending)) = persist {
-            if let Err(error) = self.persist_awaiting_confirm(&sid, &pending).await {
-                if let Some((restore_sid, restore_pending)) = previous {
-                    self.awaiting_confirm
-                        .lock()
-                        .await
-                        .insert(restore_sid, restore_pending);
-                }
-                return Err(error);
+        if let Some((sid, pending)) = persist
+            && let Err(error) = self.persist_awaiting_confirm(&sid, &pending).await
+        {
+            if let Some((restore_sid, restore_pending)) = previous {
+                self.awaiting_confirm
+                    .lock()
+                    .await
+                    .insert(restore_sid, restore_pending);
             }
+            return Err(error);
         }
         if let Some(sid) = wake_sid {
             // Wake the dispatcher: continuation runs approved tools.
@@ -591,12 +591,8 @@ impl SessionExecutor {
         // Establish the lifecycle state before exposing any confirm id to the
         // UI. A callback can synchronously trigger an IPC resolve; that
         // resolver must observe a real paused session and a registered gate.
-        if let Err(error) = self
-            .update_session_status(session_id, SessionStatus::PausedAwaitingConfirm)
-            .await
-        {
-            return Err(error);
-        }
+        self.update_session_status(session_id, SessionStatus::PausedAwaitingConfirm)
+            .await?;
         self.set_awaiting_confirm(session_id, Some(pending.clone()))
             .await;
 

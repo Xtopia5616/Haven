@@ -97,7 +97,6 @@ impl<'a> StreamSession<'a> {
                 self.partial_reasoning,
             )
             .await
-            .map(|(response, duration_ms)| (response, duration_ms))
     }
 
     pub(super) fn role(&self) -> EndpointRole {

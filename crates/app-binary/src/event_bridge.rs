@@ -145,6 +145,7 @@ impl TauriEmitter {
     /// Construct the wire payload from an explicit DTO for every event. Dynamic
     /// `Value` fields remain only where they are part of an intentional
     /// extension point: tool input, web-search result, and usage diagnostics.
+    #[cfg(test)]
     pub(crate) fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
         Self::payload_with_event_seq(event, chunk_seq, None)
     }

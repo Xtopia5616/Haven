@@ -526,16 +526,15 @@ impl ReActEngine {
             {
                 state.stage_retry_nudge(tool_call_id, nudge);
             }
-        } else if let Some(signal) = exhausted_failure
-            && batch_state.asked_questions.is_empty()
+        } else if batch_state.asked_questions.is_empty()
             && need_confirm.is_empty()
+            && let Some(signal) = exhausted_failure
+            && let Some(tool_call_id) = signal.tool_call_id.clone()
         {
-            if let Some(tool_call_id) = signal.tool_call_id.clone() {
-                state.stage_retry_nudge(
-                    tool_call_id,
-                    "The automatic retry budget for this exact tool operation and failure kind is exhausted. Do not repeat the same call; change the approach or ask the user for guidance.".into(),
-                );
-            }
+            state.stage_retry_nudge(
+                tool_call_id,
+                "The automatic retry budget for this exact tool operation and failure kind is exhausted. Do not repeat the same call; change the approach or ask the user for guidance.".into(),
+            );
         }
 
         // A normal batch is checkpointed only after all state that belongs to
