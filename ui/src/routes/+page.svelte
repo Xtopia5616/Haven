@@ -1102,7 +1102,16 @@
 						clearStepBlockIds,
 						updateSessionTitle: (sessionId, title) => {
 							const index = sessions.findIndex((session) => session.id === sessionId);
-							if (index >= 0) sessions[index] = { ...sessions[index], title };
+							if (index >= 0) {
+								sessions[index] = { ...sessions[index], title };
+								// Keep the shell's task/status view in sync with the chat
+								// header as soon as the generated title arrives.
+								sessionStore.set(sessions);
+							} else {
+								// A title event can win the race with the initial session
+								// list load. The persisted title will be picked up here.
+								void loadSessions();
+							}
 						},
 						loadSessions,
 					}),
@@ -1482,7 +1491,7 @@
 	);
 	const sessionHeaderTitle = $derived(activeSession?.title || activeSession?.input || '新会话');
 	const sessionHeaderStatus = $derived(
-		activeSession ? sessionStatusLabel(activeSession) : '准备开始',
+		activeSession ? sessionStatusLabel(activeSession) : '就绪',
 	);
 </script>
 

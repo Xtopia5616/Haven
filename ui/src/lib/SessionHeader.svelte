@@ -13,7 +13,7 @@
 	 */
 	let {
 		title = '新会话',
-		status = '准备开始',
+		status = '就绪',
 		running = false,
 		hasSession = false,
 		onNew,

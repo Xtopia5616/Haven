@@ -713,12 +713,28 @@ impl AgentLayer {
         self.react_engine.reset_cumulative_usage(session_id);
     }
 
-    /// Generate a short title using small_model after a successful ReAct
-    /// loop. Spawned as a background session so it does not block the
-    /// dispatcher. Only runs once per session (when title is None), and only
-    /// once at a time: overlapping dispatches of the same session (auto-reload
-    /// on app start plus a manual continue) must not fire concurrent title
-    /// calls.
+    /// Schedule short-title generation using small_model. The normal ingress
+    /// path calls this immediately after the first user message is persisted,
+    /// before the ReAct dispatcher is woken, so the title can appear while the
+    /// first response is being generated. Resume still calls it after a
+    /// successful run as a retry/fallback for sessions created before this
+    /// early trigger. Only one title call per session may be in flight.
+    pub(crate) fn spawn_title_generation(&self, session_id: &str) {
+        let db = self.db.clone();
+        let executor = self.executor.clone();
+        let title = self.title.clone();
+        let events = self.events.clone();
+        let in_flight = self.title_in_flight.clone();
+        let tid = session_id.to_string();
+        tokio::spawn(async move {
+            Self::try_generate_title(db, executor, title, events, in_flight, tid).await;
+        });
+    }
+
+    /// Generate a short title using small_model in a background task. Only
+    /// runs when the session has no title yet, and only once at a time:
+    /// overlapping dispatches of the same session (auto-reload plus a manual
+    /// continue) must not fire concurrent title calls.
     pub(crate) async fn try_generate_title(
         db: Arc<Database>,
         executor: Arc<SessionExecutor>,
@@ -841,6 +857,12 @@ impl AgentLayer {
             }
         };
         self.executor.ensure_session_loaded(&record.id).await?;
+        // Human conversations get a title as soon as their first input is
+        // durable. Peer kickoff sessions use their explicit title/fallback
+        // path below and must not spend a small-model call here.
+        if dispatch && message_type == "text" {
+            self.spawn_title_generation(&record.id);
+        }
         if dispatch {
             // Wake the dispatcher now that the message is persisted.
             self.executor

@@ -390,22 +390,12 @@ impl AgentLayer {
             }
         };
 
-        // Generate title after the ReAct loop if not already set. Only
-        // spawned when the run itself succeeded: a failed run (e.g. all LLM
-        // endpoints down) would burn the full title retry budget on the same
-        // dead endpoint and duplicate the conversation's own retry latency.
-        // A resumed session whose title was never generated gets its title
-        // attempt on the next successful run instead.
+        // Retry title generation after a successful ReAct loop for sessions
+        // created before the early first-input trigger, or when that first
+        // attempt failed. A failed run still avoids spending title latency on
+        // an already unavailable endpoint.
         if session.title.is_none() && result.is_ok() {
-            let db = self.db.clone();
-            let executor = self.executor.clone();
-            let title = self.title.clone();
-            let events = self.events.clone();
-            let in_flight = self.title_in_flight.clone();
-            let tid = session_id.to_string();
-            tokio::spawn(async move {
-                Self::try_generate_title(db, executor, title, events, in_flight, tid).await;
-            });
+            self.spawn_title_generation(session_id);
         }
 
         result
