@@ -10,7 +10,10 @@ use std::collections::HashSet;
 use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart};
 use haven_memory::Database;
 use haven_memory::repositories::messages::Message;
+use haven_memory::repositories::session_steps::SessionStep;
 use serde_json::Value;
+
+use crate::types::{Action, TranscriptRecord};
 
 /// Merge the two durable recovery scans in their read order and deduplicate by
 /// the persisted message id.
@@ -55,6 +58,85 @@ pub(crate) fn load_mcp_tool_names(input: &Value) -> Option<Vec<String>> {
         }
     }
     Some(names)
+}
+
+/// Reconcile a snapshot whose last event is an assistant tool call with the
+/// durable action-step projection.
+///
+/// The normal write order is projection first, then the in-memory event log,
+/// then a later snapshot checkpoint. A process crash can therefore leave a
+/// snapshot ending at `ToolCall` while `session_steps` already knows that the
+/// call completed (or that it crossed an uncertain side-effect boundary).
+/// The old recovery path trimmed that call and minted a new identity, which
+/// could repeat an external side effect. Recovery is fail-closed instead:
+/// every call in the dangling batch receives either its durable observation or
+/// an explicit unknown observation, and the caller can safely keep the event
+/// log without executing the batch again.
+///
+/// The function is deliberately pure. The caller owns the one durable write
+/// of the repaired snapshot, so a crash before that write leaves the same
+/// dangling input and the next resume repeats this idempotent reconciliation.
+pub(crate) fn reconcile_dangling_tool_call(
+    events: &mut Vec<TranscriptRecord>,
+    steps: &[SessionStep],
+) -> bool {
+    let Some(TranscriptRecord::ToolCall {
+        step_number,
+        tool_calls,
+        ..
+    }) = events.last()
+    else {
+        return false;
+    };
+    if tool_calls.is_empty() {
+        return false;
+    }
+
+    let step_number = *step_number;
+    let mut recovered = Vec::with_capacity(tool_calls.len());
+    for (action_index, call) in tool_calls.iter().enumerate() {
+        let matched = steps.iter().find(|step| {
+            step.step_number == step_number as i32
+                && step.action_index == action_index as i32
+                && step.action_tool.as_deref() == Some(call.name.as_str())
+                && (call.id.is_empty() || step.tool_call_id.as_deref() == Some(call.id.as_str()))
+        });
+
+        let (step_id, observation) = match matched {
+            Some(step) => {
+                let observation = match (step.status.as_str(), step.observation.as_deref()) {
+                    ("completed" | "failed" | "cancelled", Some(text)) if !text.is_empty() => {
+                        text.to_string()
+                    }
+                    (status, _) => format!(
+                        "[recovery:unknown] durable tool intent is {status}; the operation may have produced an external side effect. Do not retry automatically; ask the user whether to verify it."
+                    ),
+                };
+                (step.id.clone(), observation)
+            }
+            None => (
+                haven_common::types::new_id("step"),
+                "[recovery:unknown] the tool call was durable in the assistant transcript, but no matching action result was found. The operation may have produced an external side effect. Do not retry automatically; ask the user whether to verify it.".to_string(),
+            ),
+        };
+
+        recovered.push(TranscriptRecord::ToolResult {
+            step_number,
+            action_index: action_index as u32,
+            step_id,
+            canonical_observation: observation.clone(),
+            history_observation: observation,
+            tool_call_id: (!call.id.is_empty()).then(|| call.id.clone()),
+            action: Action {
+                tool_name: call.name.clone(),
+                tool_input: call.arguments.clone(),
+                is_final: false,
+                tool_call_id: (!call.id.is_empty()).then(|| call.id.clone()),
+            },
+        });
+    }
+    events.extend(recovered);
+    true
 }
 
 /// Project completed tool calls from the materialized step projection when the
@@ -165,6 +247,75 @@ mod tests {
             load_mcp_tool_names(&serde_json::json!({"tool_names": []})),
             Some(Vec::new())
         );
+    }
+
+    fn dangling_call() -> TranscriptRecord {
+        TranscriptRecord::ToolCall {
+            step_number: 4,
+            text: String::new(),
+            tool_calls: vec![CanonicalToolCall {
+                id: "call-read".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "notes.txt"}),
+            }],
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }
+    }
+
+    fn action_step(status: &str, observation: Option<&str>) -> SessionStep {
+        SessionStep {
+            id: "step-read".into(),
+            session_id: "ses-test".into(),
+            step_number: 4,
+            action_index: 0,
+            thought: None,
+            action_tool: Some("read_file".into()),
+            action_input: Some(r#"{"path":"notes.txt"}"#.into()),
+            tool_call_id: Some("call-read".into()),
+            observation: observation.map(str::to_string),
+            status: status.into(),
+            is_high_risk: false,
+            confirmed: None,
+            silent: false,
+            started_at: None,
+            completed_at: None,
+            created_at: "2026-09-07T00:00:00.000Z".into(),
+        }
+    }
+
+    #[test]
+    fn reconcile_reuses_completed_step_observation_without_replaying() {
+        let mut events = vec![dangling_call()];
+        assert!(reconcile_dangling_tool_call(
+            &mut events,
+            &[action_step("completed", Some("contents"))]
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(TranscriptRecord::ToolResult {
+                step_id,
+                canonical_observation,
+                ..
+            }) if step_id == "step-read" && canonical_observation == "contents"
+        ));
+    }
+
+    #[test]
+    fn reconcile_pending_step_is_unknown_and_never_replayed() {
+        let mut events = vec![dangling_call()];
+        assert!(reconcile_dangling_tool_call(
+            &mut events,
+            &[action_step("running", None)]
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(TranscriptRecord::ToolResult {
+                canonical_observation,
+                ..
+            }) if canonical_observation.contains("recovery:unknown")
+        ));
     }
 
     #[test]

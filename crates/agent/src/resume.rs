@@ -29,6 +29,7 @@ use crate::AgentLayer;
 use crate::react::{ReActState, RunInput};
 use crate::resume_support::{
     load_mcp_tool_names, merge_recovery_candidates, project_tool_chain_from_steps,
+    reconcile_dangling_tool_call,
 };
 use crate::rollback_support::trim_dangling_tool_call;
 
@@ -185,6 +186,42 @@ impl AgentLayer {
                         session_id,
                         snapshot.events.len()
                     );
+                    // The snapshot and materialized projections are written at
+                    // different boundaries. If the process died after an
+                    // action step was persisted but before the next snapshot,
+                    // the restored event log can end at ToolCall while the DB
+                    // already knows the result. Reconcile that edge before
+                    // any dangling-call trim; replaying the call would mint a
+                    // new step id and could repeat an external side effect.
+                    let db = self.db.clone();
+                    let sid = session_id.to_string();
+                    let durable_steps = db
+                        .run_blocking(move |db| db.get_session_steps(&sid))
+                        .await
+                        .map_err(|error| {
+                            anyhow::anyhow!(
+                                "failed to load durable action steps for session {session_id}: {error}"
+                            )
+                        })?;
+                    if reconcile_dangling_tool_call(&mut snapshot.events, &durable_steps) {
+                        for branch in snapshot.branch_points.values_mut() {
+                            branch.event_cursor = branch.event_cursor.min(snapshot.events.len());
+                        }
+                        let repaired_json = serde_json::to_string(&snapshot)?;
+                        let db = self.db.clone();
+                        let sid = session_id.to_string();
+                        db.run_blocking(move |db| db.save_react_state(&sid, &repaired_json))
+                            .await
+                            .map_err(|error| {
+                                anyhow::anyhow!(
+                                    "failed to persist reconciled snapshot for session {session_id}: {error}"
+                                )
+                            })?;
+                        tracing::warn!(
+                            "reconciled a dangling tool call from durable action steps before resuming session {}",
+                            session_id
+                        );
+                    }
                     // Re-register per-session tools (skills/MCP) from projected
                     // rounds, since in-memory registrations are lost on restart.
                     let (_, rounds) = snapshot.project();
