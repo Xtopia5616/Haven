@@ -31,6 +31,8 @@ interface ResumeMessage {
 	toolArgs?: unknown;
 	/** Historical operation has no safe current-tool equivalent. */
 	unrecoverable?: boolean;
+	/** Durable tool outcome used to render failed/cancelled/unknown history. */
+	outcome?: string | null;
 	/** Live-only mid-turn anchor marking a user message as steering; the DB
 	 * has no such flag (agent:supplement clears it on the live entry). */
 	steering?: boolean;
@@ -48,7 +50,12 @@ interface ResumeStep {
 	/** Tool/ask completion time (observation landed). `null` for rows that
 	 * never completed (failed mid-execution); falls back to created_at. */
 	completed_at?: string | null;
+	status?: string;
 	step_number: number;
+}
+
+function historicalToolOutcome(status: string | null | undefined): string | null {
+	return status === 'failed' || status === 'cancelled' || status === 'unknown' ? status : null;
 }
 
 interface ResumeMsg {
@@ -233,6 +240,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 						...(step?.action_input != null && step.action_input !== ''
 							? { toolArgs: step.action_input }
 							: {}),
+						...(historicalToolOutcome(step?.status)
+							? { outcome: historicalToolOutcome(step?.status) }
+							: {}),
 					}
 				: {}),
 			voice: !!msg.voice,
@@ -347,6 +357,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			...(unrecoverable ? { unrecoverable: true } : {}),
 			...(step.action_input != null && step.action_input !== ''
 				? { toolArgs: step.action_input }
+				: {}),
+			...(historicalToolOutcome(step.status)
+				? { outcome: historicalToolOutcome(step.status) }
 				: {}),
 			voice: false,
 			time: formatMessageTime(step.created_at),

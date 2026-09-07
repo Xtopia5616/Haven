@@ -10,6 +10,27 @@ const sampleSession = {
 };
 
 describe('buildResumeMessages', () => {
+	it('carries durable unknown tool outcomes into history cards', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [],
+			steps: [
+				{
+					id: 'step-unknown',
+					action_tool: 'write_file',
+					status: 'unknown',
+					observation: 'may have run',
+					created_at: '2026-09-07T00:00:00.000Z',
+					step_number: 1,
+				},
+			],
+		});
+		expect(items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: 'step-unknown', type: 'tool', outcome: 'unknown' }),
+			]),
+		);
+	});
 	it('converts session messages into chat bubble items', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
