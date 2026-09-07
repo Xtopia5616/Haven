@@ -1,5 +1,6 @@
 use crate::db::Database;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
+use rusqlite::OptionalExtension;
 
 /// WHERE clause shared by every session search query (list, count, paginated).
 /// Kept as one constant so search semantics cannot drift between queries.
@@ -56,6 +57,20 @@ pub struct Session {
     pub updated_at: String,
     pub transcript: String,
     pub react_state: Option<String>,
+}
+
+/// Metadata committed alongside `sessions.react_state`.
+///
+/// The snapshot JSON is the event authority; these cursors only describe the
+/// point at which its materialized projections were observed. They let resume
+/// distinguish a projection that is ahead of a snapshot (reconcile) from one
+/// that is behind it (fail closed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReactCheckpoint {
+    pub revision: i64,
+    pub event_cursor: i64,
+    pub message_ingress_seq: i64,
+    pub step_seq: i64,
 }
 
 impl Database {
@@ -488,12 +503,127 @@ impl Database {
     pub fn save_react_state(&self, session_id: &str, state_json: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let compressed = compress_react_state(state_json)?;
+        let event_cursor = serde_json::from_str::<serde_json::Value>(state_json)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("events")
+                    .and_then(|events| events.as_array())
+                    .cloned()
+            })
+            .map(|events| events.len() as i64)
+            .unwrap_or(0);
         let conn = self.conn();
-        conn.execute(
-            "UPDATE sessions SET react_state = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![compressed, now, session_id],
-        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            let previous_revision: Option<i64> = conn
+                .query_row(
+                    "SELECT COALESCE(revision, 0) + 1
+                 FROM react_checkpoints WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let revision = previous_revision.unwrap_or(1);
+            let message_ingress_seq: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(last_ingress_seq, 0)
+                     FROM message_ingress_cursors WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            let step_seq: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(last_step_seq, 0)
+                     FROM session_step_cursors WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            conn.execute(
+                "UPDATE sessions SET react_state = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![compressed, now, session_id],
+            )?;
+            conn.execute(
+                "INSERT INTO react_checkpoints
+                    (session_id, revision, event_cursor, message_ingress_seq, step_seq, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    revision = excluded.revision,
+                    event_cursor = excluded.event_cursor,
+                    message_ingress_seq = excluded.message_ingress_seq,
+                    step_seq = excluded.step_seq,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![
+                    session_id,
+                    revision,
+                    event_cursor,
+                    message_ingress_seq,
+                    step_seq,
+                    now
+                ],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
         Ok(())
+    }
+
+    /// Read the checkpoint metadata written with the latest snapshot.
+    pub fn get_react_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<ReactCheckpoint>> {
+        let conn = self.conn();
+        let value = conn
+            .query_row(
+                "SELECT revision, event_cursor, message_ingress_seq, step_seq
+                 FROM react_checkpoints WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| {
+                    Ok(ReactCheckpoint {
+                        revision: row.get(0)?,
+                        event_cursor: row.get(1)?,
+                        message_ingress_seq: row.get(2)?,
+                        step_seq: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    /// Read the current high-water marks of the materialized projections.
+    pub fn get_react_projection_cursor(&self, session_id: &str) -> anyhow::Result<(i64, i64)> {
+        let conn = self.conn();
+        let message_ingress_seq = conn
+            .query_row(
+                "SELECT COALESCE(last_ingress_seq, 0)
+                 FROM message_ingress_cursors WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let step_seq = conn
+            .query_row(
+                "SELECT COALESCE(last_step_seq, 0)
+                 FROM session_step_cursors WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        Ok((message_ingress_seq, step_seq))
     }
 
     /// Load serialized ReAct state for a paused session. Snapshots must be
@@ -990,6 +1120,41 @@ mod tests {
 
         let loaded = db.get_react_state(&session.id).unwrap().unwrap();
         assert_eq!(loaded, r#"{"v":2}"#);
+    }
+
+    #[test]
+    fn test_react_checkpoint_tracks_revision_event_and_projection_cursors() {
+        let db = create_db();
+        let session = db.create_session("input", "").unwrap();
+
+        db.save_react_state(&session.id, r#"{"events":[{},{}]}"#)
+            .unwrap();
+        let first = db
+            .get_react_checkpoint(&session.id)
+            .unwrap()
+            .expect("checkpoint after snapshot");
+        assert_eq!(first.revision, 1);
+        assert_eq!(first.event_cursor, 2);
+        assert_eq!(first.message_ingress_seq, 0);
+        assert_eq!(first.step_seq, 0);
+
+        db.add_message(&session.id, "user", "later", None, None)
+            .unwrap();
+        db.create_thought_step(&session.id, 1, "step-checkpoint")
+            .unwrap();
+        db.save_react_state(&session.id, r#"{"events":[{}, {}, {}]}"#)
+            .unwrap();
+
+        let second = db
+            .get_react_checkpoint(&session.id)
+            .unwrap()
+            .expect("updated checkpoint");
+        assert_eq!(second.revision, 2);
+        assert_eq!(second.event_cursor, 3);
+        assert_eq!(second.message_ingress_seq, 1);
+        assert_eq!(second.step_seq, 1);
+        assert!(second.message_ingress_seq > first.message_ingress_seq);
+        assert!(second.step_seq > first.step_seq);
     }
 
     #[test]

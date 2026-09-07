@@ -23,7 +23,7 @@ use migrations::{MIGRATIONS, SCHEMA_VERSION, apply_migrations, set_user_version,
 #[cfg(test)]
 use migrations::{
     Migration, migrate_v10_llm_usage_cache_accounting, migrate_v11_usage_cache_diagnostics,
-    migrate_v12_session_steps, migrate_v13_message_ingress_seq,
+    migrate_v12_session_steps, migrate_v13_message_ingress_seq, migrate_v14_react_checkpoints,
 };
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
@@ -53,6 +53,18 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS message_ingress_cursors (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         last_ingress_seq INTEGER NOT NULL DEFAULT 0
+    )",
+    "CREATE TABLE IF NOT EXISTS react_checkpoints (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL DEFAULT 0,
+        event_cursor INTEGER NOT NULL DEFAULT 0,
+        message_ingress_seq INTEGER NOT NULL DEFAULT 0,
+        step_seq INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )",
+    "CREATE TABLE IF NOT EXISTS session_step_cursors (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        last_step_seq INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE TABLE IF NOT EXISTS session_steps (
         id TEXT PRIMARY KEY,
@@ -736,7 +748,9 @@ mod tests {
             "message_ingress_cursors",
             "messages",
             "partial_messages",
+            "react_checkpoints",
             "session_steps",
+            "session_step_cursors",
             "session_usage",
             "sessions",
         ];
@@ -967,6 +981,17 @@ mod tests {
         };
         assert_eq!(rows, vec![("msg-1".into(), 1), ("msg-2".into(), 2)]);
         assert!(column_exists(&conn, "messages", "ingress_seq").unwrap());
+    }
+
+    #[test]
+    fn v14_migration_creates_react_checkpoint_and_step_cursors() {
+        let conn = create_test_conn();
+        migrate_v14_react_checkpoints(&conn).unwrap();
+        migrate_v14_react_checkpoints(&conn).unwrap();
+        assert!(table_exists(&conn, "react_checkpoints").unwrap());
+        assert!(table_exists(&conn, "session_step_cursors").unwrap());
+        assert!(column_exists(&conn, "react_checkpoints", "message_ingress_seq").unwrap());
+        assert!(column_exists(&conn, "react_checkpoints", "step_seq").unwrap());
     }
 
     #[test]

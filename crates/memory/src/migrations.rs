@@ -6,7 +6,7 @@
 //! reviewable without mixing it with the current table definition.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-pub(super) const SCHEMA_VERSION: i32 = 13;
+pub(super) const SCHEMA_VERSION: i32 = 14;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -43,6 +43,8 @@ pub(super) struct Migration {
 ///   cancelled/unknown action outcomes on `session_steps`.
 /// - v13: monotonic per-session message ingress sequence used as the durable
 ///   resume cursor, independent of wall-clock timestamps.
+/// - v14: durable snapshot revision and materialized-projection cursors used
+///   to detect a crash between projection writes and snapshot persistence.
 pub(super) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -92,7 +94,42 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         version: 13,
         apply: migrate_v13_message_ingress_seq,
     },
+    Migration {
+        version: 14,
+        apply: migrate_v14_react_checkpoints,
+    },
 ];
+
+/// Add the durable checkpoint metadata that accompanies `sessions.react_state`.
+pub(super) fn migrate_v14_react_checkpoints(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS react_checkpoints (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            revision INTEGER NOT NULL DEFAULT 0,
+            event_cursor INTEGER NOT NULL DEFAULT 0,
+            message_ingress_seq INTEGER NOT NULL DEFAULT 0,
+            step_seq INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS session_step_cursors (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            last_step_seq INTEGER NOT NULL DEFAULT 0
+        );",
+    )?;
+    if table_exists(conn, "session_steps")? {
+        conn.execute(
+            "INSERT INTO session_step_cursors (session_id, last_step_seq)
+             SELECT session_id, COUNT(*)
+               FROM session_steps
+              GROUP BY session_id
+             ON CONFLICT(session_id) DO UPDATE SET
+                last_step_seq = MAX(session_step_cursors.last_step_seq,
+                                    excluded.last_step_seq)",
+            [],
+        )?;
+    }
+    Ok(())
+}
 
 /// Add invocation identity and expand the action-step outcome CHECK in one
 /// migration. SQLite cannot alter a CHECK in place, so old tables are rebuilt

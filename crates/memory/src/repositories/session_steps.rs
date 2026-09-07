@@ -65,6 +65,17 @@ impl ActionStepOutcome {
 }
 
 impl Database {
+    fn bump_step_seq(conn: &rusqlite::Connection, session_id: &str) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO session_step_cursors (session_id, last_step_seq)
+             VALUES (?1, 1)
+             ON CONFLICT(session_id) DO UPDATE SET
+                last_step_seq = session_step_cursors.last_step_seq + 1",
+            rusqlite::params![session_id],
+        )?;
+        Ok(())
+    }
+
     fn insert_action_step(
         &self,
         fields: ActionStepFields<'_>,
@@ -95,6 +106,9 @@ impl Database {
                 fields.confirmed.map(|confirmed| confirmed as i32),
             ],
         )?;
+        if conn.changes() > 0 {
+            Self::bump_step_seq(&conn, fields.session_id)?;
+        }
         Ok(now)
     }
 
@@ -171,6 +185,7 @@ impl Database {
              VALUES (?1, ?2, ?3, 'thought', ?1, NULL, 'completed', 0, ?4)",
             rusqlite::params![id, session_id, step_number, now],
         )?;
+        Self::bump_step_seq(&conn, session_id)?;
         Ok(SessionStep {
             id: id.into(),
             session_id: session_id.into(),

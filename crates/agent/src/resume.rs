@@ -195,14 +195,54 @@ impl AgentLayer {
                     // new step id and could repeat an external side effect.
                     let db = self.db.clone();
                     let sid = session_id.to_string();
-                    let durable_steps = db
-                        .run_blocking(move |db| db.get_session_steps(&sid))
+                    let (durable_steps, checkpoint, projection_cursor) = db
+                        .run_blocking(move |db| {
+                            Ok((
+                                db.get_session_steps(&sid)?,
+                                db.get_react_checkpoint(&sid)?,
+                                db.get_react_projection_cursor(&sid)?,
+                            ))
+                        })
                         .await
                         .map_err(|error| {
                             anyhow::anyhow!(
                                 "failed to load durable action steps for session {session_id}: {error}"
                             )
                         })?;
+                    if let Some(checkpoint) = checkpoint {
+                        if checkpoint.event_cursor != snapshot.events.len() as i64 {
+                            tracing::warn!(
+                                session_id,
+                                snapshot_events = snapshot.events.len(),
+                                checkpoint_events = checkpoint.event_cursor,
+                                revision = checkpoint.revision,
+                                "snapshot event cursor differs from its durable checkpoint"
+                            );
+                        }
+                        let projection_behind = projection_cursor.0
+                            < checkpoint.message_ingress_seq
+                            || projection_cursor.1 < checkpoint.step_seq;
+                        if projection_behind {
+                            return Err(anyhow::anyhow!(
+                                "session '{}' materialized projection is behind snapshot revision {}; refusing resume",
+                                session_id,
+                                checkpoint.revision
+                            ));
+                        }
+                        if projection_cursor.0 > checkpoint.message_ingress_seq
+                            || projection_cursor.1 > checkpoint.step_seq
+                        {
+                            tracing::warn!(
+                                session_id,
+                                revision = checkpoint.revision,
+                                saved_message_ingress_seq = checkpoint.message_ingress_seq,
+                                current_message_ingress_seq = projection_cursor.0,
+                                saved_step_seq = checkpoint.step_seq,
+                                current_step_seq = projection_cursor.1,
+                                "materialized projection is ahead of snapshot; attempting reconciliation"
+                            );
+                        }
+                    }
                     if reconcile_dangling_tool_call(&mut snapshot.events, &durable_steps) {
                         for branch in snapshot.branch_points.values_mut() {
                             branch.event_cursor = branch.event_cursor.min(snapshot.events.len());
