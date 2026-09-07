@@ -72,24 +72,14 @@
 	// L11: the component may be destroyed while onMount's dynamic imports are
 	// still resolving; guard state writes against an unmounted component.
 	let mounted = true;
-	// Shared renderer resolution + per-frame streaming coalescing. Markdown is
-	// rendered live while streaming so headings/bold/lists appear as they are
-	// typed; code fences are deferred (plain <pre>) until streaming ends.
+	// Shared renderer resolution. Markdown/highlighting is intentionally kept
+	// off the hot streaming path: a lightweight text preview paints every
+	// chunk immediately, then the completed answer is upgraded to Markdown.
 	let rendererReady = false;
 	let rendererLoading = false;
-	let mdRafId = 0;
-	// Long-answer protection: the full accumulated text is re-parsed on every
-	// render, and markdown-it re-renders grow linearly with the answer. A
-	// frame-by-frame render (60/s) of a long answer saturates the webview main
-	// thread, starves Tauri IPC, and makes streaming appear frozen. Cap live
-	// previews to one render per MD_STREAM_RENDER_MS (~7/s — still visually
-	// live); the final render when streaming ends is always immediate.
-	const MD_STREAM_RENDER_MS = 150;
-	let lastMdRender = 0;
 
 	onDestroy(() => {
 		mounted = false;
-		if (mdRafId) cancelAnimationFrame(mdRafId);
 	});
 
 	/** @param {any} e */
@@ -281,11 +271,11 @@
 	// until the shared renderer is loaded and this bubble is still mounted.
 	// Only assistant text bubbles render markdown; everything else (user,
 	// thought, reasoning, tool, ask, supplement) skips the shared instance
-	// entirely. While streaming, re-render on every content change (coalesced
-	// to one render per animation frame) so markdown appears live; the renderer
-	// defers code blocks to the final render.
+	// entirely. Streaming assistant text stays as a cheap escaped text preview
+	// so the UI cannot fall behind while markdown/highlighting reparses a long
+	// answer. The final state is rendered with the shared Markdown instance.
 	$effect(() => {
-		if (!mounted || !rendersMarkdown) return;
+		if (!mounted || !rendersMarkdown || streaming) return;
 		if (!rendererReady) {
 			// Renderer still loading — show plain text with the caret, then
 			// render once the shared instance resolves.
@@ -294,44 +284,20 @@
 				getMarkdownRenderer().then(() => {
 					if (!mounted) return;
 					rendererReady = true;
-					renderNow();
+					if (!streaming) renderNow();
 				});
 			}
 			mdHtml = '';
 			return;
 		}
-		if (streaming) {
-			// Coalesce chunk updates: at most one markdown render per frame
-			// (rAF) and at most one per MD_STREAM_RENDER_MS (time throttle).
-			// A skipped render retries next frame instead of being dropped so
-			// the preview never lags more than one window behind the text.
-			if (mdRafId) return;
-			const tryRender = () => {
-				if (!mounted) return;
-				const now = performance.now();
-				if (now - lastMdRender < MD_STREAM_RENDER_MS) {
-					mdRafId = requestAnimationFrame(tryRender);
-					return;
-				}
-				mdRafId = 0;
-				renderNow();
-			};
-			mdRafId = requestAnimationFrame(tryRender);
-			return;
-		}
-		if (mdRafId) {
-			cancelAnimationFrame(mdRafId);
-			mdRafId = 0;
-		}
 		renderNow();
 	});
 
-	// Reads the current props, so it is safe to call from the rAF callback
-	// and from the renderer-load completion.
+	// Reads the current props, so it is safe to call from the renderer-load
+	// completion.
 	function renderNow() {
 		const text = content || '';
-		mdHtml = text ? renderMarkdown(text, !!streaming) : '';
-		lastMdRender = performance.now();
+		mdHtml = text ? renderMarkdown(text) : '';
 	}
 </script>
 
@@ -419,14 +385,16 @@
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if rendersMarkdown}
-			{#if mdHtml}
+			{#if streaming}
+				<p class="streaming-preview">
+					{content}{#if content}<span class="caret"></span>{/if}
+				</p>
+			{:else if mdHtml}
 				<div class="md-content" class:streaming use:mdContent>
-					{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}
+					{@html mdHtml}
 				</div>
 			{:else}
-				<p>
-					{content}{#if streaming && content}<span class="caret"></span>{/if}
-				</p>
+				<p>{content}</p>
 			{/if}
 		{:else}
 			{#if attachments && attachments.length > 0}
@@ -492,6 +460,12 @@
 		border-radius: var(--md-sys-shape-large);
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
+	}
+	/* The global long-conversation optimization may skip off-screen bubbles;
+	 * the active stream is the exception because its newest text must paint
+	 * immediately and remain available to the auto-follow scroll boundary. */
+	.bubble.streaming {
+		content-visibility: visible;
 	}
 	.bubble.thinking {
 		width: 88%;
@@ -574,6 +548,11 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.streaming-preview {
+		margin: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
 	.caret {
 		display: inline-block;

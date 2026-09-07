@@ -7,6 +7,7 @@
 	 * @prop {'refresh'|'edit'|'delete'|undefined} icon — optional shared action icon
 	 * @prop {function} onclick
 	 * @prop {boolean} disabled
+	 * @prop {boolean | undefined} ariaExpanded — optional disclosure state
 	 * @prop {boolean | undefined} ariaBusy — optional busy state for async actions
 	 * @prop {string} title — optional native tooltip
 	 * @prop {string} className — additional class names for layout positioning
@@ -18,6 +19,7 @@
 		icon = undefined,
 		onclick,
 		disabled = false,
+		ariaExpanded = undefined,
 		ariaBusy = undefined,
 		title = '',
 		className = '',
@@ -30,6 +32,7 @@
 	data-variant={variant}
 	data-size={size}
 	aria-label={label}
+	aria-expanded={ariaExpanded === undefined ? undefined : ariaExpanded}
 	aria-busy={ariaBusy === undefined ? undefined : ariaBusy}
 	{title}
 	{disabled}

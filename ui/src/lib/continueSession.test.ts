@@ -1,5 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { pickContinueStrategy, shouldResubmitOriginalUser } from './continueSession.ts';
+import {
+	pickContinueStrategy,
+	shouldResubmitOriginalUser,
+	shouldShowContinueButton,
+} from './continueSession.ts';
+
+describe('shouldShowContinueButton', () => {
+	it('shows for a conversation whose last visible message is from the user', () => {
+		expect(
+			shouldShowContinueButton([
+				{ role: 'assistant', content: '已完成' },
+				{ role: 'user', content: '继续做' },
+			]),
+		).toBe(true);
+	});
+
+	it('does not show for an assistant tail unless the session errored', () => {
+		expect(shouldShowContinueButton([{ role: 'assistant', content: '已完成' }])).toBe(false);
+		expect(shouldShowContinueButton([{ role: 'assistant', content: '中断' }], true)).toBe(true);
+	});
+
+	it('keeps the error affordance available even when no message was persisted', () => {
+		expect(shouldShowContinueButton([], true)).toBe(true);
+	});
+});
 
 describe('pickContinueStrategy', () => {
 	it('resends the original user text when the agent never generated', () => {

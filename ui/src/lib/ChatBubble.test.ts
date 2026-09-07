@@ -122,6 +122,17 @@ describe('ChatBubble', () => {
 		expect(bubble.classList.contains('assistant')).toBe(true);
 	});
 
+	it('paints streamed assistant text immediately without waiting for Markdown', () => {
+		const { container } = render(
+			ChatBubble,
+			base({ role: 'assistant', content: '第一段\n第二段', streaming: true }),
+		);
+
+		expect(container.querySelector('.streaming-preview')?.textContent).toContain(
+			'第一段\n第二段',
+		);
+	});
+
 	it('does not apply any pending class to finalized assistant bubbles', () => {
 		const { container } = render(ChatBubble, base({ role: 'assistant', content: 'hi' }));
 		expect(container.querySelector('.bubble')!.classList.contains('pending')).toBe(false);
@@ -525,7 +536,9 @@ describe('ChatBubble markdown code fences', () => {
 		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());
 		expect(container.querySelector('.md-code-lang')!.textContent).toBe('js');
 		expect(container.querySelector('.md-code-copy')).toBeTruthy();
-		expect(container.querySelector('.md-code-wrap code')!.textContent).toContain('const a = 1;');
+		expect(container.querySelector('.md-code-wrap code')!.textContent).toContain(
+			'const a = 1;',
+		);
 	});
 
 	it('labels unknown languages as text and still wraps the block', async () => {

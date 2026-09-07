@@ -8,8 +8,7 @@
  */
 
 export type ContinueStrategy =
-	| { mode: 'resend_user'; text: string }
-	| { mode: 'continue'; text: '继续' };
+	{ mode: 'resend_user'; text: string } | { mode: 'continue'; text: '继续' };
 
 /** Message shape used by continue heuristics (extra fields allowed). */
 export type ContinueMessage = {
@@ -19,6 +18,21 @@ export type ContinueMessage = {
 	id?: string;
 	toolName?: string;
 };
+
+/**
+ * The retry affordance belongs to the conversation tail, not only to the
+ * session error event. A persisted user turn can be the last visible item
+ * when a paused session has not started (or has not yet reported) its next
+ * assistant block.
+ */
+export function shouldShowContinueButton(
+	messages: ContinueMessage[],
+	activeSessionError = false,
+): boolean {
+	if (activeSessionError) return true;
+	const last = messages[messages.length - 1];
+	return last?.role === 'user';
+}
 
 /** Assistant bubbles that mean the model started generating after the user turn. */
 function isGenerationMessage(msg: ContinueMessage): boolean {

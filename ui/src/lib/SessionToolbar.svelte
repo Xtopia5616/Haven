@@ -5,7 +5,6 @@
 		activeSessionId = null,
 		showSessionMenu = false,
 		sessionMenuOpen = false,
-		parallelSessions = [],
 		menuSessions = [],
 		sessionStatusLabel = /** @type {(session: any) => string} */ ((session) => session.status),
 		onToggleSessionMenu = () => {},
@@ -27,12 +26,15 @@
 	<div class="session-switch">
 		<MaterialIconButton
 			size="toolbar"
+			variant="tonal"
 			className="session-switch-btn"
 			label="切换会话"
+			ariaExpanded={sessionMenuOpen}
 			onclick={() => onToggleSessionMenu()}
 			title="切换并行会话或开始新会话"
 		>
 			<svg
+				class="session-switch-icon"
 				width="20"
 				height="20"
 				viewBox="0 0 24 24"
@@ -41,8 +43,11 @@
 				stroke-width="2"
 				stroke-linecap="round"
 				stroke-linejoin="round"
-				><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg
+				><rect x="4" y="5" width="12" height="12" rx="2" /><path
+					d="M8 19h8a4 4 0 0 0 4-4V9"
+				/></svg
 			>
+			<span class="session-switch-label">会话</span>
 			<svg
 				class="session-switch-caret"
 				width="16"
@@ -54,30 +59,52 @@
 				stroke-linecap="round"
 				stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
 			>
-			{#if parallelSessions.length > 0}
-				<span class="session-switch-badge">{parallelSessions.length}</span>
+			{#if menuSessions.length > 0}
+				<span class="session-switch-badge">{menuSessions.length}</span>
 			{/if}
 		</MaterialIconButton>
 		{#if sessionMenuOpen}
-			<div class="session-menu">
-				<div class="session-menu-title">正在执行的会话</div>
+			<div class="session-menu" role="menu">
+				<div class="session-menu-heading">
+					<span class="session-menu-title">切换会话</span>
+					<span class="session-menu-count">{menuSessions.length} 个</span>
+				</div>
 				{#each menuSessions as session}
 					<button
 						class="session-menu-item"
 						class:selected={session.id === activeSessionId}
 						onclick={() => onSwitchSession(session.id)}
+						role="menuitem"
 						type="button"
 					>
-						<span class="session-menu-item-main">
-							<span class="session-menu-item-title">{session.title}</span>
-							<span class="session-menu-item-id">{session.id}</span>
-						</span>
 						<span
-							class="session-menu-item-status"
+							class="session-menu-status-dot"
 							class:running={session.status === 'running'}
-						>
-							{sessionStatusLabel(session)}
+							class:paused={session.status !== 'running'}
+							aria-hidden="true"
+						></span>
+						<span class="session-menu-item-main">
+							<span class="session-menu-item-title"
+								>{session.title || '未命名会话'}</span
+							>
+							<span class="session-menu-item-status"
+								>{sessionStatusLabel(session)}</span
+							>
 						</span>
+						{#if session.id === activeSessionId}
+							<svg
+								class="session-menu-check"
+								width="16"
+								height="16"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2.5"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-label="当前会话"><polyline points="20 6 9 17 4 12" /></svg
+							>
+						{/if}
 					</button>
 				{/each}
 				<div class="session-menu-divider"></div>
@@ -186,8 +213,17 @@
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 		width: auto;
-		min-width: var(--md-comp-icon-button-size);
-		padding-inline: var(--md-sys-space-xs);
+		min-width: 0;
+		padding-inline: var(--md-sys-space-sm);
+		box-shadow: var(--md-sys-elevation-1);
+	}
+	.session-switch-icon {
+		color: var(--md-sys-color-primary);
+	}
+	.session-switch-label {
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.session-switch-caret {
 		flex-shrink: 0;
@@ -210,24 +246,38 @@
 		left: 0;
 		bottom: calc(100% + 8px);
 		z-index: 1000;
-		min-width: 240px;
-		max-width: 320px;
+		width: min(320px, calc(100vw - 2 * var(--md-sys-space-md)));
+		min-width: min(240px, calc(100vw - 2 * var(--md-sys-space-md)));
 		max-height: 320px;
 		overflow-y: auto;
 		background: var(--md-sys-color-surface-container-high);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
-		padding: var(--md-sys-space-xs);
-		box-shadow: var(--md-sys-elevation-2);
+		padding: var(--md-sys-space-sm);
+		box-shadow: var(--md-sys-elevation-3);
+		animation: session-menu-in var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-emphasized);
+	}
+	.session-menu-heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm) var(--md-sys-space-sm);
 	}
 	.session-menu-title {
-		font-size: var(--md-sys-typescale-label-small-size);
+		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
-		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		text-transform: uppercase;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+	}
+	.session-menu-count {
+		padding: 2px var(--md-sys-space-xs);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.session-menu-item {
 		display: flex;
@@ -235,7 +285,8 @@
 		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
 		width: 100%;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		min-height: var(--md-comp-button-touch-height);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		border: none;
 		background: transparent;
 		color: var(--md-sys-color-on-surface);
@@ -250,6 +301,9 @@
 	.session-menu-item:hover {
 		background: var(--md-sys-color-surface-container-highest);
 	}
+	.session-menu-item.selected {
+		background: var(--md-sys-color-primary-container);
+	}
 	.session-menu-item.selected .session-menu-item-title {
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
@@ -261,25 +315,32 @@
 		min-width: 0;
 		flex: 1 1 auto;
 	}
-	.session-menu-item-title,
-	.session-menu-item-id {
+	.session-menu-item-title {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.session-menu-item-id {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		font-family: var(--md-sys-typescale-body-small-font-family, inherit);
+	.session-menu-status-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-outline);
+		flex-shrink: 0;
+	}
+	.session-menu-status-dot.running {
+		background: var(--md-sys-color-primary);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 15%, transparent);
+	}
+	.session-menu-status-dot.paused {
+		background: var(--md-sys-color-tertiary);
 	}
 	.session-menu-item-status {
-		flex-shrink: 0;
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.session-menu-item-status.running {
+	.session-menu-check {
+		flex-shrink: 0;
 		color: var(--md-sys-color-primary);
 	}
 	.session-menu-divider {
@@ -358,5 +419,15 @@
 	}
 	.token-budget.danger .token-budget-fill {
 		background: var(--md-sys-color-error, #b3261e);
+	}
+	@keyframes session-menu-in {
+		from {
+			opacity: 0;
+			transform: translateY(4px) scale(0.98);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0) scale(1);
+		}
 	}
 </style>

@@ -12,6 +12,9 @@
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
 		activeSessionError = false,
+		showContinueButton = false,
+		continueDisabled = false,
+		continueBusy = false,
 		stepUsage = () => null,
 		onContextMenu = () => {},
 		onAskSelectionChange = () => {},
@@ -79,12 +82,15 @@
 	</div>
 {/if}
 
-{#if activeSessionError}
+{#if showContinueButton}
 	<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
 		<MaterialButton
 			variant="filled"
 			className="continue-btn"
 			ariaLabel="继续生成"
+			ariaBusy={continueBusy}
+			disabled={continueDisabled}
+			title={continueDisabled ? '当前会话尚未进入可恢复状态' : '从上一条消息继续生成'}
 			onclick={() => onContinue()}
 		>
 			<svg
@@ -171,17 +177,29 @@
 	.continue-banner {
 		display: flex;
 		align-items: center;
-		justify-content: flex-start;
+		justify-content: center;
 		gap: var(--md-sys-space-md);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		position: sticky;
+		bottom: 0;
+		z-index: 2;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md) var(--md-sys-space-md);
 		max-width: min(800px, 100%);
 		margin: 0 auto;
 		width: 100%;
+		pointer-events: none;
+		background: linear-gradient(
+			to bottom,
+			color-mix(in srgb, var(--md-sys-color-surface) 0%, transparent),
+			var(--md-sys-color-surface) 45%
+		);
 	}
 	:global(.continue-btn) {
+		pointer-events: auto;
+		min-width: 148px;
 		gap: var(--md-sys-space-xs);
 		font-size: var(--md-sys-typescale-label-large-size);
 		line-height: var(--md-sys-typescale-label-large-line-height);
+		box-shadow: var(--md-sys-elevation-2);
 	}
 
 	.awaiting-bg-banner {

@@ -7,7 +7,11 @@
 		mergeLiveStreaming,
 		isDisplayOnlyMessageId,
 	} from '$lib/resumeMessages.ts';
-	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
+	import {
+		pickContinueStrategy,
+		shouldResubmitOriginalUser,
+		shouldShowContinueButton,
+	} from '$lib/continueSession.ts';
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
@@ -256,10 +260,6 @@
 	// usage is only the latest request and changes after the next response;
 	// cumulative usage is persisted and represents the whole conversation.
 	const showCumulativeTokens = true;
-	// Sessions executing in parallel (running or waiting). When 2+ exist, the
-	// new-session button turns into a switcher menu: switch to a parallel session
-	// or start a new one. Otherwise the button keeps its default behavior.
-	const parallelSessions = $derived(sessions.filter((t) => isBusyStatus(t.status)));
 	// Menu source: parallel sessions plus paused ones — a paused session is
 	// otherwise invisible in the chat view (its conversation is not shown).
 	const menuSessions = $derived(
@@ -743,7 +743,8 @@
 	}
 
 	async function handleContinue() {
-		if (!activeSessionId) return;
+		if (!activeSessionId || continuePending) return;
+		continuePending = true;
 		const tid = activeSessionId;
 		const currentMessages = get(sessionMessagesStore)[tid] || [];
 		// A retry can begin as soon as continue_session resolves. Keep only
@@ -797,6 +798,8 @@
 		} catch (e) {
 			reportError(e, { context: '+page', message: '继续失败', log: false });
 			// Keep the banner visible so the user can retry.
+		} finally {
+			continuePending = false;
 		}
 	}
 
@@ -841,6 +844,16 @@
 
 	let activeSessionError = $state(false);
 	let sessionErrorId = /** @type {string | null} */ ($state(null));
+	let continuePending = $state(false);
+	const showContinueButton = $derived(
+		!!activeSessionId && shouldShowContinueButton(messages, activeSessionError),
+	);
+	// Keep the affordance visible for every user-tail conversation, but do not
+	// let it race a normal pending/running turn. `continue_session` is only a
+	// retry operation for paused/error sessions.
+	const continueDisabled = $derived(
+		continuePending || (!activeSessionError && !isPausedStatus(activeSessionStatus)),
+	);
 
 	// Clear error state when the active session changes.
 	$effect(() => {
@@ -1523,6 +1536,9 @@
 				{awaitingBackground}
 				{awaitingBackgroundCount}
 				{activeSessionError}
+				{showContinueButton}
+				{continueDisabled}
+				continueBusy={continuePending}
 				{stepUsage}
 				onContextMenu={handleContextMenu}
 				onAskSelectionChange={handleAskSelectionChange}
@@ -1571,7 +1587,6 @@
 				{activeSessionId}
 				{showSessionMenu}
 				{sessionMenuOpen}
-				{parallelSessions}
 				{menuSessions}
 				onToggleSessionMenu={() => {
 					if (showSessionMenu) sessionMenuOpen = !sessionMenuOpen;
