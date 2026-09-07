@@ -715,7 +715,7 @@ impl OpenAiAdapter {
                 // or a non-object root.
                 let parameters = crate::types::sanitize_tool_parameters(t.function.parameters);
                 let parameters = if xai_compatible {
-                    crate::types::project_tool_parameters_for_xai(parameters)
+                    crate::types::project_tool_parameters_for_object_root(parameters)
                 } else {
                     parameters
                 };

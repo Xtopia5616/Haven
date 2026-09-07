@@ -791,7 +791,9 @@ impl OpenAiResponsesAdapter {
                 // Defense in depth: `ToolDefinition::from` already sanitizes,
                 // but direct constructors / cache hits may still carry Null.
                 let parameters = crate::types::canonicalize_json(
-                    crate::types::sanitize_tool_parameters(t.function.parameters),
+                    crate::types::project_tool_parameters_for_object_root(
+                        crate::types::sanitize_tool_parameters(t.function.parameters),
+                    ),
                 );
                 serde_json::to_value(ResponsesTool {
                     tool_type: t.tool_type,
@@ -2097,7 +2099,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_tools_keep_root_union_in_non_strict_mode() {
+    fn responses_tools_project_root_union_to_object_schema() {
         let tools = OpenAiResponsesAdapter::convert_tools(vec![ToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
@@ -2105,16 +2107,45 @@ mod tests {
                 description: "schedule an action".into(),
                 parameters: serde_json::json!({
                     "type": "object",
+                    "properties": {
+                        "operation": { "type": "string", "enum": ["set", "list", "cancel"] }
+                    },
                     "oneOf": [
-                        { "type": "object", "properties": { "operation": { "const": "list" } } },
-                        { "type": "object", "properties": { "operation": { "const": "set" } } }
+                        {
+                            "type": "object",
+                            "properties": { "operation": { "const": "list" } },
+                            "required": ["operation"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "operation": { "const": "cancel" },
+                                "action_id": { "type": "string" }
+                            },
+                            "required": ["operation", "action_id"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "operation": { "const": "set" },
+                                "body": { "type": "string" }
+                            },
+                            "required": ["operation", "body"]
+                        }
                     ]
                 }),
             },
         }]);
 
         assert_eq!(tools[0]["strict"], false);
-        assert!(tools[0]["parameters"].get("oneOf").is_some());
+        assert_eq!(tools[0]["parameters"]["type"], "object");
+        assert!(tools[0]["parameters"].get("oneOf").is_none());
+        assert_eq!(
+            tools[0]["parameters"]["properties"]["operation"]["enum"],
+            serde_json::json!(["set", "list", "cancel"])
+        );
+        assert!(tools[0]["parameters"]["properties"]["action_id"].is_object());
+        assert!(tools[0]["parameters"]["properties"]["body"].is_object());
     }
 
     #[test]

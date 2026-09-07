@@ -461,17 +461,16 @@ pub fn sanitize_tool_parameters(schema: Value) -> Value {
     }
 }
 
-/// Project a tool parameter schema into the object-only dialect accepted by
-/// xAI's tool validator.
+/// Project a tool parameter schema into the object-only dialect required by
+/// providers whose function-tool parameters must have an object root.
 ///
-/// xAI rejects a root-level `anyOf`/`oneOf`/`allOf`, even when the schema also
-/// declares `type: object`. The full schema remains authoritative inside
-/// Haven: the tool registry validates every model-produced call before
-/// execution. This projection only widens the model-visible schema by
-/// merging branch properties and fields required by every object branch.
-/// Nested unions inside properties are left intact because they are valid in
-/// xAI's object-root dialect.
-pub(crate) fn project_tool_parameters_for_xai(schema: Value) -> Value {
+/// xAI and OpenAI Responses reject a root-level `anyOf`/`oneOf`/`allOf`, even
+/// when the schema also declares `type: object`. The full schema remains
+/// authoritative inside Haven: the tool registry validates every model-
+/// produced call before execution. This projection only widens the
+/// model-visible schema by merging branch properties and fields required by
+/// every object branch. Nested unions inside properties are left intact.
+pub(crate) fn project_tool_parameters_for_object_root(schema: Value) -> Value {
     let Value::Object(mut root) = schema else {
         return serde_json::json!({"type": "object", "properties": {}});
     };
@@ -580,7 +579,9 @@ fn project_gemini_schema(schema: Value) -> Value {
     if !branches.is_empty() {
         if branches.iter().all(is_object_schema) {
             map.insert("oneOf".into(), Value::Array(branches));
-            return project_gemini_schema(project_tool_parameters_for_xai(Value::Object(map)));
+            return project_gemini_schema(project_tool_parameters_for_object_root(Value::Object(
+                map,
+            )));
         }
         return project_gemini_scalar_union(map, branches);
     }
@@ -1315,8 +1316,8 @@ mod tests {
     }
 
     #[test]
-    fn xai_tool_parameter_projection_flattens_root_unions() {
-        let projected = project_tool_parameters_for_xai(serde_json::json!({
+    fn object_root_tool_parameter_projection_flattens_root_unions() {
+        let projected = project_tool_parameters_for_object_root(serde_json::json!({
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": ["set", "list"] }
@@ -1349,8 +1350,8 @@ mod tests {
     }
 
     #[test]
-    fn xai_tool_parameter_projection_adds_object_root_and_merges_const_values() {
-        let projected = project_tool_parameters_for_xai(serde_json::json!({
+    fn object_root_tool_parameter_projection_adds_object_root_and_merges_const_values() {
+        let projected = project_tool_parameters_for_object_root(serde_json::json!({
             "oneOf": [
                 {
                     "type": "object",
@@ -1374,8 +1375,8 @@ mod tests {
     }
 
     #[test]
-    fn xai_tool_parameter_projection_preserves_nested_unions() {
-        let projected = project_tool_parameters_for_xai(serde_json::json!({
+    fn object_root_tool_parameter_projection_preserves_nested_unions() {
+        let projected = project_tool_parameters_for_object_root(serde_json::json!({
             "type": "object",
             "properties": {
                 "value": {
