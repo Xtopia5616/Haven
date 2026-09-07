@@ -7,7 +7,7 @@ describe('SessionHeader', () => {
 		const onNew = vi.fn();
 		const onEnd = vi.fn();
 		render(SessionHeader as any, { onNew, onEnd, hasSession: true });
-		expect(screen.getByText('就绪')).toBeTruthy();
+		expect(document.querySelector('.session-header__status')).toBeNull();
 
 		const newButton = screen.getByRole('button', { name: '新建会话' });
 		const endButton = screen.getByRole('button', { name: '结束会话' });

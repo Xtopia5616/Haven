@@ -35,6 +35,7 @@
 	} from '$lib/events.ts';
 	import {
 		sessionStore,
+		activeConversationStatusStore,
 		addNotification,
 		resumeTargetStore,
 		activeSessionIdStore,
@@ -1490,9 +1491,12 @@
 		activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null,
 	);
 	const sessionHeaderTitle = $derived(activeSession?.title || activeSession?.input || '新会话');
-	const sessionHeaderStatus = $derived(
+	const activeConversationStatus = $derived(
 		activeSession ? sessionStatusLabel(activeSession) : '就绪',
 	);
+	$effect(() => {
+		activeConversationStatusStore.set(activeConversationStatus);
+	});
 </script>
 
 <div class="chat-page">
@@ -1536,8 +1540,6 @@
 
 	<SessionHeader
 		title={sessionHeaderTitle}
-		status={sessionHeaderStatus}
-		running={isGenerating || sessionRunning}
 		hasSession={!!activeSessionId}
 		onNew={newSession}
 		onEnd={endSession}

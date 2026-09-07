@@ -362,6 +362,11 @@ export const recordingOverlay = writable({
 // Driven by +page.svelte's agent:* event handlers; consumed by +layout.svelte.
 export const modelStateStore = writable('ready');
 
+// Presentation-level status for the currently selected conversation. The chat
+// route owns the session/action context; the shell consumes this single value
+// so the titlebar is the only lifecycle indicator shown to the user.
+export const activeConversationStatusStore = writable('就绪');
+
 let modelStateTimer: ReturnType<typeof setTimeout> | null = null;
 export function updateModelState(state: string, opts: { idleTimeoutMs?: number } = {}) {
 	const { idleTimeoutMs } = opts;

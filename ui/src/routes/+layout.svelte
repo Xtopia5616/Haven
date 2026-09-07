@@ -5,6 +5,7 @@
 		recordingOverlay,
 		activeSessionIdStore,
 		modelStateStore,
+		activeConversationStatusStore,
 		updateModelState,
 		clearModelStateTimer,
 		upsertAction,
@@ -201,6 +202,8 @@
 	let durationTimer = /** @type {ReturnType<typeof setInterval> | null} */ (null);
 	let processingTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 	let modelState = $state('ready'); // synced from modelStateStore on mount
+	let conversationStatus = $state('就绪');
+	$effect(() => syncStore(activeConversationStatusStore, (v) => (conversationStatus = v)));
 	// Runtime mode is intentionally separate from backend bootstrap state:
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
 	// can still be waiting for Rust startup.
@@ -1005,6 +1008,7 @@
 			{overlay}
 			{modelState}
 			{busySessions}
+			{conversationStatus}
 			{runtime}
 			{bootstrapReady}
 			{llmConnected}

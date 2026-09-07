@@ -20,4 +20,29 @@ describe('WorkspaceStatus', () => {
 
 		expect(screen.getByRole('button', { name: /就绪/ })).toBeTruthy();
 	});
+
+	it('mirrors the active conversation and keeps the status dot moving', () => {
+		render(WorkspaceStatus, {
+			runtime: 'tauri',
+			bootstrapReady: true,
+			llmConnected: 'ready',
+			conversationStatus: '运行中',
+			busySessions: new Set(['ses-1']),
+		});
+
+		expect(screen.getByRole('button', { name: /运行中/ })).toBeTruthy();
+		expect(document.querySelector('.status-dot.animate')).toBeTruthy();
+	});
+
+	it('shows a paused conversation without animating it', () => {
+		render(WorkspaceStatus, {
+			runtime: 'tauri',
+			bootstrapReady: true,
+			llmConnected: 'ready',
+			conversationStatus: '已暂停',
+		});
+
+		expect(screen.getByRole('button', { name: /已暂停/ })).toBeTruthy();
+		expect(document.querySelector('.status-dot.animate')).toBeNull();
+	});
 });

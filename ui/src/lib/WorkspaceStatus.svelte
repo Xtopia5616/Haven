@@ -7,6 +7,7 @@
 		overlay = {},
 		modelState = 'ready',
 		busySessions = new Set(),
+		conversationStatus = '就绪',
 		runtime = 'tauri',
 		bootstrapReady = true,
 		llmConnected = null,
@@ -20,6 +21,9 @@
 		if (runtime === 'browser') return '浏览器预览';
 		if (overlay.isRecording) return '录音中';
 		if (overlay.processing) return '转写中';
+		// Mirror the selected conversation in the shell. With parallel sessions,
+		// keep the global count so the titlebar does not hide other work.
+		if (conversationStatus !== '就绪' && busySessions.size <= 1) return conversationStatus;
 		if (modelState === 'streaming') return '生成中';
 		if (modelState === 'tool') return '工具调用';
 		if (modelState === 'stalled' || modelState === 'waiting') return '等待响应';
@@ -36,6 +40,9 @@
 	const statusColor = $derived.by(() => {
 		if (runtime === 'browser') return 'outline';
 		if (overlay.isRecording) return 'error';
+		if (conversationStatus === '已暂停') return 'warning';
+		if (conversationStatus === '等待后台任务') return 'tertiary';
+		if (conversationStatus === '运行中' || conversationStatus === '等待中') return 'warning';
 		if (
 			overlay.processing ||
 			modelState === 'stalled' ||
@@ -48,6 +55,10 @@
 		if (runningActionCount > 0 || llmConnected === 'ready') return 'success';
 		return 'outline';
 	});
+
+	const statusAnimating = $derived(
+		!['就绪', '未配置', '已断开', '浏览器预览', '已暂停'].includes(statusLabel),
+	);
 
 	const statusTitle = $derived.by(() => {
 		if (runtime === 'browser') {
@@ -74,12 +85,7 @@
 	>
 		<StatusDot
 			color={statusColor}
-			animate={
-				statusLabel !== '就绪' &&
-				statusLabel !== '未配置' &&
-				statusLabel !== '已断开' &&
-				statusLabel !== '浏览器预览'
-			}
+			animate={statusAnimating}
 		/>
 		<span class:recording-text={overlay.isRecording} class="status-text">{statusLabel}</span>
 		{#if runningActionCount > 0 || pendingScheduledActions.length > 0}

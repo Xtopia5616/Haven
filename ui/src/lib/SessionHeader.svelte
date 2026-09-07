@@ -5,28 +5,16 @@
 	 * SessionHeader — keeps the active conversation identity and lifecycle
 	 * state visible above the message timeline.
 	 * @prop {string} title — active session title
-	 * @prop {string} status — user-facing lifecycle status
-	 * @prop {boolean} running — whether the session can be stopped
 	 * @prop {boolean} hasSession — whether a persisted session is active
 	 * @prop {() => void} onNew — create a fresh conversation
 	 * @prop {() => void} onEnd — close the active conversation
 	 */
 	let {
 		title = '新会话',
-		status = '就绪',
-		running = false,
 		hasSession = false,
 		onNew,
 		onEnd,
 	} = $props();
-
-	let statusVariant = $derived(
-		running
-			? 'success'
-			: status.includes('暂停') || status.includes('等待')
-				? 'warning'
-				: 'neutral',
-	);
 </script>
 
 <header class="session-header">
@@ -37,9 +25,6 @@
 		</span>
 		<div class="session-header__title-row">
 			<h1>{title}</h1>
-			<span class="md-badge session-header__status" data-variant={statusVariant}
-				>{status}</span
-			>
 		</div>
 	</div>
 	<div class="session-header__actions">
@@ -153,9 +138,6 @@
 		font-weight: 700;
 		letter-spacing: 0;
 		line-height: var(--md-sys-typescale-title-large-line-height);
-	}
-	.session-header__status {
-		flex-shrink: 0;
 	}
 	.session-header__actions {
 		display: flex;
