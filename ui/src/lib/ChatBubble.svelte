@@ -340,30 +340,33 @@
 	class:user={role === 'user' && !isPeerKickoff}
 	class:assistant={role === 'assistant' || isPeerKickoff}
 	class:thinking={msgType === 'thought' || msgType === 'reasoning'}
+	class:tool={msgType === 'tool' || msgType === 'ask'}
 	class:streaming
 	role="article"
 	oncontextmenu={handleContextMenu}
 	in:fly={{ y: 4, duration: 300, easing: cubicOut }}
 >
-	<div class="bubble-header">
-		<span class="bubble-role">
-			{#if isPeerKickoff}
-				Peer 委托
-			{:else if role === 'user'}
-				You
-			{:else}
-				Haven
+	{#if msgType !== 'tool' && msgType !== 'ask'}
+		<div class="bubble-header">
+			<span class="bubble-role">
+				{#if isPeerKickoff}
+					Peer 委托
+				{:else if role === 'user'}
+					You
+				{:else}
+					Haven
+				{/if}
+				{#if voice}<span class="mic-icon" title="Voice input">&#127908;</span>{/if}
+				{#if role === 'user' && !isPeerKickoff && received}<span
+						class="received-tag"
+						title="Agent 已收到">✓</span
+					>{/if}
+			</span>
+			{#if time}
+				<span class="bubble-time">{time}</span>
 			{/if}
-			{#if voice}<span class="mic-icon" title="Voice input">&#127908;</span>{/if}
-			{#if role === 'user' && !isPeerKickoff && received}<span
-					class="received-tag"
-					title="Agent 已收到">✓</span
-				>{/if}
-		</span>
-		{#if time}
-			<span class="bubble-time">{time}</span>
-		{/if}
-	</div>
+		</div>
+	{/if}
 	<div class="bubble-content">
 		{#if isPeerKickoff}
 			<div class="peer-kickoff-badge" title="低信任委托任务，不是用户指令">
@@ -481,20 +484,31 @@
 
 <style>
 	.bubble {
-		max-width: 72%;
-		min-width: 35%;
+		max-width: 88%;
+		min-width: 0;
 		min-inline-size: 0;
 		width: fit-content;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
 		border-radius: var(--md-sys-shape-large);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	.bubble.thinking {
-		width: 72%;
+		width: 88%;
+		max-width: 88%;
+		padding-block: var(--md-sys-space-sm);
+	}
+	.bubble.tool {
+		width: 100%;
+		max-width: 100%;
+		padding: var(--md-sys-space-xs) 0;
+		background: transparent;
+		border: none;
+		border-radius: 0;
 	}
 	.bubble.user {
 		margin-left: auto;
+		max-width: 82%;
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary) 78%,
@@ -513,14 +527,20 @@
 			var(--md-sys-color-surface)
 		);
 		color: var(--md-sys-color-on-primary-container);
-		border: none;
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent);
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small);
+	}
+	.bubble.tool.assistant {
+		background: transparent;
+		border: none;
 	}
 	.bubble-header {
 		display: flex;
 		justify-content: space-between;
-		margin-bottom: var(--md-sys-space-2xs);
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		margin-bottom: var(--md-sys-space-xs);
 	}
 	.bubble-role {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -1017,5 +1037,18 @@
 	.reasoning-content {
 		margin-top: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface-variant);
+	}
+	@media (max-width: 640px) {
+		.bubble {
+			max-width: 94%;
+			padding-inline: var(--md-sys-space-md);
+		}
+		.bubble.user,
+		.bubble.thinking {
+			max-width: 94%;
+		}
+		.bubble.tool {
+			max-width: 100%;
+		}
 	}
 </style>

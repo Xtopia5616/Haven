@@ -19,6 +19,14 @@
 		onNew,
 		onEnd,
 	} = $props();
+
+	let statusVariant = $derived(
+		running
+			? 'success'
+			: status.includes('暂停') || status.includes('等待')
+				? 'warning'
+				: 'neutral',
+	);
 </script>
 
 <header class="session-header">
@@ -29,9 +37,8 @@
 		</span>
 		<div class="session-header__title-row">
 			<h1>{title}</h1>
-			<span
-				class="md-badge session-header__status"
-				data-variant={running ? 'success' : 'neutral'}>{status}</span
+			<span class="md-badge session-header__status" data-variant={statusVariant}
+				>{status}</span
 			>
 		</div>
 	</div>
@@ -153,17 +160,18 @@
 	}
 	@media (max-width: 640px) {
 		.session-header {
-			align-items: flex-start;
+			align-items: center;
 			padding: var(--md-sys-space-md);
 			padding-left: var(--md-sys-space-lg);
 		}
 		.session-header__title-row {
-			align-items: flex-start;
-			flex-direction: column;
-			gap: var(--md-sys-space-xs);
+			align-items: center;
+			flex-direction: row;
+			gap: var(--md-sys-space-sm);
 		}
 		.session-header h1 {
-			max-width: min(48vw, 240px);
+			max-width: min(56vw, 260px);
+			font-size: var(--md-sys-typescale-title-medium-size);
 		}
 		:global(.session-header__new) {
 			width: var(--md-comp-button-small-height);

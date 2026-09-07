@@ -174,6 +174,25 @@ describe('ToolResultCard ask', () => {
 		expect(onAskSelectionChange).toHaveBeenCalledWith('ask-42', ['稍后']);
 	});
 
+	it('offers an explicit submit action after selecting quick replies', async () => {
+		const onAskSubmit = vi.fn();
+		render(ToolResultCard, {
+			type: 'ask',
+			content: '选择？',
+			options: ['立即执行'],
+			awaiting: true,
+			messageId: 'ask-submit',
+			onAskSubmit,
+		});
+
+		const submit = screen.getByRole('button', { name: '提交回答' }) as HTMLButtonElement;
+		expect(submit.disabled).toBe(true);
+		await fireEvent.click(screen.getByText('立即执行'));
+		expect(submit.disabled).toBe(false);
+		await fireEvent.click(submit);
+		expect(onAskSubmit).toHaveBeenCalledWith('ask-submit');
+	});
+
 	it('fires onIgnore with the message id', async () => {
 		const onIgnore = vi.fn();
 		render(ToolResultCard, {

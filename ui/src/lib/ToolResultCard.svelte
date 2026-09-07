@@ -46,10 +46,10 @@
 	let displayName = $derived(toolDisplayName(toolName));
 	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
 	const outcomeLabels = /** @type {Record<string, string>} */ ({
-			failed: '执行失败',
-			cancelled: '已取消',
-			timed_out: '执行超时',
-			unknown: '结果未知，可能已执行',
+		failed: '执行失败',
+		cancelled: '已取消',
+		timed_out: '执行超时',
+		unknown: '结果未知，可能已执行',
 	});
 	let outcomeLabel = $derived(outcomeLabels[outcome || ''] || '');
 
@@ -159,6 +159,16 @@
 	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
 	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));
+	const toolStateLabels = /** @type {Record<string, string>} */ ({
+		running: '执行中',
+		completed: '完成',
+		failed: '失败',
+		cancelled: '已取消',
+		timed_out: '超时',
+		unknown: '未知',
+	});
+	let toolState = $derived(outcome || (liveStreaming ? 'running' : 'completed'));
+	let toolStateLabel = $derived(toolStateLabels[toolState] || toolState);
 	// The `raw` kind carries data: null for plain text and the parsed JSON
 	// value for arrays/primitives; `data` above would collapse the null to {},
 	// so resolve the body text here against the original `parsed` payload.
@@ -276,10 +286,19 @@
 </script>
 
 {#if type === 'ask'}
-	<div class="tool-card" role="status" oncontextmenu={handleContextMenu}>
+	<div
+		class="tool-card tool-card--ask"
+		data-state={awaiting ? 'waiting' : resolved ? 'resolved' : 'completed'}
+		role="status"
+		oncontextmenu={handleContextMenu}
+	>
 		<div class="tool-card-header">
 			<span class="tool-card-icon" aria-hidden="true">&#63;</span>
 			<span class="tool-card-label">Haven 需要你的回答</span>
+			<span class="tool-state" data-state={awaiting ? 'waiting' : 'completed'}>
+				<span class="tool-state-dot" aria-hidden="true"></span>
+				{awaiting ? '等待回答' : '已处理'}
+			</span>
 		</div>
 		{#if content}
 			<p class="ask-question">{content}</p>
@@ -311,6 +330,14 @@
 						等待你的回答...
 					{/if}
 				</span>
+				{#if options && options.length > 0}
+					<button
+						class="ask-submit"
+						disabled={selectedOptions.length === 0}
+						onclick={() => onAskSubmit?.(messageId)}
+						type="button">提交回答</button
+					>
+				{/if}
 			</div>
 		{/if}
 		{#if resolved}
@@ -324,7 +351,7 @@
 		{/if}
 	</div>
 {:else}
-	<div class="tool-card" role="status" oncontextmenu={handleContextMenu}>
+	<div class="tool-card" data-state={toolState} role="status" oncontextmenu={handleContextMenu}>
 		<MaterialCollapsible bind:open={cardOpen}>
 			{#snippet header()}
 				<span class="tool-card-icon" aria-hidden="true">
@@ -562,8 +589,9 @@
 					<span
 						class="tool-outcome"
 						data-outcome={outcome}
-						title={outcome === 'unknown' ? '该操作可能已经产生副作用，禁止自动重试' : undefined}
-						>{outcomeLabel}</span
+						title={outcome === 'unknown'
+							? '该操作可能已经产生副作用，禁止自动重试'
+							: undefined}>{outcomeLabel}</span
 					>
 				{/if}
 				{#if usage}
@@ -602,6 +630,11 @@
 						{formatTokenCount(toolDataUsage.total)} tokens
 					</span>
 				{/if}
+				<span class="tool-state" data-state={toolState}>
+					<span class="tool-state-dot" aria-hidden="true"></span>
+					{toolStateLabel}
+				</span>
+				<span class="tool-expand-hint">{cardOpen ? '收起详情' : '查看详情'}</span>
 			{/snippet}
 
 			{#if cardOpen && hasToolArgs}
@@ -650,17 +683,61 @@
 		);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		padding: var(--md-sys-space-md);
 		width: min(42rem, 100%);
 		max-width: 100%;
 		box-sizing: border-box;
 		margin-top: var(--md-sys-space-xs);
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard);
+	}
+	.tool-card[data-state='running'] {
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-tertiary) 60%,
+			var(--md-sys-color-outline-variant)
+		);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-tertiary-container) 28%,
+			var(--md-sys-color-surface)
+		);
+	}
+	.tool-card[data-state='failed'],
+	.tool-card[data-state='cancelled'],
+	.tool-card[data-state='timed_out'],
+	.tool-card[data-state='unknown'] {
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-error) 45%,
+			var(--md-sys-color-outline-variant)
+		);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-error-container) 22%,
+			var(--md-sys-color-surface)
+		);
+	}
+	.tool-card--ask[data-state='waiting'] {
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-warning) 58%,
+			var(--md-sys-color-outline-variant)
+		);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-warning-container) 28%,
+			var(--md-sys-color-surface)
+		);
 	}
 	.tool-card-header {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 		margin-bottom: var(--md-sys-space-xs);
+		min-width: 0;
 	}
 	.tool-card-icon {
 		display: inline-flex;
@@ -681,8 +758,63 @@
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-secondary-container);
 		min-width: 0;
+		flex: 1 1 10rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	:global(.tool-card .md-collapsible-header-content) {
+		flex-wrap: wrap;
+		row-gap: var(--md-sys-space-xs);
+	}
+	.tool-state {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		flex: none;
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		color: var(--md-sys-color-on-surface-variant);
+		white-space: nowrap;
+	}
+	.tool-state[data-state='running'],
+	.tool-state[data-state='waiting'] {
+		color: var(--md-sys-color-tertiary);
+	}
+	.tool-state[data-state='failed'],
+	.tool-state[data-state='cancelled'],
+	.tool-state[data-state='timed_out'],
+	.tool-state[data-state='unknown'] {
+		color: var(--md-sys-color-error);
+	}
+	.tool-state-dot {
+		width: var(--md-sys-space-sm);
+		height: var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-full);
+		background: currentColor;
+		flex: none;
+	}
+	.tool-state[data-state='running'] .tool-state-dot,
+	.tool-state[data-state='waiting'] .tool-state-dot {
+		animation: tool-state-pulse 1.2s ease-in-out infinite;
+	}
+	@keyframes tool-state-pulse {
+		0%,
+		100% {
+			opacity: 0.45;
+			transform: scale(0.8);
+		}
+		50% {
+			opacity: 1;
+			transform: scale(1);
+		}
+	}
+	.tool-expand-hint {
+		flex: none;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		color: var(--md-sys-color-primary);
 		white-space: nowrap;
 	}
 	.tool-intent {
@@ -791,6 +923,38 @@
 		cursor: pointer;
 		transition: filter 0.15s ease;
 	}
+	.ask-submit {
+		margin-left: auto;
+		border: 1px solid var(--md-sys-color-primary);
+		border-radius: var(--md-sys-shape-full);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-md);
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+		cursor: pointer;
+		transition:
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.ask-submit:hover:not(:disabled) {
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary) 88%,
+			var(--md-sys-color-on-primary)
+		);
+	}
+	.ask-submit:focus-visible,
+	.ask-ignore:focus-visible {
+		outline: 2px solid var(--md-sys-color-primary);
+		outline-offset: 2px;
+	}
+	.ask-submit:disabled {
+		cursor: not-allowed;
+		opacity: 0.45;
+	}
 	.ask-ignore:hover {
 		filter: brightness(0.9);
 	}
@@ -853,5 +1017,30 @@
 		color: var(--md-sys-color-on-surface-variant);
 		border-top: 1px dashed var(--md-sys-color-outline-variant);
 		padding-top: var(--md-sys-space-xs);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.tool-state[data-state='running'] .tool-state-dot,
+		.tool-state[data-state='waiting'] .tool-state-dot {
+			animation: none;
+		}
+	}
+	@media (max-width: 520px) {
+		.tool-card {
+			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		}
+		.tool-expand-hint {
+			width: 100%;
+			margin-left: var(--md-sys-space-lg);
+		}
+		.ask-actions {
+			align-items: flex-start;
+			flex-wrap: wrap;
+		}
+		.ask-waiting {
+			flex: 1 1 8rem;
+		}
+		.ask-submit {
+			margin-left: 0;
+		}
 	}
 </style>
