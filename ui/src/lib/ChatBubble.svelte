@@ -486,8 +486,8 @@
 		width: fit-content;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-large);
-		font-size: var(--md-sys-typescale-body-medium-size);
-		line-height: var(--md-sys-typescale-body-medium-line-height);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.bubble.thinking {
 		width: 72%;
