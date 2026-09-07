@@ -553,6 +553,221 @@ pub(crate) fn project_tool_parameters_for_xai(schema: Value) -> Value {
     Value::Object(root)
 }
 
+/// Project a tool parameter schema into the subset used by Gemini function
+/// declarations.
+///
+/// Gemini documents function parameters as a deliberately small OpenAPI
+/// schema subset. The complete schema remains authoritative inside Haven;
+/// this projection only shapes what the model sees at the provider boundary.
+/// Root and nested object unions are widened into ordinary objects, scalar
+/// `const` values become single-value enums, and validation-only keywords that
+/// Gemini does not consume are dropped.
+pub(crate) fn project_tool_parameters_for_gemini(schema: Value) -> Value {
+    project_gemini_schema(sanitize_tool_parameters(schema))
+}
+
+fn project_gemini_schema(schema: Value) -> Value {
+    let Value::Object(mut map) = schema else {
+        return serde_json::json!({});
+    };
+
+    let mut branches = Vec::new();
+    for keyword in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(items)) = map.remove(keyword) {
+            branches.extend(items);
+        }
+    }
+    if !branches.is_empty() {
+        if branches.iter().all(is_object_schema) {
+            map.insert("oneOf".into(), Value::Array(branches));
+            return project_gemini_schema(project_tool_parameters_for_xai(Value::Object(map)));
+        }
+        return project_gemini_scalar_union(map, branches);
+    }
+
+    let description = map
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut projected = Map::new();
+    if let Some(description) = description {
+        projected.insert("description".into(), Value::String(description));
+    }
+
+    let mut nullable = map
+        .get("nullable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let schema_type = match map.get("type") {
+        Some(Value::String(schema_type)) => Some(schema_type.clone()),
+        Some(Value::Array(types)) => {
+            let mut first_type = None;
+            for item in types {
+                let Some(schema_type) = item.as_str() else {
+                    continue;
+                };
+                if schema_type == "null" {
+                    nullable = true;
+                } else if first_type.is_none() {
+                    first_type = Some(schema_type.to_owned());
+                }
+            }
+            first_type
+        }
+        _ => None,
+    };
+
+    let has_properties = matches!(map.get("properties"), Some(Value::Object(_)));
+    let has_items = map.get("items").is_some();
+    let schema_type = schema_type.or_else(|| {
+        if has_properties {
+            Some("object".into())
+        } else if has_items {
+            Some("array".into())
+        } else if map.get("const").is_some() || map.get("enum").is_some() {
+            map.get("const")
+                .or_else(|| map.get("enum").and_then(|value| value.as_array()?.first()))
+                .and_then(gemini_type_of_value)
+                .map(str::to_owned)
+        } else {
+            None
+        }
+    });
+
+    if let Some(schema_type) = schema_type {
+        if matches!(
+            schema_type.as_str(),
+            "string" | "number" | "integer" | "boolean" | "object" | "array"
+        ) {
+            projected.insert("type".into(), Value::String(schema_type.clone()));
+        }
+
+        if schema_type == "object" {
+            let mut properties = Map::new();
+            if let Some(Value::Object(input_properties)) = map.get("properties") {
+                for (name, property) in input_properties {
+                    properties.insert(name.clone(), project_gemini_schema(property.clone()));
+                }
+            }
+            projected.insert("properties".into(), Value::Object(properties));
+
+            if let Some(Value::Array(required)) = map.get("required") {
+                let required = required
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|name| {
+                        projected["properties"]
+                            .as_object()
+                            .is_some_and(|properties| properties.contains_key(*name))
+                    })
+                    .map(|name| Value::String(name.to_owned()))
+                    .collect::<Vec<_>>();
+                if !required.is_empty() {
+                    projected.insert("required".into(), Value::Array(required));
+                }
+            }
+        } else if schema_type == "array"
+            && let Some(items) = map.get("items")
+        {
+            projected.insert("items".into(), project_gemini_schema(items.clone()));
+        }
+    }
+
+    let enum_values = if let Some(const_value) = map.get("const") {
+        Some(vec![const_value.clone()])
+    } else {
+        map.get("enum")
+            .and_then(Value::as_array)
+            .filter(|values| !values.is_empty())
+            .cloned()
+    };
+    if let Some(enum_values) = enum_values {
+        projected.insert("enum".into(), Value::Array(enum_values));
+    }
+    if nullable {
+        projected.insert("nullable".into(), Value::Bool(true));
+    }
+    if let Some(format) = map.get("format").and_then(Value::as_str) {
+        projected.insert("format".into(), Value::String(format.to_owned()));
+    }
+
+    Value::Object(projected)
+}
+
+fn project_gemini_scalar_union(mut metadata: Map<String, Value>, branches: Vec<Value>) -> Value {
+    let mut projected = Map::new();
+    if let Some(description) = metadata.remove("description")
+        && description.is_string()
+    {
+        projected.insert("description".into(), description);
+    }
+
+    let mut nullable = metadata
+        .remove("nullable")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let mut enum_values = Vec::new();
+    let mut branch_types = Vec::new();
+    for branch in branches {
+        let Value::Object(branch) = branch else {
+            continue;
+        };
+        if branch.get("type").and_then(Value::as_str) == Some("null") {
+            nullable = true;
+        } else if let Some(schema_type) = branch
+            .get("type")
+            .and_then(Value::as_str)
+            .or_else(|| branch.get("const").and_then(gemini_type_of_value))
+        {
+            branch_types.push(schema_type.to_owned());
+        }
+        if let Some(const_value) = branch.get("const") {
+            if !enum_values.iter().any(|value| value == const_value) {
+                enum_values.push(const_value.clone());
+            }
+        } else if let Some(values) = branch.get("enum").and_then(Value::as_array) {
+            for value in values {
+                if !enum_values.iter().any(|existing| existing == value) {
+                    enum_values.push(value.clone());
+                }
+            }
+        }
+    }
+
+    let schema_type = branch_types.first().cloned();
+    if let Some(schema_type) = schema_type
+        && matches!(
+            schema_type.as_str(),
+            "string" | "number" | "integer" | "boolean" | "object" | "array"
+        )
+    {
+        projected.insert("type".into(), Value::String(schema_type));
+    }
+    if !enum_values.is_empty() {
+        projected.insert("enum".into(), Value::Array(enum_values));
+    }
+    if nullable {
+        projected.insert("nullable".into(), Value::Bool(true));
+    }
+    Value::Object(projected)
+}
+
+fn is_object_schema(schema: &Value) -> bool {
+    schema.get("type").and_then(Value::as_str) == Some("object")
+        || schema.get("properties").is_some_and(Value::is_object)
+}
+
+fn gemini_type_of_value(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::String(_) => Some("string"),
+        Value::Number(_) => Some("number"),
+        Value::Bool(_) => Some("boolean"),
+        Value::Array(_) => Some("array"),
+        Value::Object(_) => Some("object"),
+        Value::Null => None,
+    }
+}
+
 fn merge_xai_property_schemas(left: Value, right: Value) -> Value {
     let mut values = Vec::new();
     for schema in [&left, &right] {
@@ -1175,6 +1390,73 @@ mod tests {
 
         assert!(projected.get("oneOf").is_none());
         assert!(projected["properties"]["value"].get("anyOf").is_some());
+    }
+
+    #[test]
+    fn gemini_tool_parameter_projection_uses_openapi_subset() {
+        let projected = project_tool_parameters_for_gemini(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["set", "list"] },
+                "delay_secs": { "type": "integer", "minimum": 1 },
+                "body": { "type": "string", "minLength": 1 },
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "const": "safe", "description": "execution mode" }
+                    },
+                    "required": ["mode"]
+                }
+            },
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "set" } },
+                    "required": ["operation", "body"]
+                },
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "list" } },
+                    "required": ["operation"]
+                }
+            ]
+        }));
+
+        assert_eq!(projected["type"], "object");
+        assert!(projected.get("oneOf").is_none());
+        assert_eq!(
+            projected["properties"]["operation"]["enum"],
+            serde_json::json!(["set", "list"])
+        );
+        assert!(
+            projected["properties"]["delay_secs"]
+                .get("minimum")
+                .is_none()
+        );
+        assert!(projected["properties"]["body"].get("minLength").is_none());
+        assert_eq!(
+            projected["properties"]["metadata"]["properties"]["mode"]["enum"],
+            serde_json::json!(["safe"])
+        );
+    }
+
+    #[test]
+    fn gemini_tool_parameter_projection_handles_scalar_union() {
+        let projected = project_tool_parameters_for_gemini(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "null" }
+                    ]
+                }
+            }
+        }));
+
+        assert_eq!(projected["properties"]["value"]["type"], "string");
+        assert_eq!(projected["properties"]["value"]["nullable"], true);
+        assert!(projected["properties"]["value"].get("anyOf").is_none());
     }
 
     #[test]

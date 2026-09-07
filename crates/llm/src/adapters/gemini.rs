@@ -465,7 +465,9 @@ impl GeminiAdapter {
                 function_declarations: vec![GeminiFunctionDeclaration {
                     name: t.function.name,
                     description: t.function.description,
-                    parameters: t.function.parameters,
+                    parameters: crate::types::project_tool_parameters_for_gemini(
+                        t.function.parameters,
+                    ),
                 }],
             })
             .collect()
@@ -1674,6 +1676,53 @@ mod tests {
         assert_eq!(cfg.temperature, 0.2);
         assert_eq!(cfg.top_p, Some(0.9));
         assert_eq!(cfg.top_k, Some(40));
+    }
+
+    #[test]
+    fn convert_tools_projects_gemini_schema_subset() {
+        let tools = GeminiAdapter::convert_tools(vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "schedule".into(),
+                description: "schedule an action".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "operation": { "type": "string", "enum": ["list", "set"] },
+                        "delay_secs": { "type": "integer", "minimum": 1 }
+                    },
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": { "operation": { "const": "list" } }
+                        },
+                        {
+                            "type": "object",
+                            "properties": { "operation": { "const": "set" } }
+                        }
+                    ]
+                }),
+            },
+        }]);
+
+        let GeminiTool::Functions {
+            function_declarations,
+        } = &tools[0]
+        else {
+            panic!("expected function declaration");
+        };
+        let parameters = &function_declarations[0].parameters;
+        assert_eq!(parameters["type"], "object");
+        assert!(parameters.get("oneOf").is_none());
+        assert_eq!(
+            parameters["properties"]["operation"]["enum"],
+            json!(["list", "set"])
+        );
+        assert!(
+            parameters["properties"]["delay_secs"]
+                .get("minimum")
+                .is_none()
+        );
     }
 
     #[test]

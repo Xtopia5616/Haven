@@ -69,6 +69,11 @@ struct ResponsesTool {
     description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parameters: Option<Value>,
+    /// Haven validates tool calls locally. Explicitly keep Responses in its
+    /// non-strict schema mode so it does not auto-rewrite a richer JSON Schema
+    /// into its strict subset before accepting the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -793,6 +798,7 @@ impl OpenAiResponsesAdapter {
                     name: Some(t.function.name),
                     description: Some(t.function.description),
                     parameters: Some(parameters),
+                    strict: Some(false),
                 })
                 .unwrap_or_default()
             })
@@ -2086,7 +2092,29 @@ mod tests {
         let tools = body.tools.unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "search");
+        assert_eq!(tools[0]["strict"], false);
         assert_eq!(body.tool_choice, Some(serde_json::json!("auto")));
+    }
+
+    #[test]
+    fn responses_tools_keep_root_union_in_non_strict_mode() {
+        let tools = OpenAiResponsesAdapter::convert_tools(vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "schedule".into(),
+                description: "schedule an action".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "oneOf": [
+                        { "type": "object", "properties": { "operation": { "const": "list" } } },
+                        { "type": "object", "properties": { "operation": { "const": "set" } } }
+                    ]
+                }),
+            },
+        }]);
+
+        assert_eq!(tools[0]["strict"], false);
+        assert!(tools[0]["parameters"].get("oneOf").is_some());
     }
 
     #[test]

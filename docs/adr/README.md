@@ -93,3 +93,4 @@
 - [0090：内置工具边界与注册表安全契约](0090-tool-name-boundaries-and-security-contract.md)
 - [0091：内置工具面精简与本机操作补齐](0091-builtin-tool-surface-cleanup.md)
 - [0092：严格 OpenAI-compatible provider 的工具 schema 投影](0092-xai-tool-schema-projection.md)
+- [0093：Provider 工具 schema 投影与 OpenAI-compatible 网关审查](0093-provider-tool-schema-projections.md)

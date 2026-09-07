@@ -710,10 +710,14 @@ impl OpenAiAdapter {
         tools
             .into_iter()
             .map(|t| {
+                // Defense in depth: `ToolDefinition::from` already sanitizes,
+                // but direct constructors / cache hits may still carry Null
+                // or a non-object root.
+                let parameters = crate::types::sanitize_tool_parameters(t.function.parameters);
                 let parameters = if xai_compatible {
-                    crate::types::project_tool_parameters_for_xai(t.function.parameters)
+                    crate::types::project_tool_parameters_for_xai(parameters)
                 } else {
-                    t.function.parameters
+                    parameters
                 };
                 OpenAiTool {
                     tool_type: t.tool_type,
@@ -2735,6 +2739,26 @@ mod tests {
     fn convert_tools_empty_vec() {
         let result = OpenAiAdapter::convert_tools(vec![], false);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn convert_tools_sanitizes_non_object_schema() {
+        let result = OpenAiAdapter::convert_tools(
+            vec![ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "broken".into(),
+                    description: "broken schema".into(),
+                    parameters: serde_json::Value::Null,
+                },
+            }],
+            false,
+        );
+
+        assert_eq!(
+            result[0].function.parameters,
+            serde_json::json!({"type": "object", "properties": {}})
+        );
     }
 
     #[test]

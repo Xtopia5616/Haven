@@ -517,10 +517,16 @@ impl AnthropicAdapter {
         tools
             .into_iter()
             .map(|t| {
+                // Defense in depth: the local ToolDefinition constructor
+                // sanitizes schemas, but cached/direct definitions can still
+                // contain a null or non-object root.
+                let parameters = crate::types::canonicalize_json(
+                    crate::types::sanitize_tool_parameters(t.function.parameters),
+                );
                 json!({
                     "name": t.function.name,
                     "description": t.function.description,
-                    "input_schema": t.function.parameters,
+                    "input_schema": parameters,
                 })
             })
             .collect()
@@ -2044,6 +2050,39 @@ mod tests {
             "last tool should carry a prompt-cache breakpoint"
         );
         assert_eq!(body.tool_choice, Some(json!({"type": "auto"})));
+    }
+
+    #[test]
+    fn convert_tools_sanitizes_non_object_schema_without_flattening_unions() {
+        let tools = AnthropicAdapter::convert_tools(vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "schedule".into(),
+                description: "schedule an action".into(),
+                parameters: json!({
+                    "type": "object",
+                    "oneOf": [
+                        { "type": "object", "properties": { "operation": { "const": "list" } } },
+                        { "type": "object", "properties": { "operation": { "const": "set" } } }
+                    ]
+                }),
+            },
+        }]);
+
+        assert!(tools[0]["input_schema"].get("oneOf").is_some());
+
+        let sanitized = AnthropicAdapter::convert_tools(vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "broken".into(),
+                description: "broken schema".into(),
+                parameters: Value::Null,
+            },
+        }]);
+        assert_eq!(
+            sanitized[0]["input_schema"],
+            json!({"type": "object", "properties": {}})
+        );
     }
 
     #[test]
