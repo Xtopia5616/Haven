@@ -39,6 +39,11 @@
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
+	import {
+		BOOTSTRAP_PROBE_INTERVAL_MS,
+		isBootstrapReady,
+		nextBootstrapProbeInterval,
+	} from '$lib/bootstrapStatus.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -200,10 +205,13 @@
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
 	// can still be waiting for Rust startup.
 	let runtime = $state('unknown');
-	// Cold-start gate: false until the backend dispatcher is ready (or the
-	// get_bootstrap_status probe says ready). MCP/skills catalog work may keep
-	// running in the background without keeping the status chip on 加载中.
+	// Cold-start gate: false until MCP/skills/audio prewarm is ready. The event
+	// is best-effort, so get_bootstrap_status is retried when startup races with
+	// a reused Vite/Tauri development process.
 	let bootstrapReady = $state(false);
+	let bootstrapProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
+	let bootstrapProbeInFlight = false;
+	let bootstrapProbeFailureStreak = 0;
 	// Whether ANY session is busy (pending/running). The model-state events only
 	// fire while chunks flow; a session whose LLM call is stuck (idle timeout,
 	// empty-response retries, provider hang) emits nothing, and the 5s idle
@@ -230,6 +238,43 @@
 	let llmProbeFailureStreak = 0;
 	const LLM_PROBE_INTERVAL_MS = 15000;
 	const LLM_PROBE_MAX_INTERVAL_MS = 120000;
+	function markBootstrapReady() {
+		if (bootstrapReady) return;
+		bootstrapReady = true;
+		clearTimeout(bootstrapProbeTimer);
+		bootstrapProbeTimer = undefined;
+		probeLlmConnection();
+	}
+	function scheduleBootstrapProbe() {
+		clearTimeout(bootstrapProbeTimer);
+		if (bootstrapReady || !isTauri()) return;
+		const delay =
+			bootstrapProbeFailureStreak === 0
+				? BOOTSTRAP_PROBE_INTERVAL_MS
+				: nextBootstrapProbeInterval(bootstrapProbeFailureStreak);
+		bootstrapProbeTimer = setTimeout(() => {
+			void probeBootstrapStatus();
+		}, delay);
+	}
+	async function probeBootstrapStatus() {
+		if (bootstrapReady || bootstrapProbeInFlight || !isTauri()) return;
+		bootstrapProbeInFlight = true;
+		try {
+			const status = await invoke('get_bootstrap_status');
+			if (isBootstrapReady(status)) {
+				bootstrapProbeFailureStreak = 0;
+				markBootstrapReady();
+			} else {
+				bootstrapProbeFailureStreak = 0;
+			}
+		} catch (e) {
+			bootstrapProbeFailureStreak = Math.min(bootstrapProbeFailureStreak + 1, 4);
+			logger.warn('+layout', 'get_bootstrap_status error; retrying', e);
+		} finally {
+			bootstrapProbeInFlight = false;
+			scheduleBootstrapProbe();
+		}
+	}
 	modelStateStore.subscribe((v) => {
 		modelState = v;
 		if (v === 'ready') probeLlmConnection();
@@ -586,8 +631,7 @@
 					'app:bootstrap': (event) => {
 						const status = event?.payload?.status;
 						if (status === 'ready') {
-							bootstrapReady = true;
-							probeLlmConnection();
+							markBootstrapReady();
 						} else if (status === 'loading') {
 							bootstrapReady = false;
 						}
@@ -911,20 +955,7 @@
 		await registrations.ready;
 
 		if (isTauri()) {
-			try {
-				const status = await invoke('get_bootstrap_status');
-				if (status === 'ready') {
-					bootstrapReady = true;
-					probeLlmConnection();
-				}
-			} catch (e) {
-				logger.warn('+layout', 'get_bootstrap_status error', e);
-				// Do not report readiness when the backend status probe failed. The
-				// bootstrap event listener above can still transition us to ready;
-				// otherwise the loading state remains honest instead of claiming the
-				// backend is usable after an unknown failure.
-				bootstrapReady = false;
-			}
+			void probeBootstrapStatus();
 		} else {
 			bootstrapReady = true;
 		}
@@ -945,6 +976,7 @@
 		stopTimer();
 		if (processingTimer) clearTimeout(processingTimer);
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);
+		if (bootstrapProbeTimer) clearTimeout(bootstrapProbeTimer);
 		clearModelStateTimer();
 		eventRegistrations?.dispose();
 	});
