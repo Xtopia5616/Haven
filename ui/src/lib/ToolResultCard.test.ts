@@ -301,11 +301,13 @@ describe('ToolResultCard usage', () => {
 			content: 'file.txt',
 		});
 
-		const chip = container.querySelector('.tool-data-usage-chip') as HTMLElement;
+		const chip = container.querySelector('.usage-chip') as HTMLElement;
 		expect(chip).toBeTruthy();
-		expect(chip.textContent).toContain('工具数据');
-		expect(chip.getAttribute('title')).toContain('工具数据 token（估算）');
-		expect(chip.getAttribute('title')).toContain('不等于模型计费 token');
+		expect(chip.textContent?.trim()).toMatch(/tokens$/);
+		expect(chip.getAttribute('title')).toContain('调用参数');
+		expect(chip.getAttribute('title')).toContain('返回结果');
+		expect(chip.getAttribute('title')).toContain('合计');
+		expect(chip.getAttribute('title')).not.toContain('估算');
 	});
 });
 
