@@ -401,22 +401,6 @@ impl OpenAiAdapter {
         requires_reasoning_echo(&self.endpoint)
     }
 
-    /// xAI keeps the OpenAI chat wire format, but its tool validator rejects
-    /// root-level JSON Schema unions. Provider identity and the canonical API
-    /// host must therefore enable the same projection as the explicit `xai`
-    /// wire style, even when a legacy/custom config says `openai-chat`.
-    fn uses_xai_tool_schema_projection(&self) -> bool {
-        self.style == "xai"
-            || matches!(
-                self.endpoint.provider.trim().to_ascii_lowercase().as_str(),
-                "xai" | "grok"
-            )
-            || url::Url::parse(&self.endpoint.base_url)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .is_some_and(|host| host.eq_ignore_ascii_case("api.x.ai"))
-    }
-
     /// Derive a compact, deterministic cache routing key from the stable part
     /// of a ReAct conversation. The dynamic session-context suffix is
     /// intentionally excluded so identical agent instructions and tool schemas
@@ -461,11 +445,7 @@ impl OpenAiAdapter {
         // Hash the exact provider tool projection, not the canonical
         // ToolDefinition. This keeps the routing key aligned with the wire
         // schema after recursive JSON canonicalization.
-        let tool_value = serde_json::to_value(Self::convert_tools(
-            tools.to_vec(),
-            self.uses_xai_tool_schema_projection(),
-        ))
-        .ok()?;
+        let tool_value = serde_json::to_value(Self::convert_tools(tools.to_vec())).ok()?;
         hasher.update(crate::types::stable_json_bytes(&tool_value));
 
         let digest = hasher.finalize();
@@ -706,7 +686,7 @@ impl OpenAiAdapter {
         out
     }
 
-    fn convert_tools(tools: Vec<ToolDefinition>, xai_compatible: bool) -> Vec<OpenAiTool> {
+    fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<OpenAiTool> {
         tools
             .into_iter()
             .map(|t| {
@@ -714,11 +694,11 @@ impl OpenAiAdapter {
                 // but direct constructors / cache hits may still carry Null
                 // or a non-object root.
                 let parameters = crate::types::sanitize_tool_parameters(t.function.parameters);
-                let parameters = if xai_compatible {
-                    crate::types::project_tool_parameters_for_object_root(parameters)
-                } else {
-                    parameters
-                };
+                // OpenAI Chat is also the fallback wire format for unknown
+                // gateways. Keep every Chat-compatible request on the same
+                // object-root projection so a gateway cannot reject a root
+                // union before sampling starts.
+                let parameters = crate::types::project_tool_parameters_for_object_root(parameters);
                 OpenAiTool {
                     tool_type: t.tool_type,
                     function: OpenAiToolFunction {
@@ -815,10 +795,7 @@ impl OpenAiAdapter {
             temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
             tools: if has_tools {
-                Some(Self::convert_tools(
-                    tools,
-                    self.uses_xai_tool_schema_projection(),
-                ))
+                Some(Self::convert_tools(tools))
             } else {
                 None
             },
@@ -2735,7 +2712,7 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
         }];
-        let result = OpenAiAdapter::convert_tools(tools, false);
+        let result = OpenAiAdapter::convert_tools(tools);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].tool_type, "function");
         assert_eq!(result[0].function.name, "read");
@@ -2762,7 +2739,7 @@ mod tests {
                 },
             },
         ];
-        let result = OpenAiAdapter::convert_tools(tools, false);
+        let result = OpenAiAdapter::convert_tools(tools);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].function.name, "a");
         assert_eq!(result[1].function.name, "b");
@@ -2770,23 +2747,20 @@ mod tests {
 
     #[test]
     fn convert_tools_empty_vec() {
-        let result = OpenAiAdapter::convert_tools(vec![], false);
+        let result = OpenAiAdapter::convert_tools(vec![]);
         assert!(result.is_empty());
     }
 
     #[test]
     fn convert_tools_sanitizes_non_object_schema() {
-        let result = OpenAiAdapter::convert_tools(
-            vec![ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: "broken".into(),
-                    description: "broken schema".into(),
-                    parameters: serde_json::Value::Null,
-                },
-            }],
-            false,
-        );
+        let result = OpenAiAdapter::convert_tools(vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "broken".into(),
+                description: "broken schema".into(),
+                parameters: serde_json::Value::Null,
+            },
+        }]);
 
         assert_eq!(
             result[0].function.parameters,
@@ -2795,7 +2769,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_convert_tools_flattens_root_union_schema() {
+    fn openai_convert_tools_projects_root_union_schema() {
         let tools = vec![ToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
@@ -2825,7 +2799,7 @@ mod tests {
             },
         }];
 
-        let result = OpenAiAdapter::convert_tools(tools, true);
+        let result = OpenAiAdapter::convert_tools(tools);
         let parameters = &result[0].function.parameters;
         assert_eq!(parameters["type"], "object");
         assert!(parameters.get("oneOf").is_none());
@@ -2834,10 +2808,17 @@ mod tests {
             parameters["properties"]["operation"]["enum"],
             serde_json::json!(["set", "list"])
         );
+        assert_eq!(
+            parameters["dependentSchemas"]["operation"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
-    fn xai_provider_projects_schedule_style_schema_when_wire_style_is_openai_chat() {
+    fn openai_chat_projects_schedule_schema_for_xai_provider() {
         let endpoint = ModelEndpoint {
             provider: "xai".into(),
             api_style: Some("openai-chat".into()),
@@ -2902,10 +2883,12 @@ mod tests {
             serde_json::json!(["set", "list", "cancel"])
         );
         assert_eq!(parameters["properties"]["action_id"]["type"], "string");
+        assert!(parameters["dependentSchemas"]["operation"]["oneOf"].is_array());
+        assert!(parameters["dependentSchemas"]["operation"]["oneOf"][2]["oneOf"].is_array());
     }
 
     #[test]
-    fn openai_convert_tools_keeps_root_union_schema() {
+    fn openai_convert_tools_projects_undiscriminated_root_union_schema() {
         let tools = vec![ToolDefinition {
             tool_type: "function".into(),
             function: ToolFunction {
@@ -2921,8 +2904,9 @@ mod tests {
             },
         }];
 
-        let result = OpenAiAdapter::convert_tools(tools, false);
-        assert!(result[0].function.parameters.get("oneOf").is_some());
+        let result = OpenAiAdapter::convert_tools(tools);
+        assert!(result[0].function.parameters.get("oneOf").is_none());
+        assert!(result[0].function.parameters["properties"].is_object());
     }
 
     #[test]

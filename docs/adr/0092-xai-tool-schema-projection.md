@@ -1,5 +1,7 @@
 # ADR 0092：严格 OpenAI-compatible provider 的工具 schema 投影
 
+> 本 ADR 已由 [ADR 0095](0095-openai-compatible-object-root-tool-schema.md) 替代；保留原文记录历史决定。
+
 - 状态：Accepted
 - 日期：2026-09-07
 

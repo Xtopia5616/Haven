@@ -466,18 +466,39 @@ pub fn sanitize_tool_parameters(schema: Value) -> Value {
 /// xAI and OpenAI Responses reject a root-level `anyOf`/`oneOf`/`allOf`, even
 /// when the schema also declares `type: object`. The full schema remains
 /// authoritative inside Haven: the tool registry validates every model-
-/// produced call before execution. This projection only widens the
-/// model-visible schema by merging branch properties and fields required by
-/// every object branch. Nested unions inside properties are left intact.
+/// produced call before execution. This projection widens the model-visible
+/// schema by merging branch properties and fields required by every object
+/// branch. When a root union has a shared discriminator such as `operation` or
+/// `scope`, its original constraint is retained below `dependentSchemas`; this
+/// keeps nested branch unions (for example schedule timing alternatives)
+/// visible to the model without leaving a forbidden union at the schema root.
+/// Unions without a usable discriminator are widened as before because JSON
+/// Schema has no equivalent object-only encoding for an arbitrary root union.
 pub(crate) fn project_tool_parameters_for_object_root(schema: Value) -> Value {
-    let Value::Object(mut root) = schema else {
-        return serde_json::json!({"type": "object", "properties": {}});
+    let Value::Object(mut root) = sanitize_tool_parameters(schema) else {
+        unreachable!("sanitize_tool_parameters always returns an object");
     };
 
     let mut branches = Vec::new();
+    let mut constraints = Vec::new();
+    let mut common_required = None;
+    let mut all_required = Vec::new();
     for keyword in ["anyOf", "oneOf", "allOf"] {
         if let Some(Value::Array(items)) = root.remove(keyword) {
-            branches.extend(items);
+            branches.extend(items.iter().cloned());
+            let mut constraint = Map::new();
+            constraint.insert(keyword.to_string(), Value::Array(items.clone()));
+            constraints.push(Value::Object(constraint));
+
+            let branch_required = required_names(&items);
+            if keyword == "allOf" {
+                all_required.extend(branch_required);
+            } else {
+                common_required = Some(match common_required {
+                    None => branch_required,
+                    Some(previous) => intersect_names(previous, branch_required),
+                });
+            }
         }
     }
     if branches.is_empty() {
@@ -488,9 +509,8 @@ pub(crate) fn project_tool_parameters_for_object_root(schema: Value) -> Value {
         Some(Value::Object(properties)) => properties,
         _ => Map::new(),
     };
-    let mut common_required: Option<Vec<String>> = None;
 
-    for branch in branches {
+    for branch in &branches {
         let Value::Object(branch) = branch else {
             continue;
         };
@@ -509,8 +529,66 @@ pub(crate) fn project_tool_parameters_for_object_root(schema: Value) -> Value {
                 }
             }
         }
+    }
 
-        let required = branch
+    root.insert("type".into(), Value::String("object".into()));
+    root.insert("properties".into(), Value::Object(properties));
+
+    let mut root_required = root
+        .remove("required")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    for name in common_required.unwrap_or_default() {
+        if !root_required
+            .iter()
+            .any(|value| value.as_str() == Some(&name))
+        {
+            root_required.push(Value::String(name));
+        }
+    }
+    for name in all_required {
+        if !root_required
+            .iter()
+            .any(|value| value.as_str() == Some(&name))
+        {
+            root_required.push(Value::String(name));
+        }
+    }
+    if !root_required.is_empty() {
+        root.insert("required".into(), Value::Array(root_required));
+    }
+
+    if let Some(discriminator) = find_common_discriminator(&branches) {
+        let constraint = match constraints.as_slice() {
+            [single] => single.clone(),
+            [] => unreachable!("root union branches produce a constraint"),
+            multiple => serde_json::json!({"allOf": multiple}),
+        };
+        let mut dependent = match root.remove("dependentSchemas") {
+            Some(Value::Object(dependent)) => dependent,
+            _ => Map::new(),
+        };
+        match dependent.remove(&discriminator) {
+            Some(existing) if !existing.is_null() => {
+                dependent.insert(
+                    discriminator,
+                    serde_json::json!({"allOf": [existing, constraint]}),
+                );
+            }
+            _ => {
+                dependent.insert(discriminator, constraint);
+            }
+        }
+        root.insert("dependentSchemas".into(), Value::Object(dependent));
+    }
+
+    Value::Object(root)
+}
+
+fn required_names(branches: &[Value]) -> Vec<String> {
+    let mut common = None;
+    for branch in branches {
+        let names = branch
             .get("required")
             .and_then(Value::as_array)
             .map(|items| {
@@ -521,34 +599,67 @@ pub(crate) fn project_tool_parameters_for_object_root(schema: Value) -> Value {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        common_required = Some(match common_required {
-            None => required,
+        common = Some(match common {
+            None => names,
+            Some(previous) => intersect_names(previous, names),
+        });
+    }
+    common.unwrap_or_default()
+}
+
+fn intersect_names(left: Vec<String>, right: Vec<String>) -> Vec<String> {
+    left.into_iter()
+        .filter(|name| right.iter().any(|candidate| candidate == name))
+        .collect()
+}
+
+fn find_common_discriminator(branches: &[Value]) -> Option<String> {
+    let mut common: Option<Vec<String>> = None;
+    for branch in branches {
+        let mut candidates = Vec::new();
+        collect_discriminator_candidates(branch, &mut candidates);
+        candidates.sort();
+        candidates.dedup();
+        common = Some(match common {
+            None => candidates,
             Some(previous) => previous
                 .into_iter()
-                .filter(|name| required.iter().any(|candidate| candidate == name))
+                .filter(|name| candidates.iter().any(|candidate| candidate == name))
                 .collect(),
         });
     }
 
-    root.insert("type".into(), Value::String("object".into()));
-    root.insert("properties".into(), Value::Object(properties));
+    let common = common?;
+    ["operation", "scope"]
+        .into_iter()
+        .find(|preferred| common.iter().any(|candidate| candidate == preferred))
+        .map(str::to_owned)
+        .or_else(|| common.into_iter().next())
+}
 
-    if let Some(common_required) = common_required {
-        let mut required = root
-            .remove("required")
-            .and_then(|value| value.as_array().cloned())
-            .unwrap_or_default();
-        for name in common_required {
-            if !required.iter().any(|value| value.as_str() == Some(&name)) {
-                required.push(Value::String(name));
+fn collect_discriminator_candidates(schema: &Value, candidates: &mut Vec<String>) {
+    let Some(object) = schema.as_object() else {
+        return;
+    };
+    if let Some(Value::Object(properties)) = object.get("properties") {
+        for (name, property) in properties {
+            if property.get("const").is_some()
+                || property
+                    .get("enum")
+                    .and_then(Value::as_array)
+                    .is_some_and(|values| !values.is_empty())
+            {
+                candidates.push(name.clone());
             }
         }
-        if !required.is_empty() {
-            root.insert("required".into(), Value::Array(required));
+    }
+    for keyword in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(branches)) = object.get(keyword) {
+            for branch in branches {
+                collect_discriminator_candidates(branch, candidates);
+            }
         }
     }
-
-    Value::Object(root)
 }
 
 /// Project a tool parameter schema into the subset used by Gemini function
@@ -1345,6 +1456,61 @@ mod tests {
         );
         assert!(projected["properties"]["body"].is_object());
         assert_eq!(projected["required"], serde_json::json!(["operation"]));
+        assert_eq!(
+            projected["dependentSchemas"]["operation"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn object_root_tool_parameter_projection_sanitizes_non_object_roots() {
+        for schema in [
+            Value::Null,
+            Value::String("invalid".into()),
+            Value::Bool(true),
+        ] {
+            let projected = project_tool_parameters_for_object_root(schema);
+            assert_eq!(projected["type"], "object");
+            assert!(projected["properties"].is_object());
+        }
+    }
+
+    #[test]
+    fn object_root_tool_parameter_projection_removes_every_root_union_keyword() {
+        let projected = project_tool_parameters_for_object_root(serde_json::json!({
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "read" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "write" } },
+                    "required": ["operation"]
+                }
+            ],
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": { "const": "read" },
+                        "trace": { "type": "boolean" }
+                    },
+                    "required": ["operation", "trace"]
+                }
+            ]
+        }));
+
+        assert_eq!(projected["type"], "object");
+        for keyword in ["anyOf", "oneOf", "allOf"] {
+            assert!(projected.get(keyword).is_none(), "root contains {keyword}");
+        }
+        assert!(projected["dependentSchemas"]["operation"]["allOf"][0]["anyOf"].is_array());
+        assert!(projected["dependentSchemas"]["operation"]["allOf"][1]["allOf"].is_array());
     }
 
     #[test]
@@ -1389,6 +1555,48 @@ mod tests {
 
         assert!(projected.get("oneOf").is_none());
         assert!(projected["properties"]["value"].get("anyOf").is_some());
+    }
+
+    #[test]
+    fn object_root_tool_parameter_projection_keeps_discriminated_nested_union_constraints() {
+        let projected = project_tool_parameters_for_object_root(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["set", "list"] },
+                "delay_secs": { "type": "integer" },
+                "due_at": { "type": "string" }
+            },
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "list" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": { "const": "set" },
+                        "delay_secs": { "type": "integer" },
+                        "due_at": { "type": "string" }
+                    },
+                    "required": ["operation"],
+                    "oneOf": [
+                        { "required": ["delay_secs"] },
+                        { "required": ["due_at"] }
+                    ]
+                }
+            ]
+        }));
+
+        assert!(projected.get("oneOf").is_none());
+        let branches = projected["dependentSchemas"]["operation"]["oneOf"]
+            .as_array()
+            .unwrap();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(
+            branches[1]["oneOf"][0]["required"],
+            serde_json::json!(["delay_secs"])
+        );
     }
 
     #[test]
