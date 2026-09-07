@@ -44,8 +44,8 @@ Assert-SetEqual 'Tauri handlers vs Rust contract registry' $implemented $contrac
 Assert-SetEqual 'Rust contract registry vs frontend contract registry' $contractNames $frontendNames
 Assert-SetEqual 'Tauri handlers vs IPC contract docs' $implemented $documentedNames
 
-if ($contractNames.Count -ne 68) {
-	throw "expected 68 Tauri command contracts, found $($contractNames.Count)"
+if ($contractNames.Count -ne 69) {
+	throw "expected 69 Tauri command contracts, found $($contractNames.Count)"
 }
 
 Write-Host "IPC contract registry verified: $($contractNames.Count) commands, handlers/registration/frontend/docs agree."

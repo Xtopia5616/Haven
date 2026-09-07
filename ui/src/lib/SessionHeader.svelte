@@ -1,6 +1,5 @@
 <script>
 	import MaterialButton from './MaterialButton.svelte';
-	import MaterialIconButton from './MaterialIconButton.svelte';
 
 	/**
 	 * SessionHeader — keeps the active conversation identity and lifecycle
@@ -44,11 +43,9 @@
 		</div>
 	</div>
 	<div class="session-header__actions">
-		<MaterialIconButton
+		<MaterialButton
+			variant="outlined"
 			className="session-header__new"
-			size="toolbar"
-			variant="default"
-			label="新建会话"
 			title="新建会话"
 			onclick={() => onNew?.()}
 		>
@@ -63,13 +60,15 @@
 			>
 				<path d="M12 5v14M5 12h14" />
 			</svg>
-		</MaterialIconButton>
+			新建会话
+		</MaterialButton>
 		{#if hasSession}
 			<MaterialButton
-				variant="text"
+				variant="outlined"
 				className="session-header__end"
+				title="结束会话"
 				onclick={() => onEnd?.()}
-				ariaLabel="结束会话">结束</MaterialButton
+				ariaLabel="结束会话">结束会话</MaterialButton
 			>
 		{/if}
 	</div>
@@ -157,7 +156,9 @@
 		flex-shrink: 0;
 	}
 	:global(.session-header__end) {
-		color: var(--md-sys-color-error);
+		--_btn-fg: var(--md-sys-color-error);
+		--_btn-border: 1px solid var(--md-sys-color-error);
+		--_btn-state: var(--md-sys-color-error);
 	}
 	@media (max-width: 640px) {
 		.session-header {

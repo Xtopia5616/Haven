@@ -188,9 +188,15 @@ pub(crate) async fn aggregate_stream_cancellable(
     // Code-fence abort only applies when the model has tools available —
     // without tools, dumping a code sample is legitimate assistant output.
     let enforce_stream_rules = !tools.is_empty();
-    let mut stream = client
-        .chat_stream_with_tools_output_cap(messages, tools, max_output_tokens)
-        .await?;
+    // Stream creation includes the provider request and response-header wait.
+    // Keep that phase cancellable too: otherwise pressing the UI interrupt
+    // button cannot stop a provider that accepted the connection but has not
+    // returned headers yet, and the caller waits for the transport timeout.
+    let mut stream = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(LlmError::Cancelled),
+        result = client.chat_stream_with_tools_output_cap(messages, tools, max_output_tokens) => result?,
+    };
     tracing::debug!("aggregate_stream_cancellable start");
 
     // Channel decouples the stream loop from callback execution.
@@ -355,4 +361,86 @@ pub(crate) async fn aggregate_stream_cancellable(
         tracing::warn!("stream chunk consumer action panicked: {}", e);
     }
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::LlmClient;
+    use crate::types::{Embedding, SttResult};
+    use async_trait::async_trait;
+    use std::pin::Pin;
+
+    struct PendingStreamClient;
+
+    #[async_trait]
+    impl LlmClient for PendingStreamClient {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::Unknown("test client does not chat".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn chat_stream_with_tools_output_cap(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+            _tools: Vec<ToolDefinition>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            std::future::pending().await
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+
+        async fn embed(&self, _input: Vec<String>) -> Result<Embedding, LlmError> {
+            Err(LlmError::UnsupportedCapability("test".into()))
+        }
+
+        async fn transcribe(&self, _wav_data: &[u8]) -> Result<SttResult, LlmError> {
+            Err(LlmError::UnsupportedCapability("test".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_provider_stream_creation() {
+        let cancel = CancellationToken::new();
+        let rules = Arc::new(RwLock::new(Vec::new()));
+        let on_chunk = Arc::new(StdMutex::new(|_chunk: &StreamChunk| {}));
+        let client: Arc<dyn LlmClient> = Arc::new(PendingStreamClient);
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            aggregate_stream_cancellable(
+                client,
+                Vec::new(),
+                Vec::new(),
+                on_chunk,
+                task_cancel,
+                rules.as_ref(),
+                Duration::from_secs(30),
+                None,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("stream creation should be cancellable")
+            .expect("stream task should not panic");
+        assert!(matches!(result, Err(LlmError::Cancelled)));
+    }
 }

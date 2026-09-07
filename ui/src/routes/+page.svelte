@@ -239,6 +239,7 @@
 	// text and the agent actively generating output the button interrupts the
 	// current output while keeping the session resumable.
 	let modelState = $state('ready');
+	let interruptPending = $state(false);
 	$effect(() =>
 		syncStore(modelStateStore, (v) => {
 			modelState = v;
@@ -741,11 +742,14 @@
 	}
 
 	async function interruptOutput() {
-		if (!activeSessionId) return;
+		if (!activeSessionId || interruptPending) return;
+		interruptPending = true;
 		try {
 			await invoke('interrupt_session', { sessionId: activeSessionId });
 		} catch (e) {
 			reportError(e, { context: '+page', message: '中断输出失败', log: false });
+		} finally {
+			interruptPending = false;
 		}
 	}
 
@@ -1584,6 +1588,7 @@
 		{hotkeyBinding}
 		{isGenerating}
 		{sessionRunning}
+		interrupting={interruptPending}
 		allowEmptySubmit={askSelectionsReady}
 		{...inputLimits}
 		onsubmit={handleInputSubmit}

@@ -855,18 +855,28 @@ impl LlmRouter {
         cancel: CancellationToken,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        self.with_endpoint_permit(&role, || async {
-            self.chat_stream_with_tools_aggregated_cancellable_inner(
-                role,
-                messages,
-                tools,
-                hooks,
-                cancel,
-                max_output_tokens,
-            )
-            .await
-        })
-        .await
+        let operation = self.with_endpoint_permit(&role, || {
+            let cancel = cancel.clone();
+            async move {
+                self.chat_stream_with_tools_aggregated_cancellable_inner(
+                    role,
+                    messages,
+                    tools,
+                    hooks,
+                    cancel,
+                    max_output_tokens,
+                )
+                .await
+            }
+        });
+        // Cancellation also covers waiting for a concurrency permit or a
+        // shared rate-limit cooldown. Dropping the operation releases the
+        // permit and prevents a stopped session from starting later.
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(LlmError::Cancelled),
+            result = operation => result,
+        }
     }
 
     /// Re-run a stream on the primary endpoint after a stream rule aborted it,

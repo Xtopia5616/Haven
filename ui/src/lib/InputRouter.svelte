@@ -16,6 +16,7 @@
 		hotkeyBinding = 'Ctrl+Shift+Space',
 		isGenerating = false,
 		sessionRunning = false,
+		interrupting = false,
 		// When true, Enter may submit even with an empty draft (e.g. ask option
 		// chips are selected and the page will compose the answer).
 		allowEmptySubmit = false,
@@ -73,7 +74,7 @@
 	// The merged send button becomes "interrupt output" only when there is no input
 	// and the agent is actively working (generating output, a running/pending
 	// session). With fresh input present, it always stays a send button.
-	const stopMode = $derived(!hasInput && (isGenerating || sessionRunning));
+	const stopMode = $derived(!hasInput && (interrupting || isGenerating || sessionRunning));
 
 	// Allow the host page to populate the draft box programmatically (e.g.
 	// restoring a message after rollback) via `bind:this`.
@@ -623,9 +624,9 @@
 			<MaterialIconButton
 				size="toolbar"
 				variant={stopMode ? 'danger' : 'primary'}
-				label={hasInput ? '发送' : stopMode ? '中断输出' : '发送'}
-				title={hasInput ? '发送' : stopMode ? '中断当前输出' : '发送'}
-				disabled={!hasInput && !isGenerating && !sessionRunning}
+				label={hasInput ? '发送' : interrupting ? '正在停止' : stopMode ? '中断输出' : '发送'}
+				title={hasInput ? '发送' : interrupting ? '正在停止当前输出' : stopMode ? '中断当前输出' : '发送'}
+				disabled={interrupting || (!hasInput && !isGenerating && !sessionRunning)}
 				onclick={stopMode ? () => onstop?.() : handleSubmit}
 			>
 				{#if hasInput}

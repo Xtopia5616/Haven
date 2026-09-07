@@ -3,16 +3,22 @@ import { describe, expect, it, vi } from 'vitest';
 import SessionHeader from './SessionHeader.svelte';
 
 describe('SessionHeader', () => {
-	it('renders the new-session action as a square toolbar icon button', async () => {
+	it('renders new and end actions with the same text-button geometry', async () => {
 		const onNew = vi.fn();
-		render(SessionHeader as any, { onNew });
+		const onEnd = vi.fn();
+		render(SessionHeader as any, { onNew, onEnd, hasSession: true });
 
-		const button = screen.getByRole('button', { name: '新建会话' });
-		expect(button.classList.contains('session-header__new')).toBe(true);
-		expect(button.classList.contains('md-icon-btn')).toBe(true);
-		expect(button.getAttribute('data-size')).toBe('toolbar');
+		const newButton = screen.getByRole('button', { name: '新建会话' });
+		const endButton = screen.getByRole('button', { name: '结束会话' });
+		for (const button of [newButton, endButton]) {
+			expect(button.classList.contains('md-btn')).toBe(true);
+			expect(button.classList.contains('md-btn--outlined')).toBe(true);
+			expect(button.classList.contains('md-icon-btn')).toBe(false);
+		}
 
-		await fireEvent.click(button);
+		await fireEvent.click(newButton);
 		expect(onNew).toHaveBeenCalledTimes(1);
+		await fireEvent.click(endButton);
+		expect(onEnd).toHaveBeenCalledTimes(1);
 	});
 });
