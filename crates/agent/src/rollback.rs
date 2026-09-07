@@ -107,10 +107,7 @@ impl AgentLayer {
                             )
                         })?;
                     self.db
-                        .delete_messages_from(session_id, &target.created_at)?;
-                    self.db
-                        .delete_llm_usage_from(session_id, &target.created_at)?;
-                    self.db.rebuild_session_usage_from_calls(session_id)?;
+                        .truncate_session_after(session_id, &target.created_at, true)?;
                 } else if let Some(ts) = self.db.last_user_message_ts(session_id)? {
                     self.db.truncate_session_after(session_id, &ts, false)?;
                 }
@@ -241,16 +238,10 @@ impl AgentLayer {
                     .expect("pause target resolved above")
                     .created_at
                     .clone();
-                self.db.delete_messages_from(session_id, &user_ts)?;
-                // Rollback overwrites: drop step rows recorded after
-                // the user message too (they belong to the discarded
-                // timeline).
-                self.db.delete_session_steps_after(session_id, &user_ts)?;
-                // Usage for the discarded assistant turns is at-or-after the
-                // user message; cut it and rebuild cumulative counters so
-                // token stats do not stay inflated after edit-resend.
-                self.db.delete_llm_usage_from(session_id, &user_ts)?;
-                self.db.rebuild_session_usage_from_calls(session_id)?;
+                // Rollback overwrites: remove the clicked user message and
+                // every projection row after it in one transaction, including
+                // the cumulative usage rebuild.
+                self.db.truncate_session_after(session_id, &user_ts, true)?;
             } else {
                 // Strict `>` for both: the branch-point cutoff is the last
                 // message BEFORE the discarded step, so we keep the cutoff

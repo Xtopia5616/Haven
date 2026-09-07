@@ -445,7 +445,7 @@ impl Database {
         Ok(())
     }
 
-    fn rebuild_session_usage_from_calls_conn(
+    pub(crate) fn rebuild_session_usage_from_calls_conn(
         conn: &rusqlite::Connection,
         session_id: &str,
     ) -> anyhow::Result<()> {

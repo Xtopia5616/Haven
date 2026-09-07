@@ -489,11 +489,24 @@ impl Database {
             format!("DELETE FROM session_steps WHERE session_id = ?1 AND created_at {op} ?2");
         let usage_sql =
             format!("DELETE FROM llm_usage WHERE session_id = ?1 AND created_at {op} ?2");
-        conn.execute(&msgs_sql, rusqlite::params![session_id, ts])?;
-        conn.execute(&steps_sql, rusqlite::params![session_id, ts])?;
-        conn.execute(&usage_sql, rusqlite::params![session_id, ts])?;
-        drop(conn);
-        self.rebuild_session_usage_from_calls(session_id)?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            conn.execute(&msgs_sql, rusqlite::params![session_id, ts])?;
+            conn.execute(&steps_sql, rusqlite::params![session_id, ts])?;
+            conn.execute(&usage_sql, rusqlite::params![session_id, ts])?;
+            // Keep the cumulative usage projection in the same transaction as
+            // the detail-row deletion. A crash between separate commits would
+            // otherwise leave the UI showing tokens for a rolled-back branch.
+            Self::rebuild_session_usage_from_calls_conn(&conn, session_id)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
         self.cache_invalidate_messages(session_id);
         Ok(())
     }
