@@ -168,8 +168,18 @@ function moveMessages(m: Record<string, any[]>, fromKey: string, toKey: string) 
 }
 
 // Move draft messages to a real session (called when session:created fires).
-export function adoptDraftMessages(sessionId: string) {
-	sessionMessagesStore.update((m) => moveMessages(m, DRAFT_KEY, sessionId));
+// Return whether a draft was actually adopted so the session lifecycle
+// handler can bind the newly-created session before a very fast model run
+// reaches session:completed. Without that handoff, terminal cleanup can
+// evict the only in-memory copy before process_transcript returns its result.
+export function adoptDraftMessages(sessionId: string): boolean {
+	let adopted = false;
+	sessionMessagesStore.update((m) => {
+		if (!Array.isArray(m[DRAFT_KEY]) || m[DRAFT_KEY].length === 0) return m;
+		adopted = true;
+		return moveMessages(m, DRAFT_KEY, sessionId);
+	});
+	return adopted;
 }
 
 /**

@@ -328,7 +328,7 @@ describe('adoptDraftMessages', () => {
 	it('prepends draft messages into the new session before any agent streaming', () => {
 		addSessionMessage('_draft', { id: 'd1', role: 'user' });
 		setSessionMessages('t1', [{ id: 'e1' }]);
-		adoptDraftMessages('t1');
+		expect(adoptDraftMessages('t1')).toBe(true);
 		const m = storeMap();
 		expect(m.t1.map((x) => x.id)).toEqual(['d1', 'e1']);
 		expect(m.t1[0].received).toBe(true);
@@ -337,7 +337,7 @@ describe('adoptDraftMessages', () => {
 
 	it('leaves the store untouched when there is no draft', () => {
 		setSessionMessages('t1', [{ id: 'e1' }]);
-		adoptDraftMessages('t1');
+		expect(adoptDraftMessages('t1')).toBe(false);
 		expect(storeMap().t1).toHaveLength(1);
 		expect(storeMap()._draft).toBeUndefined();
 	});

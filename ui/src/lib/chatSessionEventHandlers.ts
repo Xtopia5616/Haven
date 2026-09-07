@@ -10,7 +10,7 @@ import { updateSessionMessages } from './sessionMessages.ts';
 interface ChatSessionEventContext {
 	getActiveSessionId: () => string | null;
 	isFreshSessionIntent: () => boolean;
-	adoptDraftMessages: (sessionId: string) => void;
+	adoptDraftMessages: (sessionId: string) => boolean;
 	setActiveSessionId: (sessionId: string) => void;
 	getSessionErrorId: () => string | null;
 	clearSessionError: () => void;
@@ -65,10 +65,13 @@ export function createChatSessionEventHandlers({
 			if (sessionId) {
 				// Voice input appends to the draft before the backend session exists.
 				// Move it before any agent response can land in the new session.
-				adoptDraftMessages(sessionId);
+				const adoptedDraft = adoptDraftMessages(sessionId);
 				// The submission that requested a fresh session owns the selection;
-				// this guard covers the event/invoke-resolution race window.
-				if (!isFreshSessionIntent()) setActiveSessionId(sessionId);
+				// this guard covers unrelated background-created sessions. When this
+				// event adopts the pending draft, however, it is the submission's own
+				// session and must be selected immediately: a fast response can emit
+				// session:completed before process_transcript resolves.
+				if (!isFreshSessionIntent() || adoptedDraft) setActiveSessionId(sessionId);
 			}
 			loadSessions();
 		},
