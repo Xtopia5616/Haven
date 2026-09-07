@@ -445,7 +445,8 @@ impl OpenAiAdapter {
         // Hash the exact provider tool projection, not the canonical
         // ToolDefinition. This keeps the routing key aligned with the wire
         // schema after recursive JSON canonicalization.
-        let tool_value = serde_json::to_value(Self::convert_tools(tools.to_vec())).ok()?;
+        let tool_value =
+            serde_json::to_value(Self::convert_tools(tools.to_vec(), self.style == "xai")).ok()?;
         hasher.update(crate::types::stable_json_bytes(&tool_value));
 
         let digest = hasher.finalize();
@@ -686,16 +687,23 @@ impl OpenAiAdapter {
         out
     }
 
-    fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<OpenAiTool> {
+    fn convert_tools(tools: Vec<ToolDefinition>, xai_compatible: bool) -> Vec<OpenAiTool> {
         tools
             .into_iter()
-            .map(|t| OpenAiTool {
-                tool_type: t.tool_type,
-                function: OpenAiToolFunction {
-                    name: t.function.name,
-                    description: t.function.description,
-                    parameters: crate::types::canonicalize_json(t.function.parameters),
-                },
+            .map(|t| {
+                let parameters = if xai_compatible {
+                    crate::types::project_tool_parameters_for_xai(t.function.parameters)
+                } else {
+                    t.function.parameters
+                };
+                OpenAiTool {
+                    tool_type: t.tool_type,
+                    function: OpenAiToolFunction {
+                        name: t.function.name,
+                        description: t.function.description,
+                        parameters: crate::types::canonicalize_json(parameters),
+                    },
+                }
             })
             .collect()
     }
@@ -775,7 +783,7 @@ impl OpenAiAdapter {
             temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
             tools: if has_tools {
-                Some(Self::convert_tools(tools))
+                Some(Self::convert_tools(tools, self.style == "xai"))
             } else {
                 None
             },
@@ -2668,7 +2676,7 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
         }];
-        let result = OpenAiAdapter::convert_tools(tools);
+        let result = OpenAiAdapter::convert_tools(tools, false);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].tool_type, "function");
         assert_eq!(result[0].function.name, "read");
@@ -2695,7 +2703,7 @@ mod tests {
                 },
             },
         ];
-        let result = OpenAiAdapter::convert_tools(tools);
+        let result = OpenAiAdapter::convert_tools(tools, false);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].function.name, "a");
         assert_eq!(result[1].function.name, "b");
@@ -2703,8 +2711,71 @@ mod tests {
 
     #[test]
     fn convert_tools_empty_vec() {
-        let result = OpenAiAdapter::convert_tools(vec![]);
+        let result = OpenAiAdapter::convert_tools(vec![], false);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn xai_convert_tools_flattens_root_union_schema() {
+        let tools = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "schedule".into(),
+                description: "schedule an action".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "operation": { "type": "string", "enum": ["set", "list"] }
+                    },
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "operation": { "const": "set" },
+                                "body": { "type": "string" }
+                            },
+                            "required": ["operation", "body"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": { "operation": { "const": "list" } },
+                            "required": ["operation"]
+                        }
+                    ]
+                }),
+            },
+        }];
+
+        let result = OpenAiAdapter::convert_tools(tools, true);
+        let parameters = &result[0].function.parameters;
+        assert_eq!(parameters["type"], "object");
+        assert!(parameters.get("oneOf").is_none());
+        assert_eq!(parameters["properties"]["operation"]["type"], "string");
+        assert_eq!(
+            parameters["properties"]["operation"]["enum"],
+            serde_json::json!(["set", "list"])
+        );
+    }
+
+    #[test]
+    fn openai_convert_tools_keeps_root_union_schema() {
+        let tools = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "example".into(),
+                description: "example".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "oneOf": [
+                        { "type": "object", "required": ["a"] },
+                        { "type": "object", "required": ["b"] }
+                    ]
+                }),
+            },
+        }];
+
+        let result = OpenAiAdapter::convert_tools(tools, false);
+        assert!(result[0].function.parameters.get("oneOf").is_some());
     }
 
     #[test]

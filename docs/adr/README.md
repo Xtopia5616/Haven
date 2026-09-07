@@ -92,3 +92,4 @@
 - [0089：内置工具契约名称与进程启动边界](0089-tool-contract-name-and-process-boundary.md)
 - [0090：内置工具边界与注册表安全契约](0090-tool-name-boundaries-and-security-contract.md)
 - [0091：内置工具面精简与本机操作补齐](0091-builtin-tool-surface-cleanup.md)
+- [0092：严格 OpenAI-compatible provider 的工具 schema 投影](0092-xai-tool-schema-projection.md)

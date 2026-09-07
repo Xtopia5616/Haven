@@ -461,6 +461,132 @@ pub fn sanitize_tool_parameters(schema: Value) -> Value {
     }
 }
 
+/// Project a tool parameter schema into the object-only dialect accepted by
+/// xAI's tool validator.
+///
+/// xAI rejects a root-level `anyOf`/`oneOf`/`allOf`, even when the schema also
+/// declares `type: object`. The full schema remains authoritative inside
+/// Haven: the tool registry validates every model-produced call before
+/// execution. This projection only widens the model-visible schema by
+/// merging branch properties and fields required by every object branch.
+/// Nested unions inside properties are left intact because they are valid in
+/// xAI's object-root dialect.
+pub(crate) fn project_tool_parameters_for_xai(schema: Value) -> Value {
+    let Value::Object(mut root) = schema else {
+        return serde_json::json!({"type": "object", "properties": {}});
+    };
+
+    let mut branches = Vec::new();
+    for keyword in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(items)) = root.remove(keyword) {
+            branches.extend(items);
+        }
+    }
+    if branches.is_empty() {
+        return Value::Object(root);
+    }
+
+    let mut properties = match root.remove("properties") {
+        Some(Value::Object(properties)) => properties,
+        _ => Map::new(),
+    };
+    let mut common_required: Option<Vec<String>> = None;
+
+    for branch in branches {
+        let Value::Object(branch) = branch else {
+            continue;
+        };
+
+        if let Some(Value::Object(branch_properties)) = branch.get("properties") {
+            for (name, schema) in branch_properties {
+                match properties.get_mut(name) {
+                    Some(existing) if existing != schema => {
+                        let merged = merge_xai_property_schemas(existing.clone(), schema.clone());
+                        *existing = merged;
+                    }
+                    Some(_) => {}
+                    None => {
+                        properties.insert(name.clone(), schema.clone());
+                    }
+                }
+            }
+        }
+
+        let required = branch
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        common_required = Some(match common_required {
+            None => required,
+            Some(previous) => previous
+                .into_iter()
+                .filter(|name| required.iter().any(|candidate| candidate == name))
+                .collect(),
+        });
+    }
+
+    root.insert("type".into(), Value::String("object".into()));
+    root.insert("properties".into(), Value::Object(properties));
+
+    if let Some(common_required) = common_required {
+        let mut required = root
+            .remove("required")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        for name in common_required {
+            if !required.iter().any(|value| value.as_str() == Some(&name)) {
+                required.push(Value::String(name));
+            }
+        }
+        if !required.is_empty() {
+            root.insert("required".into(), Value::Array(required));
+        }
+    }
+
+    Value::Object(root)
+}
+
+fn merge_xai_property_schemas(left: Value, right: Value) -> Value {
+    let mut values = Vec::new();
+    for schema in [&left, &right] {
+        if let Some(value) = schema.get("const") {
+            if !values.iter().any(|existing| existing == value) {
+                values.push(value.clone());
+            }
+        } else if let Some(enum_values) = schema.get("enum").and_then(Value::as_array) {
+            for value in enum_values {
+                if !values.iter().any(|existing| existing == value) {
+                    values.push(value.clone());
+                }
+            }
+        }
+    }
+    if !values.is_empty() {
+        let mut merged = Map::new();
+        let left_type = left.get("type").and_then(Value::as_str);
+        let right_type = right.get("type").and_then(Value::as_str);
+        let property_type = match (left_type, right_type) {
+            (Some(left_type), Some(right_type)) if left_type == right_type => Some(left_type),
+            (Some(left_type), None) | (None, Some(left_type)) => Some(left_type),
+            _ => None,
+        };
+        if let Some(property_type) = property_type {
+            merged.insert("type".into(), Value::String(property_type.into()));
+        }
+        merged.insert("enum".into(), Value::Array(values));
+        return Value::Object(merged);
+    }
+
+    serde_json::json!({"anyOf": [left, right]})
+}
+
 fn sanitize_schema_value(value: &mut Value) {
     match value {
         Value::Object(map) => sanitize_schema_object(map),
@@ -971,6 +1097,84 @@ mod tests {
         }));
         assert_eq!(cleaned["additionalProperties"], false);
         assert_eq!(cleaned["properties"]["cwd"]["additionalProperties"], false);
+    }
+
+    #[test]
+    fn xai_tool_parameter_projection_flattens_root_unions() {
+        let projected = project_tool_parameters_for_xai(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["set", "list"] }
+            },
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": { "const": "set" },
+                        "body": { "type": "string" }
+                    },
+                    "required": ["operation", "body"]
+                },
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "list" } },
+                    "required": ["operation"]
+                }
+            ]
+        }));
+
+        assert_eq!(projected["type"], "object");
+        assert!(projected.get("oneOf").is_none());
+        assert_eq!(
+            projected["properties"]["operation"]["enum"],
+            serde_json::json!(["set", "list"])
+        );
+        assert!(projected["properties"]["body"].is_object());
+        assert_eq!(projected["required"], serde_json::json!(["operation"]));
+    }
+
+    #[test]
+    fn xai_tool_parameter_projection_adds_object_root_and_merges_const_values() {
+        let projected = project_tool_parameters_for_xai(serde_json::json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "get" } },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "set" } },
+                    "required": ["operation", "value"]
+                }
+            ]
+        }));
+
+        assert_eq!(projected["type"], "object");
+        assert_eq!(
+            projected["properties"]["operation"]["enum"],
+            serde_json::json!(["get", "set"])
+        );
+        assert_eq!(projected["required"], serde_json::json!(["operation"]));
+    }
+
+    #[test]
+    fn xai_tool_parameter_projection_preserves_nested_unions() {
+        let projected = project_tool_parameters_for_xai(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [{ "type": "string" }, { "type": "integer" }]
+                }
+            },
+            "oneOf": [
+                { "type": "object", "properties": { "value": {} } },
+                { "type": "object", "properties": { "value": {} } }
+            ]
+        }));
+
+        assert!(projected.get("oneOf").is_none());
+        assert!(projected["properties"]["value"].get("anyOf").is_some());
     }
 
     #[test]
