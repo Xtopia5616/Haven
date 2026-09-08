@@ -57,10 +57,10 @@
 	// Secondary workspaces are intentionally loaded after the chat shell is
 	// interactive. Their views contain the largest forms, lists and tool cards;
 	// keeping them out of the initial module graph makes the first conversation
-	// paint independent of settings/tools/memory/task-center code.
+	// paint independent of settings/tools/memory code. TaskCenter is nested in
+	// the history workspace and is loaded with MemoryView.
 	/** @type {Record<string, () => Promise<{ default: any }>>} */
 	const LAZY_VIEW_LOADERS = {
-		tasks: () => import('$lib/TaskCenter.svelte'),
 		tools: () => import('$lib/views/ToolsView.svelte'),
 		memory: () => import('$lib/views/MemoryView.svelte'),
 		settings: () => import('$lib/views/SettingsView.svelte'),
@@ -99,16 +99,17 @@
 	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
 	// also makes direct deep links (/tools etc.) restore the right tab.
 	// Legacy `history` / `/history` map to `memory` (the history center).
-	const TAB_IDS = ['chat', 'tasks', 'tools', 'memory', 'settings'];
+	const TAB_IDS = ['chat', 'tools', 'memory', 'settings'];
 	function initialTabFromUrl() {
 		if (typeof window === 'undefined') return 'chat';
 		const url = get(page).url;
 		const tabParam = url.searchParams.get('tab');
 		if (tabParam === 'history') return 'memory';
+		if (tabParam === 'tasks') return 'memory';
 		if (tabParam && TAB_IDS.includes(tabParam)) return tabParam;
 		const path = url.pathname;
 		if (path === '/tools') return 'tools';
-		if (String(path) === '/tasks') return 'tasks';
+		if (String(path) === '/tasks') return 'memory';
 		if (path === '/memory' || path === '/history') return 'memory';
 		if (path === '/settings') return 'settings';
 		return 'chat';
@@ -121,7 +122,6 @@
 	let visited = $state({
 		chat: true,
 		tools: initialTab === 'tools',
-		tasks: initialTab === 'tasks',
 		memory: initialTab === 'memory',
 		settings: initialTab === 'settings',
 	});
@@ -152,27 +152,30 @@
 	}
 
 	/** @param {string} id */
-	function applyTab(id) {
+	function applyTab(id, section = '') {
 		applyingTab = true;
 		activateTab(id);
-		void goto('/?tab=' + id, { replaceState: true }).finally(() => {
+		const params = new URLSearchParams({ tab: id });
+		if (section) params.set('section', section);
+		void goto('/?' + params.toString(), { replaceState: true }).finally(() => {
 			applyingTab = false;
 		});
 	}
 
-	/** @param {string} id */
-	async function switchTab(id) {
-		if (id === activeTab || leaveSettingsPending) return;
+	/** @param {string} id @param {string} [section] */
+	async function switchTab(id, section = '') {
+		if ((id === activeTab && !section) || leaveSettingsPending) return false;
 		if (activeTab === 'settings' && id !== 'settings') {
 			leaveSettingsPending = true;
 			try {
 				const ok = await confirmLeaveSettingsIfNeeded();
-				if (!ok) return;
+				if (!ok) return false;
 			} finally {
 				leaveSettingsPending = false;
 			}
 		}
-		applyTab(id);
+		applyTab(id, section);
+		return true;
 	}
 
 	/** @param {string} sessionId */
@@ -349,23 +352,31 @@
 		const url = $page.url;
 		const path = url.pathname;
 		if (path !== '/') {
-			// Legacy direct deep link (/tools, /memory|/history, /settings):
+			// Legacy direct deep link (/tools, /tasks, /memory|/history, /settings):
 			// normalize to the keep-alive URL scheme so the root route (chat)
-			// stays mounted. `/history` and `?tab=history` map to the history center.
+			// stays mounted. `/tasks` maps to the history center's task section.
+			const isLegacyTasksPath = String(path) === '/tasks';
 			const t =
 				path === '/tools'
 					? 'tools'
-					: String(path) === '/tasks'
-						? 'tasks'
+					: isLegacyTasksPath
+						? 'memory'
 						: path === '/memory' || path === '/history'
 							? 'memory'
 							: path === '/settings'
 								? 'settings'
 								: 'chat';
-			goto('/?tab=' + t, { replaceState: true });
+			goto(
+				isLegacyTasksPath ? '/?tab=memory&section=tasks' : '/?tab=' + t,
+				{ replaceState: true },
+			);
 			return;
 		}
 		const rawTab = url.searchParams.get('tab');
+		if (rawTab === 'tasks') {
+			goto('/?tab=memory&section=tasks', { replaceState: true });
+			return;
+		}
 		const tabParam = rawTab === 'history' ? 'memory' : rawTab;
 		const t = TAB_IDS.includes(tabParam || '') ? tabParam || 'chat' : 'chat';
 		if (t === activeTab) {
@@ -473,8 +484,11 @@
 	// Completed-task history (terminal background rows + fired scheduled rows),
 	// fetched whenever the panel opens so it reflects the persisted table.
 	let actionHistory = /** @type {Array<any>} */ ($state([]));
+	const taskCenterVisible = $derived(
+		activeTab === 'memory' && $page.url.searchParams.get('section') === 'tasks',
+	);
 	$effect(() => {
-		if (activeTab !== 'tasks') return;
+		if (!taskCenterVisible) return;
 		// Fetch a wider window so the task center can show cross-session history.
 		refreshActionHistory(null, 200).then((rows) => {
 			if (rows) actionHistory = rows;
@@ -495,15 +509,10 @@
 	let sessions = /** @type {Array<any>} */ ($state([]));
 	$effect(() => syncStore(sessionStore, (v) => (sessions = v)));
 
-	// Foreground running sessions: active (non-terminal) conversations.
-	const runningSessions = $derived(
-		sessions.filter((t) => isBusyStatus(t.status) || isPausedStatus(t.status)),
-	);
-
 	// While the panel is open, re-render once a second so countdowns tick.
 	let countdownTick = $state(0);
 	$effect(() => {
-		if (activeTab !== 'tasks') return;
+		if (!taskCenterVisible) return;
 		const t = setInterval(() => (countdownTick += 1), 1000);
 		return () => clearInterval(t);
 	});
@@ -552,7 +561,7 @@
 				// cancelled: that would overwrite a successful terminal payload
 				// and block a later action:finished repair.
 				removeAction(actionId);
-				if (activeTab === 'tasks') {
+				if (taskCenterVisible) {
 					refreshActionHistory(null, 200).then((rows) => {
 						if (rows) actionHistory = rows;
 					});
@@ -987,7 +996,6 @@
 
 	const tabs = [
 		{ id: 'chat', label: '对话' },
-		{ id: 'tasks', label: '任务' },
 		{ id: 'tools', label: '工具' },
 		{ id: 'memory', label: '历史' },
 		{ id: 'settings', label: '设置' },
@@ -1016,7 +1024,7 @@
 			{awaitingBackgroundActive}
 			{runningActionCount}
 			{pendingScheduledActions}
-			onOpenTasks={() => switchTab('tasks')}
+			onOpenTasks={() => switchTab('memory', 'tasks')}
 		/>
 	{/snippet}
 	{#snippet content()}
@@ -1068,15 +1076,16 @@
 								<LoadingState label="正在加载工具…" detail="正在准备工具列表" />
 							{/if}
 						</div>
-					{:else if tab.id === 'tasks'}
+					{:else if tab.id === 'memory'}
 						<div class="page-shell">
-							{#if lazyViewComponents.tasks}
+							{#if lazyViewComponents.memory}
 								<WorkspaceSurface
 									entering={enteringTab === tab.id}
 									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
 										finishTabEntry(tab.id, event)}
 								>
 									<TabComponent
+										onNewSession={startNewSessionFromTasks}
 										{runningBackgroundActions}
 										{pendingScheduledActions}
 										{completedActions}
@@ -1089,35 +1098,6 @@
 										onCancel={handleCancelAction}
 										onDeleteHistory={handleDeleteHistory}
 									/>
-								</WorkspaceSurface>
-							{:else if lazyViewStates.tasks === 'error'}
-								<WorkspaceSurface
-									entering={enteringTab === tab.id}
-									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
-										finishTabEntry(tab.id, event)}
-								>
-									<div class="lazy-view-placeholder" role="alert">
-										<span>任务暂时无法加载</span>
-										<MaterialButton
-											variant="outlined"
-											label="重试"
-											onclick={() => retryTabView('tasks')}
-										/>
-									</div>
-								</WorkspaceSurface>
-							{:else}
-								<LoadingState label="正在加载任务…" detail="正在准备任务列表" />
-							{/if}
-						</div>
-					{:else if tab.id === 'memory'}
-						<div class="page-shell">
-							{#if lazyViewComponents.memory}
-								<WorkspaceSurface
-									entering={enteringTab === tab.id}
-									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
-										finishTabEntry(tab.id, event)}
-								>
-									<TabComponent onNewSession={startNewSessionFromTasks} />
 								</WorkspaceSurface>
 							{:else if lazyViewStates.memory === 'error'}
 								<WorkspaceSurface

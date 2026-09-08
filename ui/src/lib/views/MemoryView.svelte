@@ -19,6 +19,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { invoke } from '$lib/tauri.ts';
 	import { registerSessionListener } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -28,9 +29,23 @@
 	import SessionHistory from './SessionHistory.svelte';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
+	import TaskCenter from '$lib/TaskCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 
-	let { onNewSession = () => {} } = $props();
+	let {
+		onNewSession = () => {},
+		runningBackgroundActions = [],
+		pendingScheduledActions = [],
+		completedActions = [],
+		actionStatusLabel = /** @type {(status: string) => string} */ ((status) => status || ''),
+		sessionTitleFor = () => '',
+		actionDuration = () => '',
+		scheduledActionCountdown = () => '',
+		formatHistoryTime = () => '',
+		onOpenSession = () => {},
+		onCancel = () => {},
+		onDeleteHistory = () => {},
+	} = $props();
 
 	/** @type {MemorySession[]} */
 	let sessions = $state([]);
@@ -57,9 +72,15 @@
 	let renameValue = $state('');
 	/** @type {{ open: boolean; x: number; y: number; session: MemorySession | null }} */
 	let ctxMenu = $state({ open: false, x: 0, y: 0, session: null });
-	let activeTab = $state('sessions');
+	const MEMORY_TAB_IDS = ['sessions', 'tasks', 'memory'];
+	function memoryTabFromUrl() {
+		const section = get(page).url.searchParams.get('section');
+		return MEMORY_TAB_IDS.includes(section || '') ? section : 'sessions';
+	}
+	let activeTab = $state(memoryTabFromUrl());
 	const memoryTabs = [
 		{ id: 'sessions', label: '会话历史' },
+		{ id: 'tasks', label: '任务' },
 		{ id: 'memory', label: '记忆' },
 	];
 	let memoryRecall = $state({
@@ -129,10 +150,26 @@
 		unlistenLifecycle = [];
 	});
 	$effect(() => {
+		const section = $page.url.searchParams.get('section');
+		const nextTab = MEMORY_TAB_IDS.includes(section || '') ? section : 'sessions';
+		if (activeTab !== nextTab) activeTab = nextTab;
+	});
+	$effect(() => {
 		if (activeTab !== 'memory') return;
 		factSourceFilter;
 		loadFacts();
 	});
+
+	/** @param {string} tabId */
+	function selectMemoryTab(tabId) {
+		if (!MEMORY_TAB_IDS.includes(tabId)) return;
+		activeTab = tabId;
+		const params = new URLSearchParams(get(page).url.searchParams);
+		params.set('tab', 'memory');
+		if (tabId === 'sessions') params.delete('section');
+		else params.set('section', tabId);
+		void goto('/?' + params.toString(), { replaceState: true });
+	}
 
 	/** @param {Record<string, any>} extra */
 	function filterParams(extra) {
@@ -477,7 +514,7 @@
 </script>
 
 <div class="memory-page">
-	<WorkspacePageHeader title="历史" description="回顾、搜索和继续历史会话。">
+	<WorkspacePageHeader title="历史" description="回顾会话、任务执行记录和长期记忆。">
 		{#snippet children()}
 			{#if activeTab === 'sessions'}
 				<span class="workspace-count md-chip">共 {totalCount} 条历史</span>
@@ -521,7 +558,7 @@
 				role="tab"
 				aria-controls="memory-panel"
 				aria-selected={activeTab === tab.id}
-				onclick={() => (activeTab = tab.id)}>{tab.label}</button
+				onclick={() => selectMemoryTab(tab.id)}>{tab.label}</button
 			>{/each}
 	</div>
 	{#key activeTab}
@@ -566,6 +603,20 @@
 					{displayTitle}
 					{statusVariant}
 					{formatMessageTime}
+				/>
+			{:else if activeTab === 'tasks'}
+				<TaskCenter
+					{runningBackgroundActions}
+					{pendingScheduledActions}
+					{completedActions}
+					{actionStatusLabel}
+					{sessionTitleFor}
+					{actionDuration}
+					{scheduledActionCountdown}
+					{formatHistoryTime}
+					onOpenSession={onOpenSession}
+					onCancel={onCancel}
+					onDeleteHistory={onDeleteHistory}
 				/>
 			{:else}
 				<div class="memory-tools-view" aria-label="记忆管理与检索">
