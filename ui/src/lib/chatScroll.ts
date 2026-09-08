@@ -16,6 +16,17 @@ export function distanceFromChatBottom(element: {
 	return Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight);
 }
 
+/**
+ * Return the viewport distance occupied by a bottom overlay.
+ *
+ * Measuring the two edges instead of deriving the value from the overlay's
+ * height keeps the scroll clearance correct when the overlay is positioned by
+ * CSS (including its bottom offset and any future transforms).
+ */
+export function chatBottomOverlayClearance(pageBottom: number, overlayTop: number) {
+	return Math.max(0, pageBottom - overlayTop);
+}
+
 /** Whether the conversation viewport is close enough to its end to follow it. */
 export function isChatNearBottom(
 	element: {

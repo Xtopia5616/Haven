@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { distanceFromChatBottom, isChatNearBottom, shouldFollowChatScroll } from './chatScroll';
+import {
+	chatBottomOverlayClearance,
+	distanceFromChatBottom,
+	isChatNearBottom,
+	shouldFollowChatScroll,
+} from './chatScroll';
 
 function viewport(overrides: Partial<HTMLElement> = {}) {
 	return {
@@ -11,6 +16,11 @@ function viewport(overrides: Partial<HTMLElement> = {}) {
 }
 
 describe('chat scroll position helpers', () => {
+	it('reserves the real space above a bottom overlay', () => {
+		expect(chatBottomOverlayClearance(900, 580)).toBe(320);
+		expect(chatBottomOverlayClearance(900, 940)).toBe(0);
+	});
+
 	it('keeps the distance from the bottom non-negative', () => {
 		expect(distanceFromChatBottom(viewport({ scrollTop: 900 }))).toBe(0);
 	});

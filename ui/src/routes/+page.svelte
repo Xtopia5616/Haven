@@ -72,6 +72,7 @@
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import {
 		CHAT_SCROLL_SETTLED_THRESHOLD,
+		chatBottomOverlayClearance,
 		isChatNearBottom,
 		shouldFollowChatScroll,
 	} from '$lib/chatScroll.ts';
@@ -1098,21 +1099,33 @@
 	$effect(() => syncStore(resumeTargetStore, (v) => processResumeTarget(v)));
 
 	// The composer is a bottom overlay so messages can continue underneath its
-	// transparent outer area. Keep the scroll clearance in sync with attachments
-	// and the auto-growing textarea instead of relying on a fixed height.
+	// transparent outer area. Measure the actual distance from the page bottom to
+	// the composer's top instead of deriving it from height + a duplicated CSS
+	// offset. This keeps the last message above the opaque inner surface even
+	// after a resize, attachment change, or narrow-window reflow.
 	$effect(() => {
 		const page = chatPageEl;
 		if (!browser || !page || typeof ResizeObserver === 'undefined') return;
 		const composer = page.querySelector('.input-area');
 		if (!(composer instanceof HTMLElement)) return;
 
-		const updateComposerHeight = () => {
-			page.style.setProperty('--chat-composer-height', `${composer.getBoundingClientRect().height}px`);
+		const updateComposerClearance = () => {
+			const pageRect = page.getBoundingClientRect();
+			const composerRect = composer.getBoundingClientRect();
+			const clearance = chatBottomOverlayClearance(pageRect.bottom, composerRect.top);
+			page.style.setProperty('--chat-composer-clearance', `${clearance}px`);
+			// A composer resize changes scrollHeight via the padding below. Preserve
+			// the user's follow-to-bottom intent after that layout update.
+			if (autoFollow) scrollToBottom();
 		};
-		const observer = new ResizeObserver(updateComposerHeight);
+		const observer = new ResizeObserver(updateComposerClearance);
 		observer.observe(composer);
-		updateComposerHeight();
-		return () => observer.disconnect();
+		observer.observe(page);
+		updateComposerClearance();
+		return () => {
+			observer.disconnect();
+			page.style.removeProperty('--chat-composer-clearance');
+		};
 	});
 
 	onMount(async () => {
@@ -1740,9 +1753,7 @@
 		overscroll-behavior-x: none;
 		touch-action: pan-y;
 		padding: var(--md-sys-space-lg) var(--md-sys-space-md)
-			calc(
-				var(--chat-composer-height, 0px) + var(--md-sys-space-md) + var(--md-sys-space-sm)
-			);
+			calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
 	}
 	:global(.messages-area.drag-scroll--active) {
 		cursor: grabbing;
@@ -1751,9 +1762,7 @@
 	.jump-bottom-anchor {
 		position: absolute;
 		right: var(--md-sys-space-md);
-		bottom: calc(
-			var(--chat-composer-height, 0px) + var(--md-sys-space-md) + var(--md-sys-space-sm)
-		);
+		bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
 		display: flex;
 		z-index: 5;
 		pointer-events: none;
