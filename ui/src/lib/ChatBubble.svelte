@@ -748,14 +748,11 @@
 	}
 	.md-content :global(.md-table-wrap) {
 		position: relative;
-		overflow: hidden;
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface);
 		margin: 0 0 0.75em;
 	}
 	.md-content :global(.md-table-wrap > .md-table) {
 		margin: 0;
-		border-radius: inherit;
+		border-radius: 0;
 	}
 	.md-content :global(.md-code-bar) {
 		display: flex;

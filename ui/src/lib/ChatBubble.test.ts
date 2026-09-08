@@ -594,7 +594,7 @@ describe('ChatBubble markdown tables', () => {
 	const renderMd = (content: string) =>
 		render(ChatBubble, { role: 'assistant', content, type: null, time: null });
 
-	it('keeps the table surface wrapped and marked for the shared rounded treatment', async () => {
+	it('keeps the table surface wrapped and marked for the shared square treatment', async () => {
 		const { container } = renderMd('| Name | Value |\n| --- | --- |\n| A | 1 |');
 
 		await waitFor(() => expect(container.querySelector('.md-table-wrap')).toBeTruthy());
