@@ -28,9 +28,7 @@
 	import SessionHistory from './SessionHistory.svelte';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
-	import WorkspaceMetricStrip from '$lib/WorkspaceMetricStrip.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
-	import WorkspaceScopeNote from '$lib/WorkspaceScopeNote.svelte';
 
 	let { onNewSession = () => {} } = $props();
 
@@ -62,8 +60,7 @@
 	let activeTab = $state('sessions');
 	const memoryTabs = [
 		{ id: 'sessions', label: '会话历史' },
-		{ id: 'facts', label: '长期记忆' },
-		{ id: 'recall', label: '记忆检索' },
+		{ id: 'memory', label: '记忆' },
 	];
 	let memoryRecall = $state({
 		query: '',
@@ -90,27 +87,6 @@
 		{ value: 'user', label: '手动' },
 		{ value: 'inferred', label: '推断' },
 	];
-	const metricItems = $derived([
-		{
-			id: 'sessions',
-			value: totalCount,
-			label: '历史会话',
-			detail: '可回看、重命名或继续',
-		},
-		{
-			id: 'facts',
-			value: factsLoaded ? facts.length : '—',
-			label: '长期记忆',
-			detail: '跨会话保留的事实',
-			tone: 'running',
-		},
-		{
-			id: 'recall',
-			value: memoryRecall.searched ? memoryRecall.results.length : '—',
-			label: '最近检索',
-			detail: memoryRecall.searched ? '条匹配结果' : '尚未开始检索',
-		},
-	]);
 	const todayISO = $derived.by(() => {
 		const now = new Date();
 		return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -153,7 +129,7 @@
 		unlistenLifecycle = [];
 	});
 	$effect(() => {
-		if (activeTab !== 'facts') return;
+		if (activeTab !== 'memory') return;
 		factSourceFilter;
 		loadFacts();
 	});
@@ -501,7 +477,7 @@
 </script>
 
 <div class="memory-page">
-	<WorkspacePageHeader title="记忆" description="回顾历史会话，管理长期记忆和检索结果。">
+	<WorkspacePageHeader title="历史" description="回顾、搜索和继续历史会话。">
 		{#snippet children()}
 			{#if activeTab === 'sessions'}
 				<span class="workspace-count md-chip">共 {totalCount} 条历史</span>
@@ -537,11 +513,6 @@
 			{/if}
 		{/snippet}
 	</WorkspacePageHeader>
-	<WorkspaceScopeNote
-		title="记忆负责保存与回顾"
-		message="会话历史用于回看和继续，长期记忆用于跨会话保留；正在执行或待执行的工作请到“任务”。"
-	/>
-	<WorkspaceMetricStrip items={metricItems} />
 	<div class="md-tabs memory-tabs" role="tablist">
 		{#each memoryTabs as tab}<button
 				type="button"
@@ -558,7 +529,7 @@
 			id="memory-panel"
 			class="memory-panel motion-surface-enter"
 			role="tabpanel"
-			aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '记忆'}
+			aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '历史'}
 		>
 			{#if activeTab === 'sessions'}
 				<SessionHistory
@@ -596,24 +567,25 @@
 					{statusVariant}
 					{formatMessageTime}
 				/>
-			{:else if activeTab === 'facts'}
-				<LongTermFacts
-					{facts}
-					{factsLoaded}
-					{factSourceFilter}
-					{factSourceOptions}
-					{newFact}
-					{addingFact}
-					onFactSourceFilterChange={handleFactSourceFilterChange}
-					onAddFact={addFact}
-					onDeleteFact={deleteFact}
-				/>
 			{:else}
-				<MemoryRecall
-					{memoryRecall}
-					onRecallKindChange={handleRecallKindChange}
-					onRunRecall={runRecall}
-				/>
+				<div class="memory-tools-view" aria-label="记忆管理与检索">
+					<LongTermFacts
+						{facts}
+						{factsLoaded}
+						{factSourceFilter}
+						{factSourceOptions}
+						{newFact}
+						{addingFact}
+						onFactSourceFilterChange={handleFactSourceFilterChange}
+						onAddFact={addFact}
+						onDeleteFact={deleteFact}
+					/>
+					<MemoryRecall
+						{memoryRecall}
+						onRecallKindChange={handleRecallKindChange}
+						onRunRecall={runRecall}
+					/>
+				</div>
 			{/if}
 		</div>
 	{/key}
@@ -706,6 +678,12 @@
 		max-width: var(--md-sys-content-max-width);
 	}
 	.memory-panel {
+		min-width: 0;
+	}
+	.memory-tools-view {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-3xl);
 		min-width: 0;
 	}
 	.header-actions {

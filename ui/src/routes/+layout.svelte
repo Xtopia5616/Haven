@@ -98,7 +98,7 @@
 	// instant and rapid tab clicks never tear down a view that is being
 	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
 	// also makes direct deep links (/tools etc.) restore the right tab.
-	// Legacy `history` / `/history` map to `memory` (X6 memory center).
+	// Legacy `history` / `/history` map to `memory` (the history center).
 	const TAB_IDS = ['chat', 'tasks', 'tools', 'memory', 'settings'];
 	function initialTabFromUrl() {
 		if (typeof window === 'undefined') return 'chat';
@@ -351,7 +351,7 @@
 		if (path !== '/') {
 			// Legacy direct deep link (/tools, /memory|/history, /settings):
 			// normalize to the keep-alive URL scheme so the root route (chat)
-			// stays mounted. `/history` and `?tab=history` map to memory (X6).
+			// stays mounted. `/history` and `?tab=history` map to the history center.
 			const t =
 				path === '/tools'
 					? 'tools'
@@ -989,7 +989,7 @@
 		{ id: 'chat', label: '对话' },
 		{ id: 'tasks', label: '任务' },
 		{ id: 'tools', label: '工具' },
-		{ id: 'memory', label: '记忆' },
+		{ id: 'memory', label: '历史' },
 		{ id: 'settings', label: '设置' },
 	];
 </script>
@@ -1077,7 +1077,6 @@
 										finishTabEntry(tab.id, event)}
 								>
 									<TabComponent
-										{runningSessions}
 										{runningBackgroundActions}
 										{pendingScheduledActions}
 										{completedActions}
@@ -1089,7 +1088,6 @@
 										onOpenSession={openTaskSession}
 										onCancel={handleCancelAction}
 										onDeleteHistory={handleDeleteHistory}
-										onNewSession={startNewSessionFromTasks}
 									/>
 								</WorkspaceSurface>
 							{:else if lazyViewStates.tasks === 'error'}
@@ -1128,7 +1126,7 @@
 										finishTabEntry(tab.id, event)}
 								>
 									<div class="lazy-view-placeholder" role="alert">
-										<span>记忆页面暂时无法加载</span>
+										<span>历史页面暂时无法加载</span>
 										<MaterialButton
 											variant="outlined"
 											label="重试"
@@ -1137,7 +1135,7 @@
 									</div>
 								</WorkspaceSurface>
 							{:else}
-								<LoadingState label="正在加载记忆…" detail="正在准备记忆中心" />
+								<LoadingState label="正在加载历史…" detail="正在准备历史记录" />
 							{/if}
 						</div>
 					{:else if tab.id === 'settings'}

@@ -8,12 +8,9 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
-	import WorkspaceMetricStrip from '$lib/WorkspaceMetricStrip.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
-	import WorkspaceScopeNote from '$lib/WorkspaceScopeNote.svelte';
 
 	let {
-		runningSessions = [],
 		runningBackgroundActions = [],
 		pendingScheduledActions = [],
 		completedActions = [],
@@ -25,7 +22,6 @@
 		onOpenSession = () => {},
 		onCancel = () => {},
 		onDeleteHistory = () => {},
-		onNewSession = () => {},
 	} = $props();
 
 	let selectedTaskId = $state(null);
@@ -34,15 +30,6 @@
 	let filter = $state('all');
 
 	const taskRows = $derived.by(() => [
-		...runningSessions.map((session) => ({
-			id: session.id,
-			kind: 'foreground',
-			title: session.title || session.input || '当前会话',
-			subtitle: session.status === 'paused' ? '已暂停，可继续' : taskKindLabel('foreground'),
-			status: session.status,
-			sessionId: session.id,
-			value: session,
-		})),
 		...runningBackgroundActions.map((action) => ({
 			id: action.id,
 			kind: 'background',
@@ -83,35 +70,6 @@
 		});
 	});
 	const hasFilters = $derived(Boolean(query.trim() || filter !== 'all'));
-	const metricItems = $derived([
-		{
-			id: 'current',
-			value: runningSessions.length,
-			label: '当前会话',
-			detail: '正在处理或等待继续',
-			tone: 'running',
-		},
-		{
-			id: 'background',
-			value: runningBackgroundActions.length,
-			label: '处理中',
-			detail: '后台任务',
-			tone: 'running',
-		},
-		{
-			id: 'scheduled',
-			value: pendingScheduledActions.length,
-			label: '待执行',
-			detail: '定时任务',
-			tone: 'scheduled',
-		},
-		{
-			id: 'history',
-			value: completedActions.length,
-			label: '执行记录',
-			detail: '已完成、失败或取消',
-		},
-	]);
 
 	const selectedRow = $derived(taskRows.find((row) => row.id === selectedTaskId) || null);
 
@@ -123,22 +81,16 @@
 	const taskGroups = $derived.by(() => {
 		return [
 			{
-				id: 'session',
-				label: '当前会话',
-				description: '正在运行、排队或等待继续的会话。',
-				rows: filteredRows.filter((row) => row.kind === 'foreground'),
-			},
-			{
 				id: 'actions',
-				label: '后台与定时任务',
+				label: '进行中与待执行',
 				description: '可取消的后台执行，以及尚未触发的定时任务。',
-				rows: filteredRows.filter((row) => row.kind !== 'foreground' && isLiveAction(row)),
+				rows: filteredRows.filter((row) => isLiveAction(row)),
 			},
 			{
 				id: 'history',
 				label: '执行记录',
 				description: '已完成、失败或已取消的任务结果。',
-				rows: filteredRows.filter((row) => row.kind !== 'foreground' && !isLiveAction(row)),
+				rows: filteredRows.filter((row) => !isLiveAction(row)),
 			},
 		].filter((group) => group.rows.length > 0);
 	});
@@ -152,12 +104,6 @@
 
 	/** @param {any} row */
 	function rowStatus(row) {
-		if (row.kind === 'foreground') {
-			if (row.status === 'running') return '运行中';
-			if (row.status === 'paused' || String(row.status || '').startsWith('paused_'))
-				return '已暂停';
-			return actionStatusLabel(row.status) || row.subtitle;
-		}
 		if (row.kind === 'scheduled') return row.status === 'scheduled' ? '待执行' : '已执行';
 		return actionStatusLabel(row.status);
 	}
@@ -173,8 +119,7 @@
 	/** @param {any} row */
 	function rowSummary(row) {
 		const value = row.value || {};
-		const candidates =
-			row.kind === 'foreground' ? [value.input] : [value.command, value.preview, value.body];
+		const candidates = [value.command, value.preview, value.body];
 		for (const candidate of candidates) {
 			if (
 				typeof candidate === 'string' &&
@@ -185,7 +130,6 @@
 				return candidate.trim();
 			}
 		}
-		if (row.kind === 'foreground') return '正在处理这段会话';
 		if (row.kind === 'scheduled') {
 			return `将在${rowTiming(row)}执行 · ${scheduleModeLabel(value.mode)}`;
 		}
@@ -196,14 +140,12 @@
 
 	/** @param {any} row */
 	function rowContext(row) {
-		if (row.kind === 'foreground') return row.status === 'paused' ? '等待继续' : '当前会话';
 		if (row.kind === 'scheduled') return scheduleModeLabel(row.value?.mode);
 		return sessionTitleFor(row.value) || '无关联会话';
 	}
 
 	/** @param {any} row */
 	function rowTiming(row) {
-		if (row.kind === 'foreground') return row.status === 'paused' ? '可继续' : '正在处理';
 		if (row.kind === 'background') return actionDuration(row.value) || '耗时未知';
 		if (row.status === 'scheduled') {
 			return scheduledActionCountdown(row.value?.dueAt) || '时间未设置';
@@ -248,20 +190,9 @@
 <section class="task-center" aria-labelledby="task-center-title">
 	<WorkspacePageHeader
 		title="任务"
-		description="查看正在执行、待执行和已完成的工作。"
+		description="查看后台任务、定时任务及其执行记录。"
 		headingId="task-center-title"
-	>
-		{#snippet children()}
-			<MaterialButton variant="filled" label="新建会话" onclick={() => onNewSession?.()} />
-		{/snippet}
-	</WorkspacePageHeader>
-
-	<WorkspaceScopeNote
-		title="任务负责执行与进度"
-		message="在这里查看状态、取消任务和追踪结果；完整的会话历史与长期记忆请到“记忆”。"
 	/>
-
-	<WorkspaceMetricStrip items={metricItems} />
 
 	<div class="task-toolbar workspace-filter-bar" role="search">
 		<label class="task-search">
@@ -280,7 +211,6 @@
 				ariaLabel="任务类型"
 				options={[
 					{ value: 'all', label: '全部类型' },
-					{ value: 'foreground', label: '当前会话' },
 					{ value: 'background', label: '后台任务' },
 					{ value: 'scheduled', label: '定时任务' },
 				]}
@@ -295,9 +225,7 @@
 	{#if taskRows.length === 0}
 		<AsyncState
 			title="暂无任务"
-			message="开始对话或安排后台、定时任务后，执行状态和结果会显示在这里。"
-			actionLabel="开始新会话"
-			onAction={() => onNewSession?.()}
+			message="安排后台或定时任务后，执行状态和结果会显示在这里。"
 		/>
 	{:else if filteredRows.length === 0}
 		<AsyncState
@@ -368,17 +296,7 @@
 										</span>
 									</button>
 									<div class="task-card-actions">
-										{#if row.kind === 'foreground' && row.sessionId}
-											<MaterialButton
-												variant={row.status === 'paused'
-													? 'filled'
-													: 'tonal'}
-												label={row.status === 'paused'
-													? '继续会话'
-													: '打开会话'}
-												onclick={() => onOpenSession?.(row.sessionId)}
-											/>
-										{:else if row.kind === 'background' && row.value.status === 'running'}
+										{#if row.kind === 'background' && row.value.status === 'running'}
 											<MaterialButton
 												variant="danger"
 												label="停止后台任务"
@@ -440,18 +358,15 @@
 						<dd>{taskKindLabel(selectedRow.kind)}</dd>
 					</div>
 					<div>
-						<dt>{selectedRow.kind === 'foreground' ? '会话编号' : '来源会话'}</dt>
+						<dt>来源会话</dt>
 						<dd>
-							{selectedRow.kind === 'foreground'
-								? selectedRow.sessionId
-								: selectedRow.sessionId
-									? sessionTitleFor({ sessionId: selectedRow.sessionId }) ||
-										selectedRow.sessionId
-									: '无关联会话'}
+							{selectedRow.sessionId
+								? sessionTitleFor({ sessionId: selectedRow.sessionId }) || selectedRow.sessionId
+								: '无关联会话'}
 						</dd>
 					</div>
 					<div>
-						<dt>{selectedRow.kind === 'foreground' ? '运行编号' : '任务编号'}</dt>
+						<dt>任务编号</dt>
 						<dd><code class="task-code">{selectedRow.id}</code></dd>
 					</div>
 					{#if selectedRow.kind === 'background'}
@@ -472,7 +387,7 @@
 							<dd>{rowTiming(selectedRow)}</dd>
 						</div>
 					{/if}
-					{#if selectedRow.kind !== 'foreground' && selectedRow.value.finishedAt}
+					{#if selectedRow.value.finishedAt}
 						<div>
 							<dt>完成时间</dt>
 							<dd>{formatHistoryTime(selectedRow.value)}</dd>
@@ -503,7 +418,7 @@
 					{#if selectedRow.sessionId}
 						<MaterialButton
 							variant="filled"
-							label={selectedRow.kind === 'foreground' ? '打开会话' : '打开来源会话'}
+							label="打开来源会话"
 							onclick={openSelectedSession}
 						/>
 					{/if}
@@ -521,7 +436,7 @@
 							onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
 						/>
 					{/if}
-					{#if selectedRow.kind !== 'foreground' && selectedRow.status !== 'running'}
+					{#if selectedRow.status !== 'running'}
 						<MaterialButton
 							variant="text"
 							className="task-delete"

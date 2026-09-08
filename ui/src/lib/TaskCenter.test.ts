@@ -12,15 +12,12 @@ const commonProps = {
 };
 
 describe('TaskCenter', () => {
-	it('shows a useful empty state and starts a new session', async () => {
-		const onNewSession = vi.fn();
-		render(TaskCenter, { ...commonProps, onNewSession });
+	it('keeps the empty state focused on tasks', () => {
+		render(TaskCenter, { ...commonProps });
 
 		expect(screen.getByRole('heading', { name: '任务' })).toBeTruthy();
 		expect(screen.getByText('暂无任务')).toBeTruthy();
-		expect(screen.getByText('任务负责执行与进度')).toBeTruthy();
-		await fireEvent.click(screen.getByRole('button', { name: '开始新会话' }));
-		expect(onNewSession).toHaveBeenCalledTimes(1);
+		expect(screen.queryByText('当前会话')).toBeNull();
 	});
 
 	it('opens task detail and routes source-session actions', async () => {
@@ -42,7 +39,7 @@ describe('TaskCenter', () => {
 			onCancel,
 		});
 
-		expect(screen.getByRole('heading', { name: '后台与定时任务' })).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '进行中与待执行' })).toBeTruthy();
 		expect(screen.getAllByText('整理下载目录').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('研究会话').length).toBeGreaterThan(0);
 		await fireEvent.click(screen.getByRole('button', { name: '停止后台任务' }));
@@ -65,7 +62,7 @@ describe('TaskCenter', () => {
 			completedActions: [{ id: 'act-fired', kind: 'scheduled', body: '已经触发' }],
 		});
 
-		expect(screen.getByRole('heading', { name: '后台与定时任务' })).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '进行中与待执行' })).toBeTruthy();
 		expect(screen.getByRole('heading', { name: '执行记录' })).toBeTruthy();
 		expect(screen.getAllByText('待执行').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('已执行').length).toBeGreaterThan(0);
