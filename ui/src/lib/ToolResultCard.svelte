@@ -124,7 +124,7 @@
 				background: true,
 				action_id: actionId,
 				status: boundAction.status,
-				...(boundAction.exit_code != null ? { exit_code: boundAction.exit_code } : {}),
+				...(boundAction.exitCode != null ? { exit_code: boundAction.exitCode } : {}),
 				...(boundAction.error && !boundAction.output ? { error: boundAction.error } : {}),
 			});
 		}

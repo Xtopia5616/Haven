@@ -14,6 +14,9 @@
 		后台任务{data.status === 'completed' ? '已完成' : '失败'}{#if data.action_id}
 			· {data.action_id}{/if}
 	</div>
+	{#if data.exit_code != null}
+		<div class="tool-card-meta">退出码 {data.exit_code}</div>
+	{/if}
 {/if}
 {#if shellText}
 	<pre class="content-preview" class:streaming={liveStreaming}>{shellText}</pre>
@@ -31,11 +34,15 @@
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
-	.tool-card-empty {
+	.tool-card-empty,
+	.tool-card-meta {
 		margin: 0;
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
+	}
+	.tool-card-meta {
+		margin-top: var(--md-sys-space-2xs);
 	}
 	.content-preview {
 		background: var(--md-sys-color-surface-container-high);

@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
+import { actionStore, upsertAction } from './stores.ts';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -295,6 +296,24 @@ describe('ToolResultCard shell / notify / generic', () => {
 		expect(screen.getByText('输出过长已截断')).toBeTruthy();
 	});
 
+	it('renders the exit code for a completed background shell action', () => {
+		upsertAction({
+			id: 'act-shell-1',
+			kind: 'background',
+			status: 'completed',
+			output: 'command output',
+			exitCode: 0,
+		});
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			actionId: 'act-shell-1',
+			content: '',
+		});
+		expect(container.querySelector('.tool-card-count')?.textContent).toContain('后台任务已完成');
+		expect(screen.getByText('退出码 0')).toBeTruthy();
+		expect(screen.getByText('command output')).toBeTruthy();
+	});
+
 	it('renders a notification card with title and body', () => {
 		render(ToolResultCard, {
 			toolName: 'notify',
@@ -315,6 +334,10 @@ describe('ToolResultCard shell / notify / generic', () => {
 		expect(screen.getByText('"server_name"')).toBeTruthy();
 		expect(screen.getByText('"filesystem"')).toBeTruthy();
 	});
+});
+
+afterEach(() => {
+	actionStore.set({});
 });
 
 describe('ToolResultCard raw', () => {
