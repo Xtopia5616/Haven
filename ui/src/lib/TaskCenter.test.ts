@@ -32,22 +32,26 @@ describe('TaskCenter', () => {
 				{
 					id: 'act-1',
 					kind: 'background',
-					command: '整理下载目录',
 					status: 'running',
 					sessionId: 'ses-1',
 					startedAt: '2026-09-03T10:00:00Z',
+					command: '整理下载目录',
 				},
 			],
 			onOpenSession,
 			onCancel,
 		});
 
-		expect(screen.getByRole('heading', { name: '调用工具' })).toBeTruthy();
 		expect(screen.getByRole('heading', { name: '后台与定时任务' })).toBeTruthy();
-		expect(screen.getByText('整理下载目录')).toBeTruthy();
+		expect(screen.getAllByText('整理下载目录').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('研究会话').length).toBeGreaterThan(0);
+		await fireEvent.click(screen.getByRole('button', { name: '查看调用工具详情' }));
+		expect(screen.getByRole('dialog')).toBeTruthy();
+		expect(screen.getByRole('heading', { name: '调用工具' })).toBeTruthy();
+		expect(screen.getByText('执行命令')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: '打开来源会话' }));
 		expect(onOpenSession).toHaveBeenCalledWith('ses-1');
+		await fireEvent.click(screen.getByRole('button', { name: '查看调用工具详情' }));
 		await fireEvent.click(screen.getByRole('button', { name: '停止任务' }));
 		expect(onCancel).toHaveBeenCalledWith('act-1', 'background');
 	});

@@ -10,7 +10,14 @@
 	 * @prop {function} onConfirm — optional confirm callback
 	 * @prop {string} dialogClass — extra class for the dialog container
 	 */
-	let { open = false, onClose, title = '', children, footer, dialogClass = '' } = $props();
+	let {
+		open = false,
+		onClose,
+		title = '',
+		children,
+		footer = undefined,
+		dialogClass = '',
+	} = $props();
 
 	/**
 	 * @param {MouseEvent} e
@@ -32,7 +39,6 @@
 	function handleOverlayKeydown(e) {
 		if (e.key === 'Escape') onClose?.();
 	}
-
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -46,6 +52,7 @@
 		onkeydown={handleOverlayKeydown}
 		role="dialog"
 		aria-modal="true"
+		aria-labelledby={title ? 'md-dialog-title' : undefined}
 		tabindex={-1}
 		in:fade={{ duration: 300, easing: cubicOut }}
 	>
@@ -57,8 +64,8 @@
 		>
 			{#if title}
 				<div class="md-dialog-header">
-					<h3>{title}</h3>
-					<button class="md-dialog-close" onclick={onClose}>✕</button>
+					<h3 id="md-dialog-title">{title}</h3>
+					<button class="md-dialog-close" aria-label="关闭" onclick={onClose}>✕</button>
 				</div>
 			{/if}
 			<div class="md-dialog-body">

@@ -5,6 +5,7 @@
 	 */
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
 	import WorkspaceScopeNote from '$lib/WorkspaceScopeNote.svelte';
@@ -26,6 +27,7 @@
 	} = $props();
 
 	let selectedTaskId = $state(null);
+	let detailOpen = $state(false);
 	let query = $state('');
 	let filter = $state('all');
 
@@ -73,15 +75,13 @@
 		return taskRows.filter((row) => {
 			if (filter !== 'all' && row.kind !== filter) return false;
 			if (!normalized) return true;
-			return `${row.title} ${row.subtitle} ${row.sessionId || ''} ${row.value?.command || ''}`
+			return `${row.title} ${row.subtitle} ${row.sessionId || ''} ${row.value?.command || ''} ${row.value?.body || ''} ${row.value?.preview || ''}`
 				.toLocaleLowerCase()
 				.includes(normalized);
 		});
 	});
 
-	const selectedRow = $derived(
-		filteredRows.find((row) => row.id === selectedTaskId) || filteredRows[0] || null,
-	);
+	const selectedRow = $derived(taskRows.find((row) => row.id === selectedTaskId) || null);
 
 	/** @param {any} row */
 	function isLiveAction(row) {
@@ -112,13 +112,20 @@
 	});
 
 	$effect(() => {
-		if (selectedRow && selectedTaskId !== selectedRow.id) selectedTaskId = selectedRow.id;
-		if (!selectedRow) selectedTaskId = null;
+		if (!selectedRow) {
+			selectedTaskId = null;
+			detailOpen = false;
+		}
 	});
 
 	/** @param {any} row */
 	function rowStatus(row) {
-		if (row.kind === 'foreground') return row.status === 'running' ? '运行中' : row.subtitle;
+		if (row.kind === 'foreground') {
+			if (row.status === 'running') return '运行中';
+			if (row.status === 'paused' || String(row.status || '').startsWith('paused_'))
+				return '已暂停';
+			return actionStatusLabel(row.status) || row.subtitle;
+		}
 		if (row.kind === 'scheduled') return row.status === 'scheduled' ? '待执行' : '已执行';
 		return actionStatusLabel(row.status);
 	}
@@ -132,8 +139,67 @@
 	}
 
 	/** @param {any} row */
+	function rowSummary(row) {
+		const value = row.value || {};
+		const candidates =
+			row.kind === 'foreground' ? [value.input] : [value.command, value.preview, value.body];
+		for (const candidate of candidates) {
+			if (
+				typeof candidate === 'string' &&
+				candidate.trim() &&
+				candidate.trim().toLocaleLowerCase() !==
+					String(row.title).trim().toLocaleLowerCase()
+			) {
+				return candidate.trim();
+			}
+		}
+		if (row.kind === 'foreground') return '正在处理这段会话';
+		if (row.kind === 'scheduled') {
+			return `将在${rowTiming(row)}执行 · ${scheduleModeLabel(value.mode)}`;
+		}
+		if (row.status === 'failed') return '任务执行失败，打开详情查看原因';
+		if (row.status === 'completed') return '任务已完成，打开详情查看执行结果';
+		return '正在执行后台任务';
+	}
+
+	/** @param {any} row */
+	function rowContext(row) {
+		if (row.kind === 'foreground') return row.status === 'paused' ? '等待继续' : '当前会话';
+		if (row.kind === 'scheduled') return scheduleModeLabel(row.value?.mode);
+		return sessionTitleFor(row.value) || '无关联会话';
+	}
+
+	/** @param {any} row */
+	function rowTiming(row) {
+		if (row.kind === 'foreground') return row.status === 'paused' ? '可继续' : '正在处理';
+		if (row.kind === 'background') return actionDuration(row.value) || '耗时未知';
+		if (row.status === 'scheduled') {
+			return scheduledActionCountdown(row.value?.dueAt) || '时间未设置';
+		}
+		return formatHistoryTime(row.value) || '已执行';
+	}
+
+	/** @param {any} row */
 	function selectRow(row) {
 		selectedTaskId = row.id;
+		detailOpen = true;
+	}
+
+	function closeDetail() {
+		detailOpen = false;
+	}
+
+	function openSelectedSession() {
+		if (!selectedRow?.sessionId) return;
+		detailOpen = false;
+		onOpenSession?.(selectedRow.sessionId);
+	}
+
+	function deleteSelectedHistory() {
+		if (!selectedRow) return;
+		const id = selectedRow.id;
+		detailOpen = false;
+		onDeleteHistory?.(id);
 	}
 
 	/** @param {string} value */
@@ -202,158 +268,197 @@
 			}}
 		/>
 	{:else}
-		<div class="task-layout">
-			<div class="task-list-panel">
-				<div class="task-list-heading">
-					<div>
-						<h2>任务列表</h2>
-						<span class="task-list-count">{filteredRows.length} 项</span>
-					</div>
-					<span class="task-list-hint">选择一项查看详情</span>
+		<div class="task-list-panel">
+			<div class="task-list-heading">
+				<div>
+					<h2>任务列表</h2>
+					<span class="task-list-count">{filteredRows.length} 项</span>
 				</div>
-				<div class="task-groups" aria-label="按生命周期分组的任务列表">
-					{#each taskGroups as group (group.id)}
-						<section class="task-group" aria-labelledby={`task-group-${group.id}`}>
-							<div class="task-group-heading">
-								<div>
-									<h3 id={`task-group-${group.id}`}>{group.label}</h3>
-									<span class="task-list-count">{group.rows.length} 项</span>
-								</div>
-								<p>{group.description}</p>
+				<span class="task-list-hint">点击卡片查看详情</span>
+			</div>
+			<div class="task-groups" aria-label="按生命周期分组的任务列表">
+				{#each taskGroups as group (group.id)}
+					<section class="task-group" aria-labelledby={`task-group-${group.id}`}>
+						<div class="task-group-heading">
+							<div>
+								<h3 id={`task-group-${group.id}`}>{group.label}</h3>
+								<span class="task-list-count">{group.rows.length} 项</span>
 							</div>
-							<div class="task-list">
-								{#each group.rows as row (row.id)}
-									<button
-										class="task-row motion-list-item"
-										class:selected={selectedRow?.id === row.id}
-										aria-pressed={selectedRow?.id === row.id}
-										type="button"
-										onclick={() => selectRow(row)}
-									>
-										<span
-											class="task-row-indicator"
-											data-tone={rowTone(row)}
-											aria-hidden="true"
-										></span>
-										<span class="task-row-main">
-											<strong>{row.title}</strong>
-											<span>{row.subtitle}</span>
+							<p>{group.description}</p>
+						</div>
+						<div class="task-list">
+							{#each group.rows as row (row.id)}
+								<button
+									class="task-card motion-list-item"
+									class:selected={selectedTaskId === row.id && detailOpen}
+									type="button"
+									aria-label={`查看${row.title}详情`}
+									onclick={() => selectRow(row)}
+								>
+									<span class="task-card-header">
+										<span class="task-card-type" data-tone={rowTone(row)}>
+											<span
+												class="task-card-indicator"
+												data-tone={rowTone(row)}
+												aria-hidden="true"
+											></span>
+											{taskKindLabel(row.kind)}
 										</span>
-										<span class="task-row-status" data-tone={rowTone(row)}
+										<span class="md-badge" data-variant={rowTone(row)}
 											>{rowStatus(row)}</span
 										>
-									</button>
-								{/each}
-							</div>
-						</section>
-					{/each}
-				</div>
+									</span>
+									<strong class="task-card-title">{row.title}</strong>
+									<span class="task-card-summary">{rowSummary(row)}</span>
+									<span class="task-card-meta">
+										<span>{rowContext(row)}</span>
+										<span class="task-card-meta-separator" aria-hidden="true"
+											>·</span
+										>
+										<span>{rowTiming(row)}</span>
+									</span>
+									<span class="task-card-footer">
+										<span class="task-card-id">{row.id}</span>
+										<span class="task-card-open" aria-hidden="true"
+											>查看详情 <span>→</span></span
+										>
+									</span>
+								</button>
+							{/each}
+						</div>
+					</section>
+				{/each}
 			</div>
-
-			{#if selectedRow}
-				{@const detail = selectedRow.value}
-				{#key selectedRow.id}
-					<article
-						class="task-detail md-card motion-surface-enter"
-						aria-labelledby="task-detail-title"
-					>
-						<div class="task-detail-heading">
-							<div>
-								<span class="task-kicker"
-									>{selectedRow.kind === 'foreground'
-										? taskKindLabel('foreground')
-										: selectedRow.kind === 'background'
-											? taskKindLabel('background')
-											: taskKindLabel('scheduled')}</span
-								>
-								<h2 id="task-detail-title">{selectedRow.title}</h2>
-							</div>
-							<span class="md-badge" data-variant={rowTone(selectedRow)}
-								>{rowStatus(selectedRow)}</span
-							>
-						</div>
-						<dl class="task-facts">
-							<div>
-								<dt>
-									{selectedRow.kind === 'foreground' ? '会话编号' : '来源会话'}
-								</dt>
-								<dd>
-									{selectedRow.kind === 'foreground'
-										? selectedRow.sessionId
-										: selectedRow.sessionId
-											? sessionTitleFor({
-													sessionId: selectedRow.sessionId,
-												}) || selectedRow.sessionId
-											: '无关联会话'}
-								</dd>
-							</div>
-							<div>
-								<dt>
-									{selectedRow.kind === 'foreground' ? '运行编号' : '任务编号'}
-								</dt>
-								<dd>{selectedRow.id}</dd>
-							</div>
-							{#if selectedRow.kind === 'background'}<div>
-									<dt>耗时</dt>
-									<dd>{actionDuration(detail)}</dd>
-								</div>{/if}
-							{#if selectedRow.kind === 'background' && detail.command}<div>
-									<dt>执行命令</dt>
-									<dd><code class="task-command">{detail.command}</code></dd>
-								</div>{/if}
-							{#if selectedRow.kind === 'scheduled'}<div>
-									<dt>执行时间</dt>
-									<dd>{scheduledActionCountdown(detail.dueAt)}</dd>
-								</div>{/if}
-							{#if selectedRow.kind !== 'foreground' && detail.finishedAt}<div>
-									<dt>完成时间</dt>
-									<dd>{formatHistoryTime(detail)}</dd>
-								</div>{/if}
-						</dl>
-						{#if detail.body}<p class="task-detail-copy">{detail.body}</p>{/if}
-						{#if detail.output || detail.errorReason || detail.error}<pre
-								class="task-output">{detail.output ||
-									detail.errorReason ||
-									detail.error}</pre>{/if}
-						<div class="task-actions">
-							{#if selectedRow.sessionId}
-								<MaterialButton
-									variant="filled"
-									label={selectedRow.kind === 'foreground'
-										? '打开会话'
-										: '打开来源会话'}
-									onclick={() => onOpenSession?.(selectedRow.sessionId)}
-								/>
-							{/if}
-							{#if selectedRow.kind === 'background' && detail.status === 'running'}
-								<MaterialButton
-									variant="danger"
-									label="停止任务"
-									onclick={() => onCancel?.(selectedRow.id, 'background')}
-								/>
-							{/if}
-							{#if selectedRow.kind === 'scheduled'}
-								<MaterialButton
-									variant="danger"
-									label="取消定时任务"
-									onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
-								/>
-							{/if}
-							{#if selectedRow.kind !== 'foreground' && selectedRow.status !== 'running'}
-								<MaterialButton
-									variant="text"
-									className="task-delete"
-									label="删除记录"
-									onclick={() => onDeleteHistory?.(selectedRow.id)}
-								/>
-							{/if}
-						</div>
-					</article>
-				{/key}
-			{/if}
 		</div>
 	{/if}
 </section>
+
+<MaterialDialog
+	open={detailOpen && selectedRow !== null}
+	title={selectedRow?.title || '任务详情'}
+	dialogClass="task-dialog"
+	onClose={closeDetail}
+>
+	{#snippet children()}
+		{#if selectedRow}
+			<div class="task-dialog-content">
+				<div class="task-dialog-overview">
+					<div class="task-dialog-type-row">
+						<span class="task-card-type" data-tone={rowTone(selectedRow)}>
+							<span
+								class="task-card-indicator"
+								data-tone={rowTone(selectedRow)}
+								aria-hidden="true"
+							></span>
+							{taskKindLabel(selectedRow.kind)}
+						</span>
+						<span class="md-badge" data-variant={rowTone(selectedRow)}
+							>{rowStatus(selectedRow)}</span
+						>
+					</div>
+					<p class="task-dialog-summary">{rowSummary(selectedRow)}</p>
+				</div>
+
+				<dl class="task-facts">
+					<div>
+						<dt>任务类型</dt>
+						<dd>{taskKindLabel(selectedRow.kind)}</dd>
+					</div>
+					<div>
+						<dt>{selectedRow.kind === 'foreground' ? '会话编号' : '来源会话'}</dt>
+						<dd>
+							{selectedRow.kind === 'foreground'
+								? selectedRow.sessionId
+								: selectedRow.sessionId
+									? sessionTitleFor({ sessionId: selectedRow.sessionId }) ||
+										selectedRow.sessionId
+									: '无关联会话'}
+						</dd>
+					</div>
+					<div>
+						<dt>{selectedRow.kind === 'foreground' ? '运行编号' : '任务编号'}</dt>
+						<dd><code class="task-code">{selectedRow.id}</code></dd>
+					</div>
+					{#if selectedRow.kind === 'background'}
+						<div>
+							<dt>耗时</dt>
+							<dd>{actionDuration(selectedRow.value) || '耗时未知'}</dd>
+						</div>
+					{/if}
+					{#if selectedRow.kind === 'background' && selectedRow.value.command}
+						<div>
+							<dt>执行命令</dt>
+							<dd><code class="task-command">{selectedRow.value.command}</code></dd>
+						</div>
+					{/if}
+					{#if selectedRow.kind === 'scheduled'}
+						<div>
+							<dt>执行时间</dt>
+							<dd>{rowTiming(selectedRow)}</dd>
+						</div>
+					{/if}
+					{#if selectedRow.kind !== 'foreground' && selectedRow.value.finishedAt}
+						<div>
+							<dt>完成时间</dt>
+							<dd>{formatHistoryTime(selectedRow.value)}</dd>
+						</div>
+					{/if}
+				</dl>
+
+				{#if selectedRow.value.body}
+					<section class="task-dialog-section">
+						<h4>任务内容</h4>
+						<p class="task-detail-copy">{selectedRow.value.body}</p>
+					</section>
+				{/if}
+				{#if selectedRow.value.output || selectedRow.value.errorReason || selectedRow.value.error}
+					<section class="task-dialog-section">
+						<h4>
+							{selectedRow.value.errorReason || selectedRow.value.error
+								? '失败原因'
+								: '执行结果'}
+						</h4>
+						<pre class="task-output">{selectedRow.value.output ||
+								selectedRow.value.errorReason ||
+								selectedRow.value.error}</pre>
+					</section>
+				{/if}
+
+				<div class="task-actions">
+					{#if selectedRow.sessionId}
+						<MaterialButton
+							variant="filled"
+							label={selectedRow.kind === 'foreground' ? '打开会话' : '打开来源会话'}
+							onclick={openSelectedSession}
+						/>
+					{/if}
+					{#if selectedRow.kind === 'background' && selectedRow.value.status === 'running'}
+						<MaterialButton
+							variant="danger"
+							label="停止任务"
+							onclick={() => onCancel?.(selectedRow.id, 'background')}
+						/>
+					{/if}
+					{#if selectedRow.kind === 'scheduled'}
+						<MaterialButton
+							variant="danger"
+							label="取消定时任务"
+							onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
+						/>
+					{/if}
+					{#if selectedRow.kind !== 'foreground' && selectedRow.status !== 'running'}
+						<MaterialButton
+							variant="text"
+							className="task-delete"
+							label="删除记录"
+							onclick={deleteSelectedHistory}
+						/>
+					{/if}
+				</div>
+			</div>
+		{/if}
+	{/snippet}
+</MaterialDialog>
 
 <style>
 	.task-center {
@@ -373,15 +478,9 @@
 		flex: 0 1 220px;
 		min-width: 0;
 	}
-	.task-layout {
-		display: grid;
-		grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.35fr);
-		gap: var(--md-sys-space-lg);
-		align-items: start;
-	}
 	.task-list-panel {
 		min-width: 0;
-		padding: var(--md-sys-space-md);
+		padding: var(--md-sys-space-lg);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		background: var(--md-sys-color-surface-container-low);
@@ -393,13 +492,15 @@
 		gap: var(--md-sys-space-sm);
 		padding: 0 var(--md-sys-space-xs) var(--md-sys-space-md);
 	}
-	.task-list-heading > div {
+	.task-list-heading > div,
+	.task-group-heading > div {
 		display: flex;
 		align-items: baseline;
 		gap: var(--md-sys-space-sm);
 		min-width: 0;
 	}
-	.task-list-heading h2 {
+	.task-list-heading h2,
+	.task-group-heading h3 {
 		margin: 0;
 		font-size: var(--md-sys-typescale-title-medium-size);
 		line-height: var(--md-sys-typescale-title-medium-line-height);
@@ -432,17 +533,6 @@
 		gap: var(--md-sys-space-md);
 		margin: 0 var(--md-sys-space-xs) var(--md-sys-space-sm);
 	}
-	.task-group-heading > div {
-		display: flex;
-		align-items: baseline;
-		gap: var(--md-sys-space-sm);
-		min-width: 0;
-	}
-	.task-group-heading h3 {
-		margin: 0;
-		font-size: var(--md-sys-typescale-title-medium-size);
-		line-height: var(--md-sys-typescale-title-medium-line-height);
-	}
 	.task-group-heading p {
 		margin: 0;
 		color: var(--md-sys-color-on-surface-variant);
@@ -451,167 +541,260 @@
 		text-align: right;
 	}
 	.task-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-xs);
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: var(--md-sys-space-md);
 		min-width: 0;
-		max-height: min(520px, calc(100vh - 320px));
+		max-height: min(620px, calc(100vh - 280px));
 		overflow-y: auto;
 		scrollbar-gutter: stable;
-		padding-right: var(--md-sys-space-xs);
+		padding: var(--md-sys-space-xs);
 	}
-	.task-row {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--md-sys-space-md);
+	.task-card {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: var(--md-sys-space-sm);
 		width: 100%;
 		min-width: 0;
-		min-height: 64px;
-		padding: var(--md-sys-space-md);
+		min-height: 168px;
+		padding: var(--md-sys-space-lg);
+		overflow: hidden;
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-low);
+		border-radius: var(--md-sys-shape-large);
+		background: var(--md-sys-color-surface-container-lowest);
 		color: var(--md-sys-color-on-surface);
 		text-align: left;
 		cursor: pointer;
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	.task-row:hover,
-	.task-row.selected {
+	.task-card::after {
+		position: absolute;
+		inset: 0;
+		content: '';
+		background: currentColor;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.task-card > * {
+		position: relative;
+		z-index: 1;
+	}
+	.task-card:hover,
+	.task-card.selected {
 		border-color: var(--md-sys-color-primary);
 		background: var(--md-sys-color-primary-container);
+		box-shadow: var(--md-sys-elevation-2);
+		transform: translateY(-1px);
 	}
-	.task-row-indicator {
-		width: 8px;
-		height: 8px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-outline);
-		flex: 0 0 auto;
+	.task-card:hover::after {
+		opacity: var(--md-sys-state-hover-opacity);
 	}
-	.task-row-indicator[data-tone='running'] {
-		background: var(--md-sys-color-success);
+	.task-card:focus-visible {
+		outline: none;
+		box-shadow: var(--md-sys-focus-ring), var(--md-sys-elevation-1);
 	}
-	.task-row-indicator[data-tone='error'] {
-		background: var(--md-sys-color-error);
-	}
-	.task-row-indicator[data-tone='scheduled'] {
-		background: var(--md-sys-color-tertiary);
-	}
-	.task-row-indicator[data-tone='success'] {
-		background: var(--md-sys-color-success);
-	}
-	.task-row-main {
+	.task-card-header,
+	:global(.task-dialog-type-row),
+	.task-card-footer,
+	.task-card-meta {
 		display: flex;
-		flex-direction: column;
+		align-items: center;
+		min-width: 0;
+	}
+	.task-card-header,
+	:global(.task-dialog-type-row) {
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+	}
+	.task-card-type {
+		display: inline-flex;
+		align-items: center;
 		gap: var(--md-sys-space-xs);
 		min-width: 0;
-		flex: 1;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 650;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
-	.task-row-main strong,
-	.task-row-main span {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
+	.task-card-type[data-tone='running'] {
+		color: var(--md-sys-color-success);
 	}
-	.task-row-main strong {
+	.task-card-type[data-tone='error'] {
+		color: var(--md-sys-color-error);
+	}
+	.task-card-type[data-tone='scheduled'] {
+		color: var(--md-sys-color-tertiary);
+	}
+	.task-card-type[data-tone='success'] {
+		color: var(--md-sys-color-success);
+	}
+	.task-card-indicator {
+		width: 8px;
+		height: 8px;
+		flex: 0 0 auto;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-outline);
+	}
+	.task-card-indicator[data-tone='running'] {
+		background: var(--md-sys-color-success);
+	}
+	.task-card-indicator[data-tone='error'] {
+		background: var(--md-sys-color-error);
+	}
+	.task-card-indicator[data-tone='scheduled'] {
+		background: var(--md-sys-color-tertiary);
+	}
+	.task-card-indicator[data-tone='success'] {
+		background: var(--md-sys-color-success);
+	}
+	.task-card-header :global(.md-badge),
+	:global(.task-dialog-type-row .md-badge) {
+		flex: 0 0 auto;
+	}
+	.task-card-title {
 		display: -webkit-box;
 		-webkit-box-orient: vertical;
 		-webkit-line-clamp: 2;
 		line-clamp: 2;
+		overflow: hidden;
+		overflow-wrap: anywhere;
+		font-size: var(--md-sys-typescale-title-medium-size);
+		line-height: var(--md-sys-typescale-title-medium-line-height);
+	}
+	.task-card-summary {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		min-width: 0;
+		overflow: hidden;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		overflow-wrap: anywhere;
 	}
-	.task-row-main span {
-		white-space: nowrap;
-	}
-	.task-row-main strong {
-		font-size: var(--md-sys-typescale-body-medium-size);
-		line-height: var(--md-sys-typescale-body-medium-line-height);
-	}
-	.task-row-main span {
+	.task-card-meta {
+		gap: var(--md-sys-space-xs);
+		margin-top: auto;
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
-	.task-row-status {
+	.task-card-meta span:first-child {
 		min-width: 0;
-		max-width: 40%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
-	.task-row-status[data-tone='running'],
-	.task-row-status[data-tone='success'] {
-		color: var(--md-sys-color-success);
+	.task-card-meta-separator {
+		flex: 0 0 auto;
+		color: var(--md-sys-color-outline);
 	}
-	.task-row-status[data-tone='error'] {
-		color: var(--md-sys-color-error);
+	.task-card-meta span:last-child {
+		flex: 0 0 auto;
 	}
-	.task-detail {
-		min-width: 0;
-		position: sticky;
-		top: var(--md-sys-space-lg);
-	}
-	.task-detail-heading {
-		display: flex;
-		align-items: flex-start;
+	.task-card-footer {
 		justify-content: space-between;
-		gap: var(--md-sys-space-md);
-		min-width: 0;
-	}
-	.task-detail-heading > div {
-		min-width: 0;
-		flex: 1 1 auto;
-	}
-	.task-kicker {
+		gap: var(--md-sys-space-sm);
+		padding-top: var(--md-sys-space-sm);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	.task-detail h2 {
-		margin-top: var(--md-sys-space-xs);
-		font-size: var(--md-sys-typescale-headline-medium-size);
-		line-height: var(--md-sys-typescale-headline-medium-line-height);
-		overflow-wrap: anywhere;
-	}
-	.task-detail-heading .md-badge {
+	.task-card-id {
 		min-width: 0;
-		max-width: 36%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		font-family: var(--md-sys-typescale-mono);
+	}
+	.task-card-open {
+		flex: 0 0 auto;
+		color: var(--md-sys-color-primary);
+		font-weight: 650;
+		white-space: nowrap;
+	}
+	.task-card-open span {
+		display: inline-block;
+		margin-left: var(--md-sys-space-2xs);
+		transition: transform var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
+	}
+	.task-card:hover .task-card-open span {
+		transform: translateX(var(--md-sys-space-2xs));
+	}
+	.task-dialog-content {
+		min-width: 0;
+	}
+	.task-dialog-overview {
+		padding: var(--md-sys-space-md);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.task-dialog-summary {
+		margin: var(--md-sys-space-md) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
 	.task-facts {
 		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: var(--md-sys-space-md);
 		margin: var(--md-sys-space-xl) 0;
 	}
 	.task-facts div {
 		display: grid;
 		gap: var(--md-sys-space-xs);
+		min-width: 0;
+		padding: var(--md-sys-space-sm) 0;
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 	}
-	.task-facts dt {
+	.task-facts dt,
+	.task-dialog-section h4 {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 650;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.task-facts dd {
+		min-width: 0;
 		margin: 0;
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		overflow-wrap: anywhere;
 	}
+	.task-code,
+	.task-command {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
+		word-break: break-all;
+	}
+	.task-dialog-section {
+		margin-top: var(--md-sys-space-lg);
+	}
+	.task-dialog-section h4 {
+		margin: 0 0 var(--md-sys-space-sm);
+	}
 	.task-detail-copy {
+		margin: 0;
 		color: var(--md-sys-color-on-surface-variant);
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
 	.task-output {
 		max-height: 240px;
-		margin-top: var(--md-sys-space-lg);
+		margin: 0;
 		padding: var(--md-sys-space-md);
 		overflow: auto;
 		border-radius: var(--md-sys-shape-small);
@@ -638,6 +821,14 @@
 	:global(.task-delete) {
 		color: var(--md-sys-color-error);
 	}
+	:global(.task-dialog) {
+		width: min(640px, calc(100vw - var(--md-sys-space-2xl)));
+		max-height: calc(100vh - var(--md-sys-space-2xl));
+		overflow: hidden;
+	}
+	:global(.task-dialog .md-dialog-body) {
+		overflow-y: auto;
+	}
 	.sr-only {
 		position: absolute;
 		width: 1px;
@@ -650,17 +841,11 @@
 		border: 0;
 	}
 	@container (max-width: 800px) {
-		.task-layout {
-			grid-template-columns: 1fr;
-		}
 		.task-list {
+			grid-template-columns: 1fr;
 			max-height: none;
 			overflow: visible;
 			padding-right: 0;
-		}
-		.task-detail {
-			order: -1;
-			position: static;
 		}
 	}
 	@container (max-width: 520px) {
@@ -672,10 +857,6 @@
 		.task-filter {
 			width: 100%;
 			flex: 0 1 auto;
-		}
-		.task-actions {
-			flex-direction: column;
-			align-items: stretch;
 		}
 		.task-list-panel {
 			padding: var(--md-sys-space-sm);
@@ -692,21 +873,25 @@
 		.task-group-heading p {
 			text-align: left;
 		}
+		.task-card {
+			min-height: 0;
+			padding: var(--md-sys-space-md);
+		}
+		.task-actions {
+			flex-direction: column;
+			align-items: stretch;
+		}
 		.task-actions :global(.md-btn) {
 			width: 100%;
 		}
 	}
-	@container (max-width: 420px) {
-		.task-row {
-			padding-inline: var(--md-sys-space-sm);
+	@media (max-width: 540px) {
+		.task-facts {
+			grid-template-columns: 1fr;
 		}
-		.task-row-status {
-			max-width: 34%;
-		}
-	}
-	@container (max-width: 360px) {
-		.task-row-status {
-			display: none;
+		:global(.task-dialog) {
+			width: calc(100vw - var(--md-sys-space-lg));
+			max-height: calc(100vh - var(--md-sys-space-lg));
 		}
 	}
 	@media (max-width: 455px) {
