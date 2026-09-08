@@ -219,7 +219,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。 |
 | `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 run/step 顺序消费；只发送补充上下文，不发送快照内部对象。 |
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id? }` | 聊天页 | 按事件顺序消费；`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
-| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 固定 token/cost 字段；`cache_diagnostics` 仅为 provider 诊断扩展点。 |
+| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 固定 token/cost/cache/context 字段；`cache_diagnostics` 仅为 provider 诊断扩展点；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
 | `notification:show` | `AgentNotificationEvent` | 根布局 | 纯文本 toast/系统通知；不承载密钥、完整命令输出或原始 provider 错误。 |
 

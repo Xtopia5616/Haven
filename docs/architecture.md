@@ -424,3 +424,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-02 | §3 阶段 E：将 `haven-app-binary` 的事件桥、宿主 handler 与 Tauri 启动编排从 `lib.rs` 拆至 `event_bridge.rs`、`handlers.rs`、`bootstrap.rs`，保持启动与 IPC 契约不变 |
 | 2026-09-03 | §3 阶段 F：将 Settings/Model/Memory 三个 UI 大视图按 tab 与职责拆至 `SettingsGeneral`、`SettingsLimits`、`MediaSettings`、`SessionHistory`、`LongTermFacts`、`MemoryRecall`，父视图保留唯一状态、IPC、事件与保存边界 |
 | 2026-09-08 | §2.6 UI：工具卡统一显示各自参数与结果的 token 估算；provider 真实总量仅保留在会话级统计，删除首个工具卡的 step 聚合展示（ADR 0099） |
+| 2026-09-08 | §2.6 UI / §2.3 Memory：聊天 token 摘要改为可展开明细，展示上传/生成、缓存命中率、当前上下文预算与累计费用；用量持久化增加最后一次上下文快照（ADR 0102） |

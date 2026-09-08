@@ -615,6 +615,7 @@ impl ReActEngine {
         let usage_cached = usage.cached_tokens;
         let usage_cache_creation = usage.cache_creation_tokens;
         let usage_cache_miss = usage.cache_miss_tokens();
+        let usage_context_tokens = usage.context_tokens();
         let usage_cache_diagnostics = usage
             .cache_diagnostics
             .as_ref()
@@ -633,23 +634,26 @@ impl ReActEngine {
             if epoch_now() != persist_epoch {
                 return Ok(());
             }
-            let rec = db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
-                &session_id_for_persist,
-                Some(step_number),
-                role.as_str(),
-                model_for_persist.as_deref(),
-                usage_prompt,
-                usage_completion,
-                usage_total,
-                usage_cached,
-                usage_cache_creation,
-                usage_cache_miss,
-                usage.cache_accounting.as_str(),
-                usage_cache_diagnostics.as_deref(),
-                call_cost,
-                call_has_cost,
-                duration_ms,
-            )?;
+            let rec = db
+                .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+                    &session_id_for_persist,
+                    Some(step_number),
+                    role.as_str(),
+                    model_for_persist.as_deref(),
+                    usage_prompt,
+                    usage_completion,
+                    usage_total,
+                    usage_cached,
+                    usage_cache_creation,
+                    usage_cache_miss,
+                    usage.cache_accounting.as_str(),
+                    usage_cache_diagnostics.as_deref(),
+                    call_cost,
+                    call_has_cost,
+                    duration_ms,
+                    usage_context_tokens,
+                    context_window,
+                )?;
             // Rollback may have truncated between the pre-check and the
             // insert; drop the phantom row and rebuild so totals stay true.
             if epoch_now() != persist_epoch {

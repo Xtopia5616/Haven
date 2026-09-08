@@ -21,7 +21,10 @@
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
-	import { buildTokenUsageTooltip } from '$lib/sessionUsagePresentation.ts';
+	import {
+		buildTokenUsageDetails,
+		buildTokenUsageTooltip,
+	} from '$lib/sessionUsagePresentation.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
@@ -252,6 +255,9 @@
 	// expected. A finished or history-opened conversation with no persisted
 	// usage will never receive events, so show a neutral hint instead.
 	const tokenStatsHint = $derived(isGenerating || sessionRunning ? '等待 LLM 统计' : '暂无统计');
+	const tokenUsageDetails = $derived.by(() =>
+		tokenStats ? buildTokenUsageDetails(tokenStats, llmUsage) : null,
+	);
 	// The primary number must retain its meaning across pause/resume. Context
 	// usage is only the latest request and changes after the next response;
 	// cumulative usage is persisted and represents the whole conversation.
@@ -1614,6 +1620,7 @@
 				onSwitchSession={switchToSession}
 				{sessionStatusLabel}
 				{tokenStats}
+				{tokenUsageDetails}
 				{tokenStatsHint}
 				{buildTokenTooltip}
 				{formatTokenCount}

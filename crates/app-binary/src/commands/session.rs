@@ -440,6 +440,8 @@ fn estimate_session_usage(
         cached_tokens: 0,
         cache_creation_tokens: 0,
         cache_miss_tokens: 0,
+        context_tokens: 0,
+        context_window: None,
         cost_usd: 0.0,
         has_cost: false,
     }

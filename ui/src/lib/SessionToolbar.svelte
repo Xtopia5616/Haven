@@ -11,6 +11,7 @@
 		onNewSession = () => {},
 		onSwitchSession = () => {},
 		tokenStats = null,
+		tokenUsageDetails = null,
 		tokenStatsHint = '暂无统计',
 		buildTokenTooltip = () => '',
 		formatTokenCount = /** @type {(value: any) => string} */ ((value) => String(value)),
@@ -20,7 +21,29 @@
 		showCumulativeTokens = true,
 		contextBudget = null,
 	} = $props();
+
+	let tokenDetailsOpen = $state(false);
+	/** @type {HTMLElement | null} */
+	let tokenStatsWrap = $state(null);
+
+	/** @param {MouseEvent} event */
+	function closeTokenDetails(event) {
+		if (tokenStatsWrap && !event.composedPath().includes(tokenStatsWrap)) {
+			tokenDetailsOpen = false;
+		}
+	}
+
+	function toggleTokenDetails() {
+		if (tokenStats) tokenDetailsOpen = !tokenDetailsOpen;
+	}
+
+	/** @param {number | null | undefined} value */
+	function percentage(value) {
+		return value == null ? '—' : `${value.toFixed(0)}%`;
+	}
 </script>
+
+<svelte:window onclick={closeTokenDetails} />
 
 {#if showSessionMenu}
 	<div class="session-switch">
@@ -135,12 +158,18 @@
 		{/if}
 	</div>
 {/if}
-<div
-	class="token-stats"
-	class:active={!!tokenStats}
-	title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
->
-	{#if tokenStats}
+<div class="token-stats-wrap" bind:this={tokenStatsWrap}>
+	<button
+		class="token-stats"
+		class:active={!!tokenStats}
+		type="button"
+		title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
+		aria-label={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
+		aria-haspopup="dialog"
+		aria-expanded={tokenDetailsOpen}
+		disabled={!tokenStats}
+		onclick={toggleTokenDetails}
+	>
 		<svg
 			class="token-icon"
 			width="16"
@@ -155,51 +184,143 @@
 		>
 			<path d="M4 6h16M4 12h10M4 18h16" />
 		</svg>
-		<div class="token-text">
-			<span class="token-context"
-				>{formatTokenCount(
-					showCumulativeTokens
-						? coalesceTokenTotal(
-								tokenStats.cumulativePromptTokens || 0,
-								tokenStats.cumulativeCompletionTokens || 0,
-								tokenStats.cumulativeTotalTokens || 0,
-								tokenStats.cumulativeCachedTokens || 0,
-								tokenStats.cumulativeCacheCreationTokens || 0,
-							)
-						: tokenStats.contextTokens || tokenStats.promptTokens || 0,
-				)}</span
-			>
-			<span class="token-unit">{showCumulativeTokens ? 'tok' : 'ctx'}</span>
-		</div>
-		{#if contextBudget && contextBudget.window && !showCumulativeTokens}
-			<div
-				class="token-budget"
-				class:warn={contextBudget.ratio >= 0.75}
-				class:danger={contextBudget.ratio >= 0.9}
-				aria-label={`上下文使用 ${(contextBudget.ratio * 100).toFixed(0)}%`}
-			>
-				<div
-					class="token-budget-fill"
-					style="width: {(contextBudget.ratio * 100).toFixed(1)}%"
-				></div>
+		{#if tokenStats}
+			<div class="token-text">
+				<span class="token-context"
+					>{formatTokenCount(
+						showCumulativeTokens
+							? coalesceTokenTotal(
+									tokenStats.cumulativePromptTokens || 0,
+									tokenStats.cumulativeCompletionTokens || 0,
+									tokenStats.cumulativeTotalTokens || 0,
+									tokenStats.cumulativeCachedTokens || 0,
+									tokenStats.cumulativeCacheCreationTokens || 0,
+								)
+							: tokenStats.contextTokens || tokenStats.promptTokens || 0,
+					)}</span
+				>
+				<span class="token-unit">{showCumulativeTokens ? 'tok' : 'ctx'}</span>
 			</div>
+			{#if tokenUsageDetails?.currentCacheRatePercent != null}
+				<span class="token-cache-rate"
+					>缓存 {percentage(tokenUsageDetails.currentCacheRatePercent)}</span
+				>
+			{/if}
+			{#if tokenUsageDetails?.contextRatePercent != null}
+				<div
+					class="token-budget"
+					class:warn={tokenUsageDetails.contextRatePercent >= 75}
+					class:danger={tokenUsageDetails.contextRatePercent >= 90}
+					aria-label={`上下文使用 ${percentage(tokenUsageDetails.contextRatePercent)}`}
+				>
+					<div
+						class="token-budget-fill"
+						style="width: {Math.min(100, tokenUsageDetails.contextRatePercent).toFixed(
+							1,
+						)}%"
+					></div>
+				</div>
+			{/if}
+		{:else}
+			<span class="token-text token-idle">—</span>
 		{/if}
-	{:else}
-		<svg
-			class="token-icon"
-			width="16"
-			height="16"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			aria-hidden="true"
-		>
-			<path d="M4 6h16M4 12h10M4 18h16" />
-		</svg>
-		<span class="token-text token-idle">—</span>
+	</button>
+
+	{#if tokenDetailsOpen && tokenStats && tokenUsageDetails}
+		<div class="token-details" role="dialog" tabindex="-1" aria-label="Token 使用明细">
+			<div class="token-details-heading">
+				<div>
+					<strong>Token 使用明细</strong>
+					{#if tokenUsageDetails.model}
+						<span>{tokenUsageDetails.model}</span>
+					{/if}
+				</div>
+				<span class="token-details-count">{tokenUsageDetails.callCount} 次调用</span>
+			</div>
+
+			<div class="token-detail-section">
+				<div class="token-detail-section-title">当前请求</div>
+				<div class="token-detail-grid">
+					<span>上传</span><strong
+						>{formatTokenCount(tokenUsageDetails.currentPromptTokens)}</strong
+					>
+					<span>生成</span><strong
+						>{formatTokenCount(tokenUsageDetails.currentCompletionTokens)}</strong
+					>
+					<span>合计</span><strong
+						>{formatTokenCount(tokenUsageDetails.currentTotalTokens)}</strong
+					>
+				</div>
+			</div>
+
+			<div class="token-detail-section">
+				<div class="token-detail-section-title">当前上下文</div>
+				<div class="token-detail-line">
+					<strong>{formatTokenCount(tokenUsageDetails.contextTokens)}</strong>
+					<span
+						>/ {tokenUsageDetails.contextWindow
+							? `${formatTokenCount(tokenUsageDetails.contextWindow)} tokens`
+							: '窗口未知'}</span
+					>
+					<b>{percentage(tokenUsageDetails.contextRatePercent)}</b>
+				</div>
+				{#if tokenUsageDetails.contextWindow}
+					<div class="token-detail-progress">
+						<div
+							style="width: {Math.min(
+								100,
+								tokenUsageDetails.contextRatePercent || 0,
+							).toFixed(1)}%"
+						></div>
+					</div>
+				{/if}
+			</div>
+
+			<div class="token-detail-section">
+				<div class="token-detail-section-title">缓存</div>
+				<div class="token-detail-line">
+					<span>命中率</span><strong
+						>{percentage(tokenUsageDetails.currentCacheRatePercent)}</strong
+					>
+				</div>
+				<div class="token-detail-muted">
+					本次命中 {formatTokenCount(tokenUsageDetails.currentCachedTokens)} · 未命中
+					{formatTokenCount(tokenUsageDetails.currentCacheMissTokens)} · 写入
+					{formatTokenCount(tokenUsageDetails.currentCacheCreationTokens)}
+				</div>
+				{#if tokenUsageDetails.cumulativeCacheRatePercent != null}
+					<div class="token-detail-muted">
+						累计命中率 {percentage(tokenUsageDetails.cumulativeCacheRatePercent)}
+						· 命中 {formatTokenCount(tokenUsageDetails.cumulativeCachedTokens)}
+					</div>
+				{/if}
+			</div>
+
+			<div class="token-detail-section">
+				<div class="token-detail-section-title">会话累计</div>
+				<div class="token-detail-line">
+					<span>上传 / 生成</span>
+					<strong
+						>{formatTokenCount(tokenUsageDetails.cumulativePromptTokens)} /
+						{formatTokenCount(tokenUsageDetails.cumulativeCompletionTokens)}</strong
+					>
+				</div>
+				<div class="token-detail-line">
+					<span>总计</span><strong
+						>{formatTokenCount(tokenUsageDetails.cumulativeTotalTokens)}</strong
+					>
+				</div>
+				{#if tokenUsageDetails.costUsd != null}
+					<div class="token-detail-line">
+						<span>费用</span><strong>{tokenUsageDetails.costUsd.toFixed(4)} USD</strong>
+					</div>
+				{/if}
+			</div>
+
+			{#if tokenStats.estimated}
+				<div class="token-detail-estimated">历史会话数据为估算值，未计费</div>
+			{/if}
+		</div>
 	{/if}
 </div>
 
@@ -354,6 +475,10 @@
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
 	}
+	.token-stats-wrap {
+		position: relative;
+		flex-shrink: 0;
+	}
 	.token-stats {
 		display: inline-flex;
 		align-items: center;
@@ -368,8 +493,13 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		flex-shrink: 0;
+		font-family: inherit;
+		cursor: pointer;
 		transition: border-color var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
+	}
+	.token-stats:disabled {
+		cursor: default;
 	}
 	.token-stats.active {
 		border-color: var(--md-sys-color-primary);
@@ -393,6 +523,12 @@
 		opacity: 0.6;
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.token-cache-rate {
+		color: var(--md-sys-color-primary);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 	}
 	.token-idle {
 		opacity: 0.5;
@@ -419,6 +555,112 @@
 	}
 	.token-budget.danger .token-budget-fill {
 		background: var(--md-sys-color-error, #b3261e);
+	}
+	.token-details {
+		position: absolute;
+		left: 0;
+		bottom: calc(100% + 8px);
+		z-index: 1000;
+		width: min(340px, calc(100vw - 24px));
+		padding: var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-high);
+		box-shadow: var(--md-sys-elevation-3);
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+		animation: token-details-in var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-emphasized);
+	}
+	.token-details-heading,
+	.token-detail-line {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+	}
+	.token-details-heading {
+		padding-bottom: var(--md-sys-space-sm);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.token-details-heading > div {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.token-details-heading strong {
+		font-size: var(--md-sys-typescale-title-small-size);
+		line-height: var(--md-sys-typescale-title-small-line-height);
+	}
+	.token-details-heading span,
+	.token-details-count,
+	.token-detail-muted {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.token-details-heading > div > span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.token-detail-section {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: var(--md-sys-space-sm) 0;
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.token-detail-section:last-of-type {
+		border-bottom: none;
+	}
+	.token-detail-section-title {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.token-detail-grid {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		gap: 3px var(--md-sys-space-md);
+	}
+	.token-detail-grid span,
+	.token-detail-line > span {
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.token-detail-line strong,
+	.token-detail-grid strong {
+		font-variant-numeric: tabular-nums;
+	}
+	.token-detail-progress {
+		height: 5px;
+		margin-top: 3px;
+		border-radius: 999px;
+		background: var(--md-sys-color-surface-variant, rgba(0, 0, 0, 0.08));
+		overflow: hidden;
+	}
+	.token-detail-progress > div {
+		height: 100%;
+		border-radius: inherit;
+		background: var(--md-sys-color-primary);
+		transition: width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
+	}
+	.token-detail-estimated {
+		padding-top: var(--md-sys-space-sm);
+		color: var(--md-sys-color-tertiary);
+		font-size: var(--md-sys-typescale-label-small-size);
+	}
+	@keyframes token-details-in {
+		from {
+			opacity: 0;
+			transform: translateY(4px) scale(0.98);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0) scale(1);
+		}
 	}
 	@keyframes session-menu-in {
 		from {

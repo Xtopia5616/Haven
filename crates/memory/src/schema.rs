@@ -168,6 +168,8 @@ const SCHEMA_SQL: &[&str] = &[
          cached_tokens INTEGER NOT NULL DEFAULT 0,
          cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
          cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+         context_tokens INTEGER NOT NULL DEFAULT 0,
+         context_window INTEGER,
          cost_usd REAL NOT NULL DEFAULT 0,
         has_cost INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -190,6 +192,8 @@ const SCHEMA_SQL: &[&str] = &[
          cache_accounting TEXT NOT NULL DEFAULT 'unknown',
          cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
          cache_diagnostics TEXT,
+         context_tokens INTEGER NOT NULL DEFAULT 0,
+         context_window INTEGER,
          cost_usd REAL NOT NULL DEFAULT 0,
         has_cost INTEGER NOT NULL DEFAULT 0,
         duration_ms INTEGER,

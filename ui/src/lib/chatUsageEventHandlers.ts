@@ -1,7 +1,4 @@
-import type {
-	AgentCompactionPayload,
-	AgentUsagePayload,
-} from './contracts/agent.ts';
+import type { AgentCompactionPayload, AgentUsagePayload } from './contracts/agent.ts';
 import type { TauriEvent } from './contracts/session.ts';
 import { addNotification } from './stores.ts';
 import {
@@ -92,6 +89,8 @@ export function createChatUsageEventHandlers(): {
 					cache_miss_tokens: miss,
 					cache_accounting: d.cacheAccounting || 'unknown',
 					cache_diagnostics: d.cacheDiagnostics || undefined,
+					context_tokens: d.contextTokens || 0,
+					context_window: d.contextWindow ?? null,
 					cost_usd: d.costUsd ?? null,
 					has_cost: !!d.hasCost,
 					duration_ms: d.durationMs ?? null,

@@ -6,7 +6,7 @@
 //! reviewable without mixing it with the current table definition.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-pub(super) const SCHEMA_VERSION: i32 = 14;
+pub(super) const SCHEMA_VERSION: i32 = 15;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -45,6 +45,8 @@ pub(super) struct Migration {
 ///   resume cursor, independent of wall-clock timestamps.
 /// - v14: durable snapshot revision and materialized-projection cursors used
 ///   to detect a crash between projection writes and snapshot persistence.
+/// - v15: last-request context occupancy and model window on usage rows, so
+///   restored sessions can show the same context budget as live sessions.
 pub(super) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -98,7 +100,46 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         version: 14,
         apply: migrate_v14_react_checkpoints,
     },
+    Migration {
+        version: 15,
+        apply: migrate_v15_usage_context,
+    },
 ];
+
+/// Persist the context occupancy reported by the provider for the latest LLM
+/// call. Existing calls remain valid with zero/NULL values and are presented
+/// as unknown context data by the UI.
+pub(super) fn migrate_v15_usage_context(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if table_exists(conn, "session_usage")? {
+        if !column_exists(conn, "session_usage", "context_tokens")? {
+            conn.execute(
+                "ALTER TABLE session_usage ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !column_exists(conn, "session_usage", "context_window")? {
+            conn.execute(
+                "ALTER TABLE session_usage ADD COLUMN context_window INTEGER",
+                [],
+            )?;
+        }
+    }
+    if table_exists(conn, "llm_usage")? {
+        if !column_exists(conn, "llm_usage", "context_tokens")? {
+            conn.execute(
+                "ALTER TABLE llm_usage ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !column_exists(conn, "llm_usage", "context_window")? {
+            conn.execute(
+                "ALTER TABLE llm_usage ADD COLUMN context_window INTEGER",
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
 
 /// Add the durable checkpoint metadata that accompanies `sessions.react_state`.
 pub(super) fn migrate_v14_react_checkpoints(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -982,6 +1023,7 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     #[test]
     fn migration_catalog_is_ordered_and_reaches_current_version() {
@@ -993,5 +1035,22 @@ mod tests {
                 .all(|pair| pair[0].version < pair[1].version)
         );
         assert!(MIGRATIONS.first().unwrap().version > 1);
+    }
+
+    #[test]
+    fn v15_adds_usage_context_columns_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY);
+             CREATE TABLE llm_usage (id TEXT PRIMARY KEY, session_id TEXT NOT NULL);",
+        )
+        .unwrap();
+
+        migrate_v15_usage_context(&conn).unwrap();
+        migrate_v15_usage_context(&conn).unwrap();
+        assert!(column_exists(&conn, "session_usage", "context_tokens").unwrap());
+        assert!(column_exists(&conn, "session_usage", "context_window").unwrap());
+        assert!(column_exists(&conn, "llm_usage", "context_tokens").unwrap());
+        assert!(column_exists(&conn, "llm_usage", "context_window").unwrap());
     }
 }

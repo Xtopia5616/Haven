@@ -1,5 +1,6 @@
 use crate::db::Database;
 use crate::repositories::messages::now_rfc3339_millis;
+use rusqlite::OptionalExtension;
 
 /// Per-session cumulative token/cost counters, persisted so a resumed or
 /// reopened session can restore the token-stats display instead of resetting
@@ -16,6 +17,10 @@ pub struct SessionUsage {
     pub cache_creation_tokens: u32,
     #[serde(default)]
     pub cache_miss_tokens: u32,
+    #[serde(default)]
+    pub context_tokens: u32,
+    #[serde(default)]
+    pub context_window: Option<u32>,
     pub cost_usd: f64,
     pub has_cost: bool,
 }
@@ -62,7 +67,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT prompt_tokens, completion_tokens, total_tokens,
-                    cached_tokens, cache_creation_tokens, cache_miss_tokens, cost_usd, has_cost
+                    cached_tokens, cache_creation_tokens, cache_miss_tokens,
+                    context_tokens, context_window, cost_usd, has_cost
              FROM session_usage WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query_map(rusqlite::params![session_id], |row| {
@@ -73,8 +79,10 @@ impl Database {
                 cached_tokens: row.get(3)?,
                 cache_creation_tokens: row.get(4)?,
                 cache_miss_tokens: row.get(5)?,
-                cost_usd: row.get(6)?,
-                has_cost: row.get::<_, i32>(7)? != 0,
+                context_tokens: row.get(6)?,
+                context_window: row.get(7)?,
+                cost_usd: row.get(8)?,
+                has_cost: row.get::<_, i32>(9)? != 0,
             })
         })?;
         match rows.next() {
@@ -116,6 +124,12 @@ pub struct LlmCallUsage {
     pub cache_accounting: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_diagnostics: Option<serde_json::Value>,
+    /// Tokens occupying the provider context window for this call.
+    #[serde(default)]
+    pub context_tokens: u32,
+    /// Configured provider context window for this call, when known.
+    #[serde(default)]
+    pub context_window: Option<u32>,
     pub cost_usd: f64,
     pub has_cost: bool,
     /// Wall-clock duration of the LLM call in milliseconds.
@@ -213,6 +227,8 @@ impl Database {
             cache_miss_tokens,
             cache_accounting,
             cache_diagnostics,
+            0,
+            None,
             cost_usd,
             has_cost,
             duration_ms,
@@ -232,6 +248,8 @@ impl Database {
             cache_miss_tokens,
             cache_accounting: cache_accounting.into(),
             cache_diagnostics: cache_diagnostics.and_then(|value| serde_json::from_str(value).ok()),
+            context_tokens: 0,
+            context_window: None,
             cost_usd,
             has_cost,
             duration_ms,
@@ -300,6 +318,48 @@ impl Database {
         has_cost: bool,
         duration_ms: Option<u64>,
     ) -> anyhow::Result<LlmCallUsage> {
+        self.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+            session_id,
+            step_number,
+            role,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            cache_miss_tokens,
+            cache_accounting,
+            cache_diagnostics,
+            cost_usd,
+            has_cost,
+            duration_ms,
+            0,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+        &self,
+        session_id: &str,
+        step_number: Option<i32>,
+        role: &str,
+        model: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_miss_tokens: u32,
+        cache_accounting: &str,
+        cache_diagnostics: Option<&str>,
+        cost_usd: f64,
+        has_cost: bool,
+        duration_ms: Option<u64>,
+        context_tokens: u32,
+        context_window: Option<u32>,
+    ) -> anyhow::Result<LlmCallUsage> {
         let id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
@@ -320,6 +380,8 @@ impl Database {
                 cache_miss_tokens,
                 cache_accounting,
                 cache_diagnostics,
+                context_tokens,
+                context_window,
                 cost_usd,
                 has_cost,
                 duration_ms,
@@ -341,6 +403,8 @@ impl Database {
                 cache_accounting: cache_accounting.into(),
                 cache_diagnostics: cache_diagnostics
                     .and_then(|value| serde_json::from_str(value).ok()),
+                context_tokens,
+                context_window,
                 cost_usd,
                 has_cost,
                 duration_ms,
@@ -403,6 +467,8 @@ impl Database {
         cache_miss_tokens: u32,
         cache_accounting: &str,
         cache_diagnostics: Option<&str>,
+        context_tokens: u32,
+        context_window: Option<u32>,
         cost_usd: f64,
         has_cost: bool,
         duration_ms: Option<u64>,
@@ -420,8 +486,8 @@ impl Database {
             "INSERT INTO llm_usage
                  (id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
                    total_tokens, cached_tokens, cache_creation_tokens, cache_miss_tokens, cache_accounting,
-                   cache_diagnostics, cost_usd, has_cost, duration_ms, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                   cache_diagnostics, context_tokens, context_window, cost_usd, has_cost, duration_ms, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             rusqlite::params![
                 id,
                 session_id,
@@ -436,6 +502,8 @@ impl Database {
                 cache_miss_tokens,
                 cache_accounting,
                 cache_diagnostics,
+                context_tokens,
+                context_window,
                 cost_usd,
                 has_cost,
                 duration_ms,
@@ -482,14 +550,27 @@ impl Database {
                 ))
             },
         )?;
+        let (context_tokens, context_window): (u32, Option<u32>) = conn
+            .query_row(
+                "SELECT context_tokens, context_window
+                   FROM llm_usage
+                  WHERE session_id = ?1
+                  ORDER BY created_at DESC, rowid DESC
+                  LIMIT 1",
+                rusqlite::params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((0, None));
         // Always upsert — including zeros when no detail remains — so resume
         // does not treat a cleared row as "predates persistence" and fall
         // back to estimate_session_usage.
         conn.execute(
             "INSERT INTO session_usage
                  (session_id, prompt_tokens, completion_tokens, total_tokens,
-                   cached_tokens, cache_creation_tokens, cache_miss_tokens, cost_usd, has_cost, updated_at)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+                   cached_tokens, cache_creation_tokens, cache_miss_tokens,
+                   context_tokens, context_window, cost_usd, has_cost, updated_at)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
              ON CONFLICT(session_id) DO UPDATE SET
                  prompt_tokens = excluded.prompt_tokens,
                  completion_tokens = excluded.completion_tokens,
@@ -497,6 +578,8 @@ impl Database {
                  cached_tokens = excluded.cached_tokens,
                  cache_creation_tokens = excluded.cache_creation_tokens,
                  cache_miss_tokens = excluded.cache_miss_tokens,
+                 context_tokens = excluded.context_tokens,
+                 context_window = excluded.context_window,
                  cost_usd = excluded.cost_usd,
                  has_cost = excluded.has_cost,
                  updated_at = excluded.updated_at",
@@ -508,6 +591,8 @@ impl Database {
                 cached as u32,
                 creation as u32,
                 miss as u32,
+                context_tokens,
+                context_window,
                 cost,
                 has_cost != 0
             ],
@@ -522,7 +607,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
                     total_tokens, cached_tokens, cache_creation_tokens, cache_miss_tokens, cache_accounting,
-                    cache_diagnostics, cost_usd, has_cost, duration_ms, created_at
+                    cache_diagnostics, context_tokens, context_window, cost_usd, has_cost, duration_ms, created_at
              FROM llm_usage WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
@@ -542,10 +627,12 @@ impl Database {
                 cache_diagnostics: row
                     .get::<_, Option<String>>(12)?
                     .and_then(|value| serde_json::from_str(&value).ok()),
-                cost_usd: row.get(13)?,
-                has_cost: row.get::<_, i32>(14)? != 0,
-                duration_ms: row.get(15)?,
-                created_at: row.get(16)?,
+                context_tokens: row.get(13)?,
+                context_window: row.get(14)?,
+                cost_usd: row.get(15)?,
+                has_cost: row.get::<_, i32>(16)? != 0,
+                duration_ms: row.get(17)?,
+                created_at: row.get(18)?,
             })
         })?;
         let mut usage = Vec::new();
@@ -594,6 +681,42 @@ mod tests {
         assert_eq!(u.cache_creation_tokens, 5);
         assert_eq!(u.cost_usd, 0.25);
         assert!(u.has_cost);
+    }
+
+    #[test]
+    fn persist_and_restore_context_snapshot() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        let rec = db
+            .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+                &session.id,
+                Some(1),
+                "default_model",
+                Some("model-a"),
+                900,
+                120,
+                1020,
+                300,
+                0,
+                600,
+                "inclusive",
+                None,
+                0.0,
+                false,
+                Some(42),
+                900,
+                Some(4096),
+            )
+            .unwrap();
+
+        assert_eq!(rec.context_tokens, 900);
+        assert_eq!(rec.context_window, Some(4096));
+        let summary = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(summary.context_tokens, 900);
+        assert_eq!(summary.context_window, Some(4096));
+        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        assert_eq!(calls[0].context_tokens, 900);
+        assert_eq!(calls[0].context_window, Some(4096));
     }
 
     #[test]

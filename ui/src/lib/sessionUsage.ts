@@ -27,6 +27,8 @@ export interface LlmUsage {
 	cache_creation_tokens?: number;
 	cache_miss_tokens?: number;
 	cache_accounting?: 'inclusive' | 'exclusive' | 'unknown' | string;
+	context_tokens?: number;
+	context_window?: number | null;
 	cache_diagnostics?: {
 		mode?: string;
 		key_requested?: boolean;
@@ -86,6 +88,8 @@ export function restoreSessionTokenStats(
 		cached_tokens?: number;
 		cache_creation_tokens?: number;
 		cache_miss_tokens?: number;
+		context_tokens?: number;
+		context_window?: number | null;
 		cost_usd?: number | null;
 		has_cost?: boolean;
 	},
@@ -105,7 +109,7 @@ export function restoreSessionTokenStats(
 		cachedTokens: 0,
 		cacheCreationTokens: 0,
 		cacheMissTokens: 0,
-		contextTokens: 0,
+		contextTokens: usage.context_tokens || 0,
 		cacheExclusive: false,
 		cumulativePromptTokens: prompt,
 		cumulativeCompletionTokens: completion,
@@ -121,7 +125,7 @@ export function restoreSessionTokenStats(
 		cumulativeCacheMissTokens: miss,
 		costUsd: null,
 		cumulativeCostUsd: hasCost ? usage.cost_usd : null,
-		contextWindow: null,
+		contextWindow: usage.context_window ?? null,
 		model: null,
 		estimated: !!estimated,
 		restored: true,
@@ -207,7 +211,9 @@ export function coalesceTokenTotal(
 export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null {
 	if (
 		!calls.length ||
-		calls.some((call) => !['inclusive', 'exclusive'].includes(call.cache_accounting || 'unknown'))
+		calls.some(
+			(call) => !['inclusive', 'exclusive'].includes(call.cache_accounting || 'unknown'),
+		)
 	) {
 		return null;
 	}
@@ -218,8 +224,7 @@ export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null 
 		const read = call.cached_tokens || 0;
 		const creation = call.cache_creation_tokens || 0;
 		cached += read;
-		eligibleInput +=
-			call.cache_accounting === 'exclusive' ? prompt + read + creation : prompt;
+		eligibleInput += call.cache_accounting === 'exclusive' ? prompt + read + creation : prompt;
 	}
 	if (!cached || !eligibleInput) return null;
 	return Math.min(100, (cached / eligibleInput) * 100);
