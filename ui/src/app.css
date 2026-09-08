@@ -874,6 +874,151 @@ select.md-select {
 	pointer-events: none;
 }
 
+/* ---------- Workspace item cards ---------- */
+/* Shared by task and memory item cards. Domain views only own the
+ * content hierarchy and domain-specific status styling. */
+.workspace-item-card {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	width: 100%;
+	min-width: 0;
+	min-height: 168px;
+	overflow: hidden;
+	border: 1px solid var(--md-sys-color-outline-variant);
+	border-radius: var(--md-sys-shape-large);
+	background: var(--md-sys-color-surface-container-low);
+	color: var(--md-sys-color-on-surface);
+	text-align: left;
+	transition:
+		border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.workspace-item-card-main {
+	position: relative;
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--md-sys-space-sm);
+	width: 100%;
+	min-width: 0;
+	min-height: 0;
+	padding: var(--md-sys-space-lg);
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.workspace-item-card::after {
+	position: absolute;
+	inset: 0;
+	content: '';
+	background: currentColor;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.workspace-item-card > * {
+	position: relative;
+	z-index: 1;
+}
+.workspace-item-card:hover,
+.workspace-item-card.selected {
+	border-color: var(--md-sys-color-primary);
+	background: var(--md-sys-color-primary-container);
+	box-shadow: var(--md-sys-elevation-2);
+	transform: translateY(-1px);
+}
+.workspace-item-card:hover::after {
+	opacity: var(--md-sys-state-hover-opacity);
+}
+.workspace-item-card-main:focus-visible {
+	outline: none;
+	box-shadow: var(--md-sys-focus-ring), var(--md-sys-elevation-1);
+	z-index: 2;
+}
+.workspace-item-card-header,
+.workspace-item-card-meta,
+.workspace-item-card-footer {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+}
+.workspace-item-card-header {
+	justify-content: space-between;
+	gap: var(--md-sys-space-sm);
+}
+.workspace-item-card-meta {
+	gap: var(--md-sys-space-xs);
+	margin-top: auto;
+	color: var(--md-sys-color-on-surface-variant);
+	font-size: var(--md-sys-typescale-label-medium-size);
+	line-height: var(--md-sys-typescale-label-medium-line-height);
+}
+.workspace-item-card-meta > :first-child {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.workspace-item-card-meta > :last-child {
+	flex: 0 0 auto;
+}
+.workspace-item-card-footer {
+	justify-content: space-between;
+	gap: var(--md-sys-space-sm);
+	padding-top: var(--md-sys-space-sm);
+	border-top: 1px solid var(--md-sys-color-outline-variant);
+	color: var(--md-sys-color-on-surface-variant);
+	font-size: var(--md-sys-typescale-label-small-size);
+	line-height: var(--md-sys-typescale-label-small-line-height);
+}
+.workspace-item-card-id {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--md-sys-typescale-mono);
+}
+.workspace-item-card-open {
+	flex: 0 0 auto;
+	color: var(--md-sys-color-primary);
+	font-weight: 650;
+	white-space: nowrap;
+}
+.workspace-item-card-open > span {
+	display: inline-block;
+	margin-left: var(--md-sys-space-2xs);
+	transition: transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+}
+.workspace-item-card:hover .workspace-item-card-open > span {
+	transform: translateX(var(--md-sys-space-2xs));
+}
+.workspace-item-card-actions {
+	position: relative;
+	z-index: 1;
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--md-sys-space-sm);
+	padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
+	border-top: 1px solid var(--md-sys-color-outline-variant);
+	background: color-mix(
+		in srgb,
+		var(--md-sys-color-surface-container-low) 76%,
+		var(--md-sys-color-surface) 24%
+	);
+}
+.workspace-item-card-actions .md-btn {
+	min-width: 0;
+	white-space: nowrap;
+}
+
 /* ---------- Cards ---------- */
 .md-card {
 	background: var(--md-sys-color-surface-container-low);
@@ -1172,4 +1317,20 @@ select.md-select {
 }
 .state-layer:active::after {
 	opacity: var(--md-sys-state-pressed-opacity);
+}
+
+@media (max-width: 520px) {
+	.workspace-item-card {
+		min-height: 0;
+	}
+	.workspace-item-card-main {
+		padding: var(--md-sys-space-md);
+	}
+	.workspace-item-card-actions {
+		justify-content: stretch;
+		padding-inline: var(--md-sys-space-md);
+	}
+	.workspace-item-card-actions .md-btn {
+		flex: 1;
+	}
 }

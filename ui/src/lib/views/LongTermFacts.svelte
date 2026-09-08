@@ -1,6 +1,8 @@
 <script>
-	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import MaterialSelect from '$lib/MaterialSelect.svelte';
 
 	let {
 		facts = [],
@@ -13,14 +15,90 @@
 		onAddFact = () => {},
 		onDeleteFact = () => {},
 	} = $props();
+
 	let selectedFactId = $state(null);
-	const selectedFact = $derived.by(
-		() => facts.find((fact) => fact.id === selectedFactId) || facts[0] || null,
-	);
+	let detailOpen = $state(false);
+	const selectedFact = $derived(facts.find((fact) => fact.id === selectedFactId) || null);
+
 	$effect(() => {
-		if (selectedFact && selectedFactId !== selectedFact.id) selectedFactId = selectedFact.id;
-		if (!selectedFact) selectedFactId = null;
+		if (selectedFactId && !selectedFact) {
+			selectedFactId = null;
+			detailOpen = false;
+		}
 	});
+
+	/** @param {any} fact */
+	function factSourceLabel(fact) {
+		return fact.source === 'inferred' ? '推断' : '手动';
+	}
+
+	/** @param {any} fact */
+	function factSourceTone(fact) {
+		return fact.source === 'inferred' ? 'secondary' : 'primary';
+	}
+
+	/** @param {any} fact */
+	function factSubjectLabel(fact) {
+		return fact.subject && fact.subject !== 'user' ? `关于 ${fact.subject}` : '关于你';
+	}
+
+	/** @param {any} fact */
+	function factTitle(fact) {
+		return fact.predicate || '未命名记忆';
+	}
+
+	/** @param {any} fact */
+	function factSentence(fact) {
+		const subject = fact.subject && fact.subject !== 'user' ? fact.subject : '你';
+		return `${subject} · ${fact.predicate || '未命名'} · ${fact.object || '暂无内容'}`;
+	}
+
+	/** @param {number | undefined} confidence */
+	function confidenceLabel(confidence) {
+		if (typeof confidence !== 'number' || Number.isNaN(confidence)) return '置信度未知';
+		return `置信度 ${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
+	}
+
+	/** @param {any} fact */
+	function reinforcementLabel(fact) {
+		const count = Number(fact.mention_count || 0);
+		return count > 0 ? `已复核 ${count} 次` : '尚未复核';
+	}
+
+	/** @param {string | undefined | null} value */
+	function formatDate(value) {
+		if (!value) return '未知';
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return value;
+		return new Intl.DateTimeFormat('zh-CN', {
+			dateStyle: 'medium',
+			timeStyle: 'short',
+		}).format(date);
+	}
+
+	/** @param {any} fact */
+	function tagsLabel(fact) {
+		return Array.isArray(fact.tags) && fact.tags.length > 0 ? fact.tags.join('、') : '无';
+	}
+
+	/** @param {any} fact */
+	function selectFact(fact) {
+		selectedFactId = fact.id;
+		detailOpen = true;
+	}
+
+	function closeDetail() {
+		detailOpen = false;
+	}
+
+	function deleteSelectedFact() {
+		if (!selectedFact) return;
+		const factId = selectedFact.id;
+		detailOpen = false;
+		selectedFactId = null;
+		onDeleteFact?.(factId);
+	}
+
 	/** @param {string} value */
 	function handleSourceChange(value) {
 		onFactSourceFilterChange(value);
@@ -43,44 +121,80 @@
 		</div>
 	</div>
 	<p class="section-hint">
-		跨会话长期记忆（身份、偏好、工作区等）。你可以手动添加/删除，Agent 也可以通过 memory
-		工具更新。
+		跨会话长期记忆（身份、偏好、工作区等）。条目默认展示关键信息，点击后查看完整来源和记忆状态。
 	</p>
 
 	<div class="facts-layout">
-		<section class="fact-browser md-card md-card--outlined" aria-labelledby="fact-list-title">
-			<div class="section-head">
+		<section class="fact-browser" aria-labelledby="fact-list-title">
+			<div class="fact-list-heading">
 				<div>
 					<h3 id="fact-list-title">已保存的记忆</h3>
-					<p>选择一条查看完整内容。</p>
+					<span class="section-count">{facts.length} 项</span>
 				</div>
-				<span class="section-count">{facts.length} 条</span>
+				<span class="fact-list-hint">点击条目查看详情，或直接删除</span>
 			</div>
 			{#if factsLoaded && facts.length > 0}
-				<div class="fact-list" role="listbox" aria-label="长期记忆列表">
+				<div class="fact-list" role="list" aria-label="长期记忆列表">
 					{#each facts as fact (fact.id)}
-						<button
-							class="fact-row"
-							class:selected={selectedFact?.id === fact.id}
-							type="button"
-							role="option"
-							aria-selected={selectedFact?.id === fact.id}
-							onclick={() => (selectedFactId = fact.id)}
+						<article
+							class="fact-card workspace-item-card motion-list-item"
+							class:selected={selectedFactId === fact.id && detailOpen}
 						>
-							<span class="fact-row-copy">
-								<span class="fact-key">
-									{#if fact.subject !== 'user'}{fact.subject}:{/if}{fact.predicate}
-								</span>
-								<span class="fact-object">{fact.object}</span>
-							</span>
-							<span
-								class="fact-tag"
-								class:fact-tag--inf={fact.source === 'inferred'}
-								class:fact-tag--user={fact.source !== 'inferred'}
-								>{fact.source === 'inferred' ? '推断' : '手动'}</span
+							<button
+								class="fact-card-main workspace-item-card-main"
+								type="button"
+								aria-label={`查看${factTitle(fact)}详情`}
+								onclick={() => selectFact(fact)}
 							>
-							<span class="fact-row-arrow" aria-hidden="true">→</span>
-						</button>
+								<span class="fact-card-header workspace-item-card-header">
+									<span class="fact-card-type" data-tone={factSourceTone(fact)}>
+										<span
+											class="fact-card-indicator"
+											data-tone={factSourceTone(fact)}
+											aria-hidden="true"
+										></span>
+										长期记忆
+									</span>
+									<MaterialBadge
+										text={factSourceLabel(fact)}
+										variant={factSourceTone(fact)}
+									/>
+								</span>
+								<strong class="fact-card-title">{factTitle(fact)}</strong>
+								<span class="fact-card-summary">{fact.object || '暂无内容'}</span>
+								<span class="fact-card-meta workspace-item-card-meta">
+									<span>{factSubjectLabel(fact)}</span>
+									<span class="fact-card-meta-separator" aria-hidden="true"
+										>·</span
+									>
+									<span>{confidenceLabel(fact.confidence)}</span>
+								</span>
+								<span class="fact-card-footer workspace-item-card-footer">
+									<span class="fact-card-id workspace-item-card-id"
+										>{reinforcementLabel(fact)}</span
+									>
+									<span
+										class="fact-card-open workspace-item-card-open"
+										aria-hidden="true"
+									>
+										查看详情 <span>→</span>
+									</span>
+								</span>
+							</button>
+							<div class="fact-card-actions workspace-item-card-actions">
+								<MaterialButton
+									variant="text"
+									label="查看详情"
+									onclick={() => selectFact(fact)}
+								/>
+								<MaterialButton
+									variant="text"
+									className="fact-delete"
+									label="删除"
+									onclick={() => onDeleteFact?.(fact.id)}
+								/>
+							</div>
+						</article>
 					{/each}
 				</div>
 			{:else if factsLoaded}
@@ -143,61 +257,102 @@
 					/>
 				</div>
 			</section>
-
-			{#if selectedFact}
-				{@const detailFact = selectedFact}
-				<article
-					class="fact-detail md-card md-card--outlined"
-					aria-labelledby="fact-detail-title"
-				>
-					<div class="section-head section-head--compact">
-						<div>
-							<span class="fact-detail-kicker">当前选中</span>
-							<h3 id="fact-detail-title">{detailFact.predicate}</h3>
-						</div>
-						<span
-							class="fact-tag"
-							class:fact-tag--inf={detailFact.source === 'inferred'}
-							class:fact-tag--user={detailFact.source !== 'inferred'}
-							>{detailFact.source === 'inferred' ? '推断' : '手动'}</span
-						>
-					</div>
-					<dl class="fact-details">
-						<div>
-							<dt>主语</dt>
-							<dd>{detailFact.subject || 'user'}</dd>
-						</div>
-						<div>
-							<dt>谓词</dt>
-							<dd>{detailFact.predicate}</dd>
-						</div>
-						<div>
-							<dt>对象</dt>
-							<dd>{detailFact.object}</dd>
-						</div>
-						{#if detailFact.tags}<div>
-								<dt>标签</dt>
-								<dd>
-									{Array.isArray(detailFact.tags)
-										? detailFact.tags.join('、')
-										: detailFact.tags}
-								</dd>
-							</div>{/if}
-						<div>
-							<dt>编号</dt>
-							<dd class="fact-id">{detailFact.id}</dd>
-						</div>
-					</dl>
-					<MaterialButton
-						variant="danger"
-						label="删除这条事实"
-						onclick={() => onDeleteFact(detailFact.id)}
-					/>
-				</article>
-			{/if}
 		</aside>
 	</div>
 </div>
+
+<MaterialDialog
+	open={detailOpen && selectedFact !== null}
+	title={selectedFact ? factTitle(selectedFact) : '记忆详情'}
+	dialogClass="fact-dialog"
+	onClose={closeDetail}
+>
+	{#snippet children()}
+		{#if selectedFact}
+			<div class="fact-dialog-content">
+				<div class="fact-dialog-overview">
+					<div class="fact-dialog-type-row">
+						<span class="fact-card-type" data-tone={factSourceTone(selectedFact)}>
+							<span
+								class="fact-card-indicator"
+								data-tone={factSourceTone(selectedFact)}
+								aria-hidden="true"
+							></span>
+							{factSubjectLabel(selectedFact)}
+						</span>
+						<MaterialBadge
+							text={factSourceLabel(selectedFact)}
+							variant={factSourceTone(selectedFact)}
+						/>
+					</div>
+					<p class="fact-dialog-summary">{factSentence(selectedFact)}</p>
+				</div>
+
+				<dl class="fact-facts">
+					<div>
+						<dt>主语</dt>
+						<dd>{selectedFact.subject || 'user'}</dd>
+					</div>
+					<div>
+						<dt>谓词</dt>
+						<dd>{selectedFact.predicate}</dd>
+					</div>
+					<div>
+						<dt>对象</dt>
+						<dd>{selectedFact.object}</dd>
+					</div>
+					<div>
+						<dt>置信度</dt>
+						<dd>{confidenceLabel(selectedFact.confidence)}</dd>
+					</div>
+					<div>
+						<dt>创建时间</dt>
+						<dd>{formatDate(selectedFact.created_at)}</dd>
+					</div>
+					<div>
+						<dt>最近复核</dt>
+						<dd>{formatDate(selectedFact.last_seen_at)}</dd>
+					</div>
+					<div>
+						<dt>复核次数</dt>
+						<dd>{selectedFact.mention_count || 0} 次</dd>
+					</div>
+					<div>
+						<dt>标签</dt>
+						<dd>{tagsLabel(selectedFact)}</dd>
+					</div>
+					<div>
+						<dt>持久度</dt>
+						<dd>
+							{Math.round(
+								Math.max(0, Math.min(1, selectedFact.durability ?? 1)) * 100,
+							)}%
+						</dd>
+					</div>
+					<div>
+						<dt>记忆编号</dt>
+						<dd><code class="fact-code">{selectedFact.id}</code></dd>
+					</div>
+				</dl>
+
+				{#if selectedFact.source_ref?.snippet}
+					<section class="fact-dialog-section">
+						<h4>来源摘录</h4>
+						<p class="fact-detail-copy">{selectedFact.source_ref.snippet}</p>
+					</section>
+				{/if}
+
+				<div class="fact-actions">
+					<MaterialButton
+						variant="danger"
+						label="删除这条记忆"
+						onclick={deleteSelectedFact}
+					/>
+				</div>
+			</div>
+		{/if}
+	{/snippet}
+</MaterialDialog>
 
 <style>
 	.facts-view {
@@ -211,7 +366,9 @@
 		margin-bottom: 0;
 	}
 	.section-heading,
-	.section-head {
+	.section-head,
+	.fact-list-heading,
+	.fact-dialog-type-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -219,14 +376,16 @@
 		min-width: 0;
 	}
 	.section-heading h2,
-	.section-head h3 {
+	.section-head h3,
+	.fact-list-heading h3 {
 		margin: 0;
 		font-size: var(--md-sys-typescale-title-large-size);
 		font-weight: 650;
 		line-height: var(--md-sys-typescale-title-large-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
-	.section-head h3 {
+	.section-head h3,
+	.fact-list-heading h3 {
 		font-size: var(--md-sys-typescale-title-medium-size);
 		line-height: var(--md-sys-typescale-title-medium-line-height);
 	}
@@ -240,8 +399,8 @@
 	.section-hint {
 		margin: 0 0 var(--md-sys-space-sm);
 	}
-	.section-count {
-		flex: 0 0 auto;
+	.section-count,
+	.fact-list-hint {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
@@ -259,103 +418,91 @@
 		min-width: 0;
 	}
 	.fact-browser,
-	.fact-editor,
-	.fact-detail {
+	.fact-editor {
 		min-width: 0;
 	}
-	.fact-browser {
-		min-height: 240px;
+	.fact-list-heading {
+		align-items: baseline;
+		padding: 0 var(--md-sys-space-xs) var(--md-sys-space-md);
+	}
+	.fact-list-heading > div {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-sm);
+		min-width: 0;
 	}
 	.fact-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-xs);
-		margin-top: var(--md-sys-space-lg);
-	}
-	.fact-row {
-		position: relative;
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		width: 100%;
-		min-width: 0;
-		padding: var(--md-sys-space-md);
-		border: 1px solid transparent;
-		border-radius: var(--md-sys-shape-medium);
-		background: transparent;
-		font: inherit;
-		text-align: left;
-		cursor: pointer;
-		transition:
-			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	.fact-row:hover,
-	.fact-row.selected {
-		border-color: var(--md-sys-color-primary);
-		background: var(--md-sys-color-primary-container);
-	}
-	.fact-row:focus-visible {
-		outline: none;
-		box-shadow: var(--md-sys-focus-ring);
-	}
-	.fact-row-copy {
 		display: grid;
-		gap: var(--md-sys-space-2xs);
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: var(--md-sys-space-md);
 		min-width: 0;
-		flex: 1;
+		max-height: min(620px, calc(100vh - 280px));
+		overflow-y: auto;
+		scrollbar-gutter: stable;
+		padding: var(--md-sys-space-xs);
 	}
-	.fact-key,
-	.fact-object {
+	.fact-card-type {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
 		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.fact-key {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 650;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
-	.fact-object {
-		color: var(--md-sys-color-on-surface);
+	.fact-card-type[data-tone='primary'] {
+		color: var(--md-sys-color-primary);
+	}
+	.fact-card-type[data-tone='secondary'] {
+		color: var(--md-sys-color-secondary);
+	}
+	.fact-card-indicator {
+		width: var(--md-sys-space-sm);
+		height: var(--md-sys-space-sm);
+		flex: 0 0 auto;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-outline);
+	}
+	.fact-card-indicator[data-tone='primary'] {
+		background: var(--md-sys-color-primary);
+	}
+	.fact-card-indicator[data-tone='secondary'] {
+		background: var(--md-sys-color-secondary);
+	}
+	.fact-card-header :global(.md-badge),
+	.fact-dialog-type-row :global(.md-badge) {
+		flex: 0 0 auto;
+	}
+	.fact-card-title {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		min-width: 0;
+		overflow: hidden;
+		overflow-wrap: anywhere;
+		font-size: var(--md-sys-typescale-title-medium-size);
+		line-height: var(--md-sys-typescale-title-medium-line-height);
+	}
+	.fact-card-summary {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		min-width: 0;
+		overflow: hidden;
+		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
+		overflow-wrap: anywhere;
 	}
-	.fact-row-arrow {
+	.fact-card-meta-separator {
 		flex: 0 0 auto;
-		color: var(--md-sys-color-primary);
-		font-size: var(--md-sys-typescale-title-large-size);
-		line-height: 1;
-		transition: transform var(--md-sys-motion-duration-fast)
-			var(--md-sys-motion-easing-standard);
+		color: var(--md-sys-color-outline);
 	}
-	.fact-row:hover .fact-row-arrow,
-	.fact-row.selected .fact-row-arrow {
-		transform: translateX(var(--md-sys-space-xs));
-	}
-	.fact-tag {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-height: var(--md-sys-space-xl);
-		padding: 0 var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		white-space: nowrap;
-		flex-shrink: 0;
-	}
-	.fact-tag--user {
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
-	}
-	.fact-tag--inf {
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
+	.fact-card-actions :global(.fact-delete) {
+		color: var(--md-sys-color-error);
 	}
 	.fact-side {
 		display: flex;
@@ -385,47 +532,6 @@
 		justify-content: flex-end;
 		margin-top: var(--md-sys-space-lg);
 	}
-	.fact-detail {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-lg);
-	}
-	.fact-detail-kicker {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.fact-detail h3 {
-		margin-top: var(--md-sys-space-xs);
-	}
-	.fact-details {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: var(--md-sys-space-md);
-		margin: 0;
-	}
-	.fact-details div {
-		display: grid;
-		gap: var(--md-sys-space-xs);
-		min-width: 0;
-	}
-	.fact-details dt {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.fact-details dd {
-		margin: 0;
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		overflow-wrap: anywhere;
-	}
-	.fact-id {
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-label-small-size) !important;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
 	.empty-inline {
 		display: grid;
 		justify-items: center;
@@ -450,9 +556,86 @@
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
+	.fact-dialog-content {
+		min-width: 0;
+	}
+	.fact-dialog-overview {
+		padding: var(--md-sys-space-md);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.fact-dialog-summary {
+		margin: var(--md-sys-space-md) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.fact-facts {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: var(--md-sys-space-md);
+		margin: var(--md-sys-space-xl) 0;
+	}
+	.fact-facts div {
+		display: grid;
+		gap: var(--md-sys-space-xs);
+		min-width: 0;
+		padding: var(--md-sys-space-sm) 0;
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.fact-facts dt,
+	.fact-dialog-section h4 {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 650;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.fact-facts dd {
+		min-width: 0;
+		margin: 0;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+		overflow-wrap: anywhere;
+	}
+	.fact-code {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-code-size);
+		line-height: var(--md-sys-typescale-code-line-height);
+		word-break: break-all;
+	}
+	.fact-dialog-section {
+		margin-top: var(--md-sys-space-lg);
+	}
+	.fact-dialog-section h4 {
+		margin: 0 0 var(--md-sys-space-sm);
+	}
+	.fact-detail-copy {
+		margin: 0;
+		color: var(--md-sys-color-on-surface-variant);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.fact-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-sm);
+		margin-top: var(--md-sys-space-xl);
+	}
+	:global(.fact-dialog) {
+		width: min(640px, calc(100vw - var(--md-sys-space-2xl)));
+		max-height: calc(100vh - var(--md-sys-space-2xl));
+		overflow: hidden;
+	}
+	:global(.fact-dialog .md-dialog-body) {
+		overflow-y: auto;
+	}
 	@media (max-width: 800px) {
 		.facts-layout {
 			grid-template-columns: 1fr;
+		}
+		.fact-list {
+			max-height: none;
+			overflow: visible;
 		}
 	}
 	@media (max-width: 640px) {
@@ -464,24 +647,34 @@
 			width: 100%;
 		}
 	}
-	@media (max-width: 455px) {
-		.fact-row {
-			align-items: flex-start;
-			flex-wrap: wrap;
-		}
-		.fact-row-copy {
-			min-width: calc(100% - 56px);
-		}
-		.fact-tag {
-			margin-left: var(--md-sys-space-2xl);
-		}
-		.fact-details {
+	@media (max-width: 540px) {
+		.fact-list {
 			grid-template-columns: 1fr;
+		}
+		.fact-facts {
+			grid-template-columns: 1fr;
+		}
+		:global(.fact-dialog) {
+			width: calc(100vw - var(--md-sys-space-lg));
+			max-height: calc(100vh - var(--md-sys-space-lg));
+		}
+	}
+	@media (max-width: 455px) {
+		.fact-list-heading {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.fact-list-hint {
+			white-space: normal;
 		}
 		.fact-editor-actions,
 		.fact-editor-actions :global(.md-btn),
-		.fact-detail :global(.md-btn) {
+		.fact-actions :global(.md-btn) {
 			width: 100%;
+		}
+		.fact-actions {
+			flex-direction: column;
+			align-items: stretch;
 		}
 	}
 </style>

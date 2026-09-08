@@ -104,3 +104,4 @@
 - [0101：工具契约与结果渲染审查](0101-tool-contract-and-result-renderer-audit.md)
 - [0102：聊天 token 统计明细与上下文快照](0102-token-usage-detail-popover.md)
 - [0103：合并模型可见的诊断能力](0103-merge-diagnostics-capabilities.md)
+- [0104：统一工作区条目卡片并将记忆详情移入弹窗](0104-ui-memory-item-detail-dialog.md)

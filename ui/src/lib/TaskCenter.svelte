@@ -223,10 +223,7 @@
 	</div>
 
 	{#if taskRows.length === 0}
-		<AsyncState
-			title="暂无任务"
-			message="安排后台或定时任务后，执行状态和结果会显示在这里。"
-		/>
+		<AsyncState title="暂无任务" message="安排后台或定时任务后，执行状态和结果会显示在这里。" />
 	{:else if filteredRows.length === 0}
 		<AsyncState
 			title="没有匹配的任务"
@@ -256,16 +253,16 @@
 						<div class="task-list">
 							{#each group.rows as row (row.id)}
 								<article
-									class="task-card motion-list-item"
+									class="task-card workspace-item-card motion-list-item"
 									class:selected={selectedTaskId === row.id && detailOpen}
 								>
 									<button
-										class="task-card-main"
+										class="task-card-main workspace-item-card-main"
 										type="button"
 										aria-label={`查看${row.title}详情`}
 										onclick={() => selectRow(row)}
 									>
-										<span class="task-card-header">
+										<span class="task-card-header workspace-item-card-header">
 											<span class="task-card-type" data-tone={rowTone(row)}>
 												<span
 													class="task-card-indicator"
@@ -280,7 +277,7 @@
 										</span>
 										<strong class="task-card-title">{row.title}</strong>
 										<span class="task-card-summary">{rowSummary(row)}</span>
-										<span class="task-card-meta">
+										<span class="task-card-meta workspace-item-card-meta">
 											<span>{rowContext(row)}</span>
 											<span
 												class="task-card-meta-separator"
@@ -288,14 +285,17 @@
 											>
 											<span>{rowTiming(row)}</span>
 										</span>
-										<span class="task-card-footer">
-											<span class="task-card-id">{row.id}</span>
-											<span class="task-card-open" aria-hidden="true"
-												>查看详情 <span>→</span></span
+										<span class="task-card-footer workspace-item-card-footer">
+											<span class="task-card-id workspace-item-card-id"
+												>{row.id}</span
+											>
+											<span
+												class="task-card-open workspace-item-card-open"
+												aria-hidden="true">查看详情 <span>→</span></span
 											>
 										</span>
 									</button>
-									<div class="task-card-actions">
+									<div class="task-card-actions workspace-item-card-actions">
 										{#if row.kind === 'background' && row.value.status === 'running'}
 											<MaterialButton
 												variant="danger"
@@ -361,7 +361,8 @@
 						<dt>来源会话</dt>
 						<dd>
 							{selectedRow.sessionId
-								? sessionTitleFor({ sessionId: selectedRow.sessionId }) || selectedRow.sessionId
+								? sessionTitleFor({ sessionId: selectedRow.sessionId }) ||
+									selectedRow.sessionId
 								: '无关联会话'}
 						</dd>
 					</div>
@@ -539,85 +540,15 @@
 		scrollbar-gutter: stable;
 		padding: var(--md-sys-space-xs);
 	}
-	.task-card {
-		position: relative;
-		display: flex;
-		flex-direction: column;
-		align-items: stretch;
-		width: 100%;
-		min-width: 0;
-		min-height: 168px;
-		overflow: hidden;
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		background: var(--md-sys-color-surface-container-low);
-		color: var(--md-sys-color-on-surface);
-		text-align: left;
-		transition:
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	.task-card-main {
-		position: relative;
-		display: flex;
-		flex: 1;
-		flex-direction: column;
-		align-items: stretch;
-		gap: var(--md-sys-space-sm);
-		width: 100%;
-		min-width: 0;
-		min-height: 0;
-		padding: var(--md-sys-space-lg);
-		border: 0;
-		background: transparent;
-		color: inherit;
-		font: inherit;
-		text-align: left;
-		cursor: pointer;
-	}
-	.task-card::after {
-		position: absolute;
-		inset: 0;
-		content: '';
-		background: currentColor;
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	.task-card > * {
-		position: relative;
-		z-index: 1;
-	}
-	.task-card:hover,
-	.task-card.selected {
-		border-color: var(--md-sys-color-primary);
-		background: var(--md-sys-color-primary-container);
-		box-shadow: var(--md-sys-elevation-2);
-		transform: translateY(-1px);
-	}
-	.task-card:hover::after {
-		opacity: var(--md-sys-state-hover-opacity);
-	}
-	.task-card-main:focus-visible {
-		outline: none;
-		box-shadow: var(--md-sys-focus-ring), var(--md-sys-elevation-1);
-	}
 	.task-card-main:focus-visible,
 	.task-card-actions :global(.md-btn:focus-visible) {
 		z-index: 2;
 	}
-	.task-card-header,
-	:global(.task-dialog-type-row),
-	.task-card-footer,
-	.task-card-meta {
+	:global(.task-dialog-type-row) {
 		display: flex;
 		align-items: center;
 		min-width: 0;
 	}
-	.task-card-header,
 	:global(.task-dialog-type-row) {
 		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
@@ -689,74 +620,9 @@
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		overflow-wrap: anywhere;
 	}
-	.task-card-meta {
-		gap: var(--md-sys-space-xs);
-		margin-top: auto;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.task-card-meta span:first-child {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
 	.task-card-meta-separator {
 		flex: 0 0 auto;
 		color: var(--md-sys-color-outline);
-	}
-	.task-card-meta span:last-child {
-		flex: 0 0 auto;
-	}
-	.task-card-footer {
-		justify-content: space-between;
-		gap: var(--md-sys-space-sm);
-		padding-top: var(--md-sys-space-sm);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.task-card-id {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-family: var(--md-sys-typescale-mono);
-	}
-	.task-card-open {
-		flex: 0 0 auto;
-		color: var(--md-sys-color-primary);
-		font-weight: 650;
-		white-space: nowrap;
-	}
-	.task-card-open span {
-		display: inline-block;
-		margin-left: var(--md-sys-space-2xs);
-		transition: transform var(--md-sys-motion-duration-fast)
-			var(--md-sys-motion-easing-standard);
-	}
-	.task-card:hover .task-card-open span {
-		transform: translateX(var(--md-sys-space-2xs));
-	}
-	.task-card-actions {
-		position: relative;
-		z-index: 1;
-		display: flex;
-		justify-content: flex-end;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-surface-container-low) 76%,
-			var(--md-sys-color-surface) 24%
-		);
-	}
-	.task-card-actions :global(.md-btn) {
-		min-width: 0;
-		white-space: nowrap;
 	}
 	.task-dialog-content {
 		min-width: 0;
