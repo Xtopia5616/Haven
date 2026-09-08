@@ -686,7 +686,7 @@
 
 <style>
 	.input-area {
-		background: var(--md-sys-color-surface-container-low);
+		background: transparent;
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
