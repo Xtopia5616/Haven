@@ -26,6 +26,7 @@
 		toolName = '',
 		unrecoverable = false,
 		outcome = null,
+		silent = false,
 		content = '',
 		options = [],
 		awaiting = false,
@@ -44,7 +45,9 @@
 	let toolSource = $derived(classifyToolSource(toolName));
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
 	let displayName = $derived(toolDisplayName(toolName));
-	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
+	// Silent calls may still expose their tool name while running, but never
+	// their arguments or output. The placeholder disappears on observation.
+	let hasToolArgs = $derived(!silent && toolArgs != null && toolArgs !== '');
 	const outcomeLabels = /** @type {Record<string, string>} */ ({
 		failed: '执行失败',
 		cancelled: '已取消',
@@ -101,8 +104,9 @@
 		actionId ? /** @type {any} */ ($actionStore[actionId] || null) : null,
 	);
 	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
-	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
+	let liveStreaming = $derived(streaming || actionRunning || (!silent && !!livePreview));
 	let displayContent = $derived.by(() => {
+		if (silent) return '';
 		if (actionRunning) {
 			const out =
 				typeof boundAction.output === 'string' ? boundAction.output : livePreview || '';

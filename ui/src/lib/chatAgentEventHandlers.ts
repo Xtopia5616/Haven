@@ -246,18 +246,6 @@ export function createChatAgentEventHandlers({
 			const { reasoningId, thoughtId } = blockIdsOf(sessionId, data.stepNumber, data.runId);
 			if (reasoningId) pruneSeq(reasoningId);
 			if (thoughtId) pruneSeq(thoughtId);
-			if (data.silent) {
-				updateSessionMessages(sessionId, (messages) =>
-					finalizeStreamBlocks(
-						data.suppressStreamedThought
-							? dropStreamedThought(messages, thoughtId)
-							: messages,
-						reasoningId,
-						thoughtId,
-					),
-				);
-				return;
-			}
 			updateSessionMessages(sessionId, (messages) => {
 				const fixed = finalizeStreamBlocks(
 					data.suppressStreamedThought
@@ -276,7 +264,8 @@ export function createChatAgentEventHandlers({
 						toolName: data.toolName,
 						time: new Date().toLocaleTimeString(),
 						streaming: true,
-						toolArgs: data.input ?? null,
+						...(data.silent ? {} : { toolArgs: data.input ?? null }),
+						silent: data.silent,
 						showFallbackIntent,
 					}),
 				);

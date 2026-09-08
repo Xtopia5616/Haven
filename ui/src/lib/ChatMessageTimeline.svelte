@@ -57,6 +57,7 @@
 				stepNumber={msg.stepNumber}
 				usage={showStepUsage ? stepUsage(msg.stepNumber) : null}
 				toolArgs={msg.toolArgs ?? null}
+				silent={!!msg.silent}
 				attachments={msg.attachments}
 				{showFallbackIntent}
 				options={msg.options ?? []}
@@ -71,7 +72,7 @@
 			/>
 		{/each}
 	</div>
-	{#if showContinueButton}
+	{#if showContinueButton && !continueDisabled}
 		<div class="continue-action" in:fly={{ y: 6, duration: 240 }}>
 			<MaterialButton
 				variant="outlined"
@@ -82,20 +83,6 @@
 				title={continueDisabled ? '当前会话尚未进入可恢复状态' : '从上一条消息继续生成'}
 				onclick={() => onContinue()}
 			>
-				<svg
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					aria-hidden="true"
-				>
-					<path d="M20 11a8 8 0 1 0 2 5.3" />
-					<polyline points="20 4 20 11 13 11" />
-				</svg>
 				<span>继续生成</span>
 			</MaterialButton>
 		</div>
@@ -183,10 +170,6 @@
 		justify-content: flex-end;
 		padding-top: var(--md-sys-space-xs);
 	}
-	:global(.continue-btn) {
-		gap: var(--md-sys-space-xs);
-	}
-
 	.awaiting-bg-banner {
 		display: flex;
 		align-items: center;

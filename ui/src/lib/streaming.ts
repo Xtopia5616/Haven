@@ -27,6 +27,8 @@ export interface StreamMessage {
 	runId?: number | null;
 	time?: string;
 	streaming?: boolean;
+	/** Keep a transient status card for a silent call without showing data. */
+	silent?: boolean;
 	/** Render the deterministic tool-intent label when no preamble was emitted. */
 	showFallbackIntent?: boolean;
 	url?: string;
@@ -172,6 +174,7 @@ export function newToolMessage({
 	time = undefined,
 	content = '',
 	streaming = false,
+	silent = false,
 	askOptions = null,
 	actionId = null,
 	toolArgs = undefined,
@@ -184,6 +187,7 @@ export function newToolMessage({
 	time?: string | undefined;
 	content?: string;
 	streaming?: boolean;
+	silent?: boolean;
 	askOptions?: string[] | null;
 	actionId?: string | null;
 	/** Live Action.input or resume action_input; omitted on observation fills
@@ -203,10 +207,11 @@ export function newToolMessage({
 		stepNumber,
 		...(time ? { time } : {}),
 		streaming,
+		...(silent ? { silent: true } : {}),
 		...(showFallbackIntent !== undefined ? { showFallbackIntent } : {}),
 		...(outcome ? { outcome } : {}),
 		...(actionId ? { actionId } : {}),
-		...(toolArgs !== undefined ? { toolArgs } : {}),
+		...(toolArgs !== undefined && !silent ? { toolArgs } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),
 	};
 }

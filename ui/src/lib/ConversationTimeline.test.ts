@@ -23,5 +23,17 @@ describe('ConversationTimeline', () => {
 		expect(
 			screen.getByRole('button', { name: '继续生成' }).classList.contains('md-btn--outlined'),
 		).toBe(true);
+		expect(screen.getByRole('button', { name: '继续生成' }).querySelector('svg')).toBeNull();
+	});
+
+	it('removes the continue action while it is unavailable', () => {
+		render(ConversationTimeline, {
+			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],
+			showContinueButton: true,
+			continueDisabled: true,
+		});
+
+		expect(screen.queryByRole('button', { name: '继续生成' })).toBeNull();
+		expect(document.querySelector('.continue-action')).toBeNull();
 	});
 });

@@ -160,9 +160,9 @@ describe('buildResumeMessages', () => {
 		});
 	});
 
-	it('hides silent tool steps like the live chat does', () => {
-		// `"silent": true` on a tool input hides its card live; the resume
-		// rebuild must not resurrect it as a tool badge.
+	it('hides completed silent tool steps after their transient live frame', () => {
+		// `"silent": true` keeps only a transient live status frame; the resume
+		// rebuild must not resurrect the completed call as a tool badge.
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
@@ -178,7 +178,7 @@ describe('buildResumeMessages', () => {
 	});
 
 	it('still assigns a stepNumber to the thought before a silent action step', () => {
-		// The silent action itself has no badge, but its preceding thought
+		// The completed silent action has no badge, but its preceding thought
 		// must resolve to the step via the matching thought step row so
 		// rollback targeting keeps working.
 		const items = buildResumeMessages({

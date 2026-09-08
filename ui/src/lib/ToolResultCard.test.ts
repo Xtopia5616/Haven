@@ -400,6 +400,21 @@ describe('ToolResultCard source + args', () => {
 });
 
 describe('ToolResultCard empty in-progress', () => {
+	it('shows a transient silent-call frame without exposing arguments', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: '',
+			streaming: true,
+			silent: true,
+			toolArgs: { command: 'secret command' },
+		});
+
+		expect(container.querySelector('.tool-card')).toBeTruthy();
+		expect(screen.getByText('终端输出')).toBeTruthy();
+		expect(screen.getByText('执行中')).toBeTruthy();
+		expect(container.querySelector('.tool-args')).toBeNull();
+	});
+
 	it('shows the deterministic intent fallback when the model emitted no preamble', () => {
 		render(ToolResultCard, {
 			toolName: 'shell',

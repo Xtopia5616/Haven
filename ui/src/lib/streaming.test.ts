@@ -881,6 +881,20 @@ describe('newToolMessage', () => {
 		});
 		expect('toolArgs' in fill).toBe(false);
 	});
+
+	it('marks a silent action as transient without adding its arguments', () => {
+		const msg = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'shell',
+			streaming: true,
+			silent: true,
+			toolArgs: { command: 'secret command' },
+		});
+
+		expect(msg).toMatchObject({ silent: true, streaming: true });
+		expect('toolArgs' in msg).toBe(false);
+	});
 });
 
 describe('actionIdFromObservation', () => {
