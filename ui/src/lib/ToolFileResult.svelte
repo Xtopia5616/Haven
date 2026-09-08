@@ -147,11 +147,6 @@
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.tool-card-list {
-		max-height: 200px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
-	}
 	.file-row,
 	.env-row {
 		display: flex;

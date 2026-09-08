@@ -1,6 +1,9 @@
 <script>
 	import JsonView from '$lib/JsonView.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import StatusBadge from '$lib/StatusBadge.svelte';
+	import ToolCardList from '$lib/ToolCardList.svelte';
+	import ToolSearch from '$lib/ToolSearch.svelte';
 
 	let { data = {} } = $props();
 
@@ -68,13 +71,13 @@
 		return processStatusLabels[String(status ?? '')] ?? String(status ?? '未知');
 	}
 	/** @param {any} status */
-	function procStatusClass(status) {
+	function procStatusTone(status) {
 		const normalized = String(status ?? '').toLowerCase();
-		if (normalized.includes('run')) return 'running';
-		if (normalized.includes('sleep') || normalized.includes('idle')) return 'idle';
-		if (normalized.includes('zombie') || normalized.includes('dead')) return 'failed';
-		if (normalized.includes('stop') || normalized.includes('tracing')) return 'cancelled';
-		return 'not_found';
+		if (normalized.includes('run')) return 'success';
+		if (normalized.includes('zombie') || normalized.includes('dead')) return 'error';
+		if (normalized.includes('sleep') || normalized.includes('idle')) return 'neutral';
+		if (normalized.includes('stop') || normalized.includes('tracing')) return 'warning';
+		return 'neutral';
 	}
 </script>
 
@@ -82,14 +85,13 @@
 	<div class="tool-card-count">
 		{#if processFilter}{filteredProcesses.length} / {processList.length} 个进程{:else}{processList.length} 个进程{/if}
 	</div>
-	<input
-		class="tool-search"
-		type="search"
+	<ToolSearch
+		value={processFilter}
+		onInput={(/** @type {string} */ value) => (processFilter = value)}
 		placeholder="筛选进程..."
-		bind:value={processFilter}
-		aria-label="筛选进程"
+		ariaLabel="筛选进程"
 	/>
-	<div class="tool-card-list">
+	<ToolCardList>
 		<table class="proc-table">
 			<thead>
 				<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
@@ -115,18 +117,15 @@
 								></span></span
 							>{fmtBytes(process.memory)}
 						</td>
-						<td class="proc-status"
-							><span
-								class="status-badge status-{procStatusClass(process.status)}"
-								>{procStatusLabel(process.status)}</span
-							></td
-						>
+						<td class="proc-status">
+							<StatusBadge label={procStatusLabel(process.status)} tone={procStatusTone(process.status)} />
+						</td>
 					</tr>
 				{/each}
 			</tbody>
 		</table>
 		{#if visibleProcesses.length === 0}<p class="tool-card-empty">没有匹配的进程</p>{/if}
-	</div>
+	</ToolCardList>
 	{#if !processFilter && processList.length > processVisibleLimit}
 		<MaterialButton
 			variant="text"
@@ -137,7 +136,7 @@
 	{/if}
 {:else if data.operation === 'kill' && data.killed != null}
 	<div class="process-action-row">
-		<span class="status-badge status-completed">已终止</span>
+		<StatusBadge label="已终止" tone="success" />
 		<span class="process-action-id">PID {data.killed}</span>
 	</div>
 {:else if data.operation}
@@ -154,27 +153,6 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
-	}
-	.tool-card-list {
-		max-height: 200px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
-	}
-	.tool-search {
-		width: 100%;
-		box-sizing: border-box;
-		background: var(--md-sys-color-surface-container-high);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		padding: 4px var(--md-sys-space-sm);
-		margin-bottom: var(--md-sys-space-xs);
-		outline: none;
-	}
-	.tool-search:focus {
-		border-color: var(--md-sys-color-primary);
 	}
 	.proc-table {
 		width: 100%;
@@ -234,33 +212,6 @@
 	}
 	.proc-status {
 		padding-right: var(--md-sys-space-2xs) !important;
-	}
-	.status-badge {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		text-transform: uppercase;
-		padding: 1px 8px;
-		border-radius: var(--md-sys-shape-full);
-	}
-	.status-running {
-		background: var(--md-sys-color-secondary);
-		color: var(--md-sys-color-on-secondary);
-	}
-	.status-completed {
-		background: var(--md-sys-color-success);
-		color: var(--md-sys-color-on-success-container);
-	}
-	.status-failed {
-		background: var(--md-sys-color-error);
-		color: var(--md-sys-color-on-error);
-	}
-	.status-cancelled,
-	.status-not_found,
-	.status-idle {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	:global(.md-btn.show-all-btn) {
 		width: 100%;

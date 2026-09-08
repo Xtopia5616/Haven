@@ -14,6 +14,7 @@
 	.status-badge {
 		display: inline-flex;
 		align-items: center;
+		flex: none;
 		min-height: var(--md-comp-button-small-height);
 		padding: 0 var(--md-sys-spacing-3);
 		border: 1px solid var(--md-sys-color-outline-variant);

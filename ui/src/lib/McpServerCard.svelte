@@ -4,6 +4,7 @@
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
+	import StatusBadge from '$lib/StatusBadge.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
 	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
@@ -52,6 +53,13 @@
 	function isConnecting() {
 		const s = server.status;
 		return s === 'Connecting' || (typeof s === 'object' && 'Connecting' in s);
+	}
+
+	function statusTone() {
+		if (isConnected()) return 'success';
+		if (isOffline()) return 'error';
+		if (isConnecting()) return 'warning';
+		return 'neutral';
 	}
 
 	let contextMenuItems = $derived.by(() => {
@@ -106,21 +114,12 @@
 			{#if server.url}
 				<span class="endpoint">{server.url}</span>
 			{/if}
-			<span
-				class="enabled-badge"
-				class:enabled={server.enabled}
-				class:disabled={!server.enabled}
-			>
-				{server.enabled ? 'Enabled' : 'Disabled'}
-			</span>
-			<span
-				class="status-badge"
-				class:connected={isConnected()}
-				class:offline={isOffline()}
-				class:connecting={isConnecting()}
-			>
-				{statusLabel(server.status)}
-			</span>
+			<StatusBadge
+				label={server.enabled ? 'Enabled' : 'Disabled'}
+				tone={server.enabled ? 'success' : 'neutral'}
+				className="enabled-badge"
+			/>
+			<StatusBadge label={statusLabel(server.status)} tone={statusTone()} />
 			{#if server.last_seen_at}
 				<span class="last-seen"
 					>Last seen: {new Date(server.last_seen_at * 1000).toLocaleTimeString()}</span
@@ -226,40 +225,6 @@
 		font-family: var(--md-sys-typescale-mono);
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);
-	}
-	.status-badge {
-		padding: 2px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-weight: 700;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.enabled-badge {
-		padding: 2px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-weight: 700;
-	}
-	.enabled-badge.enabled {
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
-	}
-	.enabled-badge.disabled {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.status-badge.connected {
-		background: var(--md-sys-color-success-container);
-		color: var(--md-sys-color-on-success-container);
-	}
-	.status-badge.offline {
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
-	}
-	.status-badge.connecting {
-		background: var(--md-sys-color-warning-container);
-		color: var(--md-sys-color-on-warning-container);
 	}
 	.tool-count {
 		background: var(--md-sys-color-surface-container-high);

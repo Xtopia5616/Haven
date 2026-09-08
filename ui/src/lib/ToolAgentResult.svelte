@@ -1,4 +1,6 @@
 <script>
+	import StatusBadge from '$lib/StatusBadge.svelte';
+	import ToolCardList from '$lib/ToolCardList.svelte';
 	let { data = {} } = $props();
 </script>
 
@@ -8,27 +10,27 @@
 {:else if Array.isArray(data.agents)}
 	<div class="tool-card-count">{data.agents.length} 个同伴</div>
 	{#if data.agents.length > 0}
-		<div class="tool-card-list">
+		<ToolCardList>
 			{#each data.agents as agent (agent.name ?? agent.session_id ?? agent.agent)}
 				<div class="action-row">
 					<span class="action-id">{agent.title || agent.name || agent.session_id || agent.agent}</span>
 					{#if agent.role}<span class="scheduled-mode">{agent.role}</span>{/if}
-					{#if agent.status}<span class="status-badge status-{agent.status === 'online' ? 'completed' : 'cancelled'}">{agent.status}</span>{/if}
+					{#if agent.status}<StatusBadge label={agent.status} tone={agent.status === 'online' ? 'success' : 'neutral'} />{/if}
 				</div>
 			{/each}
-		</div>
+		</ToolCardList>
 	{:else}
 		<p class="tool-card-empty">没有已注册同伴</p>
 	{/if}
 {:else if data.timed_out}
 	<div class="action-row">
-		<span class="status-badge status-failed">超时</span>
+		<StatusBadge label="超时" tone="error" />
 		{#if data.message_id}<span class="action-id">{data.message_id}</span>{/if}
 	</div>
 	<div class="tool-card-meta">等待同伴回复超时（{data.timeout_secs ?? '?'}s）</div>
 {:else if data.session_id || data.agent}
 	<div class="action-row">
-		<span class="status-badge status-{data.ok === false ? 'failed' : 'completed'}">{data.ok === false ? '失败' : '已创建'}</span>
+		<StatusBadge label={data.ok === false ? '失败' : '已创建'} tone={data.ok === false ? 'error' : 'success'} />
 		<span class="action-id">{data.session_id || data.agent}</span>
 	</div>
 	{#if data.parent}<div class="tool-card-meta">父会话 {data.parent}</div>{/if}
@@ -62,11 +64,6 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-list {
-		max-height: 200px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
 	}
 	.content-preview {
 		background: var(--md-sys-color-surface-container-high);
@@ -102,27 +99,6 @@
 		flex: none;
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.status-badge {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		text-transform: uppercase;
-		padding: 1px 8px;
-		border-radius: var(--md-sys-shape-full);
-	}
-	.status-completed {
-		background: var(--md-sys-color-success);
-		color: var(--md-sys-color-on-success-container);
-	}
-	.status-failed {
-		background: var(--md-sys-color-error);
-		color: var(--md-sys-color-on-error);
-	}
-	.status-cancelled {
-		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>

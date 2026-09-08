@@ -1036,6 +1036,13 @@ select.md-select {
 	border: 1px solid var(--md-sys-color-outline-variant);
 }
 
+/* ---------- Structured tool results ---------- */
+.tool-card-list {
+	max-height: 200px;
+	overflow-y: auto;
+	border-radius: var(--md-sys-shape-extra-small);
+}
+
 /* Shared route heading rhythm. Pages can opt in without duplicating layout
  * rules, while the actual content and actions remain route-owned. */
 .page-heading {

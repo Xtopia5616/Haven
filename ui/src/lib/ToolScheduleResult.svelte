@@ -44,11 +44,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
 	}
-	.tool-card-list {
-		max-height: 200px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
-	}
 	.tool-card-empty,
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-medium-size);

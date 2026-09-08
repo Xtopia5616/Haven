@@ -1,13 +1,10 @@
 <script>
+	import StatusBadge from '$lib/StatusBadge.svelte';
 	let { data = {} } = $props();
 </script>
 
 <div class="action-row">
-	<span
-		class="status-badge status-{data.status >= 200 && data.status < 300
-			? 'completed'
-			: 'failed'}">{data.status}</span
-	>
+	<StatusBadge label={String(data.status)} tone={data.status >= 200 && data.status < 300 ? 'success' : 'error'} />
 	{#if data.truncated}<span class="tool-card-meta">（响应过长已截断）</span>{/if}
 </div>
 {#if typeof data.body === 'string' && data.body}
@@ -21,23 +18,6 @@
 		gap: var(--md-sys-space-xs);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.status-badge {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		text-transform: uppercase;
-		padding: 1px 8px;
-		border-radius: var(--md-sys-shape-full);
-	}
-	.status-completed {
-		background: var(--md-sys-color-success);
-		color: var(--md-sys-color-on-success-container);
-	}
-	.status-failed {
-		background: var(--md-sys-color-error);
-		color: var(--md-sys-color-on-error);
 	}
 	.tool-card-meta {
 		font-size: var(--md-sys-typescale-label-small-size);

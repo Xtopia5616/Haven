@@ -3,6 +3,7 @@
 	import { formatError } from './formatError.ts';
 	import JsonView from '$lib/JsonView.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import ToolSearch from '$lib/ToolSearch.svelte';
 
 	let { data = {} } = $props();
 
@@ -112,6 +113,10 @@
 		} catch (error) {
 			logger.warn('ToolSystemResult', 'environment value copy failed', formatError(error));
 		}
+	}
+	/** @param {string} value */
+	function setEnvFilter(value) {
+		envFilter = value;
 	}
 </script>
 
@@ -254,13 +259,7 @@
 	<div class="tool-card-count">
 		{#if envFilter}{filteredEnv.length} / {envList.length} 个变量{:else}{envList.length} 个变量{/if}
 	</div>
-	<input
-		class="tool-search"
-		type="search"
-		placeholder="筛选变量..."
-		bind:value={envFilter}
-		aria-label="筛选变量"
-	/>
+	<ToolSearch value={envFilter} onInput={setEnvFilter} placeholder="筛选变量..." ariaLabel="筛选变量" />
 	{#if filteredEnv.length > 0}
 		<div class="tool-card-list">
 			{#each filteredEnv as variable (variable.name)}
@@ -329,11 +328,6 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-card-list {
-		max-height: 200px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
 	}
 	.sys-os {
 		display: flex;
@@ -496,22 +490,6 @@
 		flex: 1;
 		min-width: 0;
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.tool-search {
-		width: 100%;
-		box-sizing: border-box;
-		background: var(--md-sys-color-surface-container-high);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		padding: 4px var(--md-sys-space-sm);
-		margin-bottom: var(--md-sys-space-xs);
-		outline: none;
-	}
-	.tool-search:focus {
-		border-color: var(--md-sys-color-primary);
 	}
 	.system-action-row {
 		display: flex;

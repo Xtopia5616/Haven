@@ -1,8 +1,20 @@
 <script>
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 	import JsonView from '$lib/JsonView.svelte';
+	import StatusBadge from '$lib/StatusBadge.svelte';
+	import ToolCardList from '$lib/ToolCardList.svelte';
 
 	let { data = {} } = $props();
+
+	/** @param {unknown} status */
+	function statusTone(status) {
+		const value = String(status ?? '').toLowerCase();
+		if (value.includes('error') || value.includes('fail')) return 'error';
+		if (value.includes('run') || value.includes('progress')) return 'info';
+		if (value.includes('cancel') || value.includes('pause')) return 'warning';
+		if (value.includes('complete') || value.includes('success') || value === 'done') return 'success';
+		return 'neutral';
+	}
 </script>
 
 {#if data.operation === 'result_injected'}
@@ -12,32 +24,32 @@
 	{#if data.status}
 		<div class="action-row">
 			<span class="action-id">{data.action_id || '—'}</span>
-			<span class="status-badge status-{data.status}">{actionStatusLabel(data.status)}</span>
+			<StatusBadge label={actionStatusLabel(data.status)} tone={statusTone(data.status)} />
 		</div>
 	{/if}
 {:else if data.operation === 'cancel'}
 	<div class="action-row">
-		<span class="status-badge status-{data.cancelled ? 'completed' : 'not_found'}">{data.cancelled ? '已取消' : '未找到任务'}</span>
+		<StatusBadge label={data.cancelled ? '已取消' : '未找到任务'} tone={data.cancelled ? 'success' : 'neutral'} />
 		<span class="action-id">{data.action_id || '—'}</span>
 	</div>
 {:else if Array.isArray(data.actions)}
 	<div class="tool-card-count">{data.actions.length} 个后台任务</div>
 	{#if data.actions.length > 0}
-		<div class="tool-card-list">
+		<ToolCardList>
 			{#each data.actions as action (action.action_id ?? action.job_id)}
 				<div class="action-row">
 					<span class="action-id">{action.action_id ?? action.job_id}</span>
-					<span class="status-badge status-{action.status}">{actionStatusLabel(action.status)}</span>
+					<StatusBadge label={actionStatusLabel(action.status)} tone={statusTone(action.status)} />
 				</div>
 			{/each}
-		</div>
+		</ToolCardList>
 	{:else}
 		<p class="tool-card-empty">没有后台任务</p>
 	{/if}
 {:else if data.action_id || data.job_id || data.status}
 	<div class="action-row">
 		<span class="action-id">{data.action_id ?? data.job_id}</span>
-		<span class="status-badge status-{data.status}">{actionStatusLabel(data.status)}</span>
+		<StatusBadge label={actionStatusLabel(data.status)} tone={statusTone(data.status)} />
 	</div>
 	{#if data.exit_code != null}
 		<div class="tool-card-meta">退出码 {data.exit_code}</div>
@@ -54,11 +66,6 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		margin-bottom: var(--md-sys-space-xs);
-	}
-	.tool-card-list {
-		max-height: 200px;
-		overflow-y: auto;
-		border-radius: var(--md-sys-shape-extra-small);
 	}
 	.tool-card-empty,
 	.tool-card-meta {
@@ -89,32 +96,5 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.status-badge {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		text-transform: uppercase;
-		padding: 1px 8px;
-		border-radius: var(--md-sys-shape-full);
-	}
-	.status-completed {
-		background: var(--md-sys-color-success);
-		color: var(--md-sys-color-on-success-container);
-	}
-	.status-failed {
-		background: var(--md-sys-color-error);
-		color: var(--md-sys-color-on-error);
-	}
-	.status-running {
-		background: var(--md-sys-color-secondary);
-		color: var(--md-sys-color-on-secondary);
-	}
-	.status-cancelled,
-	.status-not_found,
-	.status-idle {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 </style>
