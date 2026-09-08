@@ -19,6 +19,7 @@
 
 	let {
 		type = 'tool',
+		embedded = false,
 		toolName = '',
 		unrecoverable = false,
 		outcome = null,
@@ -282,6 +283,7 @@
 {#if type === 'ask'}
 	<div
 		class="tool-card tool-card--ask"
+		class:embedded
 		data-state={awaiting ? 'waiting' : resolved ? 'resolved' : 'completed'}
 		role="status"
 		oncontextmenu={handleContextMenu}
@@ -345,7 +347,13 @@
 		{/if}
 	</div>
 {:else}
-	<div class="tool-card" data-state={toolState} role="status" oncontextmenu={handleContextMenu}>
+	<div
+		class="tool-card"
+		class:embedded
+		data-state={toolState}
+		role="status"
+		oncontextmenu={handleContextMenu}
+	>
 		<MaterialCollapsible bind:open={cardOpen} lazy>
 			{#snippet header()}
 				<span class="tool-card-icon" aria-hidden="true">
@@ -699,6 +707,31 @@
 				var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
+	/* ChatBubble owns the shared conversation surface. Embedded tool cards
+	 * keep their semantic header/details but do not create a second card. */
+	.tool-card.embedded {
+		background: transparent;
+		border: none;
+		border-radius: 0;
+		padding: 0;
+		box-shadow: none;
+	}
+	.tool-card.embedded[data-state='running'],
+	.tool-card.embedded[data-state='failed'],
+	.tool-card.embedded[data-state='cancelled'],
+	.tool-card.embedded[data-state='timed_out'],
+	.tool-card.embedded[data-state='unknown'],
+	.tool-card.embedded.tool-card--ask[data-state='waiting'] {
+		background: transparent;
+		border: none;
+		box-shadow: none;
+	}
+	.tool-card.embedded :global(.md-collapsible-header) {
+		min-height: 28px;
+	}
+	.tool-card.embedded :global(.md-collapsible-body) {
+		margin-top: var(--md-sys-space-md);
+	}
 	.tool-card[data-state='running'] {
 		border-color: color-mix(
 			in srgb,
@@ -756,17 +789,17 @@
 		width: 28px;
 		height: 28px;
 		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-primary);
 		font-size: 12px;
 		font-weight: 700;
 		flex: none;
 	}
 	.tool-card-label {
-		font-size: var(--md-sys-typescale-label-medium-size);
+		font-size: var(--md-sys-typescale-label-large-size);
 		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-secondary-container);
+		line-height: var(--md-sys-typescale-label-large-line-height);
+		color: var(--md-sys-color-on-surface);
 		min-width: 0;
 		flex: 1 1 10rem;
 		overflow: hidden;

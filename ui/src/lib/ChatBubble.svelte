@@ -358,6 +358,7 @@
 			</div>
 		{:else if msgType === 'tool'}
 			<ToolResultCard
+				embedded
 				{toolName}
 				{unrecoverable}
 				{outcome}
@@ -370,6 +371,7 @@
 			/>
 		{:else if msgType === 'ask'}
 			<ToolResultCard
+				embedded
 				type="ask"
 				{content}
 				{options}
@@ -483,11 +485,8 @@
 	.bubble.tool {
 		width: 100%;
 		max-width: 100%;
-		padding: 0;
-		background: transparent;
-		border: none;
-		border-radius: 0;
-		box-shadow: none;
+		/* Tool calls use the same outer surface as assistant messages. The
+		 * nested result component only owns the header and details. */
 	}
 	.bubble.user {
 		margin-left: auto;
@@ -504,7 +503,8 @@
 			var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
 	}
-	.bubble.assistant {
+	.bubble.assistant,
+	.bubble.tool.assistant {
 		margin-right: auto;
 		width: 100%;
 		max-width: 100%;
@@ -524,11 +524,6 @@
 	.bubble.assistant.thinking {
 		background: transparent;
 		border-color: transparent;
-		box-shadow: none;
-	}
-	.bubble.tool.assistant {
-		background: transparent;
-		border: none;
 		box-shadow: none;
 	}
 	.bubble.user .bubble-role {
