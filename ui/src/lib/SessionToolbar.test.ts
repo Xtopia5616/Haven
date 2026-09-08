@@ -53,9 +53,14 @@ describe('SessionToolbar', () => {
 			},
 		});
 
-		await fireEvent.click(screen.getByRole('button', { name: '打开 token 使用明细' }));
+		const tokenButton = screen.getByRole('button', { name: '打开 token 使用明细' });
+		expect(tokenButton.getAttribute('data-cache-tone')).toBe('medium');
+		expect(screen.queryByText('缓存 50%')).toBeNull();
+
+		await fireEvent.click(tokenButton);
 		expect(screen.getByRole('dialog', { name: 'Token 使用明细' })).toBeTruthy();
-		expect(screen.getByText('缓存 50%')).toBeTruthy();
+		expect(screen.getByText('命中率')).toBeTruthy();
+		expect(screen.getAllByText('50%')).toHaveLength(1);
 		expect(screen.getByText('当前请求')).toBeTruthy();
 	});
 });

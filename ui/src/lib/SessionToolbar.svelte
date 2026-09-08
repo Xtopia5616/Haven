@@ -41,6 +41,14 @@
 	function percentage(value) {
 		return value == null ? '—' : `${value.toFixed(0)}%`;
 	}
+
+	/** @param {number | null | undefined} value */
+	function cacheTone(value) {
+		if (value == null) return 'none';
+		if (value >= 80) return 'high';
+		if (value >= 50) return 'medium';
+		return 'low';
+	}
 </script>
 
 <svelte:window onclick={closeTokenDetails} />
@@ -50,7 +58,7 @@
 		<MaterialIconButton
 			size="toolbar"
 			variant="tonal"
-			className="session-switch-btn"
+			className={`session-switch-btn${sessionMenuOpen ? ' is-open' : ''}`}
 			label="切换会话"
 			ariaExpanded={sessionMenuOpen}
 			onclick={() => onToggleSessionMenu()}
@@ -71,6 +79,9 @@
 				/></svg
 			>
 			<span class="session-switch-label">会话</span>
+			{#if menuSessions.length > 0}
+				<span class="session-switch-badge">{menuSessions.length}</span>
+			{/if}
 			<svg
 				class="session-switch-caret"
 				width="16"
@@ -82,9 +93,6 @@
 				stroke-linecap="round"
 				stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
 			>
-			{#if menuSessions.length > 0}
-				<span class="session-switch-badge">{menuSessions.length}</span>
-			{/if}
 		</MaterialIconButton>
 		{#if sessionMenuOpen}
 			<div class="session-menu" role="menu">
@@ -162,6 +170,7 @@
 	<button
 		class="token-stats"
 		class:active={!!tokenStats}
+		data-cache-tone={cacheTone(tokenUsageDetails?.currentCacheRatePercent)}
 		type="button"
 		title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
 		aria-label={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
@@ -201,11 +210,6 @@
 				>
 				<span class="token-unit">{showCumulativeTokens ? 'tok' : 'ctx'}</span>
 			</div>
-			{#if tokenUsageDetails?.currentCacheRatePercent != null}
-				<span class="token-cache-rate"
-					>缓存 {percentage(tokenUsageDetails.currentCacheRatePercent)}</span
-				>
-			{/if}
 			{#if tokenUsageDetails?.contextRatePercent != null}
 				<div
 					class="token-budget"
@@ -336,10 +340,36 @@
 		width: auto;
 		min-width: 0;
 		padding-inline: var(--md-sys-space-sm);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 28%, var(--md-sys-color-outline-variant));
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary-container) 72%,
+			var(--md-sys-color-surface-container) 28%
+		);
 		box-shadow: var(--md-sys-elevation-1);
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	:global(.session-switch-btn:hover) {
+		border-color: var(--md-sys-color-primary);
+		box-shadow: var(--md-sys-elevation-2);
+	}
+	:global(.session-switch-btn.is-open),
+	:global(.session-switch-btn.is-open:hover) {
+		border-color: var(--md-sys-color-primary);
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
+		box-shadow: var(--md-sys-elevation-2);
 	}
 	.session-switch-icon {
 		color: var(--md-sys-color-primary);
+	}
+	:global(.session-switch-btn.is-open .session-switch-icon) {
+		color: currentColor;
 	}
 	.session-switch-label {
 		font-size: var(--md-sys-typescale-label-medium-size);
@@ -348,6 +378,11 @@
 	}
 	.session-switch-caret {
 		flex-shrink: 0;
+		transition: transform var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
+	}
+	:global(.session-switch-btn.is-open) .session-switch-caret {
+		transform: rotate(180deg);
 	}
 	.session-switch-badge {
 		min-width: 18px;
@@ -480,6 +515,8 @@
 		flex-shrink: 0;
 	}
 	.token-stats {
+		position: relative;
+		overflow: hidden;
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
@@ -495,14 +532,65 @@
 		flex-shrink: 0;
 		font-family: inherit;
 		cursor: pointer;
-		transition: border-color var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.token-stats::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: currentColor;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.token-stats:hover::after {
+		opacity: var(--md-sys-state-hover-opacity);
+	}
+	.token-stats:focus-visible::after {
+		opacity: var(--md-sys-state-focus-opacity);
+	}
+	.token-stats:active::after {
+		opacity: var(--md-sys-state-pressed-opacity);
+	}
+	.token-stats > * {
+		position: relative;
+		z-index: 1;
 	}
 	.token-stats:disabled {
 		cursor: default;
 	}
 	.token-stats.active {
 		border-color: var(--md-sys-color-primary);
+	}
+	.token-stats[data-cache-tone='low'] {
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container) 91%,
+			var(--md-sys-color-tertiary) 9%
+		);
+	}
+	.token-stats[data-cache-tone='medium'] {
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container) 86%,
+			var(--md-sys-color-primary) 14%
+		);
+	}
+	.token-stats[data-cache-tone='high'] {
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container) 78%,
+			var(--md-sys-color-primary) 22%
+		);
+	}
+	.token-stats[data-cache-tone='low'].active,
+	.token-stats[data-cache-tone='medium'].active,
+	.token-stats[data-cache-tone='high'].active {
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
 	}
 	.token-icon {
 		opacity: 0.75;
@@ -523,12 +611,6 @@
 		opacity: 0.6;
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.token-cache-rate {
-		color: var(--md-sys-color-primary);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
 	}
 	.token-idle {
 		opacity: 0.5;
@@ -554,7 +636,7 @@
 		background: #c97a00;
 	}
 	.token-budget.danger .token-budget-fill {
-		background: var(--md-sys-color-error, #b3261e);
+		background: var(--md-sys-color-error);
 	}
 	.token-details {
 		position: absolute;
