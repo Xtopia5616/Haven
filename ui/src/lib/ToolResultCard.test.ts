@@ -308,22 +308,19 @@ describe('ToolResultCard raw', () => {
 });
 
 describe('ToolResultCard usage', () => {
-	it('shows a usage chip in the dropdown header', () => {
-		render(ToolResultCard, {
+	it('shows only the tool-local token chip in the dropdown header', () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
+			toolArgs: { command: 'dir' },
 			content: 'ok',
-			usage: {
-				total: 1234,
-				prompt: 1000,
-				completion: 234,
-				cost: 0,
-				hasCost: false,
-				durationMs: 1500,
-				model: 'x',
-				calls: 1,
-			},
 		});
-		expect(screen.getByText('1.23K tokens')).toBeTruthy();
+
+		const chips = container.querySelectorAll('.usage-chip');
+		expect(chips).toHaveLength(1);
+		expect(chips[0].textContent?.trim()).not.toBe('1.23K tokens');
+		expect(chips[0].getAttribute('title')).toContain('调用参数');
+		expect(chips[0].getAttribute('title')).toContain('返回结果');
+		expect(chips[0].getAttribute('title')).not.toContain('模型');
 	});
 
 	it('shows an independent estimated data-token chip for each tool', () => {

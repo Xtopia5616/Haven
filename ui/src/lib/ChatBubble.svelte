@@ -24,7 +24,6 @@
 		outcome = null,
 		messageId = '',
 		stepNumber = null,
-		usage = null,
 		toolArgs = null,
 		attachments = [],
 		options = [],
@@ -365,7 +364,6 @@
 				{content}
 				{streaming}
 				{actionId}
-				{usage}
 				{toolArgs}
 				{showFallbackIntent}
 				{messageId}

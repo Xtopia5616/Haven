@@ -6,19 +6,6 @@ import {
 	type LlmUsage,
 } from './sessionUsage';
 
-export interface StepUsage {
-	prompt: number;
-	completion: number;
-	total: number;
-	cost: number;
-	hasCost: boolean;
-	durationMs: number;
-	model: string | null;
-	cacheMiss: number;
-	cacheDiagnostics: LlmUsage['cache_diagnostics'] | null;
-	calls: number;
-}
-
 export interface SessionTokenStats {
 	promptTokens?: number;
 	completionTokens?: number;
@@ -38,11 +25,6 @@ export interface SessionTokenStats {
 	model?: string | null;
 	estimated?: boolean;
 	restored?: boolean;
-}
-
-export interface StepUsageMessage {
-	type?: string | null;
-	stepNumber?: number | null;
 }
 
 export interface ToolDataUsage {
@@ -92,75 +74,15 @@ function estimateTextTokens(value: string): number {
 	let cjk = 0;
 	let other = 0;
 	for (const character of value) {
-		if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(character)) {
+		if (
+			/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(character)
+		) {
 			cjk += 1;
 		} else {
 			other += 1;
 		}
 	}
 	return cjk + (other > 0 ? Math.ceil(other / 4) : 0);
-}
-
-/**
- * A ReAct step can contain several parallel tool cards, but the provider
- * reports one usage record for the model response that produced the batch.
- * Render that step aggregate on the first visible tool card only; repeating
- * it on every sibling makes one request look like several charges.
- */
-export function isFirstToolForStep(
-	messages: StepUsageMessage[],
-	index: number,
-): boolean {
-	const current = messages[index];
-	if (current?.type !== 'tool' || current.stepNumber == null) return false;
-	return messages.findIndex(
-		(message) => message.type === 'tool' && message.stepNumber === current.stepNumber,
-	) === index;
-}
-
-/**
- * Aggregate persisted per-call usage for one ReAct step. The optional cache
- * lets the chat page avoid rebuilding the same tooltip data on every render.
- */
-export function stepUsageFor(
-	llmUsage: LlmUsage[],
-	stepNumber: number | null,
-	cache: Map<number, StepUsage>,
-): StepUsage | null {
-	if (stepNumber == null || llmUsage.length === 0) return null;
-	const cached = cache.get(stepNumber);
-	if (cached !== undefined) return cached;
-	const calls = llmUsage.filter((usage) => usage.step_number === stepNumber);
-	if (calls.length === 0) return null;
-	const prompt = calls.reduce((sum, usage) => sum + (usage.prompt_tokens || 0), 0);
-	const completion = calls.reduce((sum, usage) => sum + (usage.completion_tokens || 0), 0);
-	const total = calls.reduce(
-		(sum, usage) =>
-			sum +
-				coalesceTokenTotal(
-					usage.prompt_tokens || 0,
-					usage.completion_tokens || 0,
-					usage.total_tokens || 0,
-					usage.cached_tokens || 0,
-					usage.cache_creation_tokens || 0,
-					usage.cache_accounting || 'unknown',
-				),
-		0,
-	);
-	const value: StepUsage = {
-		prompt,
-		completion,
-		total,
-		cost: calls.reduce((sum, usage) => sum + (usage.cost_usd || 0), 0),
-		hasCost: calls.some((usage) => usage.has_cost),
-		durationMs: calls.reduce((sum, usage) => sum + (usage.duration_ms || 0), 0),
-		model: calls.map((usage) => usage.model).filter(Boolean).at(-1) || null,
-		cacheMiss: calls.reduce((sum, usage) => sum + (usage.cache_miss_tokens || 0), 0),
-		cacheDiagnostics: calls.map((usage) => usage.cache_diagnostics).filter(Boolean).at(-1) || null,
-		calls: calls.length,
-	};
-	cache.set(stepNumber, value);
-	return value;
 }
 
 /** Calculate a cache-hit percentage for one live usage snapshot. */
@@ -177,10 +99,7 @@ function cacheHitRatePercent(
 }
 
 /** Build the tooltip for the chat token usage widget. */
-export function buildTokenUsageTooltip(
-	stats: SessionTokenStats,
-	llmUsage: LlmUsage[],
-): string {
+export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUsage[]): string {
 	const parts: string[] = [];
 	const cumulativePrompt = stats.cumulativePromptTokens || 0;
 	const cumulativeCompletion = stats.cumulativeCompletionTokens || 0;
@@ -197,9 +116,7 @@ export function buildTokenUsageTooltip(
 		parts.push(`累计上传 ${cumulativePrompt} → 累计生成 ${cumulativeCompletion} tokens`);
 		parts.push(`累计 ${cumulativeTotal} tokens`);
 	} else {
-		parts.push(
-			`上传 ${stats.promptTokens || 0} → 生成 ${stats.completionTokens || 0} tokens`,
-		);
+		parts.push(`上传 ${stats.promptTokens || 0} → 生成 ${stats.completionTokens || 0} tokens`);
 		parts.push(`累计 ${cumulativeTotal} tokens`);
 		if (stats.cumulativePromptTokens != null) {
 			parts.push(
@@ -237,7 +154,8 @@ export function buildTokenUsageTooltip(
 		const percentage = used ? `${((used / stats.contextWindow) * 100).toFixed(0)}%` : '?';
 		parts.push(`上下文 ${percentage} / ${formatTokenCount(stats.contextWindow)}`);
 	}
-	if (stats.cumulativeCostUsd != null) parts.push(`费用 ${formatCostUsd(stats.cumulativeCostUsd)}`);
+	if (stats.cumulativeCostUsd != null)
+		parts.push(`费用 ${formatCostUsd(stats.cumulativeCostUsd)}`);
 	if (stats.estimated) parts.push('估算值（历史对话，未计费）');
 	return parts.join('\n');
 }

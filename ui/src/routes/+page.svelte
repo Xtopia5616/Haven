@@ -21,7 +21,7 @@
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
-	import { buildTokenUsageTooltip, stepUsageFor } from '$lib/sessionUsagePresentation.ts';
+	import { buildTokenUsageTooltip } from '$lib/sessionUsagePresentation.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
@@ -196,14 +196,13 @@
 	});
 
 	// Per-LLM-call usage detail for the active session (restored from the
-	// persisted `llm_usage` when a resume conversation opens). Used to render
-	// per-step token chips on tool cards and the tooltip call count.
+	// persisted `llm_usage` when a resume conversation opens). Used by the
+	// session-level token tooltip and call count.
 	/** @type {Array<import('$lib/sessionUsage.ts').LlmUsage>} */
 	let llmUsage = $state([]);
 	$effect(() =>
 		syncStore(sessionLlmUsageStore, (m) => {
 			llmUsage = activeSessionId ? m[activeSessionId] || [] : [];
-			stepUsageCache.clear();
 		}),
 	);
 	$effect(() => {
@@ -211,11 +210,6 @@
 		if (!activeSessionId) llmUsage = [];
 	});
 
-	const stepUsageCache = new Map();
-	/** @param {number|null} stepNumber */
-	function stepUsage(stepNumber) {
-		return stepUsageFor(llmUsage, stepNumber, stepUsageCache);
-	}
 	/** @param {any} stats */
 	function buildTokenTooltip(stats) {
 		return buildTokenUsageTooltip(stats, llmUsage);
@@ -1563,7 +1557,6 @@
 				{showContinueButton}
 				{continueDisabled}
 				continueBusy={continuePending}
-				{stepUsage}
 				onContextMenu={handleContextMenu}
 				onAskSelectionChange={handleAskSelectionChange}
 				onIgnore={handleIgnoreAsk}

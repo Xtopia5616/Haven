@@ -99,3 +99,4 @@
 - [0096：幂等启动开发服务器](0096-idempotent-dev-server-launch.md)
 - [0097：首次对话不等待工具目录启动](0097-first-turn-dispatcher-startup.md)
 - [0098：LLM 流式请求建立阶段可取消](0098-cancellable-llm-stream-start.md)
+- [0099：工具卡统一显示单工具 token](0099-ui-per-tool-token-display.md)

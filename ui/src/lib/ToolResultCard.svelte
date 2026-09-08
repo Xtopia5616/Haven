@@ -36,7 +36,6 @@
 		resolved = null,
 		streaming = false,
 		actionId = null,
-		usage = null,
 		toolArgs = null,
 		showFallbackIntent = false,
 	} = $props();
@@ -590,30 +589,6 @@
 							? '该操作可能已经产生副作用，禁止自动重试'
 							: undefined}>{outcomeLabel}</span
 					>
-				{/if}
-				{#if usage}
-					<span
-						class="usage-chip"
-						title={[
-							usage.model ? `模型 ${usage.model}` : null,
-							`上传 ${usage.prompt} → 生成 ${usage.completion} tokens`,
-							usage.durationMs > 0
-								? `耗时 ${(usage.durationMs / 1000).toFixed(1)}s`
-								: null,
-							usage.hasCost ? `费用 ${usage.cost.toFixed(6)} USD` : null,
-							usage.cacheMiss > 0
-								? `缓存未命中 ${formatTokenCount(usage.cacheMiss)}`
-								: null,
-							usage.cacheDiagnostics
-								? `缓存策略 ${usage.cacheDiagnostics.mode || 'off'} / ${usage.cacheDiagnostics.outcome || 'unknown'}${usage.cacheDiagnostics.downgraded ? '（已兼容降级）' : ''}`
-								: null,
-							usage.calls > 1 ? `${usage.calls} 次调用合并` : null,
-						]
-							.filter(Boolean)
-							.join('\n')}
-					>
-						{formatTokenCount(usage.total)} tokens
-					</span>
 				{/if}
 				{#if toolDataUsage}
 					<span
