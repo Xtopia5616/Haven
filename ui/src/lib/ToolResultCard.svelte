@@ -357,7 +357,23 @@
 		<MaterialCollapsible bind:open={cardOpen} lazy>
 			{#snippet header()}
 				<span class="tool-card-icon" aria-hidden="true">
-					{#if kind === 'shell'}
+					{#if toolSource === 'mcp'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><circle cx="6" cy="12" r="2" /><circle cx="18" cy="6" r="2" /><circle
+							cx="18"
+							cy="18"
+							r="2"
+						/><path d="m7.7 11 8.6-4M7.7 13l8.6 4" /></svg
+						>
+					{:else if kind === 'shell'}
 						<svg
 							width="12"
 							height="12"

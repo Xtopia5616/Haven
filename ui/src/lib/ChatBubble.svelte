@@ -503,8 +503,7 @@
 			var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
 	}
-	.bubble.assistant,
-	.bubble.tool.assistant {
+	.bubble.assistant {
 		margin-right: auto;
 		width: 100%;
 		max-width: 100%;
@@ -516,10 +515,14 @@
 		color: var(--md-sys-color-on-surface);
 		border: 1px solid
 			color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-outline-variant));
-		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-primary) 72%, transparent);
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small);
 		box-shadow: var(--md-sys-elevation-1);
+	}
+	/* Tool cards have their own structured header, so keep a secondary-color
+	 * edge only on those cards to preserve a lightweight type distinction. */
+	.bubble.tool.assistant {
+		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-secondary) 65%, transparent);
 	}
 	.bubble.assistant.thinking {
 		background: transparent;
@@ -1052,7 +1055,7 @@
 		);
 		border: 1px dashed
 			color-mix(in srgb, var(--md-sys-color-primary) 35%, var(--md-sys-color-outline-variant));
-		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-primary) 62%, transparent);
+		border-left: 2px solid color-mix(in srgb, var(--md-sys-color-primary) 45%, transparent);
 		border-radius: var(--md-sys-shape-small);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		font-size: var(--md-sys-typescale-body-small-size);

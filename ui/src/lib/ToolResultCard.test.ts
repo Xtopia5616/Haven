@@ -395,6 +395,7 @@ describe('ToolResultCard source + args', () => {
 		const badge = container.querySelector('.tool-source') as HTMLElement;
 		expect(badge.getAttribute('data-source')).toBe('mcp');
 		expect(badge.textContent).toBe('MCP');
+		expect(container.querySelector('.tool-card-icon svg')).toBeTruthy();
 		expect(screen.getByText('filesystem__read')).toBeTruthy();
 		expect(screen.getByText('调用参数')).toBeTruthy();
 		expect(screen.getByText('"path"')).toBeTruthy();
