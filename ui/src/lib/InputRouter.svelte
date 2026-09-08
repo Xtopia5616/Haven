@@ -367,7 +367,16 @@
 	$effect(() => {
 		transcriptInput;
 		transcriptTextarea;
-		if (browser) autoGrowInput();
+		if (!browser || !transcriptTextarea) return;
+		autoGrowInput();
+
+		// Recalculate when the composer width changes. A draft can switch between
+		// one and multiple visual lines without its value changing, otherwise the
+		// old vertical padding would make the text appear intermittently off-center.
+		if (typeof ResizeObserver !== 'function') return;
+		const observer = new ResizeObserver(() => autoGrowInput());
+		observer.observe(transcriptTextarea);
+		return () => observer.disconnect();
 	});
 
 	let ctxMenu = $state({ open: false, x: 0, y: 0, selStart: 0, selEnd: 0, selText: '' });
@@ -856,6 +865,7 @@
 		overflow-y: auto;
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 		font-size: var(--md-sys-typescale-body-medium-size);
+		text-align: left;
 	}
 	.chat-input::placeholder {
 		/* Placeholder line-height tracks the balanced padding so it stays

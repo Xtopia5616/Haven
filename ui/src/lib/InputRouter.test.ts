@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import InputRouter from './InputRouter.svelte';
+import inputRouterSource from './InputRouter.svelte?raw';
 
 describe('InputRouter context menu', () => {
 	beforeEach(() => {
@@ -116,5 +117,9 @@ describe('InputRouter context menu', () => {
 		} finally {
 			getComputedStyleSpy.mockRestore();
 		}
+	});
+
+	it('keeps the chat draft text horizontally left-aligned', () => {
+		expect(inputRouterSource).toMatch(/\.chat-input\s*\{[\s\S]*text-align:\s*left;/);
 	});
 });
