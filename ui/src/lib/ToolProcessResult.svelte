@@ -1,4 +1,6 @@
 <script>
+	import JsonView from '$lib/JsonView.svelte';
+
 	let { data = {} } = $props();
 
 	/** @param {unknown} value */
@@ -75,61 +77,74 @@
 	}
 </script>
 
-<div class="tool-card-count">
-	{#if processFilter}{filteredProcesses.length} / {processList.length} 个进程{:else}{processList.length} 个进程{/if}
-</div>
-<input
-	class="tool-search"
-	type="search"
-	placeholder="筛选进程..."
-	bind:value={processFilter}
-	aria-label="筛选进程"
-/>
-<div class="tool-card-list">
-	<table class="proc-table">
-		<thead>
-			<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
-		</thead>
-		<tbody>
-			{#each visibleProcesses as process (process.pid)}
-				<tr>
-					<td class="proc-name" title={process.name}>{process.name}</td>
-					<td class="proc-num">{process.pid}</td>
-					<td class="proc-num proc-meter-cell">
-						<span class="proc-meter"
+{#if Array.isArray(data.processes)}
+	<div class="tool-card-count">
+		{#if processFilter}{filteredProcesses.length} / {processList.length} 个进程{:else}{processList.length} 个进程{/if}
+	</div>
+	<input
+		class="tool-search"
+		type="search"
+		placeholder="筛选进程..."
+		bind:value={processFilter}
+		aria-label="筛选进程"
+	/>
+	<div class="tool-card-list">
+		<table class="proc-table">
+			<thead>
+				<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
+			</thead>
+			<tbody>
+				{#each visibleProcesses as process (process.pid)}
+					<tr>
+						<td class="proc-name" title={process.name}>{process.name}</td>
+						<td class="proc-num">{process.pid}</td>
+						<td class="proc-num proc-meter-cell">
+							<span class="proc-meter"
+								><span
+									class="proc-meter-fill"
+									style="width: {clampPct(process.cpu)}%"
+								></span></span
+							>{Number(process.cpu ?? 0).toFixed(1)}%
+						</td>
+						<td class="proc-num proc-meter-cell">
+							<span class="proc-meter"
+								><span
+									class="proc-meter-fill"
+									style="width: {memPct(process)}%"
+								></span></span
+							>{fmtBytes(process.memory)}
+						</td>
+						<td class="proc-status"
 							><span
-								class="proc-meter-fill"
-								style="width: {clampPct(process.cpu)}%"
-							></span></span
-						>{Number(process.cpu ?? 0).toFixed(1)}%
-					</td>
-					<td class="proc-num proc-meter-cell">
-						<span class="proc-meter"
-							><span
-								class="proc-meter-fill"
-								style="width: {memPct(process)}%"
-							></span></span
-						>{fmtBytes(process.memory)}
-					</td>
-					<td class="proc-status"
-						><span
-							class="status-badge status-{procStatusClass(process.status)}"
-							>{procStatusLabel(process.status)}</span
-						></td
-					>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
-</div>
-{#if !processFilter && processList.length > processVisibleLimit}
-	<button
-		class="show-all-btn"
-		type="button"
-		onclick={() => (processShowAll = !processShowAll)}
-	>
-		{processShowAll ? '收起' : `显示全部 ${processList.length} 个进程`}
-	</button>
+								class="status-badge status-{procStatusClass(process.status)}"
+								>{procStatusLabel(process.status)}</span
+							></td
+						>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+		{#if visibleProcesses.length === 0}<p class="tool-card-empty">没有匹配的进程</p>{/if}
+	</div>
+	{#if !processFilter && processList.length > processVisibleLimit}
+		<button
+			class="show-all-btn"
+			type="button"
+			onclick={() => (processShowAll = !processShowAll)}
+		>
+			{processShowAll ? '收起' : `显示全部 ${processList.length} 个进程`}
+		</button>
+	{/if}
+{:else if data.operation === 'kill' && data.killed != null}
+	<div class="process-action-row">
+		<span class="status-badge status-completed">已终止</span>
+		<span class="process-action-id">PID {data.killed}</span>
+	</div>
+{:else if data.operation}
+	<div class="tool-card-meta">进程操作：{data.operation}</div>
+	<JsonView value={data} defaultDepth={1} />
+{:else}
+	<p class="tool-card-empty">没有进程结果</p>
 {/if}
 
 <style>
@@ -233,6 +248,10 @@
 		background: var(--md-sys-color-secondary);
 		color: var(--md-sys-color-on-secondary);
 	}
+	.status-completed {
+		background: var(--md-sys-color-success);
+		color: var(--md-sys-color-on-success-container);
+	}
 	.status-failed {
 		background: var(--md-sys-color-error);
 		color: var(--md-sys-color-on-error);
@@ -259,5 +278,21 @@
 	}
 	.show-all-btn:hover {
 		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
+	}
+	.tool-card-empty {
+		margin: var(--md-sys-space-sm) 0;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.process-action-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+	}
+	.process-action-id {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-code-size);
+		color: var(--md-sys-color-on-surface);
 	}
 </style>

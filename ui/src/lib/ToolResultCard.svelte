@@ -19,6 +19,7 @@
 		toolDisplayName,
 		toolSourceLabel,
 	} from '$lib/toolIdentity.ts';
+	import { canonicalToolName } from '$lib/toolNames.ts';
 	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
 
 	let {
@@ -40,9 +41,13 @@
 		showFallbackIntent = false,
 	} = $props();
 
-	let toolSource = $derived(classifyToolSource(toolName));
+	// History normally canonicalizes aliases before building messages, but the
+	// live path and older callers can still provide one. Resolve it once at the
+	// card boundary so label, parser and renderer registry cannot disagree.
+	let renderToolName = $derived(canonicalToolName(toolName));
+	let toolSource = $derived(classifyToolSource(renderToolName));
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
-	let displayName = $derived(toolDisplayName(toolName));
+	let displayName = $derived(toolDisplayName(renderToolName));
 	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
 	const outcomeLabels = /** @type {Record<string, string>} */ ({
 		failed: '执行失败',
@@ -137,10 +142,12 @@
 		return content;
 	});
 	let toolDataUsage = $derived(
-		type === 'tool' ? estimateToolDataTokens(toolName, toolArgs, displayContent) : null,
+		type === 'tool' ? estimateToolDataTokens(renderToolName, toolArgs, displayContent) : null,
 	);
 
-	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, displayContent) : null);
+	let parsed = $derived(
+		type === 'tool' ? parseToolResult(renderToolName, displayContent) : null,
+	);
 
 	// Tool details are useful after completion as well as during execution, so
 	// cards start open and stay open. The user can still collapse a card
@@ -154,7 +161,7 @@
 	});
 	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
-	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));
+	let BodyRenderer = $derived(getToolResultRenderer(kind, renderToolName, data));
 	const toolStateLabels = /** @type {Record<string, string>} */ ({
 		running: '执行中',
 		completed: '完成',
@@ -407,7 +414,7 @@
 							stroke-linecap="round"
 							stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
 						>
-					{:else if toolName === 'files'}
+					{:else if renderToolName === 'files'}
 						<svg
 							width="12"
 							height="12"
@@ -423,7 +430,7 @@
 								y2="16.65"
 							/></svg
 						>
-					{:else if toolName === 'system'}
+					{:else if renderToolName === 'system'}
 						<svg
 							width="12"
 							height="12"
@@ -442,7 +449,7 @@
 								d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"
 							/></svg
 						>
-					{:else if toolName === 'process'}
+					{:else if renderToolName === 'process'}
 						<svg
 							width="12"
 							height="12"
@@ -454,7 +461,7 @@
 							stroke-linejoin="round"
 							><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg
 						>
-					{:else if toolName === 'window'}
+					{:else if renderToolName === 'window'}
 						<svg
 							width="12"
 							height="12"
@@ -468,7 +475,7 @@
 								d="M8 21h8M12 17v4"
 							/></svg
 						>
-					{:else if toolName === 'actions'}
+					{:else if renderToolName === 'actions'}
 						<svg
 							width="12"
 							height="12"
@@ -482,7 +489,7 @@
 								points="12 7 12 12 15.5 13.5"
 							/></svg
 						>
-					{:else if toolName === 'schedule'}
+					{:else if renderToolName === 'schedule'}
 						<svg
 							width="12"
 							height="12"
@@ -496,7 +503,7 @@
 								d="M13.73 21a2 2 0 0 1-3.46 0"
 							/></svg
 						>
-					{:else if toolName === 'files' && !Array.isArray(data.results)}
+					{:else if renderToolName === 'files' && !Array.isArray(data.results)}
 						<svg
 							width="12"
 							height="12"
@@ -510,7 +517,7 @@
 								d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
 							/><polyline points="14 2 14 8 20 8" /></svg
 						>
-					{:else if toolName === 'http'}
+					{:else if renderToolName === 'http'}
 						<svg
 							width="12"
 							height="12"
@@ -524,7 +531,7 @@
 								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
 							/></svg
 						>
-					{:else if toolName === 'clipboard'}
+					{:else if renderToolName === 'clipboard'}
 						<svg
 							width="12"
 							height="12"
@@ -538,7 +545,7 @@
 								d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
 							/><rect x="8" y="2" width="8" height="4" rx="1" /></svg
 						>
-					{:else if toolName === 'web_search'}
+					{:else if renderToolName === 'web_search'}
 						<svg
 							width="12"
 							height="12"
@@ -552,7 +559,7 @@
 								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
 							/></svg
 						>
-					{:else if toolName === 'agent'}
+					{:else if renderToolName === 'agent'}
 						<svg
 							width="12"
 							height="12"

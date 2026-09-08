@@ -1,5 +1,6 @@
 <script>
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
+	import JsonView from '$lib/JsonView.svelte';
 
 	let { data = {} } = $props();
 </script>
@@ -14,6 +15,11 @@
 			<span class="status-badge status-{data.status}">{actionStatusLabel(data.status)}</span>
 		</div>
 	{/if}
+{:else if data.operation === 'cancel'}
+	<div class="action-row">
+		<span class="status-badge status-{data.cancelled ? 'completed' : 'not_found'}">{data.cancelled ? '已取消' : '未找到任务'}</span>
+		<span class="action-id">{data.action_id || '—'}</span>
+	</div>
 {:else if Array.isArray(data.actions)}
 	<div class="tool-card-count">{data.actions.length} 个后台任务</div>
 	{#if data.actions.length > 0}
@@ -28,7 +34,7 @@
 	{:else}
 		<p class="tool-card-empty">没有后台任务</p>
 	{/if}
-{:else}
+{:else if data.action_id || data.job_id || data.status}
 	<div class="action-row">
 		<span class="action-id">{data.action_id ?? data.job_id}</span>
 		<span class="status-badge status-{data.status}">{actionStatusLabel(data.status)}</span>
@@ -36,6 +42,9 @@
 	{#if data.exit_code != null}
 		<div class="tool-card-meta">退出码 {data.exit_code}</div>
 	{/if}
+{:else}
+	<div class="tool-card-meta">后台任务操作：{data.operation}</div>
+	<JsonView value={data} defaultDepth={1} />
 {/if}
 
 <style>

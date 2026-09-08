@@ -50,6 +50,23 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('audio', 'plain text')).toBe(true);
 		expect(canRenderToolResult('notify', 'Some other text')).toBe(true);
 	});
+	it('keeps operation-scoped builtin results on their dedicated renderer path', () => {
+		expect(
+			parseToolResult('files', JSON.stringify({ operation: 'create_dir', created: true })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('system', JSON.stringify({ scope: 'info', networks: [] })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('process', JSON.stringify({ operation: 'kill', killed: 42 })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('window', JSON.stringify({ operation: 'screenshot', path: 'shot.png' })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('actions', JSON.stringify({ operation: 'cancel', action_id: 'act-1' })),
+		).toMatchObject({ kind: 'custom' });
+	});
 	it('rejects empty content', () => {
 		expect(canRenderToolResult('', '')).toBe(false);
 		expect(canRenderToolResult('files', '')).toBe(false);
@@ -489,6 +506,24 @@ describe('ToolResultCard collapsible', () => {
 });
 
 describe('ToolResultCard files', () => {
+	it('renders create_dir with the file-specific result UI', () => {
+		render(ToolResultCard, {
+			toolName: 'files',
+			content: JSON.stringify({ operation: 'create_dir', created: true, path: 'D:\\tmp\\reports' }),
+		});
+		expect(screen.getByText('已创建目录')).toBeTruthy();
+		expect(screen.getByText('D:\\tmp\\reports')).toBeTruthy();
+	});
+
+	it('normalizes the historical file_search alias before selecting the renderer', () => {
+		render(ToolResultCard, {
+			toolName: 'file_search',
+			content: searchJson([{ path: 'D:\\tmp\\match.rs' }]),
+		});
+		expect(screen.getByText('文件与搜索')).toBeTruthy();
+		expect(screen.getByText('D:\\tmp\\match.rs')).toBeTruthy();
+	});
+
 	it('renders a filename-mode search card with paths and count', () => {
 		render(ToolResultCard, {
 			toolName: 'files',
@@ -524,6 +559,20 @@ describe('ToolResultCard files', () => {
 });
 
 describe('ToolResultCard system', () => {
+	it('renders network category results instead of generic JSON', () => {
+		render(ToolResultCard, {
+			toolName: 'system',
+			content: JSON.stringify({
+				scope: 'info',
+				networks: [{ name: 'Wi-Fi', state: 'up', ips: ['192.168.1.2'] }],
+				count: 1,
+			}),
+		});
+		expect(screen.getByText('1 个网络接口')).toBeTruthy();
+		expect(screen.getByText('Wi-Fi')).toBeTruthy();
+		expect(screen.getByText('192.168.1.2')).toBeTruthy();
+	});
+
 	it('renders cpu/memory meters and os info', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',
@@ -541,9 +590,33 @@ describe('ToolResultCard system', () => {
 		expect(screen.getByText('8 核 / 16 线程')).toBeTruthy();
 		expect(container.querySelectorAll('.meter-fill').length).toBe(2);
 	});
+
+	it('renders power status and no-battery state', () => {
+		render(ToolResultCard, {
+			toolName: 'system',
+			content: JSON.stringify({
+				scope: 'power',
+				ac_power: 'offline',
+				battery_percent: null,
+				battery_present: false,
+				battery_status: 'unknown',
+			}),
+		});
+		expect(screen.getByText('使用电池')).toBeTruthy();
+		expect(screen.getByText('未检测到电池')).toBeTruthy();
+	});
 });
 
 describe('ToolResultCard process', () => {
+	it('renders a kill result with the process-specific action UI', () => {
+		render(ToolResultCard, {
+			toolName: 'process',
+			content: JSON.stringify({ operation: 'kill', killed: 42 }),
+		});
+		expect(screen.getByText('已终止')).toBeTruthy();
+		expect(screen.getByText('PID 42')).toBeTruthy();
+	});
+
 	it('renders a process table with pid, cpu and memory', () => {
 		render(ToolResultCard, {
 			toolName: 'process',
@@ -617,11 +690,52 @@ describe('ToolResultCard actions', () => {
 		});
 		expect(screen.getByText('act-1')).toBeTruthy();
 		expect(screen.getByText('已完成')).toBeTruthy();
-		expect(screen.getByText('退出码 0')).toBeTruthy();
+		 expect(screen.getByText('退出码 0')).toBeTruthy();
+	});
+
+	it('renders cancel results with an explicit action status', () => {
+		render(ToolResultCard, {
+			toolName: 'actions',
+			content: JSON.stringify({ operation: 'cancel', action_id: 'act-2', cancelled: true }),
+		});
+		expect(screen.getByText('已取消')).toBeTruthy();
+		expect(screen.getByText('act-2')).toBeTruthy();
+	});
+});
+
+describe('ToolResultCard window', () => {
+	it('renders screenshot results with a file reference and dimensions', () => {
+		render(ToolResultCard, {
+			toolName: 'window',
+			content: JSON.stringify({
+				operation: 'screenshot',
+				path: 'C:\\tmp\\screen.png',
+				width: 1920,
+				height: 1080,
+				format: 'png',
+			}),
+		});
+		expect(screen.getByText('截图已保存')).toBeTruthy();
+		expect(screen.getByText('C:\\tmp\\screen.png')).toBeTruthy();
+		expect(screen.getByText('1920×1080 · PNG')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard files', () => {
+	it('renders image analysis results instead of a blank read state', () => {
+		render(ToolResultCard, {
+			toolName: 'files',
+			content: JSON.stringify({
+				operation: 'read',
+				image: true,
+				path: 'C:\\tmp\\diagram.png',
+				description: 'A flow diagram with three nodes.',
+			}),
+		});
+		expect(screen.getByText('图像读取完成')).toBeTruthy();
+		expect(screen.getByText('A flow diagram with three nodes.')).toBeTruthy();
+	});
+
 	it('renders write / delete results', () => {
 		render(ToolResultCard, {
 			toolName: 'files',

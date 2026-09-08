@@ -1,7 +1,23 @@
 <script>
 	import ExternalRef from '$lib/ExternalRef.svelte';
+	import JsonView from '$lib/JsonView.svelte';
 
-	let { data = {} } = $props();
+	let { data = {}, rawText = '' } = $props();
+
+	/** @type {Record<string, string>} */
+	const operationLabels = {
+		read: '读取完成',
+		write: '写入完成',
+		create_dir: '目录创建完成',
+		edit: '编辑完成',
+		copy: '复制完成',
+		move: '移动完成',
+		delete: '删除完成',
+		list: '目录列表',
+		summary: '摘要结果',
+		search: '搜索结果',
+	};
+	let operationLabel = $derived(operationLabels[data.operation] || '文件结果');
 
 	/** @param {unknown} value */
 	function fmtBytes(value) {
@@ -45,6 +61,52 @@
 	<div class="file-row">
 		<span class="file-op">已删除</span><ExternalRef class="file-path" target={data.path} />
 	</div>
+{:else if data.created}
+	<div class="file-row">
+		<span class="file-op">已创建目录</span><ExternalRef class="file-path" target={data.path} />
+	</div>
+{:else if data.image}
+	<div class="file-row">
+		<span class="file-op">{data.understand_error ? '图像分析失败' : data.understand_unavailable ? '图像分析不可用' : '图像读取完成'}</span>
+		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
+	</div>
+	{#if data.description}<pre class="content-preview">{data.description}</pre>{/if}
+	{#if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
+{:else if data.binary}
+	<div class="file-row">
+		<span class="file-op">二进制文件</span>
+		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
+	</div>
+	<div class="tool-card-meta">
+		{data.file_type || data.mime || '无法作为文本读取'}{data.size != null ? ` · ${fmtBytes(data.size)}` : ''}
+	</div>
+{:else if data.summary || data.summary_unavailable || data.summary_error}
+	<div class="file-row">
+		<span class="file-op">{data.summary ? '摘要完成' : data.summary_error ? '摘要失败' : '摘要不可用'}</span>
+		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
+	</div>
+	{#if data.summary}<pre class="content-preview">{data.summary}</pre>{/if}
+	{#if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
+{:else if data.too_large}
+	<div class="file-row">
+		<span class="file-op">文件过大</span><ExternalRef class="file-path" target={data.path} />
+	</div>
+	{#if typeof data.content === 'string' && data.content}
+		<pre class="content-preview">{data.content}</pre>
+	{/if}
+{:else if data.warning || data.error}
+	<div class="file-row">
+		<span class="file-op file-op--error">{data.warning ? '需要精确匹配' : '读取失败'}</span>
+		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
+	</div>
+	{#if data.warning}<p class="tool-card-empty">{data.warning}</p>{/if}
+	{#if data.error}<p class="tool-card-empty">{data.error}</p>{/if}
+	{#if data.matches}<JsonView value={data.matches} defaultDepth={1} />{/if}
+{:else if data.operation && data.operation !== 'read' && !Array.isArray(data.entries)}
+	<div class="tool-card-meta">{operationLabel}</div>
+	<JsonView value={data} defaultDepth={1} />
+{:else if rawText}
+	<pre class="content-preview">{rawText}</pre>
 {:else if Array.isArray(data.entries)}
 	<div class="tool-card-count">{data.count ?? data.entries.length} 项</div>
 	{#if data.entries.length > 0}
@@ -127,6 +189,10 @@
 		color: var(--md-sys-color-on-surface-variant);
 		width: 34px;
 		text-align: center;
+	}
+	.file-op--error {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 	}
 	:global(.file-path) {
 		flex: 1;

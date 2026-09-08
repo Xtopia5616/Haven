@@ -1,6 +1,7 @@
 <script>
 	import logger from './logger.ts';
 	import { formatError } from './formatError.ts';
+	import JsonView from '$lib/JsonView.svelte';
 
 	let { data = {} } = $props();
 
@@ -38,6 +39,31 @@
 		return `${minutes} 分钟`;
 	}
 
+	/** @param {unknown} value */
+	function networkStateLabel(value) {
+		return (
+			{
+				up: '已连接',
+				down: '已断开',
+				dormant: '待机',
+				unknown: '未知',
+			}[String(value ?? '').toLowerCase()] ?? String(value ?? '未知')
+		);
+	}
+
+	/** @param {unknown} value */
+	function batteryStatusLabel(value) {
+		return (
+			{
+				high: '电量充足',
+				low: '电量较低',
+				critical: '电量严重不足',
+				charging: '充电中',
+				unknown: '状态未知',
+			}[String(value ?? '').toLowerCase()] ?? String(value ?? '状态未知')
+		);
+	}
+
 	let envFilter = $state('');
 	let envList = $derived(Array.isArray(data.variables) ? data.variables : []);
 	let filteredEnv = $derived(
@@ -55,6 +81,29 @@
 				})
 			: envList,
 	);
+	let hasStructuredView = $derived(
+		!!data.os ||
+		!!data.cpu ||
+		!!data.memory ||
+		!!data.disks ||
+		Array.isArray(data.displays) ||
+		Array.isArray(data.variables) ||
+		Array.isArray(data.networks) ||
+		!!data.network_summary ||
+		!!data.user ||
+		!!data.locale ||
+		Array.isArray(data.values) ||
+		Array.isArray(data.subkeys) ||
+		!!data.name ||
+		data.battery_percent != null ||
+		data.ac_power ||
+		data.battery_present != null ||
+		data.battery_saver ||
+		data.locked ||
+		data.sleep ||
+		data.hibernate ||
+		data.available === false,
+	);
 	/** @param {string} text */
 	async function copyEnvValue(text) {
 		try {
@@ -69,6 +118,76 @@
 	<div class="sys-os">
 		<span class="sys-os-name">{data.os.name || '系统'}</span>
 		{#if data.os.hostname}<span class="sys-os-host">{data.os.hostname}</span>{/if}
+	</div>
+{/if}
+{#if data.user}
+	<div class="tool-card-count">用户信息</div>
+	<div class="info-grid">
+		{#if data.user.username}<div class="info-label">用户</div><div class="info-value">{data.user.username}</div>{/if}
+		{#if data.user.computer_name}<div class="info-label">计算机</div><div class="info-value">{data.user.computer_name}</div>{/if}
+		{#if data.user.home}<div class="info-label">主目录</div><div class="info-value" title={data.user.home}>{data.user.home}</div>{/if}
+		{#if data.user.cwd}<div class="info-label">当前目录</div><div class="info-value" title={data.user.cwd}>{data.user.cwd}</div>{/if}
+	</div>
+{/if}
+{#if data.locale}
+	<div class="tool-card-count">时间与区域</div>
+	<div class="info-grid">
+		{#if data.locale.locale_name}<div class="info-label">区域</div><div class="info-value">{data.locale.locale_name}</div>{/if}
+		{#if data.locale.ui_language}<div class="info-label">界面语言</div><div class="info-value">{data.locale.ui_language}</div>{/if}
+		{#if data.locale.local_time}<div class="info-label">本地时间</div><div class="info-value">{data.locale.local_time}</div>{/if}
+		{#if data.locale.timezone_offset_hours != null}<div class="info-label">时区</div><div class="info-value">UTC{data.locale.timezone_offset_hours >= 0 ? '+' : ''}{data.locale.timezone_offset_hours}</div>{/if}
+	</div>
+{/if}
+{#if Array.isArray(data.networks)}
+	<div class="tool-card-count">{data.count ?? data.networks.length} 个网络接口</div>
+	<div class="tool-card-list">
+		{#each data.networks as network (network.name)}
+			<div class="network-row">
+				<div class="network-main">
+					<span class="network-name">{network.name || '未命名接口'}</span>
+					<span class="network-state">{networkStateLabel(network.state)}</span>
+				</div>
+				{#if Array.isArray(network.ips) && network.ips.length > 0}<div class="network-ips">{network.ips.join(' · ')}</div>{/if}
+			</div>
+		{/each}
+	</div>
+{/if}
+{#if data.network_summary}
+	<div class="tool-card-count">网络概况</div>
+	<div class="info-grid">
+		<div class="info-label">接口</div><div class="info-value">{data.network_summary.interface_count ?? 0}</div>
+		<div class="info-label">可用或未知</div><div class="info-value">{data.network_summary.up_or_unknown ?? 0}</div>
+		<div class="info-label">已断开</div><div class="info-value">{data.network_summary.down ?? 0}</div>
+	</div>
+{/if}
+{#if Array.isArray(data.values) || Array.isArray(data.subkeys)}
+	<div class="tool-card-count">注册表{data.path ? ` · ${data.path}` : ''}</div>
+	{#if Array.isArray(data.values) && data.values.length > 0}
+		<div class="tool-card-list">
+			{#each data.values as value (value)}<div class="env-row"><span class="env-name">{value}</span></div>{/each}
+		</div>
+	{:else if Array.isArray(data.subkeys) && data.subkeys.length > 0}
+		<div class="tool-card-list">
+			{#each data.subkeys as key (key)}<div class="env-row"><span class="env-name">{key}</span></div>{/each}
+		</div>
+	{:else}
+		<p class="tool-card-empty">没有注册表值或子项</p>
+	{/if}
+{/if}
+{#if data.deleted}
+	<div class="system-action-row">
+		<span class="system-action">已删除</span>
+		{#if data.path}<span class="info-value" title={data.path}>{data.path}</span>{/if}
+	</div>
+{/if}
+{#if data.available === false}
+	<p class="tool-card-empty">{data.note || data.reason || '此系统能力当前不可用'}</p>
+{/if}
+{#if data.ac_power || data.battery_present != null || data.battery_saver}
+	<div class="info-grid power-info">
+		{#if data.ac_power}<div class="info-label">电源</div><div class="info-value">{data.ac_power === 'online' ? '接通电源' : data.ac_power === 'offline' ? '使用电池' : data.ac_power}</div>{/if}
+		{#if data.battery_present === false}<div class="info-label">电池</div><div class="info-value">未检测到电池</div>{/if}
+		{#if data.battery_saver}<div class="info-label">省电模式</div><div class="info-value">已开启</div>{/if}
 	</div>
 {/if}
 {#if data.cpu}
@@ -147,7 +266,7 @@
 				<div class="env-row">
 					<span class="env-name" title={variable.name}>{variable.name}</span>
 					<span class="env-value" title={variable.value ?? ''}
-						>{variable.value ?? '(未设置)'}</span
+						>{variable.value != null ? variable.value : '仅名称（未读取）'}</span
 					>
 					{#if typeof variable.value === 'string' && variable.value}
 						<button
@@ -167,7 +286,7 @@
 {:else if data.name && ('value' in data || data.set || data.removed)}
 	<div class="env-row">
 		<span class="env-name">{data.name}</span>
-		<span class="env-value" title={data.value ?? ''}>{data.value ?? '(未设置)'}</span>
+		<span class="env-value" title={data.value ?? ''}>{data.value != null ? data.value : data.removed ? '已移除' : 'value' in data ? '未设置' : '仅名称（未读取）'}</span>
 	</div>
 {/if}
 {#if data.battery_percent != null}
@@ -178,13 +297,16 @@
 			><span class="meter-fill" style="width: {clampPct(data.battery_percent)}%"></span></span
 		>
 		<span class="meter-sub"
-			>{data.battery_status ?? 'unknown'}{data.ac_power === 'online' ? ' · 已接电源' : ''}</span
+			>{batteryStatusLabel(data.battery_status)}{data.ac_power === 'online' ? ' · 已接电源' : ''}</span
 		>
 	</div>
 {:else if data.locked || data.sleep || data.hibernate}
 	<p class="tool-card-empty">
 		{data.locked ? '已锁定' : data.sleep ? '已睡眠' : '已休眠'}
 	</p>
+{/if}
+{#if !hasStructuredView}
+	<JsonView value={data} defaultDepth={1} />
 {/if}
 
 <style>
@@ -271,7 +393,8 @@
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.window-row,
-	.env-row {
+	.env-row,
+	.network-row {
 		display: flex;
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
@@ -279,6 +402,64 @@
 		border-radius: 4px;
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.info-grid {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		margin-bottom: var(--md-sys-space-sm);
+	}
+	.info-label,
+	.info-value {
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.info-label {
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.info-value {
+		min-width: 0;
+		font-family: var(--md-sys-typescale-mono);
+		color: var(--md-sys-color-on-surface);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.network-row {
+		display: block;
+	}
+	.network-main {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--md-sys-space-xs);
+	}
+	.network-name {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-code-size);
+		color: var(--md-sys-color-on-surface);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.network-state,
+	.network-ips {
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.network-state {
+		flex: none;
+	}
+	.network-row:nth-child(odd) {
+		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
+	}
+	.network-ips {
+		margin-top: var(--md-sys-space-2xs);
+		font-family: var(--md-sys-typescale-mono);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.window-row:nth-child(odd),
 	.env-row:nth-child(odd) {
@@ -330,6 +511,22 @@
 	}
 	.tool-search:focus {
 		border-color: var(--md-sys-color-primary);
+	}
+	.system-action-row {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-xs);
+		margin-bottom: var(--md-sys-space-sm);
+	}
+	.system-action {
+		flex: none;
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		padding: 1px 6px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 	}
 	.env-copy {
 		flex: none;

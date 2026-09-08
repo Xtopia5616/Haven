@@ -65,13 +65,27 @@ export function parseToolResult(toolName: string, content: string): ParsedToolRe
 function customShape(toolName: string, data: ToolResultObject): ToolResultObject | null {
 	switch (toolName) {
 		case 'files':
-			if (Array.isArray(data.results)) return data;
+			// Every current files operation is annotated at the backend boundary.
+			// Prefer that stable discriminator so new operations (create_dir,
+			// summary, binary reads, and operation-specific warnings) do not fall
+			// back to the generic JSON renderer merely because their payload has a
+			// different shape.
+			if (typeof data.operation === 'string' || Array.isArray(data.results)) return data;
 			if (
 				data.written ||
+				data.created ||
 				data.edited ||
 				data.copied ||
 				data.moved ||
 				data.deleted ||
+				data.image ||
+				data.binary ||
+				data.too_large ||
+				data.summary ||
+				data.summary_unavailable ||
+				data.summary_error ||
+				'error' in data ||
+				'warning' in data ||
 				Array.isArray(data.entries) ||
 				'content' in data ||
 				'size' in data
@@ -79,7 +93,10 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				return data;
 			return null;
 		case 'system':
-			return data.cpu ||
+			// `scope` is added to every system result, including network/user/
+			// locale/registry/power results that do not carry the overview fields.
+			return typeof data.scope === 'string' ||
+				data.cpu ||
 				data.memory ||
 				data.os ||
 				data.disks ||
@@ -93,16 +110,20 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				? data
 				: null;
 		case 'process':
-			return Array.isArray(data.processes) ? data : null;
+			return typeof data.operation === 'string' || Array.isArray(data.processes)
+				? data
+				: null;
 		case 'window':
-			return Array.isArray(data.windows) ||
+			return typeof data.operation === 'string' ||
+				Array.isArray(data.windows) ||
 				Array.isArray(data.elements) ||
 				typeof data.text === 'string' ||
 				data.waited === true
 				? data
 				: null;
 		case 'actions':
-			return Array.isArray(data.actions) ||
+			return typeof data.operation === 'string' ||
+				Array.isArray(data.actions) ||
 				typeof data.status === 'string' ||
 				data.operation === 'result_injected'
 				? data
