@@ -1,5 +1,7 @@
 # ADR 0090: Close tool-name boundaries and registry security contracts
 
+> Superseded for legacy-name handling by [ADR 0100](0100-remove-tool-name-compatibility.md).
+
 - Status: Accepted
 - Date: 2026-09-06
 
@@ -14,10 +16,8 @@ representative rows and could drift from the actual builtin schemas.
 
 ## Decision
 
-1. Keep a small explicit canonical-name map at the common boundary. Migrate
-   only unambiguous permission aliases (`file` and `scheduled_action`) while
-   preserving operation suffixes; current keys win. History/UI additionally
-   maps `file_search` to `files` for renderer selection.
+1. The legacy-name handling in this item is superseded by ADR 0100. The
+   remaining security matrix and capability allowlist decisions stay active.
 2. Preserve `process.launch` as an unknown historical name and mark its card
    unrecoverable instead of guessing a replacement.
 3. Restrict model-driven `haven_tools` toggles to an explicit allowlist of

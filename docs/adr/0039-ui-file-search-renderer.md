@@ -1,18 +1,15 @@
-# ADR 0039：UI file_search/files renderer 边界
+# ADR 0039：UI files 搜索 renderer 边界
 
 ## 背景
 
-`file_search` 与带 `results` 数组的 `files` 结果共享文件路径、行号和 snippet
-列表展示。它们仍由 `ToolResultCard` 的条件模板直接渲染，使搜索结果样式与公共
-卡片壳耦合。
+带 `results` 数组的 `files` 结果共享文件路径、行号和 snippet 列表展示。它们仍由
+`ToolResultCard` 的条件模板直接渲染，使搜索结果样式与公共卡片壳耦合。
 
 ## 决定
 
-- 新增 `ToolFileSearchResult.svelte`，承载 `file_search` 以及带搜索结果的
-  `files` body renderer。
-- `toolResultRenderers.ts` 按 `custom + toolName` 注册 `file_search`；仅当
-  `files` 数据包含 `results` 数组时选择同一 renderer，其他 `files` 结果保持既有
-  generic/custom 分类行为。
+- 新增 `ToolFileSearchResult.svelte`，承载带搜索结果的 `files` body renderer。
+- `toolResultRenderers.ts` 仅当 `files` 数据包含 `results` 数组时选择搜索 renderer，
+  其他 `files` 结果保持既有 generic/custom 分类行为。
 - 将文件路径外部引用、行号、snippet、结果计数和空态样式迁移到该组件；保持
   `ExternalRef` 的复制/打开行为、原有中文文案、排序和 key 语义，不改变 IPC DTO
   或后端搜索语义。
@@ -39,5 +36,5 @@ corepack pnpm --dir ui run test:run
 
 ## 回滚与重置
 
-代码回滚时删除搜索 renderer 组件，移除 `file_search/files` registry 映射并恢复
+代码回滚时删除搜索 renderer 组件，移除 `files` registry 映射并恢复
 `ToolResultCard` 搜索分支；本次不改变持久化数据或配置，不需要用户重置。

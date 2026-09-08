@@ -117,6 +117,7 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 			return typeof data.operation === 'string' ||
 				Array.isArray(data.windows) ||
 				Array.isArray(data.elements) ||
+				data.available === false ||
 				typeof data.text === 'string' ||
 				data.waited === true
 				? data
@@ -129,7 +130,28 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				? data
 				: null;
 		case 'schedule':
-			return Array.isArray(data.scheduled_actions) || (data.id && data.mode) ? data : null;
+			return typeof data.operation === 'string' ||
+				Array.isArray(data.scheduled_actions) ||
+				(data.id && data.mode)
+				? data
+				: null;
+		case 'memory':
+			return typeof data.operation === 'string' ||
+				Array.isArray(data.facts) ||
+				Array.isArray(data.hits)
+				? data
+				: null;
+		case 'input':
+			return typeof data.operation === 'string' ? data : null;
+		case 'audio':
+			return typeof data.operation === 'string' ? data : null;
+		case 'haven_config':
+		case 'haven_diagnostics':
+		case 'haven_mcp':
+		case 'haven_session_diagnostics':
+		case 'haven_skills':
+		case 'haven_tools':
+			return data;
 		case 'http':
 			return typeof data.status === 'number' ? data : null;
 		case 'clipboard':

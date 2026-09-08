@@ -79,7 +79,14 @@ impl InputTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let result = match params.operation {
+        let operation = match params.operation {
+            InputOperation::Type => "type",
+            InputOperation::Key => "key",
+            InputOperation::Click => "click",
+            InputOperation::Move => "move",
+            InputOperation::Scroll => "scroll",
+        };
+        let mut result = match params.operation {
             InputOperation::Type => {
                 let text = params
                     .text
@@ -126,6 +133,9 @@ impl InputTool {
                 serde_json::json!({ "scrolled": delta })
             }
         };
+        if let Some(object) = result.as_object_mut() {
+            object.insert("operation".into(), Value::String(operation.into()));
+        }
         Ok(ToolResult::ok(result))
     }
 }

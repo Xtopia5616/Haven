@@ -4,7 +4,10 @@
 
 import { formatMessageTime } from '$lib/stores.ts';
 import { isPausedStatus } from '$lib/sessionStatus.ts';
-import { canonicalToolName, isUnrecoverableHistoricalTool } from '$lib/toolNames.ts';
+
+function isUnrecoverableHistoricalTool(name: string | null | undefined): boolean {
+	return name === 'process.launch';
+}
 
 // Sentinel the backend used to persist in `messages.tool_call_id` for
 // assistant messages carrying an `ask` question text. New records no
@@ -224,7 +227,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		if (msg.tool_call_id === ASK_MSG_TOOL_CALL_ID) continue;
 		const step = stepById.get(msg.id);
 		const isToolObservation = msg.role === 'tool' || msg.message_type === 'observation';
-		const persistedToolName = canonicalToolName(step?.action_tool);
+		const persistedToolName = step?.action_tool;
 		items.push({
 			id: msg.id,
 			// Tool observations are rendered as assistant-side cards in chat, even
@@ -271,7 +274,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		const stepId = step.id;
 		if (!step.action_tool) continue;
 		if (msgIds.has(stepId) && step.action_tool !== 'ask') continue;
-		const toolName = canonicalToolName(step.action_tool);
+		const toolName = step.action_tool;
 		const unrecoverable = isUnrecoverableHistoricalTool(step.action_tool);
 		const obs = step.observation && step.observation !== '{}' ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card

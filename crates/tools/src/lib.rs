@@ -19,6 +19,7 @@ use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfi
 use haven_common::types::{RiskLevel, ShellChoice};
 use haven_llm::LlmRouter;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -94,7 +95,9 @@ pub struct StartupWiring {
 /// successful `load_mcp`); Anthropic additionally caps the length at 64.
 /// The transform is deterministic so the name advertised to the model in the
 /// tool definitions always equals the per-session registration key used for
-/// execution lookup — no reverse mapping is needed.
+/// execution lookup — no reverse mapping is needed. A digest suffix is kept
+/// when truncating, otherwise two long MCP names with the same prefix could
+/// silently overwrite one another in the session catalog.
 pub fn llm_tool_name(qualified: &str) -> String {
     let mut out: String = qualified
         .chars()
@@ -107,8 +110,16 @@ pub fn llm_tool_name(qualified: &str) -> String {
         })
         .collect();
     if out.len() > 64 {
-        let idx = out.floor_char_boundary(64);
+        let digest = Sha256::digest(qualified.as_bytes());
+        let suffix: String = digest[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let prefix_len = 64 - 1 - suffix.len();
+        let idx = out.floor_char_boundary(prefix_len);
         out.truncate(idx);
+        out.push('_');
+        out.push_str(&suffix);
     }
     out
 }
@@ -1102,6 +1113,18 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn llm_tool_name_preserves_short_names_and_hashes_truncated_names() {
+        assert_eq!(llm_tool_name("mcp::calendar::list"), "mcp__calendar__list");
+
+        let first = llm_tool_name(&format!("mcp::{}::read", "a".repeat(100)));
+        let second = llm_tool_name(&format!("mcp::{}::read", "a".repeat(99) + "b"));
+        assert_eq!(first.len(), 64);
+        assert_eq!(second.len(), 64);
+        assert!(first.starts_with("mcp__"));
+        assert_ne!(first, second);
+    }
 
     #[tokio::test]
     async fn test_tools_manager_new() {

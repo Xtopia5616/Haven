@@ -15,7 +15,7 @@ use crate::{
 use async_trait::async_trait;
 use haven_common::config::{ConfigPatch, ConfigService, LogLevel};
 use haven_common::types::RiskLevel;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -159,72 +159,196 @@ impl AdminCapability {
     }
 
     fn schema(self) -> Value {
-        let mut properties = serde_json::Map::new();
-        properties.insert(
-            "operation".into(),
-            serde_json::json!({
-                "type": "string",
-                "enum": self.operation_names(),
-                "description": "The allowlisted administration operation"
-            }),
-        );
-
-        match self {
-            Self::Diagnostics | Self::SessionDiagnostics => {
-                properties.insert(
-                    "limit".into(),
+        let branches = match self {
+            Self::Diagnostics => vec![
+                admin_branch("status", serde_json::json!({}), &["operation"]),
+                admin_branch(
+                    "logs_tail",
                     serde_json::json!({
-                        "type": "integer",
-                        "description": "Bounded row/line limit"
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
                     }),
-                );
-            }
-            Self::Config => {
-                properties.insert(
-                    "path".into(),
+                    &["operation"],
+                ),
+            ],
+            Self::Config => vec![
+                admin_branch(
+                    "config_get",
                     serde_json::json!({
-                        "type": "string",
-                        "description": "Optional read-only config path; values are masked"
+                        "path": { "type": "string", "description": "Optional masked config path" }
                     }),
-                );
-                properties.insert(
-                    "level".into(),
+                    &["operation"],
+                ),
+                admin_branch(
+                    "logs_level",
                     serde_json::json!({
-                        "type": "string",
-                        "enum": ["trace", "debug", "info", "warn", "error"],
-                        "description": "Log level for logs_level"
+                        "level": { "type": "string", "enum": ["trace", "debug", "info", "warn", "error"] }
                     }),
-                );
-            }
+                    &["operation", "level"],
+                ),
+            ],
             Self::Skills => {
-                add_skill_properties(&mut properties);
+                let mut create = Map::new();
+                add_skill_properties(&mut create);
+                vec![
+                    admin_branch("skills_list", serde_json::json!({}), &["operation"]),
+                    admin_branch(
+                        "skill_enable",
+                        serde_json::json!({
+                            "name": { "type": "string", "minLength": 1 }
+                        }),
+                        &["operation", "name"],
+                    ),
+                    admin_branch(
+                        "skill_disable",
+                        serde_json::json!({
+                            "name": { "type": "string", "minLength": 1 }
+                        }),
+                        &["operation", "name"],
+                    ),
+                    admin_branch(
+                        "skill_create",
+                        Value::Object(create),
+                        &["operation", "name", "description", "instructions"],
+                    ),
+                ]
             }
-            Self::Tools => {
-                properties.insert(
-                    "name".into(),
+            Self::Tools => vec![
+                admin_branch(
+                    "tool_enable",
                     serde_json::json!({
-                        "type": "string",
-                        "enum": MODEL_TOGGLEABLE_TOOL_NAMES,
-                        "description": "Builtin tool name"
+                        "name": {
+                            "type": "string",
+                            "enum": MODEL_TOGGLEABLE_TOOL_NAMES,
+                            "description": "Builtin tool name"
+                        }
                     }),
-                );
-            }
-            Self::Mcp => {
-                add_mcp_properties(&mut properties);
-            }
-        }
-
+                    &["operation", "name"],
+                ),
+                admin_branch(
+                    "tool_disable",
+                    serde_json::json!({
+                        "name": {
+                            "type": "string",
+                            "enum": MODEL_TOGGLEABLE_TOOL_NAMES,
+                            "description": "Builtin tool name"
+                        }
+                    }),
+                    &["operation", "name"],
+                ),
+            ],
+            Self::Mcp => vec![
+                admin_branch("mcp_list", serde_json::json!({}), &["operation"]),
+                admin_branch(
+                    "mcp_connect",
+                    serde_json::json!({ "name": { "type": "string", "minLength": 1 } }),
+                    &["operation", "name"],
+                ),
+                admin_branch(
+                    "mcp_disconnect",
+                    serde_json::json!({ "name": { "type": "string", "minLength": 1 } }),
+                    &["operation", "name"],
+                ),
+                admin_branch(
+                    "mcp_add",
+                    serde_json::json!({
+                        "name": { "type": "string", "minLength": 1 },
+                        "transport": { "const": "stdio" },
+                        "command": { "type": "string", "minLength": 1 },
+                        "args": { "type": "array", "items": { "type": "string" } },
+                        "env": { "type": "array", "items": { "type": "string" } },
+                        "cwd": { "type": "string" },
+                        "enabled": { "type": "boolean" },
+                        "auto_connect": { "type": "boolean" }
+                    }),
+                    &["operation", "name", "command"],
+                ),
+                admin_branch(
+                    "mcp_add",
+                    serde_json::json!({
+                        "name": { "type": "string", "minLength": 1 },
+                        "transport": { "const": "http" },
+                        "url": { "type": "string", "minLength": 1 },
+                        "enabled": { "type": "boolean" },
+                        "auto_connect": { "type": "boolean" }
+                    }),
+                    &["operation", "name", "transport", "url"],
+                ),
+                admin_branch(
+                    "mcp_update",
+                    serde_json::json!({
+                        "name": { "type": "string", "minLength": 1 },
+                        "command": { "type": "string", "minLength": 1 },
+                        "transport": { "type": "string", "enum": ["stdio", "http"] },
+                        "url": { "type": "string" },
+                        "args": { "type": "array", "items": { "type": "string" } },
+                        "env": { "type": "array", "items": { "type": "string" } },
+                        "cwd": { "type": "string" },
+                        "enabled": { "type": "boolean" }
+                    }),
+                    &["operation", "name"],
+                ),
+                admin_branch(
+                    "mcp_toggle",
+                    serde_json::json!({
+                        "name": { "type": "string", "minLength": 1 },
+                        "enabled": { "type": "boolean" }
+                    }),
+                    &["operation", "name", "enabled"],
+                ),
+                admin_branch(
+                    "mcp_remove",
+                    serde_json::json!({ "name": { "type": "string", "minLength": 1 } }),
+                    &["operation", "name"],
+                ),
+                admin_branch("mcp_reload", serde_json::json!({}), &["operation"]),
+            ],
+            Self::SessionDiagnostics => vec![
+                admin_branch(
+                    "sessions",
+                    serde_json::json!({
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    }),
+                    &["operation"],
+                ),
+                admin_branch(
+                    "errors",
+                    serde_json::json!({
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    }),
+                    &["operation"],
+                ),
+            ],
+        };
         serde_json::json!({
             "type": "object",
-            "additionalProperties": false,
-            "properties": properties,
-            "required": if matches!(self, Self::Tools) {
-                serde_json::json!(["operation", "name"])
-            } else {
-                serde_json::json!(["operation"])
-            }
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": self.operation_names(),
+                    "description": "The allowlisted administration operation"
+                }
+            },
+            "required": ["operation"],
+            "oneOf": branches
         })
     }
+}
+
+fn admin_branch(operation: &str, properties: Value, required: &[&str]) -> Value {
+    let mut branch_properties = Map::new();
+    branch_properties.insert(
+        "operation".into(),
+        serde_json::json!({ "const": operation }),
+    );
+    if let Value::Object(properties) = properties {
+        branch_properties.extend(properties);
+    }
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": branch_properties,
+        "required": required
+    })
 }
 
 /// Stable policy metadata for one admin operation. The current `Tool` trait
@@ -531,46 +655,6 @@ fn add_skill_properties(properties: &mut serde_json::Map<String, Value>) {
     );
 }
 
-fn add_mcp_properties(properties: &mut serde_json::Map<String, Value>) {
-    properties.insert(
-        "name".into(),
-        serde_json::json!({ "type": "string", "description": "MCP server name" }),
-    );
-    properties.insert(
-        "command".into(),
-        serde_json::json!({ "type": "string", "description": "stdio server command" }),
-    );
-    properties.insert(
-        "transport".into(),
-        serde_json::json!({ "type": "string", "enum": ["stdio", "http"] }),
-    );
-    properties.insert(
-        "url".into(),
-        serde_json::json!({ "type": "string", "description": "HTTP server endpoint" }),
-    );
-    properties.insert(
-        "args".into(),
-        serde_json::json!({ "type": "array", "items": { "type": "string" } }),
-    );
-    properties.insert(
-        "env".into(),
-        serde_json::json!({
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "KEY=VALUE entries; values are never returned"
-        }),
-    );
-    properties.insert(
-        "cwd".into(),
-        serde_json::json!({ "type": "string", "description": "stdio working directory" }),
-    );
-    properties.insert("enabled".into(), serde_json::json!({ "type": "boolean" }));
-    properties.insert(
-        "auto_connect".into(),
-        serde_json::json!({ "type": "boolean", "description": "Connect after mcp_add" }),
-    );
-}
-
 /// A model-facing adapter for one admin capability.
 pub struct AdminCapabilityTool {
     surface: Arc<SelfTool>,
@@ -614,7 +698,34 @@ impl Tool for AdminCapabilityTool {
     }
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
-        self.surface.concurrency(input)
+        let Some(operation) = self.operation(input) else {
+            return ToolConcurrency::Exclusive;
+        };
+        if !self.capability.accepts(operation) {
+            return ToolConcurrency::Exclusive;
+        }
+        match self.capability {
+            AdminCapability::Diagnostics => {
+                ToolConcurrency::SharedResource("haven:diagnostics".into())
+            }
+            AdminCapability::Config => match operation {
+                SelfOperation::ConfigGet => ToolConcurrency::SharedResource("config".into()),
+                SelfOperation::LogsLevel => ToolConcurrency::Resource("config".into()),
+                _ => ToolConcurrency::Exclusive,
+            },
+            AdminCapability::Skills => match operation {
+                SelfOperation::SkillsList => ToolConcurrency::SharedResource("skills".into()),
+                _ => ToolConcurrency::Resource("skills".into()),
+            },
+            AdminCapability::Tools => ToolConcurrency::Resource("tool_settings".into()),
+            AdminCapability::Mcp => match operation {
+                SelfOperation::McpList => ToolConcurrency::SharedResource("mcp".into()),
+                _ => ToolConcurrency::Resource("mcp".into()),
+            },
+            AdminCapability::SessionDiagnostics => {
+                ToolConcurrency::SharedResource("haven:sessions".into())
+            }
+        }
     }
 
     fn input_schema(&self) -> Value {
@@ -719,7 +830,7 @@ mod tests {
                 .as_array()
                 .expect("operation enum");
             assert!(!operations.is_empty());
-            assert!(schema["additionalProperties"] == false);
+            assert!(schema["oneOf"].as_array().unwrap().len() >= operations.len());
         }
 
         assert!(!AdminCapability::Config.accepts(SelfOperation::McpRemove));
@@ -739,12 +850,79 @@ mod tests {
         );
 
         let tool_schema = AdminCapability::Tools.schema();
-        let tool_names = tool_schema["properties"]["name"]["enum"]
-            .as_array()
-            .expect("tool toggle allowlist");
+        let tool_names =
+            tool_schema["oneOf"].as_array().unwrap().first().unwrap()["properties"]["name"]["enum"]
+                .as_array()
+                .expect("tool toggle allowlist");
         assert!(tool_names.iter().any(|name| name == "files"));
         assert!(!tool_names.iter().any(|name| name == "haven_tools"));
         assert!(!tool_names.iter().any(|name| name == "load_mcp"));
+    }
+
+    #[tokio::test]
+    async fn capability_schemas_are_operation_strict() {
+        let (surface, _dir) = test_surface();
+        let diagnostics = AdminCapabilityTool::new(surface.clone(), AdminCapability::Diagnostics);
+        assert!(
+            diagnostics
+                .validate_input(&serde_json::json!({ "operation": "status" }))
+                .is_ok()
+        );
+        assert!(
+            diagnostics
+                .validate_input(&serde_json::json!({ "operation": "status", "limit": 2 }))
+                .is_err()
+        );
+        assert!(
+            diagnostics
+                .validate_input(&serde_json::json!({ "operation": "logs_tail", "limit": 2 }))
+                .is_ok()
+        );
+
+        let skills = AdminCapabilityTool::new(surface.clone(), AdminCapability::Skills);
+        assert!(
+            skills
+                .validate_input(&serde_json::json!({ "operation": "skill_enable", "name": "demo" }))
+                .is_ok()
+        );
+        assert!(
+            skills
+                .validate_input(
+                    &serde_json::json!({ "operation": "skill_enable", "instructions": "x" })
+                )
+                .is_err()
+        );
+
+        let config = AdminCapabilityTool::new(surface.clone(), AdminCapability::Config);
+        assert_eq!(
+            config.concurrency(&serde_json::json!({ "operation": "logs_level" })),
+            ToolConcurrency::Resource("config".into())
+        );
+
+        let mcp = AdminCapabilityTool::new(surface, AdminCapability::Mcp);
+        assert!(
+            mcp.validate_input(&serde_json::json!({
+                "operation": "mcp_add",
+                "name": "demo",
+                "transport": "stdio",
+                "command": "demo-mcp"
+            }))
+            .is_ok()
+        );
+        assert!(
+            mcp.validate_input(&serde_json::json!({
+                "operation": "mcp_add",
+                "name": "demo",
+                "transport": "http",
+                "command": "demo-mcp"
+            }))
+            .is_err()
+        );
+
+        assert_eq!(
+            diagnostics.concurrency(&serde_json::json!({ "operation": "status" })),
+            ToolConcurrency::SharedResource("haven:diagnostics".into())
+        );
     }
 
     #[tokio::test]

@@ -1,5 +1,7 @@
 # ADR 0089：内置工具契约名称与进程启动边界
 
+> 配置迁移部分已由 [ADR 0100](0100-remove-tool-name-compatibility.md) 取代：旧工具名称不再迁移。
+
 ## 背景
 
 静态审查发现三类契约漂移：运行时定时任务工具名已经是 `schedule`，安全矩阵和权限路由仍使用
@@ -18,9 +20,9 @@
 4. `audio.play.file_path` 纳入统一 `allowed_paths` 收集器和负向回归测试。
 5. 删除 `process.launch`、相关 schema、风险矩阵和测试；进程启动统一使用 `shell` 的
    `background: true`，通过 `actions` 管理生命周期。
-6. 配置加载时一次性把 `[tool_settings.file]` 转为 `[tool_settings.files]`，把
-   `scheduled_action` 权限 key 前缀转为 `schedule`。如果新旧名称同时存在，新名称优先；运行时和
-   后续保存不再暴露旧名称。数据库中旧定时任务的 `tool_name` 不做隐式改写，避免改变已持久化调用语义。
+6. 旧工具名称的配置、权限和历史处理由 ADR 0100 单独定义：不再迁移或映射；检测到旧配置时
+   备份并按默认配置启动，旧历史名称不自动改写。数据库中旧定时任务的 `tool_name` 也不做隐式
+   改写，避免改变已持久化调用语义。
 
 ## 替代方案
 
@@ -32,12 +34,12 @@
 ## 影响与验证
 
 - 这是模型工具名、权限 key、UI renderer 和 `process` schema 的破坏性内部契约变更；旧模型调用应重新生成。
-- 旧配置别名无需手工迁移；加载时会被规范化，保存后只写正式名称。旧数据库定时任务引用删除工具名时需取消重建或重置数据。
+- 旧配置别名会触发备份和配置重置；旧数据库定时任务引用删除工具名时需取消重建或重置数据。
 - 必须通过：`cargo fmt --all -- --check`、`cargo test --locked -p haven-common`、
   `cargo test --locked -p haven-tools`、`cargo check --locked -p haven-agent -p haven-app-binary`、
   `cd ui; corepack pnpm run check; corepack pnpm run test:run`。
 
 ## 回滚
 
-回退本 ADR 对应提交即可恢复旧工具契约。配置迁移是单向的；回滚到旧版本前应使用升级前的完整配置备份，
-否则旧版本可能无法识别已经写出的 `files` 或 `schedule` 名称。
+回退本 ADR 对应提交即可恢复旧工具契约。回滚到旧版本前应使用升级前的完整配置备份，避免混用新旧
+工具名称和权限语义。

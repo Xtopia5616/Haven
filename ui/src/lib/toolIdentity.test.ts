@@ -9,11 +9,9 @@ import {
 describe('classifyToolSource', () => {
 	it('detects mcp and skill wire prefixes', () => {
 		expect(classifyToolSource('mcp__filesystem__read')).toBe('mcp');
-		expect(classifyToolSource('mcp_filesystem_read')).toBe('mcp');
-		expect(classifyToolSource('mcp::fs::read')).toBe('mcp');
 		expect(classifyToolSource('skill__weather')).toBe('skill');
-		expect(classifyToolSource('skill_weather')).toBe('skill');
-		expect(classifyToolSource('skill::weather')).toBe('skill');
+		expect(classifyToolSource('mcp_filesystem_read')).toBe('builtin');
+		expect(classifyToolSource('skill_weather')).toBe('builtin');
 	});
 
 	it('treats builtins and load_* meta-tools as builtin', () => {
@@ -33,12 +31,15 @@ describe('toolSourceLabel / toolDisplayName', () => {
 
 	it('uses Chinese labels for builtins and strips mcp/skill prefixes', () => {
 		expect(toolDisplayName('shell')).toBe('终端输出');
+		expect(toolDisplayName('haven_config')).toBe('Haven 配置');
+		expect(toolDisplayName('haven_session_diagnostics')).toBe('会话诊断');
+		expect(toolDisplayName('haven')).toBe('haven');
 		expect(toolDisplayName('load_mcp')).toBe('加载 MCP');
 		expect(toolDisplayName('mcp__test-server__greet')).toBe('test-server__greet');
 		expect(toolDisplayName('skill__echo')).toBe('echo');
-		expect(toolDisplayName('mcp_filesystem_read')).toBe('filesystem_read');
-		expect(toolDisplayName('skill_weather')).toBe('weather');
-		expect(toolDisplayName('mcp::fs::read')).toBe('fs::read');
+		expect(toolDisplayName('mcp_filesystem_read')).toBe('mcp_filesystem_read');
+		expect(toolDisplayName('skill_weather')).toBe('skill_weather');
+		expect(toolDisplayName('mcp::fs::read')).toBe('mcp::fs::read');
 	});
 });
 

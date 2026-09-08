@@ -4,7 +4,12 @@
 	let { data = {} } = $props();
 </script>
 
-{#if Array.isArray(data.scheduled_actions)}
+{#if data.operation === 'cancel'}
+	<div class="action-row">
+		<span class="scheduled-mode">已取消</span>
+		{#if data.cancelled}<span class="action-id">#{data.cancelled}</span>{/if}
+	</div>
+{:else if Array.isArray(data.scheduled_actions)}
 	<div class="tool-card-count">{data.scheduled_actions.length} 条定时任务</div>
 	{#if data.scheduled_actions.length > 0}
 		<div class="tool-card-list">
@@ -19,7 +24,7 @@
 	{:else}
 		<p class="tool-card-empty">没有待触发的定时任务</p>
 	{/if}
-{:else}
+{:else if data.operation === 'set' || (data.id && data.mode)}
 	<div class="action-row">
 		<span class="action-id">#{data.id}</span>
 		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>
@@ -27,6 +32,8 @@
 	{#if data.fires_at}
 		<div class="tool-card-meta">触发时间 {data.fires_at}</div>
 	{/if}
+{:else}
+	<div class="tool-card-meta">定时任务结果</div>
 {/if}
 
 <style>

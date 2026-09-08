@@ -1,5 +1,7 @@
 # ADR 0034：UI 文件工具结果 renderer 边界
 
+> 工具名称与旧 renderer 入口的后续决定见 [ADR 0100](0100-remove-tool-name-compatibility.md)。本文保留为历史拆分记录。
+
 ## 背景
 
 文件工具结果包含写入、编辑、复制、移动、删除、目录列表和文件读取等多种

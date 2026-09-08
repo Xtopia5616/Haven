@@ -383,12 +383,12 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-08-30 | §2.6 UI：将会话 token usage、LLM 调用明细、恢复/清理与用量格式化收口到 `ui/src/lib/sessionUsage.ts`（ADR 0031） |
 | 2026-08-30 | §2.6 UI：将流式 chunk 排队、按帧归并、sequence 去重、step block 关联与同步 flush 收口到 `ui/src/lib/streamAggregator.ts`（ADR 0032） |
 | 2026-08-30 | §2.6 UI：将 shell、notify、generic/raw 工具结果 body 按 kind 注册到独立 renderer 组件，`ToolResultCard` 保留公共卡片壳与复杂工具分支（ADR 0033） |
-| 2026-08-30 | §2.6 UI：将 `file` 工具的文件操作、目录和读取结果收口到 `ToolFileResult.svelte`，并由 renderer registry 按工具名选择（ADR 0034） |
+| 2026-08-30 | §2.6 UI：将 `files` 工具的文件操作、目录和读取结果收口到 `ToolFileResult.svelte`，并由 renderer registry 按工具名选择（ADR 0034） |
 | 2026-08-30 | §2.6 UI：将 `system` 工具的机器指标、显示器、环境变量筛选/复制与电源状态收口到 `ToolSystemResult.svelte`，并由 renderer registry 按工具名选择（ADR 0035） |
 | 2026-08-30 | §2.6 UI：将 `process` 工具的筛选、显示上限、CPU/内存指标和状态表格收口到 `ToolProcessResult.svelte`，并由 renderer registry 按工具名选择（ADR 0036） |
 | 2026-08-30 | §2.6 UI：将 `window`、`actions`、`schedule` 结果分别收口到对应 renderer 组件，并由 registry 按工具名选择（ADR 0037） |
 | 2026-08-30 | §2.6 UI：将 `http`、`clipboard`、`web_search` 结果分别收口到对应 renderer 组件，并由 registry 按工具名选择（ADR 0038） |
-| 2026-08-30 | §2.6 UI：将 `file_search` 与带结果数组的 `files` 结果收口到 `ToolFileSearchResult.svelte`，并由 registry 按工具名与结果 shape 选择（ADR 0039） |
+| 2026-08-30 | §2.6 UI：将 `files` 的搜索结果与普通文件结果分流到对应 renderer，并由 registry 按结果 shape 选择（ADR 0039） |
 | 2026-08-30 | §2.6 UI：将 `agent` 工具结果收口到 `ToolAgentResult.svelte`，并由 registry 按工具名选择（ADR 0040） |
 | 2026-08-30 | §2.6 UI：将工具结果解码与 custom shape 分类收口到 `ui/src/lib/toolResultParsing.ts`，`ToolResultCard` 保留兼容 re-export（ADR 0041） |
 | 2026-08-30 | §2.6 UI：将会话切换/token 概览与模型/联网搜索菜单收口到 `SessionToolbar.svelte`、`ModelToolbar.svelte`，路由页只编排状态与回调（ADR 0042） |

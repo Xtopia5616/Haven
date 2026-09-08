@@ -154,6 +154,7 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         }
     }
     const REMOVED_TOOL_SETTINGS: &[&str] = &[
+        "file",
         "facts",
         "network",
         "self",
@@ -169,95 +170,32 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         "agent_profile",
         "agent_spawn",
     ];
-    let settings = value.get("tool_settings")?.as_table()?;
-    REMOVED_TOOL_SETTINGS
-        .iter()
-        .find(|name| settings.contains_key(**name))
-        .map(|_| "removed [tool_settings] entry")
-}
-
-/// Normalize the small set of builtin tool names that changed before the
-/// current config contract was frozen. The migration happens on the parsed
-/// TOML value, so the old names never enter the runtime config or get written
-/// back by a later save. When both names exist, the current name wins.
-fn migrate_legacy_tool_names(value: &mut toml::Value) {
-    let Some(root) = value.as_table_mut() else {
-        return;
-    };
-
-    let legacy_tool_settings_name = "file";
-    if let Some(tool_settings) = root
-        .get_mut("tool_settings")
-        .and_then(toml::Value::as_table_mut)
-        && let Some(canonical_name) = crate::types::canonical_tool_name(legacy_tool_settings_name)
-        && let Some(legacy) = tool_settings.remove(legacy_tool_settings_name)
-    {
-        if tool_settings.contains_key(canonical_name) {
-            tracing::warn!(
-                "ignoring legacy [tool_settings.file] because [tool_settings.files] is present"
-            );
-        } else {
-            tool_settings.insert(canonical_name.into(), legacy);
-            tracing::info!(
-                legacy_name = legacy_tool_settings_name,
-                canonical_name,
-                "migrated legacy tool-settings name"
-            );
-        }
-    }
-
-    if let Some(permissions) = root
-        .get_mut("security")
-        .and_then(toml::Value::as_table_mut)
-        .and_then(|security| security.get_mut("permissions"))
-        .and_then(toml::Value::as_array_mut)
-    {
-        // Current keys win over a legacy spelling. Use a single pass over the
-        // array so `file`, `file:<operation>`, and `scheduled_action:*` all
-        // follow the same collision and duplicate rules.
-        let current_keys: std::collections::HashSet<String> = permissions
+    if let Some(settings) = value.get("tool_settings").and_then(toml::Value::as_table)
+        && let Some(name) = REMOVED_TOOL_SETTINGS
             .iter()
-            .filter_map(|permission| {
-                permission
-                    .get("key")
-                    .and_then(toml::Value::as_str)
-                    .filter(|key| crate::types::canonical_legacy_permission_key(key).is_none())
-                    .map(str::to_owned)
-            })
-            .collect();
-        let mut seen_keys = current_keys.clone();
-        let mut retained = Vec::with_capacity(permissions.len());
-        for mut permission in std::mem::take(permissions) {
-            let Some(old_key) = permission
-                .get("key")
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned)
-            else {
-                retained.push(permission);
-                continue;
-            };
-            let Some(new_key) = crate::types::canonical_legacy_permission_key(&old_key) else {
-                retained.push(permission);
-                continue;
-            };
-            if !seen_keys.insert(new_key.clone()) {
-                tracing::warn!(
-                    old_key,
-                    new_key,
-                    "discarding legacy permission because current key already exists"
-                );
-                continue;
-            }
-            let Some(permission_table) = permission.as_table_mut() else {
-                retained.push(permission);
-                continue;
-            };
-            permission_table.insert("key".into(), toml::Value::String(new_key.clone()));
-            tracing::info!(old_key, new_key, "migrated legacy permission key");
-            retained.push(permission);
-        }
-        *permissions = retained;
+            .find(|name| settings.contains_key(**name))
+            .copied()
+    {
+        return Some(if name == "file" {
+            "removed legacy [tool_settings] entry"
+        } else {
+            "removed [tool_settings] entry"
+        });
     }
+
+    let permissions = value
+        .get("security")
+        .and_then(toml::Value::as_table)
+        .and_then(|security| security.get("permissions"))
+        .and_then(toml::Value::as_array)?;
+    let legacy_roots = ["file", "file_search", "scheduled_action"];
+    permissions.iter().find_map(|permission| {
+        let key = permission.get("key").and_then(toml::Value::as_str)?;
+        let root = key.split_once(':').map_or(key, |(root, _)| root);
+        legacy_roots
+            .contains(&root)
+            .then_some("removed legacy tool permission key")
+    })
 }
 
 impl ConfigLoader {
@@ -310,8 +248,6 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path)?;
         let config: AppConfig = match toml::from_str::<toml::Value>(&content) {
             Ok(value) => {
-                let mut value = value;
-                migrate_legacy_tool_names(&mut value);
                 if let Some(entry) = removed_config_entry(&value) {
                     backup_unparsable_config(path, &format!("removed configuration: {entry}"));
                     AppConfig::default()
@@ -946,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn load_migrates_legacy_tool_and_permission_names() {
+    fn load_backs_up_removed_tool_names_without_migrating_them() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -959,87 +895,52 @@ timeout_secs = 60
 [[security.permissions]]
 key = "scheduled_action:set"
 effect = "allow"
-
-[[security.permissions]]
-key = "file:write"
-effect = "allow"
-
-[[security.permissions]]
-key = "file"
-effect = "allow"
 "#,
         )
         .unwrap();
 
         let loader = ConfigLoader::load_from(&path).unwrap();
-        assert!(loader.config().tool_settings.get("file").is_none());
-        assert_eq!(
-            loader
-                .config()
-                .tool_settings
-                .get("files")
-                .and_then(|config| config.timeout_secs),
-            Some(60)
-        );
-        assert_eq!(loader.config().security.permissions[0].key, "schedule:set");
-        assert_eq!(loader.config().security.permissions[1].key, "files:write");
-        assert_eq!(loader.config().security.permissions[2].key, "files");
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1, "removed tool names must require reset");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn load_prefers_current_tool_and_permission_names() {
+    fn load_backs_up_removed_legacy_permission_names() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(
             &path,
             r#"
-[tool_settings.file]
-timeout_secs = 60
-
-[tool_settings.files]
-timeout_secs = 120
-
 [[security.permissions]]
-key = "scheduled_action:set"
+key = "file_search:content"
 effect = "allow"
-
-[[security.permissions]]
-key = "schedule:set"
-effect = "deny"
-
-[[security.permissions]]
-key = "file:write"
-effect = "allow"
-
-[[security.permissions]]
-key = "files:write"
-effect = "deny"
 "#,
         )
         .unwrap();
 
         let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(
-            loader
-                .config()
-                .tool_settings
-                .get("files")
-                .and_then(|config| config.timeout_secs),
-            Some(120)
-        );
-        assert_eq!(loader.config().security.permissions.len(), 2);
-        assert_eq!(loader.config().security.permissions[0].key, "schedule:set");
-        assert_eq!(
-            loader.config().security.permissions[0].effect,
-            crate::types::PermissionEffect::Deny
-        );
-        assert_eq!(loader.config().security.permissions[1].key, "files:write");
-        assert_eq!(
-            loader.config().security.permissions[1].effect,
-            crate::types::PermissionEffect::Deny
-        );
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1, "removed permission names must require reset");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

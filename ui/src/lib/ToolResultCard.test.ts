@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
-import ToolResultCard, { canRenderToolResult, parseToolResult } from './ToolResultCard.svelte';
+import ToolResultCard from './ToolResultCard.svelte';
+import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -9,7 +10,7 @@ describe('canRenderToolResult', () => {
 	it('accepts search with a results array', () => {
 		expect(canRenderToolResult('files', searchJson([{ path: 'a.rs' }]))).toBe(true);
 	});
-	it('accepts system, process, window, actions, schedule, files, http, clipboard', () => {
+	it('accepts system, process, window, actions, schedule, memory, admin, files, http, clipboard', () => {
 		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
 			true,
 		);
@@ -24,6 +25,9 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('schedule', JSON.stringify({ id: 'r1', mode: 'notify' }))).toBe(
 			true,
 		);
+		expect(canRenderToolResult('schedule', JSON.stringify({ operation: 'cancel', cancelled: 'act-1' }))).toBe(true);
+		expect(canRenderToolResult('memory', JSON.stringify({ operation: 'search', facts: [] }))).toBe(true);
+		expect(canRenderToolResult('haven_tools', JSON.stringify({ name: 'files', enabled: true }))).toBe(true);
 		expect(canRenderToolResult('system', JSON.stringify({ variables: [] }))).toBe(true);
 		expect(canRenderToolResult('files', JSON.stringify({ written: true, path: 'x' }))).toBe(
 			true,
@@ -43,6 +47,8 @@ describe('canRenderToolResult', () => {
 			),
 		).toBe(true);
 		expect(canRenderToolResult('audio', JSON.stringify({ played: true }))).toBe(true);
+		expect(canRenderToolResult('audio', JSON.stringify({ operation: 'volume_get', volume: 0.5 }))).toBe(true);
+		expect(canRenderToolResult('input', JSON.stringify({ operation: 'click', clicked: [10, 20] }))).toBe(true);
 		expect(canRenderToolResult('files', JSON.stringify({ nope: 1 }))).toBe(true);
 	});
 	it('accepts any non-empty text as a raw card', () => {
@@ -65,6 +71,15 @@ describe('canRenderToolResult', () => {
 		).toMatchObject({ kind: 'custom' });
 		expect(
 			parseToolResult('actions', JSON.stringify({ operation: 'cancel', action_id: 'act-1' })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('window', JSON.stringify({ available: false, note: 'Windows only' })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('memory', JSON.stringify({ operation: 'search', facts: [] })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('haven_tools', JSON.stringify({ name: 'files', enabled: true })),
 		).toMatchObject({ kind: 'custom' });
 	});
 	it('rejects empty content', () => {
@@ -515,13 +530,10 @@ describe('ToolResultCard files', () => {
 		expect(screen.getByText('D:\\tmp\\reports')).toBeTruthy();
 	});
 
-	it('normalizes the historical file_search alias before selecting the renderer', () => {
-		render(ToolResultCard, {
-			toolName: 'file_search',
-			content: searchJson([{ path: 'D:\\tmp\\match.rs' }]),
+	it('does not route a removed file_search alias to the files renderer', () => {
+		expect(parseToolResult('file_search', searchJson([{ path: 'D:\\tmp\\match.rs' }]))).toMatchObject({
+			kind: 'generic',
 		});
-		expect(screen.getByText('文件与搜索')).toBeTruthy();
-		expect(screen.getByText('D:\\tmp\\match.rs')).toBeTruthy();
 	});
 
 	it('renders a filename-mode search card with paths and count', () => {
@@ -786,6 +798,71 @@ describe('ToolResultCard http', () => {
 		expect(screen.getByText('#r42')).toBeTruthy();
 		expect(screen.getByText('调用工具')).toBeTruthy();
 		expect(screen.getByText('触发时间 2026-08-05T09:00:00+08:00')).toBeTruthy();
+	});
+
+	it('renders a schedule cancellation as a dedicated result', () => {
+		render(ToolResultCard, {
+			toolName: 'schedule',
+			content: JSON.stringify({ operation: 'cancel', cancelled: 'act-42' }),
+		});
+		expect(screen.getByText('已取消')).toBeTruthy();
+		expect(screen.getByText('#act-42')).toBeTruthy();
+	});
+});
+
+describe('ToolResultCard memory', () => {
+	it('renders fact search results as readable triples', () => {
+		render(ToolResultCard, {
+			toolName: 'memory',
+			content: JSON.stringify({
+				operation: 'search',
+				facts: [{ subject: 'user', predicate: '喜欢', object: 'Rust', confidence: 0.92 }],
+			}),
+		});
+		expect(screen.getByText('1 条记忆事实')).toBeTruthy();
+		expect(screen.getByText('喜欢')).toBeTruthy();
+		expect(screen.getByText('Rust')).toBeTruthy();
+		expect(screen.getByText('置信度 0.92')).toBeTruthy();
+	});
+
+	it('renders recall hits and empty states', () => {
+		render(ToolResultCard, {
+			toolName: 'memory',
+			content: JSON.stringify({ operation: 'recall', hits: [], mode: 'keyword' }),
+		});
+		expect(screen.getByText('0 条召回结果 · keyword')).toBeTruthy();
+		expect(screen.getByText('没有找到相关记忆')).toBeTruthy();
+	});
+});
+
+describe('ToolResultCard admin capabilities', () => {
+	it('renders tool toggles as a compact status result', () => {
+		render(ToolResultCard, {
+			toolName: 'haven_tools',
+			content: JSON.stringify({ name: 'files', enabled: false, saved: true }),
+		});
+		expect(screen.getByText('已停用')).toBeTruthy();
+		expect(screen.getByText('files')).toBeTruthy();
+	});
+});
+
+describe('ToolResultCard audio and input', () => {
+	it('renders volume results with a human-readable percentage', () => {
+		render(ToolResultCard, {
+			toolName: 'audio',
+			content: JSON.stringify({ operation: 'volume_get', volume: 0.5 }),
+		});
+		expect(screen.getByText('当前音量')).toBeTruthy();
+		expect(screen.getByText('50%')).toBeTruthy();
+	});
+
+	it('renders input results with the action and coordinates', () => {
+		render(ToolResultCard, {
+			toolName: 'input',
+			content: JSON.stringify({ operation: 'click', clicked: [10, 20], button: 'left' }),
+		});
+		expect(screen.getByText('已点击')).toBeTruthy();
+		expect(screen.getByText('10, 20')).toBeTruthy();
 	});
 });
 

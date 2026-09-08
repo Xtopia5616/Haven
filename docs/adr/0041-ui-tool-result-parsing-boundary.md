@@ -1,5 +1,7 @@
 # ADR 0041：UI 工具结果解析边界
 
+> 本文记录 2026-08-30 的拆分决定；named export 的后续清理见 [ADR 0101](0101-tool-contract-and-result-renderer-audit.md)。
+
 ## 背景
 
 工具结果 renderer 已按 kind 和 tool name 注册，但 JSON 解析、空内容处理和
@@ -10,8 +12,8 @@ custom shape 分类仍位于 `ToolResultCard.svelte` 的 module script 中，使
 
 - 新增 `ui/src/lib/toolResultParsing.ts`，集中处理工具结果 JSON 解码、shell/
   notify/raw/generic/custom 分类和 custom shape 判断。
-- `ToolResultCard.svelte` 继续从原路径 re-export `canRenderToolResult` 与
-  `parseToolResult`，保持既有测试及调用方兼容；组件实例代码直接依赖解析模块。
+- `ToolResultCard.svelte` 的组件实例直接依赖解析模块；当时保留的原路径
+  re-export 作为拆分过渡，后续不再作为 UI 内部 API。
 - `toolResultRenderers.ts` 继续负责从已分类结果选择 renderer；不把 tool-specific
   展示逻辑重新放回解析模块。
 - 保持空 shell、通知前缀、无效 JSON、JSON primitive/array 和所有已登记 custom

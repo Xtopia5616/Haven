@@ -1,7 +1,3 @@
-<script module>
-	export { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
-</script>
-
 <script>
 	import { untrack } from 'svelte';
 	import JsonView from '$lib/JsonView.svelte';
@@ -19,7 +15,6 @@
 		toolDisplayName,
 		toolSourceLabel,
 	} from '$lib/toolIdentity.ts';
-	import { canonicalToolName } from '$lib/toolNames.ts';
 	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
 
 	let {
@@ -41,13 +36,9 @@
 		showFallbackIntent = false,
 	} = $props();
 
-	// History normally canonicalizes aliases before building messages, but the
-	// live path and older callers can still provide one. Resolve it once at the
-	// card boundary so label, parser and renderer registry cannot disagree.
-	let renderToolName = $derived(canonicalToolName(toolName));
-	let toolSource = $derived(classifyToolSource(renderToolName));
+	let toolSource = $derived(classifyToolSource(toolName));
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
-	let displayName = $derived(toolDisplayName(renderToolName));
+	let displayName = $derived(toolDisplayName(toolName));
 	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
 	const outcomeLabels = /** @type {Record<string, string>} */ ({
 		failed: '执行失败',
@@ -142,11 +133,11 @@
 		return content;
 	});
 	let toolDataUsage = $derived(
-		type === 'tool' ? estimateToolDataTokens(renderToolName, toolArgs, displayContent) : null,
+		type === 'tool' ? estimateToolDataTokens(toolName, toolArgs, displayContent) : null,
 	);
 
 	let parsed = $derived(
-		type === 'tool' ? parseToolResult(renderToolName, displayContent) : null,
+		type === 'tool' ? parseToolResult(toolName, displayContent) : null,
 	);
 
 	// Tool details are useful after completion as well as during execution, so
@@ -161,7 +152,7 @@
 	});
 	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
-	let BodyRenderer = $derived(getToolResultRenderer(kind, renderToolName, data));
+	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));
 	const toolStateLabels = /** @type {Record<string, string>} */ ({
 		running: '执行中',
 		completed: '完成',
@@ -414,7 +405,7 @@
 							stroke-linecap="round"
 							stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
 						>
-					{:else if renderToolName === 'files'}
+					{:else if toolName === 'files' && Array.isArray(data.results)}
 						<svg
 							width="12"
 							height="12"
@@ -430,7 +421,7 @@
 								y2="16.65"
 							/></svg
 						>
-					{:else if renderToolName === 'system'}
+					{:else if toolName === 'system'}
 						<svg
 							width="12"
 							height="12"
@@ -449,7 +440,7 @@
 								d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"
 							/></svg
 						>
-					{:else if renderToolName === 'process'}
+					{:else if toolName === 'process'}
 						<svg
 							width="12"
 							height="12"
@@ -461,7 +452,7 @@
 							stroke-linejoin="round"
 							><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg
 						>
-					{:else if renderToolName === 'window'}
+					{:else if toolName === 'window'}
 						<svg
 							width="12"
 							height="12"
@@ -475,7 +466,7 @@
 								d="M8 21h8M12 17v4"
 							/></svg
 						>
-					{:else if renderToolName === 'actions'}
+					{:else if toolName === 'actions'}
 						<svg
 							width="12"
 							height="12"
@@ -489,7 +480,7 @@
 								points="12 7 12 12 15.5 13.5"
 							/></svg
 						>
-					{:else if renderToolName === 'schedule'}
+					{:else if toolName === 'schedule'}
 						<svg
 							width="12"
 							height="12"
@@ -503,7 +494,7 @@
 								d="M13.73 21a2 2 0 0 1-3.46 0"
 							/></svg
 						>
-					{:else if renderToolName === 'files' && !Array.isArray(data.results)}
+					{:else if toolName === 'files' && !Array.isArray(data.results)}
 						<svg
 							width="12"
 							height="12"
@@ -517,7 +508,7 @@
 								d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
 							/><polyline points="14 2 14 8 20 8" /></svg
 						>
-					{:else if renderToolName === 'http'}
+					{:else if toolName === 'http'}
 						<svg
 							width="12"
 							height="12"
@@ -531,7 +522,7 @@
 								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
 							/></svg
 						>
-					{:else if renderToolName === 'clipboard'}
+					{:else if toolName === 'clipboard'}
 						<svg
 							width="12"
 							height="12"
@@ -545,7 +536,7 @@
 								d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
 							/><rect x="8" y="2" width="8" height="4" rx="1" /></svg
 						>
-					{:else if renderToolName === 'web_search'}
+					{:else if toolName === 'web_search'}
 						<svg
 							width="12"
 							height="12"
@@ -559,7 +550,7 @@
 								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
 							/></svg
 						>
-					{:else if renderToolName === 'agent'}
+					{:else if toolName === 'agent'}
 						<svg
 							width="12"
 							height="12"
@@ -576,6 +567,17 @@
 							/><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path
 								d="M16 3.13a4 4 0 0 1 0 7.75"
 							/></svg
+						>
+					{:else if toolName === 'memory'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"><path d="M12 3c4.4 0 8 1.8 8 4s-3.6 4-8 4-8-1.8-8-4 3.6-4 8-4Z" /><path d="M4 7v5c0 2.2 3.6 4 8 4s8-1.8 8-4V7" /><path d="M4 12v5c0 2.2 3.6 4 8 4s8-1.8 8-4v-5" /></svg
 						>
 					{/if}
 				</span>

@@ -8,6 +8,10 @@ import ToolProcessResult from './ToolProcessResult.svelte';
 import ToolActionResult from './ToolActionResult.svelte';
 import ToolClipboardResult from './ToolClipboardResult.svelte';
 import ToolHttpResult from './ToolHttpResult.svelte';
+import ToolInputResult from './ToolInputResult.svelte';
+import ToolAdminResult from './ToolAdminResult.svelte';
+import ToolAudioResult from './ToolAudioResult.svelte';
+import ToolMemoryResult from './ToolMemoryResult.svelte';
 import ToolScheduleResult from './ToolScheduleResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolWebSearchResult from './ToolWebSearchResult.svelte';
@@ -57,5 +61,13 @@ export function getToolResultRenderer(
 	if (kind === 'custom' && toolName === 'http') return ToolHttpResult;
 	if (kind === 'custom' && toolName === 'clipboard') return ToolClipboardResult;
 	if (kind === 'custom' && toolName === 'web_search') return ToolWebSearchResult;
+	if (kind === 'custom' && toolName === 'memory') return ToolMemoryResult;
+	if (kind === 'custom' && toolName === 'input') return ToolInputResult;
+	if (kind === 'custom' && toolName === 'audio') return ToolAudioResult;
+	if (
+		kind === 'custom' &&
+		['haven_config', 'haven_diagnostics', 'haven_mcp', 'haven_session_diagnostics', 'haven_skills', 'haven_tools'].includes(toolName)
+	)
+		return ToolAdminResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;
 }

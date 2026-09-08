@@ -16,7 +16,12 @@ export const TOOL_LABELS: Record<string, string> = {
 	notify: '通知',
 	audio: '音频',
 	input: '输入操作',
-	haven: 'Haven 自身',
+	haven_config: 'Haven 配置',
+	haven_diagnostics: 'Haven 诊断',
+	haven_mcp: 'Haven MCP',
+	haven_session_diagnostics: '会话诊断',
+	haven_skills: 'Haven 技能',
+	haven_tools: 'Haven 工具',
 	memory: '记忆',
 	load_mcp: '加载 MCP',
 	load_skill: '加载技能',
@@ -24,29 +29,20 @@ export const TOOL_LABELS: Record<string, string> = {
 	agent: 'Agent 协作',
 };
 
-/**
- * Wire tool names from `llm_tool_name`: `mcp::server::tool` / `skill::name`
- * become `mcp__server__tool` / `skill__name`. Older UI fixtures may still use
- * a single underscore or the raw `::` form.
- */
-function stripToolPrefix(name: string, prefixes: string[]): string | null {
-	for (const prefix of prefixes) {
-		if (name.startsWith(prefix)) {
-			const rest = name.slice(prefix.length);
-			return rest || name;
-		}
-	}
-	return null;
+/** Strip the provider-safe namespace prefix from a dynamic tool name. */
+function stripToolPrefix(name: string, prefix: string): string | null {
+	if (!name.startsWith(prefix)) return null;
+	const rest = name.slice(prefix.length);
+	return rest || name;
 }
 
 /** Classify a wire tool name into builtin / skill / MCP. */
 export function classifyToolSource(toolName: string): ToolSource {
 	const name = String(toolName || '');
-	// Check double-underscore wire form first; `mcp__` also starts with `mcp_`.
-	if (name.startsWith('mcp__') || name.startsWith('mcp_') || name.startsWith('mcp::')) {
+	if (name.startsWith('mcp__')) {
 		return 'mcp';
 	}
-	if (name.startsWith('skill__') || name.startsWith('skill_') || name.startsWith('skill::')) {
+	if (name.startsWith('skill__')) {
 		return 'skill';
 	}
 	return 'builtin';
@@ -66,8 +62,7 @@ export function toolSourceLabel(source: ToolSource): string {
 
 /**
  * Human-readable tool title for the card header. Builtins use Chinese labels;
- * MCP/Skill strip their wire prefix (`mcp__` / `skill__`, plus legacy forms).
- * `__` must be checked before `_` because `mcp__` also starts with `mcp_`.
+ * MCP/Skill strip their provider-safe wire prefix (`mcp__` / `skill__`).
  */
 export function toolDisplayName(
 	toolName: string,
@@ -75,9 +70,7 @@ export function toolDisplayName(
 ): string {
 	const name = String(toolName || '');
 	if (labels[name]) return labels[name];
-	const stripped =
-		stripToolPrefix(name, ['mcp__', 'mcp::', 'mcp_']) ??
-		stripToolPrefix(name, ['skill__', 'skill::', 'skill_']);
+	const stripped = stripToolPrefix(name, 'mcp__') ?? stripToolPrefix(name, 'skill__');
 	return stripped ?? name;
 }
 
