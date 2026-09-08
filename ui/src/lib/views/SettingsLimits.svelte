@@ -1,6 +1,7 @@
 <script>
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.js';
 
@@ -457,7 +458,7 @@
 	</div>
 	<div class="limits-grid">
 		{#each limitViews as group}
-			<div class="format-card limit-card">
+			<MaterialCard variant="outlined" className="format-card limit-card">
 				<h3>{group.title}</h3>
 				<p class="model-hint">{group.hint}</p>
 				{#each group.normal as f}
@@ -514,27 +515,27 @@
 						</MaterialCollapsible>
 					</div>
 				{/if}
-			</div>
+			</MaterialCard>
 		{/each}
 	</div>
 </div>
 
 <style>
-	.format-card {
+	:global(.format-card) {
 		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		padding: var(--md-sys-space-md);
 		margin-bottom: var(--md-sys-space-md);
 	}
-	.format-card h3 {
+	:global(.format-card h3) {
 		font-size: var(--md-sys-typescale-body-large-size);
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-primary);
 		margin-bottom: var(--md-sys-space-sm);
 	}
-	.format-card .model-hint {
+	:global(.format-card .model-hint) {
 		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
 	}
@@ -543,7 +544,7 @@
 		grid-template-columns: 1fr 1fr;
 		gap: var(--md-sys-space-md);
 	}
-	.limit-card {
+	:global(.limit-card) {
 		min-width: 0;
 	}
 	.limits-toolbar {
@@ -678,7 +679,7 @@
 			width: min(100%, var(--md-comp-settings-number-width));
 			flex: 0 1 auto;
 		}
-		.format-card {
+		:global(.format-card) {
 			padding: var(--md-sys-space-sm);
 		}
 	}

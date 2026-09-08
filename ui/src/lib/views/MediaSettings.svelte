@@ -4,6 +4,8 @@
 	import { addNotification } from '$lib/stores.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
+	import MaterialCard from '$lib/MaterialCard.svelte';
+	import SettingsSection from '$lib/SettingsSection.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
@@ -180,15 +182,14 @@
 	onDestroy(() => clearTimeout(sttFetchTimer));
 </script>
 
-<div class="section media-section">
-	<h2>媒体</h2>
+<SettingsSection title="媒体" className="media-section">
 	<p class="model-hint">
 		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 Audio / Image Model；TTS /
 		文生图复用「模型」页已添加的 Provider（Base URL + API Key）。
 	</p>
 	<div class="card-list">
 		{#each inputFormats as format (format.id)}
-			<div class="settings-card">
+			<MaterialCard variant="outlined" className="settings-card">
 				<div class="card-head">
 					<span class="card-title">{format.label}</span>
 					<p class="card-hint">{format.hint}</p>
@@ -656,10 +657,10 @@
 						/>
 					</div>
 				{/if}
-			</div>
+			</MaterialCard>
 		{/each}
 	</div>
-</div>
+</SettingsSection>
 
 <ApiKeyDialog
 	open={keyDlg.open}
@@ -672,26 +673,10 @@
 />
 
 <style>
-	.section {
-		background: var(--md-sys-color-surface-container);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-lg);
-		margin-bottom: var(--md-sys-space-lg);
-	}
-	.section h2 {
-		font-size: var(--md-sys-typescale-body-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		text-transform: uppercase;
-		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		margin-bottom: var(--md-sys-space-lg);
-	}
-	.media-section {
+	:global(.media-section) {
 		max-width: 760px;
 	}
-	.media-section .form-row :global(.md-number-field) {
+	:global(.media-section) .form-row :global(.md-number-field) {
 		width: min(100%, var(--md-comp-settings-number-width));
 		flex: 0 1 var(--md-comp-settings-number-width);
 	}
@@ -700,7 +685,7 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-md);
 	}
-	.settings-card {
+	:global(.settings-card) {
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		background: var(--md-sys-color-surface-container-lowest);
@@ -865,7 +850,7 @@
 			align-items: stretch;
 			gap: var(--md-sys-space-xs);
 		}
-		.media-section .form-row :global(.md-number-field) {
+		:global(.media-section) .form-row :global(.md-number-field) {
 			width: min(100%, var(--md-comp-settings-number-width));
 			flex: 0 1 auto;
 		}

@@ -5,6 +5,8 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import SettingsField from '$lib/SettingsField.svelte';
+	import SettingsSection from '$lib/SettingsSection.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import {
 		inputElementValue,
@@ -80,18 +82,15 @@
 </script>
 
 <div class="settings-general">
-	<div class="section">
-		<h2>快捷键</h2>
-		<div class="form-row">
-			<label for="hotkey-binding">快捷键</label>
+	<SettingsSection title="快捷键">
+		<SettingsField label="快捷键" id="hotkey-binding">
 			<HotkeyInput
 				id="hotkey-binding"
 				value={hotkeyBinding}
 				onChange={withStringValue((v) => onHotkeyBindingChange(v))}
 			/>
-		</div>
-		<div class="form-row">
-			<label for="hotkey-mode">录音模式</label>
+		</SettingsField>
+		<SettingsField label="录音模式" id="hotkey-mode">
 			<MaterialSelect
 				id="hotkey-mode"
 				value={hotkeyMode}
@@ -101,17 +100,15 @@
 				]}
 				onChange={withStringValue((v) => onHotkeyModeChange(v))}
 			/>
-		</div>
-	</div>
+		</SettingsField>
+	</SettingsSection>
 
-	<div class="section">
-		<h2>会话与并发</h2>
+	<SettingsSection title="会话与并发">
 		<p class="model-hint">
 			Max Concurrent 控制同时运行的会话数；LLM Per-Endpoint Concurrency
 			限制每个模型端点（角色）同时在途的请求数。后者低于前者时，超出上限的模型请求会排队等待，避免多个会话同时请求同一服务商触发限流（429）。
 		</p>
-		<div class="form-row">
-			<label for="session-max-concurrent">最大并发会话</label>
+		<SettingsField label="最大并发会话" id="session-max-concurrent">
 			<MaterialNumberField
 				id="session-max-concurrent"
 				value={session.max_concurrent}
@@ -121,9 +118,8 @@
 					session.max_concurrent = v;
 				})}
 			/>
-		</div>
-		<div class="form-row">
-			<label for="llm-max-concurrent-requests">模型端点并发</label>
+		</SettingsField>
+		<SettingsField label="模型端点并发" id="llm-max-concurrent-requests">
 			<MaterialNumberField
 				id="llm-max-concurrent-requests"
 				value={llmConfig.max_concurrent_requests}
@@ -133,9 +129,8 @@
 					llmConfig.max_concurrent_requests = v;
 				})}
 			/>
-		</div>
-		<div class="form-row">
-			<label for="session-max-steps">最大步骤数</label>
+		</SettingsField>
+		<SettingsField label="最大步骤数" id="session-max-steps">
 			<MaterialNumberField
 				id="session-max-steps"
 				value={session.max_steps}
@@ -145,36 +140,32 @@
 					session.max_steps = v;
 				})}
 			/>
-		</div>
-	</div>
+		</SettingsField>
+	</SettingsSection>
 
-	<div class="section">
-		<h2>命令行工具</h2>
+	<SettingsSection title="命令行工具">
 		<p class="model-hint">
 			Agent 的 shell 工具默认使用的命令行解释器。模型仍可在调用时通过 shell 参数临时指定其他
 			shell（cmd / powershell / pwsh）。
 		</p>
-		<div class="form-row">
-			<label for="default-shell">默认 Shell</label>
+		<SettingsField label="默认 Shell" id="default-shell">
 			<MaterialSelect
 				id="default-shell"
 				value={defaultShell}
 				options={shellOptions()}
 				onChange={withStringValue((v) => onDefaultShellChange(v))}
 			/>
-		</div>
+		</SettingsField>
 		{#if defaultShell === 'pwsh' && shellAvailable.pwsh === false}
 			<div class="shell-warning">
 				<p>未检测到 PowerShell 7（pwsh），命令将无法执行。请先安装：</p>
 				<code>winget install Microsoft.PowerShell</code>
 			</div>
 		{/if}
-	</div>
+	</SettingsSection>
 
-	<div class="section">
-		<h2>记忆</h2>
-		<div class="form-row">
-			<label for="memory-window-size">窗口大小</label>
+	<SettingsSection title="记忆">
+		<SettingsField label="窗口大小" id="memory-window-size">
 			<MaterialNumberField
 				id="memory-window-size"
 				value={memory.session_window_size}
@@ -184,9 +175,8 @@
 					memory.session_window_size = v;
 				})}
 			/>
-		</div>
-		<div class="form-row">
-			<label for="memory-retention">保留天数</label>
+		</SettingsField>
+		<SettingsField label="保留天数" id="memory-retention">
 			<MaterialNumberField
 				id="memory-retention"
 				value={memory.history_retention_days}
@@ -196,7 +186,7 @@
 					memory.history_retention_days = v;
 				})}
 			/>
-		</div>
+		</SettingsField>
 		<h3 class="model-group-heading">维护</h3>
 		<p class="model-hint">维护会清理重复、敏感、过期的事实与残留向量。</p>
 		<div class="form-row">
@@ -210,61 +200,52 @@
 				<span class="recall-hint">上次清理 {memoryMaintenance.lastCount} 项</span>
 			{/if}
 		</div>
-	</div>
+	</SettingsSection>
 
-	<div class="section appearance-section">
-		<h2>外观</h2>
-		<div class="form-row">
-			<span class="form-label">主题</span>
+	<SettingsSection title="外观" className="appearance-section">
+		<SettingsField label="主题">
 			<div class="theme-toggle-row" role="radiogroup" aria-label="主题">
-				<button
-					class="md-btn"
-					class:md-btn--outlined={currentTheme === 'light'}
-					class:md-btn--filled={currentTheme !== 'light'}
+				<MaterialButton
+					variant={currentTheme === 'light' ? 'filled' : 'outlined'}
+					label="浅色"
 					role="radio"
-					aria-checked={currentTheme === 'light'}
-					onclick={() => themeStore.setTheme('light')}>浅色</button
-				>
-				<button
-					class="md-btn"
-					class:md-btn--outlined={currentTheme === 'dark'}
-					class:md-btn--filled={currentTheme !== 'dark'}
+					ariaChecked={currentTheme === 'light'}
+					onclick={() => themeStore.setTheme('light')}
+				/>
+				<MaterialButton
+					variant={currentTheme === 'dark' ? 'filled' : 'outlined'}
+					label="深色"
 					role="radio"
-					aria-checked={currentTheme === 'dark'}
-					onclick={() => themeStore.setTheme('dark')}>深色</button
-				>
+					ariaChecked={currentTheme === 'dark'}
+					onclick={() => themeStore.setTheme('dark')}
+				/>
 			</div>
-		</div>
-		<div class="form-row">
-			<span class="form-label">强调色</span>
-			<div class="accent-picker" role="radiogroup" aria-label="强调色">
+		</SettingsField>
+		<SettingsField label="强调色">
+			<div class="accent-picker" aria-label="强调色">
 				{#each Object.entries(themeStore.presets) as [key, preset]}
-					<button
-						class="md-btn"
-						class:accent-swatch-selected={accent === key}
-						style="background: {preset.hex}; color: {contrastText(
+					<MaterialButton
+						variant="filled"
+						label={preset.label}
+						className={`accent-swatch ${accent === key ? 'accent-swatch-selected' : ''}`}
+						style={`background: ${preset.hex}; color: ${contrastText(
 							preset.hex,
-						)}; --_btn-state: {contrastText(
+						)}; --_btn-state: ${contrastText(
 							preset.hex,
-						)}; border: 2px solid transparent; border-color: {accent === key
+						)}; border: 2px solid transparent; border-color: ${accent === key
 							? contrastText(preset.hex)
-							: 'transparent'}"
+							: 'transparent'}`}
 						role="radio"
-						aria-checked={accent === key}
-						aria-label="{preset.label} {preset.hex}"
+						ariaChecked={accent === key}
+						ariaLabel={`${preset.label} ${preset.hex}`}
 						onclick={() => {
 							accent = key;
 							themeStore.setAccent(key);
-						}}>{preset.label}</button
-					>
+						}}
+					/>
 				{/each}
-				<button
-					class="md-btn md-btn--filled"
-					class:md-btn--outlined={accent.startsWith('#') || accent.startsWith('custom:')}
-					role="radio"
-					aria-checked={accent.startsWith('#') || accent.startsWith('custom:')}
-					aria-label="Custom hex color"
-				>
+				<label class="accent-custom" for="custom-accent">
+					<span>Custom</span>
 					<input
 						id="custom-accent"
 						type="text"
@@ -282,15 +263,13 @@
 							}
 						}}
 					/>
-				</button>
+				</label>
 			</div>
-		</div>
-	</div>
+		</SettingsField>
+	</SettingsSection>
 
-	<div class="section">
-		<h2>安全</h2>
-		<div class="form-row">
-			<label for="security-mode">确认模式</label>
+	<SettingsSection title="安全">
+		<SettingsField label="确认模式" id="security-mode">
 			<MaterialSelect
 				id="security-mode"
 				value={security.confirmation_mode}
@@ -303,9 +282,8 @@
 					security.confirmation_mode = v;
 				})}
 			/>
-		</div>
-		<div class="form-row">
-			<label for="security-min-level">最低确认级别</label>
+		</SettingsField>
+		<SettingsField label="最低确认级别" id="security-min-level">
 			<MaterialSelect
 				id="security-min-level"
 				value={security.min_risk_level}
@@ -320,7 +298,7 @@
 					security.min_risk_level = v;
 				})}
 			/>
-		</div>
+		</SettingsField>
 		<p class="model-hint">
 			仅 Ask 模式使用风险阈值。永久允许/拒绝优先于阈值；禁用操作与路径沙箱始终拦截。Autopilot
 			仍会执行永久拒绝。
@@ -334,11 +312,12 @@
 						<span class="perm-effect" class:deny={perm.effect === 'deny'}
 							>{perm.effect === 'deny' ? '拒绝' : '允许'}</span
 						>
-						<button
-							type="button"
-							class="perm-revoke"
-							onclick={() => revokePermission(perm.key)}>撤销</button
-						>
+						<MaterialButton
+							variant="text"
+							className="perm-revoke"
+							label="撤销"
+							onclick={() => revokePermission(perm.key)}
+						/>
 					</div>
 				{/each}
 			</div>
@@ -347,10 +326,9 @@
 				暂无永久权限。确认弹窗中选「始终允许 / 始终拒绝」后会出现在这里。
 			</p>
 		{/if}
-	</div>
+	</SettingsSection>
 
-	<div class="section notification-section">
-		<h2>通知</h2>
+	<SettingsSection title="通知" className="notification-section">
 		<div class="notify-grid-header">
 			<span class="switch-label"></span><span class="switch-label">应用内提示</span><span
 				class="switch-label">Windows 通知</span
@@ -378,9 +356,9 @@
 		<p class="model-hint">
 			Agent 通过 notify 工具发出的通知始终开启（应用内 + Windows），不受上表开关控制。
 		</p>
-	</div>
+	</SettingsSection>
 
-	<div class="section log-section">
+	<SettingsSection className="log-section">
 		<div class="llm-head">
 			<h2>日志</h2>
 			<MaterialButton
@@ -419,36 +397,20 @@
 		<p class="model-hint">
 			日志级别与文件输出仅作用于后端（tracing）；前端开发日志仍按 DEV/PROD 门控。
 		</p>
-	</div>
+	</SettingsSection>
 
-	<div class="section autostart-section">
-		<h2>自动启动</h2>
-		<div class="form-row autostart-row">
-			<span class="autostart-label">开机时启动 Haven</span><MaterialSwitch
+	<SettingsSection title="自动启动" className="autostart-section">
+		<SettingsField label="开机时启动 Haven" className="autostart-row">
+			<MaterialSwitch
 				checked={autostartEnabled}
 				ariaLabel="切换开机启动 Haven"
 				onChange={withBooleanValue((v) => onAutostartChange(v))}
 			/>
-		</div>
-	</div>
+		</SettingsField>
+	</SettingsSection>
 </div>
 
 <style>
-	.section {
-		background: var(--md-sys-color-surface-container-low);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-xl);
-		margin-bottom: var(--md-sys-space-xl);
-	}
-	.section h2 {
-		font-size: var(--md-sys-typescale-title-medium-size);
-		font-weight: 700;
-		color: var(--md-sys-color-on-surface);
-		letter-spacing: 0;
-		line-height: var(--md-sys-typescale-title-medium-line-height);
-		margin-bottom: var(--md-sys-space-lg);
-	}
 	.model-hint {
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
@@ -472,8 +434,7 @@
 		margin-bottom: var(--md-sys-space-sm);
 		gap: var(--md-sys-space-md);
 	}
-	.form-row label,
-	.form-row .form-label {
+	.form-row label {
 		width: var(--md-comp-settings-label-width);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
@@ -487,15 +448,13 @@
 		flex: 0 1 var(--md-comp-settings-control-width);
 		min-width: 0;
 	}
-	.switch-row,
-	.autostart-section .autostart-row {
+	.switch-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--md-sys-space-md);
 	}
-	.switch-label,
-	.autostart-label {
+	.switch-label {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
@@ -560,7 +519,7 @@
 	.perm-effect.deny {
 		color: var(--md-sys-color-error);
 	}
-	.perm-revoke {
+	:global(.md-btn.perm-revoke) {
 		border: none;
 		background: transparent;
 		color: var(--md-sys-color-on-surface-variant);
@@ -570,7 +529,7 @@
 		cursor: pointer;
 		padding: 2px 6px;
 	}
-	.perm-revoke:hover {
+	:global(.md-btn.perm-revoke:hover) {
 		color: var(--md-sys-color-error);
 	}
 	.notify-grid-header,
@@ -616,9 +575,21 @@
 		flex: 1;
 		flex-wrap: wrap;
 	}
-	.accent-swatch-selected {
+	:global(.md-btn.accent-swatch-selected) {
 		outline: 2px solid var(--md-sys-color-on-surface);
 		outline-offset: -2px;
+	}
+	.accent-custom {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		min-height: var(--md-comp-button-height);
+		padding: 0 var(--md-sys-space-sm);
+		border: 1px solid var(--md-sys-color-outline);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-surface);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
 	}
 	.custom-hex-input {
 		width: 84px;
@@ -642,8 +613,7 @@
 			align-items: stretch;
 			gap: var(--md-sys-space-xs);
 		}
-		.form-row label,
-		.form-row .form-label {
+		.form-row label {
 			width: auto;
 			flex-shrink: 1;
 		}
@@ -653,14 +623,12 @@
 			width: min(100%, var(--md-comp-settings-control-width));
 			flex: 0 1 auto;
 		}
-		.switch-row,
-		.autostart-section .autostart-row {
+		.switch-row {
 			flex-direction: row;
 			align-items: center;
 			justify-content: space-between;
 		}
-		.switch-label,
-		.autostart-label {
+		.switch-label {
 			flex: 1;
 			min-width: 0;
 			padding-top: 0;

@@ -12,6 +12,7 @@
 	 * @prop {boolean | undefined} ariaChecked — optional checked state for radio-like controls
 	 * @prop {boolean | undefined} ariaPressed — optional pressed state for toggle controls
 	 * @prop {string | undefined} role — optional semantic role for specialized controls
+	 * @prop {string} style — optional inline style for semantic color variants
 	 * @prop {string} className — additional class names for layout/state styling
 	 */
 	let {
@@ -26,6 +27,7 @@
 		ariaChecked = undefined,
 		ariaPressed = undefined,
 		role = undefined,
+		style = '',
 		className = '',
 		children = undefined,
 	} = $props();
@@ -39,6 +41,7 @@
 	aria-checked={ariaChecked === undefined ? undefined : ariaChecked}
 	aria-pressed={ariaPressed === undefined ? undefined : ariaPressed}
 	{role}
+	style={style || undefined}
 	title={title || undefined}
 	{disabled}
 	type="button"

@@ -6,6 +6,7 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
@@ -13,6 +14,7 @@
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import MediaSettings from './MediaSettings.svelte';
+	import SettingsSection from '$lib/SettingsSection.svelte';
 	import { emptyRoleSlot, ensureRoleSlots, modelCards } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.js';
 	import {
@@ -394,7 +396,7 @@
 {/if}
 
 {#if section === 'models'}
-	<div class="section">
+	<SettingsSection className="model-section">
 		<div class="llm-head">
 			<h2>模型配置</h2>
 			<div class="llm-head-actions">
@@ -478,13 +480,13 @@
 			Context / 成本优先用 Provider
 			返回的元数据；均未填写时上下文回退到「限制」页的默认上下文窗口，成本按 0（不显示）。
 		</p>
-	</div>
+	</SettingsSection>
 {/if}
 
 {#snippet rolePicker(card = /** @type {any} */ (null))}
 	{@const slot = roleFor(card.key)}
 	{#if slot}
-		<div class="settings-card">
+		<MaterialCard variant="outlined" className="settings-card">
 			<div class="picker-card">
 				<div class="model-field model-role">
 					<span class="field-label">{card.label}</span>
@@ -584,7 +586,7 @@
 					/>
 				</div>
 			</div>
-		</div>
+		</MaterialCard>
 	{/if}
 {/snippet}
 
@@ -679,27 +681,12 @@
 {/if}
 
 <style>
-	.section {
-		background: var(--md-sys-color-surface-container-low);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-xl);
-		margin-bottom: var(--md-sys-space-xl);
-	}
-	.section h2 {
-		font-size: var(--md-sys-typescale-title-medium-size);
-		font-weight: 700;
-		color: var(--md-sys-color-on-surface);
-		letter-spacing: 0;
-		line-height: var(--md-sys-typescale-title-medium-line-height);
-		margin-bottom: var(--md-sys-space-lg);
-	}
 	.card-list {
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-md);
 	}
-	.settings-card {
+	:global(.settings-card) {
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		background: var(--md-sys-color-surface-container-lowest);
