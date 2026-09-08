@@ -13,6 +13,7 @@
 	 * @prop {boolean | undefined} ariaPressed — optional pressed state for toggle controls
 	 * @prop {string | undefined} role — optional semantic role for specialized controls
 	 * @prop {string} style — optional inline style for semantic color variants
+	 * @prop {string | undefined} ariaHaspopup — optional popup relationship
 	 * @prop {string} className — additional class names for layout/state styling
 	 */
 	let {
@@ -28,6 +29,7 @@
 		ariaPressed = undefined,
 		role = undefined,
 		style = '',
+		ariaHaspopup = undefined,
 		className = '',
 		children = undefined,
 	} = $props();
@@ -40,6 +42,7 @@
 	aria-expanded={ariaExpanded === undefined ? undefined : ariaExpanded}
 	aria-checked={ariaChecked === undefined ? undefined : ariaChecked}
 	aria-pressed={ariaPressed === undefined ? undefined : ariaPressed}
+	aria-haspopup={ariaHaspopup}
 	{role}
 	style={style || undefined}
 	title={title || undefined}

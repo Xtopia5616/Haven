@@ -1,6 +1,9 @@
 <script>
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import MenuItem from './MenuItem.svelte';
+	import MaterialButton from './MaterialButton.svelte';
+	import MaterialSplitButton from './MaterialSplitButton.svelte';
 
 	// Interactive dialog countdown (starts when shown). Backend keeps a
 	// longer absolute fail-closed ceiling for closed/crashed UI.
@@ -123,26 +126,31 @@
 				<span>未确认将于 {remaining} 秒后自动拒绝</span>
 			</div>
 			<div class="actions">
-				<div class="deny-wrap">
-					<button class="btn-deny" onclick={() => decide('deny', 'once')}>拒绝</button>
-					<button
-						class="btn-deny-more"
-						title="更多拒绝选项"
-						aria-label="更多拒绝选项"
-						onclick={() => { showDenyMenu = !showDenyMenu; }}
-					>▾</button>
+				<MaterialSplitButton
+					label="拒绝"
+					variant="tonal"
+					className="deny-split"
+					open={showDenyMenu}
+					onclick={() => decide('deny', 'once')}
+					onToggle={() => (showDenyMenu = !showDenyMenu)}
+					ariaLabel="更多拒绝选项"
+				>
+					{#snippet children()}
 					{#if showDenyMenu}
 						<div class="deny-menu">
-							<button onclick={() => decide('deny', 'session')}>本对话拒绝此工具</button>
-							<button onclick={() => decide('deny', 'always')}>始终拒绝</button>
+							<MenuItem label="本对话拒绝此工具" onSelect={() => decide('deny', 'session')} />
+							<MenuItem label="始终拒绝" danger onSelect={() => decide('deny', 'always')} />
 						</div>
 					{/if}
-				</div>
+					{/snippet}
+				</MaterialSplitButton>
 				<div class="btn-group">
-					<button class="btn-once" onclick={() => decide('allow', 'once')}>仅本次</button>
-					<button class="btn-session" onclick={() => decide('allow', 'session')}>本对话允许</button>
-					<button
-						class="btn-always"
+					<MaterialButton variant="text" className="btn-once" label="仅本次" onclick={() => decide('allow', 'once')} />
+					<MaterialButton variant="tonal" className="btn-session" label="本对话允许" onclick={() => decide('allow', 'session')} />
+					<MaterialButton
+						variant="filled"
+						className="btn-always"
+						label="始终允许"
 						title={alwaysWarn ? '将永久允许该工具的全部调用，不限本次参数' : ''}
 						onclick={() => {
 							if (
@@ -155,7 +163,7 @@
 							}
 							decide('allow', 'always');
 						}}
-					>始终允许</button>
+					/>
 				</div>
 			</div>
 		</div>
@@ -269,10 +277,8 @@
 		flex-wrap: wrap;
 		justify-content: flex-end;
 	}
-	.deny-wrap {
+	:global(.md-split-button.deny-split) {
 		position: relative;
-		display: flex;
-		align-items: stretch;
 	}
 	.deny-menu {
 		position: absolute;
@@ -287,64 +293,4 @@
 		flex-direction: column;
 		z-index: 1;
 	}
-	.deny-menu button {
-		border: none;
-		background: transparent;
-		text-align: left;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border-radius: var(--md-sys-shape-extra-small);
-		font: inherit;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface);
-		cursor: pointer;
-	}
-	.deny-menu button:hover {
-		background: var(--md-sys-color-surface-variant, rgba(0, 0, 0, 0.06));
-	}
-	.btn-deny, .btn-deny-more, .btn-once, .btn-session, .btn-always {
-		padding: 0 var(--md-sys-space-lg);
-		height: 40px;
-		border: none;
-		border-radius: var(--md-sys-shape-small);
-		font-family: inherit;
-		font-size: var(--md-sys-typescale-label-large-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-large-line-height);
-		cursor: pointer;
-		transition: background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-		white-space: nowrap;
-	}
-	.btn-deny {
-		background: var(--md-sys-color-surface-container-highest);
-		color: var(--md-sys-color-on-surface-variant);
-		border-top-right-radius: 0;
-		border-bottom-right-radius: 0;
-	}
-	.btn-deny-more {
-		background: var(--md-sys-color-surface-container-highest);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: 0 10px;
-		border-top-left-radius: 0;
-		border-bottom-left-radius: 0;
-		border-left: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 30%, transparent);
-	}
-	.btn-deny:hover, .btn-deny-more:hover { box-shadow: var(--md-sys-elevation-1); }
-	.btn-once {
-		background: var(--md-sys-color-surface-container-highest);
-		color: var(--md-sys-color-primary);
-	}
-	.btn-once:hover { box-shadow: var(--md-sys-elevation-1); }
-	.btn-session {
-		background: var(--md-sys-color-secondary-container, var(--md-sys-color-surface-container-highest));
-		color: var(--md-sys-color-on-secondary-container, var(--md-sys-color-primary));
-	}
-	.btn-session:hover { box-shadow: var(--md-sys-elevation-1); }
-	.btn-always {
-		background: var(--md-sys-color-primary);
-		color: var(--md-sys-color-on-primary);
-	}
-	.btn-always:hover { box-shadow: var(--md-sys-elevation-1); }
 </style>

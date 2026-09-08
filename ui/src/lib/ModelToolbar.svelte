@@ -1,5 +1,6 @@
 <script>
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import MenuItem from './MenuItem.svelte';
 
 	let {
 		modelMenuOpen = false,
@@ -47,26 +48,31 @@
 		<div class="model-menu">
 			<div class="model-menu-title">切换默认模型</div>
 			{#each modelOptions as model}
-				<button
-					class="model-item"
-					class:selected={model.id === currentModelId}
-					onclick={() => onModelSelect(model)}
-					type="button"
+				<MenuItem
+					className="model-item"
+					selected={model.id === currentModelId}
+					role="menuitemradio"
+					ariaChecked={model.id === currentModelId}
+					onSelect={() => onModelSelect(model)}
 				>
-					<span class="model-item-name">{model.name}</span>
-					<span class="model-item-provider">{model.provider}</span>
-				</button>
+					{#snippet children()}
+						<span class="model-item-name">{model.name}</span>
+						<span class="model-item-provider">{model.provider}</span>
+					{/snippet}
+				</MenuItem>
 			{/each}
 			<div class="model-menu-divider"></div>
 			<div class="model-menu-title">思考强度</div>
 			<div class="effort-row">
 				{#each effortOptions as option}
-					<button
-						class="effort-item"
-						class:selected={currentEffort === option.value}
-						onclick={() => onEffortSelect(option.value)}
-						type="button">{option.label}</button
-					>
+					<MenuItem
+						className="effort-item"
+						label={option.label}
+						selected={currentEffort === option.value}
+						role="menuitemradio"
+						ariaChecked={currentEffort === option.value}
+						onSelect={() => onEffortSelect(option.value)}
+					/>
 				{/each}
 			</div>
 			<div class="model-menu-divider"></div>
@@ -74,23 +80,27 @@
 			{#if webSearchSupported}
 				<div class="effort-row">
 					{#each webSearchOptions as option}
-						<button
-							class="effort-item"
-							class:selected={currentWebSearch === option.value}
-							onclick={() => onWebSearchSelect(option.value)}
-							type="button">{option.label}</button
-						>
+						<MenuItem
+							className="effort-item"
+							label={option.label}
+							selected={currentWebSearch === option.value}
+							role="menuitemradio"
+							ariaChecked={currentWebSearch === option.value}
+							onSelect={() => onWebSearchSelect(option.value)}
+						/>
 					{/each}
 				</div>
 			{:else}
 				<div class="model-menu-hint">当前线协议不支持内置联网搜索</div>
 				<div class="effort-row">
-					<button
-						class="effort-item"
-						class:selected={currentWebSearch === 'off'}
-						onclick={() => onWebSearchSelect('off')}
-						type="button">关闭</button
-					>
+					<MenuItem
+						className="effort-item"
+						label="关闭"
+						selected={currentWebSearch === 'off'}
+						role="menuitemradio"
+						ariaChecked={currentWebSearch === 'off'}
+						onSelect={() => onWebSearchSelect('off')}
+					/>
 				</div>
 			{/if}
 		</div>
@@ -132,7 +142,7 @@
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
 		opacity: 0.85;
 	}
-	.model-item {
+	:global(.menu-item.model-item) {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -150,10 +160,10 @@
 		transition: background var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
-	.model-item:hover {
+	:global(.menu-item.model-item:hover) {
 		background: var(--md-sys-color-surface-container-highest);
 	}
-	.model-item.selected .model-item-name {
+	:global(.menu-item.model-item.selected) .model-item-name {
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
 	}
@@ -172,7 +182,7 @@
 		gap: var(--md-sys-space-xs);
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
 	}
-	.effort-item {
+	:global(.menu-item.effort-item) {
 		flex: 1;
 		height: 32px;
 		border: 1px solid var(--md-sys-color-outline);
@@ -189,10 +199,10 @@
 			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
-	.effort-item:hover {
+	:global(.menu-item.effort-item:hover) {
 		border-color: var(--md-sys-color-primary);
 	}
-	.effort-item.selected {
+	:global(.menu-item.effort-item.selected) {
 		border-color: var(--md-sys-color-primary);
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);

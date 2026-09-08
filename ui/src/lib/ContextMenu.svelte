@@ -29,6 +29,7 @@
 
 <script>
 	import { tick } from 'svelte';
+	import MenuItem from './MenuItem.svelte';
 
 	// Reusable right-click menu (constraint context_menu_edge_flipping).
 	// items: [{ id?, label, icon?, danger?, disabled?, separator?, action? }]
@@ -112,14 +113,13 @@
 			{#if item.separator}
 				<div class="ctx-sep" role="separator"></div>
 			{:else}
-				<button
-					class="ctx-item"
-					class:danger={item.danger}
+				<MenuItem
+					className="ctx-item"
+					danger={item.danger}
 					disabled={item.disabled}
-					role="menuitem"
-					type="button"
-					onclick={() => run(item)}
+					onSelect={() => run(item)}
 				>
+					{#snippet children()}
 					{#if iconMarkup(item.icon)}
 						<svg
 							width="16"
@@ -134,7 +134,8 @@
 						>
 					{/if}
 					<span class="ctx-label">{item.label}</span>
-				</button>
+					{/snippet}
+				</MenuItem>
 			{/if}
 		{/each}
 	</div>
@@ -152,41 +153,6 @@
 		min-width: 160px;
 		display: flex;
 		flex-direction: column;
-	}
-	.ctx-item {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		width: 100%;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border: none;
-		background: transparent;
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-body-small-size);
-		font-family: inherit;
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		cursor: pointer;
-		border-radius: var(--md-sys-shape-small);
-		transition:
-			background var(--md-sys-motion-duration-fast)
-				var(--md-sys-motion-easing-standard);
-	}
-	.ctx-item:hover:not(:disabled) {
-		background: var(--md-sys-color-surface-container-highest);
-	}
-	.ctx-item:disabled {
-		opacity: 0.38;
-		cursor: not-allowed;
-	}
-	.ctx-item.danger {
-		color: var(--md-sys-color-error);
-	}
-	.ctx-item.danger:hover:not(:disabled) {
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
-	}
-	.ctx-item svg {
-		flex-shrink: 0;
 	}
 	.ctx-label {
 		flex: 1;

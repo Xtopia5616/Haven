@@ -1,5 +1,7 @@
 <script>
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import MaterialButton from './MaterialButton.svelte';
+	import MenuItem from './MenuItem.svelte';
 
 	let {
 		activeSessionId = null,
@@ -101,13 +103,14 @@
 					<span class="session-menu-count">{menuSessions.length} 个</span>
 				</div>
 				{#each menuSessions as session}
-					<button
-						class="session-menu-item"
-						class:selected={session.id === activeSessionId}
-						onclick={() => onSwitchSession(session.id)}
-						role="menuitem"
-						type="button"
+					<MenuItem
+						className="session-menu-item"
+						selected={session.id === activeSessionId}
+						ariaChecked={session.id === activeSessionId}
+						role="menuitemradio"
+						onSelect={() => onSwitchSession(session.id)}
 					>
+						{#snippet children()}
 						<span
 							class="session-menu-status-dot"
 							class:running={session.status === 'running'}
@@ -136,14 +139,15 @@
 								aria-label="当前会话"><polyline points="20 6 9 17 4 12" /></svg
 							>
 						{/if}
-					</button>
+						{/snippet}
+					</MenuItem>
 				{/each}
 				<div class="session-menu-divider"></div>
-				<button
-					class="session-menu-item session-menu-new"
-					onclick={() => onNewSession()}
-					type="button"
+				<MenuItem
+					className="session-menu-item session-menu-new"
+					onSelect={() => onNewSession()}
 				>
+					{#snippet children()}
 					<svg
 						width="16"
 						height="16"
@@ -161,20 +165,20 @@
 						/></svg
 					>
 					新建会话
-				</button>
+					{/snippet}
+				</MenuItem>
 			</div>
 		{/if}
 	</div>
 {/if}
 <div class="token-stats-wrap" bind:this={tokenStatsWrap}>
-	<button
-		class="token-stats"
-		class:selected={tokenDetailsOpen}
-		type="button"
+	<MaterialButton
+		variant="text"
+		className={`token-stats${tokenDetailsOpen ? ' selected' : ''}`}
 		title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
-		aria-label={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
-		aria-haspopup="dialog"
-		aria-expanded={tokenDetailsOpen}
+		ariaLabel={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
+		ariaHaspopup="dialog"
+		ariaExpanded={tokenDetailsOpen}
 		disabled={!tokenStats}
 		onclick={toggleTokenDetails}
 	>
@@ -227,7 +231,7 @@
 		{:else}
 			<span class="token-text token-idle">—</span>
 		{/if}
-	</button>
+	</MaterialButton>
 
 	{#if tokenDetailsOpen && tokenStats && tokenUsageDetails}
 		<div class="token-details" role="dialog" tabindex="-1" aria-label="Token 使用明细">
@@ -423,7 +427,7 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	.session-menu-item {
+	:global(.menu-item.session-menu-item) {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -442,13 +446,13 @@
 		transition: background var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
-	.session-menu-item:hover {
+	:global(.menu-item.session-menu-item:hover) {
 		background: var(--md-sys-color-surface-container-highest);
 	}
-	.session-menu-item.selected {
+	:global(.menu-item.session-menu-item.selected) {
 		background: var(--md-sys-color-primary-container);
 	}
-	.session-menu-item.selected .session-menu-item-title {
+	:global(.menu-item.session-menu-item.selected) .session-menu-item-title {
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
 	}
@@ -492,7 +496,7 @@
 		background: var(--md-sys-color-outline-variant);
 		margin: var(--md-sys-space-xs) 0;
 	}
-	.session-menu-new {
+	:global(.menu-item.session-menu-new) {
 		justify-content: flex-start;
 		gap: var(--md-sys-space-sm);
 		color: var(--md-sys-color-primary);
@@ -502,7 +506,7 @@
 		position: relative;
 		flex-shrink: 0;
 	}
-	.token-stats {
+	:global(.md-btn.token-stats) {
 		position: relative;
 		overflow: hidden;
 		display: inline-flex;
@@ -526,7 +530,7 @@
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	.token-stats::after {
+	:global(.md-btn.token-stats)::after {
 		content: '';
 		position: absolute;
 		inset: 0;
@@ -535,23 +539,23 @@
 		pointer-events: none;
 		transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	.token-stats:hover::after {
+	:global(.md-btn.token-stats:hover)::after {
 		opacity: var(--md-sys-state-hover-opacity);
 	}
-	.token-stats:focus-visible::after {
+	:global(.md-btn.token-stats:focus-visible)::after {
 		opacity: var(--md-sys-state-focus-opacity);
 	}
-	.token-stats:active::after {
+	:global(.md-btn.token-stats:active)::after {
 		opacity: var(--md-sys-state-pressed-opacity);
 	}
-	.token-stats > * {
+	:global(.md-btn.token-stats > *) {
 		position: relative;
 		z-index: 1;
 	}
-	.token-stats:disabled {
+	:global(.md-btn.token-stats:disabled) {
 		cursor: default;
 	}
-	.token-stats.selected {
+	:global(.md-btn.token-stats.selected) {
 		border-color: var(--md-sys-color-primary);
 	}
 	.token-icon {
