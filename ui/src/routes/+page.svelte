@@ -26,6 +26,7 @@
 		buildTokenUsageTooltip,
 	} from '$lib/sessionUsagePresentation.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
@@ -70,12 +71,13 @@
 	} from '$lib/sessionUsage.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
+	import { isChatNearBottom } from '$lib/chatScroll.ts';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
-	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import SessionHeader from '$lib/SessionHeader.svelte';
 	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
@@ -824,6 +826,8 @@
 	let messagesEl = /** @type {HTMLElement | null | undefined} */ (undefined);
 	let autoFollow = $state(true);
 	let scrollRafPending = false;
+	let jumpingToBottom = false;
+	let jumpBottomTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 	let dead = false;
 	// Guards concurrent loadSessions() calls so a stale response can't overwrite
 	// a newer one.
@@ -963,15 +967,44 @@
 
 	function onScroll() {
 		if (!messagesEl) return;
-		const threshold = 100;
-		const atBottom =
-			messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
+		const atBottom = isChatNearBottom(messagesEl);
+		// Keep the button hidden while the requested smooth scroll is settling.
+		// Otherwise each intermediate scroll event briefly marks the view as
+		// detached and makes the button flicker back in.
+		if (jumpingToBottom) {
+			if (atBottom) stopJumpToBottom();
+			return;
+		}
 		autoFollow = atBottom;
 	}
 
+	function stopJumpToBottom() {
+		jumpingToBottom = false;
+		if (jumpBottomTimer) {
+			clearTimeout(jumpBottomTimer);
+			jumpBottomTimer = null;
+		}
+	}
+
+	function cancelJumpToBottom() {
+		if (!jumpingToBottom) return;
+		stopJumpToBottom();
+		if (messagesEl) autoFollow = isChatNearBottom(messagesEl);
+	}
+
 	function jumpToBottom() {
+		if (!messagesEl) return;
+		stopJumpToBottom();
 		autoFollow = true;
-		if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+		jumpingToBottom = true;
+		messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+		// WebViews normally emit a final scroll event, but the timeout also
+		// releases the guard if the target is already at the end or events are
+		// coalesced by the platform.
+		jumpBottomTimer = setTimeout(() => {
+			stopJumpToBottom();
+			if (messagesEl) autoFollow = isChatNearBottom(messagesEl);
+		}, 700);
 	}
 
 	const streamEvents = createStreamEventAggregator({
@@ -1234,6 +1267,7 @@
 		// merges the store with the DB copy).
 		flushChunksNow();
 		eventRegistrations?.dispose();
+		stopJumpToBottom();
 		if (browser) {
 			window.removeEventListener('click', handleWindowClick);
 		}
@@ -1550,7 +1584,11 @@
 		<div
 			class="messages-area"
 			bind:this={messagesEl}
+			role="region"
+			aria-label="会话消息"
 			onscroll={onScroll}
+			onpointerdown={cancelJumpToBottom}
+			onwheel={cancelJumpToBottom}
 			use:dragScroll={{ axis: 'y' }}
 		>
 			<ConversationTimeline
@@ -1571,26 +1609,29 @@
 			/>
 		</div>
 		{#if !autoFollow && messages.length > 0}
-			<MaterialIconButton
-				size="toolbar"
-				variant="tonal"
-				className="jump-bottom"
-				label="返回底部"
-				title="返回底部"
-				onclick={jumpToBottom}
-			>
-				<svg
-					width="18"
-					height="18"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
+			<div class="jump-bottom-shell" in:fade={{ duration: 160 }} out:fade={{ duration: 120 }}>
+				<MaterialButton
+					variant="tonal"
+					className="jump-bottom"
+					ariaLabel="回到底部"
+					title="回到底部"
+					onclick={jumpToBottom}
 				>
-			</MaterialIconButton>
+					<svg
+						width="20"
+						height="20"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+						><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
+					>
+					<span>回到底部</span>
+				</MaterialButton>
+			</div>
 		{/if}
 	</div>
 
@@ -1682,14 +1723,34 @@
 		cursor: grabbing;
 		user-select: none;
 	}
-	:global(.jump-bottom) {
+	.jump-bottom-shell {
 		position: absolute;
 		right: var(--md-sys-space-md);
 		bottom: var(--md-sys-space-sm);
-		cursor: pointer;
-		box-shadow: var(--md-sys-elevation-2);
-		transition: background var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
 		z-index: 5;
+		pointer-events: none;
+	}
+	:global(.jump-bottom) {
+		box-shadow: var(--md-sys-elevation-2);
+		pointer-events: auto;
+		white-space: nowrap;
+	}
+	:global(.jump-bottom svg) {
+		flex: 0 0 auto;
+		transition: transform var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
+	}
+	:global(.jump-bottom:hover svg) {
+		transform: translateY(var(--md-sys-space-2xs));
+	}
+
+	@media (max-width: 480px) {
+		.jump-bottom-shell {
+			right: var(--md-sys-space-sm);
+		}
+		:global(.jump-bottom) {
+			min-width: 0;
+			padding-inline: var(--md-sys-space-md);
+		}
 	}
 </style>
