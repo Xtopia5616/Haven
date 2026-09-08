@@ -24,6 +24,7 @@
 	import { registerSessionListener } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import MaterialDatePicker from '$lib/MaterialDatePicker.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import SessionHistory from './SessionHistory.svelte';
@@ -550,17 +551,15 @@
 			{/if}
 		{/snippet}
 	</WorkspacePageHeader>
-	<div class="md-tabs memory-tabs" role="tablist">
-		{#each memoryTabs as tab}<button
-				type="button"
-				class="md-tab"
-				class:active={activeTab === tab.id}
-				role="tab"
-				aria-controls="memory-panel"
-				aria-selected={activeTab === tab.id}
-				onclick={() => selectMemoryTab(tab.id)}>{tab.label}</button
-			>{/each}
-	</div>
+	<MaterialTabs
+		tabs={memoryTabs}
+		activeTab={activeTab ?? 'sessions'}
+		onNavigate={selectMemoryTab}
+		ariaLabel="历史分区"
+		idPrefix="memory-tab"
+		panelId="memory-panel"
+		className="memory-tabs"
+	/>
 	{#key activeTab}
 		<div
 			id="memory-panel"
@@ -742,7 +741,7 @@
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
 	}
-	.memory-tabs {
+	:global(.memory-tabs) {
 		margin-bottom: var(--md-sys-space-xl);
 	}
 	.date-filter-dialog {

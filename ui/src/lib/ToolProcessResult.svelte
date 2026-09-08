@@ -1,5 +1,6 @@
 <script>
 	import JsonView from '$lib/JsonView.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 
 	let { data = {} } = $props();
 
@@ -127,13 +128,12 @@
 		{#if visibleProcesses.length === 0}<p class="tool-card-empty">没有匹配的进程</p>{/if}
 	</div>
 	{#if !processFilter && processList.length > processVisibleLimit}
-		<button
-			class="show-all-btn"
-			type="button"
+		<MaterialButton
+			variant="text"
+			className="show-all-btn"
+			label={processShowAll ? '收起' : `显示全部 ${processList.length} 个进程`}
 			onclick={() => (processShowAll = !processShowAll)}
-		>
-			{processShowAll ? '收起' : `显示全部 ${processList.length} 个进程`}
-		</button>
+		/>
 	{/if}
 {:else if data.operation === 'kill' && data.killed != null}
 	<div class="process-action-row">
@@ -262,7 +262,7 @@
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.show-all-btn {
+	:global(.md-btn.show-all-btn) {
 		width: 100%;
 		box-sizing: border-box;
 		margin-top: var(--md-sys-space-xs);
@@ -270,13 +270,9 @@
 		border: 1px dashed var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
 		color: var(--md-sys-color-primary);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		padding: 4px;
-		cursor: pointer;
+		min-height: var(--md-comp-button-small-height);
 	}
-	.show-all-btn:hover {
+	:global(.md-btn.show-all-btn:hover) {
 		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
 	}
 	.tool-card-empty {

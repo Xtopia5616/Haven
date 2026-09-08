@@ -9,6 +9,8 @@
 	 * @prop {string} ariaLabel — optional accessible name when content is not enough
 	 * @prop {boolean | undefined} ariaBusy — optional busy state for async actions
 	 * @prop {boolean | undefined} ariaExpanded — optional expanded state for disclosure actions
+	 * @prop {boolean | undefined} ariaChecked — optional checked state for radio-like controls
+	 * @prop {boolean | undefined} ariaPressed — optional pressed state for toggle controls
 	 * @prop {string | undefined} role — optional semantic role for specialized controls
 	 * @prop {string} className — additional class names for layout/state styling
 	 */
@@ -21,6 +23,8 @@
 		ariaLabel = '',
 		ariaBusy = undefined,
 		ariaExpanded = undefined,
+		ariaChecked = undefined,
+		ariaPressed = undefined,
 		role = undefined,
 		className = '',
 		children = undefined,
@@ -32,6 +36,8 @@
 	aria-label={ariaLabel || undefined}
 	aria-busy={ariaBusy === undefined ? undefined : ariaBusy}
 	aria-expanded={ariaExpanded === undefined ? undefined : ariaExpanded}
+	aria-checked={ariaChecked === undefined ? undefined : ariaChecked}
+	aria-pressed={ariaPressed === undefined ? undefined : ariaPressed}
 	{role}
 	title={title || undefined}
 	{disabled}

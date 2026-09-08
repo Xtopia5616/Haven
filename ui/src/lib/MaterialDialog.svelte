@@ -1,6 +1,7 @@
 <script>
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import MaterialIconButton from './MaterialIconButton.svelte';
 
 	/**
 	 * Material Dialog — overlay + dialog container.
@@ -65,7 +66,12 @@
 			{#if title}
 				<div class="md-dialog-header">
 					<h3 id="md-dialog-title">{title}</h3>
-					<button class="md-dialog-close" aria-label="关闭" onclick={onClose}>✕</button>
+					<MaterialIconButton
+						icon="close"
+						label="关闭"
+						className="md-dialog-close"
+						onclick={onClose}
+					/>
 				</div>
 			{/if}
 			<div class="md-dialog-body">
@@ -112,25 +118,15 @@
 		line-height: var(--md-sys-typescale-title-medium-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
-	.md-dialog-close {
-		background: none;
-		border: none;
+	:global(.md-icon-btn.md-dialog-close) {
+		background: transparent;
+		border-color: transparent;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-title-large-size);
-		line-height: var(--md-sys-typescale-title-large-line-height);
-		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
-		width: 32px;
-		height: 32px;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		transition:
-			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		width: var(--md-comp-icon-button-compact-size);
+		height: var(--md-comp-icon-button-compact-size);
 	}
-	.md-dialog-close:hover {
+	:global(.md-icon-btn.md-dialog-close:hover) {
 		color: var(--md-sys-color-on-surface);
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 	}

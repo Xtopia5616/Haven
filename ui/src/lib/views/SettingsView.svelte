@@ -4,6 +4,7 @@
 	import { registerListeners } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { reportError } from '$lib/errorHandling.ts';
@@ -856,19 +857,15 @@
 			/>
 		</div>
 	{/if}
-	<div class="md-tabs settings-tabs" role="tablist">
-		{#each settingsTabs as tab}<button
-				class="md-tab"
-				class:active={settingsTab === tab.id}
-				role="tab"
-				aria-controls="settings-panel"
-				aria-selected={settingsTab === tab.id}
-				onclick={() => changeSettingsTab(tab.id)}
-			>
-				<span>{tab.label}</span>
-				<small>{tab.hint}</small>
-			</button>{/each}
-	</div>
+	<MaterialTabs
+		tabs={settingsTabs}
+		activeTab={settingsTab}
+		onNavigate={changeSettingsTab}
+		ariaLabel="设置分类"
+		idPrefix="settings-tab"
+		panelId="settings-panel"
+		className="settings-tabs"
+	/>
 	{#key settingsTab}
 	<div
 		id="settings-panel"
@@ -1005,10 +1002,10 @@
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: var(--md-sys-space-xl);
 	}
-	.settings-tabs {
+	:global(.settings-tabs) {
 		margin-bottom: var(--md-sys-space-2xl);
 	}
-	.settings-tabs .md-tab {
+	:global(.settings-tabs .md-tab) {
 		display: grid;
 		justify-items: start;
 		gap: var(--md-sys-space-xs);
@@ -1017,7 +1014,7 @@
 		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
 		text-align: left;
 	}
-	.settings-tabs .md-tab small {
+	:global(.settings-tabs .md-tab small) {
 		max-width: 180px;
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -1104,12 +1101,12 @@
 		white-space: pre;
 	}
 	@media (max-width: 640px) {
-		.settings-tabs .md-tab {
+		:global(.settings-tabs .md-tab) {
 			min-width: 0;
 			flex: 1 1 50%;
 			padding-inline: var(--md-sys-space-md);
 		}
-		.settings-tabs .md-tab small {
+		:global(.settings-tabs .md-tab small) {
 			display: none;
 		}
 		.settings-callout,

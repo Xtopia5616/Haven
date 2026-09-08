@@ -1226,35 +1226,9 @@ select.md-select {
 	}
 }
 
-.workspace-nav {
-	position: relative;
-}
-.workspace-nav .md-tab.active::before {
-	display: none;
-}
-.workspace-nav__indicator {
-	position: absolute;
-	left: 0;
-	bottom: var(--md-comp-tab-indicator-bottom);
-	width: var(--md-tab-indicator-width);
-	height: var(--md-comp-tab-indicator-height);
-	border-radius: var(--md-sys-shape-full);
-	background: var(--md-sys-color-primary);
-	transform: translate3d(var(--md-tab-indicator-x), 0, 0);
-	transform-origin: center;
-	opacity: 0;
-	pointer-events: none;
-	transition:
-		transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-		opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-}
-.workspace-nav--indicator-ready .workspace-nav__indicator {
-	opacity: 1;
-}
-
 @media (prefers-reduced-motion: reduce) {
 	.md-tab.active::before,
-	.workspace-nav__indicator {
+	.md-tabs--measured .workspace-nav__indicator {
 		animation: none;
 		transition: none;
 	}

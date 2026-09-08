@@ -1,6 +1,7 @@
 <script>
 	import { untrack } from 'svelte';
 	import JsonView from './JsonView.svelte';
+	import MaterialButton from './MaterialButton.svelte';
 	import logger from './logger.ts';
 	import { formatError } from './formatError.ts';
 
@@ -82,14 +83,19 @@
 					JSON
 				{/if}
 			</span>
-			<button class="jv-copy" class:jv-copied={copied} type="button" onclick={copyJson} aria-label="复制 JSON">
+			<MaterialButton
+				variant="text"
+				className={`jv-copy ${copied ? 'jv-copied' : ''}`}
+				ariaLabel="复制 JSON"
+				onclick={copyJson}
+			>
 				{#if copied}
 					<span aria-hidden="true">✓</span>已复制
 				{:else}
 					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
 					复制
 				{/if}
-			</button>
+			</MaterialButton>
 		</div>
 	{/if}
 	<div class="jv-body" class:jv-root-body={depth === 0}>
@@ -187,7 +193,7 @@
 		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
 		padding: 0 4px;
 	}
-	.jv-copy {
+	:global(.md-btn.jv-copy) {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
@@ -206,11 +212,11 @@
 			color 0.15s ease,
 			border-color 0.15s ease;
 	}
-	.jv-copy:hover {
+	:global(.md-btn.jv-copy:hover) {
 		background: var(--md-sys-color-surface-container-highest);
 		color: var(--md-sys-color-on-surface);
 	}
-	.jv-copy.jv-copied {
+	:global(.md-btn.jv-copy.jv-copied) {
 		color: var(--md-sys-color-success);
 	}
 	.jv-body {

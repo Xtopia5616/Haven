@@ -1,5 +1,6 @@
 <script>
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import { formatError } from '$lib/formatError.ts';
@@ -43,9 +44,7 @@
 	let previewResult = /** @type {string | null} */ ($state(null));
 	let running = $state(false);
 
-	/** @param {MouseEvent} e */
-	async function runPreview(e) {
-		e.stopPropagation();
+	async function runPreview() {
 		if (running) return;
 		running = true;
 		previewResult = null;
@@ -128,9 +127,13 @@
 					placeholder={'{"key": "value"}'}
 					onclick={(e) => e.stopPropagation()}
 					autocomplete="off"></textarea>
-				<button class="btn-preview" onclick={runPreview} disabled={running}>
-					{running ? 'Running...' : 'Run'}
-				</button>
+				<MaterialButton
+					variant="filled"
+					label={running ? 'Running...' : 'Run'}
+					className="btn-preview"
+					onclick={runPreview}
+					disabled={running}
+				/>
 			</div>
 			{#if previewResult}
 				<pre class="preview-result">{previewResult}</pre>
@@ -223,29 +226,9 @@
 		outline: none;
 		border-color: var(--md-sys-color-primary);
 	}
-	.btn-preview {
-		background: var(--md-sys-color-primary);
-		color: var(--md-sys-color-on-primary);
-		border: none;
-		border-radius: var(--md-sys-shape-extra-small);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		cursor: pointer;
-		font-weight: 600;
-		transition: background-color var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
-	}
-	.btn-preview:hover {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-on-primary) 8%,
-			var(--md-sys-color-primary)
-		);
-	}
-	.btn-preview:disabled {
-		opacity: 0.38;
-		cursor: not-allowed;
+	:global(.md-btn.btn-preview) {
+		align-self: stretch;
+		min-width: 64px;
 	}
 	.preview-result {
 		margin-top: var(--md-sys-space-sm);

@@ -2,6 +2,7 @@
 	import logger from './logger.ts';
 	import { formatError } from './formatError.ts';
 	import JsonView from '$lib/JsonView.svelte';
+	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 
 	let { data = {} } = $props();
 
@@ -269,13 +270,13 @@
 						>{variable.value != null ? variable.value : '仅名称（未读取）'}</span
 					>
 					{#if typeof variable.value === 'string' && variable.value}
-						<button
-							class="env-copy"
-							type="button"
-							aria-label="复制值"
+						<MaterialIconButton
+							icon="copy"
+							className="env-copy"
+							label="复制值"
 							title="复制值"
-							onclick={() => copyEnvValue(variable.value)}>⧉</button
-						>
+							onclick={() => copyEnvValue(variable.value)}
+						/>
 					{/if}
 				</div>
 			{/each}
@@ -528,27 +529,23 @@
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
 	}
-	.env-copy {
+	:global(.md-icon-btn.env-copy) {
 		flex: none;
-		border: none;
+		width: var(--md-comp-icon-button-compact-size);
+		height: var(--md-comp-icon-button-compact-size);
+		min-width: var(--md-comp-icon-button-compact-size);
+		min-height: var(--md-comp-icon-button-compact-size);
+		border-color: transparent;
 		background: transparent;
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		padding: 2px 4px;
-		border-radius: 4px;
-		cursor: pointer;
 		opacity: 0;
-		transition:
-			opacity 0.15s ease,
-			background-color 0.15s ease,
-			color 0.15s ease;
+		transition: opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
-	.env-row:hover .env-copy,
-	.env-copy:focus-visible {
+	.env-row:hover :global(.md-icon-btn.env-copy),
+	:global(.md-icon-btn.env-copy:focus-visible) {
 		opacity: 1;
 	}
-	.env-copy:hover {
+	:global(.md-icon-btn.env-copy:hover) {
 		background: var(--md-sys-color-surface-container-highest);
 		color: var(--md-sys-color-on-surface);
 	}

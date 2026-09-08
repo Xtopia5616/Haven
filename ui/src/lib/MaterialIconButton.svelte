@@ -4,7 +4,7 @@
 	 * @prop {string} label — aria-label
 	 * @prop {'default'|'ghost'|'danger'|'danger-outline'|'primary'|'tonal'} variant
 	 * @prop {'default'|'toolbar'} size — visual size used by the surrounding layout
-	 * @prop {'refresh'|'edit'|'delete'|undefined} icon — optional shared action icon
+	 * @prop {'refresh'|'edit'|'delete'|'close'|'copy'|'eye'|'eye-off'|undefined} icon — optional shared action icon
 	 * @prop {function} onclick
 	 * @prop {boolean} disabled
 	 * @prop {boolean | undefined} ariaExpanded — optional disclosure state
@@ -85,6 +85,14 @@
 				d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
 			/><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg
 		>
+	{:else if icon === 'close'}
+		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+	{:else if icon === 'copy'}
+		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+	{:else if icon === 'eye'}
+		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></svg>
+	{:else if icon === 'eye-off'}
+		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 4.3A10.7 10.7 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-3.2 4.5M6.2 6.2C3.6 8.2 2 12 2 12s3.5 8 10 8c1.5 0 2.9-.4 4.1-1" /></svg>
 	{:else}
 		{@render children?.()}
 	{/if}

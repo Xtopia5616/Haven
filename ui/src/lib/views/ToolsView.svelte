@@ -25,6 +25,7 @@
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 
@@ -349,6 +350,10 @@
 		{ id: 'mcp', label: 'MCP' },
 		{ id: 'skills', label: '技能' },
 	];
+	/** @param {string} tabId */
+	function selectToolTab(tabId) {
+		activeTab = tabId;
+	}
 </script>
 
 <div class="tools-page">
@@ -359,19 +364,15 @@
 		</div>
 	</div>
 
-	<div class="md-tabs" role="tablist">
-		{#each tabs as tab}
-			<button
-				class="md-tab"
-				class:active={activeTab === tab.id}
-				role="tab"
-				aria-selected={activeTab === tab.id}
-				onclick={() => (activeTab = tab.id)}
-			>
-				{tab.label}
-			</button>
-		{/each}
-	</div>
+	<MaterialTabs
+		tabs={tabs}
+		activeTab={activeTab}
+		onNavigate={selectToolTab}
+		ariaLabel="工具分类"
+		idPrefix="tools-tab"
+		panelIdPrefix=""
+		className="tools-tabs"
+	/>
 
 	<div class="resource-toolbar workspace-filter-bar" role="search" aria-label="筛选工具资源">
 		<label class="resource-search">
@@ -502,7 +503,7 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 	}
-	.md-tabs {
+	:global(.tools-tabs) {
 		margin-bottom: var(--md-sys-space-2xl);
 	}
 	.resource-toolbar {
