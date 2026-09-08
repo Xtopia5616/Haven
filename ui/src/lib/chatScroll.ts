@@ -1,5 +1,7 @@
 /** Distance in pixels at which the conversation is considered to be at its end. */
 export const CHAT_SCROLL_BOTTOM_THRESHOLD = 32;
+/** Smaller settled range used to hide the jump button without flickering. */
+export const CHAT_SCROLL_SETTLED_THRESHOLD = 4;
 
 /**
  * Return the remaining scrollable distance below a conversation viewport.
@@ -24,4 +26,21 @@ export function isChatNearBottom(
 	threshold = CHAT_SCROLL_BOTTOM_THRESHOLD,
 ) {
 	return distanceFromChatBottom(element) <= threshold;
+}
+
+/**
+ * Keep the follow state stable in the small gap between the visible bottom
+ * threshold and the exact settled position.
+ */
+export function shouldFollowChatScroll(
+	element: {
+		scrollHeight: number;
+		scrollTop: number;
+		clientHeight: number;
+	},
+	currentlyFollowing: boolean,
+) {
+	if (isChatNearBottom(element, CHAT_SCROLL_SETTLED_THRESHOLD)) return true;
+	if (!isChatNearBottom(element)) return false;
+	return currentlyFollowing;
 }

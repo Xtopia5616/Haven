@@ -70,7 +70,11 @@
 	} from '$lib/sessionUsage.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
-	import { isChatNearBottom } from '$lib/chatScroll.ts';
+	import {
+		CHAT_SCROLL_SETTLED_THRESHOLD,
+		isChatNearBottom,
+		shouldFollowChatScroll,
+	} from '$lib/chatScroll.ts';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
@@ -966,15 +970,15 @@
 
 	function onScroll() {
 		if (!messagesEl) return;
-		const atBottom = isChatNearBottom(messagesEl);
+		const settledAtBottom = isChatNearBottom(messagesEl, CHAT_SCROLL_SETTLED_THRESHOLD);
 		// Keep the button hidden while the requested smooth scroll is settling.
 		// Otherwise each intermediate scroll event briefly marks the view as
 		// detached and makes the button flicker back in.
 		if (jumpingToBottom) {
-			if (atBottom) stopJumpToBottom();
+			if (settledAtBottom) stopJumpToBottom();
 			return;
 		}
-		autoFollow = atBottom;
+		autoFollow = shouldFollowChatScroll(messagesEl, autoFollow);
 	}
 
 	function stopJumpToBottom() {
@@ -1608,26 +1612,28 @@
 			/>
 		</div>
 		{#if !autoFollow && messages.length > 0}
-			<MaterialIconButton
-				size="toolbar"
-				variant="tonal"
-				className="jump-bottom"
-				label="返回底部"
-				title="返回底部"
-				onclick={jumpToBottom}
-			>
-				<svg
-					width="18"
-					height="18"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
+			<div class="jump-bottom-anchor">
+				<MaterialIconButton
+					size="toolbar"
+					variant="tonal"
+					className="jump-bottom"
+					label="返回底部"
+					title="返回底部"
+					onclick={jumpToBottom}
 				>
-			</MaterialIconButton>
+					<svg
+						width="18"
+						height="18"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
+					>
+				</MaterialIconButton>
+			</div>
 		{/if}
 	</div>
 
@@ -1719,15 +1725,20 @@
 		cursor: grabbing;
 		user-select: none;
 	}
-	:global(.jump-bottom) {
+	.jump-bottom-anchor {
 		position: absolute;
 		right: var(--md-sys-space-md);
 		bottom: var(--md-sys-space-sm);
+		display: flex;
+		z-index: 5;
+		pointer-events: none;
+	}
+	:global(.jump-bottom) {
+		pointer-events: auto;
 		cursor: pointer;
 		box-shadow: var(--md-sys-elevation-2);
 		transition: background var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
-		z-index: 5;
 	}
 	:global(.jump-bottom > svg) {
 		transition: transform var(--md-sys-motion-duration-short)

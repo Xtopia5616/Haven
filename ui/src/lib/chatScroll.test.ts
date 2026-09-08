@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { distanceFromChatBottom, isChatNearBottom } from './chatScroll';
+import { distanceFromChatBottom, isChatNearBottom, shouldFollowChatScroll } from './chatScroll';
 
 function viewport(overrides: Partial<HTMLElement> = {}) {
 	return {
@@ -22,5 +22,11 @@ describe('chat scroll position helpers', () => {
 
 	it('supports a caller-specific threshold', () => {
 		expect(isChatNearBottom(viewport({ scrollTop: 790 }), 60)).toBe(true);
+	});
+
+	it('keeps the follow state stable in the near-bottom gap', () => {
+		expect(shouldFollowChatScroll(viewport({ scrollTop: 810 }), false)).toBe(false);
+		expect(shouldFollowChatScroll(viewport({ scrollTop: 810 }), true)).toBe(true);
+		expect(shouldFollowChatScroll(viewport({ scrollTop: 838 }), false)).toBe(true);
 	});
 });
