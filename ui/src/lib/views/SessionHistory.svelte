@@ -20,6 +20,7 @@
 		renameValue = '',
 		onSearchQueryChange = () => {},
 		onSearchInput = () => {},
+		onClearFilters = () => {},
 		onStatusFilterChange = () => {},
 		onOpenDateFilter = () => {},
 		onToggleSelectAll = () => {},
@@ -56,6 +57,9 @@
 	function handleStatusChange(value) {
 		onStatusFilterChange(value);
 	}
+	const hasFilters = $derived(
+		Boolean(searchQuery.trim() || statusFilter || startDate || endDate),
+	);
 </script>
 
 <div class="history-view">
@@ -86,6 +90,9 @@
 					: '日期筛选'}
 				onclick={() => onOpenDateFilter()}
 			/>
+			{#if hasFilters}
+				<MaterialButton variant="text" label="清除" onclick={() => onClearFilters()} />
+			{/if}
 		</div>
 	</div>
 
@@ -128,10 +135,10 @@
 									></div>
 								</div>
 								<div class="session-title-row">
-										<span class="session-title">{displayTitle(session)}</span
-										><MaterialBadge
-											variant={statusVariant(session.status)}
-											text={sessionStatusLabel(session.status)}
+									<span class="session-title">{displayTitle(session)}</span
+									><MaterialBadge
+										variant={statusVariant(session.status)}
+										text={sessionStatusLabel(session.status)}
 									/>
 								</div>
 							</div>
@@ -146,18 +153,10 @@
 						</div>
 					</button>
 				{:else}
-					<div
+					<article
 						class="session-item motion-list-item"
 						class:selected={selectedIds.has(session.id)}
-						role="button"
-						tabindex="0"
-						onclick={() => onResume(session)}
-						onkeydown={(event) => {
-							if (event.key === 'Enter' || event.key === ' ') {
-								event.preventDefault();
-								onResume(session);
-							}
-						}}
+						aria-label={`会话：${displayTitle(session)}`}
 						oncontextmenu={(event) => onContextMenu(event, session)}
 					>
 						<div class="session-item-main">
@@ -172,25 +171,15 @@
 											onRenameValueChange(event.currentTarget.value)}
 										onkeydown={(event) => onRenameKeydown(event, session.id)}
 										onblur={() => onSaveTitle(session.id)}
-										onclick={(event) => event.stopPropagation()}
 										autofocus
 										autocomplete="off"
 									/>
 								{:else}
-									<span
+									<button
+										type="button"
 										class="session-title"
-										onclick={(event) => {
-											event.stopPropagation();
-											onStartEdit(session);
-										}}
-										onkeydown={(event) => {
-											if (event.key === 'Enter') {
-												event.stopPropagation();
-												onStartEdit(session);
-											}
-										}}
-										role="button"
-										tabindex="0"
+										onclick={() => onStartEdit(session)}
+										aria-label={`重命名${displayTitle(session)}`}
 										>{displayTitle(session)}<svg
 											class="title-edit-icon"
 											width="14"
@@ -204,7 +193,7 @@
 											><path
 												d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
 											/></svg
-										></span
+										></button
 									>
 								{/if}
 								<MaterialBadge
@@ -236,7 +225,7 @@
 								</span>
 							</div>
 						</div>
-					</div>
+					</article>
 				{/if}
 			{/each}
 		</div>
@@ -323,7 +312,6 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-md);
-		cursor: pointer;
 	}
 	.session-top-row,
 	.session-title-row {
@@ -337,6 +325,12 @@
 		min-width: 0;
 	}
 	.session-title {
+		position: relative;
+		border: 0;
+		padding: 0;
+		background: transparent;
+		font-family: inherit;
+		text-align: left;
 		font-size: var(--md-sys-typescale-body-medium-size);
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-body-medium-line-height);
@@ -351,6 +345,11 @@
 		white-space: nowrap;
 		flex: 1;
 	}
+	.session-title:focus-visible {
+		border-radius: var(--md-sys-shape-extra-small);
+		outline: none;
+		box-shadow: var(--md-sys-focus-ring);
+	}
 	.session-title:hover .title-edit-icon {
 		opacity: 1;
 	}
@@ -358,8 +357,7 @@
 		opacity: 0.45;
 		flex-shrink: 0;
 		color: var(--md-sys-color-on-surface-variant);
-		transition: opacity var(--md-sys-motion-duration-fast)
-			var(--md-sys-motion-easing-standard);
+		transition: opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	.title-input {
 		font-size: var(--md-sys-typescale-body-medium-size);

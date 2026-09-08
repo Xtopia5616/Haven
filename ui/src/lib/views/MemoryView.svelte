@@ -28,6 +28,8 @@
 	import SessionHistory from './SessionHistory.svelte';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
+	import WorkspaceMetricStrip from '$lib/WorkspaceMetricStrip.svelte';
+	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceScopeNote from '$lib/WorkspaceScopeNote.svelte';
 
 	let { onNewSession = () => {} } = $props();
@@ -88,6 +90,27 @@
 		{ value: 'user', label: '手动' },
 		{ value: 'inferred', label: '推断' },
 	];
+	const metricItems = $derived([
+		{
+			id: 'sessions',
+			value: totalCount,
+			label: '历史会话',
+			detail: '可回看、重命名或继续',
+		},
+		{
+			id: 'facts',
+			value: factsLoaded ? facts.length : '—',
+			label: '长期记忆',
+			detail: '跨会话保留的事实',
+			tone: 'running',
+		},
+		{
+			id: 'recall',
+			value: memoryRecall.searched ? memoryRecall.results.length : '—',
+			label: '最近检索',
+			detail: memoryRecall.searched ? '条匹配结果' : '尚未开始检索',
+		},
+	]);
 	const todayISO = $derived.by(() => {
 		const now = new Date();
 		return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -203,6 +226,13 @@
 		searchTimer = setTimeout(loadSessions, 300);
 	}
 	function handleFilterChange() {
+		loadSessions();
+	}
+	function clearHistoryFilters() {
+		searchQuery = '';
+		statusFilter = '';
+		startDate = '';
+		endDate = '';
 		loadSessions();
 	}
 	/** @param {string} value */
@@ -471,14 +501,10 @@
 </script>
 
 <div class="memory-page">
-	<header class="page-heading">
-		<div class="page-heading-content">
-			<h1>记忆</h1>
-			<p>回顾历史会话，管理长期记忆和检索结果。</p>
-		</div>
-		{#if activeTab === 'sessions'}
-			<div class="page-heading-actions">
-				<span class="count-badge">共 {totalCount} 条历史</span>
+	<WorkspacePageHeader title="记忆" description="回顾历史会话，管理长期记忆和检索结果。">
+		{#snippet children()}
+			{#if activeTab === 'sessions'}
+				<span class="workspace-count md-chip">共 {totalCount} 条历史</span>
 				<div class="header-actions">
 					{#if selectMode}
 						<MaterialButton
@@ -491,44 +517,49 @@
 					{:else}
 						<MaterialButton
 							variant="filled"
-							className="memory-header-action"
 							label="新建会话"
 							onclick={() => onNewSession?.()}
 						/>
 						{#if sessions.length > 0}
 							<MaterialButton
 								variant="outlined"
-								className="memory-header-action"
 								label="导出"
 								onclick={enterSelectMode}
 							/>
 							<MaterialButton
 								variant="danger"
-								className="memory-header-action"
 								label="清空会话"
 								onclick={() => (showClearDialog = true)}
 							/>
 						{/if}
 					{/if}
 				</div>
-			</div>
-		{/if}
-	</header>
+			{/if}
+		{/snippet}
+	</WorkspacePageHeader>
 	<WorkspaceScopeNote
 		title="记忆负责保存与回顾"
 		message="会话历史用于回看和继续，长期记忆用于跨会话保留；正在执行或待执行的工作请到“任务”。"
 	/>
+	<WorkspaceMetricStrip items={metricItems} />
 	<div class="md-tabs memory-tabs" role="tablist">
 		{#each memoryTabs as tab}<button
+				type="button"
 				class="md-tab"
 				class:active={activeTab === tab.id}
 				role="tab"
+				aria-controls="memory-panel"
 				aria-selected={activeTab === tab.id}
 				onclick={() => (activeTab = tab.id)}>{tab.label}</button
 			>{/each}
 	</div>
 	{#key activeTab}
-		<div class="memory-panel">
+		<div
+			id="memory-panel"
+			class="memory-panel motion-surface-enter"
+			role="tabpanel"
+			aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '记忆'}
+		>
 			{#if activeTab === 'sessions'}
 				<SessionHistory
 					{sessions}
@@ -545,6 +576,7 @@
 					{renameValue}
 					onSearchQueryChange={setSearchQuery}
 					onSearchInput={handleSearchInput}
+					onClearFilters={clearHistoryFilters}
 					onStatusFilterChange={handleStatusFilterChange}
 					onOpenDateFilter={() => {
 						showDateFilter = true;
@@ -673,24 +705,13 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 	}
+	.memory-panel {
+		min-width: 0;
+	}
 	.header-actions {
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
-	}
-	.header-actions :global(.memory-header-action) {
-		flex: 0 0 112px;
-		width: 112px;
-	}
-	.count-badge {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-surface-container);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		color: var(--md-sys-color-on-surface-variant);
-		white-space: nowrap;
 	}
 	.memory-tabs {
 		margin-bottom: var(--md-sys-space-xl);

@@ -45,6 +45,8 @@ describe('TaskCenter', () => {
 		expect(screen.getByRole('heading', { name: '后台与定时任务' })).toBeTruthy();
 		expect(screen.getAllByText('整理下载目录').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('研究会话').length).toBeGreaterThan(0);
+		await fireEvent.click(screen.getByRole('button', { name: '停止后台任务' }));
+		expect(onCancel).toHaveBeenCalledWith('act-1', 'background');
 		await fireEvent.click(screen.getByRole('button', { name: '查看调用工具详情' }));
 		expect(screen.getByRole('dialog')).toBeTruthy();
 		expect(screen.getByRole('heading', { name: '调用工具' })).toBeTruthy();

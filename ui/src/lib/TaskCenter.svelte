@@ -8,6 +8,8 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
+	import WorkspaceMetricStrip from '$lib/WorkspaceMetricStrip.svelte';
+	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceScopeNote from '$lib/WorkspaceScopeNote.svelte';
 
 	let {
@@ -80,6 +82,36 @@
 				.includes(normalized);
 		});
 	});
+	const hasFilters = $derived(Boolean(query.trim() || filter !== 'all'));
+	const metricItems = $derived([
+		{
+			id: 'current',
+			value: runningSessions.length,
+			label: '当前会话',
+			detail: '正在处理或等待继续',
+			tone: 'running',
+		},
+		{
+			id: 'background',
+			value: runningBackgroundActions.length,
+			label: '处理中',
+			detail: '后台任务',
+			tone: 'running',
+		},
+		{
+			id: 'scheduled',
+			value: pendingScheduledActions.length,
+			label: '待执行',
+			detail: '定时任务',
+			tone: 'scheduled',
+		},
+		{
+			id: 'history',
+			value: completedActions.length,
+			label: '执行记录',
+			detail: '已完成、失败或取消',
+		},
+	]);
 
 	const selectedRow = $derived(taskRows.find((row) => row.id === selectedTaskId) || null);
 
@@ -206,23 +238,30 @@
 	function handleFilterChange(value) {
 		filter = value;
 	}
+
+	function clearFilters() {
+		query = '';
+		filter = 'all';
+	}
 </script>
 
 <section class="task-center" aria-labelledby="task-center-title">
-	<header class="page-heading">
-		<div class="page-heading-content">
-			<h1 id="task-center-title">任务</h1>
-			<p>查看正在执行、待执行和已完成的工作。</p>
-		</div>
-		<div class="page-heading-actions">
-			<MaterialButton variant="outlined" label="新对话" onclick={() => onNewSession?.()} />
-		</div>
-	</header>
+	<WorkspacePageHeader
+		title="任务"
+		description="查看正在执行、待执行和已完成的工作。"
+		headingId="task-center-title"
+	>
+		{#snippet children()}
+			<MaterialButton variant="filled" label="新建会话" onclick={() => onNewSession?.()} />
+		{/snippet}
+	</WorkspacePageHeader>
 
 	<WorkspaceScopeNote
 		title="任务负责执行与进度"
 		message="在这里查看状态、取消任务和追踪结果；完整的会话历史与长期记忆请到“记忆”。"
 	/>
+
+	<WorkspaceMetricStrip items={metricItems} />
 
 	<div class="task-toolbar workspace-filter-bar" role="search">
 		<label class="task-search">
@@ -248,6 +287,9 @@
 				onChange={handleFilterChange}
 			/>
 		</div>
+		{#if hasFilters}
+			<MaterialButton variant="text" label="清除筛选" onclick={clearFilters} />
+		{/if}
 	</div>
 
 	{#if taskRows.length === 0}
@@ -262,10 +304,7 @@
 			title="没有匹配的任务"
 			message="换一个关键词或清除筛选条件。"
 			actionLabel="清除筛选"
-			onAction={() => {
-				query = '';
-				filter = 'all';
-			}}
+			onAction={clearFilters}
 		/>
 	{:else}
 		<div class="task-list-panel">
@@ -274,7 +313,7 @@
 					<h2>任务列表</h2>
 					<span class="task-list-count">{filteredRows.length} 项</span>
 				</div>
-				<span class="task-list-hint">点击卡片查看详情</span>
+				<span class="task-list-hint">查看详情，或直接执行右侧操作</span>
 			</div>
 			<div class="task-groups" aria-label="按生命周期分组的任务列表">
 				{#each taskGroups as group (group.id)}
@@ -288,42 +327,78 @@
 						</div>
 						<div class="task-list">
 							{#each group.rows as row (row.id)}
-								<button
+								<article
 									class="task-card motion-list-item"
 									class:selected={selectedTaskId === row.id && detailOpen}
-									type="button"
-									aria-label={`查看${row.title}详情`}
-									onclick={() => selectRow(row)}
 								>
-									<span class="task-card-header">
-										<span class="task-card-type" data-tone={rowTone(row)}>
-											<span
-												class="task-card-indicator"
-												data-tone={rowTone(row)}
-												aria-hidden="true"
-											></span>
-											{taskKindLabel(row.kind)}
+									<button
+										class="task-card-main"
+										type="button"
+										aria-label={`查看${row.title}详情`}
+										onclick={() => selectRow(row)}
+									>
+										<span class="task-card-header">
+											<span class="task-card-type" data-tone={rowTone(row)}>
+												<span
+													class="task-card-indicator"
+													data-tone={rowTone(row)}
+													aria-hidden="true"
+												></span>
+												{taskKindLabel(row.kind)}
+											</span>
+											<span class="md-badge" data-variant={rowTone(row)}
+												>{rowStatus(row)}</span
+											>
 										</span>
-										<span class="md-badge" data-variant={rowTone(row)}
-											>{rowStatus(row)}</span
-										>
-									</span>
-									<strong class="task-card-title">{row.title}</strong>
-									<span class="task-card-summary">{rowSummary(row)}</span>
-									<span class="task-card-meta">
-										<span>{rowContext(row)}</span>
-										<span class="task-card-meta-separator" aria-hidden="true"
-											>·</span
-										>
-										<span>{rowTiming(row)}</span>
-									</span>
-									<span class="task-card-footer">
-										<span class="task-card-id">{row.id}</span>
-										<span class="task-card-open" aria-hidden="true"
-											>查看详情 <span>→</span></span
-										>
-									</span>
-								</button>
+										<strong class="task-card-title">{row.title}</strong>
+										<span class="task-card-summary">{rowSummary(row)}</span>
+										<span class="task-card-meta">
+											<span>{rowContext(row)}</span>
+											<span
+												class="task-card-meta-separator"
+												aria-hidden="true">·</span
+											>
+											<span>{rowTiming(row)}</span>
+										</span>
+										<span class="task-card-footer">
+											<span class="task-card-id">{row.id}</span>
+											<span class="task-card-open" aria-hidden="true"
+												>查看详情 <span>→</span></span
+											>
+										</span>
+									</button>
+									<div class="task-card-actions">
+										{#if row.kind === 'foreground' && row.sessionId}
+											<MaterialButton
+												variant={row.status === 'paused'
+													? 'filled'
+													: 'tonal'}
+												label={row.status === 'paused'
+													? '继续会话'
+													: '打开会话'}
+												onclick={() => onOpenSession?.(row.sessionId)}
+											/>
+										{:else if row.kind === 'background' && row.value.status === 'running'}
+											<MaterialButton
+												variant="danger"
+												label="停止后台任务"
+												onclick={() => onCancel?.(row.id, 'background')}
+											/>
+										{:else if row.kind === 'scheduled' && row.status === 'scheduled'}
+											<MaterialButton
+												variant="outlined"
+												label="取消此定时任务"
+												onclick={() => onCancel?.(row.id, 'scheduled')}
+											/>
+										{:else}
+											<MaterialButton
+												variant="text"
+												label="查看详情"
+												onclick={() => selectRow(row)}
+											/>
+										{/if}
+									</div>
+								</article>
 							{/each}
 						</div>
 					</section>
@@ -554,24 +629,39 @@
 		display: flex;
 		flex-direction: column;
 		align-items: stretch;
-		gap: var(--md-sys-space-sm);
 		width: 100%;
 		min-width: 0;
 		min-height: 168px;
-		padding: var(--md-sys-space-lg);
 		overflow: hidden;
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-on-surface);
 		text-align: left;
-		cursor: pointer;
 		transition:
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.task-card-main {
+		position: relative;
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		align-items: stretch;
+		gap: var(--md-sys-space-sm);
+		width: 100%;
+		min-width: 0;
+		min-height: 0;
+		padding: var(--md-sys-space-lg);
+		border: 0;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
 	}
 	.task-card::after {
 		position: absolute;
@@ -596,9 +686,13 @@
 	.task-card:hover::after {
 		opacity: var(--md-sys-state-hover-opacity);
 	}
-	.task-card:focus-visible {
+	.task-card-main:focus-visible {
 		outline: none;
 		box-shadow: var(--md-sys-focus-ring), var(--md-sys-elevation-1);
+	}
+	.task-card-main:focus-visible,
+	.task-card-actions :global(.md-btn:focus-visible) {
+		z-index: 2;
 	}
 	.task-card-header,
 	:global(.task-dialog-type-row),
@@ -730,6 +824,24 @@
 	}
 	.task-card:hover .task-card-open span {
 		transform: translateX(var(--md-sys-space-2xs));
+	}
+	.task-card-actions {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container-low) 76%,
+			var(--md-sys-color-surface) 24%
+		);
+	}
+	.task-card-actions :global(.md-btn) {
+		min-width: 0;
+		white-space: nowrap;
 	}
 	.task-dialog-content {
 		min-width: 0;
@@ -871,7 +983,12 @@
 		}
 		.task-card {
 			min-height: 0;
+		}
+		.task-card-main {
 			padding: var(--md-sys-space-md);
+		}
+		.task-card-actions {
+			padding-inline: var(--md-sys-space-md);
 		}
 		.task-actions {
 			flex-direction: column;
@@ -879,6 +996,12 @@
 		}
 		.task-actions :global(.md-btn) {
 			width: 100%;
+		}
+		.task-card-actions {
+			justify-content: stretch;
+		}
+		.task-card-actions :global(.md-btn) {
+			flex: 1;
 		}
 	}
 	@media (max-width: 540px) {
@@ -891,22 +1014,16 @@
 		}
 	}
 	@media (max-width: 455px) {
-		.page-heading,
 		.task-toolbar {
 			align-items: stretch;
 			flex-direction: column;
 		}
-		.page-heading-content,
-		.page-heading-actions,
 		.task-search,
 		.task-filter {
 			width: 100%;
 		}
 		.task-search {
 			flex: 0 1 auto;
-		}
-		.page-heading-actions :global(.md-btn) {
-			width: 100%;
 		}
 	}
 </style>
