@@ -544,11 +544,6 @@
 						/>
 						<MaterialButton variant="text" label="取消" onclick={cancelSelectMode} />
 					{:else}
-						<MaterialButton
-							variant="filled"
-							label="新建会话"
-							onclick={() => onNewSession?.()}
-						/>
 						{#if sessions.length > 0}
 							<MaterialButton
 								variant="outlined"

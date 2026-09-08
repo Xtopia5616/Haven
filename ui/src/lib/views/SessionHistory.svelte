@@ -356,7 +356,7 @@
 	:global(.md-btn.session-title:focus-visible) {
 		border-radius: var(--md-sys-shape-extra-small);
 		outline: none;
-		box-shadow: var(--md-sys-focus-ring);
+		box-shadow: 0 0 0 4px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 	}
 	:global(.md-btn.session-title:hover .title-edit-icon) {
 		opacity: 1;
