@@ -28,8 +28,7 @@
 	import MaterialDatePicker from '$lib/MaterialDatePicker.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import SessionHistory from './SessionHistory.svelte';
-	import LongTermFacts from './LongTermFacts.svelte';
-	import MemoryRecall from './MemoryRecall.svelte';
+	import MemoryCenter from './MemoryCenter.svelte';
 	import TaskCenter from '$lib/TaskCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 
@@ -84,9 +83,10 @@
 		{ id: 'tasks', label: '任务' },
 		{ id: 'memory', label: '记忆' },
 	];
+	/** @type {{ query: string; kind: string; results: Array<Record<string, any>>; loading: boolean; searched: boolean }} */
 	let memoryRecall = $state({
 		query: '',
-		kind: 'fact',
+		kind: 'all',
 		results: [],
 		loading: false,
 		searched: false,
@@ -257,6 +257,8 @@
 	/** @param {string} value */
 	function handleRecallKindChange(value) {
 		memoryRecall.kind = value;
+		memoryRecall.results = [];
+		memoryRecall.searched = false;
 	}
 	/** @param {string} value */
 	function handleStartDateChange(value) {
@@ -500,9 +502,17 @@
 		if (!query) return;
 		memoryRecall.loading = true;
 		try {
-			memoryRecall.results =
-				(await invoke('recall_memory', { query, kind: memoryRecall.kind, limit: 10 })) ||
-				[];
+			const kinds = memoryRecall.kind === 'all' ? ['fact', 'episode'] : [memoryRecall.kind];
+			const limit = memoryRecall.kind === 'all' ? 5 : 10;
+			const resultGroups = await Promise.all(
+				kinds.map(async (kind) => {
+					const results = /** @type {Array<Record<string, any>>} */ (
+						(await invoke('recall_memory', { query, kind, limit })) || []
+					);
+					return results.map((result) => ({ ...result, kind }));
+				}),
+			);
+			memoryRecall.results = resultGroups.flat();
 			memoryRecall.searched = true;
 		} catch (e) {
 			memoryRecall.results = [];
@@ -512,10 +522,15 @@
 			memoryRecall.loading = false;
 		}
 	}
+	function clearMemoryRecall() {
+		memoryRecall.query = '';
+		memoryRecall.results = [];
+		memoryRecall.searched = false;
+	}
 </script>
 
 <div class="memory-page">
-	<WorkspacePageHeader title="历史" description="回顾会话、任务执行记录和长期记忆。">
+	<WorkspacePageHeader title="历史" description="回顾会话、任务执行记录和记忆。">
 		{#snippet children()}
 			{#if activeTab === 'sessions'}
 				<span class="workspace-count md-chip">共 {totalCount} 条历史</span>
@@ -613,27 +628,26 @@
 					{actionDuration}
 					{scheduledActionCountdown}
 					{formatHistoryTime}
-					onOpenSession={onOpenSession}
-					onCancel={onCancel}
-					onDeleteHistory={onDeleteHistory}
+					{onOpenSession}
+					{onCancel}
+					{onDeleteHistory}
 				/>
 			{:else}
-				<div class="memory-tools-view" aria-label="记忆管理与检索">
-					<LongTermFacts
+				<div class="memory-tools-view" aria-label="记忆中心">
+					<MemoryCenter
 						{facts}
 						{factsLoaded}
 						{factSourceFilter}
 						{factSourceOptions}
 						{newFact}
 						{addingFact}
-						onFactSourceFilterChange={handleFactSourceFilterChange}
-						onAddFact={addFact}
-						onDeleteFact={deleteFact}
-					/>
-					<MemoryRecall
 						{memoryRecall}
 						onRecallKindChange={handleRecallKindChange}
 						onRunRecall={runRecall}
+						onClearRecall={clearMemoryRecall}
+						onFactSourceFilterChange={handleFactSourceFilterChange}
+						onAddFact={addFact}
+						onDeleteFact={deleteFact}
 					/>
 				</div>
 			{/if}

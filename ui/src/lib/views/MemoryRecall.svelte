@@ -1,61 +1,76 @@
 <script>
+	/** @typedef {{ entity_id: string; text: string; score?: number; kind?: string }} MemoryRecallResult */
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
 
-	let { memoryRecall, onRecallKindChange = () => {}, onRunRecall = () => {} } = $props();
+	let {
+		memoryRecall,
+		onRecallKindChange = () => {},
+		onRunRecall = () => {},
+		showToolbar = true,
+		showHeading = true,
+	} = $props();
 	/** @param {string} value */
 	function handleKindChange(value) {
 		onRecallKindChange(value);
 	}
+	let recallResults = $derived(/** @type {MemoryRecallResult[]} */ (memoryRecall.results));
+	let factResults = $derived(recallResults.filter((result) => result.kind === 'fact'));
+	let episodeResults = $derived(recallResults.filter((result) => result.kind === 'episode'));
 </script>
 
-<section class="recall-view" aria-labelledby="memory-recall-title">
-	<div class="recall-toolbar workspace-filter-bar" role="search">
-		<label class="recall-search" for="memory-recall-query">
-			<span class="sr-only">检索记忆</span>
-			<input
-				id="memory-recall-query"
-				type="search"
-				class="md-input"
-				bind:value={memoryRecall.query}
-				placeholder="输入关键词，例如：深色主题"
-				onkeydown={(event) => {
-					if (event.key === 'Enter') onRunRecall();
-				}}
-				autocomplete="off"
-			/>
-		</label>
-		<div class="recall-kind">
-			<MaterialSelect
-				id="memory-recall-kind"
-				value={memoryRecall.kind}
-				ariaLabel="检索类型"
-				options={[
-					{ value: 'fact', label: '事实' },
-					{ value: 'episode', label: '情景' },
-				]}
-				onChange={handleKindChange}
+<section class="recall-view" aria-label="记忆结果">
+	{#if showToolbar}
+		<div class="recall-toolbar workspace-filter-bar" role="search">
+			<label class="recall-search" for="memory-recall-query">
+				<span class="sr-only">检索记忆</span>
+				<input
+					id="memory-recall-query"
+					type="search"
+					class="md-input"
+					bind:value={memoryRecall.query}
+					placeholder="输入关键词，例如：深色主题"
+					onkeydown={(event) => {
+						if (event.key === 'Enter') onRunRecall();
+					}}
+					autocomplete="off"
+				/>
+			</label>
+			<div class="recall-kind">
+				<MaterialSelect
+					id="memory-recall-kind"
+					value={memoryRecall.kind}
+					ariaLabel="检索类型"
+					options={[
+						{ value: 'all', label: '全部记忆' },
+						{ value: 'fact', label: '事实' },
+						{ value: 'episode', label: '过去的对话' },
+					]}
+					onChange={handleKindChange}
+				/>
+			</div>
+			<MaterialButton
+				variant="filled"
+				label={memoryRecall.loading ? '检索中…' : '开始检索'}
+				ariaBusy={memoryRecall.loading}
+				onclick={() => onRunRecall()}
+				disabled={memoryRecall.loading}
 			/>
 		</div>
-		<MaterialButton
-			variant="filled"
-			label={memoryRecall.loading ? '检索中…' : '开始检索'}
-			ariaBusy={memoryRecall.loading}
-			onclick={() => onRunRecall()}
-			disabled={memoryRecall.loading}
-		/>
-	</div>
+	{/if}
 
-	<div class="recall-heading">
-		<div>
-			<h2 id="memory-recall-title">记忆检索</h2>
-			<p>优先使用语义检索；未配置 Embedding Model 时会自动回退到关键词匹配。</p>
+	{#if showHeading}
+		<div class="recall-heading">
+			<div>
+				<h2 id="memory-recall-title">记忆结果</h2>
+				<p>优先使用语义检索；未配置 Embedding Model 时会自动回退到关键词匹配。</p>
+			</div>
+			{#if memoryRecall.searched && !memoryRecall.loading}
+				<span class="section-count md-chip">{memoryRecall.results.length} 条结果</span>
+			{/if}
 		</div>
-		{#if memoryRecall.searched && !memoryRecall.loading}
-			<span class="section-count md-chip">{memoryRecall.results.length} 条结果</span>
-		{/if}
-	</div>
+	{/if}
 
 	{#if memoryRecall.loading}
 		<div class="recall-loading" role="status" aria-live="polite">
@@ -66,25 +81,81 @@
 			<div class="results-header">
 				<div>
 					<h3>匹配结果</h3>
-					<p>按相关度从高到低排列。</p>
+					<p>
+						{memoryRecall.kind === 'all'
+							? '事实与过去的对话分别检索并展示。'
+							: '按相关度从高到低排列。'}
+					</p>
 				</div>
 			</div>
-			<ol class="recall-results">
-				{#each memoryRecall.results as result, index (result.entity_id + result.text)}
-					<li class="recall-result">
-						<span class="recall-rank" aria-label={`第${index + 1}条`}>{index + 1}</span>
-						<div class="recall-result-copy">
-							<span class="recall-result-type"
-								>{memoryRecall.kind === 'fact' ? '事实' : '情景'}</span
-							>
-							<p>{result.text}</p>
-						</div>
-						<span class="recall-score" title="相关度"
-							>{(result.score ?? 0).toFixed(2)}</span
+			{#if memoryRecall.kind === 'all'}
+				<div class="recall-result-groups">
+					{#if factResults.length > 0}
+						<section class="recall-result-group" aria-labelledby="fact-results-title">
+							<h4 id="fact-results-title">长期事实</h4>
+							<ol class="recall-results">
+								{#each factResults as result, index (result.entity_id + result.text)}
+									<li class="recall-result">
+										<span class="recall-rank" aria-label={`第${index + 1}条`}
+											>{index + 1}</span
+										>
+										<div class="recall-result-copy">
+											<span class="recall-result-type">长期事实</span>
+											<p>{result.text}</p>
+										</div>
+										<span class="recall-score" title="相关度"
+											>{(result.score ?? 0).toFixed(2)}</span
+										>
+									</li>
+								{/each}
+							</ol>
+						</section>
+					{/if}
+					{#if episodeResults.length > 0}
+						<section
+							class="recall-result-group"
+							aria-labelledby="episode-results-title"
 						>
-					</li>
-				{/each}
-			</ol>
+							<h4 id="episode-results-title">过去的对话</h4>
+							<ol class="recall-results">
+								{#each episodeResults as result, index (result.entity_id + result.text)}
+									<li class="recall-result">
+										<span class="recall-rank" aria-label={`第${index + 1}条`}
+											>{index + 1}</span
+										>
+										<div class="recall-result-copy">
+											<span class="recall-result-type">过去的对话</span>
+											<p>{result.text}</p>
+										</div>
+										<span class="recall-score" title="相关度"
+											>{(result.score ?? 0).toFixed(2)}</span
+										>
+									</li>
+								{/each}
+							</ol>
+						</section>
+					{/if}
+				</div>
+			{:else}
+				<ol class="recall-results">
+					{#each recallResults as result, index (result.entity_id + result.text)}
+						<li class="recall-result">
+							<span class="recall-rank" aria-label={`第${index + 1}条`}
+								>{index + 1}</span
+							>
+							<div class="recall-result-copy">
+								<span class="recall-result-type"
+									>{result.kind === 'fact' ? '长期事实' : '过去的对话'}</span
+								>
+								<p>{result.text}</p>
+							</div>
+							<span class="recall-score" title="相关度"
+								>{(result.score ?? 0).toFixed(2)}</span
+							>
+						</li>
+					{/each}
+				</ol>
+			{/if}
 		</section>
 	{:else if memoryRecall.searched}
 		<div class="recall-empty md-card md-card--outlined" role="status" aria-live="polite">
@@ -151,6 +222,19 @@
 	}
 	.recall-results-panel {
 		min-width: 0;
+	}
+	.recall-result-groups {
+		display: grid;
+		gap: var(--md-sys-space-lg);
+	}
+	.recall-result-group h4 {
+		margin: var(--md-sys-space-lg) 0 0;
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-title-small-size);
+		font-weight: 650;
+	}
+	.recall-result-group .recall-results {
+		margin-top: var(--md-sys-space-sm);
 	}
 	.recall-results {
 		list-style: none;

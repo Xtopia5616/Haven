@@ -11,6 +11,7 @@
 		factSourceOptions = [],
 		newFact = { predicate: '', object: '', tags: '' },
 		addingFact = false,
+		showHeader = true,
 		onFactSourceFilterChange = () => {},
 		onAddFact = () => {},
 		onDeleteFact = () => {},
@@ -106,35 +107,37 @@
 </script>
 
 <div class="facts-view">
-	<div class="facts-toolbar workspace-filter-bar">
-		<div class="section-heading">
-			<h2>长期记忆</h2>
-			<span class="section-count md-chip">{facts.length} 条</span>
+	{#if showHeader}
+		<div class="facts-toolbar workspace-filter-bar">
+			<div class="section-heading">
+				<h2>已保存事实</h2>
+				<span class="section-count md-chip">{facts.length} 条</span>
+			</div>
+			<div class="facts-filter">
+				<MaterialSelect
+					value={factSourceFilter}
+					ariaLabel="事实来源"
+					options={factSourceOptions}
+					onChange={handleSourceChange}
+				/>
+			</div>
 		</div>
-		<div class="facts-filter">
-			<MaterialSelect
-				value={factSourceFilter}
-				ariaLabel="记忆来源"
-				options={factSourceOptions}
-				onChange={handleSourceChange}
-			/>
-		</div>
-	</div>
-	<p class="section-hint">
-		跨会话长期记忆（身份、偏好、工作区等）。条目默认展示关键信息，点击后查看完整来源和记忆状态。
-	</p>
+		<p class="section-hint">
+			跨会话保存的结构化事实（身份、偏好、工作区等）。点击条目查看完整来源和记忆状态。
+		</p>
+	{/if}
 
 	<div class="facts-layout">
 		<section class="fact-browser" aria-labelledby="fact-list-title">
 			<div class="fact-list-heading">
 				<div>
-					<h3 id="fact-list-title">已保存的记忆</h3>
+					<h3 id="fact-list-title">已保存的事实</h3>
 					<span class="section-count">{facts.length} 项</span>
 				</div>
 				<span class="fact-list-hint">点击条目查看详情，或直接删除</span>
 			</div>
 			{#if factsLoaded && facts.length > 0}
-				<div class="fact-list" role="list" aria-label="长期记忆列表">
+				<div class="fact-list" role="list" aria-label="已保存事实列表">
 					{#each facts as fact (fact.id)}
 						<article
 							class="fact-card workspace-item-card motion-list-item"
@@ -153,7 +156,7 @@
 											data-tone={factSourceTone(fact)}
 											aria-hidden="true"
 										></span>
-										长期记忆
+										长期事实
 									</span>
 									<MaterialBadge
 										text={factSourceLabel(fact)}
@@ -200,13 +203,13 @@
 			{:else if factsLoaded}
 				<div class="empty-inline">
 					<span class="empty-inline-mark" aria-hidden="true">＋</span>
-					<strong>还没有长期记忆</strong>
+					<strong>还没有已保存的事实</strong>
 					<p>从右侧添加一条，或继续使用 Haven 让它自动抽取。</p>
 				</div>
 			{:else}
 				<div class="empty-inline" role="status" aria-live="polite">
 					<span class="empty-inline-mark" aria-hidden="true">…</span>
-					<strong>正在加载长期记忆</strong>
+					<strong>正在加载已保存事实</strong>
 				</div>
 			{/if}
 		</section>
