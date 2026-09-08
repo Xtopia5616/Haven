@@ -712,6 +712,19 @@
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
+	.input-area::before {
+		content: '';
+		position: absolute;
+		inset: 1px;
+		border-radius: calc(var(--md-sys-shape-large) - 1px);
+		background: var(--md-sys-color-surface-container-low);
+		pointer-events: none;
+		z-index: 0;
+	}
+	.input-area > * {
+		position: relative;
+		z-index: 1;
+	}
 	.input-area:has(.chat-input:focus) {
 		border-color: var(--md-sys-color-primary);
 		box-shadow: var(--md-sys-focus-ring);
