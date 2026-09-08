@@ -49,15 +49,6 @@
 		if (value >= 50) return 'medium';
 		return 'low';
 	}
-
-	/** @param {number | null | undefined} value */
-	function contextTone(value) {
-		if (value == null) return 'none';
-		if (value >= 90) return 'danger';
-		if (value >= 75) return 'high';
-		if (value >= 50) return 'medium';
-		return 'low';
-	}
 </script>
 
 <svelte:window onclick={closeTokenDetails} />
@@ -179,7 +170,6 @@
 	<button
 		class="token-stats"
 		class:selected={tokenDetailsOpen}
-		data-context-tone={contextTone(tokenUsageDetails?.contextRatePercent)}
 		type="button"
 		title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
 		aria-label={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
@@ -275,18 +265,7 @@
 							? `${formatTokenCount(tokenUsageDetails.contextWindow)} tokens`
 							: '窗口未知'}</span
 					>
-					<b>{percentage(tokenUsageDetails.contextRatePercent)}</b>
 				</div>
-				{#if tokenUsageDetails.contextWindow}
-					<div class="token-detail-progress">
-						<div
-							style="width: {Math.min(
-								100,
-								tokenUsageDetails.contextRatePercent || 0,
-							).toFixed(1)}%"
-						></div>
-					</div>
-				{/if}
 			</div>
 
 			<div class="token-detail-section">
@@ -575,40 +554,6 @@
 	.token-stats.selected {
 		border-color: var(--md-sys-color-primary);
 	}
-	.token-stats[data-context-tone='low'] {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-surface-container) 91%,
-			var(--md-sys-color-success) 9%
-		);
-	}
-	.token-stats[data-context-tone='medium'] {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-surface-container) 86%,
-			var(--md-sys-color-primary) 14%
-		);
-	}
-	.token-stats[data-context-tone='high'] {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-surface-container) 78%,
-			var(--md-sys-color-warning) 22%
-		);
-	}
-	.token-stats[data-context-tone='danger'] {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-surface-container) 78%,
-			var(--md-sys-color-error) 22%
-		);
-	}
-	.token-stats[data-context-tone='low'].selected,
-	.token-stats[data-context-tone='medium'].selected,
-	.token-stats[data-context-tone='high'].selected,
-	.token-stats[data-context-tone='danger'].selected {
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
-	}
 	.token-icon {
 		opacity: 0.75;
 		flex-shrink: 0;
@@ -735,19 +680,6 @@
 	.token-detail-line strong,
 	.token-detail-grid strong {
 		font-variant-numeric: tabular-nums;
-	}
-	.token-detail-progress {
-		height: 5px;
-		margin-top: 3px;
-		border-radius: 999px;
-		background: var(--md-sys-color-surface-variant, rgba(0, 0, 0, 0.08));
-		overflow: hidden;
-	}
-	.token-detail-progress > div {
-		height: 100%;
-		border-radius: inherit;
-		background: var(--md-sys-color-primary);
-		transition: width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
 	}
 	.token-detail-estimated {
 		padding-top: var(--md-sys-space-sm);

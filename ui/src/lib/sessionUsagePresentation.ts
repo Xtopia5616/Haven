@@ -249,11 +249,6 @@ export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUs
 	}
 	if (llmUsage.length > 0) parts.push(`调用 ${llmUsage.length} 次`);
 	if (details.model) parts.push(`模型 ${details.model}`);
-	if (details.contextWindow) {
-		const percentage =
-			details.contextRatePercent != null ? `${details.contextRatePercent.toFixed(0)}%` : '?';
-		parts.push(`上下文 ${percentage} / ${formatTokenCount(details.contextWindow)}`);
-	}
 	if (details.costUsd != null) parts.push(`费用 ${formatCostUsd(details.costUsd)}`);
 	if (stats.estimated) parts.push('估算值（历史对话，未计费）');
 	return parts.join('\n');
