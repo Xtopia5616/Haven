@@ -1101,6 +1101,7 @@
 						clearAskAwaiting,
 						evictTerminalSessionMemory,
 						clearStepBlockIds,
+						flushChunksNow,
 						updateSessionTitle: (sessionId, title) => {
 							const index = sessions.findIndex((session) => session.id === sessionId);
 							if (index >= 0) {

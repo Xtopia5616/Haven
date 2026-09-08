@@ -4,7 +4,7 @@ import type {
 	SessionTitleUpdatedPayload,
 } from './contracts/session.ts';
 import type { TauriEvent } from './contracts/session.ts';
-import { isBusyStatus } from './sessionStatus.ts';
+import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { updateSessionMessages } from './sessionMessages.ts';
 
 interface ChatSessionEventContext {
@@ -18,6 +18,8 @@ interface ChatSessionEventContext {
 	clearAskAwaiting: (sessionId: string) => void;
 	evictTerminalSessionMemory: (sessionId: string) => void;
 	clearStepBlockIds: (sessionId: string) => void;
+	/** Flush the RAF-batched stream before lifecycle cleanup changes its state. */
+	flushChunksNow: () => void;
 	updateSessionTitle: (sessionId: string, title: string) => void;
 	loadSessions: () => void;
 }
@@ -42,6 +44,7 @@ export function createChatSessionEventHandlers({
 	clearAskAwaiting,
 	evictTerminalSessionMemory,
 	clearStepBlockIds,
+	flushChunksNow,
 	updateSessionTitle,
 	loadSessions,
 }: ChatSessionEventContext): {
@@ -51,7 +54,11 @@ export function createChatSessionEventHandlers({
 	'session:error': (event: ErrorEvent) => void;
 	'session:title-updated': (event: TitleUpdatedEvent) => void;
 } {
-	const finalizeActiveMessages = (sessionId: string) => {
+	const finalizeLiveMessages = (sessionId: string) => {
+		// A lifecycle event can arrive while the last chunks are still queued for
+		// the next animation frame. Flush first, otherwise that frame can recreate
+		// a streaming bubble (and its blinking caret) after this cleanup.
+		flushChunksNow();
 		updateSessionMessages(sessionId, (messages) =>
 			messages.map((message) =>
 				message.streaming ? { ...message, streaming: false } : message,
@@ -84,16 +91,18 @@ export function createChatSessionEventHandlers({
 			if (isActive && data.status === 'pending') {
 				clearAskAwaiting(data.sessionId);
 			}
-			if (
-				getSessionErrorId() === data.sessionId &&
-				isBusyStatus(data.status)
-			) {
+			if (getSessionErrorId() === data.sessionId && isBusyStatus(data.status)) {
 				clearSessionError();
+			}
+			if (isPausedStatus(data.status)) {
+				// Pausing or interrupting preserves the partial text for resume, but
+				// it is no longer live output in the UI, so its caret must stop.
+				finalizeLiveMessages(data.sessionId);
 			}
 			if (data.status === 'completed' || data.status === 'error') {
 				evictTerminalSessionMemory(data.sessionId);
 				if (getActiveSessionId() === data.sessionId) {
-					finalizeActiveMessages(data.sessionId);
+					finalizeLiveMessages(data.sessionId);
 				}
 				clearStepBlockIds(data.sessionId);
 			}
@@ -103,7 +112,7 @@ export function createChatSessionEventHandlers({
 			const sessionId = event.payload.sessionId;
 			if (getActiveSessionId() === sessionId) {
 				clearAskAwaiting(sessionId);
-				finalizeActiveMessages(sessionId);
+				finalizeLiveMessages(sessionId);
 			}
 			evictTerminalSessionMemory(sessionId);
 			clearStepBlockIds(sessionId);
@@ -114,7 +123,7 @@ export function createChatSessionEventHandlers({
 			if (sessionId === getActiveSessionId()) {
 				showSessionError(sessionId);
 				clearAskAwaiting(sessionId);
-				finalizeActiveMessages(sessionId);
+				finalizeLiveMessages(sessionId);
 			}
 			evictTerminalSessionMemory(sessionId);
 			clearStepBlockIds(sessionId);
