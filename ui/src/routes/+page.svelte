@@ -1721,9 +1721,8 @@
 	}
 	:global(.jump-bottom) {
 		position: absolute;
-		left: var(--md-sys-space-md);
+		right: var(--md-sys-space-md);
 		bottom: var(--md-sys-space-sm);
-		transform: none;
 		cursor: pointer;
 		box-shadow: var(--md-sys-elevation-2);
 		transition: background var(--md-sys-motion-duration-short)
