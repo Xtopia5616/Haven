@@ -528,7 +528,7 @@
 			>{/each}
 	</div>
 	{#key activeTab}
-		<div class="memory-panel motion-surface-enter">
+		<div class="memory-panel">
 			{#if activeTab === 'sessions'}
 				<SessionHistory
 					{sessions}

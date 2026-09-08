@@ -189,34 +189,9 @@
 		display: flex;
 		flex-direction: column;
 	}
-	:global(.tab-view-surface) {
-		width: 100%;
-	}
-	:global(.content--chat .tab-view-surface) {
-		flex: 1;
-		min-height: 0;
-		display: flex;
-		flex-direction: column;
-	}
-	:global(.tab-view-surface--entering) {
-		animation: haven-tab-surface-enter var(--md-sys-motion-duration-fast)
-			var(--md-sys-motion-easing-decelerated) both;
-	}
-	/* Keep the tab surface free of transforms so fixed dialogs remain
-	 * viewport-relative while still mounted below the keep-alive panels. */
-	@keyframes haven-tab-surface-enter {
-		from {
-			opacity: 0;
-		}
-		to {
-			opacity: 1;
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		:global(.tab-view-surface--entering) {
-			animation: none;
-		}
-	}
+	/* Secondary workspaces use WorkspaceSurface for their shared frame and
+	 * entry motion. Keeping chat outside that component preserves its full-bleed
+	 * conversation layout. */
 	:global(.content:not(.content--chat) .page-shell) {
 		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
 		min-width: 0;

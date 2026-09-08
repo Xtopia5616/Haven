@@ -123,6 +123,7 @@
 | `.md-input` | 文本输入框 | - |
 | `.md-textarea` | 多行输入 | - |
 | `.md-card` | 卡片容器 | `--elevated`, `--outlined` |
+| `WorkspaceSurface` | 次级工作区的统一外框、背景、边框和入场动效 | `entering` |
 | `.md-chip` | 标签 chip | - |
 | `.md-divider` | 分割线 | - |
 | `.md-tabs` / `.md-tab` | Tab 导航 | `active` |
@@ -204,6 +205,8 @@
 | **`lib/` 容器组件** | 布局、状态提升 | 业务逻辑 |
 
 例外：`MaterialDialog` 可以接收 `onClose` 回调；`MaterialSwitch` 接收 `onChange` 回调。
+
+`WorkspaceSurface` 是任务、工具、记忆和设置等次级工作区的唯一外框。它只负责容器几何、主题背景、边框、阴影和工作区切换时的入场动效；页面标题、筛选器、列表和详情内容由各工作区自己提供。对话工作区保持全宽布局，不套用此外框。
 
 ---
 
@@ -652,6 +655,7 @@ ready + 用户修改 → dirty → saving → saved | error
 |---|---|---|
 | `AppShell` / 工作区壳层 | 顶栏、工作区导航、全局布局、响应式断点 | 会话业务、工具加载、设置保存 |
 | `WorkspaceNav` | 一级入口、当前工作区、窄窗折叠 | 具体页面数据请求 |
+| `WorkspaceSurface` | 次级工作区的统一外框、主题背景、边框和入场动效 | 页面数据、筛选器、列表和详情内容 |
 | `SessionRail` | 新建、搜索、切换、会话级操作 | 生成循环、消息持久化 |
 | `SessionHeader` | 标题、模型、会话状态、停止/结束等会话动作 | 任务列表和全局通知 |
 | `ConversationTimeline` | 消息、思考、工具调用、确认、结果的展示编排 | 直接 `invoke` |

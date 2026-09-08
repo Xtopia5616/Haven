@@ -480,10 +480,9 @@
 	}
 	.task-list-panel {
 		min-width: 0;
-		padding: var(--md-sys-space-lg);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		background: var(--md-sys-color-surface-container-low);
+		/* The workspace-level frame is supplied by WorkspaceSurface. Keep this
+		 * region as content rhythm so task and history views share one outer
+		 * surface instead of stacking two competing cards. */
 	}
 	.task-list-heading {
 		display: flex;
@@ -563,7 +562,7 @@
 		overflow: hidden;
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
-		background: var(--md-sys-color-surface-container-lowest);
+		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-on-surface);
 		text-align: left;
 		cursor: pointer;
@@ -857,9 +856,6 @@
 		.task-filter {
 			width: 100%;
 			flex: 0 1 auto;
-		}
-		.task-list-panel {
-			padding: var(--md-sys-space-sm);
 		}
 		.task-list-heading {
 			align-items: flex-start;

@@ -49,6 +49,7 @@
 	import AppShell from '$lib/AppShell.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
+	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
 	import WorkspaceStatus from '$lib/WorkspaceStatus.svelte';
 
 	let { children } = $props();
@@ -1032,8 +1033,8 @@
 					{@const TabComponent = lazyViewComponents[tab.id]}
 					{#if tab.id === 'chat'}
 						<div
-							class="page-shell tab-view-surface"
-							class:tab-view-surface--entering={enteringTab === tab.id}
+							class="page-shell"
+							class:motion-surface-enter={enteringTab === tab.id}
 							onanimationend={(event) => finishTabEntry(tab.id, event)}
 						>
 							{@render children()}
@@ -1041,27 +1042,28 @@
 					{:else if tab.id === 'tools'}
 						<div class="page-shell">
 							{#if lazyViewComponents.tools}
-								<div
-									class="tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
 									<TabComponent />
-								</div>
+								</WorkspaceSurface>
 							{:else if lazyViewStates.tools === 'error'}
-								<div
-									class="lazy-view-placeholder tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
-									role="alert"
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
-									<span>工具页面暂时无法加载</span>
-									<MaterialButton
-										variant="outlined"
-										label="重试"
-										onclick={() => retryTabView('tools')}
-									/>
-								</div>
+									<div class="lazy-view-placeholder" role="alert">
+										<span>工具页面暂时无法加载</span>
+										<MaterialButton
+											variant="outlined"
+											label="重试"
+											onclick={() => retryTabView('tools')}
+										/>
+									</div>
+								</WorkspaceSurface>
 							{:else}
 								<LoadingState label="正在加载工具…" detail="正在准备工具列表" />
 							{/if}
@@ -1069,10 +1071,10 @@
 					{:else if tab.id === 'tasks'}
 						<div class="page-shell">
 							{#if lazyViewComponents.tasks}
-								<div
-									class="tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
 									<TabComponent
 										{runningSessions}
@@ -1089,21 +1091,22 @@
 										onDeleteHistory={handleDeleteHistory}
 										onNewSession={startNewSessionFromTasks}
 									/>
-								</div>
+								</WorkspaceSurface>
 							{:else if lazyViewStates.tasks === 'error'}
-								<div
-									class="lazy-view-placeholder tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
-									role="alert"
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
-									<span>任务暂时无法加载</span>
-									<MaterialButton
-										variant="outlined"
-										label="重试"
-										onclick={() => retryTabView('tasks')}
-									/>
-								</div>
+									<div class="lazy-view-placeholder" role="alert">
+										<span>任务暂时无法加载</span>
+										<MaterialButton
+											variant="outlined"
+											label="重试"
+											onclick={() => retryTabView('tasks')}
+										/>
+									</div>
+								</WorkspaceSurface>
 							{:else}
 								<LoadingState label="正在加载任务…" detail="正在准备任务列表" />
 							{/if}
@@ -1111,27 +1114,28 @@
 					{:else if tab.id === 'memory'}
 						<div class="page-shell">
 							{#if lazyViewComponents.memory}
-								<div
-									class="tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
 									<TabComponent onNewSession={startNewSessionFromTasks} />
-								</div>
+								</WorkspaceSurface>
 							{:else if lazyViewStates.memory === 'error'}
-								<div
-									class="lazy-view-placeholder tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
-									role="alert"
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
-									<span>记忆页面暂时无法加载</span>
-									<MaterialButton
-										variant="outlined"
-										label="重试"
-										onclick={() => retryTabView('memory')}
-									/>
-								</div>
+									<div class="lazy-view-placeholder" role="alert">
+										<span>记忆页面暂时无法加载</span>
+										<MaterialButton
+											variant="outlined"
+											label="重试"
+											onclick={() => retryTabView('memory')}
+										/>
+									</div>
+								</WorkspaceSurface>
 							{:else}
 								<LoadingState label="正在加载记忆…" detail="正在准备记忆中心" />
 							{/if}
@@ -1139,27 +1143,28 @@
 					{:else if tab.id === 'settings'}
 						<div class="page-shell">
 							{#if lazyViewComponents.settings}
-								<div
-									class="tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
 									<TabComponent />
-								</div>
+								</WorkspaceSurface>
 							{:else if lazyViewStates.settings === 'error'}
-								<div
-									class="lazy-view-placeholder tab-view-surface"
-									class:tab-view-surface--entering={enteringTab === tab.id}
-									onanimationend={(event) => finishTabEntry(tab.id, event)}
-									role="alert"
+								<WorkspaceSurface
+									entering={enteringTab === tab.id}
+									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
+										finishTabEntry(tab.id, event)}
 								>
-									<span>设置页面暂时无法加载</span>
-									<MaterialButton
-										variant="outlined"
-										label="重试"
-										onclick={() => retryTabView('settings')}
-									/>
-								</div>
+									<div class="lazy-view-placeholder" role="alert">
+										<span>设置页面暂时无法加载</span>
+										<MaterialButton
+											variant="outlined"
+											label="重试"
+											onclick={() => retryTabView('settings')}
+										/>
+									</div>
+								</WorkspaceSurface>
 							{:else}
 								<LoadingState label="正在加载设置…" detail="正在准备设置页面" />
 							{/if}
