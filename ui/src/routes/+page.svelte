@@ -26,7 +26,6 @@
 		buildTokenUsageTooltip,
 	} from '$lib/sessionUsagePresentation.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
-	import { fade } from 'svelte/transition';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
@@ -77,7 +76,7 @@
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
-	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import SessionHeader from '$lib/SessionHeader.svelte';
 	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
@@ -1609,29 +1608,26 @@
 			/>
 		</div>
 		{#if !autoFollow && messages.length > 0}
-			<div class="jump-bottom-shell" in:fade={{ duration: 160 }} out:fade={{ duration: 120 }}>
-				<MaterialButton
-					variant="tonal"
-					className="jump-bottom"
-					ariaLabel="回到底部"
-					title="回到底部"
-					onclick={jumpToBottom}
+			<MaterialIconButton
+				size="toolbar"
+				variant="tonal"
+				className="jump-bottom"
+				label="返回底部"
+				title="返回底部"
+				onclick={jumpToBottom}
+			>
+				<svg
+					width="18"
+					height="18"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
 				>
-					<svg
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						aria-hidden="true"
-						><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
-					>
-					<span>回到底部</span>
-				</MaterialButton>
-			</div>
+			</MaterialIconButton>
 		{/if}
 	</div>
 
@@ -1723,34 +1719,22 @@
 		cursor: grabbing;
 		user-select: none;
 	}
-	.jump-bottom-shell {
-		position: absolute;
-		right: var(--md-sys-space-md);
-		bottom: var(--md-sys-space-sm);
-		z-index: 5;
-		pointer-events: none;
-	}
 	:global(.jump-bottom) {
+		position: absolute;
+		left: 50%;
+		bottom: var(--md-sys-space-sm);
+		transform: translateX(-50%);
+		cursor: pointer;
 		box-shadow: var(--md-sys-elevation-2);
-		pointer-events: auto;
-		white-space: nowrap;
+		transition: background var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
+		z-index: 5;
 	}
-	:global(.jump-bottom svg) {
-		flex: 0 0 auto;
+	:global(.jump-bottom > svg) {
 		transition: transform var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
 	}
-	:global(.jump-bottom:hover svg) {
+	:global(.jump-bottom:hover > svg) {
 		transform: translateY(var(--md-sys-space-2xs));
-	}
-
-	@media (max-width: 480px) {
-		.jump-bottom-shell {
-			right: var(--md-sys-space-sm);
-		}
-		:global(.jump-bottom) {
-			min-width: 0;
-			padding-inline: var(--md-sys-space-md);
-		}
 	}
 </style>
