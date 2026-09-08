@@ -492,6 +492,8 @@ describe('ToolResultCard collapsible', () => {
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header).toBeTruthy();
 		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(screen.queryByText('收起详情')).toBeNull();
+		expect(screen.queryByText('查看详情')).toBeNull();
 	});
 
 	it('keeps the details expanded as streaming ends', async () => {

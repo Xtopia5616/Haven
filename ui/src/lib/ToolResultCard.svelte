@@ -619,7 +619,6 @@
 						{formatTokenCount(toolDataUsage.total)} tokens
 					</span>
 				{/if}
-				<span class="tool-expand-hint">{cardOpen ? '收起详情' : '查看详情'}</span>
 			{/snippet}
 
 			<div class="tool-details">
@@ -853,13 +852,6 @@
 			transform: scale(1);
 		}
 	}
-	.tool-expand-hint {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-primary);
-		white-space: nowrap;
-	}
 	.tool-intent {
 		flex: none;
 		color: var(--md-sys-color-on-surface-variant);
@@ -1089,10 +1081,6 @@
 	@media (max-width: 520px) {
 		.tool-card {
 			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		}
-		.tool-expand-hint {
-			width: 100%;
-			margin-left: var(--md-sys-space-lg);
 		}
 		.ask-actions {
 			align-items: flex-start;
