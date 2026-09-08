@@ -26,7 +26,6 @@
 		toolName = '',
 		unrecoverable = false,
 		outcome = null,
-		silent = false,
 		content = '',
 		options = [],
 		awaiting = false,
@@ -45,9 +44,7 @@
 	let toolSource = $derived(classifyToolSource(toolName));
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
 	let displayName = $derived(toolDisplayName(toolName));
-	// Silent calls may still expose their tool name while running, but never
-	// their arguments or output. The placeholder disappears on observation.
-	let hasToolArgs = $derived(!silent && toolArgs != null && toolArgs !== '');
+	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
 	const outcomeLabels = /** @type {Record<string, string>} */ ({
 		failed: '执行失败',
 		cancelled: '已取消',
@@ -104,9 +101,8 @@
 		actionId ? /** @type {any} */ ($actionStore[actionId] || null) : null,
 	);
 	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
-	let liveStreaming = $derived(streaming || actionRunning || (!silent && !!livePreview));
+	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
 	let displayContent = $derived.by(() => {
-		if (silent) return '';
 		if (actionRunning) {
 			const out =
 				typeof boundAction.output === 'string' ? boundAction.output : livePreview || '';
@@ -147,17 +143,14 @@
 
 	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, displayContent) : null);
 
-	// Collapsible body: expands while the tool streams so live output is
-	// visible and auto-collapses once the observation is final (constraint
-	// tool_call_output_expand_during_collapse_after). Only streaming
-	// TRANSITIONS drive the state, so a manual click afterwards is never
-	// clobbered by content-only re-renders. Background actions stay open
-	// while `actionStore` reports running.
-	let cardOpen = $state(untrack(() => liveStreaming));
+	// Tool details are useful after completion as well as during execution, so
+	// cards start open and stay open. The user can still collapse a card
+	// manually; live output is filled into the same body as events arrive.
+	let cardOpen = $state(true);
 	let lastStreaming = untrack(() => liveStreaming);
 	$effect.pre(() => {
 		if (liveStreaming === lastStreaming) return;
-		cardOpen = liveStreaming;
+		if (liveStreaming) cardOpen = true;
 		lastStreaming = liveStreaming;
 	});
 	let kind = $derived(parsed?.kind ?? null);
@@ -356,7 +349,7 @@
 	</div>
 {:else}
 	<div class="tool-card" data-state={toolState} role="status" oncontextmenu={handleContextMenu}>
-		<MaterialCollapsible bind:open={cardOpen}>
+		<MaterialCollapsible bind:open={cardOpen} lazy>
 			{#snippet header()}
 				<span class="tool-card-icon" aria-hidden="true">
 					{#if kind === 'shell'}
@@ -634,38 +627,55 @@
 						{formatTokenCount(toolDataUsage.total)} tokens
 					</span>
 				{/if}
-				<span class="tool-state" data-state={toolState}>
-					<span class="tool-state-dot" aria-hidden="true"></span>
-					{toolStateLabel}
-				</span>
 				<span class="tool-expand-hint">{cardOpen ? '收起详情' : '查看详情'}</span>
 			{/snippet}
 
-			{#if cardOpen && hasToolArgs}
-				{@const argsValue = parseToolArgs(toolArgs)}
-				{#if argsValue != null}
-					<div class="tool-args">
-						<div class="tool-args-label">调用参数</div>
-						<JsonView value={argsValue} defaultDepth={0} />
-					</div>
-				{/if}
-			{/if}
+			<div class="tool-details">
+				<section class="tool-detail" data-detail="status">
+					<div class="tool-detail-label">执行状态</div>
+					<span class="tool-state" data-state={toolState}>
+						<span class="tool-state-dot" aria-hidden="true"></span>
+						{toolStateLabel}
+					</span>
+				</section>
 
-			{#if BodyRenderer}
-				<BodyRenderer
-					kind={kind ?? undefined}
-					{data}
-					{shellText}
-					{liveStreaming}
-					{rawText}
-					parts={notifyParts}
-				/>
-			{:else if liveStreaming}
-				<p class="tool-card-empty">等待输出…</p>
-			{/if}
-			{#if data.hint}
-				<div class="tool-card-hint">{data.hint}</div>
-			{/if}
+				<section class="tool-detail" data-detail="args">
+					<div class="tool-detail-label">调用参数</div>
+					{#if hasToolArgs}
+						{@const argsValue = parseToolArgs(toolArgs)}
+						{#if argsValue != null}
+							<div class="tool-args">
+								<JsonView value={argsValue} defaultDepth={0} />
+							</div>
+						{:else}
+							<p class="tool-card-empty">（无参数）</p>
+						{/if}
+					{:else}
+						<p class="tool-card-empty">（无参数）</p>
+					{/if}
+				</section>
+
+				<section class="tool-detail tool-detail--output" data-detail="output">
+					<div class="tool-detail-label">输出结果</div>
+					{#if BodyRenderer}
+						<BodyRenderer
+							kind={kind ?? undefined}
+							{data}
+							{shellText}
+							{liveStreaming}
+							{rawText}
+							parts={notifyParts}
+						/>
+					{:else if liveStreaming}
+						<p class="tool-card-empty">等待输出…</p>
+					{:else}
+						<p class="tool-card-empty">（无输出）</p>
+					{/if}
+					{#if data.hint}
+						<div class="tool-card-hint">{data.hint}</div>
+					{/if}
+				</section>
+			</div>
 		</MaterialCollapsible>
 	</div>
 {/if}
@@ -873,17 +883,36 @@
 		background: color-mix(in srgb, var(--md-sys-color-primary-container) 80%, transparent);
 		color: var(--md-sys-color-on-primary-container);
 	}
-	.tool-args {
-		margin-bottom: var(--md-sys-space-sm);
-		padding-bottom: var(--md-sys-space-sm);
-		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	.tool-details {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-sm);
 	}
-	.tool-args-label {
+	.tool-detail {
+		min-width: 0;
+	}
+	.tool-detail + .tool-detail {
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+		padding-top: var(--md-sys-space-sm);
+	}
+	.tool-detail-label {
+		margin-bottom: var(--md-sys-space-xs);
 		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
+		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: 4px;
+	}
+	.tool-detail[data-detail='status'] {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+	}
+	.tool-detail[data-detail='status'] .tool-detail-label {
+		margin-bottom: 0;
+	}
+	.tool-args {
+		min-width: 0;
 	}
 	.ask-question {
 		margin: 0 0 var(--md-sys-space-sm);

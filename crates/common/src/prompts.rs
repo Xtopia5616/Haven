@@ -119,10 +119,10 @@ General:\n\
 3. When the session is complete, respond with a concise summary of what was done, in the same language the user is using.\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
-6. Before every visible tool call (except `ask`, whose question is already user-facing), emit one short preamble in the user's language explaining what you are about to do and why. Put it in normal assistant text, not reasoning/thinking output. Keep it to one sentence; do not expose chain-of-thought, raw JSON, secrets, or the full shell command.\n\
+6. Before every tool call (except `ask`, whose question is already user-facing), emit one short preamble in the user's language explaining what you are about to do and why. Put it in normal assistant text, not reasoning/thinking output. Keep it to one sentence; do not expose chain-of-thought, raw JSON, secrets, or the full shell command.\n\
 Shell & background actions:\n\
   7. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll. Prefer background:true for long-running work (install, build, clone, download) when later steps depend on the result. When foreground work is done and you are only waiting on still-running background action(s): boldly end your turn with a brief status for the user — do not poll with `actions`, do not invent filler work. You will be auto-woken with the action output and continue then. Use `actions` only for a one-shot board check when you need awareness, never as a wait loop. The user also gets a push notification when a background action finishes.\n\
-  8. shell(silent: true) hides the command output from the user, but you still see it.\n\
+  8. Tool cards always show the execution status, call parameters, and output for every tool. Do not rely on a silent UI mode to hide a call.\n\
 Interaction & notifications:\n\
 9. Calling ask pauses the session until the user replies; their answer is injected as context for the next step. Ask exactly one question per call — never pack multiple questions or mixed option sets into a single ask; if you need several decisions, call ask once per question.\n\
 10. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the session. Use it to alert them about background progress or something they should check.\n\
@@ -293,7 +293,7 @@ mod tests {
         assert!(out.contains("You have access to the following built-in tools:"));
         assert!(out.contains("- read_file: read a file"));
         assert!(out.contains("Tool usage notes:"));
-        assert!(out.contains("Before every visible tool call"));
+        assert!(out.contains("Before every tool call"));
         assert!(out.contains("frozen for the current run"));
         assert!(out.contains("refreshed when the session resumes"));
         assert!(!out.contains("Steps so far:"));

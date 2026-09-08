@@ -882,18 +882,20 @@ describe('newToolMessage', () => {
 		expect('toolArgs' in fill).toBe(false);
 	});
 
-	it('marks a silent action as transient without adding its arguments', () => {
+	it('keeps the complete input on a streaming action', () => {
 		const msg = newToolMessage({
 			id: 'step-1',
 			stepNumber: 1,
 			toolName: 'shell',
 			streaming: true,
-			silent: true,
-			toolArgs: { command: 'secret command' },
+			toolArgs: { command: 'echo hi', silent: true },
 		});
 
-		expect(msg).toMatchObject({ silent: true, streaming: true });
-		expect('toolArgs' in msg).toBe(false);
+		expect(msg).toMatchObject({
+			streaming: true,
+			toolArgs: { command: 'echo hi', silent: true },
+		});
+		expect('silent' in msg).toBe(false);
 	});
 });
 

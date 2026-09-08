@@ -264,8 +264,7 @@ export function createChatAgentEventHandlers({
 						toolName: data.toolName,
 						time: new Date().toLocaleTimeString(),
 						streaming: true,
-						...(data.silent ? {} : { toolArgs: data.input ?? null }),
-						silent: data.silent,
+						toolArgs: data.input ?? null,
 						showFallbackIntent,
 					}),
 				);
@@ -283,15 +282,6 @@ export function createChatAgentEventHandlers({
 			const sessionId = data.sessionId;
 			const toolMessageId = data.stepId;
 			const { thoughtId } = blockIdsOf(sessionId, data.stepNumber, data.runId);
-			if (data.silent) {
-				clearToolOutputPreview(toolMessageId);
-				if (toolMessageId) {
-					updateSessionMessages(sessionId, (messages) =>
-						messages.filter((message) => message.id !== toolMessageId),
-					);
-				}
-				return;
-			}
 			flushChunksNow();
 			updateModelState('streaming');
 			clearToolOutputPreview(toolMessageId);

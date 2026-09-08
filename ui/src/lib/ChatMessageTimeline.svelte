@@ -57,7 +57,6 @@
 				stepNumber={msg.stepNumber}
 				usage={showStepUsage ? stepUsage(msg.stepNumber) : null}
 				toolArgs={msg.toolArgs ?? null}
-				silent={!!msg.silent}
 				attachments={msg.attachments}
 				{showFallbackIntent}
 				options={msg.options ?? []}

@@ -160,9 +160,9 @@ describe('buildResumeMessages', () => {
 		});
 	});
 
-	it('hides completed silent tool steps after their transient live frame', () => {
-		// `"silent": true` keeps only a transient live status frame; the resume
-		// rebuild must not resurrect the completed call as a tool badge.
+	it('restores silent-input tool steps with the same visible card as other tools', () => {
+		// The input flag is retained as ordinary tool parameters so the resumed
+		// card still shows status, parameters and output consistently.
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
@@ -170,17 +170,21 @@ describe('buildResumeMessages', () => {
 				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's1', action_tool: 'shell', observation: '{"silent":true,"ok":true}', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 's1', action_tool: 'shell', action_input: '{"command":"echo hi","silent":true}', observation: '{"silent":true,"ok":true}', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
 			],
 		});
-		expect(items).toHaveLength(2);
-		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+		expect(items).toHaveLength(3);
+		expect(items.find((i) => i.type === 'tool')).toMatchObject({
+			id: 's1',
+			toolName: 'shell',
+			toolArgs: '{"command":"echo hi","silent":true}',
+			content: '{"silent":true,"ok":true}',
+		});
 	});
 
-	it('still assigns a stepNumber to the thought before a silent action step', () => {
-		// The completed silent action has no badge, but its preceding thought
-		// must resolve to the step via the matching thought step row so
-		// rollback targeting keeps working.
+	it('assigns a stepNumber to the thought before a visible action step', () => {
+		// The action card is visible too, while the preceding thought still
+		// resolves to its step for rollback targeting.
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
@@ -194,7 +198,7 @@ describe('buildResumeMessages', () => {
 			],
 		});
 		expect(items.find((i) => i.id === 'm2')!.stepNumber).toBe(1);
-		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(1);
 	});
 
 	it('falls back to the session input text when there are no messages', () => {

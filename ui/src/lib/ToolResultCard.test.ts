@@ -372,7 +372,7 @@ describe('ToolResultCard source + args', () => {
 		expect(screen.getByText('"a.rs"')).toBeTruthy();
 	});
 
-	it('labels Skill tools and accepts resume action_input JSON strings', async () => {
+	it('labels Skill tools and accepts resume action_input JSON strings', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'skill__weather',
 			content: JSON.stringify({ temp: 20 }),
@@ -381,38 +381,42 @@ describe('ToolResultCard source + args', () => {
 		const badge = container.querySelector('.tool-source') as HTMLElement;
 		expect(badge.getAttribute('data-source')).toBe('skill');
 		expect(screen.getByText('weather')).toBeTruthy();
-		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
-		await fireEvent.click(header);
 		expect(screen.getByText('调用参数')).toBeTruthy();
 		expect(screen.getByText('"city"')).toBeTruthy();
 		expect(screen.getByText('"Shanghai"')).toBeTruthy();
 	});
 
-	it('does not mount the args JsonView while the card is collapsed', () => {
+	it('does not mount the args JsonView while the card is manually collapsed', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
 			content: 'ok',
 			toolArgs: { command: 'echo hi' },
 		});
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		await fireEvent.click(header);
 		expect(container.querySelector('.tool-args')).toBeNull();
 		expect(container.querySelector('.jv-view')).toBeNull();
 	});
 });
 
 describe('ToolResultCard empty in-progress', () => {
-	it('shows a transient silent-call frame without exposing arguments', () => {
+	it('shows status, parameters and output sections for every call', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
-			content: '',
+			content: JSON.stringify({ output: 'result' }),
 			streaming: true,
-			silent: true,
-			toolArgs: { command: 'secret command' },
+			toolArgs: { command: 'echo hi', silent: true },
 		});
 
 		expect(container.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(screen.getByText('执行中')).toBeTruthy();
-		expect(container.querySelector('.tool-args')).toBeNull();
+		expect(screen.getByText('执行状态')).toBeTruthy();
+		expect(screen.getByText('调用参数')).toBeTruthy();
+		expect(screen.getByText('输出结果')).toBeTruthy();
+		expect(screen.getByText('"command"')).toBeTruthy();
+		expect(screen.getByText('"echo hi"')).toBeTruthy();
+		expect(screen.getByText('result')).toBeTruthy();
 	});
 
 	it('shows the deterministic intent fallback when the model emitted no preamble', () => {
@@ -425,15 +429,17 @@ describe('ToolResultCard empty in-progress', () => {
 		expect(screen.getByText('调用工具')).toBeTruthy();
 	});
 
-	it('renders a collapsed card for an empty completed call', () => {
+	it('renders an expanded card for an empty completed call', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: '',
 		});
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header).toBeTruthy();
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		expect(screen.getByText('文件与搜索')).toBeTruthy();
+		expect(screen.getByText('（无参数）')).toBeTruthy();
+		expect(screen.getByText('（无输出）')).toBeTruthy();
 	});
 
 	it('expands and shows a waiting placeholder while streaming with no content', () => {
@@ -449,17 +455,17 @@ describe('ToolResultCard empty in-progress', () => {
 });
 
 describe('ToolResultCard collapsible', () => {
-	it('renders collapsed once the observation is final', () => {
+	it('keeps the details expanded once the observation is final', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header).toBeTruthy();
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
-	it('expands while streaming and auto-collapses when streaming ends', async () => {
+	it('keeps the details expanded as streaming ends', async () => {
 		const { container, rerender } = render(ToolResultCard, {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
@@ -468,7 +474,7 @@ describe('ToolResultCard collapsible', () => {
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ streaming: false });
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
 	it('toggles open when the header is clicked and keeps a manual expand', async () => {
@@ -477,11 +483,11 @@ describe('ToolResultCard collapsible', () => {
 			content: searchJson([{ path: 'a.rs' }]),
 		});
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await fireEvent.click(header);
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 		await rerender({ content: searchJson([{ path: 'b.rs' }]) });
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 });
 

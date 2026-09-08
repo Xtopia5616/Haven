@@ -273,9 +273,6 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		if (msgIds.has(stepId) && step.action_tool !== 'ask') continue;
 		const toolName = canonicalToolName(step.action_tool);
 		const unrecoverable = isUnrecoverableHistoricalTool(step.action_tool);
-		// Silent tool steps (input `"silent": true`) are hidden in the live
-		// chat; keep them hidden here so resume matches the live view.
-		if (step.silent) continue;
 		const obs = step.observation && step.observation !== '{}' ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card
 		// under the step row's id (matching the live card). New records keep

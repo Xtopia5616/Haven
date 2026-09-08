@@ -301,7 +301,7 @@ describe('ChatBubble', () => {
 		expect(screen.getByText('ok')).toBeTruthy();
 	});
 
-	it('renders a tool result card collapsed once the observation is final', () => {
+	it('renders a tool result card expanded once the observation is final', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
@@ -313,10 +313,10 @@ describe('ChatBubble', () => {
 		);
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header).toBeTruthy();
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
-	it('expands a tool result card while streaming and auto-collapses after', async () => {
+	it('keeps a tool result card expanded as streaming ends', async () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
@@ -330,10 +330,10 @@ describe('ChatBubble', () => {
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ streaming: false });
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
-	it('keeps a manual tool card expand across content-only re-renders', async () => {
+	it('keeps a manual tool card collapse across content-only re-renders', async () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
@@ -344,11 +344,11 @@ describe('ChatBubble', () => {
 			}),
 		);
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await fireEvent.click(header);
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 		await rerender({ content: 'second output' });
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('renders a raw card for non-JSON text observations', () => {

@@ -22,7 +22,6 @@
 		toolName = '',
 		unrecoverable = false,
 		outcome = null,
-		silent = false,
 		messageId = '',
 		stepNumber = null,
 		usage = null,
@@ -363,7 +362,6 @@
 				{toolName}
 				{unrecoverable}
 				{outcome}
-				{silent}
 				{content}
 				{streaming}
 				{actionId}
