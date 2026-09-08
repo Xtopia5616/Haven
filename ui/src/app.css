@@ -1156,9 +1156,14 @@ select.md-select {
 	flex-shrink: 0;
 	height: var(--md-comp-tab-container-height);
 	padding: var(--md-comp-tab-padding-block) var(--md-sys-space-xl);
-	background: var(--md-sys-color-surface);
+	/* Secondary tabs live inside WorkspaceSurface; let that surface carry the
+	 * background so the tab row does not read as a separate color band. */
+	background: transparent;
 	border-bottom: 1px solid var(--md-sys-color-outline-variant);
 	gap: var(--md-sys-space-xs);
+}
+.md-tabs.workspace-nav {
+	background: var(--md-sys-color-surface);
 }
 .md-tab {
 	position: relative;
