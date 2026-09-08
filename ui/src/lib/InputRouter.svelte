@@ -686,7 +686,7 @@
 
 <style>
 	.input-area {
-		background: transparent;
+		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
@@ -695,7 +695,12 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
 		flex-shrink: 0;
-		max-width: min(800px, calc(100% - 2 * var(--md-sys-content-gutter)));
+		/* Match the message column's horizontal inset so the composer edge,
+		 * message bubbles, and the jump-to-bottom control share one guide. */
+		max-width: min(
+			calc(var(--md-sys-chat-max-width) - 2 * var(--md-sys-space-md)),
+			calc(100% - 2 * var(--md-sys-space-md))
+		);
 		margin: 0 auto var(--md-sys-space-md);
 		width: 100%;
 		transition:
@@ -882,7 +887,6 @@
 
 	@media (max-width: 700px) {
 		.input-area {
-			max-width: calc(100% - 2 * var(--md-sys-content-gutter));
 			padding-inline: var(--md-sys-space-md);
 		}
 		.toolbar-row {
