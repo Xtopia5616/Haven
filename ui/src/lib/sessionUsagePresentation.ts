@@ -117,10 +117,9 @@ function cacheHitRatePercent(
 	creation = 0,
 	exclusive = false,
 ): number | null {
-	if (!cached || cached <= 0) return null;
 	const denominator = exclusive ? (prompt || 0) + cached + (creation || 0) : prompt || 0;
 	if (!denominator) return null;
-	return Math.min(100, (cached / denominator) * 100);
+	return Math.min(100, Math.max(0, (cached / denominator) * 100));
 }
 
 /**

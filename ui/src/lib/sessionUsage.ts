@@ -226,8 +226,8 @@ export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null 
 		cached += read;
 		eligibleInput += call.cache_accounting === 'exclusive' ? prompt + read + creation : prompt;
 	}
-	if (!cached || !eligibleInput) return null;
-	return Math.min(100, (cached / eligibleInput) * 100);
+	if (!eligibleInput) return null;
+	return Math.min(100, Math.max(0, (cached / eligibleInput) * 100));
 }
 
 /**

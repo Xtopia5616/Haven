@@ -54,13 +54,24 @@ describe('SessionToolbar', () => {
 		});
 
 		const tokenButton = screen.getByRole('button', { name: '打开 token 使用明细' });
-		expect(tokenButton.getAttribute('data-cache-tone')).toBe('medium');
+		expect(tokenButton.classList.contains('selected')).toBe(false);
+		expect(tokenButton.getAttribute('data-context-tone')).toBe('low');
+		const cacheBar = tokenButton.querySelector('.token-budget');
+		expect(cacheBar?.getAttribute('data-cache-tone')).toBe('medium');
+		expect(cacheBar?.getAttribute('aria-label')).toBe('缓存命中 50%');
+		expect(cacheBar?.querySelector('.token-budget-fill')?.getAttribute('style')).toContain(
+			'width: 50%',
+		);
 		expect(screen.queryByText('缓存 50%')).toBeNull();
 
 		await fireEvent.click(tokenButton);
+		expect(tokenButton.classList.contains('selected')).toBe(true);
 		expect(screen.getByRole('dialog', { name: 'Token 使用明细' })).toBeTruthy();
 		expect(screen.getByText('命中率')).toBeTruthy();
 		expect(screen.getAllByText('50%')).toHaveLength(1);
 		expect(screen.getByText('当前请求')).toBeTruthy();
+
+		await fireEvent.click(document.body);
+		expect(tokenButton.classList.contains('selected')).toBe(false);
 	});
 });

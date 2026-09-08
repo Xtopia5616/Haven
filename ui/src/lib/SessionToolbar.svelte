@@ -49,6 +49,15 @@
 		if (value >= 50) return 'medium';
 		return 'low';
 	}
+
+	/** @param {number | null | undefined} value */
+	function contextTone(value) {
+		if (value == null) return 'none';
+		if (value >= 90) return 'danger';
+		if (value >= 75) return 'high';
+		if (value >= 50) return 'medium';
+		return 'low';
+	}
 </script>
 
 <svelte:window onclick={closeTokenDetails} />
@@ -169,8 +178,8 @@
 <div class="token-stats-wrap" bind:this={tokenStatsWrap}>
 	<button
 		class="token-stats"
-		class:active={!!tokenStats}
-		data-cache-tone={cacheTone(tokenUsageDetails?.currentCacheRatePercent)}
+		class:selected={tokenDetailsOpen}
+		data-context-tone={contextTone(tokenUsageDetails?.contextRatePercent)}
 		type="button"
 		title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
 		aria-label={tokenStats ? '打开 token 使用明细' : tokenStatsHint}
@@ -210,18 +219,18 @@
 				>
 				<span class="token-unit">{showCumulativeTokens ? 'tok' : 'ctx'}</span>
 			</div>
-			{#if tokenUsageDetails?.contextRatePercent != null}
+			{#if tokenUsageDetails?.currentCacheRatePercent != null}
 				<div
 					class="token-budget"
-					class:warn={tokenUsageDetails.contextRatePercent >= 75}
-					class:danger={tokenUsageDetails.contextRatePercent >= 90}
-					aria-label={`上下文使用 ${percentage(tokenUsageDetails.contextRatePercent)}`}
+					data-cache-tone={cacheTone(tokenUsageDetails.currentCacheRatePercent)}
+					aria-label={`缓存命中 ${percentage(tokenUsageDetails.currentCacheRatePercent)}`}
 				>
 					<div
 						class="token-budget-fill"
-						style="width: {Math.min(100, tokenUsageDetails.contextRatePercent).toFixed(
-							1,
-						)}%"
+						style="width: {Math.min(
+							100,
+							tokenUsageDetails.currentCacheRatePercent,
+						).toFixed(1)}%"
 					></div>
 				</div>
 			{/if}
@@ -563,33 +572,41 @@
 	.token-stats:disabled {
 		cursor: default;
 	}
-	.token-stats.active {
+	.token-stats.selected {
 		border-color: var(--md-sys-color-primary);
 	}
-	.token-stats[data-cache-tone='low'] {
+	.token-stats[data-context-tone='low'] {
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-surface-container) 91%,
-			var(--md-sys-color-tertiary) 9%
+			var(--md-sys-color-success) 9%
 		);
 	}
-	.token-stats[data-cache-tone='medium'] {
+	.token-stats[data-context-tone='medium'] {
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-surface-container) 86%,
 			var(--md-sys-color-primary) 14%
 		);
 	}
-	.token-stats[data-cache-tone='high'] {
+	.token-stats[data-context-tone='high'] {
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-surface-container) 78%,
-			var(--md-sys-color-primary) 22%
+			var(--md-sys-color-warning) 22%
 		);
 	}
-	.token-stats[data-cache-tone='low'].active,
-	.token-stats[data-cache-tone='medium'].active,
-	.token-stats[data-cache-tone='high'].active {
+	.token-stats[data-context-tone='danger'] {
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-surface-container) 78%,
+			var(--md-sys-color-error) 22%
+		);
+	}
+	.token-stats[data-context-tone='low'].selected,
+	.token-stats[data-context-tone='medium'].selected,
+	.token-stats[data-context-tone='high'].selected,
+	.token-stats[data-context-tone='danger'].selected {
 		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
 	}
 	.token-icon {
@@ -632,11 +649,14 @@
 			width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard),
 			background var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
 	}
-	.token-budget.warn .token-budget-fill {
-		background: #c97a00;
-	}
-	.token-budget.danger .token-budget-fill {
+	.token-budget[data-cache-tone='low'] .token-budget-fill {
 		background: var(--md-sys-color-error);
+	}
+	.token-budget[data-cache-tone='medium'] .token-budget-fill {
+		background: var(--md-sys-color-warning);
+	}
+	.token-budget[data-cache-tone='high'] .token-budget-fill {
+		background: var(--md-sys-color-success);
 	}
 	.token-details {
 		position: absolute;

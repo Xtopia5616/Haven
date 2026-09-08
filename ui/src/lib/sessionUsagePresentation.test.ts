@@ -77,4 +77,13 @@ describe('buildTokenUsageDetails', () => {
 
 		expect(details.currentCacheRatePercent).toBeNull();
 	});
+
+	it('keeps a known zero cache hit rate visible', () => {
+		const details = buildTokenUsageDetails(
+			{ promptTokens: 100, cachedTokens: 0, cacheAccounting: 'inclusive' },
+			[],
+		);
+
+		expect(details.currentCacheRatePercent).toBe(0);
+	});
 });
