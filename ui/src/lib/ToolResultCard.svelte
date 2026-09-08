@@ -373,6 +373,22 @@
 							r="2"
 						/><path d="m7.7 11 8.6-4M7.7 13l8.6 4" /></svg
 						>
+					{:else if toolSource === 'skill'}
+						<svg
+							width="12"
+							height="12"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path
+								d="m12 3-1.8 5.2L5 10l5.2 1.8L12 17l1.8-5.2L19 10l-5.2-1.8L12 3Z"
+							/><path
+								d="m19 16-.7 2.3L16 19l2.3.7L19 22l.7-2.3L22 19l-2.3-.7L19 16Z"
+							/></svg
+						>
 					{:else if kind === 'shell'}
 						<svg
 							width="12"

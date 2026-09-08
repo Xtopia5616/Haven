@@ -416,6 +416,26 @@ describe('ToolResultCard source + args', () => {
 		expect(screen.getByText('"Shanghai"')).toBeTruthy();
 	});
 
+	it('labels MCP and skill activation cards with their source and icon', () => {
+		const { container, rerender } = render(ToolResultCard, {
+			toolName: 'load_mcp',
+			content: JSON.stringify({ loaded: true }),
+		});
+		let badge = container.querySelector('.tool-source') as HTMLElement;
+		expect(badge.getAttribute('data-source')).toBe('mcp');
+		expect(badge.textContent).toBe('MCP');
+		expect(container.querySelector('.tool-card-icon svg')).toBeTruthy();
+
+		rerender({
+			toolName: 'load_skill',
+			content: JSON.stringify({ loaded: true }),
+		});
+		badge = container.querySelector('.tool-source') as HTMLElement;
+		expect(badge.getAttribute('data-source')).toBe('skill');
+		expect(badge.textContent).toBe('Skill');
+		expect(container.querySelector('.tool-card-icon svg')).toBeTruthy();
+	});
+
 	it('does not mount the args JsonView while the card is manually collapsed', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',

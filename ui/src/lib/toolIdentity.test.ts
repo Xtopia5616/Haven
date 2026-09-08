@@ -14,10 +14,13 @@ describe('classifyToolSource', () => {
 		expect(classifyToolSource('skill_weather')).toBe('builtin');
 	});
 
-	it('treats builtins and load_* meta-tools as builtin', () => {
+	it('classifies MCP and skill activation tools by the capability they load', () => {
+		expect(classifyToolSource('load_mcp')).toBe('mcp');
+		expect(classifyToolSource('load_skill')).toBe('skill');
+	});
+
+	it('treats regular builtins as builtin', () => {
 		expect(classifyToolSource('shell')).toBe('builtin');
-		expect(classifyToolSource('load_mcp')).toBe('builtin');
-		expect(classifyToolSource('load_skill')).toBe('builtin');
 		expect(classifyToolSource('')).toBe('builtin');
 	});
 });

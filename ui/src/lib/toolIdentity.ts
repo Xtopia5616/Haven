@@ -38,10 +38,13 @@ function stripToolPrefix(name: string, prefix: string): string | null {
 /** Classify a wire tool name into builtin / skill / MCP. */
 export function classifyToolSource(toolName: string): ToolSource {
 	const name = String(toolName || '');
-	if (name.startsWith('mcp__')) {
+	// The activation tools are implemented by Haven, but their card represents
+	// the capability being activated, so keep them visually consistent with the
+	// dynamic tools they expose.
+	if (name === 'load_mcp' || name.startsWith('mcp__')) {
 		return 'mcp';
 	}
-	if (name.startsWith('skill__')) {
+	if (name === 'load_skill' || name.startsWith('skill__')) {
 		return 'skill';
 	}
 	return 'builtin';
