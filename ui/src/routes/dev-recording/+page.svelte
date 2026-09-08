@@ -1,5 +1,6 @@
 <script>
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 
 	let mode = $state('recording');
 	let duration = $state(7);
@@ -14,9 +15,24 @@
 <svelte:head><title>Recording Preview</title></svelte:head>
 
 <div style="position: relative; min-height: 300px;">
-	<button onclick={() => (mode = 'recording')}>录音中(静默)</button>
-	<button onclick={() => (mode = 'speaking')}>正在聆听</button>
-	<button onclick={() => (mode = 'processing')}>转写中</button>
+	<MaterialButton
+		variant="tonal"
+		label="录音中(静默)"
+		ariaPressed={mode === 'recording'}
+		onclick={() => (mode = 'recording')}
+	/>
+	<MaterialButton
+		variant="tonal"
+		label="正在聆听"
+		ariaPressed={mode === 'speaking'}
+		onclick={() => (mode = 'speaking')}
+	/>
+	<MaterialButton
+		variant="tonal"
+		label="转写中"
+		ariaPressed={mode === 'processing'}
+		onclick={() => (mode = 'processing')}
+	/>
 
 	{#if mode === 'recording'}
 		<RecordingIndicator isRecording={true} vadState="silent" duration={duration} onCancel={async () => {}} />

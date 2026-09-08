@@ -1,4 +1,7 @@
 <script>
+	import MaterialButton from './MaterialButton.svelte';
+	import MaterialIconButton from './MaterialIconButton.svelte';
+
 	/**
 	 * Unified API-key control (same chrome as md-input).
 	 *
@@ -95,73 +98,36 @@
 			spellcheck="false"
 			{disabled}
 		/>
-		<button
-			type="button"
-			class="api-key-icon-btn"
-			aria-label={showKey ? 'Hide API key' : 'Show API key'}
+		<MaterialIconButton
+			icon={showKey ? 'eye-off' : 'eye'}
+			className="api-key-icon-btn"
+			label={showKey ? 'Hide API key' : 'Show API key'}
 			title={showKey ? 'Hide API key' : 'Show API key'}
 			{disabled}
-			onclick={() => {
-				showKey = !showKey;
-			}}
-		>
-			{#if showKey}
-				<svg
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					aria-hidden="true"
-					><path
-						d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
-					/><line x1="1" y1="1" x2="23" y2="23" /></svg
-				>
-			{:else}
-				<svg
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					aria-hidden="true"
-					><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle
-						cx="12"
-						cy="12"
-						r="3"
-					/></svg
-				>
-			{/if}
-		</button>
+			onclick={() => (showKey = !showKey)}
+		/>
 	</div>
 {:else}
 	<div class="api-key-field" class:empty={!configured} class:disabled>
-		<button
-			type="button"
-			class="api-key-display"
+		<MaterialButton
+			variant="text"
+			className="api-key-display"
 			{id}
 			title={configured ? 'Configured' : 'Not Configured'}
-			aria-label={configured ? 'Change API key' : 'Set API key'}
+			ariaLabel={configured ? 'Change API key' : 'Set API key'}
 			{disabled}
 			onclick={handleEdit}
 		>
 			<span class="api-key-mask" class:grey={!configured}>{MASK}</span>
-		</button>
-		<button
-			type="button"
-			class="api-key-action"
+		</MaterialButton>
+		<MaterialButton
+			variant="text"
+			className="api-key-action"
+			label={configured ? 'Change' : 'Set'}
 			{disabled}
 			title={configured ? 'Configured' : 'Not Configured'}
 			onclick={handleEdit}
-		>
-			{configured ? 'Change' : 'Set'}
-		</button>
+		/>
 	</div>
 {/if}
 
@@ -195,7 +161,7 @@
 		background: color-mix(in srgb, var(--md-sys-color-surface-container-high) 55%, transparent);
 	}
 
-	.api-key-display {
+	:global(.md-btn.api-key-display) {
 		flex: 1;
 		min-width: 0;
 		display: flex;
@@ -243,7 +209,7 @@
 		opacity: 0.72;
 	}
 
-	.api-key-action {
+	:global(.md-btn.api-key-action) {
 		flex-shrink: 0;
 		min-width: 72px;
 		padding: 0 var(--md-sys-space-md);
@@ -259,14 +225,14 @@
 		transition: background-color var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
-	.api-key-action:hover:not(:disabled) {
+	:global(.md-btn.api-key-action:hover:not(:disabled)) {
 		background: var(--md-sys-color-surface-container-high);
 	}
-	.api-key-action:disabled {
+	:global(.md-btn.api-key-action:disabled) {
 		cursor: default;
 	}
 
-	.api-key-icon-btn {
+	:global(.md-icon-btn.api-key-icon-btn) {
 		flex-shrink: 0;
 		width: var(--md-comp-textfield-container-height);
 		border: none;
@@ -281,7 +247,7 @@
 			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
-	.api-key-icon-btn:hover:not(:disabled) {
+	:global(.md-icon-btn.api-key-icon-btn:hover:not(:disabled)) {
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface);
 	}

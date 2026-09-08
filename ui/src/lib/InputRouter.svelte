@@ -519,13 +519,13 @@
 						<span class="file-preview-name">{file.filename}</span>
 						<span class="file-preview-size">{formatFileSize(file.size)}</span>
 					</div>
-					<button
-						class="file-preview-remove"
-						onclick={() => removePendingFile(i)}
-						aria-label="移除文件"
+					<MaterialIconButton
+						icon="close"
+						className="file-preview-remove"
+						label="移除文件"
 						title="移除文件"
-						type="button">&times;</button
-					>
+						onclick={() => removePendingFile(i)}
+					/>
 				</div>
 			{/each}
 		</div>
@@ -535,12 +535,12 @@
 			{#each pendingImages as img, i (img.data + i)}
 				<div class="image-preview">
 					<img src={imageDataUrl(img)} alt="待发送图片" />
-					<button
-						class="image-preview-remove"
+					<MaterialIconButton
+						icon="close"
+						className="image-preview-remove"
+						label="移除图片"
 						onclick={() => removePendingImage(i)}
-						aria-label="移除图片"
-						type="button">&times;</button
-					>
+					/>
 				</div>
 			{/each}
 		</div>
@@ -758,22 +758,17 @@
 		object-fit: cover;
 		display: block;
 	}
-	.image-preview-remove {
+	:global(.md-icon-btn.image-preview-remove) {
 		position: absolute;
-		top: 2px;
-		right: 2px;
-		width: 20px;
-		height: 20px;
-		border-radius: 50%;
-		border: none;
-		background: rgba(0, 0, 0, 0.6);
-		color: #fff;
-		font-size: 13px;
-		line-height: 1;
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		justify-content: center;
+		top: var(--md-sys-space-2xs);
+		right: var(--md-sys-space-2xs);
+		width: var(--md-comp-icon-button-compact-size);
+		height: var(--md-comp-icon-button-compact-size);
+		min-width: var(--md-comp-icon-button-compact-size);
+		min-height: var(--md-comp-icon-button-compact-size);
+		border-color: transparent;
+		background: color-mix(in srgb, var(--md-sys-color-scrim) 60%, transparent);
+		color: var(--md-sys-color-on-surface);
 	}
 
 	.file-preview-row {
@@ -814,23 +809,18 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.file-preview-remove {
-		width: 20px;
-		height: 20px;
+	:global(.md-icon-btn.file-preview-remove) {
+		width: var(--md-comp-icon-button-compact-size);
+		height: var(--md-comp-icon-button-compact-size);
+		min-width: var(--md-comp-icon-button-compact-size);
+		min-height: var(--md-comp-icon-button-compact-size);
 		margin-left: auto;
-		border-radius: 50%;
-		border: none;
+		border-color: transparent;
 		flex-shrink: 0;
 		background: var(--md-sys-color-surface-container-highest);
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
-		line-height: 1;
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		justify-content: center;
 	}
-	.file-preview-remove:hover {
+	:global(.md-icon-btn.file-preview-remove:hover) {
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
 	}

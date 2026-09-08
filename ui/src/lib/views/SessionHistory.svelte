@@ -98,13 +98,20 @@
 
 	{#if selectMode && sessions.length > 0}
 		<div class="select-bar md-toolbar">
-			<button class="select-all-row" onclick={() => onToggleSelectAll()}
-				><div
-					class="md-checkbox-static"
-					class:checked={selectedIds.size === sessions.length}
-				></div>
-				<span>全选（{sessions.length}）</span></button
+			<MaterialButton
+				variant="text"
+				className="select-all-row"
+				ariaPressed={selectedIds.size === sessions.length}
+				onclick={() => onToggleSelectAll()}
 			>
+				{#snippet children()}
+					<span
+						class="md-checkbox-static"
+						class:checked={selectedIds.size === sessions.length}
+					></span>
+					<span>全选（{sessions.length}）</span>
+				{/snippet}
+			</MaterialButton>
 		</div>
 	{/if}
 	{#if sessions.length === 0}
@@ -175,26 +182,29 @@
 										autocomplete="off"
 									/>
 								{:else}
-									<button
-										type="button"
-										class="session-title"
-										onclick={() => onStartEdit(session)}
-										aria-label={`重命名${displayTitle(session)}`}
-										>{displayTitle(session)}<svg
-											class="title-edit-icon"
-											width="14"
-											height="14"
-											viewBox="0 0 24 24"
-											fill="none"
-											stroke="currentColor"
-											stroke-width="2"
-											stroke-linecap="round"
-											stroke-linejoin="round"
-											><path
-												d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
-											/></svg
-										></button
-									>
+					<MaterialButton
+						variant="text"
+						className="session-title"
+						ariaLabel={`重命名${displayTitle(session)}`}
+						onclick={() => onStartEdit(session)}
+					>
+						{#snippet children()}
+							{displayTitle(session)}<svg
+								class="title-edit-icon"
+								width="14"
+								height="14"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								><path
+									d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
+								/></svg
+							>
+						{/snippet}
+					</MaterialButton>
 								{/if}
 								<MaterialBadge
 									variant={statusVariant(session.status)}
@@ -265,18 +275,16 @@
 	.select-bar {
 		margin-bottom: var(--md-sys-space-md);
 	}
-	.select-all-row {
+	:global(.md-btn.select-all-row) {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
+		height: auto;
+		min-width: 0;
+		padding: 0;
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
-		background: none;
-		border: none;
-		font-family: inherit;
-		cursor: pointer;
-		padding: 0;
 	}
 	.session-list {
 		display: flex;
@@ -324,13 +332,13 @@
 		flex: 1;
 		min-width: 0;
 	}
-	.session-title {
+	:global(.md-btn.session-title) {
 		position: relative;
-		border: 0;
+		height: auto;
+		min-width: 0;
 		padding: 0;
-		background: transparent;
-		font-family: inherit;
 		text-align: left;
+		justify-content: flex-start;
 		font-size: var(--md-sys-typescale-body-medium-size);
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-body-medium-line-height);
@@ -345,12 +353,12 @@
 		white-space: nowrap;
 		flex: 1;
 	}
-	.session-title:focus-visible {
+	:global(.md-btn.session-title:focus-visible) {
 		border-radius: var(--md-sys-shape-extra-small);
 		outline: none;
 		box-shadow: var(--md-sys-focus-ring);
 	}
-	.session-title:hover .title-edit-icon {
+	:global(.md-btn.session-title:hover .title-edit-icon) {
 		opacity: 1;
 	}
 	.title-edit-icon {

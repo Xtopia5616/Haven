@@ -4,6 +4,7 @@
 	 * @prop {string} label
 	 * @prop {boolean} selected
 	 * @prop {function} onSelect
+	 * @prop {function} onKeydown
 	 * @prop {boolean} disabled
 	 * @prop {string} className
 	 */
@@ -11,9 +12,16 @@
 		label = '',
 		selected = false,
 		onSelect = () => {},
+		onKeydown = undefined,
 		disabled = false,
 		className = '',
 	} = $props();
+
+	/** @param {MouseEvent} event */
+	function handleClick(event) {
+		event.stopPropagation();
+		onSelect?.();
+	}
 </script>
 
 <button
@@ -22,7 +30,8 @@
 	class:selected
 	aria-pressed={selected}
 	{disabled}
-	onclick={() => onSelect()}
+	onclick={handleClick}
+	onkeydown={onKeydown}
 >
 	{label}
 </button>

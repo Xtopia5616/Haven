@@ -3,6 +3,8 @@
 	import JsonView from '$lib/JsonView.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialChoiceChip from '$lib/MaterialChoiceChip.svelte';
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { parseToolResult } from '$lib/toolResultParsing.ts';
 	import { copyText } from '$lib/clipboard.ts';
@@ -302,22 +304,24 @@
 		{#if awaiting && options && options.length > 0}
 			<div class="ask-options">
 				{#each options as opt (opt)}
-					<button
-						class="ask-option"
-						class:selected={selectedOptions.includes(opt)}
-						aria-pressed={selectedOptions.includes(opt)}
-						onclick={() => toggleAskOption(opt)}
-						onkeydown={handleAskKeydown}
-						type="button">{opt}</button
-					>
+					<MaterialChoiceChip
+						label={opt}
+						className="ask-option"
+						selected={selectedOptions.includes(opt)}
+						onSelect={() => toggleAskOption(opt)}
+						onKeydown={handleAskKeydown}
+					/>
 				{/each}
 			</div>
 		{/if}
 		{#if awaiting}
 			<div class="ask-actions">
-				<button class="ask-ignore" onclick={() => onIgnore?.(messageId)} type="button"
-					>忽略</button
-				>
+				<MaterialButton
+					variant="outlined"
+					className="ask-ignore"
+					label="忽略"
+					onclick={() => onIgnore?.(messageId)}
+				/>
 				<span class="ask-waiting">
 					<span class="ask-waiting-dot"></span>
 					{#if options && options.length > 0}
@@ -327,12 +331,13 @@
 					{/if}
 				</span>
 				{#if options && options.length > 0}
-					<button
-						class="ask-submit"
+					<MaterialButton
+						variant="filled"
+						className="ask-submit"
+						label="提交回答"
 						disabled={selectedOptions.length === 0}
 						onclick={() => onAskSubmit?.(messageId)}
-						type="button">提交回答</button
-					>
+					/>
 				{/if}
 			</div>
 		{/if}
@@ -967,30 +972,19 @@
 		gap: var(--md-sys-space-xs);
 		margin-bottom: var(--md-sys-space-sm);
 	}
-	.ask-option {
+	:global(.md-choice-chip.ask-option) {
+		min-width: 0;
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-full);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-md);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		cursor: pointer;
-		transition:
-			filter 0.15s ease,
-			background 0.15s ease,
-			border-color 0.15s ease,
-			color 0.15s ease;
 	}
-	.ask-option:hover {
-		filter: brightness(0.95);
-	}
-	.ask-option.selected {
+	:global(.md-choice-chip.ask-option.selected) {
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
 		border-color: var(--md-sys-color-primary);
-		filter: none;
 	}
 	.ask-actions {
 		display: flex;
@@ -998,51 +992,24 @@
 		gap: var(--md-sys-space-sm);
 		margin-bottom: var(--md-sys-space-sm);
 	}
-	.ask-ignore {
-		background: transparent;
-		color: var(--md-sys-color-on-surface-variant);
-		border: 1px solid var(--md-sys-color-outline);
+	:global(.md-btn.ask-ignore) {
+		--_btn-fg: var(--md-sys-color-on-surface-variant);
+		--_btn-state: var(--md-sys-color-on-surface-variant);
+		min-width: 0;
+		height: var(--md-comp-button-xs-height);
+		padding: 0 var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-full);
-		padding: var(--md-sys-space-2xs) var(--md-sys-space-sm);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		cursor: pointer;
-		transition: filter 0.15s ease;
 	}
-	.ask-submit {
+	:global(.md-btn.ask-submit) {
+		min-width: 0;
+		height: var(--md-comp-button-xs-height);
 		margin-left: auto;
-		border: 1px solid var(--md-sys-color-primary);
 		border-radius: var(--md-sys-shape-full);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-md);
-		background: var(--md-sys-color-primary);
-		color: var(--md-sys-color-on-primary);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		cursor: pointer;
-		transition:
-			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-	}
-	.ask-submit:hover:not(:disabled) {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-primary) 88%,
-			var(--md-sys-color-on-primary)
-		);
-	}
-	.ask-submit:focus-visible,
-	.ask-ignore:focus-visible {
-		outline: 2px solid var(--md-sys-color-primary);
-		outline-offset: 2px;
-	}
-	.ask-submit:disabled {
-		cursor: not-allowed;
-		opacity: 0.45;
-	}
-	.ask-ignore:hover {
-		filter: brightness(0.9);
 	}
 	.ask-resolved {
 		font-size: var(--md-sys-typescale-label-medium-size);
@@ -1121,7 +1088,7 @@
 		.ask-waiting {
 			flex: 1 1 8rem;
 		}
-		.ask-submit {
+		:global(.md-btn.ask-submit) {
 			margin-left: 0;
 		}
 	}

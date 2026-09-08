@@ -3,6 +3,7 @@
 	import RecordingIndicator from './RecordingIndicator.svelte';
 	import NotificationToast from './NotificationToast.svelte';
 	import WorkspaceNav from './WorkspaceNav.svelte';
+	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import { dragScroll } from '$lib/dragScroll.ts';
 
@@ -27,15 +28,17 @@
 <div class="app-shell">
 	<header class="titlebar md-toolbar">
 		<div class="titlebar-left">
-			<button
-				class="titlebar-logo"
-				type="button"
-				aria-label="回到对话"
+			<MaterialButton
+				variant="text"
+				className="titlebar-logo"
+				ariaLabel="回到对话"
 				title="回到对话"
 				onclick={() => onNavigate('chat')}
 			>
-				<Logo size={22} withText={true} />
-			</button>
+				{#snippet children()}
+					<Logo size={22} withText={true} />
+				{/snippet}
+			</MaterialButton>
 		</div>
 		<div class="titlebar-right">
 			{@render status?.()}
@@ -114,7 +117,7 @@
 		display: flex;
 		align-items: center;
 	}
-	.titlebar-logo {
+	:global(.md-btn.titlebar-logo) {
 		display: inline-flex;
 		align-items: center;
 		height: var(--md-comp-toolbar-height);
@@ -130,10 +133,10 @@
 				var(--md-sys-motion-easing-standard),
 			transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
 	}
-	.titlebar-logo:hover {
+	:global(.md-btn.titlebar-logo:hover) {
 		background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent);
 	}
-	.titlebar-logo:active {
+	:global(.md-btn.titlebar-logo:active) {
 		transform: scale(0.97);
 	}
 	.titlebar-right {

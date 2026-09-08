@@ -14,6 +14,7 @@
 	 * @prop {string | undefined} role — optional semantic role for specialized controls
 	 * @prop {string} style — optional inline style for semantic color variants
 	 * @prop {string | undefined} ariaHaspopup — optional popup relationship
+	 * @prop {string | undefined} id — optional DOM id
 	 * @prop {string} className — additional class names for layout/state styling
 	 */
 	let {
@@ -30,12 +31,14 @@
 		role = undefined,
 		style = '',
 		ariaHaspopup = undefined,
+		id = undefined,
 		className = '',
 		children = undefined,
 	} = $props();
 </script>
 
 <button
+	{id}
 	class="md-btn md-btn--{variant} {className}"
 	aria-label={ariaLabel || undefined}
 	aria-busy={ariaBusy === undefined ? undefined : ariaBusy}

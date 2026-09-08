@@ -4,7 +4,11 @@
 </script>
 
 <div class="action-row">
-	<StatusBadge label={String(data.status)} tone={data.status >= 200 && data.status < 300 ? 'success' : 'error'} />
+	<StatusBadge
+		label={String(data.status)}
+		tone={data.status >= 200 && data.status < 300 ? 'success' : 'error'}
+		className={data.status >= 200 && data.status < 300 ? 'status-completed' : 'status-failed'}
+	/>
 	{#if data.truncated}<span class="tool-card-meta">（响应过长已截断）</span>{/if}
 </div>
 {#if typeof data.body === 'string' && data.body}
