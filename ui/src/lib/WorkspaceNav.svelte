@@ -13,7 +13,7 @@
 		idPrefix="workspace-tab"
 		panelIdPrefix="workspace-tabpanel"
 		showIcons
-		indicator="measured"
+		indicator="css"
 		className="workspace-nav"
 	/>
 </nav>

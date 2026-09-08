@@ -17,7 +17,7 @@ describe('WorkspaceNav', () => {
 		expect(nav?.querySelector('[role="tablist"]')).not.toBeNull();
 		expect(document.querySelectorAll('[role="tab"]')).toHaveLength(3);
 		expect(document.querySelector('#workspace-tab-tools')?.getAttribute('aria-selected')).toBe('true');
-		expect(document.querySelector('.workspace-nav__indicator')).not.toBeNull();
+		expect(document.querySelector('.workspace-nav__indicator')).toBeNull();
 		expect(document.querySelector('#workspace-tabpanel-tools')).toBeNull();
 	});
 
