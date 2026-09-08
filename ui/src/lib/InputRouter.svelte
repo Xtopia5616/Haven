@@ -686,6 +686,11 @@
 
 <style>
 	.input-area {
+		position: absolute;
+		left: 50%;
+		bottom: var(--md-sys-space-md);
+		transform: translateX(-50%);
+		z-index: 4;
 		background: transparent;
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
@@ -701,7 +706,7 @@
 			calc(var(--md-sys-chat-max-width) - 2 * var(--md-sys-space-md)),
 			calc(100% - 2 * var(--md-sys-space-md))
 		);
-		margin: 0 auto var(--md-sys-space-md);
+		margin: 0;
 		width: 100%;
 		transition:
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),

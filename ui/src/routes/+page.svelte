@@ -85,6 +85,7 @@
 	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
 
+	let chatPageEl = /** @type {HTMLElement | null} */ ($state(null));
 	let inputRouterRef = /** @type {any} */ ($state(null));
 
 	// Attachment & compression limits for the input router, loaded from the
@@ -1096,6 +1097,24 @@
 	// on every store change (and synchronously once with the current value).
 	$effect(() => syncStore(resumeTargetStore, (v) => processResumeTarget(v)));
 
+	// The composer is a bottom overlay so messages can continue underneath its
+	// transparent outer area. Keep the scroll clearance in sync with attachments
+	// and the auto-growing textarea instead of relying on a fixed height.
+	$effect(() => {
+		const page = chatPageEl;
+		if (!browser || !page || typeof ResizeObserver === 'undefined') return;
+		const composer = page.querySelector('.input-area');
+		if (!(composer instanceof HTMLElement)) return;
+
+		const updateComposerHeight = () => {
+			page.style.setProperty('--chat-composer-height', `${composer.getBoundingClientRect().height}px`);
+		};
+		const observer = new ResizeObserver(updateComposerHeight);
+		observer.observe(composer);
+		updateComposerHeight();
+		return () => observer.disconnect();
+	});
+
 	onMount(async () => {
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
 		// load: the store is in-memory only, but the intent survives app
@@ -1537,7 +1556,7 @@
 	});
 </script>
 
-<div class="chat-page">
+<div class="chat-page" bind:this={chatPageEl}>
 	<ConfirmationDialog
 		stepId={confirmDialog.stepId}
 		toolName={confirmDialog.toolName}
@@ -1694,6 +1713,7 @@
 
 <style>
 	.chat-page {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		flex: 1;
@@ -1719,7 +1739,10 @@
 		overflow-x: clip;
 		overscroll-behavior-x: none;
 		touch-action: pan-y;
-		padding: var(--md-sys-space-lg) var(--md-sys-space-md);
+		padding: var(--md-sys-space-lg) var(--md-sys-space-md)
+			calc(
+				var(--chat-composer-height, 0px) + var(--md-sys-space-md) + var(--md-sys-space-sm)
+			);
 	}
 	:global(.messages-area.drag-scroll--active) {
 		cursor: grabbing;
@@ -1728,7 +1751,9 @@
 	.jump-bottom-anchor {
 		position: absolute;
 		right: var(--md-sys-space-md);
-		bottom: var(--md-sys-space-sm);
+		bottom: calc(
+			var(--chat-composer-height, 0px) + var(--md-sys-space-md) + var(--md-sys-space-sm)
+		);
 		display: flex;
 		z-index: 5;
 		pointer-events: none;
