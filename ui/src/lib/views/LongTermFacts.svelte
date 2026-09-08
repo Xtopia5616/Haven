@@ -3,6 +3,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import CountChip from '$lib/CountChip.svelte';
 
 	let {
 		facts = [],
@@ -111,7 +112,7 @@
 		<div class="facts-toolbar workspace-filter-bar">
 			<div class="section-heading">
 				<h2>已保存事实</h2>
-				<span class="section-count md-chip">{facts.length} 条</span>
+				<CountChip count={facts.length} label="条" />
 			</div>
 			<div class="facts-filter">
 				<MaterialSelect

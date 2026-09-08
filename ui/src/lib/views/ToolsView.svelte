@@ -28,6 +28,8 @@
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
+	import CountChip from '$lib/CountChip.svelte';
+	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -66,6 +68,7 @@
 				? visibleMcpServers.length
 				: visibleSkills.length,
 	);
+	const totalResourceCount = $derived(builtinTools.length + mcpServers.length + skills.length);
 
 	function scheduleMcpRefresh() {
 		// Cold start emits Connecting+Connected per server; coalesce into one
@@ -357,16 +360,15 @@
 </script>
 
 <div class="tools-page">
-	<div class="page-heading">
-		<div class="page-heading-content">
-			<h1>工具</h1>
-			<p>管理 Haven 可调用的工具、MCP 服务与技能。</p>
-		</div>
-	</div>
+	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。">
+		{#snippet children()}
+			<CountChip count={totalResourceCount} label="项资源" />
+		{/snippet}
+	</WorkspacePageHeader>
 
 	<MaterialTabs
-		tabs={tabs}
-		activeTab={activeTab}
+		{tabs}
+		{activeTab}
 		onNavigate={selectToolTab}
 		ariaLabel="工具分类"
 		idPrefix="tools-tab"
@@ -397,13 +399,14 @@
 				onChange={handleEnabledFilterChange}
 			/>
 		</div>
-		<span class="resource-count md-chip" aria-live="polite">{activeResourceCount} 项</span>
+		<CountChip count={activeResourceCount} label="项" className="resource-count" live />
 	</div>
 
 	{#if activeTab === 'builtin'}
 		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>内置工具</h2>
+				<CountChip count={builtinTools.length} label="个工具" />
 				<div class="toolbar-actions">
 					<MaterialButton
 						variant="outlined"
@@ -431,6 +434,7 @@
 		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>MCP 服务器</h2>
+				<CountChip count={mcpServers.length} label="个服务器" />
 				<div class="toolbar-actions toolbar-actions--paired">
 					<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
 					<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
@@ -463,6 +467,7 @@
 		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>技能</h2>
+				<CountChip count={skills.length} label="项技能" />
 				<div class="toolbar-actions toolbar-actions--paired">
 					<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
 					<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />
@@ -516,7 +521,7 @@
 	.resource-filter {
 		width: min(180px, 30%);
 	}
-	.resource-count {
+	:global(.resource-count) {
 		flex: 0 0 auto;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
@@ -616,7 +621,7 @@
 		.resource-filter {
 			width: 100%;
 		}
-		.resource-count {
+		:global(.resource-count) {
 			align-self: flex-start;
 		}
 		.toolbar-actions {

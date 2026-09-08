@@ -3,6 +3,7 @@
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
+	import CountChip from '$lib/CountChip.svelte';
 
 	let {
 		memoryRecall,
@@ -67,7 +68,7 @@
 				<p>优先使用语义检索；未配置 Embedding Model 时会自动回退到关键词匹配。</p>
 			</div>
 			{#if memoryRecall.searched && !memoryRecall.loading}
-				<span class="section-count md-chip">{memoryRecall.results.length} 条结果</span>
+				<CountChip count={memoryRecall.results.length} label="条结果" />
 			{/if}
 		</div>
 	{/if}

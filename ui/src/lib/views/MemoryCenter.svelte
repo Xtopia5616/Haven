@@ -3,6 +3,7 @@
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
+	import CountChip from '$lib/CountChip.svelte';
 
 	let {
 		facts = [],
@@ -89,7 +90,9 @@
 			<p>在一个地方浏览、管理和搜索关于你的事实与过去的对话。</p>
 		</div>
 		{#if memoryRecall.searched && !memoryRecall.loading}
-			<span class="section-count md-chip">{memoryRecall.results.length} 条结果</span>
+			<CountChip count={memoryRecall.results.length} label="条结果" />
+		{:else if factsLoaded}
+			<CountChip count={facts.length} label="条记忆" />
 		{/if}
 	</div>
 
@@ -156,11 +159,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.section-count {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		white-space: nowrap;
 	}
 	@media (max-width: 760px) {
 		.memory-center-toolbar {

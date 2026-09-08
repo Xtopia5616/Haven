@@ -18,6 +18,7 @@ describe('MemoryCenter', () => {
 		});
 
 		expect(screen.getByRole('heading', { name: '记忆' })).toBeTruthy();
+		expect(screen.getByText('共 0 条记忆')).toBeTruthy();
 		expect(screen.getByRole('heading', { name: '已保存的事实' })).toBeTruthy();
 		expect(screen.getByRole('searchbox', { name: '搜索记忆' })).toBeTruthy();
 	});

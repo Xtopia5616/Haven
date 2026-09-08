@@ -50,6 +50,40 @@ describe('ToolsView toolbar actions', () => {
 		}
 	});
 
+	it('shows reusable counts for the tool resource groups', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_tools') {
+				return {
+					tools: [
+						{ name: 'files', description: '', risk_level: 'safe', input_schema: {} },
+						{ name: 'shell', description: '', risk_level: 'high', input_schema: {} },
+					],
+				};
+			}
+			if (command === 'list_mcp_tools') {
+				return [{ name: 'docs-server', enabled: true, tools: [] }];
+			}
+			if (command === 'list_skills') {
+				return [
+					{ name: 'docs', enabled: true, language: 'markdown', has_script: false },
+					{ name: 'research', enabled: true, language: 'markdown', has_script: false },
+				];
+			}
+			return undefined;
+		});
+
+		render(ToolsView);
+
+		await waitFor(() => expect(screen.getByText('共 5 项资源')).toBeTruthy());
+		expect(screen.getByText('共 2 个工具')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
+		expect(screen.getByText('共 1 个服务器')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
+		expect(screen.getByText('共 2 项技能')).toBeTruthy();
+	});
+
 	it('locks the MCP refresh action until reconciliation finishes', async () => {
 		let finishRefresh: ((value: unknown) => void) | undefined;
 		invoke.mockImplementation((command: string) => {

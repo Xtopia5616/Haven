@@ -31,6 +31,7 @@
 	import MemoryCenter from './MemoryCenter.svelte';
 	import TaskCenter from '$lib/TaskCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
+	import CountChip from '$lib/CountChip.svelte';
 
 	let {
 		onNewSession = () => {},
@@ -533,7 +534,7 @@
 	<WorkspacePageHeader title="历史" description="回顾会话、任务执行记录和记忆。">
 		{#snippet children()}
 			{#if activeTab === 'sessions'}
-				<span class="workspace-count md-chip">共 {totalCount} 条历史</span>
+				<CountChip count={totalCount} label="条历史" />
 				<div class="header-actions">
 					{#if selectMode}
 						<MaterialButton
