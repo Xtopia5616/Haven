@@ -590,6 +590,18 @@ describe('ChatBubble markdown code fences', () => {
 	});
 });
 
+describe('ChatBubble markdown tables', () => {
+	const renderMd = (content: string) =>
+		render(ChatBubble, { role: 'assistant', content, type: null, time: null });
+
+	it('keeps the table surface wrapped and marked for the shared rounded treatment', async () => {
+		const { container } = renderMd('| Name | Value |\n| --- | --- |\n| A | 1 |');
+
+		await waitFor(() => expect(container.querySelector('.md-table-wrap')).toBeTruthy());
+		expect(container.querySelector('.md-table-wrap > .md-table')).toBeTruthy();
+	});
+});
+
 describe('ChatBubble markdown links and paths', () => {
 	let clipboardMock: any;
 	beforeEach(() => {

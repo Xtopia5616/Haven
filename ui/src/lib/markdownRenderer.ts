@@ -110,7 +110,7 @@ export function getMarkdownRenderer(): Promise<MarkdownItInstance> {
 		// live on this wrapper (positioned overlays), so they stay fixed at the
 		// viewport edges while the table scrolls inside it. Fades placed
 		// directly on the scroll container would scroll along with the content.
-		instance.renderer.rules.table_open = () => '<div class="md-table-wrap"><table>';
+		instance.renderer.rules.table_open = () => '<div class="md-table-wrap"><table class="md-table">';
 		instance.renderer.rules.table_close = () => '</table></div>';
 
 		// Bare filesystem paths → `.ext-ref` anchors (same interaction as URLs).

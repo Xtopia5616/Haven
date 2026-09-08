@@ -750,11 +750,12 @@
 		position: relative;
 		overflow: hidden;
 		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface);
 		margin: 0 0 0.75em;
 	}
-	.md-content :global(.md-table-wrap table) {
+	.md-content :global(.md-table-wrap > .md-table) {
 		margin: 0;
-		border-radius: 0;
+		border-radius: inherit;
 	}
 	.md-content :global(.md-code-bar) {
 		display: flex;
