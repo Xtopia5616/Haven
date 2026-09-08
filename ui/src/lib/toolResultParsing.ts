@@ -148,7 +148,6 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 		case 'haven_config':
 		case 'haven_diagnostics':
 		case 'haven_mcp':
-		case 'haven_session_diagnostics':
 		case 'haven_skills':
 		case 'haven_tools':
 			return data;

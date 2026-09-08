@@ -210,7 +210,6 @@ const ROUTING_PARAM_TOOLS: &[&str] = &[
     "haven_skills",
     "haven_tools",
     "haven_mcp",
-    "haven_session_diagnostics",
 ];
 
 /// Default `operation` when a routing tool omits it — must match execution

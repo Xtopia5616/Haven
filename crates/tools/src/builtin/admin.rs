@@ -52,17 +52,15 @@ pub enum AdminCapability {
     Skills,
     Tools,
     Mcp,
-    SessionDiagnostics,
 }
 
 impl AdminCapability {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Diagnostics,
         Self::Config,
         Self::Skills,
         Self::Tools,
         Self::Mcp,
-        Self::SessionDiagnostics,
     ];
 
     fn name(self) -> &'static str {
@@ -72,26 +70,29 @@ impl AdminCapability {
             Self::Skills => "haven_skills",
             Self::Tools => "haven_tools",
             Self::Mcp => "haven_mcp",
-            Self::SessionDiagnostics => "haven_session_diagnostics",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
             Self::Diagnostics => {
-                "Inspect Haven health and bounded log output without changing state."
+                "Inspect Haven health, bounded logs, and session diagnostics without changing state."
             }
             Self::Config => "Read masked configuration and change the typed runtime log level.",
             Self::Skills => "List, enable, disable, or create Haven skills.",
             Self::Tools => "Enable or disable a builtin Haven tool.",
             Self::Mcp => "Inspect and manage configured MCP servers and connections.",
-            Self::SessionDiagnostics => "Inspect bounded session history and recent errors.",
         }
     }
 
     fn operations(self) -> &'static [SelfOperation] {
         match self {
-            Self::Diagnostics => &[SelfOperation::Status, SelfOperation::LogsTail],
+            Self::Diagnostics => &[
+                SelfOperation::Status,
+                SelfOperation::LogsTail,
+                SelfOperation::Sessions,
+                SelfOperation::Errors,
+            ],
             Self::Config => &[SelfOperation::ConfigGet, SelfOperation::LogsLevel],
             Self::Skills => &[
                 SelfOperation::SkillsList,
@@ -110,7 +111,6 @@ impl AdminCapability {
                 SelfOperation::McpRemove,
                 SelfOperation::McpReload,
             ],
-            Self::SessionDiagnostics => &[SelfOperation::Sessions, SelfOperation::Errors],
         }
     }
 
@@ -166,6 +166,20 @@ impl AdminCapability {
                     "logs_tail",
                     serde_json::json!({
                         "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+                    }),
+                    &["operation"],
+                ),
+                admin_branch(
+                    "sessions",
+                    serde_json::json!({
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    }),
+                    &["operation"],
+                ),
+                admin_branch(
+                    "errors",
+                    serde_json::json!({
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
                     }),
                     &["operation"],
                 ),
@@ -301,22 +315,6 @@ impl AdminCapability {
                     &["operation", "name"],
                 ),
                 admin_branch("mcp_reload", serde_json::json!({}), &["operation"]),
-            ],
-            Self::SessionDiagnostics => vec![
-                admin_branch(
-                    "sessions",
-                    serde_json::json!({
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
-                    }),
-                    &["operation"],
-                ),
-                admin_branch(
-                    "errors",
-                    serde_json::json!({
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
-                    }),
-                    &["operation"],
-                ),
             ],
         };
         serde_json::json!({
@@ -705,9 +703,12 @@ impl Tool for AdminCapabilityTool {
             return ToolConcurrency::Exclusive;
         }
         match self.capability {
-            AdminCapability::Diagnostics => {
-                ToolConcurrency::SharedResource("haven:diagnostics".into())
-            }
+            AdminCapability::Diagnostics => match operation {
+                SelfOperation::Sessions | SelfOperation::Errors => {
+                    ToolConcurrency::SharedResource("haven:sessions".into())
+                }
+                _ => ToolConcurrency::SharedResource("haven:diagnostics".into()),
+            },
             AdminCapability::Config => match operation {
                 SelfOperation::ConfigGet => ToolConcurrency::SharedResource("config".into()),
                 SelfOperation::LogsLevel => ToolConcurrency::Resource("config".into()),
@@ -722,9 +723,6 @@ impl Tool for AdminCapabilityTool {
                 SelfOperation::McpList => ToolConcurrency::SharedResource("mcp".into()),
                 _ => ToolConcurrency::Resource("mcp".into()),
             },
-            AdminCapability::SessionDiagnostics => {
-                ToolConcurrency::SharedResource("haven:sessions".into())
-            }
         }
     }
 
@@ -824,6 +822,7 @@ mod tests {
 
     #[test]
     fn capabilities_have_disjoint_operation_surfaces() {
+        assert_eq!(AdminCapability::ALL.len(), 5);
         for capability in AdminCapability::ALL {
             let schema = capability.schema();
             let operations = schema["properties"]["operation"]["enum"]
@@ -835,6 +834,8 @@ mod tests {
 
         assert!(!AdminCapability::Config.accepts(SelfOperation::McpRemove));
         assert!(!AdminCapability::Diagnostics.accepts(SelfOperation::SkillCreate));
+        assert!(AdminCapability::Diagnostics.accepts(SelfOperation::Sessions));
+        assert!(AdminCapability::Diagnostics.accepts(SelfOperation::Errors));
         assert_eq!(
             AdminCapability::Mcp
                 .metadata(SelfOperation::McpRemove)
@@ -877,6 +878,21 @@ mod tests {
             diagnostics
                 .validate_input(&serde_json::json!({ "operation": "logs_tail", "limit": 2 }))
                 .is_ok()
+        );
+        assert!(
+            diagnostics
+                .validate_input(&serde_json::json!({ "operation": "sessions", "limit": 2 }))
+                .is_ok()
+        );
+        assert!(
+            diagnostics
+                .validate_input(&serde_json::json!({ "operation": "errors", "limit": 2 }))
+                .is_ok()
+        );
+        assert!(
+            diagnostics
+                .validate_input(&serde_json::json!({ "operation": "sessions", "limit": 51 }))
+                .is_err()
         );
 
         let skills = AdminCapabilityTool::new(surface.clone(), AdminCapability::Skills);
@@ -922,6 +938,10 @@ mod tests {
         assert_eq!(
             diagnostics.concurrency(&serde_json::json!({ "operation": "status" })),
             ToolConcurrency::SharedResource("haven:diagnostics".into())
+        );
+        assert_eq!(
+            diagnostics.concurrency(&serde_json::json!({ "operation": "sessions" })),
+            ToolConcurrency::SharedResource("haven:sessions".into())
         );
     }
 

@@ -429,11 +429,10 @@ MessagingService
 建议重建为窄而明确的管理面：
 
 ```text
-DiagnosticsService   （只读状态、日志摘要、错误和 session 诊断）
+DiagnosticsService   （只读状态、日志摘要、会话历史和错误诊断）
 ConfigAdmin          （typed patch，统一经过 ConfigService）
 SkillAdmin           （技能生命周期和 allowlist）
 McpAdmin             （MCP 配置、连接和健康状态）
-SessionDiagnostics   （只读历史/运行信息）
 ```
 
 目标和边界：

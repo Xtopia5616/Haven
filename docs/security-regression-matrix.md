@@ -27,12 +27,11 @@
 | `load_skill` | 加载元数据 = safe | 被加载 skill 的工具另行 high gate | `load_skill` | skill root 由 engine 固定 | 失败不留下半注册工具 |
 | `load_mcp` | 加载元数据 = safe | 被加载 MCP 工具统一按 high gate | `load_mcp` | MCP 配置/env 不进入普通错误或 UI | 连接取消必须关闭 client |
 | `memory` | search/list/recall = safe | remember/forget = medium | `memory`, `memory:<operation>` | 事实写入拒绝 credential-like 值 | maintenance/embedding 操作支持取消或有界执行 |
-| `haven_diagnostics` | status、logs_tail = low | 无 | `haven_diagnostics`, `haven_diagnostics:<operation>` | 日志只返回脱敏、截断内容 | 诊断失败不得暴露原始日志 |
+| `haven_diagnostics` | status、logs_tail、sessions、errors = low | 无 | `haven_diagnostics`, `haven_diagnostics:<operation>` | 日志只返回脱敏、截断内容；会话诊断只返回元数据和字符数 | 诊断失败不得暴露原始日志或会话正文 |
 | `haven_config` | config_get = low | logs_level = medium | `haven_config`, `haven_config:<operation>` | 配置读取递归脱敏；写入只接受 typed patch | 保存失败不得留下半更新状态 |
 | `haven_skills` | skills_list = low | enable/disable = medium；create = high | `haven_skills`, `haven_skills:<operation>` | 技能 root 由 engine 固定，脚本大小受限 | 创建或保存失败必须回滚可见状态 |
 | `haven_tools` | 无 | enable/disable = medium | `haven_tools`, `haven_tools:<operation>` | 只改变 allowlisted builtin tool 设置 | 保存后重建 catalog，失败不产生半更新 |
 | `haven_mcp` | mcp_list = low | connect/disconnect/reload = medium；add/update/toggle/remove = high | `haven_mcp`, `haven_mcp:<operation>` | MCP env 值不返回；外部连接错误净化 | 配置与 client 状态保持一致，失败回滚 |
-| `haven_session_diagnostics` | sessions/errors = low | 无 | `haven_session_diagnostics`, `haven_session_diagnostics:<operation>` | 只返回 session 元数据和字符数 | 不返回 input/transcript 正文 |
 
 ### 入口一致性
 

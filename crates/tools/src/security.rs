@@ -107,6 +107,8 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("memory", "recall", Safe),
     security_case!("haven_diagnostics", "status", Low),
     security_case!("haven_diagnostics", "logs_tail", Low),
+    security_case!("haven_diagnostics", "sessions", Low),
+    security_case!("haven_diagnostics", "errors", Low),
     security_case!("haven_config", "config_get", Low),
     security_case!("haven_config", "logs_level", Medium),
     security_case!("haven_skills", "skills_list", Low),
@@ -123,8 +125,6 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("haven_mcp", "mcp_toggle", High),
     security_case!("haven_mcp", "mcp_remove", High),
     security_case!("haven_mcp", "mcp_reload", Medium),
-    security_case!("haven_session_diagnostics", "sessions", Low),
-    security_case!("haven_session_diagnostics", "errors", Low),
 ];
 
 /// Check an absolute local path without applying a tool-specific allowlist.
@@ -1291,7 +1291,6 @@ mod tests {
             "haven_skills",
             "haven_tools",
             "haven_mcp",
-            "haven_session_diagnostics",
         ] {
             assert!(
                 names.contains(expected),

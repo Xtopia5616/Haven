@@ -2670,6 +2670,7 @@ mod tests {
         mgr.set_admin_context(ctx).await;
         assert!(mgr.get_tool("shell").await.is_some());
         assert!(mgr.get_tool("haven_diagnostics").await.is_some());
+        assert!(mgr.get_tool("haven_session_diagnostics").await.is_none());
         assert!(mgr.get_tool("haven").await.is_none());
 
         let tool = mgr.admin_surface().await.expect("admin surface wired");

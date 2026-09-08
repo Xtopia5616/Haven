@@ -103,3 +103,4 @@
 - [0100：删除旧工具名称兼容层](0100-remove-tool-name-compatibility.md)
 - [0101：工具契约与结果渲染审查](0101-tool-contract-and-result-renderer-audit.md)
 - [0102：聊天 token 统计明细与上下文快照](0102-token-usage-detail-popover.md)
+- [0103：合并模型可见的诊断能力](0103-merge-diagnostics-capabilities.md)

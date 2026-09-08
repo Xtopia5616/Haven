@@ -1,5 +1,9 @@
 # ADR 0070：受限 Admin Surface 与 capability-scoped 工具
 
+状态：已采纳（诊断能力部分由 ADR 0103 修订）
+
+> 诊断能力合并后的模型工具入口见 [ADR 0103](0103-merge-diagnostics-capabilities.md)。
+
 ## 背景
 
 `SelfTool` 原本把诊断、配置、技能、builtin tool、MCP 和 session history

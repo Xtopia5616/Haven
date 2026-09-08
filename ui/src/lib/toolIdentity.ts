@@ -19,7 +19,6 @@ export const TOOL_LABELS: Record<string, string> = {
 	haven_config: 'Haven 配置',
 	haven_diagnostics: 'Haven 诊断',
 	haven_mcp: 'Haven MCP',
-	haven_session_diagnostics: '会话诊断',
 	haven_skills: 'Haven 技能',
 	haven_tools: 'Haven 工具',
 	memory: '记忆',

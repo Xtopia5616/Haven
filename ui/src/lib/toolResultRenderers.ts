@@ -66,7 +66,7 @@ export function getToolResultRenderer(
 	if (kind === 'custom' && toolName === 'audio') return ToolAudioResult;
 	if (
 		kind === 'custom' &&
-		['haven_config', 'haven_diagnostics', 'haven_mcp', 'haven_session_diagnostics', 'haven_skills', 'haven_tools'].includes(toolName)
+		['haven_config', 'haven_diagnostics', 'haven_mcp', 'haven_skills', 'haven_tools'].includes(toolName)
 	)
 		return ToolAdminResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;

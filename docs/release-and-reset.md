@@ -11,6 +11,7 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 本版本同样不再迁移顶层 `[audio]` 或已删除的 `[tool_settings.*]` 名称；这两类配置会备份后以默认值启动。
 旧工具名称不再迁移或兼容：`[tool_settings.file]`、`file[:operation]`、
 `file_search[:operation]`、`scheduled_action[:operation]` 等配置/权限入口会触发备份并以默认配置启动。
+已删除的 `haven_session_diagnostics` 及其 operation 权限也不再迁移；升级时会触发同样的备份与配置重置。
 数据库中待执行定时任务若仍引用已经删除的旧工具名不会自动改写，需取消并重新创建，或按下文完整重置。
 
 旧 Phase-7 ReAct 快照（包括未压缩的旧 `react_state` 行）以及直接在 `[media.stt]`、`[media.tts]`、`[media.image_gen]` 中使用

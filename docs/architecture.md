@@ -275,9 +275,9 @@ Temp（全局约束）。
 ### 2.5.4 Admin Surface
 
 模型不再看到跨域的 `haven` 超级 dispatcher，而看到按 capability 分组的
-`haven_diagnostics`、`haven_config`、`haven_skills`、`haven_tools`、`haven_mcp`
-和 `haven_session_diagnostics`。每个工具只接受自己的 operation allowlist，因此
-SafetyGateway 的 permission key 与风险等级不会因为一个通用入口而混在一起。
+`haven_diagnostics`、`haven_config`、`haven_skills`、`haven_tools` 和 `haven_mcp`。
+`haven_diagnostics` 统一承载应用健康、日志摘要和会话诊断，但仍按 operation allowlist
+及独立资源并发边界执行；其它工具的 SafetyGateway permission key 与风险等级不会因此混在一起。
 
 配置写入使用 `ConfigService::apply_patch` 的 typed patch；普通模型路径没有任意
 `config_set(path, value)`。诊断结果只提供脱敏、截断后的日志和 session 元数据，不能
@@ -425,3 +425,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-03 | §3 阶段 F：将 Settings/Model/Memory 三个 UI 大视图按 tab 与职责拆至 `SettingsGeneral`、`SettingsLimits`、`MediaSettings`、`SessionHistory`、`LongTermFacts`、`MemoryRecall`，父视图保留唯一状态、IPC、事件与保存边界 |
 | 2026-09-08 | §2.6 UI：工具卡统一显示各自参数与结果的 token 估算；provider 真实总量仅保留在会话级统计，删除首个工具卡的 step 聚合展示（ADR 0099） |
 | 2026-09-08 | §2.6 UI / §2.3 Memory：聊天 token 摘要改为可展开明细，展示上传/生成、缓存命中率、当前上下文预算与累计费用；用量持久化增加最后一次上下文快照（ADR 0102） |
+| 2026-09-08 | §2.5 Tools：将 `haven_session_diagnostics` 合并到 `haven_diagnostics`，统一模型可见诊断入口并保留会话数据脱敏与独立并发资源（ADR 0103） |

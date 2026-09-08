@@ -188,7 +188,12 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         .and_then(toml::Value::as_table)
         .and_then(|security| security.get("permissions"))
         .and_then(toml::Value::as_array)?;
-    let legacy_roots = ["file", "file_search", "scheduled_action"];
+    let legacy_roots = [
+        "file",
+        "file_search",
+        "scheduled_action",
+        "haven_session_diagnostics",
+    ];
     permissions.iter().find_map(|permission| {
         let key = permission.get("key").and_then(toml::Value::as_str)?;
         let root = key.split_once(':').map_or(key, |(root, _)| root);
@@ -924,6 +929,36 @@ effect = "allow"
             r#"
 [[security.permissions]]
 key = "file_search:content"
+effect = "allow"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1, "removed permission names must require reset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_removed_session_diagnostics_permission_name() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[security.permissions]]
+key = "haven_session_diagnostics:sessions"
 effect = "allow"
 "#,
         )
