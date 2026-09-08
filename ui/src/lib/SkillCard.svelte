@@ -1,7 +1,6 @@
 <script>
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
-	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import { formatError } from '$lib/formatError.ts';
@@ -93,10 +92,9 @@
 				<span class="meta-badge">{skill.version}</span>
 			{/if}
 			<span class="meta-badge lang">{skill.language}</span>
-			<StatusBadge
-				label={skill.enabled ? 'Enabled' : 'Disabled'}
-				tone={skill.enabled ? 'success' : 'error'}
-			/>
+			<span class="status-badge" class:enabled={skill.enabled} class:disabled={!skill.enabled}>
+				{skill.enabled ? 'Enabled' : 'Disabled'}
+			</span>
 			{#if skill.has_script}
 				<span class="script-badge">script</span>
 			{/if}
@@ -166,6 +164,21 @@
 	.meta-badge.lang {
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
+	}
+	.status-badge {
+		padding: 2px var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		font-weight: 700;
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.status-badge.enabled {
+		background: var(--md-sys-color-success-container);
+		color: var(--md-sys-color-on-success-container);
+	}
+	.status-badge.disabled {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 	}
 	.script-badge {
 		background: var(--md-sys-color-primary-container);
