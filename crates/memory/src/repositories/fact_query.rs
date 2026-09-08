@@ -309,15 +309,15 @@ impl Database {
             .collect()
     }
 
-    /// Run FTS MATCH; `Ok(None)` means prepare/MATCH failed and the caller may
-    /// use LIKE fallback. `Ok(Some(rows))` is a successful query, possibly
-    /// empty.
+    /// Run a strict FTS MATCH query. FTS5 is part of the current database
+    /// contract, so schema/query failures are returned to the caller instead
+    /// of silently changing search semantics.
     fn search_facts_fts(
         &self,
         match_expr: &str,
         limit: Option<usize>,
         fact_subject: Option<&str>,
-    ) -> anyhow::Result<Option<Vec<Fact>>> {
+    ) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
         let edge = crate::embeddings::fts_kind::EDGE;
         let (fts_sql, bind_limit) = if let Some(lim) = limit {
@@ -348,26 +348,19 @@ impl Database {
                 None,
             )
         };
-        let Ok(mut stmt) = conn.prepare(&fts_sql) else {
-            return Ok(None);
-        };
+        let mut stmt = conn.prepare(&fts_sql)?;
         let subject = fact_subject.map(str::to_string);
         let rows = if let Some(lim) = bind_limit {
             stmt.query_map(rusqlite::params![match_expr, subject, lim], fact_from_row)
         } else {
             stmt.query_map(rusqlite::params![match_expr, subject], fact_from_row)
         };
-        let Ok(rows) = rows else {
-            return Ok(None);
-        };
+        let rows = rows?;
         let mut facts = Vec::new();
         for row in rows {
-            match row {
-                Ok(f) => facts.push(f),
-                Err(_) => return Ok(None),
-            }
+            facts.push(row?);
         }
-        Ok(Some(facts))
+        Ok(facts)
     }
 
     fn search_facts_like_any(
@@ -438,8 +431,8 @@ impl Database {
     }
 
     /// Full-text search across subject, predicate, object and tags. FTS5
-    /// trigram is preferred; escaped LIKE handles short terms and unavailable
-    /// FTS while preserving the existing long-query miss semantics.
+    /// trigram handles normal terms; escaped LIKE supplements terms shorter
+    /// than three characters, which trigram intentionally does not index.
     pub fn search_facts(&self, query: &str) -> anyhow::Result<Vec<Fact>> {
         self.search_facts_scoped(query, None)
     }
@@ -458,36 +451,12 @@ impl Database {
         }
         let match_expr = Self::build_fts_query(&terms);
         let short = Self::short_like_terms(&terms);
-        match self.search_facts_fts(&match_expr, None, fact_subject)? {
-            Some(facts) if short.is_empty() => return Ok(facts),
-            Some(facts) => {
-                let like = self.search_facts_like_any(&short, 50, fact_subject)?;
-                return Ok(Self::merge_facts_limited(facts, like, 50));
-            }
-            None if short.is_empty() => {}
-            None => {
-                let like_short = self.search_facts_like_any(&short, 50, fact_subject)?;
-                if !like_short.is_empty() {
-                    return Ok(like_short);
-                }
-            }
+        let facts = self.search_facts_fts(&match_expr, None, fact_subject)?;
+        if short.is_empty() {
+            return Ok(facts);
         }
-        let pattern = format!("%{}%", Self::escape_like_term(query));
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges
-             WHERE (?2 IS NULL OR subject = ?2)
-               AND (subject LIKE ?1 ESCAPE '\\' OR predicate LIKE ?1 ESCAPE '\\'
-                OR object LIKE ?1 ESCAPE '\\' OR tags LIKE ?1 ESCAPE '\\')"
-        ))?;
-        let subject = fact_subject.map(str::to_string);
-        let rows = stmt.query_map(rusqlite::params![pattern, subject], fact_from_row)?;
-        let mut facts = Vec::new();
-        for row in rows {
-            facts.push(row?);
-        }
-        sort_facts_effective(&mut facts);
-        Ok(facts)
+        let like = self.search_facts_like_any(&short, 50, fact_subject)?;
+        Ok(Self::merge_facts_limited(facts, like, 50))
     }
 
     /// Multi-term prompt recall: one FTS OR query with SQL LIMIT, unioned with
@@ -513,29 +482,11 @@ impl Database {
         let short = Self::short_like_terms(&terms);
         let fts = self.search_facts_fts(&match_expr, Some(limit), fact_subject)?;
 
-        match fts {
-            Some(facts) if short.is_empty() => Ok(facts),
-            Some(facts) => {
-                let like = self.search_facts_like_any(&short, limit, fact_subject)?;
-                Ok(Self::merge_facts_limited(facts, like, limit))
-            }
-            None if short.is_empty() => self.search_facts_like_any(&terms, limit, fact_subject),
-            None => {
-                let like_short = self.search_facts_like_any(&short, limit, fact_subject)?;
-                if like_short.len() >= limit {
-                    return Ok(like_short);
-                }
-                let long: Vec<&str> = terms
-                    .iter()
-                    .copied()
-                    .filter(|t| t.chars().count() >= 3)
-                    .collect();
-                if long.is_empty() {
-                    return Ok(like_short);
-                }
-                let like_long = self.search_facts_like_any(&long, limit, fact_subject)?;
-                Ok(Self::merge_facts_limited(like_short, like_long, limit))
-            }
+        if short.is_empty() {
+            Ok(fts)
+        } else {
+            let like = self.search_facts_like_any(&short, limit, fact_subject)?;
+            Ok(Self::merge_facts_limited(fts, like, limit))
         }
     }
 

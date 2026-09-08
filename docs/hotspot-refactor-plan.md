@@ -75,7 +75,7 @@
 以下目前看起来不是“为了不做内部重构而保留的旧架构”，不纳入本计划的删除清单：
 
 - [`crates/llm/src/adapters`](../crates/llm/src/adapters) 对 OpenAI-compatible、Anthropic、Gemini、Deepgram 以及 MCP JSON-RPC wire shape 的字段别名和协议差异。这些是外部服务契约，不是 Haven 内部旧 API；Responses 的 developer-input downgrade、DeepSeek reasoning echo、prompt-cache capability probe 也属于供应商互操作。
-- `crates/memory/src/migrations.rs` 的版本化 schema/data migration。它是有边界的历史数据迁移，不等同于永久保留内部双入口；若要整体清理，应另做数据库 reset/release 任务。
+- ~~`crates/memory/src/migrations.rs` 的版本化 schema/data migration。它是有边界的历史数据迁移，不等同于永久保留内部双入口；若要整体清理，应另做数据库 reset/release 任务。~~ 已在 ADR 0105 的数据库 reset/release 任务中删除；此处保留为历史审查记录。
 - UTF-8/GBK、PowerShell CLIXML、provider failover、媒体低置信度回退、进程崩溃恢复和超时保护。这些是平台/供应商/故障处理能力，除非后续证明它们只是旧内部实现的残留，否则不能按兼容层删除。
 - `/history`、旧 tab 路径和 keep-alive 路由 redirect。它们是用户导航兼容，优先级低；若决定删除，应先确认没有需要保留的书签/深链接，再单独改路由契约。
 
@@ -200,14 +200,14 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 ### F. P1：重做 memory 与 prompt 的责任边界，并删除硬编码身份事实
 
-当前 [`crates/agent/src/prompt.rs`](../crates/agent/src/prompt.rs) 同时负责 prompt render、工具/技能/MCP index cache、数据库 memory recall、向量模型调用和 MEMORY fence patch；[`crates/agent/src/inference.rs`](../crates/agent/src/inference.rs) 又同时负责事实抽取 outbox、LLM 仲裁、事实维护、embedding catch-up 和 recall。建议拆成：
+当前 [`crates/agent/src/prompt.rs`](../crates/agent/src/prompt.rs) 同时负责 prompt render、工具/技能/MCP index cache、数据库 memory recall、向量模型调用和 MEMORY fence patch；[`crates/agent/src/inference.rs`](../crates/agent/src/inference.rs) 又同时负责事实抽取 outbox（内存 coalescing 与持久化 marker）、LLM 仲裁、事实维护、embedding catch-up 和 recall。outbox 的崩溃丢失已由 ADR 0107 修复，但职责仍建议拆成：
 
 1. `MemoryService`：只提供 typed query、memory proposal、commit、index status。
 2. `MemoryWorker`：消费已提交会话事件，异步抽取事实、生成 embedding、维护索引。
 3. `PromptContextProvider`：在 turn 边界取得一次有上限的上下文快照。
 4. `PromptRenderer`：纯函数，把上下文快照渲染成 system message，不直接碰 DB、router 或 cache。
 
-另外，[`crates/agent/src/layer.rs`](../crates/agent/src/layer.rs) 构造 `AgentLayer` 时会执行 `ensure_fact("user", "name", "Xtopia", ...)`。这不是合理的默认配置，而是产品身份数据与运行时初始化混在一起的明显 placeholder/功能错误。应删除；如果产品需要用户名称，应走首次设置/用户 profile，并明确来源、可修改性和是否允许进入 prompt。不能让每次启动隐式写入一条伪造的长期记忆。
+另外，过去 [`crates/agent/src/layer.rs`](../crates/agent/src/layer.rs) 构造 `AgentLayer` 时会执行 `ensure_fact("user", "name", "Xtopia", ...)`。这不是合理的默认配置，而是产品身份数据与运行时初始化混在一起的明显 placeholder/功能错误；该写入已删除。如果产品需要用户名称，应走首次设置/用户 profile，并明确来源、可修改性和是否允许进入 prompt。不能让每次启动隐式写入一条伪造的长期记忆。
 
 ### G. P1：模型路由从固定角色改成 capability/request policy
 

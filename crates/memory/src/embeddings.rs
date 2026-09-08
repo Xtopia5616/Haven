@@ -7,8 +7,8 @@ pub struct EmbeddedText {
     pub entity_type: String,
     pub entity_id: String,
     pub model: String,
-    /// The surface text that was embedded (used for keyword fallback and
-    /// display without re-deriving it from the source table).
+    /// The surface text that was embedded (used for display without
+    /// re-deriving it from the source table).
     pub text: String,
     pub vector: Vec<f32>,
     pub created_at: String,
@@ -26,14 +26,15 @@ pub(crate) struct EpisodeKeywordHit {
 
 type EpisodeSearchRow = (String, String, String, String);
 
-/// Memory domain constants used as `memory_embeddings.entity_type`.
+/// Closed memory domains used as `memory_embeddings.entity_type`.
 ///
-/// These are **embedding-domain aliases** for the graph tables. Unified FTS
-/// uses a separate vocabulary (`fts_kind`) — never mix the two in filters.
+/// These values map directly to the owning tables. Do not add aliases here:
+/// the embedding index is a derived table and must have one unambiguous owner
+/// vocabulary.
 pub mod entity_kind {
-    /// Embedding domain for `memory_edges` SPO rows (alias kept as `fact`).
+    /// Embedding domain for `memory_edges` SPO rows.
     pub const FACT: &str = "fact";
-    /// Embedding domain for `memory_items` rows (alias kept as `episode`).
+    /// Embedding domain for `memory_items` rows.
     pub const EPISODE: &str = "episode";
 }
 
@@ -164,10 +165,17 @@ fn row_to_embedded(row: &rusqlite::Row) -> rusqlite::Result<EmbeddedText> {
 
 const EMBED_COLS: &str = "entity_type, entity_id, model, vector, text, created_at, updated_at";
 
+fn validate_entity_type(entity_type: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(entity_type, entity_kind::FACT | entity_kind::EPISODE),
+        "unsupported memory embedding domain '{entity_type}'"
+    );
+    Ok(())
+}
+
 /// SQL predicate for a live embedding owner. The embedding table is
 /// intentionally polymorphic, so SQLite cannot express this as a foreign key.
-/// Unknown legacy domains remain readable for compatibility; the two current
-/// domains must have a live graph/item row.
+/// Its domain is closed by schema and every query still verifies the owner.
 fn live_owner_filter(alias: &str) -> String {
     let entity_type = if alias.is_empty() {
         "entity_type".to_string()
@@ -180,8 +188,7 @@ fn live_owner_filter(alias: &str) -> String {
         format!("{alias}.entity_id")
     };
     format!(
-        "({entity_type} NOT IN ('fact', 'episode')
-          OR ({entity_type} = 'fact' AND EXISTS (
+        "(({entity_type} = 'fact' AND EXISTS (
               SELECT 1 FROM memory_edges WHERE id = {entity_id}
           ))
           OR ({entity_type} = 'episode' AND EXISTS (
@@ -202,6 +209,19 @@ impl Database {
         vector: &[f32],
         text: &str,
     ) -> anyhow::Result<()> {
+        validate_entity_type(entity_type)?;
+        anyhow::ensure!(
+            !entity_id.trim().is_empty(),
+            "embedding entity_id is required"
+        );
+        anyhow::ensure!(!model.trim().is_empty(), "embedding model is required");
+        anyhow::ensure!(!text.trim().is_empty(), "embedding text is required");
+        anyhow::ensure!(!vector.is_empty(), "embedding vector must not be empty");
+        anyhow::ensure!(
+            vector.iter().all(|value| value.is_finite()),
+            "embedding vector must contain only finite values"
+        );
+        let model = model.trim();
         let now = chrono::Utc::now().to_rfc3339();
         let blob = encode_vector(vector);
         // The provider response may contain a canonical alias or versioned
@@ -229,6 +249,25 @@ impl Database {
         let owner_recheck = pending_model.is_some();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<bool> {
+            let owner_exists: Option<i32> = match entity_type {
+                entity_kind::FACT => conn
+                    .query_row(
+                        "SELECT 1 FROM memory_edges WHERE id = ?1",
+                        rusqlite::params![entity_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?,
+                entity_kind::EPISODE => conn
+                    .query_row(
+                        "SELECT 1 FROM memory_items WHERE id = ?1",
+                        rusqlite::params![entity_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?,
+                _ => unreachable!("validated memory embedding domain"),
+            };
+            anyhow::ensure!(owner_exists.is_some(), "embedding owner does not exist");
+
             if owner_recheck {
                 let current_text: Option<String> = match entity_type {
                     entity_kind::FACT => conn.query_row(
@@ -242,12 +281,27 @@ impl Database {
                         rusqlite::params![entity_id],
                         |row| row.get(0),
                     ),
-                    _ => Ok(text.to_string()),
+                    _ => unreachable!("validated memory embedding domain"),
                 }
                 .optional()?;
                 if current_text.as_deref() != Some(text) {
                     return Ok(false);
                 }
+            }
+
+            let existing_bytes: Option<i64> = conn
+                .query_row(
+                    "SELECT length(vector) FROM memory_embeddings
+                     WHERE model = ?1 LIMIT 1",
+                    rusqlite::params![stored_model],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(existing_bytes) = existing_bytes {
+                anyhow::ensure!(
+                    existing_bytes == blob.len() as i64,
+                    "embedding dimension changed within one model; clear the index before re-embedding"
+                );
             }
 
             let bucket = lsh_bucket(vector);
@@ -293,6 +347,7 @@ impl Database {
         entity_type: &str,
         model: &str,
     ) -> anyhow::Result<usize> {
+        validate_entity_type(entity_type)?;
         if model.is_empty() {
             return Ok(0);
         }
@@ -325,6 +380,7 @@ impl Database {
         entity_id: &str,
         model: Option<&str>,
     ) -> anyhow::Result<Option<EmbeddedText>> {
+        validate_entity_type(entity_type)?;
         let conn = self.conn();
         if let Some(model) = model.filter(|m| !m.is_empty()) {
             let mut stmt = conn.prepare(&format!(
@@ -355,6 +411,7 @@ impl Database {
     /// (the vector index is small and read far more often than written), so
     /// brute-force recall does not re-read + decode the whole table per query.
     pub fn list_embeddings(&self, entity_type: &str) -> anyhow::Result<Vec<EmbeddedText>> {
+        validate_entity_type(entity_type)?;
         if let Some(cached) = self.cache_get_embeddings(entity_type) {
             return Ok(cached);
         }
@@ -388,106 +445,65 @@ impl Database {
         entity_type: &str,
         model: &str,
     ) -> anyhow::Result<Vec<String>> {
+        validate_entity_type(entity_type)?;
+        let model = model.trim();
+        anyhow::ensure!(!model.is_empty(), "embedding model is required");
         let limit = match entity_type {
             entity_kind::FACT => FACT_EMBED_BACKLOG_LIMIT,
             entity_kind::EPISODE => EPISODE_EMBED_BACKLOG_LIMIT,
-            _ => return Ok(Vec::new()),
+            _ => unreachable!("validated memory embedding domain"),
         };
         self.missing_embedding_ids_limited(entity_type, model, limit)
     }
 
-    /// Like [`Self::missing_embedding_ids`] with an explicit cap (tests / tuning).
-    /// Empty `model` treats any stored embedding as covering the entity
-    /// (legacy test helper); production callers pass the current model name.
+    /// Return a bounded, newest-first backlog for one current embedding model.
+    /// The model is required because an embedding without a vector-space
+    /// identity is not useful for indexing or recall.
     pub fn missing_embedding_ids_limited(
         &self,
         entity_type: &str,
         model: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<String>> {
+        validate_entity_type(entity_type)?;
+        let model = model.trim();
+        anyhow::ensure!(!model.is_empty(), "embedding model is required");
         if limit == 0 {
             return Ok(Vec::new());
         }
         let conn = self.conn();
-        let model_filter = !model.is_empty();
         let ids = match entity_type {
             entity_kind::FACT => {
-                let mut out = Vec::new();
-                if model_filter {
-                    let mut stmt = conn.prepare(
-                        "SELECT id FROM memory_edges
-                         WHERE id NOT IN (
-                             SELECT entity_id FROM memory_embeddings
-                             WHERE entity_type = ?1 AND model = ?2
-                         )
-                         ORDER BY COALESCE(last_seen_at, created_at) DESC
-                         LIMIT ?3",
-                    )?;
-                    for row in stmt
-                        .query_map(rusqlite::params![entity_type, model, limit as i64], |r| {
-                            r.get::<_, String>(0)
-                        })?
-                    {
-                        out.push(row?);
-                    }
-                } else {
-                    let mut stmt = conn.prepare(
-                        "SELECT id FROM memory_edges
-                         WHERE id NOT IN (
-                             SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
-                         )
-                         ORDER BY COALESCE(last_seen_at, created_at) DESC
-                         LIMIT ?2",
-                    )?;
-                    for row in stmt
-                        .query_map(rusqlite::params![entity_type, limit as i64], |r| {
-                            r.get::<_, String>(0)
-                        })?
-                    {
-                        out.push(row?);
-                    }
-                }
-                out
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM memory_edges
+                     WHERE id NOT IN (
+                         SELECT entity_id FROM memory_embeddings
+                         WHERE entity_type = ?1 AND model = ?2
+                     )
+                     ORDER BY COALESCE(last_seen_at, created_at) DESC
+                     LIMIT ?3",
+                )?;
+                stmt.query_map(rusqlite::params![entity_type, model, limit as i64], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
             }
             entity_kind::EPISODE => {
-                let mut out: Vec<String> = Vec::new();
-                if model_filter {
-                    let mut ep_stmt = conn.prepare(
-                        "SELECT id FROM memory_items
-                         WHERE id NOT IN (
-                             SELECT entity_id FROM memory_embeddings
-                             WHERE entity_type = ?1 AND model = ?2
-                         )
-                         ORDER BY created_at DESC
-                         LIMIT ?3",
-                    )?;
-                    for row in ep_stmt
-                        .query_map(rusqlite::params![entity_type, model, limit as i64], |r| {
-                            r.get::<_, String>(0)
-                        })?
-                    {
-                        out.push(row?);
-                    }
-                } else {
-                    let mut ep_stmt = conn.prepare(
-                        "SELECT id FROM memory_items
-                         WHERE id NOT IN (
-                             SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
-                         )
-                         ORDER BY created_at DESC
-                         LIMIT ?2",
-                    )?;
-                    for row in ep_stmt
-                        .query_map(rusqlite::params![entity_type, limit as i64], |r| {
-                            r.get::<_, String>(0)
-                        })?
-                    {
-                        out.push(row?);
-                    }
-                }
-                out
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM memory_items
+                     WHERE id NOT IN (
+                         SELECT entity_id FROM memory_embeddings
+                         WHERE entity_type = ?1 AND model = ?2
+                     )
+                     ORDER BY created_at DESC
+                     LIMIT ?3",
+                )?;
+                stmt.query_map(rusqlite::params![entity_type, model, limit as i64], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
             }
-            _ => Vec::new(),
+            _ => unreachable!("validated memory embedding domain"),
         };
         drop(conn);
         for id in &ids {
@@ -560,6 +576,11 @@ impl Database {
         fact_subject: Option<&str>,
         exclude_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<(EmbeddedText, f64)>> {
+        validate_entity_type(entity_type)?;
+        anyhow::ensure!(
+            query_vec.iter().all(|value| value.is_finite()),
+            "embedding query vector must contain only finite values"
+        );
         if limit == 0 || model.is_empty() {
             return Ok(Vec::new());
         }
@@ -840,8 +861,8 @@ impl Database {
     /// Keyword search over the event-stream memory (user messages plus
     /// persisted compaction summaries), independent of the vector index — so
     /// cross-session recall works even when no `embedding_model` is configured.
-    /// Memory items use unified `memory_fts` (trigram) when available;
-    /// Results are ranked by distinct term hits, then recency.
+    /// FTS5 handles indexed terms and a bounded recent scan supplements terms
+    /// shorter than three characters, which trigram intentionally skips.
     ///
     /// Keyword episode search. Each result carries the owning
     /// `memory_items.id`, so hybrid recall can deduplicate the same episode
@@ -861,26 +882,19 @@ impl Database {
         let mut scored: Vec<(usize, String, String, String)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        // P2-10: prefer FTS for compaction summaries (+ topics/entities).
-        if let Ok(Some(fts_hits)) =
-            self.search_episode_summaries_fts(&terms, exclude_session_id, limit.saturating_mul(4))
-        {
+        let indexed_terms: Vec<&str> = terms
+            .iter()
+            .copied()
+            .filter(|term| term.chars().count() >= 3)
+            .collect();
+        if !indexed_terms.is_empty() {
+            // P2-10: FTS is the required path for indexed terms.
+            let fts_hits = self.search_episode_summaries_fts(
+                &indexed_terms,
+                exclude_session_id,
+                limit.saturating_mul(4),
+            )?;
             for (id, display, haystack, created) in fts_hits {
-                Self::score_episode_candidate_haystack(
-                    &id,
-                    &display,
-                    &haystack,
-                    &created,
-                    &lower_terms,
-                    &mut scored,
-                    &mut seen,
-                );
-            }
-        } else {
-            // FTS unavailable: score recent summaries (incl. topics/entities).
-            for (id, display, haystack, created) in
-                self.list_recent_episode_rows(exclude_session_id, 1000)?
-            {
                 Self::score_episode_candidate_haystack(
                     &id,
                     &display,
@@ -973,16 +987,16 @@ impl Database {
             .join(" OR ")
     }
 
-    /// `Ok(None)` = FTS missing/failed; `Ok(Some(_))` = successful MATCH.
-    /// Rows are `(entity_id, display_summary, search_haystack, created_at)`.
+    /// Run the current FTS5 episode query. Rows are `(entity_id,
+    /// display_summary, search_haystack, created_at)`.
     fn search_episode_summaries_fts(
         &self,
         terms: &[&str],
         exclude_session_id: Option<&str>,
         limit: usize,
-    ) -> anyhow::Result<Option<Vec<EpisodeSearchRow>>> {
+    ) -> anyhow::Result<Vec<EpisodeSearchRow>> {
         if limit == 0 || terms.is_empty() {
-            return Ok(Some(Vec::new()));
+            return Ok(Vec::new());
         }
         let match_expr = Self::build_episode_fts_query(terms);
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<EpisodeSearchRow> {
@@ -996,7 +1010,7 @@ impl Database {
         };
         let item = fts_kind::ITEM;
         let conn = self.conn();
-        let result = if let Some(sid) = exclude_session_id {
+        if let Some(sid) = exclude_session_id {
             let sql = format!(
                 "SELECT e.id, e.content, e.topics, e.entities, e.created_at
                  FROM memory_fts
@@ -1006,13 +1020,9 @@ impl Database {
                  ORDER BY bm25(memory_fts), e.created_at DESC
                  LIMIT ?3"
             );
-            let mut stmt = conn.prepare(&sql);
-            match stmt {
-                Ok(ref mut s) => s
-                    .query_map(rusqlite::params![match_expr, sid, limit as i64], map_row)
-                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()),
-                Err(e) => Err(e),
-            }
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params![match_expr, sid, limit as i64], map_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         } else {
             let sql = format!(
                 "SELECT e.id, e.content, e.topics, e.entities, e.created_at
@@ -1023,17 +1033,9 @@ impl Database {
                  ORDER BY bm25(memory_fts), e.created_at DESC
                  LIMIT ?2"
             );
-            let mut stmt = conn.prepare(&sql);
-            match stmt {
-                Ok(ref mut s) => s
-                    .query_map(rusqlite::params![match_expr, limit as i64], map_row)
-                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()),
-                Err(e) => Err(e),
-            }
-        };
-        match result {
-            Ok(rows) => Ok(Some(rows)),
-            Err(_) => Ok(None),
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params![match_expr, limit as i64], map_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         }
     }
 
@@ -1309,7 +1311,7 @@ mod tests {
     fn save_replaces_existing() {
         let db = db();
         insert_fact_with_id(&db, "f1");
-        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0], "a")
+        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "a")
             .unwrap();
         db.save_embedding(entity_kind::FACT, "f1", "m", &[2.0, 3.0], "b")
             .unwrap();
@@ -1577,12 +1579,16 @@ mod tests {
         let ep = db.add_episode(&session.id, "hello").unwrap();
         db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello")
             .unwrap();
-        db.save_embedding(entity_kind::EPISODE, "ghost", "m", &[1.0], "gone")
-            .unwrap();
-        db.save_embedding(entity_kind::FACT, "ghost-fact", "m", &[1.0], "gone")
-            .unwrap();
+        assert!(
+            db.save_embedding(entity_kind::EPISODE, "ghost", "m", &[1.0], "gone")
+                .is_err()
+        );
+        assert!(
+            db.save_embedding(entity_kind::FACT, "ghost-fact", "m", &[1.0], "gone")
+                .is_err()
+        );
         let deleted = db.prune_orphaned_embeddings().unwrap();
-        assert_eq!(deleted, 2);
+        assert_eq!(deleted, 0);
         assert!(
             db.get_embedding(entity_kind::EPISODE, &ep)
                 .unwrap()
@@ -1609,15 +1615,17 @@ mod tests {
     }
 
     #[test]
-    fn list_embedding_dimensions_detects_mixed_provider_shapes() {
+    fn save_embedding_rejects_mixed_dimensions_within_model() {
         let db = db();
         insert_fact_with_id(&db, "f1");
         insert_fact_with_id(&db, "f2");
         db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0], "x")
             .unwrap();
-        db.save_embedding(entity_kind::FACT, "f2", "m", &[1.0, 0.0, 0.0], "y")
-            .unwrap();
-        assert_eq!(db.list_embedding_dimensions("m").unwrap(), vec![2, 3]);
+        assert!(
+            db.save_embedding(entity_kind::FACT, "f2", "m", &[1.0, 0.0, 0.0], "y")
+                .is_err()
+        );
+        assert_eq!(db.list_embedding_dimensions("m").unwrap(), vec![2]);
     }
 
     #[test]

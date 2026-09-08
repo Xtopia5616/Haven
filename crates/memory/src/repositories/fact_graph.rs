@@ -7,14 +7,15 @@
 
 use super::fact_query::{FACT_COLS, fact_from_row};
 use super::facts::{
-    Fact, FactSourceRef, UpsertOutcome, is_single_valued_predicate, normalize_predicate,
-    polarity_opposite,
+    Fact, FactSourceRef, UpsertOutcome, is_sensitive_text, is_single_valued_predicate,
+    normalize_predicate, polarity_opposite,
 };
 use crate::db::Database;
 use chrono::Utc;
 use rusqlite::OptionalExtension;
 
 const CONTRADICTION_DEMOTE_FACTOR: f64 = super::facts::CONTRADICTION_DEMOTE_FACTOR;
+const PROVENANCE_SNIPPET_MAX_CHARS: usize = 120;
 
 fn serialize_tags(tags: &[&str]) -> String {
     serde_json::to_string(tags).unwrap_or_else(|_| "[]".into())
@@ -26,6 +27,48 @@ fn node_kind_for_label(label: &str) -> &'static str {
     } else {
         "concept"
     }
+}
+
+fn sanitize_source_ref(source_ref: Option<&FactSourceRef>) -> Option<FactSourceRef> {
+    let refer = source_ref?;
+    let mut safe = refer.clone();
+    safe.snippet = if safe.snippet.trim().is_empty() {
+        String::new()
+    } else if is_sensitive_text(&safe.snippet) {
+        "[redacted]".to_string()
+    } else {
+        safe.snippet
+            .chars()
+            .take(PROVENANCE_SNIPPET_MAX_CHARS)
+            .collect()
+    };
+    Some(safe)
+}
+
+fn validate_fact_fields(
+    subject: &str,
+    predicate: &str,
+    object: &str,
+    source: &str,
+    confidence: f64,
+    durability: f64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!subject.trim().is_empty(), "fact subject is required");
+    anyhow::ensure!(!predicate.trim().is_empty(), "fact predicate is required");
+    anyhow::ensure!(!object.trim().is_empty(), "fact object is required");
+    anyhow::ensure!(
+        matches!(source, "user" | "inferred"),
+        "unsupported fact source '{source}'"
+    );
+    anyhow::ensure!(
+        confidence.is_finite() && (0.0..=1.0).contains(&confidence),
+        "fact confidence must be finite and between 0 and 1"
+    );
+    anyhow::ensure!(
+        durability.is_finite() && (0.0..=1.0).contains(&durability),
+        "fact durability must be finite and between 0 and 1"
+    );
+    Ok(())
 }
 
 /// Internal writer for the typed memory graph's fact edges.
@@ -71,6 +114,8 @@ impl<'db> FactGraph<'db> {
         durability: f64,
     ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
+        validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
+        let safe_source_ref = sanitize_source_ref(source_ref);
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
@@ -115,18 +160,20 @@ impl<'db> FactGraph<'db> {
             created_at: now.clone(),
             mention_count: 0,
             last_seen_at: Some(now),
-            source_ref: source_ref.cloned(),
+            source_ref: safe_source_ref,
             durability,
         })
     }
 
     /// Map a public source reference to either the memory-item FK or an
-    /// opaque transcript reference. The snippet is always retained.
+    /// opaque transcript reference. Snippets are bounded and redacted before
+    /// they reach durable storage.
     fn provenance_cols_from_source_ref(
         &self,
         source_ref: Option<&FactSourceRef>,
     ) -> anyhow::Result<(Option<String>, Option<String>, Option<String>)> {
-        let Some(refer) = source_ref else {
+        let sanitized = sanitize_source_ref(source_ref);
+        let Some(refer) = sanitized.as_ref() else {
             return Ok((None, None, None));
         };
         let snippet = if refer.snippet.is_empty() {
@@ -201,6 +248,7 @@ impl<'db> FactGraph<'db> {
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
+        validate_fact_fields(subject, &predicate, object, "user", 1.0, 1.0)?;
         // Resolve node ids before opening the edge transaction. Node creation is
         // independently idempotent; the transaction below makes the user-edge
         // replacement itself atomic, so a failed insert cannot leave a missing
@@ -351,6 +399,7 @@ impl<'db> FactGraph<'db> {
         durability: f64,
     ) -> anyhow::Result<UpsertOutcome> {
         let predicate = normalize_predicate(predicate);
+        validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
         let now = Utc::now().to_rfc3339();
         let mut corrected = false;
         let opposite = polarity_opposite(&predicate);

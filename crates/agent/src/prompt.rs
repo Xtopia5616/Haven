@@ -10,7 +10,9 @@ use haven_common::tools::ToolDef;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
-use haven_memory::recall::{MAX_MEMORY_QUERY_CHARS, MemoryKind, MemoryQuery, MemoryRetriever};
+use haven_memory::recall::{
+    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRetriever,
+};
 use haven_tools::ToolsManager;
 
 use crate::compactor::estimate_tokens;
@@ -252,7 +254,7 @@ const EPISODE_EXCERPT_CHARS: usize = 200;
 /// Seed user-subject facts via SQL `ORDER BY confidence LIMIT` (not full pull).
 const USER_FACTS_SEED_LIMIT: usize = 40;
 /// Single multi-term FTS OR search limit for cross-subject keyword hits.
-const CROSS_SEARCH_LIMIT: usize = 48;
+const CROSS_SEARCH_LIMIT: usize = MAX_RECALL_LIMIT;
 /// Character budget for facts + episodes body (inside MEMORY fence).
 const MEMORY_BODY_CHAR_BUDGET: usize = 2800;
 /// Token budget for facts + episodes. Character limits remain as a secondary

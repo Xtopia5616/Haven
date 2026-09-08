@@ -229,13 +229,15 @@ impl Database {
         if affected == 0 {
             anyhow::bail!("session '{}' not found in database", id);
         }
-        // Drop the fact-extraction cursor and throttle stamp for this session;
+        // Drop all session-scoped fact-extraction state for this session;
         // otherwise every deleted session leaves permanent kv_store rows behind.
         conn.execute(
-            "DELETE FROM kv_store WHERE key = ?1 OR key = ?2",
+            "DELETE FROM kv_store WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4",
             rusqlite::params![
                 format!("fact_extraction.{}", id),
-                format!("fact_extraction_last_run.{}", id)
+                format!("fact_extraction_last_run.{}", id),
+                format!("fact_extraction_episode.{}", id),
+                format!("fact_extraction_pending.{}", id)
             ],
         )?;
         drop(conn);
@@ -264,6 +266,17 @@ impl Database {
             conn.execute("DELETE FROM messages", [])?;
             // CASCADE handles session_steps.
             let count = conn.execute("DELETE FROM sessions", [])?;
+            // Extraction state is session-scoped even though it lives in the
+            // generic internal kv table. Clear all four namespaces together
+            // with the session rows so a history reset is complete.
+            conn.execute(
+                "DELETE FROM kv_store
+                 WHERE key LIKE 'fact_extraction.%'
+                    OR key LIKE 'fact_extraction_last_run.%'
+                    OR key LIKE 'fact_extraction_episode.%'
+                    OR key LIKE 'fact_extraction_pending.%'",
+                [],
+            )?;
             Ok(count)
         })();
         match result {
@@ -370,6 +383,27 @@ impl Database {
         let count = conn.execute(
             "DELETE FROM sessions WHERE created_at < ?1",
             rusqlite::params![cutoff],
+        )?;
+        // Batch retention deletion bypasses `delete_session`; reclaim the
+        // session-scoped extraction state in the same connection while the
+        // deleted session ids are still the source of truth for this pass.
+        conn.execute(
+            "DELETE FROM kv_store
+             WHERE (key LIKE 'fact_extraction.%'
+                    OR key LIKE 'fact_extraction_last_run.%'
+                    OR key LIKE 'fact_extraction_episode.%'
+                    OR key LIKE 'fact_extraction_pending.%')
+               AND NOT EXISTS (SELECT 1 FROM sessions
+                               WHERE id = CASE
+                                   WHEN key LIKE 'fact_extraction_last_run.%'
+                                   THEN substr(key, 26)
+                                   WHEN key LIKE 'fact_extraction_episode.%'
+                                   THEN substr(key, 25)
+                                   WHEN key LIKE 'fact_extraction_pending.%'
+                                   THEN substr(key, 25)
+                                   ELSE substr(key, 17)
+                               END)",
+            [],
         )?;
         drop(conn);
         if count > 0 {
@@ -867,13 +901,44 @@ mod tests {
     #[test]
     fn test_clear_sessions() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
+        let first = db.create_session("a", "").unwrap();
         db.create_session("b", "").unwrap();
         db.create_session("c", "").unwrap();
+        db.set_kv(&format!("fact_extraction.{}", first.id), "msg-1")
+            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_last_run.{}", first.id),
+            "2026-08-15T00:00:00Z",
+        )
+        .unwrap();
+        db.set_kv(&format!("fact_extraction_episode.{}", first.id), "msg-2")
+            .unwrap();
+        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
+            .unwrap();
 
         let count = db.clear_sessions().unwrap();
         assert_eq!(count, 3);
         assert_eq!(db.count_sessions().unwrap(), 0);
+        assert!(
+            db.get_kv(&format!("fact_extraction.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_last_run.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_episode.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_pending.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -919,12 +984,43 @@ mod tests {
     #[test]
     fn test_delete_old_sessions() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
+        let first = db.create_session("a", "").unwrap();
         db.create_session("b", "").unwrap();
+        db.set_kv(&format!("fact_extraction.{}", first.id), "msg-1")
+            .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_last_run.{}", first.id),
+            "2026-08-15T00:00:00Z",
+        )
+        .unwrap();
+        db.set_kv(&format!("fact_extraction_episode.{}", first.id), "msg-2")
+            .unwrap();
+        db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
+            .unwrap();
 
         let count = db.delete_old_sessions(0).unwrap();
         assert_eq!(count, 2);
         assert_eq!(db.count_sessions().unwrap(), 0);
+        assert!(
+            db.get_kv(&format!("fact_extraction.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_last_run.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_episode.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_pending.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

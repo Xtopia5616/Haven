@@ -2,7 +2,7 @@
 //!
 //! CRUD repositories remain the persistence authority. This module owns the
 //! common read policy used by the agent prompt, the memory tool, and the
-//! desktop recall command: query normalization, keyword fallback, optional
+//! desktop recall command: query normalization, keyword degradation, optional
 //! vector fusion, deterministic ordering, and defense-in-depth filtering.
 
 use crate::Database;
@@ -10,7 +10,7 @@ use crate::embeddings::{EmbeddedText, entity_kind};
 use crate::repositories::facts::{
     Fact, fact_effective_confidence, is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Maximum result count accepted by the shared recall contract.
 pub const MAX_RECALL_LIMIT: usize = 20;
@@ -29,7 +29,7 @@ pub fn normalize_memory_query(text: &str) -> anyhow::Result<String> {
     if text.chars().count() > MAX_MEMORY_QUERY_CHARS {
         anyhow::bail!("memory query is too long (max {MAX_MEMORY_QUERY_CHARS} characters)");
     }
-    Ok(text.to_string())
+    Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// Memory entity domain used by the shared recall contract.
@@ -42,8 +42,8 @@ pub enum MemoryKind {
 impl MemoryKind {
     pub fn parse(value: &str) -> anyhow::Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "fact" | "facts" => Ok(Self::Fact),
-            "episode" | "episodes" => Ok(Self::Episode),
+            "fact" => Ok(Self::Fact),
+            "episode" => Ok(Self::Episode),
             _ => anyhow::bail!("kind must be fact or episode"),
         }
     }
@@ -71,10 +71,15 @@ pub struct MemoryQuery {
 impl MemoryQuery {
     pub fn new(text: &str, kind: MemoryKind, limit: usize) -> anyhow::Result<Self> {
         let text = normalize_memory_query(text)?;
+        anyhow::ensure!(limit > 0, "memory recall limit must be greater than zero");
+        anyhow::ensure!(
+            limit <= MAX_RECALL_LIMIT,
+            "memory recall limit exceeds the maximum of {MAX_RECALL_LIMIT}"
+        );
         Ok(Self {
             text,
             kind,
-            limit: limit.clamp(1, MAX_RECALL_LIMIT),
+            limit,
             exclude_session_id: None,
             fact_subject: None,
         })
@@ -156,7 +161,8 @@ impl<'db> MemoryRetriever<'db> {
 
     /// Defense-in-depth visibility policy shared by CRUD search, prompt
     /// recall, and vector recall. Stored credential-like rows are never
-    /// returned to a model even if a legacy database contains them.
+    /// returned to a model even if a database was modified outside the write
+    /// boundary.
     pub fn visible_fact(fact: &Fact) -> bool {
         !is_sensitive_text(&fact.subject)
             && !is_sensitive_predicate(&fact.predicate)
@@ -245,7 +251,7 @@ impl<'db> MemoryRetriever<'db> {
     /// Read vector candidates from the shared embedding persistence path.
     /// The model is mandatory so mixed embedding spaces cannot leak into a
     /// result set. Fact rows are rehydrated before filtering to protect
-    /// against sensitive legacy rows whose embedding text is incomplete.
+    /// against sensitive rows whose embedding text is incomplete.
     pub fn vector(
         &self,
         query: &MemoryQuery,
@@ -305,33 +311,57 @@ impl<'db> MemoryRetriever<'db> {
         Ok(hits)
     }
 
-    /// Combine keyword and vector candidates using one deterministic identity
-    /// rule. Empty episode ids from the legacy keyword repository are keyed by
-    /// text, while facts and vector episodes use their stable entity id.
+    /// Combine keyword and vector candidates with reciprocal-rank fusion.
+    /// Keyword and vector scores live in different spaces, so comparing their
+    /// raw floating-point values is invalid. RRF keeps each source's ranking,
+    /// rewards agreement, and remains deterministic across providers.
     pub fn merge(
         &self,
         query: &MemoryQuery,
         keyword_hits: Vec<MemoryHit>,
         vector_hits: Vec<MemoryHit>,
     ) -> MemoryRecall {
+        const RRF_K: f64 = 60.0;
         let has_vectors = !vector_hits.is_empty();
-        let mut seen = HashSet::new();
-        let mut hits = Vec::with_capacity(query.limit);
-        // Semantic hits lead; keyword hits fill the remaining slots. This
-        // keeps vector recall useful while retaining the no-embedding path.
-        for hit in vector_hits.into_iter().chain(keyword_hits) {
-            let key = if hit.entity_id.is_empty() {
-                format!("text:{}", hit.text)
-            } else {
-                format!("id:{}", hit.entity_id)
-            };
-            if seen.insert(key) {
-                hits.push(hit);
-                if hits.len() >= query.limit {
-                    break;
-                }
+        let mut candidates: HashMap<String, (MemoryHit, f64)> = HashMap::new();
+
+        for (rank, hit) in vector_hits.into_iter().enumerate() {
+            if hit.entity_id.is_empty() {
+                continue;
             }
+            let key = hit.entity_id.clone();
+            let entry = candidates.entry(key).or_insert((hit, 0.0));
+            entry.1 += 1.0 / (RRF_K + rank as f64 + 1.0);
         }
+        for (rank, hit) in keyword_hits.into_iter().enumerate() {
+            if hit.entity_id.is_empty() {
+                continue;
+            }
+            let key = hit.entity_id.clone();
+            let entry = candidates.entry(key).or_insert((hit, 0.0));
+            entry.1 += 1.0 / (RRF_K + rank as f64 + 1.0);
+        }
+
+        let mut ranked: Vec<(MemoryHit, f64)> = candidates.into_values().collect();
+        ranked.sort_by(|(left, left_rrf), (right, right_rrf)| {
+            right_rrf
+                .partial_cmp(left_rrf)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    right
+                        .score
+                        .partial_cmp(&left.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| left.entity_id.cmp(&right.entity_id))
+                .then_with(|| left.text.cmp(&right.text))
+        });
+        let hits = ranked
+            .into_iter()
+            .take(query.limit)
+            .map(|(hit, _)| hit)
+            .collect();
+
         MemoryRecall {
             hits,
             mode: if has_vectors {
@@ -351,13 +381,7 @@ impl<'db> MemoryRetriever<'db> {
         vector_hits: Option<Vec<MemoryHit>>,
     ) -> anyhow::Result<MemoryRecall> {
         let keyword_hits = self.keyword(query)?;
-        let had_vectors = vector_hits.as_ref().is_some_and(|hits| !hits.is_empty());
-        let vector_hits = vector_hits.unwrap_or_default();
-        let mut recall = self.merge(query, keyword_hits, vector_hits);
-        if had_vectors {
-            recall.mode = MemoryRecallMode::Hybrid;
-        }
-        Ok(recall)
+        Ok(self.merge(query, keyword_hits, vector_hits.unwrap_or_default()))
     }
 }
 
@@ -384,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_recall_is_typed_hybrid_and_filters_legacy_sensitive_rows() {
+    fn vector_recall_is_typed_hybrid_and_filters_sensitive_rows() {
         let db = Database::open_in_memory().unwrap();
         let safe = db
             .insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
@@ -440,10 +464,62 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_recall_rewards_candidates_present_in_both_rankings() {
+        let db = Database::open_in_memory().unwrap();
+        let query = MemoryQuery::new("anything", MemoryKind::Fact, 3).unwrap();
+        let retriever = MemoryRetriever::new(&db);
+        let recall = retriever.merge(
+            &query,
+            vec![
+                MemoryHit {
+                    entity_id: "keyword-only".into(),
+                    text: "keyword".into(),
+                    score: 1.0,
+                    model: String::new(),
+                },
+                MemoryHit {
+                    entity_id: "agreed".into(),
+                    text: "agreed".into(),
+                    score: 0.1,
+                    model: String::new(),
+                },
+            ],
+            vec![
+                MemoryHit {
+                    entity_id: "vector-only".into(),
+                    text: "vector".into(),
+                    score: 1.0,
+                    model: "model".into(),
+                },
+                MemoryHit {
+                    entity_id: "agreed".into(),
+                    text: "agreed".into(),
+                    score: 0.1,
+                    model: "model".into(),
+                },
+            ],
+        );
+
+        assert_eq!(recall.mode, MemoryRecallMode::Hybrid);
+        assert_eq!(recall.hits[0].entity_id, "agreed");
+    }
+
+    #[test]
     fn query_boundary_rejects_unbounded_recall_input() {
         let error = MemoryQuery::new(&"x".repeat(MAX_MEMORY_QUERY_CHARS + 1), MemoryKind::Fact, 1)
             .unwrap_err();
         assert!(error.to_string().contains("too long"));
+    }
+
+    #[test]
+    fn query_boundary_rejects_invalid_kind_and_limit() {
+        assert!(MemoryKind::parse("facts").is_err());
+        assert!(MemoryQuery::new("query", MemoryKind::Fact, 0).is_err());
+        assert!(MemoryQuery::new("query", MemoryKind::Fact, MAX_RECALL_LIMIT + 1).is_err());
+        assert_eq!(
+            normalize_memory_query("  dark\n\t theme  ").unwrap(),
+            "dark theme"
+        );
     }
 
     #[test]

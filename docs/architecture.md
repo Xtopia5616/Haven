@@ -136,20 +136,17 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 
 ### 2.3 `haven-memory` —— 持久化与记忆存储
 
-- `schema.rs`：当前幂等 SQLite schema、FTS/embedding 维护对象、必需列检查和
-  初始化编排。
-- `migrations.rs`：历史 schema/data migration、PRAGMA user_version 版本戳和
-  迁移顺序；只处理数据库转换，不承担 Agent 推理或 UI 展示。
+- `schema.rs`：唯一的当前 SQLite schema、FTS/embedding 维护对象、版本戳和
+  初始化编排。数据库 schema 是严格的 reset contract，不在运行时承载历史迁移。
 - `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；其中
   `fact_graph.rs` 集中负责 `memory_edges` 写入与图谱不变量，`fact_query.rs`
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
-  扫描，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观；不拥有
-  schema 升级策略。
+  扫描，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。
 - `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
 
-`schema.rs` 与 `migrations.rs` 的边界不改变 X12：`messages` /
-`session_steps` 仍是投影，`ReActSnapshot.events` 仍是恢复唯一权威；迁移只
-维护持久化结构，不成为新的业务真源。
+schema 初始化不改变 X12：`messages` / `session_steps` 仍是投影，
+`ReActSnapshot.events` 仍是恢复唯一权威；reset 只替换持久化载体，不成为新的
+业务真源。
 
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
 provider 协议和 UI 展示逻辑不得进入本 crate。
@@ -157,7 +154,8 @@ provider 协议和 UI 展示逻辑不得进入本 crate。
 Agent 的 `memory_index.rs` 是 embedding 编排边界：它负责 embedding provider 调用、
 有界 catch-up、模型切换清理和 LSH 重建；向量行的 scope、敏感过滤、规范化与 keyword
 融合由 `haven_memory::recall::MemoryRetriever` 统一负责。`InferenceEngine` 只编排
-事实抽取/维护并使用这两个组件，不把 provider 网络调用下沉到 Memory；Memory 只
+事实抽取/维护并使用这两个组件；事实抽取 outbox 以 `kv_store` marker 持久化，
+不把 provider 网络调用下沉到 Memory；Memory 只
 接收已获取的向量并执行同步数据库读取。事实维护的 SQL 清理与矛盾候选读取由
 `fact_maintenance.rs` 负责；维护调度、LLM 仲裁、提案门禁与并发控制仍属于 Agent，
 二者通过既有 `Database` 外观连接（ADR 0022、0063）。
@@ -426,3 +424,5 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-08 | §2.6 UI：工具卡统一显示各自参数与结果的 token 估算；provider 真实总量仅保留在会话级统计，删除首个工具卡的 step 聚合展示（ADR 0099） |
 | 2026-09-08 | §2.6 UI / §2.3 Memory：聊天 token 摘要改为可展开明细，展示上传/生成、缓存命中率、当前上下文预算与累计费用；用量持久化增加最后一次上下文快照（ADR 0102） |
 | 2026-09-08 | §2.5 Tools：将 `haven_session_diagnostics` 合并到 `haven_diagnostics`，统一模型可见诊断入口并保留会话数据脱敏与独立并发资源（ADR 0103） |
+| 2026-09-08 | §2.3 Memory：删除历史 schema/data migration，数据库收敛为严格 v16 当前契约；统一 FTS5、事实/episode 类型域、向量维度与 RRF 混合召回，并在 provenance 落库前限长脱敏（ADR 0105） |
+| 2026-09-08 | §2.3 Memory / §2.5 Agent：事实抽取 outbox 增加可恢复的 `kv_store` pending marker，session 删除与 orphan cleanup 统一回收 cursor、节流和队列状态；移除启动时伪造的默认姓名事实（ADR 0107） |

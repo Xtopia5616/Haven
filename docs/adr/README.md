@@ -105,3 +105,6 @@
 - [0102：聊天 token 统计明细与上下文快照](0102-token-usage-detail-popover.md)
 - [0103：合并模型可见的诊断能力](0103-merge-diagnostics-capabilities.md)
 - [0104：统一工作区条目卡片并将记忆详情移入弹窗](0104-ui-memory-item-detail-dialog.md)
+- [0105：记忆系统当前契约与严格召回](0105-memory-current-contract-and-retrieval.md)
+- [0106：统一记忆中心 UI](0106-ui-memory-center.md)
+- [0107：事实抽取使用可恢复的持久化 outbox](0107-durable-memory-extraction-outbox.md)

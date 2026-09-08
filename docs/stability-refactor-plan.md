@@ -132,6 +132,8 @@
 - 2026-09-05：P2 UI 表单字段与弹窗操作复用：MCP 表单使用 MaterialField，API Key、回退确认、日期选择器和 MCP 弹窗 footer 复用 MaterialButton（ADR 0083）。
 - 2026-09-05：P2 UI 语义化按钮迁移：工具、任务、记忆、设置、异步状态和懒加载失败态按主要、次要、低强调与危险语义复用 MaterialButton，保留 Tab、列表行、日历和安全确认等专用按钮（ADR 0084）。
 - 2026-09-05：P1/P2 错误传播边界收口：LLM 传输与流式错误、任务完成通知、ReAct 投影、checkpoint、恢复数据、MCP/VAD 与 UI 刷新均改为显式失败或 fail-closed（ADR 0086）。
+- 2026-09-08：P2 Memory 当前契约重置：删除历史 schema/data migration，数据库收敛为严格 v16；FTS5、fact/episode embedding 域、模型维度和 provenance 写入均强校验，混合召回改用 RRF，旧数据库按发布说明重置（ADR 0105）。
+- 2026-09-08：P1 Agent/Memory 事实抽取恢复性：outbox 写入可恢复的 `kv_store` pending marker，session 删除、批量清空、保留期删除与 orphan maintenance 统一清理抽取状态；删除启动时伪造的 `Xtopia` 身份事实（ADR 0107）。
 
 ## 完成标准
 

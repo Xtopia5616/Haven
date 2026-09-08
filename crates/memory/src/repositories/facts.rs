@@ -1470,6 +1470,38 @@ mod tests {
     }
 
     #[test]
+    fn test_source_ref_redacts_sensitive_snippet_before_persistence() {
+        let db = create_db();
+        let source_ref = FactSourceRef {
+            message_id: "m-secret".into(),
+            snippet: "password=hunter2".into(),
+        };
+        db.insert_fact_with_source_ref(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.9,
+            &[],
+            Some(&source_ref),
+            1.0,
+        )
+        .unwrap();
+
+        let stored = db.get_facts("user").unwrap();
+        assert_eq!(stored[0].source_ref.as_ref().unwrap().snippet, "[redacted]");
+        let raw: String = db
+            .conn()
+            .query_row(
+                "SELECT provenance_snippet FROM memory_edges WHERE id = ?1",
+                rusqlite::params![stored[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!raw.contains("hunter2"));
+    }
+
+    #[test]
     fn test_cleanup_orphan_source_refs_clears_empty_record_id() {
         let db = create_db();
         let fact = db
@@ -1790,7 +1822,7 @@ mod tests {
         assert_eq!(results.len(), 1, "got {:?}", results);
         assert_eq!(results[0].object, "xa_y");
 
-        // Tool search_facts also escapes the whole-query LIKE fallback.
+        // The normal FTS path treats the underscore literally as well.
         let via_tool = db.search_facts("xa_y").unwrap();
         assert!(via_tool.iter().any(|f| f.object == "xa_y"));
         assert!(!via_tool.iter().any(|f| f.object == "xaZy"));

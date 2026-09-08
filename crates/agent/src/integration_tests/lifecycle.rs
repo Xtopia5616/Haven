@@ -17,6 +17,7 @@ fn agent_new_constructor_works() {
     ));
     let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
     // Verify construction succeeded; no per-session indirection remains.
+    assert!(agent.db.get_facts("user").unwrap().is_empty());
     let session = agent.db.create_session("input", "transcript").unwrap();
     assert!(!session.id.is_empty());
 }

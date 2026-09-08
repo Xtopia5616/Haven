@@ -23,10 +23,11 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 `fallback_retry_max_retries` 会被忽略，保存配置后不再写回。若需要清理旧配置残留，按下文
 完整重置数据根目录后重新配置模型。
 
-本次 Agent 版本将数据库 schema 升至 v12，为 `session_steps` 增加工具调用顺序和
-`tool_call_id`。已有数据库会由迁移补齐列；没有这两个字段的旧步骤在无快照恢复时只能使用
-基于步骤 ID 的确定性 fallback。正在等待确认的旧快照缺少完整调用身份时不应继续混用，建议按
-下文完整重置后重新发起工具调用。
+本次 Agent 版本将数据库 schema 收敛为 v16 当前契约：旧数据库不再执行运行时 schema/data
+迁移，也不会尝试拼接旧表、旧列或旧 FTS/embedding 形状。`user_version` 不是 v16 的数据库，
+或没有版本戳但已经包含用户表，都会拒绝打开；必须删除 `haven.db`、`haven.db-wal` 和
+`haven.db-shm` 后重新创建。这样会同时清除会话、记忆、任务、快照和用量；若配置仍需保留，
+只删除这三个数据库文件即可，不必删除整个数据根目录。
 
 ## 用户数据位置
 

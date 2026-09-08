@@ -75,7 +75,6 @@ impl AgentLayer {
             ))
             .with_inference(inference.clone()),
         );
-        let _ = db.ensure_fact("user", "name", "Xtopia", "user", 1.0, &["identity"]);
         // Title generator is always available: it routes through the shared
         // LlmRouter, which uses EndpointRole::SmallModel. If the small_model
         // endpoint isn't configured the router will simply surface the error

@@ -100,9 +100,9 @@ corepack pnpm run check
 - 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`SessionId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。
 - 序号类字段（u64 代次，非持久实体）：`run_id`（run 实例）、`gen_id`（流式代次）、MCP JSON-RPC `next_id`，保持现有命名并加文档说明。
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。
-- kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`），内嵌的实体 ID 必须是规范格式。
+- kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`、`fact_extraction_pending.{session_id}`），内嵌的实体 ID 必须是规范格式。
 - 步骤计数统一叫 `step_number`（事件/UI/DB 列名一致）。
-- 数据库 schema 由 `haven_memory::schema::init_schema` 管理：`SCHEMA_SQL` 幂等建表 + `PRAGMA user_version` / `MIGRATIONS` 版本化迁移（当前见 `SCHEMA_VERSION`）。缺 `REQUIRED_COLUMNS` 的远古库启动时报错，删除 haven.db 重建；`user_version` 高于本二进制支持版本时拒绝打开。演进原则与剩余重构工作见 `docs/stability-refactor-plan.md`。
+- 数据库 schema 由 `haven_memory::schema::init_schema` 管理：当前 `SCHEMA_SQL` 幂等建表并写入 `SCHEMA_VERSION`；旧版本数据库不做运行时迁移，直接按 `docs/release-and-reset.md` 重置。`user_version` 高于或不同于本二进制支持版本时拒绝打开。演进原则与剩余重构工作见 `docs/stability-refactor-plan.md`。
 
 ## 通知 / 日志 / 错误处理规范
 

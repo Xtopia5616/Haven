@@ -47,7 +47,8 @@ pub struct InferenceEngine {
     inference_semaphore: Arc<Semaphore>,
     /// Pending extraction jobs keyed by session_id. Value is
     /// `bypass_throttle`; coalesce with OR so pause-path never loses to an
-    /// earlier interval enqueue (L3 / P1-7).
+    /// earlier interval enqueue (L3 / P1-7). The same marker is mirrored in
+    /// `kv_store` so a process crash cannot silently discard the queue.
     outbox: Mutex<HashMap<String, bool>>,
     outbox_notify: Notify,
     /// Lazy worker start so `AgentLayer::new` stays usable outside a Tokio
@@ -137,6 +138,16 @@ impl InferenceEngine {
         if session_id.is_empty() {
             return;
         }
+        if let Err(error) = self.db.enqueue_fact_extraction(session_id, bypass_throttle) {
+            // Keep the in-memory path available even if the durable marker
+            // cannot be written; the current process can still make progress
+            // and the failure remains observable.
+            tracing::warn!(
+                "fact extraction durable enqueue failed for session {}: {}",
+                session_id,
+                error
+            );
+        }
         if let Ok(mut pending) = self.outbox.lock() {
             let entry = pending.entry(session_id.to_string()).or_insert(false);
             *entry = *entry || bypass_throttle;
@@ -161,6 +172,26 @@ impl InferenceEngine {
         }
         let engine = self.clone();
         tokio::spawn(async move {
+            // Restore jobs that were enqueued by the previous process. Jobs
+            // stay durable until successful completion; the extraction cursor
+            // makes a replay after a crash idempotent.
+            match engine
+                .db
+                .run_blocking(|db| db.pending_fact_extractions())
+                .await
+            {
+                Ok(restored) => {
+                    if let Ok(mut pending) = engine.outbox.lock() {
+                        for (session_id, bypass) in restored {
+                            let entry = pending.entry(session_id).or_insert(false);
+                            *entry = *entry || bypass;
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("fact extraction durable outbox restore failed: {}", error);
+                }
+            }
             loop {
                 let batch: Vec<(String, bool)> = {
                     let mut pending = engine.outbox.lock().unwrap_or_else(|e| e.into_inner());
@@ -175,10 +206,26 @@ impl InferenceEngine {
                     continue;
                 }
                 for (session_id, bypass) in batch {
-                    if bypass {
-                        engine.infer_session_on_pause(&session_id).await;
+                    let completed = if bypass {
+                        engine.infer_session_on_pause(&session_id).await
                     } else {
-                        engine.infer_session(&session_id).await;
+                        engine.infer_session(&session_id).await
+                    };
+                    if completed {
+                        let session_id_for_db = session_id.clone();
+                        if let Err(error) = engine
+                            .db
+                            .run_blocking(move |db| {
+                                db.clear_pending_fact_extraction(&session_id_for_db)
+                            })
+                            .await
+                        {
+                            tracing::warn!(
+                                "fact extraction durable completion failed for session {}: {}",
+                                session_id,
+                                error
+                            );
+                        }
                     }
                 }
             }
@@ -210,24 +257,24 @@ impl InferenceEngine {
     /// session returns early WITHOUT touching the cursor, so the pending
     /// messages are still processed by the next allowed run (and by the
     /// maintenance pass regardless).
-    pub async fn infer_facts(&self, session_id: &str) {
-        self.infer_facts_inner(session_id, false).await;
+    pub async fn infer_facts(&self, session_id: &str) -> bool {
+        self.infer_facts_inner(session_id, false).await
     }
 
     /// Pause-path extraction: bypasses the time throttle so a same-step
     /// interval infer cannot starve the post-pause pass that has the
     /// fresher transcript (Phase 3 / G2).
-    pub async fn infer_facts_on_pause(&self, session_id: &str) {
-        self.infer_facts_inner(session_id, true).await;
+    pub async fn infer_facts_on_pause(&self, session_id: &str) -> bool {
+        self.infer_facts_inner(session_id, true).await
     }
 
-    async fn infer_facts_inner(&self, session_id: &str, bypass_throttle: bool) {
+    async fn infer_facts_inner(&self, session_id: &str, bypass_throttle: bool) -> bool {
         // Time throttle: at most one LLM extraction per interval per session.
         // kv_store key `fact_extraction_last_run.<session_id>` = RFC3339 of
-        // the last run that actually called the model. Note the underscore
-        // namespace (NOT `fact_extraction.`): the orphan-cursor cleanup
-        // matches `fact_extraction.%` and would wipe this stamp every
-        // maintenance pass.
+        // the last run that actually called the model. The cleanup routine
+        // treats the cursor, throttle stamp, and summary cursor as one
+        // session-scoped state family and removes all of them with dead
+        // sessions.
         if !bypass_throttle && self.fact_extraction_min_interval_secs > 0 {
             let last_key = format!("fact_extraction_last_run.{}", session_id);
             let last_run = match self
@@ -245,7 +292,7 @@ impl InferenceEngine {
                         session_id,
                         error
                     );
-                    return;
+                    return false;
                 }
             };
             if let Some(ts) = last_run
@@ -259,7 +306,7 @@ impl InferenceEngine {
                     self.fact_extraction_min_interval_secs,
                     session_id
                 );
-                return;
+                return false;
             }
         }
 
@@ -281,12 +328,12 @@ impl InferenceEngine {
                         session_id,
                         error
                     );
-                    return;
+                    return false;
                 }
             }
         };
         if messages.is_empty() {
-            return;
+            return true;
         }
 
         // Incremental window (M1+M4): cursor tracks user message ids; each new
@@ -309,7 +356,7 @@ impl InferenceEngine {
                     session_id,
                     error
                 );
-                return;
+                return false;
             }
         };
         let window = build_extraction_window(&messages, cursor.as_deref(), &steps);
@@ -332,9 +379,10 @@ impl InferenceEngine {
                         session_id,
                         error
                     );
+                    return false;
                 }
             }
-            return;
+            return true;
         }
 
         // Stamp the run timestamp BEFORE calling the model: the throttle
@@ -357,7 +405,7 @@ impl InferenceEngine {
                     session_id,
                     error
                 );
-                return;
+                return false;
             }
         }
 
@@ -395,7 +443,7 @@ impl InferenceEngine {
         };
 
         if !extraction_succeeded {
-            return;
+            return false;
         }
 
         // Advance the cursor so the next run only sees brand-new user messages.
@@ -414,8 +462,10 @@ impl InferenceEngine {
                     session_id,
                     e
                 );
+                return false;
             }
         }
+        true
     }
 
     /// Full memory maintenance pass, independent of any extraction: collapse
@@ -1036,16 +1086,18 @@ impl InferenceEngine {
     /// a **bounded** embedding batch for newly written rows. Does **not** run
     /// full-table dedup / sensitive / flush — that stays on the scheduler via
     /// [`Self::run_memory_maintenance`].
-    pub async fn infer_session(&self, session_id: &str) {
-        self.infer_facts(session_id).await;
+    pub async fn infer_session(&self, session_id: &str) -> bool {
+        let completed = self.infer_facts(session_id).await;
         self.embedding_index.embed_new_memory().await;
+        completed
     }
 
     /// Pause-path variant: bypasses the extraction time throttle so a
     /// same-step interval infer cannot starve the fresher post-pause pass.
-    pub async fn infer_session_on_pause(&self, session_id: &str) {
-        self.infer_facts_on_pause(session_id).await;
+    pub async fn infer_session_on_pause(&self, session_id: &str) -> bool {
+        let completed = self.infer_facts_on_pause(session_id).await;
         self.embedding_index.embed_new_memory().await;
+        completed
     }
 
     /// Drop mid-run MEMORY patch bookkeeping for a finished session.
@@ -2068,13 +2120,18 @@ mod tests {
     #[test]
     fn enqueue_infer_coalesces_bypass_flag() {
         let db = temp_db();
-        let engine = Arc::new(make_engine(db));
-        engine.enqueue_infer("ses-a", false);
-        engine.enqueue_infer("ses-a", true);
-        engine.enqueue_infer("ses-b", false);
+        let first = db.create_session("a", "").unwrap();
+        let second = db.create_session("b", "").unwrap();
+        let engine = Arc::new(make_engine(db.clone()));
+        engine.enqueue_infer(&first.id, false);
+        engine.enqueue_infer(&first.id, true);
+        engine.enqueue_infer(&second.id, false);
         let pending = engine.outbox.lock().unwrap();
-        assert_eq!(pending.get("ses-a"), Some(&true));
-        assert_eq!(pending.get("ses-b"), Some(&false));
+        assert_eq!(pending.get(&first.id), Some(&true));
+        assert_eq!(pending.get(&second.id), Some(&false));
         assert_eq!(pending.len(), 2);
+        let durable = db.pending_fact_extractions().unwrap();
+        assert!(durable.contains(&(first.id, true)));
+        assert!(durable.contains(&(second.id, false)));
     }
 }

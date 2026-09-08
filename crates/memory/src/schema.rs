@@ -1,30 +1,14 @@
-//! Database schema initialization with a versioned migration layer.
+//! Current SQLite schema for Haven's local store.
 //!
-//! The current schema shape lives in [`SCHEMA_SQL`] and is created
-//! idempotently on every open. Versioning uses `PRAGMA user_version`:
-//!
-//! - A brand-new database (or a v0 database whose shape happens to match the
-//!   current schema — built by a pre-versioning binary) is stamped with
-//!   [`SCHEMA_VERSION`] after initialization.
-//! - An older database (`user_version < SCHEMA_VERSION`) is upgraded by
-//!   running every migration in [`MIGRATIONS`] with a version above its own.
-//! - A NEWER database (`user_version > SCHEMA_VERSION`) is rejected — the
-//!   binary is older than the database and could corrupt it.
-//!
-//! Any schema change must be a new entry in [`MIGRATIONS`] (bumping
-//! [`SCHEMA_VERSION`]), not an edit to `SCHEMA_SQL` alone: a fresh DB runs
-//! `SCHEMA_SQL` and gets the final version stamp, an existing DB runs only
-//! the migrations it has not seen yet.
+//! The test version deliberately has one schema contract instead of carrying
+//! an in-process upgrade framework. A database created by an older build is a
+//! reset boundary: accepting a partially migrated shape would make the
+//! session projections and memory graph appear valid while silently losing
+//! recovery semantics. The current schema is created idempotently, while its
+//! version stamp rejects both older and newer database contracts.
 
-#[path = "migrations.rs"]
-mod migrations;
-
-use migrations::{MIGRATIONS, SCHEMA_VERSION, apply_migrations, set_user_version, user_version};
-#[cfg(test)]
-use migrations::{
-    Migration, migrate_v10_llm_usage_cache_accounting, migrate_v11_usage_cache_diagnostics,
-    migrate_v12_session_steps, migrate_v13_message_ingress_seq, migrate_v14_react_checkpoints,
-};
+/// Current database contract. Any schema change requires a fresh database.
+pub const SCHEMA_VERSION: i32 = 16;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -97,8 +81,8 @@ const SCHEMA_SQL: &[&str] = &[
     // Typed memory graph (X1): nodes + SPO edges + episodic items.
     "CREATE TABLE IF NOT EXISTS memory_nodes (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL,
-        label TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('user','concept')),
+        label TEXT NOT NULL CHECK(length(trim(label)) > 0),
         aliases TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -111,26 +95,26 @@ const SCHEMA_SQL: &[&str] = &[
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         kind TEXT NOT NULL CHECK(kind IN ('episode_summary','utterance','note')),
-        content TEXT NOT NULL,
+        content TEXT NOT NULL CHECK(length(trim(content)) > 0),
         topics TEXT NOT NULL DEFAULT '[]',
         entities TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL
     )",
     // Today's facts as SPO edges. Keeps `fact-*` ids. `entity_type='fact'`
-    // in memory_embeddings remains the domain alias for these edge rows.
+    // in memory_embeddings points directly at these edge rows.
     "CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
-        subject TEXT NOT NULL,
+        subject TEXT NOT NULL CHECK(length(trim(subject)) > 0),
         subject_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
-        predicate TEXT NOT NULL,
-        object TEXT NOT NULL,
+        predicate TEXT NOT NULL CHECK(length(trim(predicate)) > 0),
+        object TEXT NOT NULL CHECK(length(trim(object)) > 0),
         object_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
         source TEXT NOT NULL DEFAULT 'inferred'
             CHECK(source IN ('user','inferred')),
-        confidence REAL NOT NULL DEFAULT 1.0,
+        confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence >= 0.0 AND confidence <= 1.0),
         created_at TEXT NOT NULL,
         tags TEXT NOT NULL DEFAULT '[]',
-        durability REAL NOT NULL DEFAULT 1.0,
+        durability REAL NOT NULL DEFAULT 1.0 CHECK(durability >= 0.0 AND durability <= 1.0),
         mention_count INTEGER NOT NULL DEFAULT 0,
         last_seen_at TEXT,
         provenance_item_id TEXT REFERENCES memory_items(id) ON DELETE SET NULL,
@@ -218,19 +202,17 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
 ];
 
-/// Vector index for semantic memory. `entity_type` selects the memory domain
-/// ('fact' = memory_edges SPO rows, 'episode' = memory_items). Domain string
-/// values stay `fact`/`episode` as aliases for edge/item to limit caller churn.
-/// `entity_id` references the owning row. `vector` is a little-endian f32 blob;
-/// `text` keeps the embedded surface text so keyword search and display don't
-/// need to re-derive it.
+/// Vector index for semantic memory. `entity_type` selects the owning memory
+/// domain (`fact` = `memory_edges`, `episode` = `memory_items`). The domain is
+/// intentionally closed: a polymorphic index without a closed vocabulary is
+/// impossible to validate and used to preserve obsolete rows.
 const MEMORY_EMBEDDINGS_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS memory_embeddings (
-    entity_type TEXT NOT NULL,
-    entity_id TEXT NOT NULL,
-    model TEXT NOT NULL,
-    vector BLOB NOT NULL,
-    text TEXT NOT NULL,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('fact', 'episode')),
+    entity_id TEXT NOT NULL CHECK(length(trim(entity_id)) > 0),
+    model TEXT NOT NULL CHECK(length(trim(model)) > 0),
+    vector BLOB NOT NULL CHECK(length(vector) > 0 AND length(vector) % 4 = 0),
+    text TEXT NOT NULL CHECK(length(trim(text)) > 0),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (entity_type, entity_id, model)
@@ -239,9 +221,9 @@ CREATE INDEX IF NOT EXISTS idx_memory_embeddings_type ON memory_embeddings(entit
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_type_model
     ON memory_embeddings(entity_type, model, updated_at);
 CREATE TABLE IF NOT EXISTS embedding_lsh (
-    entity_type TEXT NOT NULL,
-    entity_id TEXT NOT NULL,
-    model TEXT NOT NULL,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('fact', 'episode')),
+    entity_id TEXT NOT NULL CHECK(length(trim(entity_id)) > 0),
+    model TEXT NOT NULL CHECK(length(trim(model)) > 0),
     bucket INTEGER NOT NULL,
     PRIMARY KEY (entity_type, entity_id, model)
 );
@@ -282,8 +264,8 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
          END;",
     )?;
     // The embedding table intentionally cannot have a polymorphic foreign key.
-    // Repair rows left by databases created before the owner triggers existed
-    // while opening the database, rather than waiting for periodic maintenance.
+    // Repair rows created outside the repository write boundary while opening
+    // the database, rather than waiting for periodic maintenance.
     conn.execute_batch(
         "DELETE FROM memory_embeddings
           WHERE (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM memory_edges))
@@ -296,9 +278,9 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
     Ok(())
 }
 
-/// Unified contentless FTS5 over memory edges + items (trigram). Best-effort:
-/// if FTS5 is unavailable, callers fall back to LIKE. Tokenizer recorded in
-/// `kv_store` so a tokenizer change rebuilds once.
+/// Unified FTS5 over memory edges + items (trigram). It is part of the current
+/// database contract; tokenizer state in `kv_store` makes a tokenizer change
+/// rebuild the derived index exactly once.
 const FTS_TOKENIZER: &str = "trigram";
 const MEMORY_FTS_TOKENIZER_KV_KEY: &str = "memory_fts_tokenizer";
 
@@ -311,12 +293,13 @@ fn applied_fts_tokenizer(conn: &rusqlite::Connection, key: &str) -> Option<Strin
     .ok()
 }
 
-fn record_fts_tokenizer(conn: &rusqlite::Connection, key: &str) {
-    let _ = conn.execute(
+fn record_fts_tokenizer(conn: &rusqlite::Connection, key: &str) -> anyhow::Result<()> {
+    conn.execute(
         "INSERT INTO kv_store (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
         rusqlite::params![key, FTS_TOKENIZER],
-    );
+    )?;
+    Ok(())
 }
 
 fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -358,9 +341,6 @@ fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 body,
                 entity_type UNINDEXED,
                 entity_id UNINDEXED,
-                content='',
-                contentless_delete=1,
-                contentless_unindexed=1,
                 tokenize='{FTS_TOKENIZER}'
             );
             CREATE TRIGGER memory_edges_ai AFTER INSERT ON memory_edges BEGIN
@@ -419,217 +399,15 @@ fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
               FROM memory_items;
             COMMIT;"
         );
-        if let Err(e) = conn.execute_batch(&fts_sql) {
-            // Prefer contentless_delete=1 (DELETE FROM works). Older SQLite may
-            // lack it — fall back to classic contentless with full-column
-            // 'delete' commands, then to a content-storing FTS table.
-            tracing::warn!(
-                "contentless_delete memory_fts unavailable ({}), trying classic contentless",
-                e
-            );
+        if let Err(error) = conn.execute_batch(&fts_sql) {
             let _ = conn.execute_batch("ROLLBACK");
-            let classic_sql = format!(
-                "BEGIN;
-                DROP TABLE IF EXISTS memory_fts;
-                DROP TRIGGER IF EXISTS memory_edges_ai;
-                DROP TRIGGER IF EXISTS memory_edges_ad;
-                DROP TRIGGER IF EXISTS memory_edges_au;
-                DROP TRIGGER IF EXISTS memory_items_ai;
-                DROP TRIGGER IF EXISTS memory_items_ad;
-                DROP TRIGGER IF EXISTS memory_items_au;
-                CREATE VIRTUAL TABLE memory_fts USING fts5(
-                    body,
-                    entity_type UNINDEXED,
-                    entity_id UNINDEXED,
-                    content='',
-                    contentless_unindexed=1,
-                    tokenize='{FTS_TOKENIZER}'
-                );
-                CREATE TRIGGER memory_edges_ai AFTER INSERT ON memory_edges BEGIN
-                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                    VALUES (
-                        new.rowid,
-                        new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
-                        'edge',
-                        new.id
-                    );
-                END;
-                CREATE TRIGGER memory_edges_ad AFTER DELETE ON memory_edges BEGIN
-                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
-                    VALUES (
-                        'delete', old.rowid,
-                        old.subject || ' ' || old.predicate || ' ' || old.object || ' ' || old.tags,
-                        'edge', old.id
-                    );
-                END;
-                CREATE TRIGGER memory_edges_au
-                AFTER UPDATE OF subject, predicate, object, tags ON memory_edges
-                BEGIN
-                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
-                    VALUES (
-                        'delete', old.rowid,
-                        old.subject || ' ' || old.predicate || ' ' || old.object || ' ' || old.tags,
-                        'edge', old.id
-                    );
-                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                    VALUES (
-                        new.rowid,
-                        new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
-                        'edge',
-                        new.id
-                    );
-                END;
-                CREATE TRIGGER memory_items_ai AFTER INSERT ON memory_items BEGIN
-                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                    VALUES (
-                        -new.rowid,
-                        new.content || ' ' || new.topics || ' ' || new.entities,
-                        'item',
-                        new.id
-                    );
-                END;
-                CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
-                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
-                    VALUES (
-                        'delete', -old.rowid,
-                        old.content || ' ' || old.topics || ' ' || old.entities,
-                        'item', old.id
-                    );
-                END;
-                CREATE TRIGGER memory_items_au
-                AFTER UPDATE OF content, topics, entities ON memory_items
-                BEGIN
-                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
-                    VALUES (
-                        'delete', -old.rowid,
-                        old.content || ' ' || old.topics || ' ' || old.entities,
-                        'item', old.id
-                    );
-                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                    VALUES (
-                        -new.rowid,
-                        new.content || ' ' || new.topics || ' ' || new.entities,
-                        'item',
-                        new.id
-                    );
-                END;
-                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                SELECT rowid, subject || ' ' || predicate || ' ' || object || ' ' || tags, 'edge', id
-                  FROM memory_edges;
-                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                SELECT -rowid, content || ' ' || topics || ' ' || entities, 'item', id
-                  FROM memory_items;
-                COMMIT;"
-            );
-            if conn.execute_batch(&classic_sql).is_ok() {
-                record_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY);
-            } else {
-                let _ = conn.execute_batch("ROLLBACK");
-                let normal_sql = format!(
-                    "BEGIN;
-                    DROP TABLE IF EXISTS memory_fts;
-                    DROP TRIGGER IF EXISTS memory_edges_ai;
-                    DROP TRIGGER IF EXISTS memory_edges_ad;
-                    DROP TRIGGER IF EXISTS memory_edges_au;
-                    DROP TRIGGER IF EXISTS memory_items_ai;
-                    DROP TRIGGER IF EXISTS memory_items_ad;
-                    DROP TRIGGER IF EXISTS memory_items_au;
-                    CREATE VIRTUAL TABLE memory_fts USING fts5(
-                        body,
-                        entity_type UNINDEXED,
-                        entity_id UNINDEXED,
-                        tokenize='{FTS_TOKENIZER}'
-                    );
-                    CREATE TRIGGER memory_edges_ai AFTER INSERT ON memory_edges BEGIN
-                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                        VALUES (
-                            new.rowid,
-                            new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
-                            'edge',
-                            new.id
-                        );
-                    END;
-                    CREATE TRIGGER memory_edges_ad AFTER DELETE ON memory_edges BEGIN
-                        DELETE FROM memory_fts WHERE rowid = old.rowid;
-                    END;
-                    CREATE TRIGGER memory_edges_au
-                    AFTER UPDATE OF subject, predicate, object, tags ON memory_edges
-                    BEGIN
-                        DELETE FROM memory_fts WHERE rowid = old.rowid;
-                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                        VALUES (
-                            new.rowid,
-                            new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
-                            'edge',
-                            new.id
-                        );
-                    END;
-                    CREATE TRIGGER memory_items_ai AFTER INSERT ON memory_items BEGIN
-                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                        VALUES (
-                            -new.rowid,
-                            new.content || ' ' || new.topics || ' ' || new.entities,
-                            'item',
-                            new.id
-                        );
-                    END;
-                    CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
-                        DELETE FROM memory_fts WHERE rowid = -old.rowid;
-                    END;
-                    CREATE TRIGGER memory_items_au
-                    AFTER UPDATE OF content, topics, entities ON memory_items
-                    BEGIN
-                        DELETE FROM memory_fts WHERE rowid = -old.rowid;
-                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                        VALUES (
-                            -new.rowid,
-                            new.content || ' ' || new.topics || ' ' || new.entities,
-                            'item',
-                            new.id
-                        );
-                    END;
-                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                    SELECT rowid, subject || ' ' || predicate || ' ' || object || ' ' || tags, 'edge', id
-                      FROM memory_edges;
-                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-                    SELECT -rowid, content || ' ' || topics || ' ' || entities, 'item', id
-                      FROM memory_items;
-                    COMMIT;"
-                );
-                if let Err(e2) = conn.execute_batch(&normal_sql) {
-                    tracing::warn!("FTS5 unavailable, memory search falls back to LIKE: {}", e2);
-                    let _ = conn.execute_batch("ROLLBACK");
-                } else {
-                    record_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY);
-                }
-            }
-        } else {
-            record_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY);
+            return Err(anyhow::anyhow!(
+                "memory_fts current contract could not be created with the bundled SQLite FTS5 feature: {error}"
+            ));
         }
+        record_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY)?;
     }
     Ok(())
-}
-
-/// Required columns per table. A database missing any of these predates the
-/// current schema and cannot be used — it is rejected with a clear error.
-const REQUIRED_COLUMNS: &[(&str, &str)] = &[
-    ("sessions", "transcript"),
-    ("messages", "voice"),
-    ("session_steps", "thought"),
-    // Pre-v9 shape (still checked when the legacy table is present).
-    ("facts", "tags"),
-    ("facts", "durability"),
-    ("memory_edges", "tags"),
-    ("memory_edges", "durability"),
-    ("actions", "kind"),
-];
-
-fn column_exists(conn: &rusqlite::Connection, table: &str, col: &str) -> anyhow::Result<bool> {
-    Ok(conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2")?
-        .query_row(rusqlite::params![table, col], |r| r.get::<_, i32>(0))
-        .map(|c| c > 0)
-        .unwrap_or(false))
 }
 
 fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool> {
@@ -640,21 +418,67 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
         .unwrap_or(false))
 }
 
-/// Create or upgrade the schema to the current version (idempotent).
+const REQUIRED_COLUMNS: &[(&str, &str)] = &[
+    ("sessions", "transcript"),
+    ("messages", "voice"),
+    ("session_steps", "thought"),
+    ("memory_nodes", "kind"),
+    ("memory_items", "content"),
+    ("memory_edges", "durability"),
+    ("actions", "kind"),
+];
+
+fn column_exists(conn: &rusqlite::Connection, table: &str, column: &str) -> anyhow::Result<bool> {
+    Ok(conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2")?
+        .query_row(rusqlite::params![table, column], |row| row.get::<_, i32>(0))?
+        > 0)
+}
+
+fn validate_current_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    for (table, column) in REQUIRED_COLUMNS {
+        anyhow::ensure!(
+            table_exists(conn, table)? && column_exists(conn, table, column)?,
+            "current schema is incomplete: missing {table}.{column}; delete haven.db and restart"
+        );
+    }
+    for table in ["facts", "memory_episodes"] {
+        anyhow::ensure!(
+            !table_exists(conn, table)?,
+            "current schema contains removed table {table}; delete haven.db and restart"
+        );
+    }
+    Ok(())
+}
+
+fn has_user_tables(conn: &rusqlite::Connection) -> anyhow::Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+         )",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+fn user_version(conn: &rusqlite::Connection) -> anyhow::Result<i32> {
+    Ok(conn
+        .prepare("PRAGMA user_version")?
+        .query_row([], |row| row.get(0))?)
+}
+
+fn set_user_version(conn: &rusqlite::Connection, version: i32) -> anyhow::Result<()> {
+    conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+    Ok(())
+}
+
+/// Create the current schema or reject a database from another contract.
 ///
-/// Version resolution:
-/// - `user_version > SCHEMA_VERSION` → error (database is from a NEWER Haven).
-/// - `user_version == SCHEMA_VERSION` → schema is current; the idempotent
-///   full-schema pass below still runs so missing objects (e.g. an FTS table
-///   dropped mid-crash) self-heal.
-/// - `user_version < SCHEMA_VERSION` → run each pending migration in order.
-///   A v0 database (built by a pre-versioning binary) has no stamp: if it
-///   carries the required columns it is treated as current-shape and the
-///   pending data migrations still run against it (each is guarded against
-///   missing tables, so a genuinely fresh DB is a no-op); if any required
-///   column is missing it predates the schema and is rejected with a clear
-///   error — there is deliberately no upgrade path from that shape, the user
-///   must delete the file and rebuild.
+/// There is intentionally no in-process migration path. Memory, session
+/// projection, and snapshot formats are one atomic local contract; mixing
+/// versions would make a database look readable while producing incomplete
+/// recovery state. Users must reset an older database at the release boundary.
 pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     let version = user_version(conn)?;
     if version > SCHEMA_VERSION {
@@ -663,31 +487,20 @@ pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
              (supports up to {SCHEMA_VERSION}). Update Haven to open this database."
         );
     }
-    if version < SCHEMA_VERSION {
-        if version == 0 {
-            // Pre-versioning database. If it is missing a required column it
-            // predates the current shape and cannot be migrated — reject it
-            // BEFORE creating anything so a later "no such column" turns into
-            // one clear message.
-            for (table, col) in REQUIRED_COLUMNS {
-                if table_exists(conn, table)? && !column_exists(conn, table, col)? {
-                    anyhow::bail!(
-                        "database schema is from an old Haven version (missing {table}.{col}). \
-                         The current version does not migrate such old databases; \
-                         delete the database file (haven.db) and restart to create a fresh one."
-                    );
-                }
-            }
-            // A v0 database that passes the shape check is "current shape": it
-            // still needs the pending data migrations (e.g. the v2 predicate
-            // alias backfill) applied before stamping.
-            apply_migrations(conn, 0, MIGRATIONS)?;
-        } else {
-            // Stamped old database: run the pending migrations in order. Each
-            // migration is stamped as it completes so a crash mid-chain leaves
-            // the database at a consistent, retryable version.
-            apply_migrations(conn, version, MIGRATIONS)?;
-        }
+    if version != 0 && version != SCHEMA_VERSION {
+        anyhow::bail!(
+            "database schema version {version} is incompatible with this Haven build \
+             (requires {SCHEMA_VERSION}); delete haven.db and restart to create a fresh database."
+        );
+    }
+    if version == 0 && has_user_tables(conn)? {
+        anyhow::bail!(
+            "unversioned Haven database is incompatible with the current memory contract; \
+             delete haven.db and restart to create a fresh database."
+        );
+    }
+    if version == SCHEMA_VERSION {
+        validate_current_schema(conn)?;
     }
     for sql in SCHEMA_SQL {
         conn.execute_batch(sql)
@@ -696,7 +509,7 @@ pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch(MEMORY_EMBEDDINGS_SCHEMA)?;
     ensure_memory_fts(conn)?;
     ensure_fact_embedding_triggers(conn)?;
-    if user_version(conn)? < SCHEMA_VERSION {
+    if version == 0 {
         set_user_version(conn, SCHEMA_VERSION)?;
     }
     Ok(())
@@ -709,38 +522,30 @@ mod tests {
 
     fn create_test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         conn
     }
 
-    fn get_tables(conn: &Connection) -> Vec<String> {
+    fn user_tables(conn: &Connection) -> Vec<String> {
         let mut stmt = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
             .unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(0))
+        stmt.query_map([], |row| row.get::<_, String>(0))
             .unwrap()
-            .filter_map(|r| r.ok())
-            .collect()
-    }
-
-    fn get_indexes(conn: &Connection) -> Vec<String> {
-        let mut stmt = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-            .unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(0))
+            .collect::<Result<Vec<_>, _>>()
             .unwrap()
-            .filter_map(|r| r.ok())
-            .collect()
     }
 
     #[test]
-    fn init_schema_creates_all_tables() {
+    fn init_schema_creates_current_contract() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        let tables = get_tables(&conn);
 
-        let expected = &[
+        for table in [
             "actions",
             "embedding_lsh",
             "kv_store",
@@ -757,930 +562,163 @@ mod tests {
             "session_step_cursors",
             "session_usage",
             "sessions",
-        ];
-        for t in expected {
-            assert!(
-                tables.iter().any(|n| n == t),
-                "expected table '{}' not found in {:?}",
-                t,
-                tables
-            );
+        ] {
+            assert!(user_tables(&conn).iter().any(|name| name == table));
         }
-        assert!(
-            !tables.iter().any(|n| n == "facts"),
-            "legacy facts table must not exist"
-        );
-        assert!(
-            !tables.iter().any(|n| n == "memory_episodes"),
-            "legacy memory_episodes table must not exist"
-        );
-        assert!(
-            tables.iter().any(|n| n == "memory_fts"),
-            "memory_fts table should exist"
-        );
-        assert!(
-            !tables.iter().any(|n| n == "facts_fts"),
-            "facts_fts must be dropped"
-        );
-        assert!(
-            !tables.iter().any(|n| n == "episodes_fts"),
-            "episodes_fts must be dropped"
-        );
-        let core: Vec<_> = tables
-            .iter()
-            .filter(|t| !t.starts_with("memory_fts"))
-            .collect();
-        assert_eq!(core.len(), expected.len());
-    }
 
-    #[test]
-    fn init_schema_creates_all_indexes() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        let indexes = get_indexes(&conn);
-
-        let expected = &[
-            "idx_embedding_lsh_probe",
-            "idx_llm_usage_session",
-            "idx_memory_edges_confidence",
-            "idx_memory_edges_subject",
-            "idx_memory_embeddings_type",
-            "idx_memory_embeddings_type_model",
-            "idx_memory_items_created",
-            "idx_memory_items_session",
-            "idx_memory_nodes_label",
-            "idx_messages_created_at",
-            "idx_session_steps_session",
-            "idx_sessions_created_at",
-            "idx_sessions_status",
-        ];
-        for ix in expected {
-            assert!(
-                indexes.iter().any(|n| n == ix),
-                "expected index '{}' not found in {:?}",
-                ix,
-                indexes
-            );
-        }
-        let core: Vec<_> = indexes
-            .iter()
-            .filter(|n| !n.starts_with("memory_fts"))
-            .collect();
-        assert_eq!(core.len(), expected.len());
+        let version = user_version(&conn).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(table_exists(&conn, "memory_fts").unwrap());
     }
 
     #[test]
     fn init_schema_is_idempotent() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        let tables_before = get_tables(&conn);
+        let before = user_tables(&conn);
         init_schema(&conn).unwrap();
-        init_schema(&conn).unwrap();
-        assert_eq!(get_tables(&conn), tables_before);
+        assert_eq!(user_tables(&conn), before);
     }
 
     #[test]
-    fn init_schema_stamps_current_user_version() {
+    fn init_schema_rejects_partial_current_contract() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        let version: i32 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
+        conn.execute_batch("DROP TABLE messages;").unwrap();
+
+        let error = init_schema(&conn).unwrap_err().to_string();
+        assert!(error.contains("current schema is incomplete"));
+        assert!(error.contains("messages.voice"));
     }
 
     #[test]
-    fn v10_migration_adds_unknown_cache_accounting_to_existing_usage() {
+    fn init_schema_rejects_old_and_new_contracts() {
         let conn = create_test_conn();
-        conn.execute_batch(
-            "CREATE TABLE llm_usage (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                prompt_tokens INTEGER NOT NULL DEFAULT 0
-            );
-            INSERT INTO llm_usage (id, session_id, prompt_tokens)
-            VALUES ('usage-old', 'ses-old', 42);",
-        )
-        .unwrap();
+        init_schema(&conn).unwrap();
 
-        migrate_v10_llm_usage_cache_accounting(&conn).unwrap();
-        assert!(column_exists(&conn, "llm_usage", "cache_accounting").unwrap());
-        let accounting: String = conn
-            .query_row(
-                "SELECT cache_accounting FROM llm_usage WHERE id = 'usage-old'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(accounting, "unknown");
+        set_user_version(&conn, SCHEMA_VERSION - 1).unwrap();
+        let old = init_schema(&conn).unwrap_err().to_string();
+        assert!(old.contains("incompatible"));
+
+        set_user_version(&conn, SCHEMA_VERSION + 1).unwrap();
+        let new = init_schema(&conn).unwrap_err().to_string();
+        assert!(new.contains("NEWER"));
     }
 
     #[test]
-    fn v11_migration_adds_cache_miss_and_diagnostics() {
+    fn init_schema_rejects_unversioned_existing_database() {
         let conn = create_test_conn();
-        conn.execute_batch(
-            "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY);
-             CREATE TABLE llm_usage (id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
-             INSERT INTO llm_usage (id, session_id) VALUES ('usage-old', 'ses-old');",
-        )
-        .unwrap();
-
-        migrate_v11_usage_cache_diagnostics(&conn).unwrap();
-        migrate_v11_usage_cache_diagnostics(&conn).unwrap();
-        assert!(column_exists(&conn, "session_usage", "cache_miss_tokens").unwrap());
-        assert!(column_exists(&conn, "llm_usage", "cache_miss_tokens").unwrap());
-        assert!(column_exists(&conn, "llm_usage", "cache_diagnostics").unwrap());
-        let miss: u32 = conn
-            .query_row(
-                "SELECT cache_miss_tokens FROM llm_usage WHERE id = 'usage-old'",
-                [],
-                |row| row.get(0),
-            )
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY);")
             .unwrap();
-        assert_eq!(miss, 0);
+
+        let error = init_schema(&conn).unwrap_err().to_string();
+        assert!(error.contains("unversioned"));
+        assert!(error.contains("delete haven.db"));
     }
 
     #[test]
-    fn v12_migration_adds_identity_and_unknown_action_outcome() {
+    fn current_memory_schema_rejects_invalid_domains_and_values() {
         let conn = create_test_conn();
-        conn.execute_batch(
-            "CREATE TABLE sessions (id TEXT PRIMARY KEY);
-             INSERT INTO sessions (id) VALUES ('ses-old');
-             CREATE TABLE session_steps (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                step_number INTEGER NOT NULL,
-                tool_name TEXT NOT NULL,
-                input TEXT NOT NULL DEFAULT '{}',
-                output TEXT NOT NULL DEFAULT '{}',
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','running','completed','failed','error')),
-                is_high_risk INTEGER NOT NULL DEFAULT 0,
-                confirmed INTEGER,
-                started_at TEXT,
-                completed_at TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                silent INTEGER NOT NULL DEFAULT 0,
-                thought TEXT,
-                action_tool TEXT,
-                action_input TEXT,
-                observation TEXT
-             );
-             INSERT INTO session_steps (id, session_id, step_number, tool_name)
-             VALUES ('step-old', 'ses-old', 0, 'shell');",
-        )
-        .unwrap();
-        migrate_v12_session_steps(&conn).unwrap();
-        migrate_v12_session_steps(&conn).unwrap();
-        assert!(column_exists(&conn, "session_steps", "action_index").unwrap());
-        assert!(column_exists(&conn, "session_steps", "tool_call_id").unwrap());
+        init_schema(&conn).unwrap();
         conn.execute(
-            "UPDATE session_steps SET status = 'unknown' WHERE id = 'step-old'",
+            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+             VALUES ('fact-1', 'user', 'likes', 'Rust', '2026-01-01')",
             [],
         )
         .unwrap();
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM session_steps WHERE id = 'step-old'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "unknown");
-    }
 
-    #[test]
-    fn v13_migration_backfills_message_ingress_sequence() {
-        let conn = create_test_conn();
-        conn.execute_batch(
-            "CREATE TABLE sessions (id TEXT PRIMARY KEY);
-             INSERT INTO sessions (id) VALUES ('ses-old');
-             CREATE TABLE messages (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                message_type TEXT,
-                created_at TEXT NOT NULL,
-                tool_call_id TEXT,
-                attachments TEXT,
-                voice INTEGER NOT NULL DEFAULT 0
-             );
-             INSERT INTO messages (id, session_id, role, content, created_at)
-             VALUES ('msg-2', 'ses-old', 'user', 'later', '2026-01-02'),
-                    ('msg-1', 'ses-old', 'user', 'earlier', '2026-01-01');",
-        )
-        .unwrap();
-
-        migrate_v13_message_ingress_seq(&conn).unwrap();
-        migrate_v13_message_ingress_seq(&conn).unwrap();
-        let rows: Vec<(String, i64)> = {
-            let mut stmt = conn
-                .prepare("SELECT id, ingress_seq FROM messages ORDER BY ingress_seq")
-                .unwrap();
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
-        assert_eq!(rows, vec![("msg-1".into(), 1), ("msg-2".into(), 2)]);
-        assert!(column_exists(&conn, "messages", "ingress_seq").unwrap());
-    }
-
-    #[test]
-    fn v14_migration_creates_react_checkpoint_and_step_cursors() {
-        let conn = create_test_conn();
-        migrate_v14_react_checkpoints(&conn).unwrap();
-        migrate_v14_react_checkpoints(&conn).unwrap();
-        assert!(table_exists(&conn, "react_checkpoints").unwrap());
-        assert!(table_exists(&conn, "session_step_cursors").unwrap());
-        assert!(column_exists(&conn, "react_checkpoints", "message_ingress_seq").unwrap());
-        assert!(column_exists(&conn, "react_checkpoints", "step_seq").unwrap());
-    }
-
-    #[test]
-    fn init_schema_stamps_legacy_complete_database() {
-        // A pre-versioning binary left a schema with all required columns but
-        // no user_version stamp (0). init_schema must treat it as current
-        // shape and stamp it, not reject it.
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        set_user_version(&conn, 0).unwrap();
-        init_schema(&conn).unwrap();
-        let version: i32 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn init_schema_rejects_newer_database() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        set_user_version(&conn, SCHEMA_VERSION + 5).unwrap();
-        let err = init_schema(&conn).unwrap_err().to_string();
         assert!(
-            err.contains("NEWER"),
-            "expected a newer-version error, got: {err}"
+            conn.execute(
+                "INSERT INTO memory_embeddings
+                    (entity_type, entity_id, model, vector, text)
+                 VALUES ('tool', 'fact-1', 'm', X'00000000', 'Rust')",
+                [],
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO memory_embeddings
+                    (entity_type, entity_id, model, vector, text)
+                 VALUES ('fact', 'fact-1', 'm', X'00', 'Rust')",
+                [],
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO memory_edges
+                    (id, subject, predicate, object, confidence, created_at)
+                 VALUES ('fact-2', ' ', 'likes', 'Rust', 1.0, '2026-01-01')",
+                [],
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO memory_edges
+                    (id, subject, predicate, object, confidence, created_at)
+                 VALUES ('fact-3', 'user', 'likes', 'Rust', 1.1, '2026-01-01')",
+                [],
+            )
+            .is_err()
         );
     }
 
     #[test]
-    fn apply_migrations_runs_in_order_and_stamps() {
+    fn embedding_triggers_keep_derived_rows_consistent() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        let migrations = [
-            Migration {
-                version: 2,
-                apply: |c| {
-                    c.execute_batch("CREATE TABLE IF NOT EXISTS mig_v2 (id TEXT PRIMARY KEY)")
-                        .map_err(anyhow::Error::from)
-                },
-            },
-            Migration {
-                version: 3,
-                apply: |c| {
-                    c.execute_batch("CREATE TABLE IF NOT EXISTS mig_v3 (id TEXT PRIMARY KEY)")
-                        .map_err(anyhow::Error::from)
-                },
-            },
-        ];
-        apply_migrations(&conn, 1, &migrations).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), 3);
-        assert!(table_exists(&conn, "mig_v2").unwrap());
-        assert!(table_exists(&conn, "mig_v3").unwrap());
-        // Re-running from the current version is a no-op.
-        apply_migrations(&conn, 3, &migrations).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), 3);
-    }
-
-    #[test]
-    fn v2_migration_backfills_legacy_predicate_aliases() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        // Simulate rows written by the pre-normalization binary: legacy
-        // spellings plus a canonical row for the same concept.
-        conn.execute_batch(
-            r#"
-            INSERT INTO memory_edges (id, subject, predicate, object, created_at) VALUES
-                ('f1', 'user', 'workspace', 'D:/proj', '2026-01-01'),
-                ('f2', 'user', 'workspace_path', 'D:/proj', '2026-01-01'),
-                ('f3', 'user', 'project_path', 'D:/proj', '2026-01-01'),
-                ('f4', 'user', 'employer', 'ACME', '2026-01-01'),
-                ('f5', 'user', 'works_at', 'ACME', '2026-01-01'),
-                ('f6', 'user', 'favorite_language', 'Rust', '2026-01-01');
-            "#,
+        conn.execute(
+            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+             VALUES ('fact-1', 'user', 'likes', 'Rust', '2026-01-01')",
+            [],
         )
         .unwrap();
-        // Stamp as v1, then reopen: migration v2 must run (on memory_edges).
-        set_user_version(&conn, 1).unwrap();
-        init_schema(&conn).unwrap();
-
-        let mut stmt = conn
-            .prepare("SELECT predicate, object FROM memory_edges ORDER BY predicate")
-            .unwrap();
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
+        conn.execute(
+            "INSERT INTO memory_embeddings
+                (entity_type, entity_id, model, vector, text)
+             VALUES ('fact', 'fact-1', 'm', X'00000000', 'user likes Rust')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memory_edges SET confidence = 0.5 WHERE id = 'fact-1'",
+            [],
+        )
+        .unwrap();
         assert_eq!(
-            rows,
-            vec![
-                ("language".to_string(), "Rust".to_string()),
-                ("project_path".to_string(), "D:/proj".to_string()),
-                ("works_at".to_string(), "ACME".to_string()),
-            ],
-            "legacy aliases must be rewritten and the duplicate collapsed"
+            conn.query_row(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-1'",
+                [],
+                |row| row.get::<_, i32>(0),
+            )
+            .unwrap(),
+            1
+        );
+        conn.execute(
+            "UPDATE memory_edges SET object = 'Golang' WHERE id = 'fact-1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-1'",
+                [],
+                |row| row.get::<_, i32>(0),
+            )
+            .unwrap(),
+            0
         );
     }
 
     #[test]
-    fn v3_migration_allows_paused_awaiting_answer_status() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        // Simulate a v2 DB whose CHECK still rejects the new status.
-        set_user_version(&conn, 2).unwrap();
-        conn.execute_batch(
-            r#"
-            PRAGMA foreign_keys=OFF;
-            CREATE TABLE sessions_v2 (
-                id TEXT PRIMARY KEY,
-                input_text TEXT NOT NULL DEFAULT '',
-                title TEXT,
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','running','paused','completed','failed','error')),
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                transcript TEXT NOT NULL DEFAULT '',
-                react_state TEXT
-            );
-            INSERT INTO sessions_v2
-                (id, input_text, title, status, created_at, updated_at, transcript, react_state)
-            SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
-              FROM sessions;
-            DROP TABLE sessions;
-            ALTER TABLE sessions_v2 RENAME TO sessions;
-            PRAGMA foreign_keys=ON;
-            "#,
-        )
-        .unwrap();
-        assert!(
-            conn.execute(
-                "INSERT INTO sessions (id, status) VALUES ('ses-ask', 'paused_awaiting_answer')",
-                [],
-            )
-            .is_err(),
-            "v2 CHECK must reject paused_awaiting_answer"
-        );
-        init_schema(&conn).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
-        conn.execute(
-            "INSERT INTO sessions (id, status) VALUES ('ses-ask', 'paused_awaiting_answer')",
-            [],
-        )
-        .expect("v3 CHECK must accept paused_awaiting_answer");
-    }
-
-    #[test]
-    fn v3_migration_repairs_orphan_sessions_v3_after_crash() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO sessions (id, input_text, status) VALUES ('ses-keep', 'hello', 'paused')",
-            [],
-        )
-        .unwrap();
-        // Simulate crash after DROP sessions, before RENAME.
-        set_user_version(&conn, 2).unwrap();
-        conn.execute_batch(
-            r#"
-            PRAGMA foreign_keys=OFF;
-            CREATE TABLE sessions_v3 (
-                id TEXT PRIMARY KEY,
-                input_text TEXT NOT NULL DEFAULT '',
-                title TEXT,
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','running','paused','paused_awaiting_answer','completed','failed','error')),
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                transcript TEXT NOT NULL DEFAULT '',
-                react_state TEXT
-            );
-            INSERT INTO sessions_v3
-                (id, input_text, title, status, created_at, updated_at, transcript, react_state)
-            SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
-              FROM sessions;
-            DROP TABLE sessions;
-            PRAGMA foreign_keys=ON;
-            "#,
-        )
-        .unwrap();
-        assert!(!table_exists(&conn, "sessions").unwrap());
-        assert!(table_exists(&conn, "sessions_v3").unwrap());
-        init_schema(&conn).unwrap();
-        assert!(table_exists(&conn, "sessions").unwrap());
-        assert!(!table_exists(&conn, "sessions_v3").unwrap());
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sessions WHERE id = 'ses-keep'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "orphan sessions_v3 must be renamed, not wiped");
-        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn v4_migration_allows_paused_awaiting_confirm_status() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        // Simulate a v3 DB whose CHECK still rejects the new status.
-        set_user_version(&conn, 3).unwrap();
-        conn.execute_batch(
-            r#"
-            PRAGMA foreign_keys=OFF;
-            CREATE TABLE sessions_v3 (
-                id TEXT PRIMARY KEY,
-                input_text TEXT NOT NULL DEFAULT '',
-                title TEXT,
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','running','paused','paused_awaiting_answer','completed','failed','error')),
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                transcript TEXT NOT NULL DEFAULT '',
-                react_state TEXT
-            );
-            INSERT INTO sessions_v3
-                (id, input_text, title, status, created_at, updated_at, transcript, react_state)
-            SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
-              FROM sessions;
-            DROP TABLE sessions;
-            ALTER TABLE sessions_v3 RENAME TO sessions;
-            PRAGMA foreign_keys=ON;
-            "#,
-        )
-        .unwrap();
-        assert!(
-            conn.execute(
-                "INSERT INTO sessions (id, status) VALUES ('ses-conf', 'paused_awaiting_confirm')",
-                [],
-            )
-            .is_err(),
-            "v3 CHECK must reject paused_awaiting_confirm"
-        );
-        init_schema(&conn).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
-        conn.execute(
-            "INSERT INTO sessions (id, status) VALUES ('ses-conf', 'paused_awaiting_confirm')",
-            [],
-        )
-        .expect("v4 CHECK must accept paused_awaiting_confirm");
-    }
-
-    #[test]
-    fn v7_migration_allows_peer_kickoff_message_type() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO sessions (id, input_text, status) VALUES ('ses-p', 'hi', 'pending')",
-            [],
-        )
-        .unwrap();
-        // Simulate a v6 DB whose CHECK still rejects peer_kickoff.
-        set_user_version(&conn, 6).unwrap();
-        conn.execute_batch(
-            r#"
-            PRAGMA foreign_keys=OFF;
-            CREATE TABLE messages_v6 (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
-                content TEXT NOT NULL,
-                message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning')),
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                tool_call_id TEXT,
-                attachments TEXT,
-                voice INTEGER NOT NULL DEFAULT 0
-            );
-            INSERT INTO messages_v6
-                (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice)
-            SELECT id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice
-              FROM messages;
-            DROP TABLE messages;
-            ALTER TABLE messages_v6 RENAME TO messages;
-            CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
-            PRAGMA foreign_keys=ON;
-            "#,
-        )
-        .unwrap();
-        assert!(
-            conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, message_type)
-                 VALUES ('msg-pk', 'ses-p', 'user', 'brief', 'peer_kickoff')",
-                [],
-            )
-            .is_err(),
-            "v6 CHECK must reject peer_kickoff"
-        );
-        init_schema(&conn).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
-        conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, message_type)
-             VALUES ('msg-pk', 'ses-p', 'user', 'brief', 'peer_kickoff')",
-            [],
-        )
-        .expect("v7 CHECK must accept peer_kickoff");
-    }
-
-    #[test]
-    fn v5_migration_adds_episode_columns_and_company_alias() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        // Simulate a v4 DB: pre-graph tables, episodes without topics/entities,
-        // and bare `company` facts. Stamp back and let v5..v9 upgrade.
-        set_user_version(&conn, 4).unwrap();
-        conn.execute_batch(
-            r#"
-            DROP TABLE IF EXISTS memory_fts;
-            DROP TABLE IF EXISTS memory_edges;
-            DROP TABLE IF EXISTS memory_items;
-            DROP TABLE IF EXISTS memory_nodes;
-            CREATE TABLE memory_episodes (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            INSERT INTO sessions (id, input_text, status)
-            VALUES ('ses-v5', 'hi', 'pending');
-            INSERT INTO memory_episodes (id, session_id, summary, created_at)
-            VALUES ('msg-ep1', 'ses-v5', 'old summary', '2026-01-01');
-            CREATE TABLE facts (
-                id TEXT PRIMARY KEY,
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT 'inferred',
-                confidence REAL NOT NULL DEFAULT 1.0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                tags TEXT NOT NULL DEFAULT '[]',
-                durability REAL NOT NULL DEFAULT 1.0,
-                mention_count INTEGER NOT NULL DEFAULT 0,
-                last_seen_at TEXT,
-                source_ref TEXT
-            );
-            INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
-            VALUES
-              ('c1', 'user', 'company', 'Acme', 'inferred', 0.9, '2026-01-01'),
-              ('c2', 'user', 'company', 'Acme', 'inferred', 0.5, '2026-01-02'),
-              ('d1', 'user', 'likes', 'Tea', 'inferred', 0.8, '2026-01-01'),
-              ('d2', 'user', 'likes', 'Tea', 'inferred', 0.7, '2026-01-02');
-            "#,
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-
-        assert!(column_exists(&conn, "memory_items", "topics").unwrap());
-        assert!(column_exists(&conn, "memory_items", "entities").unwrap());
-        let item_count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_items WHERE id = 'msg-ep1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(item_count, 1);
-        let pred: String = conn
-            .query_row(
-                "SELECT predicate FROM memory_edges WHERE id = 'c1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(pred, "works_at");
-        let works_at: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_edges WHERE predicate = 'works_at'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(works_at, 1);
-        let likes: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_edges WHERE predicate = 'likes'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(likes, 2);
-        assert!(!table_exists(&conn, "facts").unwrap());
-        assert!(!table_exists(&conn, "memory_episodes").unwrap());
-        let has_fts: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_fts'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(has_fts, 1);
-        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn v9_migration_copies_facts_and_episodes_into_graph() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        set_user_version(&conn, 8).unwrap();
-        conn.execute_batch(
-            r#"
-            DROP TABLE IF EXISTS memory_fts;
-            DROP TABLE IF EXISTS memory_edges;
-            DROP TABLE IF EXISTS memory_items;
-            DROP TABLE IF EXISTS memory_nodes;
-            CREATE TABLE memory_episodes (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                topics TEXT NOT NULL DEFAULT '[]',
-                entities TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE facts (
-                id TEXT PRIMARY KEY,
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT 'inferred',
-                confidence REAL NOT NULL DEFAULT 1.0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                tags TEXT NOT NULL DEFAULT '[]',
-                durability REAL NOT NULL DEFAULT 1.0,
-                mention_count INTEGER NOT NULL DEFAULT 0,
-                last_seen_at TEXT,
-                source_ref TEXT
-            );
-            INSERT INTO sessions (id, input_text, status)
-            VALUES ('ses-v9', 'hi', 'pending');
-            INSERT INTO memory_episodes (id, session_id, summary, topics, entities, created_at)
-            VALUES ('msg-sum', 'ses-v9', 'theme summary', '[\"ui\"]', '[\"Alice\"]', '2026-01-01');
-            INSERT INTO facts
-                (id, subject, predicate, object, source, confidence, created_at, source_ref)
-            VALUES
-                ('fact-1', 'user', 'likes', 'Rust', 'inferred', 0.9, '2026-01-01',
-                 '{"message_id":"msg-sum","snippet":"likes Rust"}'),
-                ('fact-2', 'Alice', 'role', 'dev', 'user', 1.0, '2026-01-02', NULL);
-            "#,
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
-        assert!(!table_exists(&conn, "facts").unwrap());
-        assert!(!table_exists(&conn, "memory_episodes").unwrap());
-        let (kind, content): (String, String) = conn
-            .query_row(
-                "SELECT kind, content FROM memory_items WHERE id = 'msg-sum'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(kind, "episode_summary");
-        assert_eq!(content, "theme summary");
-        let (subj, prov_item, snippet): (String, Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT subject, provenance_item_id, provenance_snippet
-                 FROM memory_edges WHERE id = 'fact-1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(subj, "user");
-        assert_eq!(prov_item.as_deref(), Some("msg-sum"));
-        assert_eq!(snippet.as_deref(), Some("likes Rust"));
-        let node_kinds: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_nodes WHERE kind IN ('user','concept')",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(node_kinds >= 2);
-        let user_kind: String = conn
-            .query_row(
-                "SELECT kind FROM memory_nodes WHERE label = 'user'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(user_kind, "user");
-    }
-
-    #[test]
-    fn init_schema_rejects_legacy_database() {
-        // Simulate an old-version database: the sessions table predates
-        // `transcript`, so the required-column check must reject it.
-        let conn = create_test_conn();
-        conn.execute_batch(
-            "CREATE TABLE sessions (
-                id TEXT PRIMARY KEY,
-                started_at TEXT NOT NULL DEFAULT (datetime('now')),
-                ended_at TEXT,
-                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','closed')),
-                parent_id TEXT REFERENCES sessions(id)
-            )",
-        )
-        .unwrap();
-        let err = init_schema(&conn).unwrap_err().to_string();
-        assert!(
-            err.contains("old Haven version"),
-            "expected a clear old-database error, got: {err}"
-        );
-        assert!(err.contains("sessions.transcript"));
-    }
-
-    #[test]
-    fn init_schema_rejects_messages_without_voice() {
-        // A database whose messages table predates the voice flag must be
-        // rejected instead of silently running with a missing column.
-        let conn = create_test_conn();
-        conn.execute_batch(
-            "CREATE TABLE messages (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL
-            )",
-        )
-        .unwrap();
-        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
-            .unwrap();
-        let err = init_schema(&conn).unwrap_err().to_string();
-        assert!(
-            err.contains("old Haven version"),
-            "expected a clear old-database error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn fact_embedding_triggers_exist_after_init() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        for name in [
-            "memory_edges_embed_del",
-            "memory_edges_embed_upd",
-            "memory_items_embed_del",
-            "memory_items_embed_upd",
-        ] {
-            let count: i32 = conn
-                .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1")
-                .unwrap()
-                .query_row(rusqlite::params![name], |r| r.get(0))
-                .unwrap();
-            assert_eq!(count, 1, "trigger {} must exist", name);
-        }
-        conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
-             VALUES ('f1', 'user', 'likes', 'Rust', '2026-01-01')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
-             VALUES ('fact', 'f1', 'm', X'0102', 'x')",
-            [],
-        )
-        .unwrap();
-        // Confidence-only updates must keep the embedding (surface text unchanged).
-        conn.execute(
-            "UPDATE memory_edges SET confidence = 0.5 WHERE id = 'f1'",
-            [],
-        )
-        .unwrap();
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id='f1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "reinforcement/demotion must not drop embeddings");
-        conn.execute(
-            "UPDATE memory_edges SET object = 'Golang' WHERE id = 'f1'",
-            [],
-        )
-        .unwrap();
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id='f1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 0, "SPO UPDATE must invalidate the embedding");
-        conn.execute(
-            "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
-             VALUES ('fact', 'f1', 'm', X'0102', 'x')",
-            [],
-        )
-        .unwrap();
-        conn.execute("DELETE FROM memory_edges WHERE id = 'f1'", [])
-            .unwrap();
-        let count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id='f1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 0, "DELETE must invalidate the embedding");
-    }
-
-    #[test]
-    fn episode_embedding_triggers_follow_owner_delete_and_content_update() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO sessions (id, input_text, created_at, updated_at)
-             VALUES ('s1', '', '2026-01-01', '2026-01-01')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO memory_items (id, session_id, kind, content, created_at)
-             VALUES ('e1', 's1', 'episode_summary', 'old', '2026-01-01')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
-             VALUES ('episode', 'e1', 'm', X'0102', 'old')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE memory_items SET content = 'new' WHERE id = 'e1'",
-            [],
-        )
-        .unwrap();
-        let after_update: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_embeddings
-                 WHERE entity_type = 'episode' AND entity_id = 'e1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(after_update, 0);
-
-        conn.execute(
-            "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
-             VALUES ('episode', 'e1', 'm', X'0102', 'new')",
-            [],
-        )
-        .unwrap();
-        conn.execute("DELETE FROM sessions WHERE id = 's1'", [])
-            .unwrap();
-        let after_delete: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_embeddings
-                 WHERE entity_type = 'episode' AND entity_id = 'e1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(after_delete, 0);
-    }
-
-    #[test]
-    fn memory_edges_defaults_apply() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
-             VALUES ('f1', 'user', 'likes', 'Rust', '2026-01-01')",
-            [],
-        )
-        .unwrap();
-        let (durability, tags): (f64, String) = conn
-            .query_row(
-                "SELECT durability, tags FROM memory_edges WHERE id='f1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(durability, 1.0);
-        assert_eq!(tags, "[]");
-    }
-
-    #[test]
-    fn fts_triggers_sync_edges() {
+    fn fts_triggers_index_current_memory() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO memory_edges (id, subject, predicate, object, tags, created_at)
-             VALUES ('f1', 'user', 'likes', 'Rust', '[\"dev\"]', '2026-01-01')",
+             VALUES ('fact-1', 'user', 'likes', 'Rust', '[\"dev\"]', '2026-01-01')",
             [],
         )
         .unwrap();
@@ -1689,131 +727,9 @@ mod tests {
                 "SELECT COUNT(*) FROM memory_fts
                  WHERE entity_type = 'edge' AND memory_fts MATCH '\"Rust\"'",
                 [],
-                |r| r.get(0),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(hits, 1, "FTS index must contain the inserted edge");
-    }
-
-    #[test]
-    fn fts_triggers_delete_and_update_surface_text() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
-             VALUES ('f1', 'user', 'likes', 'Rust', '2026-01-01')",
-            [],
-        )
-        .unwrap();
-        // Use ≥3-char tokens so trigram MATCH can hit.
-        conn.execute(
-            "UPDATE memory_edges SET object = 'Golang' WHERE id = 'f1'",
-            [],
-        )
-        .unwrap();
-        let rust_hits: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_fts
-                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Rust\"'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        assert_eq!(rust_hits, 0, "old surface text must leave FTS after UPDATE");
-        let go_hits: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_fts
-                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Golang\"'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(go_hits, 1, "new surface text must be indexed after UPDATE");
-
-        // Reinforcement-only update must not drop the FTS row.
-        conn.execute(
-            "UPDATE memory_edges SET mention_count = 3, confidence = 0.95 WHERE id = 'f1'",
-            [],
-        )
-        .unwrap();
-        let still: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_fts
-                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Golang\"'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(still, 1, "reinforcement must not rewrite/drop FTS");
-
-        conn.execute("DELETE FROM memory_edges WHERE id = 'f1'", [])
-            .unwrap();
-        let after_del: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_fts
-                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Golang\"'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        assert_eq!(after_del, 0, "DELETE must remove FTS row");
-    }
-
-    #[test]
-    fn fts_trigram_matches_chinese_substrings() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
-             VALUES ('f1', 'user', 'likes', '喝咖啡和写代码', '2026-01-01')",
-            [],
-        )
-        .unwrap();
-        let hits: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_fts
-                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"喝咖啡\"'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hits, 1, "trigram FTS must match Chinese substrings");
-    }
-
-    #[test]
-    fn fts_tokenizer_recorded_and_stable_across_reinit() {
-        let conn = create_test_conn();
-        init_schema(&conn).unwrap();
-        let recorded: String = conn
-            .query_row(
-                "SELECT value FROM kv_store WHERE key = 'memory_fts_tokenizer'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(recorded, FTS_TOKENIZER);
-        init_schema(&conn).unwrap();
-        let table_count: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_fts'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(table_count, 1);
-        conn.execute(
-            "DELETE FROM kv_store WHERE key = 'memory_fts_tokenizer'",
-            [],
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-        let rebuilt: String = conn
-            .query_row(
-                "SELECT value FROM kv_store WHERE key = 'memory_fts_tokenizer'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(rebuilt, FTS_TOKENIZER);
+        assert_eq!(hits, 1);
     }
 }

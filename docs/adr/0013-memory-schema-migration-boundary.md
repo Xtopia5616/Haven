@@ -1,5 +1,8 @@
 # ADR 0013：Memory 当前 Schema 与历史迁移边界
 
+> 本 ADR 的迁移方案已由 [ADR 0105](0105-memory-current-contract-and-retrieval.md)
+> 取代；本文保留为历史架构记录。
+
 ## 背景
 
 P2 的 Memory 目标要求分离 schema、图谱写入、查询/排序、嵌入和迁移策略。
