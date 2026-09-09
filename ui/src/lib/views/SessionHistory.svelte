@@ -205,7 +205,7 @@
 					<article
 						class="session-item motion-list-item"
 						class:selected={selectedIds.has(session.id)}
-						aria-label={`会话：${displayTitle(session)}`}
+						aria-label={`打开会话：${displayTitle(session)}`}
 						role="button"
 						tabindex="0"
 						onclick={() => onResume(session)}
@@ -252,10 +252,14 @@
 							{#if session.transcript}<div class="session-message">
 									"{session.transcript}"
 								</div>{/if}
-							<div class="session-meta">
+							<div class="session-footer workspace-item-card-footer">
 								<span class="meta-date"
 									>{formatMessageTime(session.created_at)}</span
-								><span class="session-actions">
+								>
+								<span class="session-open-hint workspace-item-card-open" aria-hidden="true"
+									>打开</span
+								>
+								<span class="session-actions">
 									<MaterialButton
 										variant="text"
 										className="delete-btn-meta"
@@ -433,6 +437,12 @@
 		color: var(--md-sys-color-on-surface-variant);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		opacity: 0.75;
+	}
+	.session-footer {
+		min-height: 28px;
+	}
+	.session-footer .session-open-hint {
+		margin-left: auto;
 	}
 	.session-actions {
 		display: inline-flex;

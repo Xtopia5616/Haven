@@ -992,14 +992,6 @@ select.md-select {
 	font-weight: 650;
 	white-space: nowrap;
 }
-.workspace-item-card-open > span {
-	display: inline-block;
-	margin-left: var(--md-sys-space-2xs);
-	transition: transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-}
-.workspace-item-card:hover .workspace-item-card-open > span {
-	transform: translateX(var(--md-sys-space-2xs));
-}
 .workspace-item-card-actions {
 	position: relative;
 	z-index: 1;

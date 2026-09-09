@@ -42,7 +42,7 @@ describe('SessionHistory actions', () => {
 		});
 
 		expect(screen.getByText('已完成')).toBeTruthy();
-		expect(screen.queryByRole('button', { name: '打开' })).toBeNull();
+		expect(screen.getByText('打开')).toBeTruthy();
 		await fireEvent.click(document.querySelector('.session-item')!);
 		expect(onResume).toHaveBeenCalledWith(session);
 		await fireEvent.click(screen.getByRole('button', { name: '删除' }));

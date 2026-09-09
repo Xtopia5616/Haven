@@ -177,12 +177,6 @@
 									<span class="fact-card-id workspace-item-card-id"
 										>{reinforcementLabel(fact)}</span
 									>
-									<span
-										class="fact-card-open workspace-item-card-open"
-										aria-hidden="true"
-									>
-										查看详情 <span>→</span>
-									</span>
 								</span>
 							</button>
 							<div class="fact-card-actions workspace-item-card-actions">

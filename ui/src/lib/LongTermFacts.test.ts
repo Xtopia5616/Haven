@@ -26,6 +26,7 @@ describe('LongTermFacts', () => {
 		render(LongTermFacts, props);
 
 		expect(screen.queryByRole('heading', { name: 'theme' })).toBeNull();
+		expect(document.querySelector('.fact-card-open')).toBeNull();
 		await fireEvent.click(screen.getByRole('button', { name: '查看theme详情' }));
 		expect(screen.getByRole('dialog')).toBeTruthy();
 		expect(screen.getByRole('heading', { name: 'theme' })).toBeTruthy();
