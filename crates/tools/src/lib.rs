@@ -84,6 +84,7 @@ pub struct StartupWiring {
     pub security_permissions: Vec<haven_common::config::StoredPermission>,
     pub router: Arc<LlmRouter>,
     pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     pub admin_context: builtin::SelfToolContext,
 }
 
@@ -181,6 +182,8 @@ pub struct ToolsManager {
     /// Wired in by the desktop shell; `None` in headless tests so the tool
     /// reports recording as unavailable.
     audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
+    /// Shared TTS client for the `audio` tool's `speak` operation.
+    tts_client: RwLock<Option<Arc<dyn haven_llm::TtsClient>>>,
     /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
     agent_spawner: builtin::AgentSpawnerSlot,
     /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
@@ -224,6 +227,7 @@ impl ToolsManager {
             admin_surface: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
+            tts_client: RwLock::new(None),
             agent_spawner: builtin::new_agent_spawner_slot(),
             memory_recall: builtin::new_memory_recall_slot(),
         }
@@ -263,10 +267,23 @@ impl ToolsManager {
         self.rebuild_catalog().await;
     }
 
+    /// Replace the router and TTS client together during a live settings
+    /// update, then rebuild the builtin catalog once so `audio.speak` cannot
+    /// observe a mixed-generation runtime.
+    pub async fn set_router_and_tts(
+        &self,
+        router: Arc<LlmRouter>,
+        tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
+    ) {
+        *self.router.write().await = Some(router);
+        *self.tts_client.write().await = tts_client;
+        self.rebuild_catalog().await;
+    }
+
     /// Apply cold-start wiring in one pass and rebuild the catalog once.
     /// Avoids the N sequential rebuilds that used to block window creation
     /// (`set_tool_settings` + `set_default_shell` + `set_context_limits` +
-    /// `set_router` + audio_pipeline + admin context).
+    /// `set_router` + audio/TTS wiring + admin context).
     pub async fn wire_startup(&self, wiring: StartupWiring) {
         let StartupWiring {
             tool_settings,
@@ -276,6 +293,7 @@ impl ToolsManager {
             security_permissions,
             router,
             audio_pipeline,
+            tts_client,
             admin_context,
         } = wiring;
         *self.tool_settings.write().await = tool_settings.clone();
@@ -292,6 +310,7 @@ impl ToolsManager {
         self.authorization.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
         *self.audio_pipeline.write().await = audio_pipeline;
+        *self.tts_client.write().await = tts_client;
         self.scheduled_actions
             .set_db(admin_context.db.clone())
             .await;
@@ -361,6 +380,13 @@ impl ToolsManager {
         self.rebuild_catalog().await;
     }
 
+    /// Replace the TTS client used by the `audio` tool after a live settings
+    /// update. A disabled or failed client is represented by `None`.
+    pub async fn set_tts_client(&self, client: Option<Arc<dyn haven_llm::TtsClient>>) {
+        *self.tts_client.write().await = client;
+        self.rebuild_catalog().await;
+    }
+
     pub async fn load_mcp_from_config(&self, servers: &[haven_common::McpServerConfig]) {
         // Store configs for dynamic loading via load_mcp tool
         let mut configs = self.mcp_server_configs.write().await;
@@ -409,6 +435,7 @@ impl ToolsManager {
         let settings = self.tool_settings.read().await;
         let limits = self.context_limits.read().await.clone();
         let audio_pipeline = self.audio_pipeline.read().await.clone();
+        let tts_client = self.tts_client.read().await.clone();
         let self_tool_arc = builtin::register_builtin_tools(
             &mut all_tools,
             &self.skills_engine,
@@ -426,6 +453,7 @@ impl ToolsManager {
             &limits,
             *self.default_shell.read().await,
             audio_pipeline,
+            tts_client,
             self.session_catalog.clone(),
             self.agent_spawner.clone(),
             self.memory_recall.clone(),

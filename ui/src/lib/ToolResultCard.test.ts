@@ -950,6 +950,16 @@ describe('ToolResultCard audio and input', () => {
 		expect(screen.getByText('50%')).toBeTruthy();
 	});
 
+	it('renders a speak result without exposing the synthesized text', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'audio',
+			content: JSON.stringify({ operation: 'speak', spoken: true, characters: 12 }),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('朗读完成')).toBeTruthy();
+		expect(screen.getByText('12 字')).toBeTruthy();
+	});
+
 	it('renders input results with the action and coordinates', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'input',

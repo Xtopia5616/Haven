@@ -128,7 +128,10 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
-  附件 → 模态/意图判定 → 专用 provider + 置信度门槛 + 主模型兜底；TTS 生图等 generate 请求。
+  附件 → 模态/意图判定 → 专用 provider + 置信度门槛 + 主模型兜底；只处理文生图等
+  ingress generate 请求。TTS 由 `audio(operation="speak")` 工具显式触发并在本机播放。
+- `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体网关的
+  自动处理分支，因此用户文本不会因为关键词被隐式朗读。
 - `registry.rs` / `stream_rules.rs`：模型注册表、流式规则（生产 router 默认启用 `code_block_abort`）。
 
 **判定标准**：一切「与模型 / 云端 provider 打交道的实现」都在这里；其它 crate 只通过

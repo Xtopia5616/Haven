@@ -1,6 +1,6 @@
 # Haven 通知 / 日志 / 错误处理规范
 
-> 版本: v1.4 | 日期: 2026-09-05
+> 版本: v1.5 | 日期: 2026-09-09
 
 本文档统一 Haven 项目中**通知（Notification）**、**日志（Logging）**、**错误处理（Error Handling）** 三套规范，覆盖 Rust 后端（Tauri 2）与 Svelte 5 前端。
 
@@ -156,6 +156,20 @@ AgentEvent / 其它后端事件
 | 后台任务完成（非当前会话） | `+layout` `action:finished` | 否；当前会话内完成不弹（对话里已有结果） |
 | 用户点击触发的命令结果 | 页面 / helper 直接 `addNotification` | 否 |
 
+### 2.2.1 `notify` 与 `audio.speak` 的边界
+
+这两个能力都可能让用户“感知到”一次模型动作，但通道和语义不同：
+
+| 能力 | 目的 | 用户可见效果 | 调用方式 |
+|---|---|---|---|
+| `notify` | 提醒用户注意状态、结果或需要处理的事项 | 应用内 toast + Windows 桌面通知；不朗读正文 | 模型显式调用 `notify` |
+| `audio(operation="speak")` | 传递需要用户听到的内容 | TTS provider 合成后由本机扬声器播放；不产生 toast 或桌面通知 | 模型显式调用 `audio` |
+
+二者没有自动联动：模型需要同时提醒并播报时，必须分别调用两个工具；只需要内容播报时用
+`audio.speak`，只需要引起注意或给出短状态提示时用 `notify`。Windows 可能因系统通知设置
+播放提示音，但那是操作系统行为，不属于 Haven 的 TTS，也不应把 `notify` 当作语音通道。
+用户输入不会再由媒体网关的关键词规则自动触发 TTS。
+
 ### 2.3 应用内 toast API（`ui/src/lib/stores.ts`）
 
 **唯一入口**：`addNotification(msg, type = 'info', duration = 按 type 默认值, options?)`。
@@ -279,6 +293,7 @@ try {
 | 后端事件 | 前端表现 |
 |---|---|
 | `notification:show` | info toast（title 为默认 `Haven` 时只显示 body；5s）+ Windows 桌面通知 |
+| `audio` operation=`speak` | 本机扬声器播放 WAV；不发 toast、不发 Windows 桌面通知 |
 | `mcp:status_change` | Connected→success（冷启动跳过）/ Disconnected→warning / Offline→error |
 | `hotkey:conflict` | error toast：`热键冲突: …`（5s） |
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |

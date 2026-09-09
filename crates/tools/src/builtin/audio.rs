@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_input::InputPipeline;
+use haven_llm::TtsClient;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,16 +15,37 @@ const DEFAULT_RECORD_SECS: f64 = 10.0;
 /// call must not monopolize it (the pipeline's own `max_duration_secs`
 /// config still applies as a final bound).
 const MAX_RECORD_SECS: f64 = 60.0;
+/// Bound the amount of text a model can send to the TTS provider in one call.
+/// This keeps provider cost, latency, and speaker occupancy predictable.
+const MAX_SPEAK_CHARS: usize = 4_000;
 
-/// Play / record audio and control system volume / mute.
+/// Speak / play / record audio and control system volume / mute.
 ///
 /// `record` captures through the shared input pipeline (same engine/STT as
 /// user voice input) and returns the transcription.
-/// `play` plays a `.wav` via WinMM `PlaySoundW`.
+/// `play` plays a `.wav` via WinMM `PlaySoundW`; `speak` synthesizes WAV audio
+/// through the configured TTS client and plays it synchronously.
 pub struct AudioTool {
     /// Shared capture/STT pipeline. `None` in headless/test contexts where
     /// recording is unavailable; the `record` operation then fails cleanly.
     pipeline: Option<Arc<InputPipeline>>,
+    /// Shared TTS client. `None` means TTS is disabled or failed to initialize.
+    tts: Option<Arc<dyn TtsClient>>,
+    /// Injectable playback boundary keeps the tool testable without a speaker.
+    playback: Arc<dyn AudioPlayback>,
+}
+
+/// Blocking speaker boundary used by the `speak` operation.
+pub trait AudioPlayback: Send + Sync {
+    fn play_wav(&self, data: &[u8]) -> anyhow::Result<()>;
+}
+
+struct SystemAudioPlayback;
+
+impl AudioPlayback for SystemAudioPlayback {
+    fn play_wav(&self, data: &[u8]) -> anyhow::Result<()> {
+        imp::play_wav_bytes(data)
+    }
 }
 
 /// Audio operation.
@@ -32,6 +54,7 @@ pub struct AudioTool {
 pub enum AudioOperation {
     Record,
     Play,
+    Speak,
     VolumeGet,
     VolumeSet,
     MuteGet,
@@ -47,6 +70,9 @@ pub struct AudioParams {
     /// Path to a `.wav` file for `play`.
     #[serde(default)]
     pub file_path: Option<String>,
+    /// Text to synthesize and play for `speak`.
+    #[serde(default)]
+    pub text: Option<String>,
     /// Recording duration in seconds (default 10, max 60).
     #[serde(default)]
     pub duration: Option<f64>,
@@ -60,7 +86,21 @@ pub struct AudioParams {
 
 impl AudioTool {
     pub fn new(pipeline: Option<Arc<InputPipeline>>) -> Self {
-        Self { pipeline }
+        Self::with_tts(pipeline, None)
+    }
+
+    pub fn with_tts(pipeline: Option<Arc<InputPipeline>>, tts: Option<Arc<dyn TtsClient>>) -> Self {
+        Self {
+            pipeline,
+            tts,
+            playback: Arc::new(SystemAudioPlayback),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_playback(mut self, playback: Arc<dyn AudioPlayback>) -> Self {
+        self.playback = playback;
+        self
     }
 
     /// Entry ①: structured native interface (internal code calls — zero
@@ -81,6 +121,10 @@ impl AudioTool {
             AudioOperation::Play => {
                 let result = self.play(&params).await?;
                 Ok(add_operation(result, "play"))
+            }
+            AudioOperation::Speak => {
+                let result = self.speak(&params, cancel).await?;
+                Ok(add_operation(result, "speak"))
             }
             AudioOperation::VolumeGet => {
                 let volume = tokio::task::spawn_blocking(imp::get_volume).await??;
@@ -135,18 +179,21 @@ impl Tool for AudioTool {
     }
 
     fn description(&self) -> String {
-        "Play or record audio and control system volume/mute: `record` captures \
+        "Speak or play audio, record audio, and control system volume/mute: `speak` \
+         uses the configured TTS provider to say text aloud when the user needs \
+         an audible response; `record` captures \
          through the microphone and returns an STT transcript; `play` plays a \
          `.wav` file; \
          `volume_get`/`volume_set` (0.0–1.0) and `mute_get`/`mute_set` control \
-         the default playback endpoint."
+         the default playback endpoint. Use `notify` for visual/system alerts, \
+         not for speech."
             .into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("record") | Some("volume_set") | Some("mute_set") => RiskLevel::Medium,
-            Some("play") | Some("volume_get") | Some("mute_get") => RiskLevel::Low,
+            Some("play") | Some("speak") | Some("volume_get") | Some("mute_get") => RiskLevel::Low,
             _ => RiskLevel::Low,
         }
     }
@@ -155,8 +202,9 @@ impl Tool for AudioTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["play", "record", "volume_get", "volume_set", "mute_get", "mute_set"] },
+                "operation": { "type": "string", "enum": ["play", "speak", "record", "volume_get", "volume_set", "mute_get", "mute_set"] },
                 "file_path": { "type": "string" },
+                "text": { "type": "string" },
                 "duration": { "type": "number" },
                 "volume": { "type": "number" },
                 "muted": { "type": "boolean" }
@@ -180,6 +228,15 @@ impl Tool for AudioTool {
                         "file_path": { "type": "string", "minLength": 1, "description": "Path to a .wav file" }
                     },
                     "required": ["operation", "file_path"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "speak" },
+                        "text": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "Text to synthesize and play aloud" }
+                    },
+                    "required": ["operation", "text"]
                 },
                 {
                     "type": "object",
@@ -312,6 +369,52 @@ impl AudioTool {
             "format": "wav",
         })))
     }
+
+    async fn speak(
+        &self,
+        params: &AudioParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let text = params
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("audio tool: text is required for speak"))?;
+        let character_count = text.chars().count();
+        if character_count > MAX_SPEAK_CHARS {
+            anyhow::bail!(
+                "audio tool: speak text is too long (maximum {} characters)",
+                MAX_SPEAK_CHARS
+            );
+        }
+        let Some(tts) = &self.tts else {
+            anyhow::bail!(
+                "audio tool: TTS is not configured; choose a TTS-capable provider in Settings"
+            );
+        };
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+
+        let wav = tokio::select! {
+            result = tts.synthesize_wav(text) => result
+                .map_err(|e| anyhow::anyhow!("audio tool: TTS synthesis failed: {e}"))?,
+            _ = cancel.cancelled() => anyhow::bail!("audio tool: speech synthesis cancelled"),
+        };
+        if cancel.is_cancelled() {
+            anyhow::bail!("audio tool: speech playback cancelled");
+        }
+
+        let playback = self.playback.clone();
+        tokio::task::spawn_blocking(move || playback.play_wav(&wav)).await??;
+        Ok(ToolResult::ok(serde_json::json!({
+            "spoken": true,
+            "characters": character_count,
+            "format": "wav",
+            "delivered_to": ["speakers"],
+        })))
+    }
 }
 
 #[cfg(windows)]
@@ -319,7 +422,7 @@ mod imp {
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{
         IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_ASYNC, SND_FILENAME,
-        eConsole, eRender,
+        SND_MEMORY, SND_SYNC, eConsole, eRender,
     };
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -378,6 +481,26 @@ mod imp {
         }
         Ok(())
     }
+
+    pub fn play_wav_bytes(data: &[u8]) -> anyhow::Result<()> {
+        if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+            anyhow::bail!("audio playback requires a valid WAV payload");
+        }
+        // SND_SYNC keeps the borrowed provider buffer alive until WinMM has
+        // finished reading and playing it. This also makes one `speak` call
+        // complete only after the audible response has been delivered.
+        let ok = unsafe {
+            PlaySoundW(
+                PCWSTR(data.as_ptr() as *const u16),
+                None,
+                SND_MEMORY | SND_SYNC,
+            )
+        };
+        if !ok.as_bool() {
+            anyhow::bail!("PlaySoundW failed for synthesized audio");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
@@ -399,6 +522,10 @@ mod imp {
     }
 
     pub fn play_wav(_path: &str) -> anyhow::Result<()> {
+        anyhow::bail!("audio playback requires Windows")
+    }
+
+    pub fn play_wav_bytes(_data: &[u8]) -> anyhow::Result<()> {
         anyhow::bail!("audio playback requires Windows")
     }
 }
@@ -457,6 +584,7 @@ mod tests {
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
         for expected in [
             "play",
+            "speak",
             "record",
             "volume_get",
             "volume_set",
@@ -469,10 +597,11 @@ mod tests {
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(req.contains(&"operation"));
         assert!(schema["properties"]["file_path"]["type"].as_str().is_some());
+        assert!(schema["properties"]["text"]["type"].as_str().is_some());
         assert!(schema["properties"]["duration"]["type"].as_str().is_some());
         assert!(schema["properties"]["volume"]["type"].as_str().is_some());
         assert!(schema["properties"]["muted"]["type"].as_str().is_some());
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 6);
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 7);
     }
 
     #[tokio::test]
@@ -534,6 +663,7 @@ mod tests {
                 AudioParams {
                     operation: AudioOperation::Record,
                     file_path: None,
+                    text: None,
                     duration: None,
                     volume: None,
                     muted: None,
@@ -593,5 +723,87 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("muted"));
+    }
+
+    struct MockTts;
+
+    #[async_trait]
+    impl TtsClient for MockTts {
+        async fn synthesize(&self, _text: &str) -> anyhow::Result<Vec<u8>> {
+            Ok(b"encoded".to_vec())
+        }
+
+        async fn synthesize_wav(&self, _text: &str) -> anyhow::Result<Vec<u8>> {
+            Ok(b"RIFF\x24\x00\x00\x00WAVEfake".to_vec())
+        }
+    }
+
+    struct MockPlayback {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl AudioPlayback for MockPlayback {
+        fn play_wav(&self, data: &[u8]) -> anyhow::Result<()> {
+            assert!(data.starts_with(b"RIFF"));
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_audio_speak_synthesizes_and_plays_wav() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool = AudioTool::with_tts(None, Some(Arc::new(MockTts))).with_playback(Arc::new(
+            MockPlayback {
+                calls: calls.clone(),
+            },
+        ));
+        let result = tool
+            .execute(
+                serde_json::json!({"operation": "speak", "text": "你好"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["operation"], "speak");
+        assert_eq!(result.output["spoken"], true);
+        assert_eq!(result.output["characters"], 2);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_audio_speak_requires_tts_configuration() {
+        let err = AudioTool::new(None)
+            .execute(
+                serde_json::json!({"operation": "speak", "text": "hello"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("TTS"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_speak_rejects_empty_or_oversized_text() {
+        let tool = AudioTool::with_tts(None, Some(Arc::new(MockTts)));
+        let empty = tool
+            .execute(
+                serde_json::json!({"operation": "speak", "text": "  "}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(empty.to_string().contains("text"));
+
+        let too_long = "x".repeat(MAX_SPEAK_CHARS + 1);
+        let long = tool
+            .execute(
+                serde_json::json!({"operation": "speak", "text": too_long}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(long.to_string().contains("too long"));
     }
 }

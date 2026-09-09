@@ -21,8 +21,6 @@ pub enum CoverageAction {
     LlmAudio,
     /// Pass through as plain text/reference → default model.
     LlmDefault,
-    /// Text → TTS (media.tts).
-    Tts,
     /// Text → text-to-image (media.image_gen).
     ImageGen,
 }
@@ -35,7 +33,6 @@ impl CoverageAction {
             CoverageAction::LlmImage => "llm:image",
             CoverageAction::LlmAudio => "llm:audio",
             CoverageAction::LlmDefault => "llm:default",
-            CoverageAction::Tts => "tts",
             CoverageAction::ImageGen => "image_gen",
         }
     }
@@ -71,8 +68,7 @@ impl MediaDecision {
 /// Resolve the coverage action for an input attachment.
 ///
 /// Generate intent on an attachment collapses to extraction/pass-through:
-/// media *from* files is not a v1 generation target, except the speech
-/// keywords with an audio/video file ("把这段音频读出来" = transcribe it).
+/// media *from* files is not a v1 generation target.
 pub fn coverage_for(modality: Modality, intent: Intent) -> CoverageAction {
     match (modality, intent) {
         (Modality::Image, Intent::Extract) => CoverageAction::Ocr,
@@ -93,14 +89,10 @@ pub fn coverage_for(modality: Modality, intent: Intent) -> CoverageAction {
     }
 }
 
-/// Resolve the coverage action for a pure-text generate request (no
-/// attachment). Image generation is the ambiguous default; speech keywords
-/// (朗读/读出来/配音…) route to TTS.
+/// Resolve the coverage action for a pure-text image-generation request.
 pub fn coverage_for_generate(user_text: &str) -> CoverageAction {
-    match crate::media::intent::detect_generate_kind(user_text) {
-        crate::media::intent::GenerateKind::Speech => CoverageAction::Tts,
-        crate::media::intent::GenerateKind::Image => CoverageAction::ImageGen,
-    }
+    let _ = user_text;
+    CoverageAction::ImageGen
 }
 
 #[cfg(test)]
@@ -117,7 +109,8 @@ mod tests {
             coverage_for(Modality::Audio, Intent::Extract),
             CoverageAction::Stt
         );
-        // "把这段音频读出来" → generate keywords, but the input is audio.
+        // An explicit generate intent on an audio attachment still means
+        // transcription rather than generating new audio.
         assert_eq!(
             coverage_for(Modality::Audio, Intent::Generate),
             CoverageAction::Stt
@@ -159,8 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_kind_routes() {
-        assert_eq!(coverage_for_generate("朗读这段文字"), CoverageAction::Tts);
+    fn image_generate_routes() {
         assert_eq!(coverage_for_generate("画一只猫"), CoverageAction::ImageGen);
     }
 
@@ -171,7 +163,6 @@ mod tests {
         assert_eq!(CoverageAction::LlmImage.as_str(), "llm:image");
         assert_eq!(CoverageAction::LlmAudio.as_str(), "llm:audio");
         assert_eq!(CoverageAction::LlmDefault.as_str(), "llm:default");
-        assert_eq!(CoverageAction::Tts.as_str(), "tts");
         assert_eq!(CoverageAction::ImageGen.as_str(), "image_gen");
     }
 }

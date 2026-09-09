@@ -219,11 +219,25 @@ impl AppState {
             pipeline.set_stt_router(None).await;
         }
 
-        // Media gateway: dedicated OCR / TTS / image-generation clients plus
+        // Build the TTS client once for the model-facing `audio.speak` tool
+        // while startup wiring is assembled below. A failed optional
+        // capability degrades only that capability and remains observable in
+        // the log.
+        let tts: Option<std::sync::Arc<dyn haven_llm::TtsClient>> =
+            match haven_llm::build_tts_client(&cfg.media.tts, &cfg.llm.providers) {
+                Ok(c) => c.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!("TTS client build failed, TTS disabled: {e}");
+                    None
+                }
+            };
+
+        // Media gateway: dedicated OCR / image-generation clients plus
         // the shared STT client. The gateway pre-processes attachments
         // (extract → OCR/ASR with main-model fallback) and handles pure-text
-        // generation requests (TTS / text-to-image) before they reach the
-        // ReAct loop. A capability build error disables only that capability
+        // image-generation requests before they reach the ReAct loop. TTS is
+        // exposed only through the model-facing audio tool. A capability
+        // build error disables only that capability
         // (fail-open: the main model still handles the media).
         let gateway = {
             let ocr: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
@@ -231,14 +245,6 @@ impl AppState {
                     Ok(c) => c.map(std::sync::Arc::from),
                     Err(e) => {
                         tracing::warn!("OCR client build failed, OCR disabled: {e}");
-                        None
-                    }
-                };
-            let tts: Option<std::sync::Arc<dyn haven_llm::TtsClient>> =
-                match haven_llm::build_tts_client(&cfg.media.tts, &cfg.llm.providers) {
-                    Ok(c) => c.map(std::sync::Arc::from),
-                    Err(e) => {
-                        tracing::warn!("TTS client build failed, TTS disabled: {e}");
                         None
                     }
                 };
@@ -256,7 +262,6 @@ impl AppState {
                 router.clone(),
                 stt_client,
                 ocr,
-                tts,
                 image_gen,
                 cfg.media.clone(),
             ))
@@ -372,6 +377,7 @@ impl AppState {
                 security_permissions: cfg.security.permissions.clone(),
                 router: router.clone(),
                 audio_pipeline: Some(pipeline.clone()),
+                tts_client: tts,
                 admin_context,
             })
             .await;

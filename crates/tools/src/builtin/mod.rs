@@ -84,12 +84,16 @@ pub async fn register_builtin_tools(
     limits: &haven_common::config::ContextLimitsConfig,
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     session_catalog: SessionCatalog,
     agent_spawner: messaging::AgentSpawnerSlot,
     memory_recall: memory::MemoryRecallSlot,
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
-    tools.push(Arc::new(audio::AudioTool::new(audio_pipeline)));
+    tools.push(Arc::new(audio::AudioTool::with_tts(
+        audio_pipeline,
+        tts_client,
+    )));
     tools.push(Arc::new(ask::AskTool));
     // Clone before FilesTool consumes `router` so WindowTool can OCR via vision.
     let window_router = router.clone();

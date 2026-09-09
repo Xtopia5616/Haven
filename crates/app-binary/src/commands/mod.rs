@@ -236,7 +236,10 @@ pub(crate) async fn hot_swap_router(
     // pointer. This keeps a failed rebuild from leaving a mixed-generation
     // router/pipeline/gateway state.
     state.agent.replace_router(new_router.clone());
-    state.tools.set_router(new_router.clone()).await;
+    state
+        .tools
+        .set_router_and_tts(new_router.clone(), tts.clone())
+        .await;
     state.pipeline.set_stt_client(stt_client.clone()).await;
     if stt_config.provider == "llm" {
         state
@@ -247,7 +250,7 @@ pub(crate) async fn hot_swap_router(
         state.pipeline.set_stt_router(None).await;
     }
     let gateway = Arc::new(haven_llm::media::MediaGateway::new(
-        new_router, stt_client, ocr, tts, image_gen, media,
+        new_router, stt_client, ocr, image_gen, media,
     ));
     state.agent.set_gateway(Some(gateway)).await;
     Ok(())

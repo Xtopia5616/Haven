@@ -7,6 +7,7 @@
 	const operationLabels = {
 		record: '录音完成',
 		play: '播放完成',
+		speak: '朗读完成',
 		volume_get: '当前音量',
 		volume_set: '音量已设置',
 		mute_get: '当前静音状态',
@@ -20,6 +21,8 @@
 	{#if data.transcript}<pre class="content-preview">{data.transcript}</pre>{/if}
 {:else if data.operation === 'play'}
 	<div class="audio-action"><span class="audio-badge">{operationLabel}</span>{#if data.played}<ExternalRef class="audio-path" target={data.played} />{/if}</div>
+{:else if data.operation === 'speak'}
+	<div class="audio-action"><span class="audio-badge">{operationLabel}</span><span>{data.characters != null ? `${data.characters} 字` : ''}</span></div>
 {:else if data.operation === 'volume_get' || data.operation === 'volume_set'}
 	<div class="audio-action"><span class="audio-badge">{operationLabel}</span><span>{Math.round(Number(data.volume ?? 0) * 100)}%</span></div>
 {:else if data.operation === 'mute_get' || data.operation === 'mute_set'}

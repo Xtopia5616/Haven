@@ -37,7 +37,7 @@
 ### 标识符
 - 类型 / 枚举 / trait / 结构体 → **PascalCase**：`Modality`、`Intent`、`LlmConfig`。
 - 函数 / 方法 / 变量 / 字段 / 模块 → **snake_case**：`fn detect_intent`、`stt_default_base_url`。
-- 常量 / 静态 → **UPPER_SNAKE_CASE**：`SPEECH_GEN_KEYWORDS`、`IMAGE_GEN_KEYWORDS`。
+- 常量 / 静态 → **UPPER_SNAKE_CASE**：`MAX_SPEAK_CHARS`、`IMAGE_GEN_KEYWORDS`。
 - 构造 `pub const fn as_str` / `new` 保持惯例命名。
 
 ### 缩写大小写规则

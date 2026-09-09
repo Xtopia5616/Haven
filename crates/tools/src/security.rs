@@ -33,6 +33,7 @@ macro_rules! security_case {
 
 pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("audio", "play", Low),
+    security_case!("audio", "speak", Low),
     security_case!("audio", "record", Medium),
     security_case!("audio", "volume_get", Low),
     security_case!("audio", "volume_set", Medium),

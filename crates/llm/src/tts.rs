@@ -6,8 +6,10 @@
 //! - a name from `llm.providers`: credentials (base URL + API key) and the
 //!   OpenAI-compatible vs ElevenLabs backend are taken from that provider
 //!
-//! Every client returns raw audio bytes (MP3); decoding/playback is the
-//! caller's job.
+//! Clients expose both the provider's encoded output and a PCM/WAV path for
+//! the local speaker. The latter keeps playback inside the app boundary: the
+//! Windows audio adapter only needs to understand RIFF/WAVE and does not
+//! need a bundled media decoder.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -18,7 +20,21 @@ use std::time::Duration;
 /// and return encoded audio bytes (typically MP3).
 #[async_trait]
 pub trait TtsClient: Send + Sync {
+    /// Synthesize encoded audio for an attachment or other media consumer.
     async fn synthesize(&self, text: &str) -> Result<Vec<u8>>;
+
+    /// Synthesize a PCM/WAV payload suitable for local playback.
+    ///
+    /// Providers that only implement the encoded path get a safe error rather
+    /// than sending compressed bytes to the Windows `PlaySoundW` adapter.
+    async fn synthesize_wav(&self, text: &str) -> Result<Vec<u8>> {
+        let bytes = self.synthesize(text).await?;
+        if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+            Ok(bytes)
+        } else {
+            anyhow::bail!("TTS provider did not return WAV audio for local playback")
+        }
+    }
 }
 
 /// Runtime-only TTS configuration resolved from a named `llm.providers`
@@ -136,6 +152,16 @@ impl OpenAiTtsClient {
 #[async_trait]
 impl TtsClient for OpenAiTtsClient {
     async fn synthesize(&self, text: &str) -> Result<Vec<u8>> {
+        self.request_audio(text, "mp3").await
+    }
+
+    async fn synthesize_wav(&self, text: &str) -> Result<Vec<u8>> {
+        self.request_audio(text, "wav").await
+    }
+}
+
+impl OpenAiTtsClient {
+    async fn request_audio(&self, text: &str, response_format: &str) -> Result<Vec<u8>> {
         if self.api_key.is_empty() {
             anyhow::bail!("OpenAI TTS requires an api_key");
         }
@@ -143,7 +169,7 @@ impl TtsClient for OpenAiTtsClient {
             "model": self.model,
             "input": text,
             "voice": self.voice,
-            "response_format": "mp3",
+            "response_format": response_format,
         });
         let resp = self
             .client
@@ -204,6 +230,19 @@ impl ElevenLabsTtsClient {
 #[async_trait]
 impl TtsClient for ElevenLabsTtsClient {
     async fn synthesize(&self, text: &str) -> Result<Vec<u8>> {
+        self.request_audio(text, None).await
+    }
+
+    async fn synthesize_wav(&self, text: &str) -> Result<Vec<u8>> {
+        // ElevenLabs exposes raw signed 16-bit PCM as a stable low-level
+        // format. Wrap it in a standard WAV container for WinMM playback.
+        let pcm = self.request_audio(text, Some("pcm_16000")).await?;
+        Ok(pcm_to_wav(&pcm, 16_000, 1))
+    }
+}
+
+impl ElevenLabsTtsClient {
+    async fn request_audio(&self, text: &str, output_format: Option<&str>) -> Result<Vec<u8>> {
         if self.api_key.is_empty() {
             anyhow::bail!("ElevenLabs TTS requires an api_key");
         }
@@ -214,12 +253,14 @@ impl TtsClient for ElevenLabsTtsClient {
         if let Some(model) = &self.model {
             payload["model_id"] = serde_json::Value::String(model.clone());
         }
+        let mut url = format!("https://api.elevenlabs.io/v1/text-to-speech/{}", self.voice);
+        if let Some(format) = output_format {
+            url.push_str("?output_format=");
+            url.push_str(format);
+        }
         let resp = self
             .client
-            .post(format!(
-                "https://api.elevenlabs.io/v1/text-to-speech/{}",
-                self.voice
-            ))
+            .post(url)
             .header("xi-api-key", &self.api_key)
             .json(&payload)
             .send()
@@ -248,6 +289,33 @@ impl TtsClient for ElevenLabsTtsClient {
         })?;
         Ok(bytes.to_vec())
     }
+}
+
+/// Wrap signed little-endian 16-bit PCM in a canonical RIFF/WAVE container.
+/// This is intentionally small and deterministic because provider output is
+/// already decoded PCM; no general-purpose media decoder belongs in the
+/// tool crate.
+fn pcm_to_wav(pcm: &[u8], sample_rate: u32, channels: u16) -> Vec<u8> {
+    let block_align = channels.saturating_mul(2);
+    let byte_rate = sample_rate.saturating_mul(block_align as u32);
+    let data_len = pcm.len().min(u32::MAX as usize) as u32;
+    let riff_len = 36u32.saturating_add(data_len);
+    let mut wav = Vec::with_capacity(44usize.saturating_add(data_len as usize));
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&riff_len.to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(&pcm[..data_len as usize]);
+    wav
 }
 
 /// Error text extraction for media HTTP responses.
@@ -433,5 +501,16 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt.block_on(client.synthesize("hi")).unwrap_err();
         assert!(err.to_string().contains("api_key"));
+    }
+
+    #[test]
+    fn pcm_to_wav_writes_a_playable_header() {
+        let wav = pcm_to_wav(&[0, 0, 255, 127], 16_000, 1);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1);
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
+        assert_eq!(&wav[44..], &[0, 0, 255, 127]);
     }
 }

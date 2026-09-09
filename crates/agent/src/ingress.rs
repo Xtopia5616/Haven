@@ -9,7 +9,7 @@ use crate::session::SessionStatus;
 use crate::types::ProcessResult;
 use base64::Engine;
 use haven_common::types::MessageAttachment;
-use haven_llm::media::{AttachmentOutcome, GenerateKind, GenerateOutcome, MediaDecision};
+use haven_llm::media::{AttachmentOutcome, GenerateOutcome, MediaDecision};
 
 /// Human-readable label for a gateway extraction decision, shown in the
 /// message content so the user (and the model) see where the text came from.
@@ -24,7 +24,7 @@ fn extraction_label(decision: &MediaDecision) -> &'static str {
 }
 
 /// Build a message attachment from a gateway-generated media file so the
-/// generated image / speech shows up in the chat like a user attachment.
+/// generated images show up in the chat like a user attachment.
 fn attachment_from_generated_file(path: &std::path::Path) -> anyhow::Result<MessageAttachment> {
     let bytes = std::fs::read(path)?;
     let media_type = haven_llm::media::detect_media_type(&bytes).to_string();
@@ -49,8 +49,9 @@ impl AgentLayer {
     /// Run the media gateway over an incoming user message: extract
     /// attachments through dedicated providers (OCR / ASR, with main-model
     /// confidence/error fallback), and handle pure-text generation requests
-    /// (TTS / text-to-image). Returns the enriched message content (extracted
-    /// text / generation notes appended) and any generated-media attachments.
+    /// (text-to-image). TTS is a model-facing `audio.speak` tool action and is
+    /// intentionally not performed during ingress. Returns the enriched
+    /// message content and any generated-media attachments.
     /// Fail-open: a gateway error leaves the message untouched.
     async fn enrich_with_gateway(
         &self,
@@ -86,24 +87,19 @@ impl AgentLayer {
             }
         } else if !transcript.trim().is_empty() {
             match gateway.process_generate(transcript, None).await {
-                Ok(GenerateOutcome::Generated {
-                    kind, file_path, ..
-                }) => match attachment_from_generated_file(&file_path) {
-                    Ok(att) => {
-                        let name = file_path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "media".into());
-                        out_attachments.push(att);
-                        notes.push(match kind {
-                            GenerateKind::Speech => {
-                                format!("（已生成语音文件：{name}）")
-                            }
-                            GenerateKind::Image => format!("（已生成图片：{name}）"),
-                        });
+                Ok(GenerateOutcome::Generated { file_path, .. }) => {
+                    match attachment_from_generated_file(&file_path) {
+                        Ok(att) => {
+                            let name = file_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "media".into());
+                            out_attachments.push(att);
+                            notes.push(format!("（已生成图片：{name}）"));
+                        }
+                        Err(e) => tracing::warn!("gateway: attaching generated file failed: {e}"),
                     }
-                    Err(e) => tracing::warn!("gateway: attaching generated file failed: {e}"),
-                },
+                }
                 Ok(GenerateOutcome::NotGenerate) | Ok(GenerateOutcome::Unsupported { .. }) => {}
                 Err(e) => tracing::warn!("gateway: generate request failed: {e}"),
             }
@@ -133,9 +129,9 @@ impl AgentLayer {
         voice: bool,
     ) -> anyhow::Result<ProcessResult> {
         // Media gateway pre-processing: extraction actions (OCR / ASR) and
-        // generation requests (TTS / text-to-image) are handled here, before
-        // persistence, so every downstream path (steering, supplements, new
-        // sessions) sees the enriched message.
+        // Image-generation requests are handled here, before persistence, so
+        // every downstream path (steering, supplements, new sessions) sees
+        // the enriched message. TTS remains an explicit tool side effect.
         let (enriched, enriched_attachments) =
             self.enrich_with_gateway(transcript, attachments).await;
         let transcript: &str = &enriched;

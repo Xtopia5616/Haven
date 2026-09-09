@@ -1,16 +1,16 @@
 //! Media gateway orchestrator (merged from `haven-gateway`).
 //!
 //! [`MediaGateway`] owns the routing pipeline over the `haven-llm` router
-//! and the dedicated media clients (STT / OCR / TTS / image generation):
+//! and the dedicated media clients (STT / OCR / image generation). TTS is
+//! consumed by the model-facing `audio.speak` tool, not by ingress:
 //!
 //! - [`MediaGateway::process_attachment`] — for a binary attachment: detect
 //!   modality, classify intent, run the coverage action. Extraction actions
 //!   run through the dedicated provider with a confidence gate; a result
 //!   below `min_confidence` (or an error / empty result) falls back to the
 //!   main model, which is called directly with the media as a content part.
-//! - [`MediaGateway::process_generate`] — pure-text generate requests
-//!   (TTS / text-to-image), saving the generated file under the app data
-//!   media directory.
+//! - [`MediaGateway::process_generate`] — pure-text image-generation
+//!   requests, saving the generated file under the app data media directory.
 //!
 //! Everything is in-process: there is no separate HTTP service, the agent
 //! calls these methods while building the user message.
@@ -18,13 +18,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
+use crate::{ImageGenClient, LlmRouter, OcrClient, SttClient};
 use haven_common::config::MediaConfig;
 use haven_common::prompts::OCR_SYSTEM_PROMPT;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
 
 use crate::media::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
-use crate::media::intent::{GenerateKind, Intent, detect_generate_kind, detect_intent};
+use crate::media::intent::{GenerateKind, Intent, detect_intent};
 use crate::media::modality::{
     Modality, detect_media_type, detect_modality, extension_for_media_type,
 };
@@ -65,7 +65,6 @@ pub struct MediaGateway {
     router: Arc<LlmRouter>,
     stt: Option<Arc<dyn SttClient>>,
     ocr: Option<Arc<dyn OcrClient>>,
-    tts: Option<Arc<dyn TtsClient>>,
     image_gen: Option<Arc<dyn ImageGenClient>>,
     config: MediaConfig,
     output_dir: Option<PathBuf>,
@@ -76,7 +75,6 @@ impl MediaGateway {
         router: Arc<LlmRouter>,
         stt: Option<Arc<dyn SttClient>>,
         ocr: Option<Arc<dyn OcrClient>>,
-        tts: Option<Arc<dyn TtsClient>>,
         image_gen: Option<Arc<dyn ImageGenClient>>,
         config: MediaConfig,
     ) -> Self {
@@ -84,7 +82,6 @@ impl MediaGateway {
             router,
             stt,
             ocr,
-            tts,
             image_gen,
             config,
             output_dir: None,
@@ -104,7 +101,7 @@ impl MediaGateway {
     /// True when any specialized capability is configured (used by callers
     /// to decide whether gateway pre-processing is worth running at all).
     pub fn has_specialized(&self) -> bool {
-        self.stt.is_some() || self.ocr.is_some() || self.tts.is_some() || self.image_gen.is_some()
+        self.stt.is_some() || self.ocr.is_some() || self.image_gen.is_some()
     }
 
     /// Process one binary attachment: modality detection → intent
@@ -245,7 +242,7 @@ impl MediaGateway {
         Ok(AttachmentOutcome::Extracted { text, decision })
     }
 
-    /// Handle a pure-text generate request (TTS / text-to-image). Returns
+    /// Handle a pure-text image-generation request. Returns
     /// [`GenerateOutcome::NotGenerate`] when the intent is not generate, and
     /// [`GenerateOutcome::Unsupported`] when the capability is unconfigured.
     pub async fn process_generate(
@@ -257,28 +254,14 @@ impl MediaGateway {
         if intent != Intent::Generate {
             return Ok(GenerateOutcome::NotGenerate);
         }
-        let kind = detect_generate_kind(user_text);
+        // TTS is intentionally not part of ingress generation. Speech is an
+        // explicit `audio(operation="speak")` tool action chosen by the
+        // model; this gateway only handles image generation.
+        let kind = GenerateKind::Image;
         let action = coverage_for_generate(user_text);
         let decision = MediaDecision::new(Modality::Text, Intent::Generate, action);
 
         match kind {
-            GenerateKind::Speech => {
-                let Some(tts) = &self.tts else {
-                    return Ok(GenerateOutcome::Unsupported {
-                        reason: "未配置 TTS（设置 → 常规 → TTS）".into(),
-                    });
-                };
-                let audio = tts
-                    .synthesize(user_text)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("TTS 合成失败: {e}"))?;
-                let path = self.save_media_file(&audio, "audio/mpeg")?;
-                Ok(GenerateOutcome::Generated {
-                    kind,
-                    file_path: path,
-                    decision,
-                })
-            }
             GenerateKind::Image => {
                 let Some(image_gen) = &self.image_gen else {
                     return Ok(GenerateOutcome::Unsupported {
@@ -448,14 +431,7 @@ mod tests {
             confidence: Some(0.95),
             calls: AtomicU64::new(0),
         });
-        let gw = MediaGateway::new(
-            mock_router("unused"),
-            None,
-            Some(ocr),
-            None,
-            None,
-            test_config(),
-        );
+        let gw = MediaGateway::new(mock_router("unused"), None, Some(ocr), None, test_config());
         let outcome = gw
             .process_attachment(&image_bytes(), "a.png", "提取文字", None)
             .await
@@ -480,7 +456,6 @@ mod tests {
             None,
             Some(ocr),
             None,
-            None,
             test_config(),
         );
         let outcome = gw
@@ -503,14 +478,7 @@ mod tests {
             confidence: None,
             calls: AtomicU64::new(0),
         });
-        let gw = MediaGateway::new(
-            mock_router("unused"),
-            None,
-            Some(ocr),
-            None,
-            None,
-            test_config(),
-        );
+        let gw = MediaGateway::new(mock_router("unused"), None, Some(ocr), None, test_config());
         let outcome = gw
             .process_attachment(&image_bytes(), "a.png", "提取文字", None)
             .await
@@ -534,7 +502,6 @@ mod tests {
             None,
             Some(ocr),
             None,
-            None,
             test_config(),
         );
         let outcome = gw
@@ -553,14 +520,7 @@ mod tests {
             text: "转写结果".into(),
             confidence: Some(0.9),
         });
-        let gw = MediaGateway::new(
-            mock_router("unused"),
-            Some(stt),
-            None,
-            None,
-            None,
-            test_config(),
-        );
+        let gw = MediaGateway::new(mock_router("unused"), Some(stt), None, None, test_config());
         let outcome = gw
             .process_attachment(&wav_bytes(), "a.wav", "转文字", None)
             .await
@@ -574,23 +534,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audio_generate_keywords_collapse_to_stt() {
-        // "把这段音频读出来" — generate keyword, but the input is audio →
-        // extraction (transcription).
+    async fn audio_transcription_routes_through_stt() {
         let stt: Arc<dyn SttClient> = Arc::new(MockStt {
             text: "读出来的内容".into(),
             confidence: Some(0.9),
         });
-        let gw = MediaGateway::new(
-            mock_router("unused"),
-            Some(stt),
-            None,
-            None,
-            None,
-            test_config(),
-        );
+        let gw = MediaGateway::new(mock_router("unused"), Some(stt), None, None, test_config());
         let outcome = gw
-            .process_attachment(&wav_bytes(), "a.wav", "把这段音频读出来", None)
+            .process_attachment(&wav_bytes(), "a.wav", "把这段音频转文字", None)
             .await
             .unwrap();
         let AttachmentOutcome::Extracted { text, .. } = outcome else {
@@ -601,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn understand_intent_passes_through() {
-        let gw = MediaGateway::new(mock_router("unused"), None, None, None, None, test_config());
+        let gw = MediaGateway::new(mock_router("unused"), None, None, None, test_config());
         let outcome = gw
             .process_attachment(&image_bytes(), "a.png", "描述一下这张图", None)
             .await
@@ -617,7 +568,6 @@ mod tests {
     async fn no_ocr_configured_passes_through() {
         let gw = MediaGateway::new(
             mock_router("unused"),
-            None,
             None,
             None,
             None,
@@ -641,7 +591,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             test_config_llm_or_none("none", "none"),
         );
         let outcome = gw
@@ -661,7 +610,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             test_config_llm_or_none("llm", "none"),
         );
         let outcome = gw
@@ -678,15 +626,6 @@ mod tests {
 
     // --- generate ----------------------------------------------------------
 
-    struct MockTts;
-
-    #[async_trait]
-    impl TtsClient for MockTts {
-        async fn synthesize(&self, _text: &str) -> anyhow::Result<Vec<u8>> {
-            Ok(b"mp3-bytes".to_vec())
-        }
-    }
-
     struct MockImageGen;
 
     #[async_trait]
@@ -700,43 +639,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_speech_saves_mp3() {
-        let tts: Arc<dyn TtsClient> = Arc::new(MockTts);
-        let output_dir = tempfile::tempdir().unwrap();
-        let gw = MediaGateway::new(
-            mock_router("unused"),
-            None,
-            None,
-            Some(tts),
-            None,
-            test_config(),
-        )
-        .with_output_dir(output_dir.path().to_path_buf());
-        let outcome = gw.process_generate("朗读这段话", None).await.unwrap();
-        let GenerateOutcome::Generated {
-            kind, file_path, ..
-        } = outcome
-        else {
-            panic!("expected Generated");
-        };
-        assert_eq!(kind, GenerateKind::Speech);
-        assert!(file_path.to_string_lossy().ends_with(".mp3"));
-        assert!(file_path.exists());
-    }
-
-    #[tokio::test]
     async fn generate_image_saves_png() {
         let ig: Arc<dyn ImageGenClient> = Arc::new(MockImageGen);
         let output_dir = tempfile::tempdir().unwrap();
-        let gw = MediaGateway::new(
-            mock_router("unused"),
-            None,
-            None,
-            None,
-            Some(ig),
-            test_config(),
-        )
-        .with_output_dir(output_dir.path().to_path_buf());
+        let gw = MediaGateway::new(mock_router("unused"), None, None, Some(ig), test_config())
+            .with_output_dir(output_dir.path().to_path_buf());
         let outcome = gw.process_generate("画一只猫", None).await.unwrap();
         let GenerateOutcome::Generated {
             kind, file_path, ..
@@ -751,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn generate_without_capability_is_unsupported() {
-        let gw = MediaGateway::new(mock_router("unused"), None, None, None, None, test_config());
+        let gw = MediaGateway::new(mock_router("unused"), None, None, None, test_config());
         let outcome = gw.process_generate("画一只猫", None).await.unwrap();
         let GenerateOutcome::Unsupported { reason } = outcome else {
             panic!("expected Unsupported");
@@ -761,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_generate_text_returns_not_generate() {
-        let gw = MediaGateway::new(mock_router("unused"), None, None, None, None, test_config());
+        let gw = MediaGateway::new(mock_router("unused"), None, None, None, test_config());
         let outcome = gw.process_generate("你好呀", None).await.unwrap();
         assert!(matches!(outcome, GenerateOutcome::NotGenerate));
     }

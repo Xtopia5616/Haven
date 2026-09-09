@@ -5,7 +5,7 @@
 //!   faithfully (OCR / ASR / subtitles / translation).
 //! - **understand**: the model must reason (description / Q&A / summary /
 //!   analysis).
-//! - **generate**: the output is another modality (text-to-image / TTS).
+//! - **generate**: the output is another modality (text-to-image).
 //!
 //! Classification is keyword-rule based (zero cost); the rule set is a
 //! denylist-free positive match — extract keywords win over generate
@@ -52,8 +52,6 @@ const EXTRACT_KEYWORDS: &[&str] = &[
 /// generation. Only explicit media-generation phrasing routes here.
 const IMAGE_GEN_KEYWORDS: &[&str] = &["画", "绘制", "文生图", "海报", "插画", "生成图", "logo"];
 
-const SPEECH_GEN_KEYWORDS: &[&str] = &["朗读", "读出来", "念出来", "配音", "播报", "唱", "唱歌"];
-
 /// Classify the intent from user text. `explicit` (UI-provided override)
 /// wins when present; otherwise the keyword rules apply, defaulting to
 /// understand.
@@ -73,26 +71,15 @@ pub fn detect_intent(user_text: &str, explicit: Option<Intent>) -> Intent {
     Intent::Understand
 }
 
-/// Whether the text asks for media generation (any generate keyword).
+/// Whether the text asks for image generation.
 fn is_generate_text(lower: &str) -> bool {
     IMAGE_GEN_KEYWORDS.iter().any(|k| lower.contains(k))
-        || SPEECH_GEN_KEYWORDS.iter().any(|k| lower.contains(k))
 }
 
-/// Sub-classification for generate intent: speech output (TTS) vs image
-/// output (text-to-image). Defaults to image when ambiguous.
-pub fn detect_generate_kind(user_text: &str) -> GenerateKind {
-    let lower = user_text.to_ascii_lowercase();
-    if SPEECH_GEN_KEYWORDS.iter().any(|k| lower.contains(k)) {
-        return GenerateKind::Speech;
-    }
-    GenerateKind::Image
-}
-
-/// Which generation capability a generate intent needs.
+/// The only automatic media-generation capability is text-to-image. Speech is
+/// deliberately model-tool driven through `audio(operation="speak")`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerateKind {
-    Speech,
     Image,
 }
 
@@ -119,16 +106,8 @@ mod tests {
 
     #[test]
     fn generate_keywords() {
-        for text in [
-            "画一只猫",
-            "生成一张海报",
-            "帮我画一个插画",
-            "文生图：星空",
-            "配音这段文字",
-            "唱一首歌",
-            "朗读这段话",
-            "把这段话读出来",
-        ] {
+        for text in ["画一只猫", "生成一张海报", "帮我画一个插画", "文生图：星空"]
+        {
             assert_eq!(detect_intent(text, None), Intent::Generate, "{text}");
         }
     }
@@ -186,12 +165,10 @@ mod tests {
     }
 
     #[test]
-    fn generate_kind_detection() {
-        assert_eq!(detect_generate_kind("朗读这段文字"), GenerateKind::Speech);
-        assert_eq!(detect_generate_kind("把这段话读出来"), GenerateKind::Speech);
-        assert_eq!(detect_generate_kind("配音"), GenerateKind::Speech);
-        assert_eq!(detect_generate_kind("画一只猫"), GenerateKind::Image);
-        assert_eq!(detect_generate_kind("生成海报"), GenerateKind::Image);
-        assert_eq!(detect_generate_kind("随便"), GenerateKind::Image);
+    fn speech_requests_stay_with_the_agent() {
+        for text in ["朗读这段文字", "把这段话读出来", "配音这段文字", "唱一首歌"]
+        {
+            assert_eq!(detect_intent(text, None), Intent::Understand, "{text}");
+        }
     }
 }

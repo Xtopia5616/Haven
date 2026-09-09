@@ -10,7 +10,7 @@
 
 | 工具 | 低风险/只读操作 | 需确认或更高风险操作 | 授权 key | 路径/外部边界 | 取消与重试 |
 |---|---|---|---|---|---|
-| `audio` | `play`, `volume_get`, `mute_get` | `record`, `volume_set`, `mute_set` = medium | `audio` 或操作 key | `play.file_path` 与文件工具一样受 `allowed_paths` 约束；录音设备由 input 管线管理 | 录音取消清理 recording id |
+| `audio` | `play`, `speak`, `volume_get`, `mute_get` | `record`, `volume_set`, `mute_set` = medium | `audio` 或操作 key | `play.file_path` 与文件工具一样受 `allowed_paths` 约束；`speak.text` 发往已配置 TTS provider；录音设备由 input 管线管理 | 录音取消清理 recording id；TTS 合成支持取消，播放完成当前 WAV |
 | `ask` | 全部 | 无系统副作用 = safe | `ask` | 无本地路径 | 不得静默跳过用户问题 |
 | `files` | `read`, `list`, 普通 `search` | `write`, `edit`, `copy`, `move`, `create_dir` = medium；`delete` = high；内容搜索 = medium | `files`, `files:<operation>` | `path`, `paths`, `source`, `destination`, `file`, `dir`, `directory`；源和目标逐一校验 | 失败不得部分放宽；重试沿用同一 gate |
 | `process` | `list` = low | `kill` = high | `process`, `process:<operation>` | 无路径参数；进程启动统一走 `shell.background` | kill 支持 token；取消不得继续执行 |

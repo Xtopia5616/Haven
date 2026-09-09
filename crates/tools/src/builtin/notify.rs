@@ -6,7 +6,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{Tool, ToolResult};
 
 /// Let the agent notify the user via the in-app toast AND a Windows desktop
-/// notification, delivered together.
+/// notification, delivered together. This is an alert channel, not speech;
+/// use `audio` with `operation="speak"` when the user needs audible content.
 ///
 /// When this tool runs, the ReAct loop detects the `notify` signal in the
 /// structured output and emits an `AgentEvent::Notification`, which the app
@@ -64,7 +65,7 @@ impl Tool for NotifyTool {
     }
 
     fn description(&self) -> String {
-        "Send the user a notification without pausing the session — alert them about something worth checking".into()
+        "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use audio.speak for spoken content, not notify.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
