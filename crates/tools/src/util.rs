@@ -45,11 +45,16 @@ impl<'a> Serialize for SnapshotRef<'a> {
     }
 }
 
-/// Largest `k` in `[1, items.len()]` whose serialized form fits `max_chars`.
-/// Serialized length is monotonic in `k` for non-empty items, so a binary
-/// search finds the split in O(log n) probes; each probe serializes a
-/// borrowed slice (no clone).
+/// Largest `k` in `[0, items.len()]` whose serialized form fits `max_chars`.
+/// Empty input returns zero. For non-empty input, a single item is retained
+/// even when it exceeds the budget. Serialized length is monotonic in `k` for
+/// non-empty items, so a binary search finds the split in O(log n) probes;
+/// each probe serializes a borrowed slice (no clone).
 fn best_split_size(list_key: &str, items: &[Value], total: usize, max_chars: usize) -> usize {
+    if items.is_empty() {
+        return 0;
+    }
+
     let mut lo = 1usize;
     let mut hi = items.len();
     let mut best = 1;
@@ -84,6 +89,16 @@ mod tests {
         let (value, truncated) = json_list_within_budget("items", items, 1, 1000);
         assert!(!truncated);
         assert_eq!(value["count"], 1);
+        assert!(value["truncated"].is_null());
+    }
+
+    #[test]
+    fn test_empty_list_does_not_panic() {
+        let (value, truncated) = json_list_within_budget("items", Vec::new(), 0, 1000);
+
+        assert!(!truncated);
+        assert_eq!(value["items"], json!([]));
+        assert_eq!(value["count"], 0);
         assert!(value["truncated"].is_null());
     }
 
