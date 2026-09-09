@@ -78,15 +78,15 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByText('共 2 项')).toBeTruthy());
-		const resourceToolbar = document.querySelector('.resource-toolbar');
-		expect(resourceToolbar?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
+		const resourceToolbar = () => document.querySelector('.resource-toolbar');
+		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
 		expect(document.querySelectorAll('.section .count-chip')).toHaveLength(0);
 
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
-		expect(resourceToolbar?.querySelector('.count-chip')?.textContent).toBe('共 1 项');
+		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 1 项');
 
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
-		expect(resourceToolbar?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
+		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
 	});
 
 	it('locks the MCP refresh action until reconciliation finishes', async () => {

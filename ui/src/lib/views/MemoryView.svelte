@@ -31,6 +31,7 @@
 	import MemoryCenter from './MemoryCenter.svelte';
 	import TaskCenter from '$lib/TaskCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
+	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 
 	let {
 		onNewSession = () => {},
@@ -548,6 +549,10 @@
 			aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '历史'}
 		>
 			{#if activeTab === 'sessions'}
+				<WorkspaceSectionHeader
+					title="会话历史"
+					description="查看并继续过去的对话。"
+				/>
 				<SessionHistory
 					{sessions}
 					{searchQuery}
@@ -589,6 +594,10 @@
 					{formatMessageTime}
 				/>
 			{:else if activeTab === 'tasks'}
+				<WorkspaceSectionHeader
+					title="任务"
+					description="查看后台任务、定时任务及其执行记录。"
+				/>
 				<TaskCenter
 					{runningBackgroundActions}
 					{pendingScheduledActions}
@@ -604,6 +613,10 @@
 				/>
 			{:else}
 				<div class="memory-tools-view" aria-label="记忆中心">
+					<WorkspaceSectionHeader
+						title="记忆"
+						description="浏览、搜索和管理关于你的事实与过去的对话。"
+					/>
 					<MemoryCenter
 						{facts}
 						{factsLoaded}
@@ -717,7 +730,7 @@
 	.memory-tools-view {
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-3xl);
+		gap: 0;
 		min-width: 0;
 	}
 	.date-filter-dialog {

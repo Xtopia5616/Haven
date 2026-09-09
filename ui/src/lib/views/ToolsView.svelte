@@ -30,6 +30,7 @@
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import CountChip from '$lib/CountChip.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
+	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -377,50 +378,54 @@
 		className="workspace-secondary-tabs"
 	/>
 
-	<div class="resource-toolbar workspace-filter-bar" role="search" aria-label="筛选工具资源">
-		<label class="resource-search">
-			<span class="sr-only">搜索工具资源</span>
-			<input
-				class="md-input"
-				type="search"
-				bind:value={searchQuery}
-				placeholder="搜索名称、描述或地址"
-			/>
-		</label>
-		<div class="resource-filter-controls">
-			<MaterialSelect
-				id="resource-enabled-filter"
-				value={enabledFilter}
-				ariaLabel="启用状态"
-				options={[
-					{ value: 'all', label: '全部状态' },
-					{ value: 'enabled', label: '仅启用' },
-					{ value: 'disabled', label: '仅禁用' },
-				]}
-				onChange={handleEnabledFilterChange}
-			/>
-			{#if hasFilters}
-				<MaterialButton variant="text" label="清除" onclick={clearFilters} />
-			{/if}
+	{#snippet resourceToolbar()}
+		<div class="resource-toolbar workspace-filter-bar" role="search" aria-label="筛选工具资源">
+			<label class="resource-search">
+				<span class="sr-only">搜索工具资源</span>
+				<input
+					class="md-input"
+					type="search"
+					bind:value={searchQuery}
+					placeholder="搜索名称、描述或地址"
+				/>
+			</label>
+			<div class="resource-filter-controls">
+				<MaterialSelect
+					id="resource-enabled-filter"
+					value={enabledFilter}
+					ariaLabel="启用状态"
+					options={[
+						{ value: 'all', label: '全部状态' },
+						{ value: 'enabled', label: '仅启用' },
+						{ value: 'disabled', label: '仅禁用' },
+					]}
+					onChange={handleEnabledFilterChange}
+				/>
+				{#if hasFilters}
+					<MaterialButton variant="text" label="清除" onclick={clearFilters} />
+				{/if}
+			</div>
+			<CountChip count={activeResourceCount} label="项" className="resource-count" live />
 		</div>
-		<CountChip count={activeResourceCount} label="项" className="resource-count" live />
-	</div>
+	{/snippet}
 
 	{#if activeTab === 'builtin'}
 		<section class="resource-panel motion-surface-enter" aria-label="内置工具">
-			<div class="resource-heading">
-				<div class="resource-heading-copy">
-					<h2>内置工具</h2>
-					<p>Haven 自带的可调用能力，可以单独启用或停用。</p>
-				</div>
-				<div class="toolbar-actions toolbar-actions--paired">
-					<MaterialButton
-						variant="outlined"
-						label="重置熔断"
-						onclick={resetToolCircuits}
-					/>
-				</div>
-			</div>
+			<WorkspaceSectionHeader
+				title="内置工具"
+				description="Haven 自带的可调用能力，可以单独启用或停用。"
+			>
+				{#snippet children()}
+					<div class="toolbar-actions toolbar-actions--paired">
+						<MaterialButton
+							variant="outlined"
+							label="重置熔断"
+							onclick={resetToolCircuits}
+						/>
+					</div>
+				{/snippet}
+			</WorkspaceSectionHeader>
+			{@render resourceToolbar()}
 			{#if builtinTools.length === 0}
 				<AsyncState
 					title="暂无可用的内置工具"
@@ -438,16 +443,18 @@
 		</section>
 	{:else if activeTab === 'mcp'}
 		<section class="resource-panel motion-surface-enter" aria-label="MCP 服务器">
-			<div class="resource-heading">
-				<div class="resource-heading-copy">
-					<h2>MCP 服务器</h2>
-					<p>连接外部工具服务，并查看当前连接状态。</p>
-				</div>
-				<div class="toolbar-actions toolbar-actions--paired">
-					<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
-					<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
-				</div>
-			</div>
+			<WorkspaceSectionHeader
+				title="MCP 服务器"
+				description="连接外部工具服务，并查看当前连接状态。"
+			>
+				{#snippet children()}
+					<div class="toolbar-actions toolbar-actions--paired">
+						<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
+						<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
+					</div>
+				{/snippet}
+			</WorkspaceSectionHeader>
+			{@render resourceToolbar()}
 			{#if mcpServers.length === 0}
 				<AsyncState
 					title="尚未配置 MCP 服务器"
@@ -473,16 +480,18 @@
 		</section>
 	{:else}
 		<section class="resource-panel motion-surface-enter" aria-label="技能">
-			<div class="resource-heading">
-				<div class="resource-heading-copy">
-					<h2>技能</h2>
-					<p>管理可被 Agent 调用的技能和执行脚本。</p>
-				</div>
-				<div class="toolbar-actions toolbar-actions--paired">
-					<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
-					<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />
-				</div>
-			</div>
+			<WorkspaceSectionHeader
+				title="技能"
+				description="管理可被 Agent 调用的技能和执行脚本。"
+			>
+				{#snippet children()}
+					<div class="toolbar-actions toolbar-actions--paired">
+						<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
+						<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />
+					</div>
+				{/snippet}
+			</WorkspaceSectionHeader>
+			{@render resourceToolbar()}
 			{#if skills.length === 0}
 				<AsyncState
 					title="暂无技能"
@@ -519,7 +528,7 @@
 		max-width: var(--md-sys-content-max-width);
 	}
 	.resource-toolbar {
-		margin-bottom: var(--md-sys-space-xl);
+		margin-bottom: var(--md-sys-space-lg);
 	}
 	.resource-search {
 		flex: 1 1 280px;
@@ -543,32 +552,8 @@
 	.resource-panel {
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-lg);
+		gap: 0;
 		min-width: 0;
-	}
-	.resource-heading {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: var(--md-sys-space-md);
-		min-width: 0;
-	}
-	.resource-heading-copy {
-		flex: 1 1 0;
-		min-width: 0;
-	}
-	.resource-heading h2 {
-		margin: 0;
-		font-size: var(--md-sys-typescale-title-large-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-title-large-line-height);
-		color: var(--md-sys-color-on-surface);
-	}
-	.resource-heading p {
-		margin: var(--md-sys-space-xs) 0 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.resource-list {
 		display: flex;
@@ -631,10 +616,6 @@
 		.toolbar-actions--paired :global(.refresh-button) {
 			flex: 1 1 0;
 		}
-		.resource-heading {
-			align-items: flex-start;
-			flex-direction: column;
-		}
 		.toolbar-actions :global(.md-btn) {
 			flex: 1 1 0;
 		}
@@ -649,10 +630,6 @@
 		.toolbar-actions :global(.md-btn) {
 			width: 100%;
 			flex: 0 0 var(--md-comp-button-small-height);
-		}
-		.resource-heading {
-			align-items: flex-start;
-			flex-direction: column;
 		}
 		.toolbar-actions--paired {
 			width: 100%;
