@@ -217,7 +217,7 @@
 | `MaterialButton` | filled / tonal / outlined / text / danger 按钮、加载态、展开态和 toggle 状态 | 文字动作和组合按钮的主动作 |
 | `MaterialIconButton` | 关闭、复制、编辑、显隐、刷新等图标动作 | 无需文字的紧凑动作，必须提供 `label` |
 | `MaterialChoiceChip` | 可选择的紧凑选项 | 选项集合；支持键盘回车提交等页面回调 |
-| `CountChip` | 工作区标题和资源分区的数量提示 | 统一展示“共 X …”计数，不承载操作 |
+| `CountChip` | 工作区筛选栏和资源列表的数量提示 | 统一展示“共 X …”计数，不承载操作 |
 | `MaterialTabs` | 工作区和设置页 Tab 导航 | 统一 tablist、选中态和指示器 |
 | `StatusBadge` | 成功、警告、错误、信息和中性状态 | 只表达状态，不承载动作 |
 | `MaterialCard` / `SettingsSection` / `SettingsField` | 设置页卡片、分组和字段布局 | 设置、偏好等表单型页面 |

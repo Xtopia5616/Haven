@@ -1,6 +1,6 @@
 <script>
 	/**
-	 * Shared count chip for workspace headings and resource sections.
+	 * Shared count chip for workspace filter bars and resource lists.
 	 * @prop {number} count
 	 * @prop {string} label
 	 * @prop {string} prefix

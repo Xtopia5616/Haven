@@ -68,7 +68,6 @@
 				? visibleMcpServers.length
 				: visibleSkills.length,
 	);
-	const totalResourceCount = $derived(builtinTools.length + mcpServers.length + skills.length);
 
 	function scheduleMcpRefresh() {
 		// Cold start emits Connecting+Connected per server; coalesce into one
@@ -360,11 +359,7 @@
 </script>
 
 <div class="tools-page">
-	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。">
-		{#snippet children()}
-			<CountChip count={totalResourceCount} label="项资源" />
-		{/snippet}
-	</WorkspacePageHeader>
+	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。" />
 
 	<MaterialTabs
 		{tabs}
@@ -406,7 +401,6 @@
 		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>内置工具</h2>
-				<CountChip count={builtinTools.length} label="个工具" />
 				<div class="toolbar-actions">
 					<MaterialButton
 						variant="outlined"
@@ -434,7 +428,6 @@
 		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>MCP 服务器</h2>
-				<CountChip count={mcpServers.length} label="个服务器" />
 				<div class="toolbar-actions toolbar-actions--paired">
 					<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
 					<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
@@ -467,7 +460,6 @@
 		<div class="section motion-surface-enter">
 			<div class="toolbar md-toolbar">
 				<h2>技能</h2>
-				<CountChip count={skills.length} label="项技能" />
 				<div class="toolbar-actions toolbar-actions--paired">
 					<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
 					<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />

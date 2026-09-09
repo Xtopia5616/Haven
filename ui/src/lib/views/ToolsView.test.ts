@@ -50,7 +50,7 @@ describe('ToolsView toolbar actions', () => {
 		}
 	});
 
-	it('shows reusable counts for the tool resource groups', async () => {
+	it('shows the active resource count in the shared filter bar', async () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'get_tools') {
 				return {
@@ -74,14 +74,16 @@ describe('ToolsView toolbar actions', () => {
 
 		render(ToolsView);
 
-		await waitFor(() => expect(screen.getByText('共 5 项资源')).toBeTruthy());
-		expect(screen.getByText('共 2 个工具')).toBeTruthy();
+		await waitFor(() => expect(screen.getByText('共 2 项')).toBeTruthy());
+		const resourceToolbar = document.querySelector('.resource-toolbar');
+		expect(resourceToolbar?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
+		expect(document.querySelectorAll('.section .count-chip')).toHaveLength(0);
 
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
-		expect(screen.getByText('共 1 个服务器')).toBeTruthy();
+		expect(resourceToolbar?.querySelector('.count-chip')?.textContent).toBe('共 1 项');
 
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
-		expect(screen.getByText('共 2 项技能')).toBeTruthy();
+		expect(resourceToolbar?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
 	});
 
 	it('locks the MCP refresh action until reconciliation finishes', async () => {

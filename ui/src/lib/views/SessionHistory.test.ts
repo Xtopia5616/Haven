@@ -10,6 +10,12 @@ const commonProps = {
 };
 
 describe('SessionHistory actions', () => {
+	it('shows the history count in the shared filter bar', () => {
+		render(SessionHistory, { ...commonProps, totalCount: 3 });
+
+		expect(document.querySelector('.filter-bar .count-chip')?.textContent).toBe('共 3 条历史');
+	});
+
 	it('offers a direct next step when there is no history', async () => {
 		const onNewSession = vi.fn();
 		render(SessionHistory, { ...commonProps, onNewSession });

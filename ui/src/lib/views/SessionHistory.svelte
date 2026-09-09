@@ -3,11 +3,13 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
+	import CountChip from '$lib/CountChip.svelte';
 
 	/** Session history tab. Loading, resume and store updates remain in the parent. */
 	let {
 		sessions = [],
 		searchQuery = '',
+		totalCount = 0,
 		statusFilter = '',
 		statusOptions = [],
 		startDate = '',
@@ -94,6 +96,7 @@
 				<MaterialButton variant="text" label="清除" onclick={() => onClearFilters()} />
 			{/if}
 		</div>
+		<CountChip count={totalCount} label="条历史" live />
 	</div>
 
 	{#if selectMode && sessions.length > 0}
