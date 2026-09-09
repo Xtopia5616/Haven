@@ -551,6 +551,7 @@
 		min-width: 0;
 	}
 	.resource-heading-copy {
+		flex: 1 1 0;
 		min-width: 0;
 	}
 	.resource-heading p {

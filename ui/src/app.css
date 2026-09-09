@@ -1188,6 +1188,7 @@ select.md-select {
 	text-decoration: none;
 	cursor: pointer;
 	user-select: none;
+	white-space: nowrap;
 	border-radius: var(--md-sys-shape-medium);
 	overflow: hidden;
 	transition: color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);

@@ -47,4 +47,23 @@ describe('SessionHistory actions', () => {
 		await fireEvent.click(screen.getByRole('button', { name: '删除' }));
 		expect(onDeleteRequest).toHaveBeenCalledWith(session);
 	});
+
+	it('places bulk history actions below the filter bar', async () => {
+		const onEnterSelectMode = vi.fn();
+		const onOpenClearDialog = vi.fn();
+		render(SessionHistory, {
+			...commonProps,
+			sessions: [{ id: 'ses-1', status: 'completed', created_at: '2026-09-06T03:00:00Z' }],
+			onEnterSelectMode,
+			onOpenClearDialog,
+		});
+
+		const actions = document.querySelector('.history-actions');
+		expect(actions).toBeTruthy();
+		expect(actions?.previousElementSibling?.classList.contains('filter-bar')).toBe(true);
+		await fireEvent.click(screen.getByRole('button', { name: '导出' }));
+		await fireEvent.click(screen.getByRole('button', { name: '清空会话' }));
+		expect(onEnterSelectMode).toHaveBeenCalledTimes(1);
+		expect(onOpenClearDialog).toHaveBeenCalledTimes(1);
+	});
 });

@@ -530,36 +530,7 @@
 </script>
 
 <div class="memory-page">
-	<WorkspacePageHeader title="历史" description="回顾会话、任务执行记录和记忆。">
-		{#snippet children()}
-			{#if activeTab === 'sessions'}
-				<div class="header-actions">
-					{#if selectMode}
-						<MaterialButton
-							variant="filled"
-							label={`导出选中（${selectedIds.size}）`}
-							onclick={exportSelected}
-							disabled={selectedIds.size === 0}
-						/>
-						<MaterialButton variant="text" label="取消" onclick={cancelSelectMode} />
-					{:else}
-						{#if sessions.length > 0}
-							<MaterialButton
-								variant="outlined"
-								label="导出"
-								onclick={enterSelectMode}
-							/>
-							<MaterialButton
-								variant="danger"
-								label="清空会话"
-								onclick={() => (showClearDialog = true)}
-							/>
-						{/if}
-					{/if}
-				</div>
-			{/if}
-		{/snippet}
-	</WorkspacePageHeader>
+	<WorkspacePageHeader title="历史" description="回顾会话、任务执行记录和记忆。" />
 	<MaterialTabs
 		tabs={memoryTabs}
 		activeTab={activeTab ?? 'sessions'}
@@ -600,6 +571,10 @@
 					}}
 					onToggleSelectAll={toggleSelectAll}
 					onToggleSelect={toggleSelect}
+					onEnterSelectMode={enterSelectMode}
+					onCancelSelectMode={cancelSelectMode}
+					onExportSelected={exportSelected}
+					onOpenClearDialog={() => (showClearDialog = true)}
 					onResume={resumeSession}
 					{onNewSession}
 					onStartEdit={startEdit}
@@ -745,11 +720,6 @@
 		gap: var(--md-sys-space-3xl);
 		min-width: 0;
 	}
-	.header-actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-sm);
-	}
 	.date-filter-dialog {
 		display: flex;
 		flex-direction: column;
@@ -800,14 +770,6 @@
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	@media (max-width: 700px) {
-		.header-actions {
-			width: 100%;
-		}
-		.header-actions :global(.md-btn) {
-			flex: 1 1 0;
-			width: 0;
-			min-width: 0;
-		}
 		.date-input-row {
 			flex-direction: column;
 		}

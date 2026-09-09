@@ -27,6 +27,10 @@
 		onOpenDateFilter = () => {},
 		onToggleSelectAll = () => {},
 		onToggleSelect = () => {},
+		onEnterSelectMode = () => {},
+		onCancelSelectMode = () => {},
+		onExportSelected = () => {},
+		onOpenClearDialog = () => {},
 		onResume = () => {},
 		onNewSession = () => {},
 		onStartEdit = () => {},
@@ -98,6 +102,35 @@
 		</div>
 		<CountChip count={totalCount} label="条历史" live />
 	</div>
+
+	{#if sessions.length > 0}
+		<div class="history-actions" aria-label="历史操作">
+			{#if selectMode}
+				<MaterialButton
+					variant="filled"
+					label={`导出选中（${selectedIds.size}）`}
+					onclick={() => onExportSelected()}
+					disabled={selectedIds.size === 0}
+				/>
+				<MaterialButton
+					variant="text"
+					label="取消"
+					onclick={() => onCancelSelectMode()}
+				/>
+			{:else}
+				<MaterialButton
+					variant="outlined"
+					label="导出"
+					onclick={() => onEnterSelectMode()}
+				/>
+				<MaterialButton
+					variant="danger"
+					label="清空会话"
+					onclick={() => onOpenClearDialog()}
+				/>
+			{/if}
+		</div>
+	{/if}
 
 	{#if selectMode && sessions.length > 0}
 		<div class="select-bar md-toolbar">
@@ -255,6 +288,13 @@
 
 <style>
 	.filter-bar {
+		margin-bottom: var(--md-sys-space-lg);
+	}
+	.history-actions {
+		display: flex;
+		justify-content: flex-end;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-sm);
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.filter-controls {
@@ -463,6 +503,13 @@
 		.filter-controls :global(.md-select-container),
 		.filter-controls :global(.md-btn--outlined) {
 			width: 100%;
+		}
+		.history-actions {
+			justify-content: stretch;
+		}
+		.history-actions :global(.md-btn) {
+			flex: 1 1 0;
+			min-width: 0;
 		}
 		.session-item-main {
 			padding: var(--md-sys-space-md);
