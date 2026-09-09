@@ -43,6 +43,8 @@ describe('SessionHistory actions', () => {
 
 		expect(screen.getByText('已完成')).toBeTruthy();
 		expect(screen.getByText('打开')).toBeTruthy();
+		expect(document.querySelector('.session-item.workspace-item-card')).toBeTruthy();
+		expect(document.querySelector('.session-item .workspace-item-card-actions')).toBeTruthy();
 		await fireEvent.click(document.querySelector('.session-item')!);
 		expect(onResume).toHaveBeenCalledWith(session);
 		await fireEvent.click(screen.getByRole('button', { name: '删除' }));

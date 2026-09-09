@@ -170,11 +170,11 @@
 			{#each sessions as session (session.id)}
 				{#if selectMode}
 					<button
-						class="session-item session-item-btn motion-list-item"
+						class="session-item session-item-btn workspace-item-card motion-list-item"
 						class:selected={selectedIds.has(session.id)}
 						onclick={() => onToggleSelect(session.id)}
 					>
-						<div class="session-item-main">
+						<div class="session-item-main workspace-item-card-main">
 							<div class="session-top-row">
 								<div class="select-checkbox">
 									<div
@@ -193,7 +193,7 @@
 							{#if session.transcript}<div class="session-message">
 									"{session.transcript}"
 								</div>{/if}
-							<div class="session-meta">
+							<div class="session-meta workspace-item-card-meta">
 								<span class="meta-date"
 									>{formatMessageTime(session.created_at)}</span
 								>
@@ -203,7 +203,7 @@
 				{:else}
 					<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 					<article
-						class="session-item motion-list-item"
+						class="session-item workspace-item-card motion-list-item"
 						class:selected={selectedIds.has(session.id)}
 						aria-label={`打开会话：${displayTitle(session)}`}
 						role="button"
@@ -212,8 +212,8 @@
 						onkeydown={(event) => handleSessionKeydown(event, session)}
 						oncontextmenu={(event) => onContextMenu(event, session)}
 					>
-						<div class="session-item-main">
-							<div class="session-title-row">
+						<div class="session-item-main workspace-item-card-main">
+							<div class="session-title-row workspace-item-card-header">
 								{#if editingTitle === session.id}
 									<!-- svelte-ignore a11y_autofocus -->
 									<input
@@ -259,17 +259,15 @@
 								<span class="session-open-hint workspace-item-card-open" aria-hidden="true"
 									>打开</span
 								>
-								<span class="session-actions">
-									<MaterialButton
-										variant="text"
-										className="delete-btn-meta"
-										label="删除"
-										onclick={() => {
-											onDeleteRequest(session);
-										}}
-									/>
-								</span>
 							</div>
+						</div>
+						<div class="session-actions workspace-item-card-actions">
+							<MaterialButton
+								variant="text"
+								className="delete-btn-meta"
+								label="删除"
+								onclick={() => onDeleteRequest(session)}
+							/>
 						</div>
 					</article>
 				{/if}
@@ -334,36 +332,10 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
 	}
-	.session-item {
-		background: var(--md-sys-color-surface-container-low);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		transition:
-			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard);
-		outline: none;
-		cursor: pointer;
-	}
-	.session-item:hover {
-		background: var(--md-sys-color-surface-container);
-		border-color: var(--md-sys-color-outline);
-		box-shadow: var(--md-sys-elevation-1);
-	}
-	.session-item:focus-visible {
-		border-color: var(--md-sys-color-primary);
-		box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
-	}
-	.session-item.selected {
-		background: var(--md-sys-color-primary-container);
-		border-color: var(--md-sys-color-primary);
-	}
 	.session-item-main {
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-md);
 	}
 	.session-top-row,
 	.session-title-row {
@@ -419,15 +391,16 @@
 		width: 280px;
 	}
 	.session-message {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		min-width: 0;
+		overflow: hidden;
 		font-size: var(--md-sys-typescale-body-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 		line-height: var(--md-sys-typescale-body-small-line-height);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		background: var(--md-sys-color-surface-container);
-		border-radius: var(--md-sys-shape-small);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
 	}
 	.session-meta {
 		display: flex;
@@ -443,15 +416,6 @@
 	}
 	.session-footer .session-open-hint {
 		margin-left: auto;
-	}
-	.session-actions {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		margin-left: auto;
-	}
-	.session-actions :global(.md-btn) {
-		min-width: 0;
 	}
 	.meta-date {
 		font-family: var(--md-sys-typescale-mono);
@@ -523,10 +487,6 @@
 		}
 		.session-meta {
 			flex-wrap: wrap;
-		}
-		.session-actions {
-			width: 100%;
-			margin-left: 0;
 		}
 	}
 </style>

@@ -75,7 +75,8 @@
 		-webkit-appearance: none;
 		margin: 0;
 	}
-	.md-number-field :global(.md-input:focus) {
+	.md-number-field :global(.md-input:focus),
+	.md-number-field:focus-within :global(.md-input) {
 		border-top-width: 2px;
 		border-right: none;
 		border-bottom-width: 2px;
@@ -84,6 +85,11 @@
 	}
 	.md-number-field:focus-within {
 		box-shadow: var(--md-sys-focus-ring);
+	}
+	.md-number-field:focus-within .stepper {
+		border-top-width: 2px;
+		border-right-width: 2px;
+		border-bottom-width: 2px;
 	}
 	.md-number-field:focus-within :global(.md-input),
 	.md-number-field:focus-within .stepper {

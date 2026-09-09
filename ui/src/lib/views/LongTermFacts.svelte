@@ -129,14 +129,7 @@
 	{/if}
 
 	<div class="facts-layout">
-		<section class="fact-browser" aria-labelledby="fact-list-title">
-			<div class="fact-list-heading">
-				<div>
-					<h3 id="fact-list-title">已保存的事实</h3>
-					<span class="section-count">{facts.length} 项</span>
-				</div>
-				<span class="fact-list-hint">点击条目查看详情，或直接删除</span>
-			</div>
+		<section class="fact-browser" aria-label="已保存事实">
 			{#if factsLoaded && facts.length > 0}
 				<div class="fact-list" role="list" aria-label="已保存事实列表">
 					{#each facts as fact (fact.id)}
@@ -365,7 +358,6 @@
 	}
 	.section-heading,
 	.section-head,
-	.fact-list-heading,
 	.fact-dialog-type-row {
 		display: flex;
 		align-items: center;
@@ -374,16 +366,14 @@
 		min-width: 0;
 	}
 	.section-heading h2,
-	.section-head h3,
-	.fact-list-heading h3 {
+	.section-head h3 {
 		margin: 0;
 		font-size: var(--md-sys-typescale-title-large-size);
 		font-weight: 650;
 		line-height: var(--md-sys-typescale-title-large-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
-	.section-head h3,
-	.fact-list-heading h3 {
+	.section-head h3 {
 		font-size: var(--md-sys-typescale-title-medium-size);
 		line-height: var(--md-sys-typescale-title-medium-line-height);
 	}
@@ -396,13 +386,6 @@
 	}
 	.section-hint {
 		margin: 0 0 var(--md-sys-space-sm);
-	}
-	.section-count,
-	.fact-list-hint {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		white-space: nowrap;
 	}
 	.facts-filter {
 		width: 140px;
@@ -417,16 +400,6 @@
 	}
 	.fact-browser,
 	.fact-editor {
-		min-width: 0;
-	}
-	.fact-list-heading {
-		align-items: baseline;
-		padding: 0 var(--md-sys-space-xs) var(--md-sys-space-md);
-	}
-	.fact-list-heading > div {
-		display: flex;
-		align-items: baseline;
-		gap: var(--md-sys-space-sm);
 		min-width: 0;
 	}
 	.fact-list {
@@ -658,13 +631,6 @@
 		}
 	}
 	@media (max-width: 455px) {
-		.fact-list-heading {
-			align-items: flex-start;
-			flex-direction: column;
-		}
-		.fact-list-hint {
-			white-space: normal;
-		}
 		.fact-editor-actions,
 		.fact-editor-actions :global(.md-btn),
 		.fact-actions :global(.md-btn) {
