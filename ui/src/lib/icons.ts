@@ -11,13 +11,16 @@ export type IconDefinition = {
 	fill: string;
 	stroke: string;
 	strokeWidth: number;
+	/** Optional optical correction for icons whose path occupies a different amount of the viewBox. */
+	opticalScale?: number;
 };
 
-const outline = (body: string, strokeWidth = 2): IconDefinition => ({
+const outline = (body: string, strokeWidth = 2, opticalScale = 1): IconDefinition => ({
 	body,
 	fill: 'none',
 	stroke: 'currentColor',
 	strokeWidth,
+	opticalScale,
 });
 
 const filled = (body: string): IconDefinition => ({
@@ -56,6 +59,8 @@ export const ICONS = {
 	chevronUp: outline('<path d="M18 15l-6-6-6 6" />'),
 	chat: outline(
 		'<path d="M5.5 4.5h10A3.5 3.5 0 0 1 19 8v4.25a3.5 3.5 0 0 1-3.5 3.5H11l-5.5 4v-4.04a3.5 3.5 0 0 1-3.5-3.46V8a3.5 3.5 0 0 1 3.5-3.5Z" /><path d="M7 9h7M7 12h4" />',
+		2,
+		0.95,
 	),
 	clock: outline('<circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15.5 13.5" />'),
 	close: outline('<path d="m6 6 12 12M18 6 6 18" />'),
@@ -101,6 +106,8 @@ export const ICONS = {
 	),
 	history: outline(
 		'<path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 5v5h5" /><path d="M12 7v5l3 2" />',
+		2,
+		0.9,
 	),
 	info: filled(
 		'<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />',
@@ -153,7 +160,9 @@ export const ICONS = {
 	),
 	send: outline('<line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" />'),
 	settings: outline(
-		'<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.41 1.41-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V20h-2v-.09a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-1.41-1.41.06-.06A1.7 1.7 0 0 0 9.4 15a1.7 1.7 0 0 0-1.56-1.03H7v-2h.84A1.7 1.7 0 0 0 9.4 10.94a1.7 1.7 0 0 0-.34-1.88L9 9l1.41-1.41.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 13.38 6.43V6h2v.43a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.76 9l-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.92 12H21v2h-.08A1.7 1.7 0 0 0 19.4 15Z" />',
+		'<path d="M9.5 3.5A2.5 2.5 0 0 1 12 1a2.5 2.5 0 0 1 2.5 2.5v.18a2 2 0 0 0 1 1.73l.43.25a2 2 0 0 0 2 0l.15-.08a2.5 2.5 0 0 1 3.41.91l.22.38a2.5 2.5 0 0 1-.91 3.41l-.15.09a2 2 0 0 0-1 1.74v.5a2 2 0 0 0 1 1.74l.15.09a2.5 2.5 0 0 1 .91 3.41l-.22.38a2.5 2.5 0 0 1-3.41.91l-.15-.08a2 2 0 0 0-2 0l-.43.25a2 2 0 0 0-1 1.73v.18A2.5 2.5 0 0 1 12 23a2.5 2.5 0 0 1-2.5-2.5v-.18a2 2 0 0 0-1-1.73l-.43-.25a2 2 0 0 0-2 0l-.15.08a2.5 2.5 0 0 1-3.41-.91l-.22-.38a2.5 2.5 0 0 1 .91-3.41l.15-.09a2 2 0 0 0 1-1.74v-.5a2 2 0 0 0-1-1.74L3.2 9.55a2.5 2.5 0 0 1-.91-3.41l.22-.38a2.5 2.5 0 0 1 3.41-.91l.15.08a2.5 2.5 0 0 0 2 0l.43-.25a2 2 0 0 0 1-1.73Z" /><circle cx="12" cy="12" r="3.25" />',
+		2,
+		0.8,
 	),
 	sparkles: outline(
 		'<path d="m12 3-1.8 5.2L5 10l5.2 1.8L12 17l1.8-5.2L19 10l-5.2-1.8L12 3Z" /><path d="m19 16-.7 2.3L16 19l2.3.7L19 22l.7-2.3L22 19l-2.3-.7L19 16Z" />',
@@ -189,11 +198,20 @@ export function hasIcon(name: unknown): name is IconName {
 	return typeof name === 'string' && name in ICONS;
 }
 
+export function getIconTransform(definition: IconDefinition): string | undefined {
+	const scale = definition.opticalScale ?? 1;
+	if (scale === 1) return undefined;
+	const offset = 12 * (1 - scale);
+	return `translate(${offset} ${offset}) scale(${scale})`;
+}
+
 /**
  * Used only by static, application-owned HTML renderers such as markdown's
  * copy button. User-authored content never reaches this registry.
  */
 export function renderIconSvg(name: string, size = 20): string {
 	const definition = getIconDefinition(name);
-	return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${definition.fill}" stroke="${definition.stroke}" stroke-width="${definition.strokeWidth}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${definition.body}</svg>`;
+	const transform = getIconTransform(definition);
+	const body = transform ? `<g transform="${transform}">${definition.body}</g>` : definition.body;
+	return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${definition.fill}" stroke="${definition.stroke}" stroke-width="${definition.strokeWidth}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 }

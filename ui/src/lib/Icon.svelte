@@ -1,5 +1,5 @@
 <script>
-	import { getIconDefinition } from './icons.ts';
+	import { getIconDefinition, getIconTransform } from './icons.ts';
 
 	/**
 	 * Shared icon primitive. All icons use the same 24×24 viewBox and inherit
@@ -20,11 +20,13 @@
 
 	let definition = $derived(getIconDefinition(name));
 	let renderedSize = $derived(typeof size === 'number' ? `${size}px` : size);
+	let transform = $derived(getIconTransform(definition));
 </script>
 
 <svg
 	class="icon {className}"
 	style={`--icon-size: ${renderedSize}`}
+	data-icon={name}
 	width={size}
 	height={size}
 	viewBox="0 0 24 24"
@@ -37,7 +39,11 @@
 	aria-label={label || undefined}
 	aria-hidden={label ? undefined : 'true'}
 >
-	{@html definition.body}
+	{#if transform}
+		<g {transform}>{@html definition.body}</g>
+	{:else}
+		{@html definition.body}
+	{/if}
 </svg>
 
 <style>

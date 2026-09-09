@@ -3,9 +3,9 @@ import { render } from '@testing-library/svelte';
 import WorkspaceNav from './WorkspaceNav.svelte';
 
 const tabs = [
-	{ id: 'chat', label: '对话' },
-	{ id: 'tools', label: '工具' },
-	{ id: 'settings', label: '设置' },
+	{ id: 'chat', label: '对话', icon: 'chat' },
+	{ id: 'tools', label: '工具', icon: 'briefcase' },
+	{ id: 'settings', label: '设置', icon: 'settings' },
 ];
 
 describe('WorkspaceNav', () => {
@@ -16,7 +16,9 @@ describe('WorkspaceNav', () => {
 		expect(nav?.getAttribute('aria-label')).toBe('工作区导航');
 		expect(nav?.querySelector('[role="tablist"]')).not.toBeNull();
 		expect(document.querySelectorAll('[role="tab"]')).toHaveLength(3);
-		expect(document.querySelector('#workspace-tab-tools')?.getAttribute('aria-selected')).toBe('true');
+		expect(document.querySelector('#workspace-tab-tools')?.getAttribute('aria-selected')).toBe(
+			'true',
+		);
 		expect(document.querySelector('.workspace-nav__indicator')).toBeNull();
 		expect(document.querySelector('#workspace-tabpanel-tools')).toBeNull();
 	});
@@ -28,5 +30,19 @@ describe('WorkspaceNav', () => {
 		const toolsTab = getByRole('tab', { name: '工具' });
 		await toolsTab.click();
 		expect(onNavigate).toHaveBeenCalledWith('tools');
+	});
+
+	it('uses explicit semantic icons instead of deriving geometry from tab ids', () => {
+		render(WorkspaceNav, { tabs, activeTab: 'chat' });
+
+		expect(document.querySelector('#workspace-tab-chat svg')?.getAttribute('data-icon')).toBe(
+			'chat',
+		);
+		expect(document.querySelector('#workspace-tab-tools svg')?.getAttribute('data-icon')).toBe(
+			'briefcase',
+		);
+		expect(
+			document.querySelector('#workspace-tab-settings svg')?.getAttribute('data-icon'),
+		).toBe('settings');
 	});
 });

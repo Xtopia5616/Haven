@@ -995,10 +995,10 @@
 	});
 
 	const tabs = [
-		{ id: 'chat', label: '对话' },
-		{ id: 'tools', label: '工具' },
-		{ id: 'memory', label: '历史' },
-		{ id: 'settings', label: '设置' },
+		{ id: 'chat', label: '对话', icon: 'chat' },
+		{ id: 'tools', label: '工具', icon: 'briefcase' },
+		{ id: 'memory', label: '历史', icon: 'history' },
+		{ id: 'settings', label: '设置', icon: 'settings' },
 	];
 </script>
 
