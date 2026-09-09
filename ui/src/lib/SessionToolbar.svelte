@@ -17,11 +17,6 @@
 		tokenStatsHint = '暂无统计',
 		buildTokenTooltip = () => '',
 		formatTokenCount = /** @type {(value: any) => string} */ ((value) => String(value)),
-		coalesceTokenTotal = /** @type {(...values: any[]) => number} */ (
-			(...values) => values[2] || values[0] + values[1]
-		),
-		showCumulativeTokens = true,
-		contextBudget = null,
 	} = $props();
 
 	let tokenDetailsOpen = $state(false);
@@ -200,18 +195,13 @@
 			<div class="token-text">
 				<span class="token-context"
 					>{formatTokenCount(
-						showCumulativeTokens
-							? coalesceTokenTotal(
-									tokenStats.cumulativePromptTokens || 0,
-									tokenStats.cumulativeCompletionTokens || 0,
-									tokenStats.cumulativeTotalTokens || 0,
-									tokenStats.cumulativeCachedTokens || 0,
-									tokenStats.cumulativeCacheCreationTokens || 0,
-								)
-							: tokenStats.contextTokens || tokenStats.promptTokens || 0,
+						tokenUsageDetails?.contextTokens ??
+							tokenStats.contextTokens ??
+							tokenStats.promptTokens ??
+							0,
 					)}</span
 				>
-				<span class="token-unit">{showCumulativeTokens ? 'tok' : 'ctx'}</span>
+				<span class="token-unit">ctx</span>
 			</div>
 			{#if tokenUsageDetails?.currentCacheRatePercent != null}
 				<div

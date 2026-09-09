@@ -56,6 +56,8 @@ describe('SessionToolbar', () => {
 		const tokenButton = screen.getByRole('button', { name: '打开 token 使用明细' });
 		expect(tokenButton.classList.contains('selected')).toBe(false);
 		expect(tokenButton.hasAttribute('data-context-tone')).toBe(false);
+		expect(tokenButton.querySelector('.token-context')?.textContent).toBe('200');
+		expect(tokenButton.querySelector('.token-unit')?.textContent).toBe('ctx');
 		const cacheBar = tokenButton.querySelector('.token-budget');
 		expect(cacheBar?.getAttribute('data-cache-tone')).toBe('medium');
 		expect(cacheBar?.getAttribute('aria-label')).toBe('缓存命中 50%');

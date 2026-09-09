@@ -143,14 +143,15 @@
 		type === 'tool' ? parseToolResult(toolName, displayContent) : null,
 	);
 
-	// Tool details are useful after completion as well as during execution, so
-	// cards start open and stay open. The user can still collapse a card
-	// manually; live output is filled into the same body as events arrive.
-	let cardOpen = $state(true);
+	// Keep live output visible while a tool is running, then collapse the card
+	// once its output is complete. Manual clicks after completion persist until
+	// the next streaming transition.
+	let cardOpen = $state(untrack(() => liveStreaming));
 	let lastStreaming = untrack(() => liveStreaming);
 	$effect.pre(() => {
 		if (liveStreaming === lastStreaming) return;
 		if (liveStreaming) cardOpen = true;
+		else cardOpen = false;
 		lastStreaming = liveStreaming;
 	});
 	let kind = $derived(parsed?.kind ?? null);

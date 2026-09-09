@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import ChatBubble from './ChatBubble.svelte';
 
+async function expandToolCard(container: HTMLElement) {
+	const header = container.querySelector('.md-collapsible-header');
+	if (header) await fireEvent.click(header);
+}
+
 describe('ChatBubble', () => {
 	const base = (props: any) => ({ type: null, time: null, ...props });
 
@@ -232,8 +237,8 @@ describe('ChatBubble', () => {
 		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
-	it('renders a shell tool call with a terminal output card', () => {
-		render(
+	it('renders a shell tool call with a terminal output card', async () => {
+		const { container } = render(
 			ChatBubble,
 			base({
 				role: 'assistant',
@@ -242,6 +247,7 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
+		await expandToolCard(container);
 		expect(screen.queryByText('▶ Calling shell')).toBeNull();
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('终端输出')).toBeTruthy();
@@ -265,8 +271,8 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
-	it('renders a structured tool result card for JSON observations', () => {
-		render(
+	it('renders a structured tool result card for JSON observations', async () => {
+		const { container } = render(
 			ChatBubble,
 			base({
 				role: 'assistant',
@@ -279,6 +285,7 @@ describe('ChatBubble', () => {
 				toolName: 'files',
 			}),
 		);
+		await expandToolCard(container);
 		expect(screen.queryByText('▶ Calling files')).toBeNull();
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('文件与搜索')).toBeTruthy();
@@ -286,8 +293,8 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
-	it('renders persisted observation messages through the same tool card', () => {
-		render(
+	it('renders persisted observation messages through the same tool card', async () => {
+		const { container } = render(
 			ChatBubble,
 			base({
 				role: 'assistant',
@@ -296,12 +303,13 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
+		await expandToolCard(container);
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(screen.getByText('ok')).toBeTruthy();
 	});
 
-	it('renders a tool result card expanded once the observation is final', () => {
+	it('renders a tool result card collapsed once the observation is final', () => {
 		const { container } = render(
 			ChatBubble,
 			base({
@@ -313,10 +321,10 @@ describe('ChatBubble', () => {
 		);
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header).toBeTruthy();
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
-	it('keeps a tool result card expanded as streaming ends', async () => {
+	it('collapses a tool result card as streaming ends', async () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
@@ -330,10 +338,10 @@ describe('ChatBubble', () => {
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ streaming: false });
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
-	it('keeps a manual tool card collapse across content-only re-renders', async () => {
+	it('keeps a manual tool card re-open across content-only re-renders', async () => {
 		const { container, rerender } = render(
 			ChatBubble,
 			base({
@@ -344,15 +352,15 @@ describe('ChatBubble', () => {
 			}),
 		);
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 		await fireEvent.click(header);
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ content: 'second output' });
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 
-	it('renders a raw card for non-JSON text observations', () => {
-		render(
+	it('renders a raw card for non-JSON text observations', async () => {
+		const { container } = render(
 			ChatBubble,
 			base({
 				role: 'assistant',
@@ -361,6 +369,7 @@ describe('ChatBubble', () => {
 				toolName: 'audio',
 			}),
 		);
+		await expandToolCard(container);
 		const card = document.querySelector('.tool-card')!;
 		expect(card).toBeTruthy();
 		expect(card.textContent).toContain('some plain error text');

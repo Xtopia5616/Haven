@@ -65,8 +65,6 @@
 		sessionLlmUsageStore,
 		restoreSessionLlmUsage,
 		clearSessionLlmUsage,
-		formatTokenCount,
-		coalesceTokenTotal,
 	} from '$lib/sessionUsage.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
@@ -182,8 +180,8 @@
 	 * @property {boolean} [estimated] - totals restored from a rough backend
 	 *   estimate (session predates usage persistence), not real recorded usage.
 	 * @property {boolean} [restored] - entry came from persistence (resume /
-	 *   reopened conversation) with no live `agent:usage` events expected:
-	 *   the widget shows the cumulative total instead of the per-step context.
+	 *   reopened conversation) with no live `agent:usage` events expected;
+	 *   the current context falls back to the latest persisted call.
 	 */
 
 	/** @type {SessionTokenStats | null} */
@@ -225,21 +223,6 @@
 		return buildTokenUsageTooltip(stats, llmUsage);
 	}
 
-	/**
-	 * Context-window utilization for the active session. Returns
-	 * `{ used, window, ratio }` where `used` is the last reported context
-	 * input (prompt + exclusive cache tokens) and `window` is the model's
-	 * configured budget. Returns `null` when no data is available.
-	 */
-	const contextBudget = $derived.by(() => {
-		if (!tokenStats) return null;
-		const window = tokenStats.contextWindow || 0;
-		const used = tokenStats.contextTokens || tokenStats.promptTokens || 0;
-		if (!window) return { used, window: 0, ratio: 0 };
-		const ratio = Math.min(1, used / window);
-		return { used, window, ratio };
-	});
-
 	// Send/interrupt merged button: text takes priority (always send); with no
 	// text and the agent actively generating output the button interrupts the
 	// current output while keeping the session resumable.
@@ -265,10 +248,6 @@
 	const tokenUsageDetails = $derived.by(() =>
 		tokenStats ? buildTokenUsageDetails(tokenStats, llmUsage) : null,
 	);
-	// The primary number must retain its meaning across pause/resume. Context
-	// usage is only the latest request and changes after the next response;
-	// cumulative usage is persisted and represents the whole conversation.
-	const showCumulativeTokens = true;
 	// Menu source: parallel sessions plus paused ones — a paused session is
 	// otherwise invisible in the chat view (its conversation is not shown).
 	const menuSessions = $derived(
@@ -1698,10 +1677,6 @@
 				{tokenUsageDetails}
 				{tokenStatsHint}
 				{buildTokenTooltip}
-				{formatTokenCount}
-				{coalesceTokenTotal}
-				{showCumulativeTokens}
-				{contextBudget}
 			/>
 		{/snippet}
 		{#snippet toolbarRight()}

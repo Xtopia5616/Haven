@@ -7,6 +7,11 @@ import { actionStore, upsertAction } from './stores.ts';
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
 
+async function expandToolCard(container: HTMLElement) {
+	const header = container.querySelector('.md-collapsible-header');
+	if (header) await fireEvent.click(header);
+}
+
 describe('canRenderToolResult', () => {
 	it('accepts search with a results array', () => {
 		expect(canRenderToolResult('files', searchJson([{ path: 'a.rs' }]))).toBe(true);
@@ -281,22 +286,24 @@ describe('ToolResultCard outcomes', () => {
 });
 
 describe('ToolResultCard shell / notify / generic', () => {
-	it('renders plain shell output in a terminal card', () => {
-		render(ToolResultCard, { toolName: 'shell', content: 'Hello from cmd' });
+	it('renders plain shell output in a terminal card', async () => {
+		const { container } = render(ToolResultCard, { toolName: 'shell', content: 'Hello from cmd' });
+		await expandToolCard(container);
 		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(screen.getByText('Hello from cmd')).toBeTruthy();
 	});
 
-	it('renders JSON shell output with the truncated note', () => {
+	it('renders JSON shell output with the truncated note', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
 			content: JSON.stringify({ output: 'line1\nline2', truncated: true }),
 		});
+		await expandToolCard(container);
 		expect(container.querySelector('.content-preview')!.textContent).toBe('line1\nline2');
 		expect(screen.getByText('输出过长已截断')).toBeTruthy();
 	});
 
-	it('renders the exit code for a completed background shell action', () => {
+	it('renders the exit code for a completed background shell action', async () => {
 		upsertAction({
 			id: 'act-shell-1',
 			kind: 'background',
@@ -309,26 +316,29 @@ describe('ToolResultCard shell / notify / generic', () => {
 			actionId: 'act-shell-1',
 			content: '',
 		});
+		await expandToolCard(container);
 		expect(container.querySelector('.tool-card-count')?.textContent).toContain('后台任务已完成');
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 		expect(screen.getByText('command output')).toBeTruthy();
 	});
 
-	it('renders a notification card with title and body', () => {
-		render(ToolResultCard, {
+	it('renders a notification card with title and body', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'notify',
 			content: 'Notification sent: 构建完成: 全部测试通过',
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('通知')).toBeTruthy();
 		expect(screen.getByText('构建完成')).toBeTruthy();
 		expect(screen.getByText('全部测试通过')).toBeTruthy();
 	});
 
-	it('renders a generic JSON tree card for tools without a custom shape', () => {
+	it('renders a generic JSON tree card for tools without a custom shape', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'load_mcp',
 			content: JSON.stringify({ server_name: 'filesystem', status: 'loaded' }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('加载 MCP')).toBeTruthy();
 		expect(container.querySelector('.jv-view')).toBeTruthy();
 		expect(screen.getByText('"server_name"')).toBeTruthy();
@@ -341,22 +351,24 @@ afterEach(() => {
 });
 
 describe('ToolResultCard raw', () => {
-	it('renders plain text output in a raw card with the tool label', () => {
+	it('renders plain text output in a raw card with the tool label', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'audio',
 			content: 'some plain text',
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('音频')).toBeTruthy();
 		expect(container.querySelector('.content-preview')!.textContent).toContain(
 			'some plain text',
 		);
 	});
 
-	it('pretty-prints JSON array observations', () => {
+	it('pretty-prints JSON array observations', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'actions',
 			content: JSON.stringify([1, 2, { a: 'b' }]),
 		});
+		await expandToolCard(container);
 		expect(container.querySelector('.content-preview')!.textContent).toContain('"a"');
 		expect(container.querySelector('.content-preview')!.textContent).toContain('"b"');
 	});
@@ -425,12 +437,13 @@ describe('ToolResultCard source + args', () => {
 		expect(screen.getByText('"a.rs"')).toBeTruthy();
 	});
 
-	it('labels Skill tools and accepts resume action_input JSON strings', () => {
+	it('labels Skill tools and accepts resume action_input JSON strings', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'skill__weather',
 			content: JSON.stringify({ temp: 20 }),
 			toolArgs: '{"city":"Shanghai"}',
 		});
+		await expandToolCard(container);
 		const badge = container.querySelector('.tool-source') as HTMLElement;
 		expect(badge.getAttribute('data-source')).toBe('skill');
 		expect(screen.getByText('weather')).toBeTruthy();
@@ -459,14 +472,12 @@ describe('ToolResultCard source + args', () => {
 		expect(container.querySelector('.tool-card-icon svg')).toBeTruthy();
 	});
 
-	it('does not mount the args JsonView while the card is manually collapsed', async () => {
+	it('does not mount the args JsonView while the card is collapsed', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
 			content: 'ok',
 			toolArgs: { command: 'echo hi' },
 		});
-		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
-		await fireEvent.click(header);
 		expect(container.querySelector('.tool-args')).toBeNull();
 		expect(container.querySelector('.jv-view')).toBeNull();
 	});
@@ -502,17 +513,17 @@ describe('ToolResultCard empty in-progress', () => {
 		expect(screen.getByText('调用工具')).toBeTruthy();
 	});
 
-	it('renders an expanded card for an empty completed call', () => {
+	it('renders a collapsed card for an empty completed call', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: '',
 		});
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header).toBeTruthy();
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 		expect(screen.getByText('文件与搜索')).toBeTruthy();
-		expect(screen.getByText('（无参数）')).toBeTruthy();
-		expect(screen.getByText('（无输出）')).toBeTruthy();
+		expect(screen.queryByText('（无参数）')).toBeNull();
+		expect(screen.queryByText('（无输出）')).toBeNull();
 	});
 
 	it('expands and shows a waiting placeholder while streaming with no content', () => {
@@ -528,19 +539,19 @@ describe('ToolResultCard empty in-progress', () => {
 });
 
 describe('ToolResultCard collapsible', () => {
-	it('keeps the details expanded once the observation is final', () => {
+	it('collapses the details once the observation is final', () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header).toBeTruthy();
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 		expect(screen.queryByText('收起详情')).toBeNull();
 		expect(screen.queryByText('查看详情')).toBeNull();
 	});
 
-	it('keeps the details expanded as streaming ends', async () => {
+	it('collapses the details as streaming ends', async () => {
 		const { container, rerender } = render(ToolResultCard, {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
@@ -549,7 +560,7 @@ describe('ToolResultCard collapsible', () => {
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ streaming: false });
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('toggles open when the header is clicked and keeps a manual expand', async () => {
@@ -558,20 +569,32 @@ describe('ToolResultCard collapsible', () => {
 			content: searchJson([{ path: 'a.rs' }]),
 		});
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
-		expect(header.getAttribute('aria-expanded')).toBe('true');
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 		await fireEvent.click(header);
-		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 		await rerender({ content: searchJson([{ path: 'b.rs' }]) });
+		expect(header.getAttribute('aria-expanded')).toBe('true');
+	});
+
+	it('reopens when streaming starts after completion', async () => {
+		const { container, rerender } = render(ToolResultCard, {
+			toolName: 'files',
+			content: searchJson([{ path: 'a.rs' }]),
+		});
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
 		expect(header.getAttribute('aria-expanded')).toBe('false');
+		await rerender({ streaming: true, content: '' });
+		expect(header.getAttribute('aria-expanded')).toBe('true');
 	});
 });
 
 describe('ToolResultCard files', () => {
-	it('renders create_dir with the file-specific result UI', () => {
-		render(ToolResultCard, {
+	it('renders create_dir with the file-specific result UI', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: JSON.stringify({ operation: 'create_dir', created: true, path: 'D:\\tmp\\reports' }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('已创建目录')).toBeTruthy();
 		expect(screen.getByText('D:\\tmp\\reports')).toBeTruthy();
 	});
@@ -582,19 +605,20 @@ describe('ToolResultCard files', () => {
 		});
 	});
 
-	it('renders a filename-mode search card with paths and count', () => {
-		render(ToolResultCard, {
+	it('renders a filename-mode search card with paths and count', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: searchJson([{ path: 'D:\\workspace\\a.rs' }, { path: 'D:\\workspace\\b.rs' }]),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('文件与搜索')).toBeTruthy();
 		expect(screen.getByText('2 个结果 · 文件名')).toBeTruthy();
 		expect(screen.getByText('D:\\workspace\\a.rs')).toBeTruthy();
 		expect(screen.getByText('D:\\workspace\\b.rs')).toBeTruthy();
 	});
 
-	it('renders line numbers and snippets in content mode', () => {
-		render(ToolResultCard, {
+	it('renders line numbers and snippets in content mode', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: JSON.stringify({
 				results: [{ path: 'lib.rs', line: 42, snippet: 'fn main() {}' }],
@@ -602,23 +626,25 @@ describe('ToolResultCard files', () => {
 				mode: 'content',
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('1 个结果 · 全文')).toBeTruthy();
 		expect(screen.getByText('L42')).toBeTruthy();
 		expect(screen.getByText('fn main() {}')).toBeTruthy();
 	});
 
-	it('renders the truncated hint when present', () => {
-		render(ToolResultCard, {
+	it('renders the truncated hint when present', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: searchJson([{ path: 'a' }], { hint: 'Results hit the max_results cap.' }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('Results hit the max_results cap.')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard system', () => {
-	it('renders network category results instead of generic JSON', () => {
-		render(ToolResultCard, {
+	it('renders network category results instead of generic JSON', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'system',
 			content: JSON.stringify({
 				scope: 'info',
@@ -626,12 +652,13 @@ describe('ToolResultCard system', () => {
 				count: 1,
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('1 个网络接口')).toBeTruthy();
 		expect(screen.getByText('Wi-Fi')).toBeTruthy();
 		expect(screen.getByText('192.168.1.2')).toBeTruthy();
 	});
 
-	it('renders cpu/memory meters and os info', () => {
+	it('renders cpu/memory meters and os info', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',
 			content: JSON.stringify({
@@ -640,6 +667,7 @@ describe('ToolResultCard system', () => {
 				memory: { total_bytes: 16 * 1024 ** 3, used_bytes: 8 * 1024 ** 3 },
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('系统')).toBeTruthy();
 		expect(screen.getByText('Windows 11')).toBeTruthy();
 		expect(screen.getByText('DESKTOP-X')).toBeTruthy();
@@ -649,8 +677,8 @@ describe('ToolResultCard system', () => {
 		expect(container.querySelectorAll('.meter-fill').length).toBe(2);
 	});
 
-	it('renders power status and no-battery state', () => {
-		render(ToolResultCard, {
+	it('renders power status and no-battery state', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'system',
 			content: JSON.stringify({
 				scope: 'power',
@@ -660,23 +688,25 @@ describe('ToolResultCard system', () => {
 				battery_status: 'unknown',
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('使用电池')).toBeTruthy();
 		expect(screen.getByText('未检测到电池')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard process', () => {
-	it('renders a kill result with the process-specific action UI', () => {
-		render(ToolResultCard, {
+	it('renders a kill result with the process-specific action UI', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'process',
 			content: JSON.stringify({ operation: 'kill', killed: 42 }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('已终止')).toBeTruthy();
 		expect(screen.getByText('PID 42')).toBeTruthy();
 	});
 
-	it('renders a process table with pid, cpu and memory', () => {
-		render(ToolResultCard, {
+	it('renders a process table with pid, cpu and memory', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'process',
 			content: JSON.stringify({
 				processes: [
@@ -685,14 +715,15 @@ describe('ToolResultCard process', () => {
 				],
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('2 个进程')).toBeTruthy();
 		expect(screen.getByText('chrome.exe')).toBeTruthy();
 		expect(screen.getByText('explorer.exe')).toBeTruthy();
 		expect(screen.getByText('500 MB')).toBeTruthy();
 	});
 
-	it('renders a status badge column with mapped labels', () => {
-		render(ToolResultCard, {
+	it('renders a status badge column with mapped labels', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'process',
 			content: JSON.stringify({
 				processes: [
@@ -702,13 +733,14 @@ describe('ToolResultCard process', () => {
 				],
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('运行中')).toBeTruthy();
 		expect(screen.getByText('休眠')).toBeTruthy();
 		expect(screen.getByText('僵尸')).toBeTruthy();
 	});
 
 	it('filters processes by name', async () => {
-		render(ToolResultCard, {
+		const { container } = render(ToolResultCard, {
 			toolName: 'process',
 			content: JSON.stringify({
 				processes: [
@@ -717,6 +749,7 @@ describe('ToolResultCard process', () => {
 				],
 			}),
 		});
+		await expandToolCard(container);
 		await fireEvent.input(screen.getByPlaceholderText('筛选进程...'), {
 			target: { value: 'chrome' },
 		});
@@ -727,10 +760,11 @@ describe('ToolResultCard process', () => {
 
 	it('collapses beyond 50 processes with a show-all toggle', async () => {
 		const processes = Array.from({ length: 60 }, (_, i) => ({ pid: i + 1, name: `p${i}.exe` }));
-		render(ToolResultCard, {
+		const { container } = render(ToolResultCard, {
 			toolName: 'process',
 			content: JSON.stringify({ processes }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('60 个进程')).toBeTruthy();
 		expect(screen.queryByText('p59.exe')).toBeNull();
 		await fireEvent.click(screen.getByText('显示全部 60 个进程'));
@@ -741,29 +775,31 @@ describe('ToolResultCard process', () => {
 });
 
 describe('ToolResultCard actions', () => {
-	it('renders the action id with a completed badge', () => {
-		render(ToolResultCard, {
+	it('renders the action id with a completed badge', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'actions',
 			content: JSON.stringify({ action_id: 'act-1', status: 'completed', exit_code: 0 }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('act-1')).toBeTruthy();
 		expect(screen.getByText('已完成')).toBeTruthy();
 		 expect(screen.getByText('退出码 0')).toBeTruthy();
 	});
 
-	it('renders cancel results with an explicit action status', () => {
-		render(ToolResultCard, {
+	it('renders cancel results with an explicit action status', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'actions',
 			content: JSON.stringify({ operation: 'cancel', action_id: 'act-2', cancelled: true }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
 		expect(screen.getByText('act-2')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard window', () => {
-	it('renders screenshot results with a file reference and dimensions', () => {
-		render(ToolResultCard, {
+	it('renders screenshot results with a file reference and dimensions', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'window',
 			content: JSON.stringify({
 				operation: 'screenshot',
@@ -773,6 +809,7 @@ describe('ToolResultCard window', () => {
 				format: 'png',
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('截图已保存')).toBeTruthy();
 		expect(screen.getByText('C:\\tmp\\screen.png')).toBeTruthy();
 		expect(screen.getByText('1920×1080 · PNG')).toBeTruthy();
@@ -780,8 +817,8 @@ describe('ToolResultCard window', () => {
 });
 
 describe('ToolResultCard files', () => {
-	it('renders image analysis results instead of a blank read state', () => {
-		render(ToolResultCard, {
+	it('renders image analysis results instead of a blank read state', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: JSON.stringify({
 				operation: 'read',
@@ -790,24 +827,27 @@ describe('ToolResultCard files', () => {
 				description: 'A flow diagram with three nodes.',
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('图像读取完成')).toBeTruthy();
 		expect(screen.getByText('A flow diagram with three nodes.')).toBeTruthy();
 	});
 
-	it('renders write / delete results', () => {
-		render(ToolResultCard, {
+	it('renders write / delete results', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: JSON.stringify({ written: true, path: 'C:\\tmp\\out.txt' }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('已写入')).toBeTruthy();
 		expect(screen.getByText('C:\\tmp\\out.txt')).toBeTruthy();
 	});
 
-	it('renders directory listing entries', () => {
-		render(ToolResultCard, {
+	it('renders directory listing entries', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'files',
 			content: JSON.stringify({ entries: ['a.txt', 'b.rs'], count: 2 }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('2 项')).toBeTruthy();
 		expect(screen.getByText('a.txt')).toBeTruthy();
 		expect(screen.getByText('b.rs')).toBeTruthy();
@@ -815,24 +855,26 @@ describe('ToolResultCard files', () => {
 });
 
 describe('ToolResultCard http', () => {
-	it('renders status badge and body preview', () => {
-		render(ToolResultCard, {
+	it('renders status badge and body preview', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'http',
 			content: JSON.stringify({ status: 200, body: '{"ok":true}', truncated: false }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('200')).toBeTruthy();
 		expect(screen.getByText('{"ok":true}')).toBeTruthy();
 	});
 
-	it('marks non-2xx status as failed', () => {
+	it('marks non-2xx status as failed', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'http',
 			content: JSON.stringify({ status: 404, body: '' }),
 		});
+		await expandToolCard(container);
 		expect(container.querySelector('.status-failed')).toBeTruthy();
 	});
-	it('renders a single scheduled action result with id, mode and fires_at', () => {
-		render(ToolResultCard, {
+	it('renders a single scheduled action result with id, mode and fires_at', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'schedule',
 			content: JSON.stringify({
 				id: 'r42',
@@ -841,90 +883,98 @@ describe('ToolResultCard http', () => {
 				wakes_session: true,
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('#r42')).toBeTruthy();
 		expect(screen.getByText('调用工具')).toBeTruthy();
 		expect(screen.getByText('触发时间 2026-08-05T09:00:00+08:00')).toBeTruthy();
 	});
 
-	it('renders a schedule cancellation as a dedicated result', () => {
-		render(ToolResultCard, {
+	it('renders a schedule cancellation as a dedicated result', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'schedule',
 			content: JSON.stringify({ operation: 'cancel', cancelled: 'act-42' }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
 		expect(screen.getByText('#act-42')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard memory', () => {
-	it('renders fact search results as readable triples', () => {
-		render(ToolResultCard, {
+	it('renders fact search results as readable triples', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'memory',
 			content: JSON.stringify({
 				operation: 'search',
 				facts: [{ subject: 'user', predicate: '喜欢', object: 'Rust', confidence: 0.92 }],
 			}),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('1 条记忆事实')).toBeTruthy();
 		expect(screen.getByText('喜欢')).toBeTruthy();
 		expect(screen.getByText('Rust')).toBeTruthy();
 		expect(screen.getByText('置信度 0.92')).toBeTruthy();
 	});
 
-	it('renders recall hits and empty states', () => {
-		render(ToolResultCard, {
+	it('renders recall hits and empty states', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'memory',
 			content: JSON.stringify({ operation: 'recall', hits: [], mode: 'keyword' }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('0 条召回结果 · keyword')).toBeTruthy();
 		expect(screen.getByText('没有找到相关记忆')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard admin capabilities', () => {
-	it('renders tool toggles as a compact status result', () => {
-		render(ToolResultCard, {
+	it('renders tool toggles as a compact status result', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'haven_tools',
 			content: JSON.stringify({ name: 'files', enabled: false, saved: true }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('已停用')).toBeTruthy();
 		expect(screen.getByText('files')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard audio and input', () => {
-	it('renders volume results with a human-readable percentage', () => {
-		render(ToolResultCard, {
+	it('renders volume results with a human-readable percentage', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'audio',
 			content: JSON.stringify({ operation: 'volume_get', volume: 0.5 }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('当前音量')).toBeTruthy();
 		expect(screen.getByText('50%')).toBeTruthy();
 	});
 
-	it('renders input results with the action and coordinates', () => {
-		render(ToolResultCard, {
+	it('renders input results with the action and coordinates', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'input',
 			content: JSON.stringify({ operation: 'click', clicked: [10, 20], button: 'left' }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('已点击')).toBeTruthy();
 		expect(screen.getByText('10, 20')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard system env', () => {
-	it('renders a variables list', () => {
-		render(ToolResultCard, {
+	it('renders a variables list', async () => {
+		const { container } = render(ToolResultCard, {
 			toolName: 'system',
 			content: JSON.stringify({ variables: [{ name: 'PATH', value: 'C:\\bin' }], count: 1 }),
 		});
+		await expandToolCard(container);
 		expect(screen.getByText('1 个变量')).toBeTruthy();
 		expect(screen.getByText('PATH')).toBeTruthy();
 		expect(screen.getByText('C:\\bin')).toBeTruthy();
 	});
 
 	it('filters variables by name and value', async () => {
-		render(ToolResultCard, {
+		const { container } = render(ToolResultCard, {
 			toolName: 'system',
 			content: JSON.stringify({
 				variables: [
@@ -933,6 +983,7 @@ describe('ToolResultCard system env', () => {
 				],
 			}),
 		});
+		await expandToolCard(container);
 		await fireEvent.input(screen.getByPlaceholderText('筛选变量...'), {
 			target: { value: 'path' },
 		});
@@ -950,10 +1001,11 @@ describe('ToolResultCard system env', () => {
 	it('copies an env value via the copy button', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-		render(ToolResultCard, {
+		const { container } = render(ToolResultCard, {
 			toolName: 'system',
 			content: JSON.stringify({ variables: [{ name: 'API_KEY', value: 'secret-value' }] }),
 		});
+		await expandToolCard(container);
 		await fireEvent.click(screen.getByTitle('复制值'));
 		expect(writeText).toHaveBeenCalledWith('secret-value');
 	});
