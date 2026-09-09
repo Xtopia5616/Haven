@@ -49,8 +49,7 @@
 				label="切换主题"
 				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
 				icon={theme === 'dark' ? 'sun' : 'moon'}
-			>
-			</MaterialIconButton>
+			></MaterialIconButton>
 		</div>
 	</header>
 
@@ -82,6 +81,8 @@
 		color: var(--md-sys-color-on-surface);
 	}
 	.titlebar {
+		position: relative;
+		z-index: 0;
 		height: var(--md-comp-titlebar-height);
 		background: var(--md-sys-color-titlebar);
 		display: flex;

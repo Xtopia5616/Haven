@@ -20,7 +20,7 @@ describe('MemoryCenter', () => {
 		expect(screen.queryByRole('heading', { name: '记忆' })).toBeNull();
 		expect(screen.getByText('共 0 条记忆')).toBeTruthy();
 		expect(screen.getByRole('heading', { name: '已保存的事实' })).toBeTruthy();
-		expect(screen.getByRole('searchbox', { name: '搜索记忆' })).toBeTruthy();
+		expect(screen.getByRole('searchbox', { name: '记忆关键词' })).toBeTruthy();
 	});
 
 	it('forwards the selected memory scope and search action', async () => {
@@ -44,7 +44,6 @@ describe('MemoryCenter', () => {
 
 		await fireEvent.click(screen.getByRole('button', { name: '记忆范围' }));
 		await fireEvent.click(screen.getByRole('option', { name: '过去的对话' }));
-		await fireEvent.click(screen.getByRole('button', { name: '搜索' }));
 
 		expect(onRecallKindChange).toHaveBeenCalledWith('episode');
 		expect(onRunRecall).toHaveBeenCalledTimes(1);

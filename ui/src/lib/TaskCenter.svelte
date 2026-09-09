@@ -13,15 +13,12 @@
 	let {
 		runningBackgroundActions = [],
 		pendingScheduledActions = [],
-		completedActions = [],
 		actionStatusLabel = /** @type {(status: string) => string} */ ((status) => status || ''),
 		sessionTitleFor = () => '',
 		actionDuration = () => '',
 		scheduledActionCountdown = () => '',
-		formatHistoryTime = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
-		onDeleteHistory = () => {},
 	} = $props();
 
 	let selectedTaskId = $state(null);
@@ -48,15 +45,6 @@
 			sessionId: action.sessionId,
 			value: action,
 		})),
-		...completedActions.map((action) => ({
-			id: action.id,
-			kind: action.kind || 'background',
-			title: taskTitle(action),
-			subtitle: action.kind === 'scheduled' ? '已执行' : actionStatusLabel(action.status),
-			status: action.status || 'completed',
-			sessionId: action.sessionId,
-			value: action,
-		})),
 	]);
 
 	const filteredRows = $derived.by(() => {
@@ -73,24 +61,13 @@
 
 	const selectedRow = $derived(taskRows.find((row) => row.id === selectedTaskId) || null);
 
-	/** @param {any} row */
-	function isLiveAction(row) {
-		return row.status === 'running' || row.status === 'scheduled';
-	}
-
 	const taskGroups = $derived.by(() => {
 		return [
 			{
 				id: 'actions',
 				label: '进行中与待执行',
 				description: '可取消的后台执行，以及尚未触发的定时任务。',
-				rows: filteredRows.filter((row) => isLiveAction(row)),
-			},
-			{
-				id: 'history',
-				label: '执行记录',
-				description: '已完成、失败或已取消的任务结果。',
-				rows: filteredRows.filter((row) => !isLiveAction(row)),
+				rows: filteredRows,
 			},
 		].filter((group) => group.rows.length > 0);
 	});
@@ -133,8 +110,6 @@
 		if (row.kind === 'scheduled') {
 			return `将在${rowTiming(row)}执行 · ${scheduleModeLabel(value.mode)}`;
 		}
-		if (row.status === 'failed') return '任务执行失败，打开详情查看原因';
-		if (row.status === 'completed') return '任务已完成，打开详情查看执行结果';
 		return '正在执行后台任务';
 	}
 
@@ -147,10 +122,7 @@
 	/** @param {any} row */
 	function rowTiming(row) {
 		if (row.kind === 'background') return actionDuration(row.value) || '耗时未知';
-		if (row.status === 'scheduled') {
-			return scheduledActionCountdown(row.value?.dueAt) || '时间未设置';
-		}
-		return formatHistoryTime(row.value) || '已执行';
+		return scheduledActionCountdown(row.value?.dueAt) || '时间未设置';
 	}
 
 	/** @param {any} row */
@@ -159,21 +131,17 @@
 		detailOpen = true;
 	}
 
+	/** @param {any} row */
+	function openRow(row) {
+		if (row.sessionId) {
+			onOpenSession?.(row.sessionId);
+			return;
+		}
+		selectRow(row);
+	}
+
 	function closeDetail() {
 		detailOpen = false;
-	}
-
-	function openSelectedSession() {
-		if (!selectedRow?.sessionId) return;
-		detailOpen = false;
-		onOpenSession?.(selectedRow.sessionId);
-	}
-
-	function deleteSelectedHistory() {
-		if (!selectedRow) return;
-		const id = selectedRow.id;
-		detailOpen = false;
-		onDeleteHistory?.(id);
 	}
 
 	/** @param {string} value */
@@ -251,8 +219,10 @@
 									<button
 										class="task-card-main workspace-item-card-main"
 										type="button"
-										aria-label={`查看${row.title}详情`}
-										onclick={() => selectRow(row)}
+										aria-label={row.sessionId
+											? `打开${row.title}对应会话`
+											: `查看${row.title}详情`}
+										onclick={() => openRow(row)}
 									>
 										<span class="task-card-header workspace-item-card-header">
 											<span class="task-card-type" data-tone={rowTone(row)}>
@@ -281,10 +251,6 @@
 											<span class="task-card-id workspace-item-card-id"
 												>{row.id}</span
 											>
-											<span
-												class="task-card-open workspace-item-card-open"
-												aria-hidden="true">查看详情 <span>→</span></span
-											>
 										</span>
 									</button>
 									<div class="task-card-actions workspace-item-card-actions">
@@ -299,12 +265,6 @@
 												variant="outlined"
 												label="取消此定时任务"
 												onclick={() => onCancel?.(row.id, 'scheduled')}
-											/>
-										{:else}
-											<MaterialButton
-												variant="text"
-												label="查看详情"
-												onclick={() => selectRow(row)}
 											/>
 										{/if}
 									</div>
@@ -380,12 +340,6 @@
 							<dd>{rowTiming(selectedRow)}</dd>
 						</div>
 					{/if}
-					{#if selectedRow.value.finishedAt}
-						<div>
-							<dt>完成时间</dt>
-							<dd>{formatHistoryTime(selectedRow.value)}</dd>
-						</div>
-					{/if}
 				</dl>
 
 				{#if selectedRow.value.body}
@@ -394,27 +348,7 @@
 						<p class="task-detail-copy">{selectedRow.value.body}</p>
 					</section>
 				{/if}
-				{#if selectedRow.value.output || selectedRow.value.errorReason || selectedRow.value.error}
-					<section class="task-dialog-section">
-						<h4>
-							{selectedRow.value.errorReason || selectedRow.value.error
-								? '失败原因'
-								: '执行结果'}
-						</h4>
-						<pre class="task-output">{selectedRow.value.output ||
-								selectedRow.value.errorReason ||
-								selectedRow.value.error}</pre>
-					</section>
-				{/if}
-
 				<div class="task-actions">
-					{#if selectedRow.sessionId}
-						<MaterialButton
-							variant="filled"
-							label="打开来源会话"
-							onclick={openSelectedSession}
-						/>
-					{/if}
 					{#if selectedRow.kind === 'background' && selectedRow.value.status === 'running'}
 						<MaterialButton
 							variant="danger"
@@ -427,14 +361,6 @@
 							variant="danger"
 							label="取消定时任务"
 							onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
-						/>
-					{/if}
-					{#if selectedRow.status !== 'running'}
-						<MaterialButton
-							variant="text"
-							className="task-delete"
-							label="删除记录"
-							onclick={deleteSelectedHistory}
 						/>
 					{/if}
 				</div>
@@ -664,19 +590,6 @@
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
-	.task-output {
-		max-height: 240px;
-		margin: 0;
-		padding: var(--md-sys-space-md);
-		overflow: auto;
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-		font: var(--md-sys-typescale-code-size)/var(--md-sys-typescale-code-line-height)
-			var(--md-sys-typescale-mono);
-	}
 	.task-actions {
 		display: flex;
 		flex-wrap: wrap;
@@ -689,9 +602,6 @@
 		max-width: 100%;
 		white-space: normal;
 		overflow-wrap: anywhere;
-	}
-	:global(.task-delete) {
-		color: var(--md-sys-color-error);
 	}
 	:global(.task-dialog) {
 		width: min(640px, calc(100vw - var(--md-sys-space-2xl)));

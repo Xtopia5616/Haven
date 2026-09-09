@@ -25,7 +25,7 @@ describe('SessionHistory actions', () => {
 		expect(onNewSession).toHaveBeenCalledTimes(1);
 	});
 
-	it('keeps opening and deleting sessions visible on each row', async () => {
+	it('opens a session by clicking its row and keeps delete available', async () => {
 		const onResume = vi.fn();
 		const onDeleteRequest = vi.fn();
 		const session = {
@@ -42,10 +42,12 @@ describe('SessionHistory actions', () => {
 		});
 
 		expect(screen.getByText('已完成')).toBeTruthy();
-		await fireEvent.click(screen.getByRole('button', { name: '打开' }));
+		expect(screen.queryByRole('button', { name: '打开' })).toBeNull();
+		await fireEvent.click(document.querySelector('.session-item')!);
 		expect(onResume).toHaveBeenCalledWith(session);
 		await fireEvent.click(screen.getByRole('button', { name: '删除' }));
 		expect(onDeleteRequest).toHaveBeenCalledWith(session);
+		expect(onResume).toHaveBeenCalledTimes(1);
 	});
 
 	it('places bulk history actions below the filter bar', async () => {

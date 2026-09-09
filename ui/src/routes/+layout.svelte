@@ -14,9 +14,6 @@
 		actionStore,
 		sessionStore,
 		cancelAction,
-		refreshActionHistory,
-		deleteAction,
-		formatMessageTime,
 		resumeTargetStore,
 	} from '$lib/stores.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
@@ -481,27 +478,8 @@
 		return runningBackgroundActions.some((a) => a.sessionId === activeSessionId);
 	});
 
-	// Completed-task history (terminal background rows + fired scheduled rows),
-	// fetched whenever the panel opens so it reflects the persisted table.
-	let actionHistory = /** @type {Array<any>} */ ($state([]));
 	const taskCenterVisible = $derived(
 		activeTab === 'memory' && $page.url.searchParams.get('section') === 'tasks',
-	);
-	$effect(() => {
-		if (!taskCenterVisible) return;
-		// Fetch a wider window so the task center can show cross-session history.
-		refreshActionHistory(null, 200).then((rows) => {
-			if (rows) actionHistory = rows;
-		});
-	});
-	// Terminal background / fired scheduled rows across all sessions. The task
-	// center is the global operational view; session filtering belongs in its
-	// search controls rather than at the data boundary.
-	const completedActions = $derived(
-		actionHistory.filter((h) => {
-			if (h.kind === 'scheduled') return true;
-			return !!h.status && h.status !== 'running';
-		}),
 	);
 
 	// Session titles for background-action rows; mirrored from the chat page's
@@ -516,17 +494,6 @@
 		const t = setInterval(() => (countdownTick += 1), 1000);
 		return () => clearInterval(t);
 	});
-
-	/** @param {string} id */
-	async function handleDeleteHistory(id) {
-		try {
-			await deleteAction(id);
-			actionHistory = actionHistory.filter((h) => h.id !== id);
-			addNotification('已删除历史记录', 'success', 2000);
-		} catch (e) {
-			reportError(e, { context: '+layout', message: '删除历史记录失败', log: false });
-		}
-	}
 
 	/** @param {any} action */
 	function sessionTitleFor(action) {
@@ -561,11 +528,6 @@
 				// cancelled: that would overwrite a successful terminal payload
 				// and block a later action:finished repair.
 				removeAction(actionId);
-				if (taskCenterVisible) {
-					refreshActionHistory(null, 200).then((rows) => {
-						if (rows) actionHistory = rows;
-					});
-				}
 				addNotification(
 					kind === 'scheduled' ? '定时任务已触发或不存在' : '后台任务已结束，无需停止',
 					'warning',
@@ -594,15 +556,6 @@
 		const hrs = Math.floor(mins / 60);
 		if (hrs < 24) return `${hrs}小时${mins % 60}分后`;
 		return `${Math.floor(hrs / 24)}天后`;
-	}
-
-	/** @param {any} h */
-	function formatHistoryTime(h) {
-		const ts = h.finishedAt || h.startedAt || h.dueAt;
-		if (!ts) return '';
-		const d = new Date(ts);
-		if (isNaN(d.getTime())) return '';
-		return formatMessageTime(d);
 	}
 
 	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (
@@ -1088,15 +1041,12 @@
 										onNewSession={startNewSessionFromTasks}
 										{runningBackgroundActions}
 										{pendingScheduledActions}
-										{completedActions}
 										{actionStatusLabel}
 										{sessionTitleFor}
 										{actionDuration}
 										{scheduledActionCountdown}
-										{formatHistoryTime}
 										onOpenSession={openTaskSession}
 										onCancel={handleCancelAction}
-										onDeleteHistory={handleDeleteHistory}
 									/>
 								</WorkspaceSurface>
 							{:else if lazyViewStates.memory === 'error'}

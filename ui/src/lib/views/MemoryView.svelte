@@ -37,15 +37,12 @@
 		onNewSession = () => {},
 		runningBackgroundActions = [],
 		pendingScheduledActions = [],
-		completedActions = [],
 		actionStatusLabel = /** @type {(status: string) => string} */ ((status) => status || ''),
 		sessionTitleFor = () => '',
 		actionDuration = () => '',
 		scheduledActionCountdown = () => '',
-		formatHistoryTime = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
-		onDeleteHistory = () => {},
 	} = $props();
 
 	/** @type {MemorySession[]} */
@@ -531,7 +528,7 @@
 </script>
 
 <div class="memory-page">
-	<WorkspacePageHeader title="历史" description="回顾会话、任务执行记录和记忆。" />
+	<WorkspacePageHeader title="历史" description="回顾会话、任务和记忆。" />
 	<MaterialTabs
 		tabs={memoryTabs}
 		activeTab={activeTab ?? 'sessions'}
@@ -549,10 +546,7 @@
 			aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '历史'}
 		>
 			{#if activeTab === 'sessions'}
-				<WorkspaceSectionHeader
-					title="会话历史"
-					description="查看并继续过去的对话。"
-				/>
+				<WorkspaceSectionHeader title="会话历史" description="查看并继续过去的对话。" />
 				<SessionHistory
 					{sessions}
 					{searchQuery}
@@ -596,20 +590,17 @@
 			{:else if activeTab === 'tasks'}
 				<WorkspaceSectionHeader
 					title="任务"
-					description="查看后台任务、定时任务及其执行记录。"
+					description="查看后台任务和定时任务的当前状态。"
 				/>
 				<TaskCenter
 					{runningBackgroundActions}
 					{pendingScheduledActions}
-					{completedActions}
 					{actionStatusLabel}
 					{sessionTitleFor}
 					{actionDuration}
 					{scheduledActionCountdown}
-					{formatHistoryTime}
 					{onOpenSession}
 					{onCancel}
-					{onDeleteHistory}
 				/>
 			{:else}
 				<div class="memory-tools-view" aria-label="记忆中心">

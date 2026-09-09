@@ -115,9 +115,8 @@ export async function refreshActions() {
 					...row,
 					id: key,
 				};
-				// Terminal background history is loaded on demand via
-				// `refreshActionHistory`; keeping it here bloated the store and
-				// let ACTION_STORE_MAX eviction delete live running rows.
+				// Keep terminal background rows out of the live registry so they do
+				// not bloat the store or let eviction delete live running rows.
 				if (merged.kind === 'background' && merged.status && merged.status !== 'running') {
 					continue;
 				}
@@ -132,30 +131,6 @@ export async function refreshActions() {
 
 export async function cancelAction(id: string, kind: ActionKind = 'background') {
 	return invoke('cancel_action', { actionId: id, kind });
-}
-
-/**
- * Fired-scheduled-action history (and terminal background-action history) from
- * the persisted action table, newest first. Returns the raw rows for the
- * panel's history tab; the caller owns the list (no store backing — it is
- * fetched on demand).
- * @param {string} [kind]
- * @param {number} [limit]
- * @returns {Promise<Array>}
- */
-export async function refreshActionHistory(kind: ActionKind | null = 'scheduled', limit = 50) {
-	try {
-		const rows = await invoke('list_action_history', { kind, limit });
-		return Array.isArray(rows) ? rows.map((row) => mapActionPayload(row as never)) : [];
-	} catch (e) {
-		logger.warn('stores', 'refreshActionHistory failed', e);
-		return undefined;
-	}
-}
-
-/** Delete a persisted action row (history cleanup) by id. */
-export function deleteAction(id: string) {
-	return invoke('delete_action', { actionId: id });
 }
 
 /**

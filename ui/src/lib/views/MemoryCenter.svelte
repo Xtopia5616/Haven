@@ -30,6 +30,7 @@
 	/** @param {string} value */
 	function handleScopeChange(value) {
 		onRecallKindChange(value);
+		onRunRecall();
 	}
 
 	/** @param {KeyboardEvent} event */
@@ -41,11 +42,11 @@
 <div class="memory-center">
 	<div class="memory-center-toolbar workspace-filter-bar" role="search">
 		<label class="memory-center-search" for="memory-center-query">
-			<span class="sr-only">搜索记忆</span>
 			<input
 				id="memory-center-query"
 				type="search"
 				class="md-input"
+				aria-label="记忆关键词"
 				bind:value={memoryRecall.query}
 				placeholder="搜索事实或过去的对话，例如：深色主题"
 				onkeydown={handleKeydown}
@@ -72,13 +73,6 @@
 				/>
 			</div>
 		{/if}
-		<MaterialButton
-			variant="filled"
-			label={memoryRecall.loading ? '搜索中…' : '搜索'}
-			ariaBusy={memoryRecall.loading}
-			onclick={() => onRunRecall()}
-			disabled={memoryRecall.loading}
-		/>
 		{#if memoryRecall.searched}
 			<MaterialButton variant="text" label="清除" onclick={() => onClearRecall()} />
 		{/if}

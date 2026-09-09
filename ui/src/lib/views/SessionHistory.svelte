@@ -64,6 +64,14 @@
 	function handleStatusChange(value) {
 		onStatusFilterChange(value);
 	}
+	/** @param {KeyboardEvent} event @param {any} session */
+	function handleSessionKeydown(event, session) {
+		if (event.target !== event.currentTarget) return;
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			onResume(session);
+		}
+	}
 	const hasFilters = $derived(
 		Boolean(searchQuery.trim() || statusFilter || startDate || endDate),
 	);
@@ -113,11 +121,7 @@
 					onclick={() => onExportSelected()}
 					disabled={selectedIds.size === 0}
 				/>
-				<MaterialButton
-					variant="text"
-					label="取消"
-					onclick={() => onCancelSelectMode()}
-				/>
+				<MaterialButton variant="text" label="取消" onclick={() => onCancelSelectMode()} />
 			{:else}
 				<MaterialButton
 					variant="outlined"
@@ -197,10 +201,15 @@
 						</div>
 					</button>
 				{:else}
+					<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 					<article
 						class="session-item motion-list-item"
 						class:selected={selectedIds.has(session.id)}
 						aria-label={`会话：${displayTitle(session)}`}
+						role="button"
+						tabindex="0"
+						onclick={() => onResume(session)}
+						onkeydown={(event) => handleSessionKeydown(event, session)}
 						oncontextmenu={(event) => onContextMenu(event, session)}
 					>
 						<div class="session-item-main">
@@ -214,21 +223,26 @@
 										oninput={(event) =>
 											onRenameValueChange(event.currentTarget.value)}
 										onkeydown={(event) => onRenameKeydown(event, session.id)}
+										onclick={(event) => event.stopPropagation()}
 										onblur={() => onSaveTitle(session.id)}
 										autofocus
 										autocomplete="off"
 									/>
 								{:else}
-					<MaterialButton
-						variant="text"
-						className="session-title"
-						ariaLabel={`重命名${displayTitle(session)}`}
-						onclick={() => onStartEdit(session)}
-					>
-						{#snippet children()}
-							{displayTitle(session)}<Icon name="edit" size={14} className="title-edit-icon" />
-						{/snippet}
-					</MaterialButton>
+									<MaterialButton
+										variant="text"
+										className="session-title"
+										ariaLabel={`重命名${displayTitle(session)}`}
+										onclick={() => onStartEdit(session)}
+									>
+										{#snippet children()}
+											{displayTitle(session)}<Icon
+												name="edit"
+												size={14}
+												className="title-edit-icon"
+											/>
+										{/snippet}
+									</MaterialButton>
 								{/if}
 								<MaterialBadge
 									variant={statusVariant(session.status)}
@@ -242,12 +256,6 @@
 								<span class="meta-date"
 									>{formatMessageTime(session.created_at)}</span
 								><span class="session-actions">
-									<MaterialButton
-										variant="tonal"
-										className="open-session-btn"
-										label="打开"
-										onclick={() => onResume(session)}
-									/>
 									<MaterialButton
 										variant="text"
 										className="delete-btn-meta"
@@ -332,6 +340,7 @@
 			background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard);
 		outline: none;
+		cursor: pointer;
 	}
 	.session-item:hover {
 		background: var(--md-sys-color-surface-container);

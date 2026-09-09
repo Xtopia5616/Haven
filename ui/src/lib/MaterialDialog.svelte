@@ -96,6 +96,7 @@
 		align-items: center;
 		justify-content: center;
 		z-index: var(--md-sys-z-dialog);
+		isolation: isolate;
 	}
 	.md-dialog {
 		background: var(--md-sys-color-surface-container-lowest);
