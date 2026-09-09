@@ -27,7 +27,7 @@ export const inputFormats = [
 	{
 		id: 'file',
 		label: '文件 File',
-		hint: '附件以 base64 上传，后端落盘后由 agent 通过 files 工具读取，无需额外 Provider。',
+		hint: '音频附件以内联媒体交给 Audio Model；其他文件后端落盘后由 agent 通过 files 工具读取。',
 	},
 	{
 		id: 'text',

@@ -41,9 +41,9 @@
 	/** @type {any[]} */
 	let pendingImages = $state([]);
 
-	// Pending non-image file attachments: [{ media_type, data, filename, size }].
-	// Read as base64 when picked, persisted by the backend to disk and handed
-	// to the agent as a path the files tool can read.
+	// Pending non-image attachments: [{ media_type, data, filename, size }].
+	// Ordinary files are persisted by the backend and handed to the agent as a
+	// path; audio keeps its base64 payload for the multimodal chat path.
 	/** @type {any[]} */
 	let pendingFiles = $state([]);
 	// Single hidden picker for both images and files; the picked items are
@@ -294,7 +294,7 @@
 	}
 
 	// Single entry point for the attachment picker: images (by MIME/extension)
-	// go to the vision preview row, everything else to the file chips.
+	// go to the vision preview row, everything else to the file/audio row.
 	/** @param {any} e */
 	function handleAttachSelect(e) {
 		const files = Array.from(e.target.files || []);
@@ -501,11 +501,25 @@
 		<div class="file-preview-row">
 			{#each pendingFiles as file, i (file.filename + i)}
 				<div class="file-preview">
-					<Icon name="file" size={18} className="file-preview-icon" />
-					<div class="file-preview-info">
-						<span class="file-preview-name">{file.filename}</span>
-						<span class="file-preview-size">{formatFileSize(file.size)}</span>
-					</div>
+					{#if (file.media_type || '').startsWith('audio/') && file.data}
+						<audio
+							class="file-preview-audio"
+							controls
+							preload="none"
+							src={imageDataUrl(file)}
+							title={file.filename || '音频附件'}
+						></audio>
+						<div class="file-preview-info">
+							<span class="file-preview-name">{file.filename}</span>
+							<span class="file-preview-size">音频 · {formatFileSize(file.size)}</span>
+						</div>
+					{:else}
+						<Icon name="file" size={18} className="file-preview-icon" />
+						<div class="file-preview-info">
+							<span class="file-preview-name">{file.filename}</span>
+							<span class="file-preview-size">{formatFileSize(file.size)}</span>
+						</div>
+					{/if}
 					<MaterialIconButton
 						icon="close"
 						className="file-preview-remove"
@@ -556,7 +570,7 @@
 			<MaterialIconButton
 				size="toolbar"
 				label="添加附件"
-				title="添加图片或文件"
+				title="添加图片、音频或文件"
 				icon="paperclip"
 				onclick={() => attachFileInput?.click()}
 			>
@@ -702,6 +716,11 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
+	}
+	.file-preview-audio {
+		width: 150px;
+		height: 30px;
+		flex: 0 0 auto;
 	}
 	.file-preview-name {
 		font-size: var(--md-sys-typescale-label-medium-size);

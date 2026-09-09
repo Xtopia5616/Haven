@@ -389,10 +389,11 @@ fn sanitize_filename(name: &str) -> String {
     clean
 }
 
-/// Write non-image attachments to disk under `uploads/<batch>/` and return
+/// Write ordinary file attachments to disk under `uploads/<batch>/` and return
 /// them with `path` set. `data` is cleared afterwards — the bytes live on
-/// disk, keeping the persisted message and DB storage slim. Images pass
-/// through untouched (their base64 payload is needed by the vision model).
+/// disk, keeping the persisted message and DB storage slim. Inline image and
+/// audio media pass through because the active chat model consumes their
+/// base64 payload directly.
 async fn persist_file_attachments(
     attachments: Vec<haven_common::types::MessageAttachment>,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
@@ -405,20 +406,20 @@ async fn persist_file_attachments_to(
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     use base64::Engine as _;
 
-    let mut images = Vec::new();
+    let mut inline_media = Vec::new();
     let mut files = Vec::new();
     for att in attachments {
-        if att.is_image() {
-            images.push(att);
+        if att.is_inline_media() {
+            inline_media.push(att);
         } else {
             files.push(att);
         }
     }
     if files.is_empty() {
-        return Ok(images);
+        return Ok(inline_media);
     }
 
-    let batch_dir = root.join(uuid::Uuid::new_v4().to_string());
+    let batch_dir = root.join(haven_common::types::new_id("file"));
     tokio::fs::create_dir_all(&batch_dir)
         .await
         .map_err(|e| format!("创建上传目录失败: {e}"))?;
@@ -457,9 +458,9 @@ async fn persist_file_attachments_to(
             .map_err(|e| format!("保存附件失败: {e}"))?;
         att.path = Some(file_path.to_string_lossy().into_owned());
         att.data = String::new();
-        images.push(att);
+        inline_media.push(att);
     }
-    Ok(images)
+    Ok(inline_media)
 }
 
 /// Server-side validation for user attachments, mirroring the frontend
@@ -467,7 +468,7 @@ async fn persist_file_attachments_to(
 /// byte caps, decodable base64, files must carry a name). The webview must
 /// not be the sole enforcement point for persisted payloads.
 fn validate_attachments(
-    attachments: Vec<haven_common::types::MessageAttachment>,
+    mut attachments: Vec<haven_common::types::MessageAttachment>,
     limits: &ContextLimitsConfig,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     let max_images = limits.max_attachment_images;
@@ -475,6 +476,21 @@ fn validate_attachments(
     let max_image_bytes = limits.max_attachment_image_bytes;
     let max_file_bytes = limits.max_attachment_file_bytes;
     use base64::Engine as _;
+
+    // Normalize MIME metadata at the host boundary. Browser-provided MIME
+    // values are optional and can be wrong; content signatures win, with the
+    // filename as a controlled fallback for formats such as SVG and AAC.
+    for att in &mut attachments {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&att.data)
+            .map_err(|_| "附件数据不是有效的 base64".to_string())?;
+        let filename = att.filename.as_deref().unwrap_or_default();
+        let detected = haven_llm::media::detect_media_type_with_filename(&bytes, filename);
+        if detected != "application/octet-stream" {
+            att.media_type = detected.to_string();
+        }
+    }
+
     let images = attachments.iter().filter(|a| a.is_image()).count();
     let files = attachments.len().saturating_sub(images);
     if images > max_images {
@@ -528,6 +544,15 @@ mod tests {
         file.filename = Some("report.pdf".into());
         let out = validate_attachments(vec![file], &limits()).unwrap();
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn test_validate_attachments_normalizes_extension_only_media() {
+        let mut audio = att("application/octet-stream", "YXVkaW8=");
+        audio.filename = Some("voice.aac".into());
+        let out = validate_attachments(vec![audio], &limits()).unwrap();
+        assert_eq!(out[0].media_type, "audio/aac");
+        assert!(out[0].is_audio());
     }
 
     #[test]
@@ -615,6 +640,23 @@ mod tests {
         let image = out.iter().find(|a| a.is_image()).unwrap();
         assert_eq!(image.data, "aGVsbG8=", "images keep their base64 payload");
         assert!(image.path.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_persist_file_attachments_keeps_audio_inline() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut audio = att("audio/wav", "UklGRg==");
+        audio.filename = Some("voice.wav".into());
+
+        let out = persist_file_attachments_to(tmp.path().to_path_buf(), vec![audio])
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_audio());
+        assert_eq!(out[0].data, "UklGRg==");
+        assert!(out[0].path.is_none());
     }
 
     #[tokio::test]

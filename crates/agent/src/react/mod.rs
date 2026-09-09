@@ -56,13 +56,14 @@ pub(crate) use snapshot_io::set_status_and_emit;
 use tool_batch_policy::FailureKind;
 
 /// Convert a stored message attachment into a content part for the LLM.
-/// Images become vision content parts (base64 payload); non-image file
-/// attachments (persisted on disk with a `path`) become a short text
-/// reference so the agent knows the file exists and where to read it with
-/// the file tool —the raw bytes are never shipped to the model.
+/// Inline image/audio attachments keep their base64 payload; ordinary file
+/// attachments (persisted on disk with a `path`) become a short text reference
+/// so the agent knows where to read them with the file tool.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
     if att.is_image() {
         haven_llm::media::image_part(&att.media_type, att.data.clone())
+    } else if att.is_audio() && !att.data.is_empty() {
+        haven_llm::media::audio_part(&att.media_type, att.data.clone())
     } else {
         let name = att.filename.as_deref().unwrap_or("attachment");
         match &att.path {
@@ -72,25 +73,41 @@ pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart
     }
 }
 
-/// True when the canonical carries at least one image content part. Scanned
-/// once per step (after `inject_pending_context`) and shared by the compactor
-/// window selection and `choose_agent_role`, so the image check is not
-/// repeated across every content part on each step.
-pub(crate) fn canonical_has_image(messages: &[CanonicalMessage]) -> bool {
-    messages.iter().any(|m| {
-        m.content
-            .iter()
-            .any(|p| matches!(p, ContentPart::Image { .. }))
-    })
+/// Media requirements of one provider request. This is deliberately a small
+/// internal policy type: content parts remain provider-neutral, while routing
+/// decides which configured role should receive them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MediaRequirements {
+    pub(crate) image: bool,
+    pub(crate) audio: bool,
 }
 
-/// Pick the endpoint role for an agent step. Conversations that carry image
-/// content parts route through the router's vision role — the dedicated
-/// `image_model` (vision-capable) endpoint when configured, otherwise the
-/// default model. Everything else uses the default model.
-pub(super) async fn choose_agent_role(router: &LlmRouter, has_image: bool) -> EndpointRole {
-    if has_image {
+/// Scan canonical content once per step. The result is shared by compaction,
+/// role selection and stream retry so those paths cannot disagree about the
+/// media carried by the request.
+pub(crate) fn canonical_media_requirements(messages: &[CanonicalMessage]) -> MediaRequirements {
+    let mut requirements = MediaRequirements::default();
+    for part in messages.iter().flat_map(|message| &message.content) {
+        match part {
+            ContentPart::Image { .. } => requirements.image = true,
+            ContentPart::Audio { .. } => requirements.audio = true,
+            ContentPart::Text(_) => {}
+        }
+    }
+    requirements
+}
+
+/// Pick the endpoint role for an agent step. Image content routes through the
+/// vision role and audio-only content through the audio role; both roles fall
+/// back to the default model when their dedicated slot is unavailable.
+pub(super) async fn choose_agent_role(
+    router: &LlmRouter,
+    requirements: MediaRequirements,
+) -> EndpointRole {
+    if requirements.image {
         router.vision_role().await
+    } else if requirements.audio {
+        router.audio_role().await
     } else {
         EndpointRole::DefaultModel
     }
@@ -822,7 +839,7 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         state: &mut ReActState,
-        has_image: bool,
+        requirements: MediaRequirements,
         tool_defs: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<bool> {
@@ -830,11 +847,12 @@ impl ReActEngine {
             return Ok(false);
         }
         // The compaction window must match the endpoint the next step will
-        // use (image-routed steps compact against the image model's budget),
-        // mirroring choose_agent_role's role selection.
+        // use, mirroring choose_agent_role's role selection.
         let router = self.router();
-        let role = if has_image {
+        let role = if requirements.image {
             router.vision_role().await
+        } else if requirements.audio {
+            router.audio_role().await
         } else {
             EndpointRole::DefaultModel
         };
@@ -912,7 +930,7 @@ impl ReActEngine {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use haven_common::types::{CanonicalRole, CanonicalToolCall};
+    use haven_common::types::{CanonicalRole, CanonicalToolCall, MessageAttachment};
 
     #[test]
     fn loop_exit_variants_distinguish_pause_reasons() {
@@ -1115,6 +1133,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn audio_attachment_becomes_inline_content_part() {
+        let attachment = MessageAttachment::new("audio/wav", "UklGRg==");
+        assert!(matches!(
+            attachment_to_content_part(&attachment),
+            ContentPart::Audio {
+                ref media_type,
+                ref data,
+                ..
+            } if media_type == "audio/wav" && data == "UklGRg=="
+        ));
+    }
+
     fn text_msg(role: CanonicalRole, text: &str) -> CanonicalMessage {
         CanonicalMessage {
             role,
@@ -1147,12 +1178,22 @@ mod tests {
         }
     }
 
-    fn msgs_contain_image(messages: &[CanonicalMessage]) -> bool {
-        messages.iter().any(|m| {
-            m.content
-                .iter()
-                .any(|p| matches!(p, ContentPart::Image { .. }))
-        })
+    fn audio_msg(role: CanonicalRole) -> CanonicalMessage {
+        CanonicalMessage {
+            role,
+            content: vec![ContentPart::Audio {
+                content_type: "input_audio".into(),
+                media_type: "audio/wav".into(),
+                data: "UklGRg==".into(),
+            }],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        }
     }
 
     #[tokio::test]
@@ -1162,9 +1203,9 @@ mod tests {
             text_msg(CanonicalRole::System, "be concise"),
             text_msg(CanonicalRole::User, "hello"),
         ];
-        let has_image = msgs_contain_image(&messages);
+        let requirements = canonical_media_requirements(&messages);
         assert_eq!(
-            choose_agent_role(&router, has_image).await,
+            choose_agent_role(&router, requirements).await,
             EndpointRole::DefaultModel
         );
     }
@@ -1173,9 +1214,9 @@ mod tests {
     async fn choose_agent_role_default_when_image_model_unconfigured() {
         let router = mock_router();
         let messages = [image_msg(CanonicalRole::User)];
-        let has_image = msgs_contain_image(&messages);
+        let requirements = canonical_media_requirements(&messages);
         assert_eq!(
-            choose_agent_role(&router, has_image).await,
+            choose_agent_role(&router, requirements).await,
             EndpointRole::DefaultModel
         );
     }
@@ -1187,9 +1228,9 @@ mod tests {
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
         let messages = [image_msg(CanonicalRole::User)];
-        let has_image = msgs_contain_image(&messages);
+        let requirements = canonical_media_requirements(&messages);
         assert_eq!(
-            choose_agent_role(&router, has_image).await,
+            choose_agent_role(&router, requirements).await,
             EndpointRole::ImageModel
         );
     }
@@ -1202,10 +1243,23 @@ mod tests {
             .await;
         router.force_routing_flags(true, false).await;
         let messages = [image_msg(CanonicalRole::User)];
-        let has_image = msgs_contain_image(&messages);
+        let requirements = canonical_media_requirements(&messages);
         assert_eq!(
-            choose_agent_role(&router, has_image).await,
+            choose_agent_role(&router, requirements).await,
             EndpointRole::DefaultModel
+        );
+    }
+
+    #[tokio::test]
+    async fn choose_agent_role_audio_model_when_configured() {
+        let router = mock_router();
+        router
+            .force_role_configured(EndpointRole::AudioModel, true)
+            .await;
+        let messages = [audio_msg(CanonicalRole::User)];
+        assert_eq!(
+            choose_agent_role(&router, canonical_media_requirements(&messages)).await,
+            EndpointRole::AudioModel
         );
     }
 

@@ -26,7 +26,7 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
 use crate::media::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
 use crate::media::intent::{GenerateKind, Intent, detect_intent};
 use crate::media::modality::{
-    Modality, detect_media_type, detect_modality, extension_for_media_type,
+    Modality, detect_media_type_with_filename, detect_modality, extension_for_media_type,
 };
 use crate::media::multimodal;
 
@@ -120,7 +120,7 @@ impl MediaGateway {
 
         match action {
             CoverageAction::Ocr => {
-                let media_type = detect_media_type(bytes).to_string();
+                let media_type = detect_media_type_with_filename(bytes, filename).to_string();
                 // Shared `llm` path: one shot through the vision role. No
                 // dedicated client (would duplicate this call on fallback).
                 if self.config.ocr.provider == "llm" {
@@ -151,7 +151,7 @@ impl MediaGateway {
                 }
             }
             CoverageAction::Stt => {
-                let media_type = detect_media_type(bytes).to_string();
+                let media_type = detect_media_type_with_filename(bytes, filename).to_string();
                 // Shared `llm` path: one shot through `transcribe_audio`
                 // (native Whisper first, multimodal chat fallback). Hotkey
                 // recording uses the same router method via

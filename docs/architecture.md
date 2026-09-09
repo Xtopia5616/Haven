@@ -128,8 +128,10 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
-  附件 → 模态/意图判定 → 专用 provider + 置信度门槛 + 主模型兜底；只处理文生图等
-  ingress generate 请求。TTS 由 `audio(operation="speak")` 工具显式触发并在本机播放。
+  附件 → 模态/意图判定 → 专用 provider + 置信度门槛 + 主模型兜底；图片/音频以内联
+  `ContentPart` 进入模型，普通文件落盘后以路径交给 `files`，视频暂不盲发到 provider。
+  MIME 归一化由 host 边界复用统一检测函数。只处理文生图等 ingress generate 请求；TTS
+  由 `audio(operation="speak")` 工具显式触发并在本机播放。
 - `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体网关的
   自动处理分支，因此用户文本不会因为关键词被隐式朗读。
 - `registry.rs` / `stream_rules.rs`：模型注册表、流式规则（生产 router 默认启用 `code_block_abort`）。
@@ -315,7 +317,7 @@ Tauri command 的迁移期 structured surface，未注册进模型目录；后�
 | | `haven-input` | `haven-llm` |
 |---|---|---|
 | 角色 | **消费方**：录音 → VAD → WAV → 调 `SttClient` | **实现方**：`LlmClient::transcribe` + `build_stt_client` / `adapter_for` |
-| 复用点 | `InputPipeline::transcribe`（用户麦克风录音） | `MediaGateway::process_attachment`（agent 的 `audio` 工具附件） |
+| 复用点 | `InputPipeline::transcribe`（用户麦克风录音） | `MediaGateway::process_attachment`（agent 的附件；音频理解进入 `ContentPart::Audio`，抽取仍走 STT） |
 
 同一个 `SttClient` 被两处复用是**有意的共享**，不是职责重复：input 走「用户录音」路径，
 llm 的 `media/` 走「agent 附件」路径。云端 STT（Whisper / Groq / Gemini / Deepgram /

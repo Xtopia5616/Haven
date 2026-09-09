@@ -433,8 +433,12 @@ impl AnthropicAdapter {
                 }
                 ContentPart::Audio { .. } => {
                     tracing::warn!(
-                        "Anthropic Messages API does not support audio input; dropping audio part"
+                        "Anthropic Messages API does not support audio input; rendering an explicit unsupported marker"
                     );
+                    blocks.push(json!({
+                        "type": "text",
+                        "text": "[Haven: audio input is not supported by the configured Anthropic model]"
+                    }));
                 }
             }
         }
@@ -1486,6 +1490,19 @@ impl LlmClient for AnthropicAdapter {
         "anthropic"
     }
 
+    fn validate_content(&self, messages: &[CanonicalMessage]) -> Result<(), LlmError> {
+        if messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|part| matches!(part, ContentPart::Audio { .. }))
+        {
+            return Err(LlmError::UnsupportedCapability(
+                "Anthropic Messages API does not support audio input; configure an audio-capable model or STT provider".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, Vec::new(), false).await
     }
@@ -1680,6 +1697,19 @@ mod tests {
         assert_eq!(out[0].role, "user");
         assert_eq!(out[0].content[0]["type"], "text");
         assert_eq!(out[0].content[0]["text"], "hello");
+    }
+
+    #[test]
+    fn validate_content_rejects_audio_instead_of_dropping_it() {
+        let client = AnthropicAdapter::new(ModelEndpoint::default());
+        let message = CanonicalMessage::user(vec![ContentPart::Audio {
+            content_type: "input_audio".into(),
+            media_type: "audio/wav".into(),
+            data: "UklGRg==".into(),
+        }]);
+        let error = client.validate_content(&[message]).unwrap_err();
+        assert!(error.is_unsupported());
+        assert!(error.to_string().contains("audio input"));
     }
 
     #[test]

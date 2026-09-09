@@ -42,6 +42,15 @@ pub trait LlmClient: Send + Sync {
         "unknown"
     }
 
+    /// Validate provider-neutral content before a request is sent. Adapters
+    /// override this when their wire protocol cannot represent a media part;
+    /// the router calls it before retry/stream machinery so unsupported media
+    /// is reported explicitly instead of being silently dropped by a mapper.
+    fn validate_content(&self, messages: &[CanonicalMessage]) -> Result<(), LlmError> {
+        let _ = messages;
+        Ok(())
+    }
+
     async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError>;
 
     async fn chat_with_tools(

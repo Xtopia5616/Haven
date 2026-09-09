@@ -149,7 +149,7 @@ function drainQueue() {
  * @param {string} text
  * @param {object} [opts]
  * @param {Array<{media_type: string, data: string}>} [opts.images=null] - image attachments; null/empty for voice
- * @param {Array<{media_type: string, data: string, filename: string}>} [opts.files=null] - non-image file attachments
+ * @param {Array<{media_type: string, data: string, filename: string}>} [opts.files=null] - audio and ordinary file attachments
  * @param {boolean} [opts.voice=false] - true when forwarded from a voice transcript
  * @returns {Promise<any>} the `process_transcript` result
  */
@@ -207,7 +207,7 @@ async function doSubmit({
 	const hasFiles = Array.isArray(files) && files.length > 0;
 	const hasAttachments = hasImages || hasFiles;
 	// Images and files travel together as one attachment list; the backend
-	// splits them again (images go to the vision model, files to disk).
+	// splits inline media from ordinary files at the host boundary.
 	const attachments = [
 		...(hasImages ? images : []),
 		...(hasFiles ? files : []),

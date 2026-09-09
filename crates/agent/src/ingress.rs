@@ -27,7 +27,13 @@ fn extraction_label(decision: &MediaDecision) -> &'static str {
 /// generated images show up in the chat like a user attachment.
 fn attachment_from_generated_file(path: &std::path::Path) -> anyhow::Result<MessageAttachment> {
     let bytes = std::fs::read(path)?;
-    let media_type = haven_llm::media::detect_media_type(&bytes).to_string();
+    let media_type = haven_llm::media::detect_media_type_with_filename(
+        &bytes,
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default(),
+    )
+    .to_string();
     Ok(MessageAttachment {
         media_type,
         data: base64::engine::general_purpose::STANDARD.encode(&bytes),

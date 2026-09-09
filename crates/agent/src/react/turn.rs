@@ -110,7 +110,7 @@ impl ReActEngine {
 
         let tools = self.build_tool_definitions_for_session(session_id).await;
         let router = self.router();
-        let role = choose_agent_role(&router, request_context.has_image()).await;
+        let role = choose_agent_role(&router, request_context.media_requirements()).await;
         let partial_thought = Arc::new(std::sync::Mutex::new(String::new()));
         let partial_reasoning = Arc::new(std::sync::Mutex::new(String::new()));
 

@@ -17,7 +17,7 @@ use super::hooks::{
     AfterLlmInput, BeforeToolAction, InferCallback, LoopHooks, MemoryPatchHandle, ToolCallIdentity,
 };
 use super::retries::{AfterLlmAction, ResponsePolicy};
-use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_has_image};
+use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_media_requirements};
 
 /// Production hooks: context compaction, interval + pause infer, throttled
 /// MEMORY fence refresh (M2), response policy, and confirm pre-check.
@@ -75,7 +75,7 @@ impl LoopHooks for DefaultHooks {
                 .patch_canonical_memory_fence(&ctx.session_id, &description, &mut state.canonical)
                 .await;
         }
-        let has_image = canonical_has_image(&state.canonical);
+        let media_requirements = canonical_media_requirements(&state.canonical);
         // Resolve the exact per-session tool projection before compaction so
         // schema tokens participate in the context decision. The turn reuses
         // the same cached Arc immediately afterwards.
@@ -87,7 +87,7 @@ impl LoopHooks for DefaultHooks {
         // settled, so compaction and the following RequestContext snapshot
         // observe one coherent canonical projection.
         engine
-            .maybe_compact(ctx, state, has_image, &tool_defs, cancel)
+            .maybe_compact(ctx, state, media_requirements, &tool_defs, cancel)
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,

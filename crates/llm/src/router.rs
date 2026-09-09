@@ -473,6 +473,19 @@ impl LlmRouter {
         }
     }
 
+    /// Resolve the endpoint for a conversational request that contains audio.
+    /// Unlike [`Self::stt_role`], this is a best-effort chat route: an
+    /// unconfigured audio role falls back to the default model so the caller
+    /// can still use providers that accept audio on their normal chat slot.
+    pub async fn audio_role(&self) -> EndpointRole {
+        let cfg = self.config.read().await;
+        if cfg.stt_use_audio_model && cfg.is_configured(EndpointRole::AudioModel) {
+            EndpointRole::AudioModel
+        } else {
+            EndpointRole::DefaultModel
+        }
+    }
+
     /// Transcribe WAV audio through the STT role (`audio_model` / default).
     /// Tries native [`LlmClient::transcribe`] first; when the adapter reports
     /// [`LlmError::UnsupportedCapability`], falls back to multimodal chat
@@ -558,6 +571,7 @@ impl LlmRouter {
         role: &EndpointRole,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        primary.validate_content(&messages)?;
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
         drop(cfg);
@@ -763,6 +777,7 @@ impl LlmRouter {
         self.wait_rate_limit_cooldown(&role).await;
         self.check_circuit(&role).await?;
         let primary = self.select_endpoint(role);
+        primary.validate_content(&messages)?;
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
         drop(cfg);
@@ -946,6 +961,7 @@ impl LlmRouter {
             tools.len()
         );
         let primary = self.select_endpoint(role);
+        primary.validate_content(messages)?;
         let StreamAttemptHooks {
             on_chunk,
             on_attempt_start,

@@ -244,6 +244,54 @@ pub fn detect_media_type(data: &[u8]) -> &'static str {
     "application/octet-stream"
 }
 
+/// Detect a MIME type using content first and the filename only when the
+/// bytes do not carry a recognizable signature. This mirrors
+/// [`detect_modality`] and fixes extension-only formats such as SVG, AAC and
+/// common Office uploads whose browser MIME may be empty or generic.
+pub fn detect_media_type_with_filename(data: &[u8], filename: &str) -> &'static str {
+    let detected = detect_media_type(data);
+    if detected != "application/octet-stream" {
+        return detected;
+    }
+    media_type_from_extension(filename).unwrap_or(detected)
+}
+
+fn media_type_from_extension(filename: &str) -> Option<&'static str> {
+    let ext = filename.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "tiff" | "tif" => "image/tiff",
+        "ico" => "image/x-icon",
+        "svg" => "image/svg+xml",
+        "heic" => "image/heic",
+        "avif" => "image/avif",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" | "oga" => "audio/ogg",
+        "m4a" | "m4b" | "m4p" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wma" => "audio/x-ms-wma",
+        "opus" => "audio/opus",
+        "amr" => "audio/amr",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "ts" | "mts" => "video/mp2t",
+        "3gp" => "video/3gpp",
+        "pdf" => "application/pdf",
+        _ => return None,
+    })
+}
+
 /// Derive a file extension from a MIME type (for generated media files).
 pub fn extension_for_media_type(media_type: &str) -> &'static str {
     match media_type {
@@ -251,13 +299,20 @@ pub fn extension_for_media_type(media_type: &str) -> &'static str {
         "image/jpeg" | "image/jpg" => "jpg",
         "image/webp" => "webp",
         "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/svg+xml" => "svg",
         "audio/mpeg" => "mp3",
         "audio/wav" => "wav",
         "audio/mp4" => "m4a",
         "audio/ogg" => "ogg",
         "audio/flac" => "flac",
+        "audio/aac" => "aac",
+        "audio/opus" => "opus",
         "video/mp4" => "mp4",
         "video/webm" => "webm",
+        "video/x-msvideo" => "avi",
+        "video/quicktime" => "mov",
         _ => "bin",
     }
 }
@@ -347,6 +402,23 @@ mod tests {
             Modality::Document
         );
         assert_eq!(detect_modality(b"\x00\x01\x02", "notes.md"), Modality::Text);
+    }
+
+    #[test]
+    fn media_type_uses_filename_when_magic_is_unknown() {
+        assert_eq!(
+            detect_media_type_with_filename(b"<svg></svg>", "drawing.svg"),
+            "image/svg+xml"
+        );
+        assert_eq!(
+            detect_media_type_with_filename(b"audio bytes", "voice.aac"),
+            "audio/aac"
+        );
+        // A real signature still wins over a misleading filename.
+        assert_eq!(
+            detect_media_type_with_filename(b"%PDF-1.7", "not-an-image.png"),
+            "application/pdf"
+        );
     }
 
     #[test]

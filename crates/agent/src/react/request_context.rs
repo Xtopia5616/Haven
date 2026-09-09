@@ -7,7 +7,7 @@
 //! projection in one type makes it impossible for Turn, retry, and compaction
 //! paths to each invent their own clone/append/sanitize sequence.
 
-use super::{ReActEngine, ReActState, RetryNudge, canonical_has_image};
+use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_requirements};
 use haven_common::types::CanonicalMessage;
 
 /// One immutable provider request snapshot.
@@ -47,8 +47,8 @@ impl RequestContext {
         &self.messages
     }
 
-    pub(super) fn has_image(&self) -> bool {
-        canonical_has_image(&self.messages)
+    pub(super) fn media_requirements(&self) -> MediaRequirements {
+        canonical_media_requirements(&self.messages)
     }
 
     pub(super) fn repairs(&self) -> usize {

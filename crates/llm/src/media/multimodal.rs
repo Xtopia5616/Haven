@@ -18,6 +18,17 @@ pub fn image_part(media_type: &str, base64_data: String) -> ContentPart {
     }
 }
 
+/// Build an audio content part from an already-encoded base64 payload.
+/// Keeping this alongside [`image_part`] makes attachment injection and
+/// gateway fallbacks use the same provider-neutral shape.
+pub fn audio_part(media_type: &str, base64_data: String) -> ContentPart {
+    ContentPart::Audio {
+        content_type: "input_audio".into(),
+        media_type: media_type.to_string(),
+        data: base64_data,
+    }
+}
+
 /// Encode raw image bytes (base64) and build the image content part.
 pub fn image_part_from_bytes(media_type: &str, bytes: &[u8]) -> ContentPart {
     image_part(
@@ -28,11 +39,10 @@ pub fn image_part_from_bytes(media_type: &str, bytes: &[u8]) -> ContentPart {
 
 /// Encode raw audio bytes (base64) and build the audio content part.
 pub fn audio_part_from_bytes(media_type: &str, bytes: &[u8]) -> ContentPart {
-    ContentPart::Audio {
-        content_type: "input_audio".into(),
-        media_type: media_type.to_string(),
-        data: base64::engine::general_purpose::STANDARD.encode(bytes),
-    }
+    audio_part(
+        media_type,
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    )
 }
 
 #[cfg(test)]
@@ -80,6 +90,20 @@ mod tests {
         match part {
             ContentPart::Image { data, .. } => assert_eq!(data, "QUJD"),
             _ => panic!("expected Image part"),
+        }
+    }
+
+    #[test]
+    fn test_preencoded_audio_part_passthrough() {
+        let part = audio_part("audio/mpeg", "SUQz".into());
+        match part {
+            ContentPart::Audio {
+                media_type, data, ..
+            } => {
+                assert_eq!(media_type, "audio/mpeg");
+                assert_eq!(data, "SUQz");
+            }
+            _ => panic!("expected Audio part"),
         }
     }
 }

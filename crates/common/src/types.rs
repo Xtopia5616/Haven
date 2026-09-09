@@ -774,10 +774,21 @@ impl MessageAttachment {
     }
 
     /// True for vision-capable attachments (images), which are injected into
-    /// the model context as image content parts. Everything else is a file
-    /// attachment the agent reads from `path` via the file tool.
+    /// the model context as image content parts.
     pub fn is_image(&self) -> bool {
         self.media_type.starts_with("image/")
+    }
+
+    /// True when the attachment can be sent to a multimodal chat endpoint as
+    /// an inline content part. Images and audio are kept in base64 for this
+    /// purpose; ordinary files are persisted and exposed through their path.
+    pub fn is_inline_media(&self) -> bool {
+        self.is_image() || self.media_type.starts_with("audio/")
+    }
+
+    /// True when the attachment is an audio input rather than a generic file.
+    pub fn is_audio(&self) -> bool {
+        self.media_type.starts_with("audio/")
     }
 }
 
@@ -1209,6 +1220,21 @@ mod tests {
         let s = Supplement::default();
         assert!(s.text.is_empty());
         assert!(!s.is_answer);
+    }
+
+    #[test]
+    fn message_attachment_classifies_inline_media() {
+        let image = MessageAttachment::new("image/png", "aGVsbG8=");
+        assert!(image.is_image());
+        assert!(image.is_inline_media());
+        assert!(!image.is_audio());
+
+        let audio = MessageAttachment::new("audio/wav", "UklGRg==");
+        assert!(audio.is_audio());
+        assert!(audio.is_inline_media());
+
+        let file = MessageAttachment::new("application/pdf", "aGVsbG8=");
+        assert!(!file.is_inline_media());
     }
 
     #[test]
