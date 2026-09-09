@@ -58,9 +58,15 @@
 		enabledFilter = value;
 	}
 
+	function clearFilters() {
+		searchQuery = '';
+		enabledFilter = 'all';
+	}
+
 	const visibleBuiltinTools = $derived(builtinTools.filter(matchesResource));
 	const visibleMcpServers = $derived(mcpServers.filter(matchesResource));
 	const visibleSkills = $derived(skills.filter(matchesResource));
+	const hasFilters = $derived(Boolean(searchQuery.trim() || enabledFilter !== 'all'));
 	const activeResourceCount = $derived(
 		activeTab === 'builtin'
 			? visibleBuiltinTools.length
@@ -381,7 +387,7 @@
 				placeholder="搜索名称、描述或地址"
 			/>
 		</label>
-		<div class="resource-filter">
+		<div class="resource-filter-controls">
 			<MaterialSelect
 				id="resource-enabled-filter"
 				value={enabledFilter}
@@ -393,15 +399,21 @@
 				]}
 				onChange={handleEnabledFilterChange}
 			/>
+			{#if hasFilters}
+				<MaterialButton variant="text" label="清除" onclick={clearFilters} />
+			{/if}
 		</div>
 		<CountChip count={activeResourceCount} label="项" className="resource-count" live />
 	</div>
 
 	{#if activeTab === 'builtin'}
-		<div class="section motion-surface-enter">
-			<div class="toolbar md-toolbar">
-				<h2>内置工具</h2>
-				<div class="toolbar-actions">
+		<section class="resource-panel motion-surface-enter" aria-labelledby="builtin-tools-title">
+			<div class="resource-heading">
+				<div class="resource-heading-copy">
+					<h2 id="builtin-tools-title">内置工具</h2>
+					<p>Haven 自带的可调用能力，可以单独启用或停用。</p>
+				</div>
+				<div class="toolbar-actions toolbar-actions--paired">
 					<MaterialButton
 						variant="outlined"
 						label="重置熔断"
@@ -417,17 +429,20 @@
 			{:else if visibleBuiltinTools.length === 0}
 				<AsyncState title="没有匹配的内置工具" message="换一个关键词或清除状态筛选。" />
 			{:else}
-				<div class="server-list">
+				<div class="resource-list">
 					{#each visibleBuiltinTools as tool (tool.name)}
 						<BuiltinToolCard {tool} onToggle={handleToolToggle} />
 					{/each}
 				</div>
 			{/if}
-		</div>
+		</section>
 	{:else if activeTab === 'mcp'}
-		<div class="section motion-surface-enter">
-			<div class="toolbar md-toolbar">
-				<h2>MCP 服务器</h2>
+		<section class="resource-panel motion-surface-enter" aria-labelledby="mcp-servers-title">
+			<div class="resource-heading">
+				<div class="resource-heading-copy">
+					<h2 id="mcp-servers-title">MCP 服务器</h2>
+					<p>连接外部工具服务，并查看当前连接状态。</p>
+				</div>
 				<div class="toolbar-actions toolbar-actions--paired">
 					<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
 					<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
@@ -443,7 +458,7 @@
 			{:else if visibleMcpServers.length === 0}
 				<AsyncState title="没有匹配的 MCP 服务器" message="换一个关键词或清除状态筛选。" />
 			{:else}
-				<div class="server-list">
+				<div class="resource-list">
 					{#each visibleMcpServers as server (server.name)}
 						<McpServerCard
 							{server}
@@ -455,11 +470,14 @@
 					{/each}
 				</div>
 			{/if}
-		</div>
+		</section>
 	{:else}
-		<div class="section motion-surface-enter">
-			<div class="toolbar md-toolbar">
-				<h2>技能</h2>
+		<section class="resource-panel motion-surface-enter" aria-labelledby="skills-title">
+			<div class="resource-heading">
+				<div class="resource-heading-copy">
+					<h2 id="skills-title">技能</h2>
+					<p>管理可被 Agent 调用的技能和执行脚本。</p>
+				</div>
 				<div class="toolbar-actions toolbar-actions--paired">
 					<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
 					<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />
@@ -475,13 +493,13 @@
 			{:else if visibleSkills.length === 0}
 				<AsyncState title="没有匹配的技能" message="换一个关键词或清除状态筛选。" />
 			{:else}
-				<div class="server-list">
+				<div class="resource-list">
 					{#each visibleSkills as skill (skill.name)}
 						<SkillCard {skill} onToggle={handleToggle} />
 					{/each}
 				</div>
 			{/if}
-		</div>
+		</section>
 	{/if}
 </div>
 
@@ -501,55 +519,60 @@
 		max-width: var(--md-sys-content-max-width);
 	}
 	.resource-toolbar {
-		margin-bottom: var(--md-sys-space-lg);
+		margin-bottom: var(--md-sys-space-xl);
 	}
 	.resource-search {
 		flex: 1 1 280px;
 		min-width: 0;
 	}
-	.resource-filter {
-		width: min(180px, 30%);
+	.resource-filter-controls {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		min-width: 0;
+	}
+	.resource-filter-controls :global(.md-select-container) {
+		width: 140px;
+		flex-shrink: 0;
 	}
 	:global(.resource-count) {
 		flex: 0 0 auto;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
 	}
-	.section {
-		background: var(--md-sys-color-surface-container-low);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-xl);
-		margin-bottom: var(--md-sys-space-xl);
-		box-shadow: var(--md-sys-elevation-0);
-	}
-	.section:last-child {
-		margin-bottom: 0;
-	}
-	.section h2 {
-		font-size: var(--md-sys-typescale-title-medium-size);
-		font-weight: 700;
-		color: var(--md-sys-color-on-surface);
-		letter-spacing: 0;
-		line-height: var(--md-sys-typescale-title-medium-line-height);
-		margin-bottom: var(--md-sys-space-md);
-	}
-	.server-list {
+	.resource-panel {
 		display: flex;
 		flex-direction: column;
+		gap: var(--md-sys-space-lg);
+		min-width: 0;
 	}
-	.toolbar {
+	.resource-heading {
 		display: flex;
-		align-items: center;
+		align-items: baseline;
 		justify-content: space-between;
-		flex-wrap: wrap;
-		gap: var(--md-comp-toolbar-gap);
-		margin-bottom: var(--md-sys-space-md);
-		min-height: var(--md-comp-button-small-height);
+		gap: var(--md-sys-space-md);
+		min-width: 0;
 	}
-	.toolbar h2 {
+	.resource-heading-copy {
+		min-width: 0;
+	}
+	.resource-heading h2 {
 		margin: 0;
-		line-height: var(--md-sys-typescale-title-medium-line-height);
+		font-size: var(--md-sys-typescale-title-large-size);
+		font-weight: 650;
+		line-height: var(--md-sys-typescale-title-large-line-height);
+		color: var(--md-sys-color-on-surface);
+	}
+	.resource-heading p {
+		margin: var(--md-sys-space-xs) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.resource-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-sm);
 	}
 	.toolbar-actions {
 		display: flex;
@@ -584,14 +607,19 @@
 			flex-direction: column;
 		}
 		.resource-search,
-		.resource-filter {
+		.resource-filter-controls {
 			width: 100%;
 		}
 		.resource-search {
 			flex: 0 1 auto;
 		}
-		.toolbar {
-			align-items: flex-start;
+		.resource-filter-controls {
+			align-items: stretch;
+			flex-direction: column;
+			gap: var(--md-sys-space-sm);
+		}
+		.resource-filter-controls :global(.md-select-container) {
+			width: 100%;
 		}
 		.toolbar-actions {
 			width: 100%;
@@ -607,9 +635,6 @@
 		}
 	}
 	@media (max-width: 455px) {
-		.resource-filter {
-			width: 100%;
-		}
 		:global(.resource-count) {
 			align-self: flex-start;
 		}
@@ -619,6 +644,13 @@
 		.toolbar-actions :global(.md-btn) {
 			width: 100%;
 			flex: 0 0 var(--md-comp-button-small-height);
+		}
+		.resource-heading {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.toolbar-actions--paired {
+			width: 100%;
 		}
 	}
 </style>

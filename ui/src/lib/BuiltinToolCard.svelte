@@ -1,5 +1,6 @@
 <script>
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
+	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
@@ -8,6 +9,28 @@
 	/** @param {boolean} checked */
 	function handleToggle(checked) {
 		onToggle?.(tool.name, checked);
+	}
+
+	/** @param {string} risk */
+	function riskLabel(risk) {
+		return (
+			{
+				safe: '安全',
+				low: '低风险',
+				medium: '中风险',
+				high: '高风险',
+				critical: '严重风险',
+				unknown: '风险未知',
+			}[risk] || risk
+		);
+	}
+
+	/** @param {string} risk */
+	function riskTone(risk) {
+		if (risk === 'safe' || risk === 'low') return 'success';
+		if (risk === 'medium') return 'warning';
+		if (risk === 'high' || risk === 'critical') return 'error';
+		return 'neutral';
 	}
 
 	let contextMenuItems = $derived([
@@ -43,10 +66,11 @@
 	{#snippet header()}
 		<div class="card-name">{tool.name}</div>
 		<div class="card-meta">
-			<span class="risk-badge risk-{tool.risk}">Risk: {tool.risk}</span>
-			<span class="enabled-badge" class:enabled={tool.enabled} class:disabled={!tool.enabled}>
-				{tool.enabled ? 'Enabled' : 'Disabled'}
-			</span>
+			<StatusBadge label={`风险：${riskLabel(tool.risk)}`} tone={riskTone(tool.risk)} />
+			<StatusBadge
+				label={tool.enabled ? '已启用' : '已停用'}
+				tone={tool.enabled ? 'success' : 'error'}
+			/>
 		</div>
 	{/snippet}
 	{#snippet actions()}
@@ -57,9 +81,9 @@
 		/>
 	{/snippet}
 	{#snippet children()}
-		<p class="desc">{tool.desc || 'No description'}</p>
+		<p class="desc">{tool.desc || '暂无描述'}</p>
 		{#if tool.schema && Object.keys(tool.schema).length > 0}
-			<h4>Input Schema</h4>
+			<h4>输入 Schema</h4>
 			<pre>{JSON.stringify(tool.schema, null, 2)}</pre>
 		{/if}
 	{/snippet}
@@ -70,7 +94,7 @@
 		font-size: var(--md-sys-typescale-body-large-size);
 		font-weight: 700;
 		line-height: var(--md-sys-typescale-body-large-line-height);
-		color: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-surface);
 		margin-bottom: var(--md-sys-space-xs);
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -83,44 +107,6 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		flex-wrap: wrap;
-	}
-	.risk-badge,
-	.enabled-badge {
-		padding: 2px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-weight: 700;
-	}
-	.risk-badge.risk-safe {
-		background: var(--md-sys-color-primary-container, #d2e3fc);
-		color: var(--md-sys-color-on-primary-container, #001d36);
-	}
-	.risk-badge.risk-low {
-		background: var(--md-sys-color-tertiary-container, #cbe9f0);
-		color: var(--md-sys-color-on-tertiary-container, #001f25);
-	}
-	.risk-badge.risk-medium {
-		background: var(--md-sys-color-secondary-container, #d9e3f3);
-		color: var(--md-sys-color-on-secondary-container, #0e1d31);
-	}
-	.risk-badge.risk-high {
-		background: #ffd9d4;
-		color: #410002;
-	}
-	.risk-badge.risk-critical {
-		background: #93000a;
-		color: #ffffff;
-	}
-	.risk-badge.risk-unknown {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.enabled-badge.enabled {
-		background: var(--md-sys-color-success-container);
-		color: var(--md-sys-color-on-success-container);
-	}
-	.enabled-badge.disabled {
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
 	}
 	.desc {
 		font-size: var(--md-sys-typescale-body-small-size);

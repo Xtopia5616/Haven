@@ -27,17 +27,25 @@
 
 	/** @param {any} status */
 	function statusLabel(status) {
-		if (typeof status === 'string') return status;
+		/** @type {Record<string, string>} */
+		const labels = {
+			Connected: '已连接',
+			Connecting: '连接中',
+			Disconnected: '已断开',
+			Offline: '离线',
+			Unknown: '未知',
+		};
+		if (typeof status === 'string') return labels[status] || status;
 		if (status && typeof status === 'object') {
-			if ('Connected' in status) return 'Connected';
-			if ('Connecting' in status) return 'Connecting';
-			if ('Disconnected' in status) return 'Disconnected';
+			if ('Connected' in status) return '已连接';
+			if ('Connecting' in status) return '连接中';
+			if ('Disconnected' in status) return '已断开';
 			if ('Offline' in status) {
 				const err = status.Offline?.error || '';
-				return err ? `Offline: ${err}` : 'Offline';
+				return err ? `离线：${err}` : '离线';
 			}
 		}
-		return 'Unknown';
+		return '未知';
 	}
 
 	function isConnected() {
@@ -107,7 +115,7 @@
 	{#snippet header()}
 		<div class="card-name">
 			<span class="card-name-text">{server.name}</span>
-			<span class="tool-count">{server.tools?.length || 0} tools</span>
+			<span class="tool-count">{server.tools?.length || 0} 个工具</span>
 		</div>
 		<div class="card-meta">
 			<span class="transport-badge">{server.transport || 'stdio'}</span>
@@ -115,14 +123,14 @@
 				<span class="endpoint">{server.url}</span>
 			{/if}
 			<StatusBadge
-				label={server.enabled ? 'Enabled' : 'Disabled'}
+				label={server.enabled ? '已启用' : '已停用'}
 				tone={server.enabled ? 'success' : 'neutral'}
 				className="enabled-badge"
 			/>
 			<StatusBadge label={statusLabel(server.status)} tone={statusTone()} />
 			{#if server.last_seen_at}
 				<span class="last-seen"
-					>Last seen: {new Date(server.last_seen_at * 1000).toLocaleTimeString()}</span
+					>最近连接：{new Date(server.last_seen_at * 1000).toLocaleTimeString()}</span
 				>
 			{/if}
 		</div>
@@ -160,18 +168,18 @@
 		/>
 	{/snippet}
 	{#snippet children()}
-		<h4>Tools</h4>
+		<h4>提供的工具</h4>
 		{#if server.tools && server.tools.length > 0}
 			<div class="tool-list">
 				{#each server.tools as tool}
 					<div class="tool-item">
 						<div class="tool-item-name">{tool.name}</div>
-						<div class="tool-item-desc">{tool.description || 'No description'}</div>
+						<div class="tool-item-desc">{tool.description || '暂无描述'}</div>
 						{#if tool.input_schema && Object.keys(tool.input_schema).length > 0}
 							<div class="schema-details">
 								<MaterialCollapsible>
 									{#snippet header()}
-										<span class="schema-label">Input Schema</span>
+										<span class="schema-label">输入 Schema</span>
 									{/snippet}
 									<pre>{JSON.stringify(tool.input_schema, null, 2)}</pre>
 								</MaterialCollapsible>
@@ -181,7 +189,7 @@
 				{/each}
 			</div>
 		{:else}
-			<p class="no-tools">No tools available</p>
+			<p class="no-tools">暂无可用工具</p>
 			{#if server.diagnostic}
 				<p class="diag-msg">{server.diagnostic}</p>
 			{/if}

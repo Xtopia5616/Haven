@@ -94,11 +94,11 @@
 			{/if}
 			<span class="meta-badge lang">{skill.language}</span>
 			<StatusBadge
-				label={skill.enabled ? 'Enabled' : 'Disabled'}
+				label={skill.enabled ? '已启用' : '已停用'}
 				tone={skill.enabled ? 'success' : 'error'}
 			/>
 			{#if skill.has_script}
-				<span class="script-badge">script</span>
+				<span class="script-badge">含脚本</span>
 			{/if}
 		</div>
 	{/snippet}
@@ -110,13 +110,13 @@
 		/>
 	{/snippet}
 	{#snippet children()}
-		<p class="desc">{skill.description || 'No description'}</p>
+		<p class="desc">{skill.description || '暂无描述'}</p>
 
-		<h4>Root</h4>
+		<h4>技能路径</h4>
 		<code class="path">{skill.root}</code>
 
 		{#if skill.has_script}
-			<h4>Execution Preview</h4>
+			<h4>执行预览</h4>
 			<div class="preview-row">
 				<textarea
 					class="preview-input"
@@ -127,7 +127,7 @@
 					autocomplete="off"></textarea>
 				<MaterialButton
 					variant="filled"
-					label={running ? 'Running...' : 'Run'}
+					label={running ? '运行中…' : '运行'}
 					className="btn-preview"
 					onclick={runPreview}
 					disabled={running}

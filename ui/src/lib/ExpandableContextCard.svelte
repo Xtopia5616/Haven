@@ -18,7 +18,8 @@
 
 	/** @param {number} duration */
 	function motionDuration(duration) {
-		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return duration;
+		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function')
+			return duration;
 		return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration;
 	}
 
@@ -75,7 +76,10 @@
 		{/if}
 	</div>
 	{#if expanded}
-		<div class="card-body" transition:slide={{ duration: motionDuration(180), easing: cubicOut }}>
+		<div
+			class="card-body"
+			transition:slide={{ duration: motionDuration(180), easing: cubicOut }}
+		>
 			{@render children?.()}
 		</div>
 	{/if}
@@ -94,13 +98,18 @@
 		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
-		margin-bottom: var(--md-sys-space-sm);
+		margin: 0;
 		overflow: hidden;
-		transition: border-color var(--md-sys-motion-duration-short)
-			var(--md-sys-motion-easing-standard);
+		transition:
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.expandable-context-card:hover {
+		background: var(--md-sys-color-surface-container);
 		border-color: var(--md-sys-color-outline);
+		box-shadow: var(--md-sys-elevation-1);
 	}
 	.expandable-context-card.expanded {
 		border-color: var(--md-sys-color-primary);
@@ -110,7 +119,8 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: flex-start;
-		padding: var(--md-sys-space-lg) var(--md-sys-space-xl);
+		gap: var(--md-sys-space-md);
+		padding: var(--md-sys-space-md);
 		cursor: pointer;
 		user-select: none;
 	}
@@ -127,7 +137,7 @@
 		padding-top: var(--md-sys-space-2xs);
 	}
 	.card-body {
-		padding: 0 var(--md-sys-space-xl) var(--md-sys-space-lg);
+		padding: 0 var(--md-sys-space-md) var(--md-sys-space-md);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
 	}
 	:global(.expandable-context-card .card-body h4) {
