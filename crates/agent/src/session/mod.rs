@@ -245,6 +245,7 @@ struct ScheduledConfirmPending {
     session_id: Option<String>,
     tool_name: String,
     tool_args: Value,
+    receipt: haven_tools::ConfirmationReceipt,
     /// Notification title from the scheduled action (outcome toast).
     title: String,
 }

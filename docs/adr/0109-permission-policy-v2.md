@@ -22,6 +22,18 @@
    清除全部规则；清除规则不改变用户选中的默认策略。
 6. 旧配置不做隐式字段迁移。检测到 `confirmation_mode` 或 `min_risk_level` 时备份
    配置并使用平衡默认值，用户需要重新建立权限策略。
+7. 一次性确认不再以 `bool` 传递。`ConfirmationReceipt` 绑定
+   `confirmation_id`、精确 `permission_key`、规范化输入 SHA-256、有效风险、策略
+   revision 和过期时间；恢复执行前必须重新校验全部字段，风险升高、Critical、策略
+   变化、输入变化、拒绝规则或过期都会 fail-closed。
+8. MCP/skill 的 renderer 直调在需要确认时进入后端 pending 队列，并复用
+   `confirm:requested` 与 `resolve_confirmation`；直调错误只允许返回 request id、
+   脱敏摘要、权限键和风险等级。原始参数只留在后端 pending 状态。
+9. `ToolConfig.risk_override` 只能提高内建风险，不能降低工具注册表声明的安全事实；
+   Critical 仍是不可由规则绕过的硬底线。永久权限写盘成功后才发布到运行时授权引擎，
+   防止内存与配置文件短暂分叉。
+10. 执行日志只记录工具名、字段数量和序列化长度，不记录完整输入；确认摘要由后端
+    按工具族生成，不把未知动态字段直接转发到 renderer。
 
 ## 替代方案
 
@@ -49,7 +61,8 @@ corepack pnpm --dir ui run build
 ```
 
 重点回归：四种策略的边界、策略变更清除会话授权、父子权限 deny-first、确认摘要不含
-原始敏感参数、旧配置备份，以及 reset_permissions 的持久化原子性。
+原始敏感参数、receipt 的输入/策略/风险校验、Critical 与风险覆盖底线、直调 pending、
+旧配置备份，以及 reset_permissions 的持久化原子性。
 
 ## 回滚与重置
 

@@ -1,4 +1,4 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::commands::log_err;
 use crate::commands::{SessionListResponse, emit_event_logged};
 use crate::events::{
@@ -107,12 +107,17 @@ pub async fn resolve_confirmation(
     // step that a concurrent `end_session`/rollback had already removed.
     let resolution = state
         .executor
-        .resolve_confirmation(&step_id.into(), confirmed)
+        .resolve_confirmation(&step_id.clone().into(), confirmed)
         .await
         .map_err(|e| log_err("resolve_confirmation", e))?;
 
     let Some(resolution) = resolution else {
-        return Err("Confirmation request is stale or already resolved".into());
+        let pending = state.ui_confirmations.lock().await.remove(&step_id);
+        let Some(pending) = pending else {
+            return Err("Confirmation request is stale or already resolved".into());
+        };
+        return resolve_ui_confirmation(&state, pending, confirmed, trust_session, effect, scope)
+            .await;
     };
 
     let (perm_effect, perm_scope) = parse_permission_decision(
@@ -127,16 +132,19 @@ pub async fn resolve_confirmation(
         return Ok(());
     }
 
-    // Deny grants use the tool parent so「拒绝此工具」covers sibling ops;
-    // Allow stays on the precise key for least privilege.
+    // Both effects stay on the exact operation key. The dialog's persistent
+    // deny action means “deny this operation”; a broader tool/server scope
+    // must be an explicit future policy operation, not an accidental side
+    // effect of rejecting one invocation.
     let precise =
         haven_common::types::permission_key(&resolution.tool_name, &resolution.tool_input);
-    let key = match perm_effect {
-        haven_common::types::PermissionEffect::Deny => {
-            haven_common::types::permission_tool_root(&precise).to_string()
-        }
-        haven_common::types::PermissionEffect::Allow => precise,
-    };
+    let key = precise;
+    // Persist Always before publishing it to the live authorization engine.
+    // If the atomic config write fails, the process must not temporarily
+    // behave as if a permanent grant exists when restart would forget it.
+    if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
+        persist_permanent_permission(&state, &key, perm_effect).await?;
+    }
     state
         .tools
         .authorization
@@ -147,10 +155,97 @@ pub async fn resolve_confirmation(
             perm_scope,
         )
         .await;
+    Ok(())
+}
 
-    if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
-        persist_permanent_permission(&state, &key, perm_effect).await?;
+async fn resolve_ui_confirmation(
+    state: &AppState,
+    pending: UiConfirmationPending,
+    confirmed: bool,
+    trust_session: Option<bool>,
+    effect: Option<String>,
+    scope: Option<String>,
+) -> Result<(), String> {
+    tracing::debug!(
+        tool = %pending.tool_name,
+        risk = ?pending.risk_level,
+        summary = %pending.summary,
+        "resolving renderer-triggered confirmation"
+    );
+    let (perm_effect, perm_scope) = parse_permission_decision(
+        confirmed,
+        trust_session,
+        effect.as_deref(),
+        scope.as_deref(),
+    )?;
+
+    if confirmed {
+        let (tool_name, input) = match &pending.action {
+            UiConfirmationAction::Mcp { args, .. } => (&pending.tool_name, args),
+            UiConfirmationAction::Skill { params, .. } => (&pending.tool_name, params),
+        };
+        state
+            .tools
+            .authorization
+            .verify_receipt(
+                Some(&pending.session_id),
+                tool_name,
+                input,
+                pending.risk_level,
+                &pending.receipt,
+            )
+            .await
+            .map_err(|reason| format!("confirmation is no longer valid: {reason}"))?;
+
+        match &pending.action {
+            UiConfirmationAction::Mcp { client, tool, args } => {
+                state
+                    .tools
+                    .mcp_manager
+                    .call_tool(
+                        client,
+                        tool,
+                        args.clone(),
+                        tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|error| log_err("resolve_ui_confirmation mcp", error))?;
+            }
+            UiConfirmationAction::Skill { name, params } => {
+                let skill = state
+                    .tools
+                    .skills_engine
+                    .get_skill(name)
+                    .await
+                    .ok_or_else(|| format!("skill '{}' not found", name))?;
+                state
+                    .tools
+                    .skill_runner
+                    .read()
+                    .await
+                    .execute(&skill, params, tokio_util::sync::CancellationToken::new())
+                    .await
+                    .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
+            }
+        }
     }
+
+    if matches!(perm_scope, haven_common::types::PermissionScope::Once) {
+        return Ok(());
+    }
+    if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
+        persist_permanent_permission(state, &pending.permission_key, perm_effect).await?;
+    }
+    state
+        .tools
+        .authorization
+        .grant(
+            Some(&pending.session_id),
+            &pending.permission_key,
+            perm_effect,
+            perm_scope,
+        )
+        .await;
     Ok(())
 }
 

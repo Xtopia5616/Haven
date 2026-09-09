@@ -16,7 +16,6 @@ use super::tool_batch_policy::ToolRetryBudget;
 use super::*;
 use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
 use futures_util::StreamExt;
-use haven_common::types::RiskLevel;
 use haven_memory::repositories::session_steps::ActionStepOutcome;
 use haven_tools::{ToolConcurrency, ToolExecutionOutcome};
 use std::collections::HashMap;
@@ -56,7 +55,7 @@ fn tool_execution_outcome(outcome: ActionStepOutcome) -> ToolExecutionOutcome {
 
 struct AdmittedTool {
     plan_index: usize,
-    pre_confirmed: bool,
+    receipt: Option<haven_tools::ConfirmationReceipt>,
     concurrency: ToolConcurrency,
 }
 
@@ -132,7 +131,7 @@ impl ReActEngine {
                 )
                 .await
             {
-                BeforeToolAction::Proceed { confirmed } => {
+                BeforeToolAction::Proceed { receipt } => {
                     let concurrency = self
                         .executor
                         .tool_concurrency(
@@ -143,7 +142,7 @@ impl ReActEngine {
                         .await;
                     admission.runnable.push(AdmittedTool {
                         plan_index,
-                        pre_confirmed: confirmed == Some(true),
+                        receipt,
                         concurrency,
                     });
                 }
@@ -152,15 +151,16 @@ impl ReActEngine {
                         .failures
                         .push(DeferredAdmissionFailure { plan_index, error });
                 }
-                BeforeToolAction::NeedConfirm { risk_level } => {
+                BeforeToolAction::NeedConfirm { receipt } => {
                     admission.need_confirm.push(ConfirmPendingTool {
-                        confirm_id: haven_common::types::new_id("conf"),
+                        confirm_id: receipt.confirmation_id.to_string(),
                         tool_name: planned.action.tool_name.clone(),
                         tool_input: planned.action.tool_input.clone(),
                         tool_call_id: planned.action.tool_call_id.clone().unwrap_or_default(),
                         step_id: planned.step_id.clone(),
                         action_index: planned.action_index,
-                        risk_level,
+                        risk_level: receipt.effective_risk,
+                        receipt: Some(receipt),
                         decision: None,
                     });
                 }
@@ -184,26 +184,40 @@ impl ReActEngine {
             // later result would need a second durable in-memory batch state
             // to survive the pause. Every plan entry is carried in one
             // pending record and resumed through the same ordered slots.
-            let gated_by_index: HashMap<u32, haven_common::types::RiskLevel> = admission
+            let gated_by_index: HashMap<
+                u32,
+                (
+                    haven_common::types::RiskLevel,
+                    haven_tools::ConfirmationReceipt,
+                ),
+            > = admission
                 .need_confirm
                 .iter()
-                .map(|tool| (tool.action_index, tool.risk_level))
+                .filter_map(|tool| {
+                    tool.receipt
+                        .clone()
+                        .map(|receipt| (tool.action_index, (tool.risk_level, receipt)))
+                })
                 .collect();
             admission.need_confirm = plan
                 .iter()
                 .map(|planned| {
-                    let risk_level = gated_by_index
+                    let (risk_level, receipt) = gated_by_index
                         .get(&planned.action_index)
-                        .copied()
-                        .unwrap_or(haven_common::types::RiskLevel::Safe);
+                        .map(|(risk, receipt)| (*risk, Some(receipt.clone())))
+                        .unwrap_or((haven_common::types::RiskLevel::Safe, None));
                     ConfirmPendingTool {
-                        confirm_id: haven_common::types::new_id("conf"),
+                        confirm_id: receipt
+                            .as_ref()
+                            .map(|receipt| receipt.confirmation_id.to_string())
+                            .unwrap_or_else(|| haven_common::types::new_id("conf").to_string()),
                         tool_name: planned.action.tool_name.clone(),
                         tool_input: planned.action.tool_input.clone(),
                         tool_call_id: planned.action.tool_call_id.clone().unwrap_or_default(),
                         step_id: planned.step_id.clone(),
                         action_index: planned.action_index,
                         risk_level,
+                        receipt,
                         // Safe, blocked, invalid, and already trusted calls do
                         // not need a user decision. They still wait behind
                         // the same batch barrier and are revalidated on
@@ -291,7 +305,7 @@ impl ReActEngine {
                         step_num,
                         action_index,
                         step_id,
-                        admitted.pre_confirmed,
+                        admitted.receipt,
                     )
                     .await;
                     (admitted.plan_index, result)
@@ -728,10 +742,8 @@ impl ReActEngine {
                     plan_index,
                     // Only calls that actually crossed the confirmation
                     // gate may bypass it on resume. Siblings that were safe
-                    // at admission must be rechecked fail-closed after the
-                    // pause; a dynamic policy change must never become an
-                    // implicit approval.
-                    pre_confirmed: !matches!(pending_tool.risk_level, RiskLevel::Safe),
+                    // at admission have no receipt and are rechecked normally.
+                    receipt: pending_tool.receipt.clone(),
                     concurrency,
                 });
             } else {

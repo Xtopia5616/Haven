@@ -125,6 +125,11 @@ pub struct ConfirmPendingTool {
     #[serde(default)]
     pub action_index: u32,
     pub risk_level: haven_common::types::RiskLevel,
+    /// One-shot proof issued by the authorization engine for this exact
+    /// invocation. `None` is used for safe/trusted siblings carried behind
+    /// the same batch barrier and therefore rechecked normally on resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<haven_tools::ConfirmationReceipt>,
     /// `None` = still waiting; `Some(true/false)` = user decided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<bool>,
@@ -639,6 +644,7 @@ mod tests {
                         step_id: "step-a".into(),
                         action_index: 0,
                         risk_level: haven_common::types::RiskLevel::High,
+                        receipt: None,
                         decision: None,
                     },
                     ConfirmPendingTool {
@@ -649,6 +655,7 @@ mod tests {
                         step_id: "step-a".into(),
                         action_index: 1,
                         risk_level: haven_common::types::RiskLevel::High,
+                        receipt: None,
                         decision: None,
                     },
                 ],

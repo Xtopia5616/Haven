@@ -50,6 +50,7 @@ mod tests {
                 step_id: "step-test".into(),
                 action_index: 0,
                 risk_level: haven_common::types::RiskLevel::High,
+                receipt: None,
                 decision: None,
             }],
         };

@@ -281,7 +281,7 @@ pub(super) async fn execute_tool_action(
     step_num: u32,
     action_index: u32,
     step_id: String,
-    pre_confirmed: bool,
+    receipt: Option<haven_tools::ConfirmationReceipt>,
 ) -> CompletedTool {
     let tool_name = action.tool_name.clone();
     let tool_input = action.tool_input.clone();
@@ -295,7 +295,7 @@ pub(super) async fn execute_tool_action(
             .unwrap_or_default()
     );
     tracing::trace!(
-        "tool '{}' at step {} full input: {} chars",
+        "tool '{}' at step {} input size: {} chars",
         tool_name,
         step_num,
         tool_input
@@ -304,7 +304,7 @@ pub(super) async fn execute_tool_action(
             .unwrap_or(0)
     );
 
-    let result = if pre_confirmed {
+    let result = if let Some(receipt) = receipt {
         executor
             .execute_step_preconfirmed_with_identity(
                 &session_id,
@@ -314,7 +314,7 @@ pub(super) async fn execute_tool_action(
                 action_index,
                 action.tool_call_id.as_deref(),
                 &step_id,
-                true,
+                receipt,
             )
             .await
     } else {

@@ -21,8 +21,10 @@ pub mod session;
 pub mod settings;
 pub mod skills;
 
-use crate::app_state::AppState;
-use crate::events::LLM_CONFIG_CHANGED_EVENT;
+use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
+use crate::events::{
+    CONFIRM_REQUESTED_EVENT, ConfirmationRequestedEvent, LLM_CONFIG_CHANGED_EVENT,
+};
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
 use haven_common::types::RiskLevel;
@@ -30,6 +32,7 @@ use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use serde::Serialize;
 use std::sync::Arc;
+use tauri::AppHandle;
 use tauri::Emitter;
 
 /// Event name for "the LlmRouter was rebuilt / model config changed". The
@@ -107,21 +110,63 @@ pub(crate) async fn run_admin_op(
     Ok(result)
 }
 
-/// Build the JSON payload returned to the frontend when a tool call needs
-/// user confirmation. Used by both `mcp_tool_call` and `execute_skill` so the
-/// wire shape is identical across tool types.
-pub(crate) fn confirmation_error(
+/// Register a renderer-triggered MCP/skill invocation and expose only the
+/// renderer-safe confirmation contract. The executor owns agent/scheduled
+/// confirmations; this small app-level store gives direct UI invocations the
+/// same resolve path without moving provider arguments across the boundary.
+pub(crate) async fn queue_ui_confirmation(
+    state: &AppState,
+    app: &AppHandle,
     tool_name: String,
     params: serde_json::Value,
     risk_level: RiskLevel,
+    receipt: haven_tools::ConfirmationReceipt,
+    action: UiConfirmationAction,
 ) -> Result<String, String> {
+    let request_id = receipt.confirmation_id.clone();
+    let summary = haven_tools::permission_prompt_summary(&tool_name, &params);
+    let permission_key = receipt.permission_key.clone();
+    state.ui_confirmations.lock().await.insert(
+        request_id.to_string(),
+        UiConfirmationPending {
+            session_id: "ui".into(),
+            tool_name: tool_name.clone(),
+            permission_key: permission_key.clone(),
+            risk_level,
+            summary: summary.clone(),
+            receipt: receipt.clone(),
+            action,
+        },
+    );
+    if let Err(error) = app.emit(
+        CONFIRM_REQUESTED_EVENT,
+        ConfirmationRequestedEvent {
+            step_id: request_id.clone(),
+            invocation_step_id: None,
+            action_index: 0,
+            tool_call_id: None,
+            tool_name,
+            risk_level,
+            session_id: "ui".into(),
+            summary: summary.clone(),
+            permission_key: permission_key.clone(),
+        },
+    ) {
+        state
+            .ui_confirmations
+            .lock()
+            .await
+            .remove(&request_id.to_string());
+        return Err(log_err("queue_ui_confirmation", error));
+    }
     serde_json::to_string(&serde_json::json!({
         "requires_confirmation": true,
-        "tool_name": tool_name,
-        "params": params,
+        "request_id": request_id,
+        "summary": summary,
+        "permission_key": permission_key,
         "risk_level": risk_level,
     }))
-    .map_err(|e| log_err("confirmation_error", e))
+    .map_err(|error| log_err("queue_ui_confirmation", error))
 }
 
 /// Rebuild the LlmRouter from the current config and hot-swap it into the

@@ -390,7 +390,8 @@ impl SessionExecutor {
     }
 
     /// Like [`execute_step`], but skips the blocking confirm wait when
-    /// `pre_confirmed` is set (Phase 5 / E3 resume after pause-confirm).
+    /// `receipt` is supplied only when the authorization engine approved the
+    /// exact invocation earlier (Phase 5 / E3 resume after pause-confirm).
     pub async fn execute_step_preconfirmed(
         &self,
         session_id: &str,
@@ -398,17 +399,10 @@ impl SessionExecutor {
         input: Value,
         step_num: u32,
         step_id: &str,
-        pre_confirmed: bool,
+        receipt: haven_tools::ConfirmationReceipt,
     ) -> anyhow::Result<ToolResult> {
         self.execute_step_preconfirmed_with_identity(
-            session_id,
-            tool_name,
-            input,
-            step_num,
-            0,
-            None,
-            step_id,
-            pre_confirmed,
+            session_id, tool_name, input, step_num, 0, None, step_id, receipt,
         )
         .await
     }
@@ -423,7 +417,7 @@ impl SessionExecutor {
         action_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
-        pre_confirmed: bool,
+        receipt: haven_tools::ConfirmationReceipt,
     ) -> anyhow::Result<ToolResult> {
         self.execute_step_inner(
             session_id,
@@ -433,7 +427,7 @@ impl SessionExecutor {
             action_index,
             tool_call_id,
             step_id,
-            Some(pre_confirmed),
+            Some(receipt),
         )
         .await
     }
@@ -448,15 +442,18 @@ impl SessionExecutor {
         action_index: u32,
         tool_call_id: Option<&str>,
         step_id: &str,
-        pre_confirmed: Option<bool>,
+        receipt: Option<haven_tools::ConfirmationReceipt>,
     ) -> anyhow::Result<ToolResult> {
         let tool_call_id = tool_call_id.map(str::to_string);
         tracing::debug!(
-            "execute_step: session={} tool={} input={:?} pre_confirmed={:?}",
+            "execute_step: session={} tool={} input_fields={} input_chars={} receipt={}",
             session_id,
             tool_name,
-            input,
-            pre_confirmed
+            input.as_object().map(|object| object.len()).unwrap_or(0),
+            serde_json::to_string(&input)
+                .map(|serialized| serialized.len())
+                .unwrap_or(0),
+            receipt.is_some(),
         );
         {
             let entry = { self.sessions.lock().await.get(session_id).cloned() };
@@ -516,7 +513,7 @@ impl SessionExecutor {
                 tool_name,
                 input.clone(),
                 cancel.clone(),
-                pre_confirmed,
+                receipt,
                 Some(step_id),
             )
             .await
@@ -675,7 +672,7 @@ impl SessionExecutor {
         tool_name: &str,
         input: Value,
         cancel: CancellationToken,
-        pre_confirmed: Option<bool>,
+        receipt: Option<haven_tools::ConfirmationReceipt>,
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolExecution> {
         let risk_level = self
@@ -683,6 +680,36 @@ impl SessionExecutor {
             .get_risk_level(session_id, tool_name, &input)
             .await;
         let mut confirmed: Option<bool> = None;
+        if let Some(receipt) = receipt.as_ref()
+            && let Err(reason) = self
+                .tools
+                .authorization
+                .verify_receipt(session_id, tool_name, &input, risk_level, receipt)
+                .await
+        {
+            tracing::warn!(
+                tool = %tool_name,
+                session = %session_id.unwrap_or("action"),
+                reason = %reason,
+                "confirmation receipt rejected; refusing to execute"
+            );
+            return Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: Value::Null,
+                    error: Some(format!(
+                        "The confirmation for operation '{}' is no longer valid ({reason}). The operation was not executed.",
+                        tool_name
+                    )),
+                    truncated: false,
+                    outcome: haven_tools::ToolExecutionOutcome::Cancelled,
+                    attempts: 1,
+                    signals: haven_tools::ToolSignals::default(),
+                },
+                risk_level,
+                confirmed: Some(false),
+            });
+        }
         match self
             .tools
             .authorization
@@ -709,20 +736,18 @@ impl SessionExecutor {
             }
             ConfirmationResult::RequiresConfirmation { .. } => {
                 // R2 / Phase 5 E3: never block inside the tool future.
-                // Callers must pre-decide via pause-confirm (`Some(true|false)`)
-                // or `request_scheduled_confirm`. Missing pre_confirmed fails closed.
-                match pre_confirmed {
-                    Some(true) => {
+                // Callers must pre-decide via pause-confirm or
+                // `request_scheduled_confirm`. Missing receipt fails closed.
+                match receipt {
+                    Some(_) => {
                         confirmed = Some(true);
                     }
-                    Some(false) | None => {
-                        if pre_confirmed.is_none() {
-                            tracing::warn!(
-                                tool = %tool_name,
-                                session = %session_id.unwrap_or("action"),
-                                "execute_gated RequiresConfirmation without pre_confirmed; rejecting (R2 fail-closed)"
-                            );
-                        }
+                    None => {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            session = %session_id.unwrap_or("action"),
+                            "execute_gated RequiresConfirmation without a receipt; rejecting (R2 fail-closed)"
+                        );
                         return Ok(ToolExecution {
                             result: ToolResult {
                                 success: false,
@@ -763,10 +788,10 @@ impl SessionExecutor {
         session_id: Option<&str>,
         tool_name: &str,
         tool_args: Value,
-        risk_level: RiskLevel,
+        receipt: haven_tools::ConfirmationReceipt,
         title: &str,
     ) -> Option<haven_common::types::ConfirmId> {
-        let step_id: haven_common::types::ConfirmId = haven_common::types::new_id("conf").into();
+        let step_id = receipt.confirmation_id.clone();
         let tid = session_id.unwrap_or("action").to_string();
         if self.on_confirm_request.snap().is_none() {
             tracing::info!(
@@ -782,6 +807,7 @@ impl SessionExecutor {
                 session_id: session_id.map(str::to_string),
                 tool_name: tool_name.to_string(),
                 tool_args: tool_args.clone(),
+                receipt: receipt.clone(),
                 title: title.to_string(),
             },
         );
@@ -790,7 +816,7 @@ impl SessionExecutor {
                 step_id.clone(),
                 tid.clone(),
                 tool_name.to_string(),
-                risk_level,
+                receipt.effective_risk,
                 tool_args,
                 None,
                 0,
@@ -888,7 +914,7 @@ impl SessionExecutor {
                 &tool_name,
                 pending.tool_args,
                 CancellationToken::new(),
-                Some(true),
+                Some(pending.receipt),
                 None,
             )
             .await;
@@ -926,15 +952,16 @@ impl SessionExecutor {
     }
 
     /// Resume decision for a gated tool after a confirm pause (Phase 5 / E3).
-    /// `Some(true)` = approved, `Some(false)` = declined, `None` = not in a
-    /// confirm-continuation batch.
+    /// Returns the recorded decision and its exact authorization receipt.
+    /// Siblings that were carried behind a confirm barrier have no receipt and
+    /// are therefore rechecked normally on resume.
     pub async fn confirm_decision_for(
         &self,
         session_id: &str,
         step_id: &str,
         action_index: u32,
         tool_call_id: Option<&str>,
-    ) -> Option<bool> {
+    ) -> Option<(bool, Option<haven_tools::ConfirmationReceipt>)> {
         let guard = self.awaiting_confirm.lock().await;
         let pending = guard.get(session_id)?;
         pending
@@ -945,6 +972,6 @@ impl SessionExecutor {
                     && t.action_index == action_index
                     && t.tool_call_id == tool_call_id.unwrap_or_default()
             })
-            .and_then(|t| t.decision)
+            .and_then(|t| t.decision.map(|decision| (decision, t.receipt.clone())))
     }
 }

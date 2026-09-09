@@ -8,6 +8,7 @@ use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use haven_memory::Database;
 use haven_tools::ToolsManager;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_subscriber::Registry;
@@ -22,6 +23,31 @@ use tracing_subscriber::reload;
 pub enum BootstrapStatus {
     Loading,
     Ready,
+}
+
+/// A renderer-triggered MCP/skill invocation waiting in the same confirmation
+/// queue as agent actions. Raw arguments stay backend-only until the request is
+/// resolved and are never part of an IPC error payload.
+pub(crate) enum UiConfirmationAction {
+    Mcp {
+        client: String,
+        tool: String,
+        args: serde_json::Value,
+    },
+    Skill {
+        name: String,
+        params: serde_json::Value,
+    },
+}
+
+pub(crate) struct UiConfirmationPending {
+    pub session_id: String,
+    pub tool_name: String,
+    pub permission_key: String,
+    pub risk_level: haven_common::types::RiskLevel,
+    pub summary: String,
+    pub receipt: haven_tools::ConfirmationReceipt,
+    pub action: UiConfirmationAction,
 }
 
 impl BootstrapStatus {
@@ -52,6 +78,7 @@ pub struct AppState {
     /// prewarm) has finished. The UI polls / listens so the status chip can
     /// show 加载中 → 就绪 without blocking window creation.
     bootstrap_ready: Arc<AtomicBool>,
+    pub(crate) ui_confirmations: Arc<tokio::sync::Mutex<HashMap<String, UiConfirmationPending>>>,
 }
 
 impl AppState {
@@ -365,6 +392,7 @@ impl AppState {
             config_service,
             recording_session: Arc::new(std::sync::Mutex::new(None)),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
+            ui_confirmations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }
 

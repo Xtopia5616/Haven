@@ -4,6 +4,7 @@ use haven_common::types::{
     permission_key_candidates,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -144,11 +145,7 @@ pub fn is_safe_local_path(path: &Path) -> bool {
 /// state. They can contain shell commands, URLs with credentials, file
 /// contents, or MCP/skill secrets and must never be sent to the renderer.
 pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
-    let operation = params
-        .get("operation")
-        .and_then(Value::as_str)
-        .or_else(|| params.get("scope").and_then(Value::as_str))
-        .unwrap_or("execute");
+    let operation = registered_operation_label(tool_name, params);
     let family = tool_name.split(':').next().unwrap_or(tool_name);
     match family {
         "files" => format!("文件操作：{operation}（目标详情已隐藏）"),
@@ -162,7 +159,51 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Return an operation only when it is present in the backend security
+/// registry. Dynamic extension arguments must never become renderer text;
+/// unknown values collapse to a generic label.
+fn registered_operation_label(tool_name: &str, params: &Value) -> String {
+    let operation = params.get("operation").and_then(Value::as_str);
+    let scope = params.get("scope").and_then(Value::as_str);
+    let candidate = match (scope, operation) {
+        (Some(scope), Some(operation)) if !scope.is_empty() && !operation.is_empty() => {
+            format!("{scope}:{operation}")
+        }
+        (None, Some(operation)) if !operation.is_empty() => operation.to_string(),
+        (Some(scope), None) if !scope.is_empty() => scope.to_string(),
+        _ => String::new(),
+    };
+    if !candidate.is_empty()
+        && LOCAL_TOOL_SECURITY_MATRIX
+            .iter()
+            .any(|case| case.tool_name == tool_name && case.operation == candidate)
+    {
+        return candidate;
+    }
+    if operation.is_some_and(|operation| {
+        LOCAL_TOOL_SECURITY_MATRIX
+            .iter()
+            .any(|case| case.tool_name == tool_name && case.operation == operation)
+    }) {
+        return operation.unwrap_or_default().to_string();
+    }
+    "受保护操作".into()
+}
+
+/// A one-shot authorization proof bound to the exact request that was shown
+/// to the user.  A receipt is deliberately invalidated by any policy change,
+/// input change, risk increase, expiry, or Critical classification.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ConfirmationReceipt {
+    pub confirmation_id: haven_common::types::ConfirmId,
+    pub permission_key: String,
+    pub canonical_input_hash: String,
+    pub effective_risk: RiskLevel,
+    pub policy_revision: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Debug, Clone)]
 pub enum ConfirmationResult {
     AutoApproved,
     RequiresConfirmation {
@@ -171,6 +212,7 @@ pub enum ConfirmationResult {
         risk_level: RiskLevel,
         /// Stable key used for grant matching (`tool` / `tool:op`).
         permission_key: String,
+        receipt: ConfirmationReceipt,
     },
     /// Hard deny — permanent/session denylist, disabled operation, or path sandbox.
     Blocked {
@@ -189,6 +231,10 @@ struct SessionGrants {
 #[derive(Clone)]
 struct SafetyConfig {
     permission_mode: PermissionMode,
+    /// Monotonic process-local revision. Configuration/policy changes
+    /// invalidate outstanding receipts; the grant attached to the decision
+    /// that created a receipt is intentionally applied after final execution.
+    policy_revision: u64,
     /// Permanent (Always) grants from `SecurityConfig.permissions`.
     permanent: HashMap<String, PermissionEffect>,
     /// Per-conversation grants keyed by session id.
@@ -214,6 +260,7 @@ impl AuthorizationEngine {
         Self {
             config: RwLock::new(SafetyConfig {
                 permission_mode: PermissionMode::Balanced,
+                policy_revision: 0,
                 permanent: HashMap::new(),
                 session_grants: HashMap::new(),
                 tool_settings: HashMap::new(),
@@ -235,6 +282,7 @@ impl AuthorizationEngine {
             cfg.permanent.insert(p.key.clone(), p.effect);
         }
         cfg.session_grants.clear();
+        bump_policy_revision(&mut cfg);
     }
 
     /// Update the policy profile. Clears session grants.
@@ -242,11 +290,14 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         cfg.permission_mode = mode;
         cfg.session_grants.clear();
+        bump_policy_revision(&mut cfg);
     }
 
     /// Refresh the live tool_settings mirror used by path/op/risk overrides.
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
-        self.config.write().await.tool_settings = settings;
+        let mut cfg = self.config.write().await;
+        cfg.tool_settings = settings;
+        bump_policy_revision(&mut cfg);
     }
 
     /// Effective risk after optional `tool_settings.risk_override`.
@@ -317,12 +368,72 @@ impl AuthorizationEngine {
             return ConfirmationResult::AutoApproved;
         }
 
+        let receipt = ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            permission_key: key.clone(),
+            canonical_input_hash: canonical_input_hash(params),
+            effective_risk: risk,
+            policy_revision: cfg.policy_revision,
+            expires_at: confirmation_expiry(),
+        };
         ConfirmationResult::RequiresConfirmation {
             tool_name: tool_name.into(),
             params: params.clone(),
             risk_level: risk,
             permission_key: key,
+            receipt,
         }
+    }
+
+    /// Verify a receipt immediately before execution. This check is separate
+    /// from `check` so a paused confirmation cannot become an unbound boolean
+    /// bypass when policy or tool risk changes during the pause.
+    pub async fn verify_receipt(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        params: &Value,
+        reported_risk: RiskLevel,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<(), String> {
+        let key = permission_key(tool_name, params);
+        let cfg = self.config.read().await;
+        if receipt.permission_key != key {
+            return Err("confirmation receipt does not match the permission key".into());
+        }
+        if receipt.canonical_input_hash != canonical_input_hash(params) {
+            return Err("confirmation receipt does not match the tool input".into());
+        }
+        if receipt.policy_revision != cfg.policy_revision {
+            return Err("confirmation receipt was issued under an older policy".into());
+        }
+        if confirmation_now() >= receipt.expires_at {
+            return Err("confirmation receipt has expired".into());
+        }
+
+        let risk = effective_risk_from(&cfg, tool_name, reported_risk);
+        if risk > receipt.effective_risk {
+            return Err("the operation risk increased after confirmation".into());
+        }
+        if risk >= RiskLevel::Critical {
+            return Err("Critical operations always require a fresh confirmation".into());
+        }
+        if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
+            return Err(reason);
+        }
+        if let Some(reason) = path_sandbox_block(&cfg.tool_settings, tool_name, params) {
+            return Err(reason);
+        }
+        if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Deny) {
+            return Err(format!("permanently denied: {key}"));
+        }
+        if let Some(sid) = session_id
+            && let Some(grants) = cfg.session_grants.get(sid)
+            && match_key_set(&grants.deny, &key)
+        {
+            return Err(format!("denied for this session: {key}"));
+        }
+        Ok(())
     }
 
     /// Record a grant. `Once` is a no-op (caller already approved this call).
@@ -361,6 +472,10 @@ impl AuthorizationEngine {
             }
             PermissionScope::Once => {}
         }
+        // A grant is the user's decision for the receipt that is currently
+        // being resolved. It must not invalidate that same receipt between
+        // the resolver waking the session and the executor's final check.
+        // Revocations and policy/config changes still advance the revision.
     }
 
     /// Snapshot of permanent grants for the settings UI.
@@ -380,7 +495,12 @@ impl AuthorizationEngine {
 
     /// Remove one permanent grant from memory. App layer persists the change.
     pub async fn revoke_permanent(&self, key: &str) -> bool {
-        self.config.write().await.permanent.remove(key).is_some()
+        let mut cfg = self.config.write().await;
+        let removed = cfg.permanent.remove(key).is_some();
+        if removed {
+            bump_policy_revision(&mut cfg);
+        }
+        removed
     }
 
     /// Remove every persisted rule. Session grants are also cleared because a
@@ -390,6 +510,9 @@ impl AuthorizationEngine {
         let removed = cfg.permanent.len();
         cfg.permanent.clear();
         cfg.session_grants.clear();
+        if removed > 0 {
+            bump_policy_revision(&mut cfg);
+        }
         removed
     }
 
@@ -411,11 +534,52 @@ impl Default for AuthorizationEngine {
 }
 
 fn effective_risk_from(cfg: &SafetyConfig, tool_name: &str, reported: RiskLevel) -> RiskLevel {
-    cfg.tool_settings
+    let configured = cfg
+        .tool_settings
         .get(tool_name)
         .and_then(|t| t.risk_override.as_deref())
-        .and_then(parse_risk_override)
-        .unwrap_or(reported)
+        .and_then(parse_risk_override);
+    match configured {
+        Some(override_risk) if override_risk > reported => override_risk,
+        _ => reported,
+    }
+}
+
+fn bump_policy_revision(cfg: &mut SafetyConfig) {
+    cfg.policy_revision = cfg.policy_revision.saturating_add(1);
+}
+
+fn confirmation_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
+fn confirmation_expiry() -> u64 {
+    confirmation_now().saturating_add(5 * 60)
+}
+
+fn canonical_input_hash(input: &Value) -> String {
+    let canonical = canonicalize_json(input);
+    let digest = Sha256::digest(serde_json::to_vec(&canonical).unwrap_or_default());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn canonicalize_json(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries: Vec<_> = object.iter().collect();
+            entries.sort_by_key(|(key, _)| *key);
+            let mut canonical = serde_json::Map::new();
+            for (key, value) in entries {
+                canonical.insert(key.clone(), canonicalize_json(value));
+            }
+            Value::Object(canonical)
+        }
+        Value::Array(values) => Value::Array(values.iter().map(canonicalize_json).collect()),
+        _ => value.clone(),
+    }
 }
 
 fn parse_risk_override(raw: &str) -> Option<RiskLevel> {
@@ -689,6 +853,17 @@ mod tests {
         assert!(!summary.contains("curl"));
     }
 
+    #[test]
+    fn permission_prompt_summary_uses_generic_text_for_unknown_operations() {
+        let summary = permission_prompt_summary(
+            "files",
+            &json!({"operation": "custom-secret-operation", "path": "C:/private.txt"}),
+        );
+        assert!(summary.contains("受保护操作"));
+        assert!(!summary.contains("custom-secret-operation"));
+        assert!(!summary.contains("private.txt"));
+    }
+
     #[tokio::test]
     async fn permission_modes_have_predictable_prompt_boundaries() {
         let gw = AuthorizationEngine::new();
@@ -707,6 +882,90 @@ mod tests {
             gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn risk_override_can_raise_but_never_lower_intrinsic_risk() {
+        let gateway = AuthorizationEngine::new();
+        let mut settings = HashMap::new();
+        settings.insert(
+            "system".into(),
+            ToolConfig {
+                risk_override: Some("safe".into()),
+                ..ToolConfig::default()
+            },
+        );
+        gateway.set_tool_settings(settings).await;
+        let decision = gateway
+            .check(
+                None,
+                "system",
+                &json!({"scope": "power", "operation": "hibernate"}),
+                RiskLevel::Critical,
+            )
+            .await;
+        let ConfirmationResult::RequiresConfirmation {
+            risk_level,
+            receipt,
+            ..
+        } = decision
+        else {
+            panic!("a Critical intrinsic risk must remain gated");
+        };
+        assert_eq!(risk_level, RiskLevel::Critical);
+        assert_eq!(receipt.effective_risk, RiskLevel::Critical);
+    }
+
+    #[tokio::test]
+    async fn confirmation_receipt_is_bound_to_input_and_policy_revision() {
+        let gateway = AuthorizationEngine::new();
+        let decision = gateway
+            .check(
+                None,
+                "shell",
+                &json!({"command": "echo safe"}),
+                RiskLevel::High,
+            )
+            .await;
+        let ConfirmationResult::RequiresConfirmation { receipt, .. } = decision else {
+            panic!("High-risk shell call should require confirmation");
+        };
+        gateway
+            .verify_receipt(
+                None,
+                "shell",
+                &json!({"command": "echo safe"}),
+                RiskLevel::High,
+                &receipt,
+            )
+            .await
+            .unwrap();
+        assert!(
+            gateway
+                .verify_receipt(
+                    None,
+                    "shell",
+                    &json!({"command": "echo changed"}),
+                    RiskLevel::High,
+                    &receipt,
+                )
+                .await
+                .is_err()
+        );
+
+        gateway.set_permission_mode(PermissionMode::Manual).await;
+        assert!(
+            gateway
+                .verify_receipt(
+                    None,
+                    "shell",
+                    &json!({"command": "echo safe"}),
+                    RiskLevel::High,
+                    &receipt,
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

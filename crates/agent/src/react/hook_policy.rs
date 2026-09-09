@@ -125,7 +125,7 @@ impl LoopHooks for DefaultHooks {
         input: &Value,
     ) -> BeforeToolAction {
         // Resume path: a prior confirm pause already recorded a decision.
-        if let Some(decision) = engine
+        if let Some((decision, receipt)) = engine
             .executor
             .confirm_decision_for(
                 &ctx.session_id,
@@ -136,9 +136,7 @@ impl LoopHooks for DefaultHooks {
             .await
         {
             return if decision {
-                BeforeToolAction::Proceed {
-                    confirmed: Some(true),
-                }
+                BeforeToolAction::Proceed { receipt }
             } else {
                 BeforeToolAction::Block {
                     error: format!(
@@ -154,15 +152,15 @@ impl LoopHooks for DefaultHooks {
             .check_tool_gate(&ctx.session_id, tool_name, input)
             .await
         {
-            ConfirmationResult::AutoApproved => BeforeToolAction::Proceed { confirmed: None },
+            ConfirmationResult::AutoApproved => BeforeToolAction::Proceed { receipt: None },
             ConfirmationResult::Blocked { reason } => BeforeToolAction::Block {
                 error: format!(
                     "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                     tool_name
                 ),
             },
-            ConfirmationResult::RequiresConfirmation { risk_level, .. } => {
-                BeforeToolAction::NeedConfirm { risk_level }
+            ConfirmationResult::RequiresConfirmation { receipt, .. } => {
+                BeforeToolAction::NeedConfirm { receipt }
             }
         }
     }

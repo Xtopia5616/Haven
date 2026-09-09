@@ -1,8 +1,8 @@
-use crate::app_state::AppState;
-use crate::commands::confirmation_error;
+use crate::app_state::{AppState, UiConfirmationAction};
 use crate::commands::connect_and_monitor;
 use crate::commands::contracts::McpToolCallResponse;
 use crate::commands::log_err;
+use crate::commands::queue_ui_confirmation;
 use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
@@ -11,6 +11,7 @@ use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::State;
 use tokio_util::sync::CancellationToken;
@@ -250,18 +251,19 @@ pub async fn refresh_mcp_servers(
 #[tauri::command]
 pub async fn mcp_tool_call(
     state: State<'_, Arc<AppState>>,
+    app: AppHandle,
     client: String,
     tool: String,
     args: Value,
 ) -> Result<McpToolCallResponse, String> {
     // Same qualified name + High risk as McpToolAdapter so Always grants from
-    // agent confirms apply to UI invoke. No session context — threshold +
-    // permanent grants only.
+    // Use the short-lived UI session so session-scope decisions made from a
+    // direct invocation apply to subsequent direct invocations in this run.
     let tool_key = haven_tools::McpToolAdapter::qualified_name_of(&client, &tool);
     match state
         .tools
         .authorization
-        .check(None, &tool_key, &args, RiskLevel::High)
+        .check(Some("ui"), &tool_key, &args, RiskLevel::High)
         .await
     {
         ConfirmationResult::AutoApproved => {}
@@ -269,10 +271,24 @@ pub async fn mcp_tool_call(
             tool_name,
             params,
             risk_level,
+            receipt,
             ..
         } => {
-            return Err(confirmation_error(tool_name, params, risk_level)
-                .map_err(|e| log_err("mcp_tool_call", e))?);
+            let action_args = params.clone();
+            return Err(queue_ui_confirmation(
+                &state,
+                &app,
+                tool_name,
+                params,
+                risk_level,
+                receipt,
+                UiConfirmationAction::Mcp {
+                    client,
+                    tool,
+                    args: action_args,
+                },
+            )
+            .await?);
         }
         ConfirmationResult::Blocked { reason } => {
             return Err(format!(

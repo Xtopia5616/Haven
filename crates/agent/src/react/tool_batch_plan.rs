@@ -165,6 +165,7 @@ mod tests {
             step_id: "step-existing".into(),
             action_index: 3,
             risk_level: haven_common::types::RiskLevel::High,
+            receipt: None,
             decision: Some(true),
         };
 

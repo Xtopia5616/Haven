@@ -72,8 +72,8 @@
 				const parsed = JSON.parse(msg);
 				if (parsed?.requires_confirmation) {
 					previewResult =
-						`需要确认才能执行（风险: ${parsed.risk_level || 'high'}）。` +
-						`请在对话中由 Agent 调用该技能，或在设置里将该技能加入永久允许。`;
+						`${parsed.summary || '此技能执行需要确认'}（风险: ${parsed.risk_level || 'high'}）。` +
+						'确认弹窗已打开，请在弹窗中选择执行范围。';
 				} else {
 					previewResult = `Error: ${msg}`;
 				}

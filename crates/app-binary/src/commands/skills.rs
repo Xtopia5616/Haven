@@ -1,7 +1,7 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, UiConfirmationAction};
 use crate::commands::contracts::{SkillExecutionResponse, ToolInfoResponse, ToolListResponse};
 use crate::commands::log_err;
-use crate::commands::{confirmation_error, emit_event_logged};
+use crate::commands::{emit_event_logged, queue_ui_confirmation};
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent};
 use haven_common::types::RiskLevel;
 use haven_tools::{ConfirmationResult, SkillInfo};
@@ -155,6 +155,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
 #[tauri::command]
 pub async fn execute_skill(
     state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
     name: String,
     params: serde_json::Value,
     confirmed: Option<bool>,
@@ -179,7 +180,7 @@ pub async fn execute_skill(
     match state
         .tools
         .authorization
-        .check(None, &tool_key, &params, risk_level)
+        .check(Some("ui"), &tool_key, &params, risk_level)
         .await
     {
         ConfirmationResult::AutoApproved => {}
@@ -187,10 +188,19 @@ pub async fn execute_skill(
             tool_name,
             params,
             risk_level,
+            receipt,
             ..
         } => {
-            return Err(confirmation_error(tool_name, params, risk_level)
-                .map_err(|e| log_err("execute_skill", e))?);
+            return Err(queue_ui_confirmation(
+                &state,
+                &app,
+                tool_name,
+                params.clone(),
+                risk_level,
+                receipt,
+                UiConfirmationAction::Skill { name, params },
+            )
+            .await?);
         }
         ConfirmationResult::Blocked { reason } => {
             return Err(format!(

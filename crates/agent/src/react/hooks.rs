@@ -18,8 +18,6 @@ use haven_llm::LlmResponse;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use haven_common::types::RiskLevel;
-
 #[cfg(test)]
 pub(crate) use super::hook_policy::{DefaultHooks, default_hooks_with_infer};
 pub(crate) use super::hook_policy::{default_hooks, default_hooks_with_infer_and_patch};
@@ -44,11 +42,15 @@ pub(crate) struct MemoryPatchHandle {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BeforeToolAction {
     /// Run the tool now (auto-approved or already confirmed).
-    Proceed { confirmed: Option<bool> },
+    Proceed {
+        receipt: Option<haven_tools::ConfirmationReceipt>,
+    },
     /// Safety policy blocked the tool — emit a failed observation, do not run.
     Block { error: String },
     /// Needs user confirmation — pause the session (like ask) before running.
-    NeedConfirm { risk_level: RiskLevel },
+    NeedConfirm {
+        receipt: haven_tools::ConfirmationReceipt,
+    },
 }
 
 /// Stable identity of one tool call within a ReAct step. Gate decisions must
@@ -104,7 +106,7 @@ pub(crate) trait LoopHooks: Send + Sync {
         _tool_name: &str,
         _input: &Value,
     ) -> BeforeToolAction {
-        BeforeToolAction::Proceed { confirmed: None }
+        BeforeToolAction::Proceed { receipt: None }
     }
 
     /// Called after status is set to a pause flavor. Default: no-op.

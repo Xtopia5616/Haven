@@ -35,7 +35,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_mcp_tools: { request: '-', response: 'McpServerSnapshot[]', boundary: 'read', security: 'snapshot only; invocation remains gated' },
 	reconnect_mcp: { request: 'McpNameRequest', response: 'void', boundary: 'execute', security: 'server name selects an existing configured client' },
 	refresh_mcp_servers: { request: '-', response: 'McpRefreshResult', boundary: 'execute', security: 'reconcile configured clients; no renderer command' },
-	mcp_tool_call: { request: 'McpToolCallRequest', response: 'McpToolCallResponse', boundary: 'execute', security: 'MCP adapter name and args pass AuthorizationEngine' },
+	mcp_tool_call: { request: 'McpToolCallRequest', response: 'McpToolCallResponse', boundary: 'execute', security: 'AuthorizationEngine; direct confirmations are queued and renderer errors are safe' },
 	add_mcp_server: { request: 'McpServerConfig', response: 'void', boundary: 'execute', security: 'shared native admin surface validates and persists config' },
 	update_mcp_server: { request: 'UpdateMcpServerRequest', response: 'void', boundary: 'execute', security: 'shared native admin surface validates and reconnects safely' },
 	remove_mcp_server: { request: 'McpNameRequest', response: 'void', boundary: 'execute', security: 'shared native admin surface removes client and config' },
@@ -84,7 +84,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	set_skill_enabled: { request: 'SetEnabledRequest', response: 'void', boundary: 'mutate', security: 'shared native admin surface persists the toggle' },
 	set_tool_enabled: { request: 'SetEnabledRequest', response: 'void', boundary: 'mutate', security: 'shared native admin surface persists the toggle' },
 	open_skills_dir: { request: '-', response: 'string', boundary: 'execute', security: 'configured skills root only' },
-	execute_skill: { request: 'ExecuteSkillRequest', response: 'SkillExecutionResponse', boundary: 'execute', security: 'qualified skill name and params pass AuthorizationEngine' },
+	execute_skill: { request: 'ExecuteSkillRequest', response: 'SkillExecutionResponse', boundary: 'execute', security: 'AuthorizationEngine; direct confirmations are queued and renderer errors are safe' },
 	get_tools: { request: '-', response: 'ToolListResponse', boundary: 'read', security: 'tool definition projection; schemas are dynamic extension data' },
 	reset_tool_circuits: { request: '-', response: 'void', boundary: 'mutate', security: 'clears local circuit state only' },
 } as const satisfies Record<string, CommandContract>;

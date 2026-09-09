@@ -290,6 +290,7 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
                 step_id: "step-3".into(),
                 action_index: 0,
                 risk_level: RiskLevel::High,
+                receipt: None,
                 decision: Some(true),
             },
             ConfirmPendingTool {
@@ -300,6 +301,7 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
                 step_id: "step-3".into(),
                 action_index: 1,
                 risk_level: RiskLevel::High,
+                receipt: None,
                 decision: Some(false),
             },
         ],
@@ -314,13 +316,13 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
         executor
             .confirm_decision_for(&session.id, "step-3", 0, Some("call-a"))
             .await,
-        Some(true)
+        Some((true, None))
     );
     assert_eq!(
         executor
             .confirm_decision_for(&session.id, "step-3", 1, Some("call-b"))
             .await,
-        Some(false)
+        Some((false, None))
     );
     assert_eq!(
         executor

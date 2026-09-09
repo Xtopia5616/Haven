@@ -175,7 +175,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "McpToolCallRequest",
         response: "McpToolCallResponse",
         boundary: CommandBoundary::Execute,
-        security: "MCP adapter name and args pass AuthorizationEngine",
+        security: "AuthorizationEngine; confirmation queues direct calls and errors are renderer-safe",
     },
     CommandContract {
         name: "add_mcp_server",
@@ -524,7 +524,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "ExecuteSkillRequest",
         response: "SkillExecutionResponse",
         boundary: CommandBoundary::Execute,
-        security: "qualified skill name and params pass AuthorizationEngine",
+        security: "AuthorizationEngine; confirmation queues direct calls and errors are renderer-safe",
     },
     CommandContract {
         name: "get_tools",

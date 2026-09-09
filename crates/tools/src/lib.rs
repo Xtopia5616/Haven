@@ -56,8 +56,8 @@ pub use output::{
 pub(crate) use process::{read_stream_capped, take_tail_if_changed};
 pub use registry::{RegistryProbe, SessionCatalog, ToolRegistry};
 pub use security::{
-    AuthorizationEngine, ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase,
-    is_safe_local_path, permission_prompt_summary,
+    AuthorizationEngine, ConfirmationReceipt, ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX,
+    LocalToolSecurityCase, is_safe_local_path, permission_prompt_summary,
 };
 #[cfg(windows)]
 pub use shell_runtime::CREATE_NO_WINDOW;

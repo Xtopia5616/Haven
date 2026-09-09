@@ -531,6 +531,7 @@ impl AgentLayer {
                                         .await;
                                 }
                                 haven_tools::ConfirmationResult::RequiresConfirmation {
+                                    receipt,
                                     ..
                                 } => {
                                     if agent
@@ -539,7 +540,7 @@ impl AgentLayer {
                                             fired.session_id.as_deref(),
                                             &tool_name,
                                             args,
-                                            risk_level,
+                                            receipt,
                                             &fired.title,
                                         )
                                         .await
