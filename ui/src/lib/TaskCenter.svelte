@@ -8,7 +8,6 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
-	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 
 	let {
 		runningBackgroundActions = [],
@@ -187,13 +186,7 @@
 	}
 </script>
 
-<section class="task-center" aria-labelledby="task-center-title">
-	<WorkspacePageHeader
-		title="任务"
-		description="查看后台任务、定时任务及其执行记录。"
-		headingId="task-center-title"
-	/>
-
+<section class="task-center" aria-label="任务">
 	<div class="task-toolbar workspace-filter-bar" role="search">
 		<label class="task-search">
 			<span class="sr-only">搜索任务</span>
@@ -235,7 +228,6 @@
 		<div class="task-list-panel">
 			<div class="task-list-heading">
 				<div>
-					<h2>任务列表</h2>
 					<span class="task-list-count">{filteredRows.length} 项</span>
 				</div>
 				<span class="task-list-hint">查看详情，或直接执行右侧操作</span>
@@ -489,7 +481,6 @@
 		gap: var(--md-sys-space-sm);
 		min-width: 0;
 	}
-	.task-list-heading h2,
 	.task-group-heading h3 {
 		margin: 0;
 		font-size: var(--md-sys-typescale-title-medium-size);

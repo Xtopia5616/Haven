@@ -82,13 +82,6 @@
 		{#if memoryRecall.searched}
 			<MaterialButton variant="text" label="清除" onclick={() => onClearRecall()} />
 		{/if}
-	</div>
-
-	<div class="memory-center-heading">
-		<div>
-			<h2>记忆</h2>
-			<p>在一个地方浏览、管理和搜索关于你的事实与过去的对话。</p>
-		</div>
 		{#if memoryRecall.searched && !memoryRecall.loading}
 			<CountChip count={memoryRecall.results.length} label="条结果" />
 		{:else if factsLoaded}
@@ -140,26 +133,6 @@
 		width: 125px;
 		flex: 0 0 auto;
 	}
-	.memory-center-heading {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: var(--md-sys-space-md);
-		min-width: 0;
-	}
-	.memory-center-heading h2 {
-		margin: 0;
-		font-size: var(--md-sys-typescale-title-large-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-title-large-line-height);
-		color: var(--md-sys-color-on-surface);
-	}
-	.memory-center-heading p {
-		margin: var(--md-sys-space-xs) 0 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
 	@media (max-width: 760px) {
 		.memory-center-toolbar {
 			align-items: stretch;
@@ -171,10 +144,6 @@
 		.memory-center-source {
 			flex: 1 1 0;
 			width: auto;
-		}
-		.memory-center-heading {
-			align-items: flex-start;
-			flex-direction: column;
 		}
 	}
 </style>

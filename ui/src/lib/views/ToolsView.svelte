@@ -407,10 +407,9 @@
 	</div>
 
 	{#if activeTab === 'builtin'}
-		<section class="resource-panel motion-surface-enter" aria-labelledby="builtin-tools-title">
+		<section class="resource-panel motion-surface-enter" aria-label="内置工具">
 			<div class="resource-heading">
 				<div class="resource-heading-copy">
-					<h2 id="builtin-tools-title">内置工具</h2>
 					<p>Haven 自带的可调用能力，可以单独启用或停用。</p>
 				</div>
 				<div class="toolbar-actions toolbar-actions--paired">
@@ -437,10 +436,9 @@
 			{/if}
 		</section>
 	{:else if activeTab === 'mcp'}
-		<section class="resource-panel motion-surface-enter" aria-labelledby="mcp-servers-title">
+		<section class="resource-panel motion-surface-enter" aria-label="MCP 服务器">
 			<div class="resource-heading">
 				<div class="resource-heading-copy">
-					<h2 id="mcp-servers-title">MCP 服务器</h2>
 					<p>连接外部工具服务，并查看当前连接状态。</p>
 				</div>
 				<div class="toolbar-actions toolbar-actions--paired">
@@ -472,10 +470,9 @@
 			{/if}
 		</section>
 	{:else}
-		<section class="resource-panel motion-surface-enter" aria-labelledby="skills-title">
+		<section class="resource-panel motion-surface-enter" aria-label="技能">
 			<div class="resource-heading">
 				<div class="resource-heading-copy">
-					<h2 id="skills-title">技能</h2>
 					<p>管理可被 Agent 调用的技能和执行脚本。</p>
 				</div>
 				<div class="toolbar-actions toolbar-actions--paired">
@@ -555,13 +552,6 @@
 	}
 	.resource-heading-copy {
 		min-width: 0;
-	}
-	.resource-heading h2 {
-		margin: 0;
-		font-size: var(--md-sys-typescale-title-large-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-title-large-line-height);
-		color: var(--md-sys-color-on-surface);
 	}
 	.resource-heading p {
 		margin: var(--md-sys-space-xs) 0 0;

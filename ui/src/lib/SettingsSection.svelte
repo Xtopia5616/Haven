@@ -4,11 +4,19 @@
 	 * @prop {string} title
 	 * @prop {string} description
 	 * @prop {string} className
+	 * @prop {string | undefined} ariaLabel — accessible name when the visible title is omitted
 	 */
-	let { title = '', description = '', className = '', children, header = undefined } = $props();
+	let {
+		title = '',
+		description = '',
+		className = '',
+		ariaLabel = undefined,
+		children,
+		header = undefined,
+	} = $props();
 </script>
 
-<section class="settings-section {className}">
+<section class="settings-section {className}" aria-label={ariaLabel}>
 	{#if header}
 		<div class="settings-section__header">{@render header()}</div>
 	{:else if title}

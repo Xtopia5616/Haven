@@ -182,7 +182,7 @@
 	onDestroy(() => clearTimeout(sttFetchTimer));
 </script>
 
-<SettingsSection title="媒体" className="media-section">
+<SettingsSection ariaLabel="媒体" className="media-section">
 	<p class="model-hint">
 		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 Audio / Image Model；TTS /
 		文生图复用「模型」页已添加的 Provider（Base URL + API Key）。

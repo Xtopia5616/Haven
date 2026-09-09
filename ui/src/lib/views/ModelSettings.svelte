@@ -396,9 +396,8 @@
 {/if}
 
 {#if section === 'models'}
-	<SettingsSection className="model-section">
+	<SettingsSection className="model-section" ariaLabel="模型配置">
 		<div class="llm-head">
-			<h2>模型配置</h2>
 			<div class="llm-head-actions">
 				<RefreshButton
 					label="刷新模型列表"
@@ -699,9 +698,6 @@
 		gap: var(--md-sys-space-md);
 		margin-bottom: var(--md-sys-space-sm);
 	}
-	.llm-head h2 {
-		margin: 0;
-	}
 	.llm-head-actions,
 	.provider-actions {
 		display: flex;
@@ -715,6 +711,7 @@
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		width: min(100%, 360px);
+		margin-left: auto;
 	}
 	.llm-head-actions :global(.md-btn) {
 		width: 100%;

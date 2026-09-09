@@ -28,7 +28,9 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByRole('tab', { name: '技能' })).toBeTruthy());
+		expect(screen.queryByRole('heading', { name: '技能' })).toBeNull();
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
+		expect(screen.queryByRole('heading', { name: 'MCP 服务器' })).toBeNull();
 		const addButton = screen.getByRole('button', { name: '添加' });
 		const mcpToolbarButtons = Array.from(document.querySelectorAll('.toolbar-actions .md-btn'));
 		const mcpToolbar = addButton.closest('.toolbar-actions');

@@ -15,7 +15,7 @@ describe('TaskCenter', () => {
 	it('keeps the empty state focused on tasks', () => {
 		render(TaskCenter, { ...commonProps });
 
-		expect(screen.getByRole('heading', { name: '任务' })).toBeTruthy();
+		expect(screen.queryByRole('heading', { name: '任务' })).toBeNull();
 		expect(screen.getByText('暂无任务')).toBeTruthy();
 		expect(screen.queryByText('当前会话')).toBeNull();
 	});
