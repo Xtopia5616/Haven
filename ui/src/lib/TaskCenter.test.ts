@@ -67,4 +67,17 @@ describe('TaskCenter', () => {
 		expect(screen.getAllByText('待执行').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('已执行').length).toBeGreaterThan(0);
 	});
+
+	it('uses shared count chips for the filtered total and lifecycle groups', () => {
+		render(TaskCenter, {
+			...commonProps,
+			runningBackgroundActions: [
+				{ id: 'act-running', kind: 'background', status: 'running' },
+			],
+			completedActions: [{ id: 'act-completed', kind: 'background', status: 'completed' }],
+		});
+
+		expect(screen.getByText('共 2 项任务')).toBeTruthy();
+		expect(screen.getAllByText('共 1 项任务')).toHaveLength(2);
+	});
 });

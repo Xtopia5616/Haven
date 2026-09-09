@@ -7,6 +7,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import CountChip from '$lib/CountChip.svelte';
 	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
 
 	let {
@@ -213,6 +214,7 @@
 		{#if hasFilters}
 			<MaterialButton variant="text" label="清除筛选" onclick={clearFilters} />
 		{/if}
+		<CountChip count={filteredRows.length} label="项任务" className="task-count" live />
 	</div>
 
 	{#if taskRows.length === 0}
@@ -226,19 +228,17 @@
 		/>
 	{:else}
 		<div class="task-list-panel">
-			<div class="task-list-heading">
-				<div>
-					<span class="task-list-count">{filteredRows.length} 项</span>
-				</div>
-				<span class="task-list-hint">查看详情，或直接执行右侧操作</span>
-			</div>
 			<div class="task-groups" aria-label="按生命周期分组的任务列表">
 				{#each taskGroups as group (group.id)}
 					<section class="task-group" aria-labelledby={`task-group-${group.id}`}>
 						<div class="task-group-heading">
 							<div>
 								<h3 id={`task-group-${group.id}`}>{group.label}</h3>
-								<span class="task-list-count">{group.rows.length} 项</span>
+								<CountChip
+									count={group.rows.length}
+									label="项任务"
+									className="task-group-count"
+								/>
 							</div>
 							<p>{group.description}</p>
 						</div>
@@ -467,17 +467,9 @@
 		 * region as content rhythm so task and history views share one outer
 		 * surface instead of stacking two competing cards. */
 	}
-	.task-list-heading {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: var(--md-sys-space-sm);
-		padding: 0 var(--md-sys-space-xs) var(--md-sys-space-md);
-	}
-	.task-list-heading > div,
 	.task-group-heading > div {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		gap: var(--md-sys-space-sm);
 		min-width: 0;
 	}
@@ -486,13 +478,10 @@
 		font-size: var(--md-sys-typescale-title-medium-size);
 		line-height: var(--md-sys-typescale-title-medium-line-height);
 	}
-	.task-list-count,
-	.task-list-hint {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.task-list-hint {
+	:global(.task-count),
+	:global(.task-group-count) {
+		flex: 0 0 auto;
+		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
 	}
 	.task-groups {
@@ -741,11 +730,6 @@
 			width: 100%;
 			flex: 0 1 auto;
 		}
-		.task-list-heading {
-			align-items: flex-start;
-			flex-direction: column;
-			padding-inline: var(--md-sys-space-xs);
-		}
 		.task-group-heading {
 			align-items: flex-start;
 			flex-direction: column;
@@ -796,6 +780,9 @@
 		}
 		.task-search {
 			flex: 0 1 auto;
+		}
+		:global(.task-count) {
+			align-self: flex-start;
 		}
 	}
 </style>
