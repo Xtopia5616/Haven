@@ -5,11 +5,20 @@ import SessionToolbar from './SessionToolbar.svelte';
 describe('SessionToolbar', () => {
 	it('shows the shared toolbar switcher when parallel sessions exist', async () => {
 		const onToggleSessionMenu = vi.fn();
-		render(SessionToolbar, { showSessionMenu: true, onToggleSessionMenu });
+		render(SessionToolbar, {
+			showSessionMenu: true,
+			menuSessions: [
+				{ id: 'ses-1', status: 'running', title: '当前会话' },
+				{ id: 'ses-2', status: 'paused', title: '另一个会话' },
+			],
+			onToggleSessionMenu,
+		});
 
 		const button = screen.getByRole('button', { name: '切换会话' });
-		expect(button.classList.contains('md-icon-btn')).toBe(true);
-		expect(button.getAttribute('data-size')).toBe('toolbar');
+		expect(button.classList.contains('md-btn')).toBe(true);
+		expect(button.classList.contains('md-icon-btn')).toBe(false);
+		expect(button.getAttribute('aria-haspopup')).toBe('menu');
+		expect(button.querySelector('.session-switch-badge')?.textContent).toBe('2');
 
 		await fireEvent.click(button);
 		expect(onToggleSessionMenu).toHaveBeenCalledTimes(1);

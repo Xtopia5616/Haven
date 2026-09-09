@@ -1,5 +1,4 @@
 <script>
-	import MaterialIconButton from './MaterialIconButton.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import MenuItem from './MenuItem.svelte';
 
@@ -52,12 +51,12 @@
 
 {#if showSessionMenu}
 	<div class="session-switch">
-		<MaterialIconButton
-			size="toolbar"
+		<MaterialButton
 			variant="tonal"
 			className={`session-switch-btn${sessionMenuOpen ? ' is-open' : ''}`}
-			label="切换会话"
+			ariaLabel="切换会话"
 			ariaExpanded={sessionMenuOpen}
+			ariaHaspopup="menu"
 			onclick={() => onToggleSessionMenu()}
 			title="切换并行会话或开始新会话"
 		>
@@ -90,7 +89,7 @@
 				stroke-linecap="round"
 				stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
 			>
-		</MaterialIconButton>
+		</MaterialButton>
 		{#if sessionMenuOpen}
 			<div class="session-menu" role="menu">
 				<div class="session-menu-heading">
@@ -315,12 +314,11 @@
 		position: relative;
 		flex-shrink: 0;
 	}
-	:global(.session-switch-btn) {
-		display: inline-flex;
-		align-items: center;
+	:global(.md-btn.session-switch-btn) {
+		justify-content: flex-start;
 		gap: var(--md-sys-space-xs);
 		width: auto;
-		min-width: 0;
+		min-width: 112px;
 		padding-inline: var(--md-sys-space-sm);
 		border: 1px solid
 			color-mix(in srgb, var(--md-sys-color-primary) 28%, var(--md-sys-color-outline-variant));
@@ -336,16 +334,20 @@
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
-	:global(.session-switch-btn:hover) {
+	:global(.md-btn.session-switch-btn:hover) {
 		border-color: var(--md-sys-color-primary);
 		box-shadow: var(--md-sys-elevation-2);
 	}
-	:global(.session-switch-btn.is-open),
-	:global(.session-switch-btn.is-open:hover) {
+	:global(.md-btn.session-switch-btn.is-open),
+	:global(.md-btn.session-switch-btn.is-open:hover) {
 		border-color: var(--md-sys-color-primary);
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
 		box-shadow: var(--md-sys-elevation-2);
+	}
+	:global(.md-btn.session-switch-btn > *) {
+		position: relative;
+		z-index: 1;
 	}
 	.session-switch-icon {
 		color: var(--md-sys-color-primary);
@@ -357,6 +359,7 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
+		white-space: nowrap;
 	}
 	.session-switch-caret {
 		flex-shrink: 0;
@@ -367,15 +370,18 @@
 		transform: rotate(180deg);
 	}
 	.session-switch-badge {
-		min-width: 18px;
-		height: 18px;
-		padding: 0 5px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 20px;
+		height: 20px;
+		padding: 0 6px;
 		border-radius: 999px;
-		background: var(--md-sys-color-primary);
-		color: var(--md-sys-color-on-primary);
+		background: color-mix(in srgb, currentColor 14%, transparent);
+		color: currentColor;
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
-		line-height: 18px;
+		line-height: 1;
 		text-align: center;
 		font-variant-numeric: tabular-nums;
 	}
