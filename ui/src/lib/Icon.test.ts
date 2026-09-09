@@ -27,4 +27,10 @@ describe('Icon', () => {
 			expect(definition.body.trim().length).toBeGreaterThan(0);
 		}
 	});
+
+	it('keeps optical workspace icon line weights intentional', () => {
+		expect(ICONS.briefcase.strokeWidth).toBe(1.9);
+		expect(ICONS.settings.strokeWidth).toBe(2.2);
+		expect(ICONS.settings.opticalScale).toBe(0.8);
+	});
 });
