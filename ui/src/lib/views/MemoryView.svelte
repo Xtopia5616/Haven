@@ -567,7 +567,7 @@
 		ariaLabel="历史分区"
 		idPrefix="memory-tab"
 		panelId="memory-panel"
-		className="memory-tabs"
+		className="workspace-secondary-tabs"
 	/>
 	{#key activeTab}
 		<div
@@ -749,9 +749,6 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
-	}
-	:global(.memory-tabs) {
-		margin-bottom: var(--md-sys-space-xl);
 	}
 	.date-filter-dialog {
 		display: flex;

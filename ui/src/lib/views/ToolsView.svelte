@@ -368,7 +368,7 @@
 		ariaLabel="工具分类"
 		idPrefix="tools-tab"
 		panelIdPrefix=""
-		className="tools-tabs"
+		className="workspace-secondary-tabs"
 	/>
 
 	<div class="resource-toolbar workspace-filter-bar" role="search" aria-label="筛选工具资源">
@@ -499,9 +499,6 @@
 		width: 100%;
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
-	}
-	:global(.tools-tabs) {
-		margin-bottom: var(--md-sys-space-2xl);
 	}
 	.resource-toolbar {
 		margin-bottom: var(--md-sys-space-lg);

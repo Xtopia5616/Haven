@@ -1165,6 +1165,9 @@ select.md-select {
 .md-tabs.workspace-nav {
 	background: var(--md-sys-color-surface);
 }
+.md-tabs.workspace-secondary-tabs {
+	margin-bottom: var(--md-sys-space-xl);
+}
 .md-tab {
 	position: relative;
 	flex: 1 1 0;
