@@ -34,20 +34,9 @@
 			className="session-header__new"
 			label="新建会话"
 			title="新建会话"
+			icon="plus"
 			onclick={() => onNew?.()}
-		>
-			<svg
-				class="session-header__icon"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				aria-hidden="true"
-			>
-				<path d="M12 5v14M5 12h14" />
-			</svg>
-		</MaterialIconButton>
+		/>
 		{#if hasSession}
 			<MaterialIconButton
 				size="toolbar"
@@ -55,20 +44,9 @@
 				className="session-header__end"
 				label="结束会话"
 				title="结束会话"
+				icon="close"
 				onclick={() => onEnd?.()}
-			>
-				<svg
-					class="session-header__icon"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					aria-hidden="true"
-				>
-					<path d="M6 6l12 12M18 6L6 18" />
-				</svg>
-			</MaterialIconButton>
+			/>
 		{/if}
 	</div>
 </header>

@@ -9,6 +9,7 @@
 	import { syncStore } from '$lib/syncStore.ts';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
 	let {
@@ -500,21 +501,7 @@
 		<div class="file-preview-row">
 			{#each pendingFiles as file, i (file.filename + i)}
 				<div class="file-preview">
-					<svg
-						class="file-preview-icon"
-						width="18"
-						height="18"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						aria-hidden="true"
-					>
-						<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-						<polyline points="14 2 14 8 20 8" />
-					</svg>
+					<Icon name="file" size={18} className="file-preview-icon" />
 					<div class="file-preview-info">
 						<span class="file-preview-name">{file.filename}</span>
 						<span class="file-preview-size">{formatFileSize(file.size)}</span>
@@ -570,22 +557,9 @@
 				size="toolbar"
 				label="添加附件"
 				title="添加图片或文件"
+				icon="paperclip"
 				onclick={() => attachFileInput?.click()}
 			>
-				<svg
-					width="20"
-					height="20"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-				>
-					<path
-						d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
-					/>
-				</svg>
 			</MaterialIconButton>
 			<input
 				hidden
@@ -599,35 +573,9 @@
 				variant={recordingState.isRecording ? 'danger' : 'default'}
 				label={recordingState.isRecording ? '停止录音' : '开始录音'}
 				title={recordingState.isRecording ? '停止录音' : '开始录音'}
+				icon={recordingState.isRecording ? 'stop' : 'mic'}
 				onclick={handleRecordClick}
 			>
-				{#if recordingState.isRecording}
-					<svg
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><rect x="6" y="6" width="12" height="12" rx="2" /></svg
-					>
-				{:else}
-					<svg
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path
-							d="M19 10v1a7 7 0 0 1-14 0v-1"
-						/><line x1="12" y1="19" x2="12" y2="22" /></svg
-					>
-				{/if}
 			</MaterialIconButton>
 			{@render toolbarRight?.()}
 			<MaterialIconButton
@@ -637,49 +585,9 @@
 				title={hasInput ? '发送' : stopMode ? '中断当前输出' : '发送'}
 				ariaBusy={interrupting}
 				disabled={interrupting || (!hasInput && !isGenerating && !sessionRunning)}
+				icon={hasInput ? 'send' : stopMode ? 'stop' : 'send'}
 				onclick={stopMode ? () => onstop?.() : handleSubmit}
 			>
-				{#if hasInput}
-					<svg
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-					>
-						<line x1="12" y1="19" x2="12" y2="5" />
-						<polyline points="5 12 12 5 19 12" />
-					</svg>
-				{:else if stopMode}
-					<svg
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><rect x="6" y="6" width="12" height="12" rx="2" /></svg
-					>
-				{:else}
-					<svg
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-					>
-						<line x1="12" y1="19" x2="12" y2="5" />
-						<polyline points="5 12 12 5 19 12" />
-					</svg>
-				{/if}
 			</MaterialIconButton>
 		</div>
 	</div>
@@ -786,7 +694,7 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		background: var(--md-sys-color-surface-container-high);
 	}
-	.file-preview-icon {
+	:global(.file-preview-icon) {
 		flex-shrink: 0;
 		color: var(--md-sys-color-on-surface-variant);
 	}

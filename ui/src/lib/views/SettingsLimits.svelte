@@ -1,6 +1,7 @@
 <script>
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.js';
@@ -440,18 +441,7 @@
 			onclick={() => setAllLimitDanger(!allLimitDangerOpen)}
 		>
 			<span class="limit-danger-caret" aria-hidden="true">
-				<svg
-					width="12"
-					height="12"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2.5"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-				>
-					<polyline points="6 9 12 15 18 9" />
-				</svg>
+				<Icon name="chevronDown" size={12} strokeWidth={2.5} />
 			</span>
 			<span>{allLimitDangerOpen ? '折叠全部危险项' : '展开全部危险项'}</span>
 		</MaterialButton>

@@ -26,23 +26,8 @@
 		onclick={() => onToggleMenu()}
 		title={`切换默认模型${currentModelName ? `：${currentModelName}` : ''}`}
 		label="切换默认模型"
+		icon="cpu"
 	>
-		<svg
-			width="20"
-			height="20"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			><rect x="5" y="5" width="14" height="14" rx="2" /><rect
-				x="9.5"
-				y="9.5"
-				width="5"
-				height="5"
-			/></svg
-		>
 	</MaterialIconButton>
 	{#if modelMenuOpen}
 		<div class="model-menu">

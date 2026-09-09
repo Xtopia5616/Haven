@@ -5,6 +5,7 @@
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialChoiceChip from '$lib/MaterialChoiceChip.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { parseToolResult } from '$lib/toolResultParsing.ts';
 	import { copyText } from '$lib/clipboard.ts';
@@ -156,6 +157,26 @@
 	});
 	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
+	let toolIcon = $derived.by(() => {
+		if (toolSource === 'mcp') return 'network';
+		if (toolSource === 'skill') return 'sparkles';
+		if (kind === 'shell') return 'terminal';
+		if (kind === 'notify') return 'bell';
+		if (kind === 'generic') return 'tools';
+		if (kind === 'raw') return 'file';
+		if (toolName === 'files' && Array.isArray(data.results)) return 'search';
+		if (toolName === 'system') return 'cpu';
+		if (toolName === 'process') return 'activity';
+		if (toolName === 'window') return 'monitor';
+		if (toolName === 'actions') return 'clock';
+		if (toolName === 'schedule') return 'bell';
+		if (toolName === 'files') return 'file';
+		if (toolName === 'http' || toolName === 'web_search') return 'globe';
+		if (toolName === 'clipboard') return 'clipboard';
+		if (toolName === 'agent') return 'users';
+		if (toolName === 'memory') return 'memory';
+		return 'tools';
+	});
 	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));
 	const toolStateLabels = /** @type {Record<string, string>} */ ({
 		running: '执行中',
@@ -363,269 +384,7 @@
 		<MaterialCollapsible bind:open={cardOpen} lazy>
 			{#snippet header()}
 				<span class="tool-card-icon" aria-hidden="true">
-					{#if toolSource === 'mcp'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><circle cx="6" cy="12" r="2" /><circle cx="18" cy="6" r="2" /><circle
-							cx="18"
-							cy="18"
-							r="2"
-						/><path d="m7.7 11 8.6-4M7.7 13l8.6 4" /></svg
-						>
-					{:else if toolSource === 'skill'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><path
-								d="m12 3-1.8 5.2L5 10l5.2 1.8L12 17l1.8-5.2L19 10l-5.2-1.8L12 3Z"
-							/><path
-								d="m19 16-.7 2.3L16 19l2.3.7L19 22l.7-2.3L22 19l-2.3-.7L19 16Z"
-							/></svg
-						>
-					{:else if kind === 'shell'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><polyline points="4 17 10 11 4 5" /><line
-								x1="12"
-								y1="19"
-								x2="20"
-								y2="19"
-							/></svg
-						>
-					{:else if kind === 'notify'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path
-								d="M13.73 21a2 2 0 0 1-3.46 0"
-							/></svg
-						>
-					{:else if kind === 'generic'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><path
-								d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-							/></svg
-						>
-					{:else if kind === 'raw'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
-						>
-					{:else if toolName === 'files' && Array.isArray(data.results)}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							><circle cx="11" cy="11" r="7" /><line
-								x1="21"
-								y1="21"
-								x2="16.65"
-								y2="16.65"
-							/></svg
-						>
-					{:else if toolName === 'system'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><rect x="4" y="4" width="16" height="16" rx="2" /><rect
-								x="9"
-								y="9"
-								width="6"
-								height="6"
-							/><path
-								d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"
-							/></svg
-						>
-					{:else if toolName === 'process'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg
-						>
-					{:else if toolName === 'window'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><rect x="2" y="3" width="20" height="14" rx="2" /><path
-								d="M8 21h8M12 17v4"
-							/></svg
-						>
-					{:else if toolName === 'actions'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><circle cx="12" cy="12" r="9" /><polyline
-								points="12 7 12 12 15.5 13.5"
-							/></svg
-						>
-					{:else if toolName === 'schedule'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path
-								d="M13.73 21a2 2 0 0 1-3.46 0"
-							/></svg
-						>
-					{:else if toolName === 'files' && !Array.isArray(data.results)}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><path
-								d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-							/><polyline points="14 2 14 8 20 8" /></svg
-						>
-					{:else if toolName === 'http'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><circle cx="12" cy="12" r="10" /><path
-								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
-							/></svg
-						>
-					{:else if toolName === 'clipboard'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><path
-								d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
-							/><rect x="8" y="2" width="8" height="4" rx="1" /></svg
-						>
-					{:else if toolName === 'web_search'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><circle cx="12" cy="12" r="10" /><path
-								d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
-							/></svg
-						>
-					{:else if toolName === 'agent'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle
-								cx="9"
-								cy="7"
-								r="4"
-							/><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path
-								d="M16 3.13a4 4 0 0 1 0 7.75"
-							/></svg
-						>
-					{:else if toolName === 'memory'}
-						<svg
-							width="12"
-							height="12"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"><path d="M12 3c4.4 0 8 1.8 8 4s-3.6 4-8 4-8-1.8-8-4 3.6-4 8-4Z" /><path d="M4 7v5c0 2.2 3.6 4 8 4s8-1.8 8-4V7" /><path d="M4 12v5c0 2.2 3.6 4 8 4s8-1.8 8-4v-5" /></svg
-						>
-					{/if}
+					<Icon name={toolIcon} size={12} strokeWidth={2.5} />
 				</span>
 				<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
 				{#if showFallbackIntent}<span class="tool-intent">{TOOL_INTENT_FALLBACK}</span>{/if}

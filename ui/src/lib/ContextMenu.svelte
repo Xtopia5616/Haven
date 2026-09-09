@@ -1,39 +1,12 @@
-<script module>
-	// Built-in icon set (inner SVG markup) for context menu items. Items
-	// reference an icon by name from this map, or pass raw SVG inner markup
-	// directly for a custom glyph. Kept central so every context menu shares
-	// the same visual language.
-	export const ICONS = {
-		copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
-		cut: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/>',
-		paste: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>',
-		selectAll: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/>',
-		rollback:
-			'<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
-		branch:
-			'<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M18 9h-6a4 4 0 0 0-4 4v4"/><circle cx="18" cy="6" r="3"/>',
-		delete:
-			'<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
-		edit: '<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
-		open: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
-		export:
-			'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
-		refresh:
-			'<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
-		play: '<polygon points="5 3 19 12 5 21 5 3"/>',
-		pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
-		stop: '<rect x="4" y="4" width="16" height="16" rx="2"/>',
-		power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
-	};
-</script>
-
 <script>
 	import { tick } from 'svelte';
 	import MenuItem from './MenuItem.svelte';
+	import Icon from './Icon.svelte';
+	import { hasIcon } from './icons.ts';
 
 	// Reusable right-click menu (constraint context_menu_edge_flipping).
 	// items: [{ id?, label, icon?, danger?, disabled?, separator?, action? }]
-	// icon is a key from the ICONS map above or raw SVG inner markup.
+	// icon is a key from the shared icon registry.
 	let { open = false, x = 0, y = 0, items = [], onClose = () => {} } = $props();
 
 	let menuEl = /** @type {HTMLDivElement | null} */ ($state(null));
@@ -83,13 +56,6 @@
 		};
 	});
 
-	/** @param {string} name */
-	function iconMarkup(name) {
-		// Icons resolve strictly against the built-in set; unknown names are
-		// ignored so no caller-supplied string can reach the raw-HTML sink.
-		return /** @type {Record<string, string>} */ (ICONS)[name] ?? '';
-	}
-
 	/** @param {any} item */
 	function run(item) {
 		item.action?.();
@@ -120,18 +86,8 @@
 					onSelect={() => run(item)}
 				>
 					{#snippet children()}
-					{#if iconMarkup(item.icon)}
-						<svg
-							width="16"
-							height="16"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							>{@html iconMarkup(item.icon)}</svg
-						>
+					{#if hasIcon(item.icon)}
+						<Icon name={item.icon} size={16} />
 					{/if}
 					<span class="ctx-label">{item.label}</span>
 					{/snippet}

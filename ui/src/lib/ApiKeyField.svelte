@@ -1,6 +1,7 @@
 <script>
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import Icon from './Icon.svelte';
 
 	/**
 	 * Unified API-key control (same chrome as md-input).
@@ -58,30 +59,9 @@
 			<span class="api-key-badge-divider" aria-hidden="true">·</span>
 		{/if}
 		{#if configured}
-			<svg
-				class="api-key-badge-icon"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2.5"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
-			>
+			<Icon name="checkmark" size={14} strokeWidth={2.5} className="api-key-badge-icon" />
 		{:else}
-			<svg
-				class="api-key-badge-icon"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				aria-hidden="true"
-				><circle cx="7.5" cy="15.5" r="3.5" /><path d="m10 13 8-8 3 3-2 2" /><path
-					d="m16 7 2 2"
-				/></svg
-			>
+			<Icon name="key" size={14} className="api-key-badge-icon" />
 		{/if}
 		<span class="api-key-badge-label">{configured ? '已配置' : '未配置'}</span>
 	</span>
@@ -99,7 +79,7 @@
 			{disabled}
 		/>
 		<MaterialIconButton
-			icon={showKey ? 'eye-off' : 'eye'}
+			icon={showKey ? 'eyeOff' : 'eye'}
 			className="api-key-icon-btn"
 			label={showKey ? 'Hide API key' : 'Show API key'}
 			title={showKey ? 'Hide API key' : 'Show API key'}
@@ -279,7 +259,7 @@
 		);
 		color: var(--md-sys-color-on-surface);
 	}
-	.api-key-badge-icon {
+	:global(.api-key-badge-icon) {
 		width: 14px;
 		height: 14px;
 		flex: 0 0 auto;

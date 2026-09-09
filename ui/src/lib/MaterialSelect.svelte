@@ -1,6 +1,7 @@
 <script>
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import Icon from './Icon.svelte';
 
 	let { value = '', options = [], onChange, id = undefined, ariaLabel = '' } = $props();
 
@@ -75,19 +76,7 @@
 		aria-expanded={open}
 	>
 		<span class="md-select-value">{selectedLabel}</span>
-		<svg
-			width="20"
-			height="20"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			class="md-select-arrow"
-		>
-			<path d="M6 9l6 6 6-6" />
-		</svg>
+		<Icon name="chevronDown" size={20} className="md-select-arrow" />
 	</button>
 
 	{#if open}
@@ -158,14 +147,14 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.md-select-arrow {
+	:global(.md-select-arrow) {
 		flex-shrink: 0;
 		color: var(--md-sys-color-on-surface-variant);
 		transition: transform var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
 		margin-left: var(--md-sys-space-sm);
 	}
-	.md-select-trigger.open .md-select-arrow {
+	.md-select-trigger.open :global(.md-select-arrow) {
 		transform: rotate(180deg);
 	}
 	.md-select-menu {

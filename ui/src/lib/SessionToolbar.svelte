@@ -1,6 +1,7 @@
 <script>
 	import MaterialButton from './MaterialButton.svelte';
 	import MenuItem from './MenuItem.svelte';
+	import Icon from './Icon.svelte';
 
 	let {
 		activeSessionId = null,
@@ -60,35 +61,12 @@
 			onclick={() => onToggleSessionMenu()}
 			title="切换并行会话或开始新会话"
 		>
-			<svg
-				class="session-switch-icon"
-				width="20"
-				height="20"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				><rect x="4" y="5" width="12" height="12" rx="2" /><path
-					d="M8 19h8a4 4 0 0 0 4-4V9"
-				/></svg
-			>
+			<Icon name="chat" size={20} className="session-switch-icon" />
 			<span class="session-switch-label">会话</span>
 			{#if menuSessions.length > 0}
 				<span class="session-switch-badge">{menuSessions.length}</span>
 			{/if}
-			<svg
-				class="session-switch-caret"
-				width="16"
-				height="16"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
-			>
+			<Icon name="chevronDown" size={16} className="session-switch-caret" />
 		</MaterialButton>
 		{#if sessionMenuOpen}
 			<div class="session-menu" role="menu">
@@ -120,18 +98,7 @@
 							>
 						</span>
 						{#if session.id === activeSessionId}
-							<svg
-								class="session-menu-check"
-								width="16"
-								height="16"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2.5"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								aria-label="当前会话"><polyline points="20 6 9 17 4 12" /></svg
-							>
+							<Icon name="check" size={16} className="session-menu-check" label="当前会话" />
 						{/if}
 						{/snippet}
 					</MenuItem>
@@ -142,22 +109,7 @@
 					onSelect={() => onNewSession()}
 				>
 					{#snippet children()}
-					<svg
-						width="16"
-						height="16"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><line x1="12" y1="5" x2="12" y2="19" /><line
-							x1="5"
-							y1="12"
-							x2="19"
-							y2="12"
-						/></svg
-					>
+					<Icon name="plus" size={16} className="session-menu-new-icon" />
 					新建会话
 					{/snippet}
 				</MenuItem>
@@ -176,20 +128,7 @@
 		disabled={!tokenStats}
 		onclick={toggleTokenDetails}
 	>
-		<svg
-			class="token-icon"
-			width="16"
-			height="16"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			aria-hidden="true"
-		>
-			<path d="M4 6h16M4 12h10M4 18h16" />
-		</svg>
+		<Icon name="listTodo" size={16} className="token-icon" />
 		{#if tokenStats}
 			<div class="token-text">
 				<span class="token-context"
@@ -349,7 +288,7 @@
 		position: relative;
 		z-index: 1;
 	}
-	.session-switch-icon {
+	:global(.session-switch-icon) {
 		color: var(--md-sys-color-primary);
 	}
 	:global(.session-switch-btn.is-open .session-switch-icon) {
@@ -361,12 +300,12 @@
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		white-space: nowrap;
 	}
-	.session-switch-caret {
+	:global(.session-switch-caret) {
 		flex-shrink: 0;
 		transition: transform var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard);
 	}
-	:global(.session-switch-btn.is-open) .session-switch-caret {
+	:global(.session-switch-btn.is-open .session-switch-caret) {
 		transform: rotate(180deg);
 	}
 	.session-switch-badge {
@@ -483,7 +422,7 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.session-menu-check {
+	:global(.session-menu-check) {
 		flex-shrink: 0;
 		color: var(--md-sys-color-primary);
 	}
@@ -554,7 +493,7 @@
 	:global(.md-btn.token-stats.selected) {
 		border-color: var(--md-sys-color-primary);
 	}
-	.token-icon {
+	:global(.token-icon) {
 		opacity: 0.75;
 		flex-shrink: 0;
 	}

@@ -1,4 +1,5 @@
 <script>
+	import Icon from './Icon.svelte';
 	let {
 		value = 0,
 		min = undefined,
@@ -45,32 +46,10 @@
 	<input {id} type="number" class="md-input" {min} {max} {step} {value} oninput={handleInput} />
 	<div class="stepper">
 		<button class="stepper-btn" type="button" onclick={increment} aria-label="增加">
-			<svg
-				width="16"
-				height="16"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-			>
-				<path d="M18 15l-6-6-6 6" />
-			</svg>
+			<Icon name="chevronUp" size={16} />
 		</button>
 		<button class="stepper-btn" type="button" onclick={decrement} aria-label="减少">
-			<svg
-				width="16"
-				height="16"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-			>
-				<path d="M6 9l6 6 6-6" />
-			</svg>
+			<Icon name="chevronDown" size={16} />
 		</button>
 	</div>
 </div>
@@ -147,7 +126,7 @@
 	.stepper-btn:active {
 		background: var(--md-sys-color-surface-container-highest);
 	}
-	.stepper-btn svg {
+	.stepper-btn :global(svg) {
 		pointer-events: none;
 	}
 </style>

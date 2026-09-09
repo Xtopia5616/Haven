@@ -1,6 +1,7 @@
 import logger from '$lib/logger.ts';
 import { EXT_REF_CLASS, EXT_REF_TITLE } from '$lib/externalRef.ts';
 import { pathifyPlugin } from '$lib/pathify.ts';
+import { renderIconSvg } from '$lib/icons.ts';
 import type { MarkdownIt as MarkdownItInstance } from 'markdown-it';
 
 // Module-level lazy singleton for the MarkdownIt renderer. Chat bubbles used
@@ -99,7 +100,7 @@ export function getMarkdownRenderer(): Promise<MarkdownItInstance> {
 				<div class="md-code-bar">
 					<span class="md-code-lang">${lang ? esc(lang) : 'text'}</span>
 					<button type="button" class="md-code-copy" aria-label="复制代码">
-						<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+						${renderIconSvg('copy', 10)}
 						<span class="md-code-copy-text">复制</span>
 					</button>
 				</div>

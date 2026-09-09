@@ -1,4 +1,5 @@
 <script>
+	import Icon from './Icon.svelte';
 	import { untrack } from 'svelte';
 	import JsonView from './JsonView.svelte';
 	import MaterialButton from './MaterialButton.svelte';
@@ -92,7 +93,7 @@
 				{#if copied}
 					<span aria-hidden="true">✓</span>已复制
 				{:else}
-					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+					<Icon name="copy" size={10} strokeWidth={2.5} />
 					复制
 				{/if}
 			</MaterialButton>
@@ -110,17 +111,7 @@
 				onclick={toggle}
 			>
 				<span class="jv-caret" aria-hidden="true">
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><polyline points="6 9 12 15 18 9" /></svg
-					>
+					<Icon name="chevronDown" size={12} strokeWidth={2.5} />
 				</span>
 				{#if key}
 					<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span class="jv-punct">:&nbsp;</span>

@@ -226,6 +226,17 @@
 
 日期选择器的日历格、JSON 树节点、快捷键捕获、数字步进，以及任务/记忆整卡点击属于组件内部的专用交互，仍可使用原生 `button`，但必须沿用 token、焦点态和可访问性语义；它们不应被强行改造成文字按钮。
 
+### 2.6 图标原语
+
+所有可复用图标统一从 `lib/Icon.svelte` 调用，图形定义集中在 `lib/icons.ts`。图标使用统一的 `24×24` viewBox、`currentColor` 和默认描边，调用方只指定语义名称与必要的尺寸变体：
+
+```svelte
+<Icon name="copy" size={16} />
+<Icon name="chevronDown" size={12} strokeWidth={2.5} />
+```
+
+禁止在页面或组件中重新内联已经存在的复制、关闭、箭头、文件、状态等图形；新增图形先补入 `icons.ts`，再通过名称调用。品牌标记（`HavenMark`）和 Markdown 生成的静态 HTML 属于明确例外。
+
 ---
 
 ## 3. CSS 命名与样式规则
@@ -456,6 +467,8 @@ ui/src/
 ├── app.html                # SvelteKit shell
 ├── lib/
 │   ├── components/         # 预留复合组件目录（当前为空）
+│   ├── Icon.svelte          # 统一尺寸与可访问性的图标原语
+│   ├── icons.ts             # 唯一图形定义和静态 HTML 图标渲染器
 │   ├── stores.js           # 共享 writable stores
 │   ├── tauri.js            # Tauri 桥接懒加载
 │   ├── themeStore.js       # 主题管理

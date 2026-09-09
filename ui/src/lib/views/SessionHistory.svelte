@@ -1,5 +1,6 @@
 <script>
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
@@ -225,20 +226,7 @@
 						onclick={() => onStartEdit(session)}
 					>
 						{#snippet children()}
-							{displayTitle(session)}<svg
-								class="title-edit-icon"
-								width="14"
-								height="14"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								><path
-									d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
-								/></svg
-							>
+							{displayTitle(session)}<Icon name="edit" size={14} className="title-edit-icon" />
 						{/snippet}
 					</MaterialButton>
 								{/if}
@@ -404,7 +392,7 @@
 	:global(.md-btn.session-title:hover .title-edit-icon) {
 		opacity: 1;
 	}
-	.title-edit-icon {
+	:global(.title-edit-icon) {
 		opacity: 0.45;
 		flex-shrink: 0;
 		color: var(--md-sys-color-on-surface-variant);

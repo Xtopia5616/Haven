@@ -1,4 +1,5 @@
 <script>
+	import Icon from './Icon.svelte';
 	/**
 	 * Material Collapsible — header with a rotating caret.
 	 * Same expand/collapse chrome as the settings Limits danger groups.
@@ -22,17 +23,7 @@
 <div class="md-collapsible" data-variant={variant} data-open={open} data-lazy={lazy}>
 	<button class="md-collapsible-header" type="button" onclick={toggle} aria-expanded={open}>
 		<span class="md-collapsible-caret" aria-hidden="true">
-			<svg
-				width="12"
-				height="12"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2.5"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				><polyline points="6 9 12 15 18 9" /></svg
-			>
+			<Icon name="chevronDown" size={12} strokeWidth={2.5} />
 		</span>
 		<span class="md-collapsible-header-content">
 			{@render header?.()}

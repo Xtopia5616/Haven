@@ -1,4 +1,5 @@
 <script>
+	import Icon from './Icon.svelte';
 	/**
 	 * Material Switch — standardised toggle switch.
 	 * @prop {boolean} checked
@@ -28,9 +29,7 @@
 	/>
 	<span class="md-switch-track" aria-hidden="true">
 		<span class="md-switch-state-layer"></span>
-		<svg class="md-switch-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
-			><path d="M9.55 18.2 3.65 12.3 5.275 10.675 9.55 14.95 18.725 5.775 20.35 7.4Z" /></svg
-		>
+		<Icon name="check" size={16} strokeWidth={2.5} className="md-switch-icon" />
 	</span>
 </label>
 
@@ -148,7 +147,7 @@
 		);
 		background: var(--md-sys-color-primary);
 	}
-	.md-switch-icon {
+	:global(.md-switch-icon) {
 		position: absolute;
 		top: 50%;
 		left: calc(
@@ -166,7 +165,7 @@
 			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
 			transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized);
 	}
-	.md-switch-input:checked + .md-switch-track .md-switch-icon {
+	.md-switch-input:checked + .md-switch-track :global(.md-switch-icon) {
 		opacity: 1;
 		transform: translate(-50%, -50%) scale(1);
 	}
@@ -200,7 +199,7 @@
 		.md-switch-track::before,
 		.md-switch-state-layer,
 		.md-switch-track::after,
-		.md-switch-icon {
+		:global(.md-switch-icon) {
 			transition-duration: 1ms;
 		}
 	}

@@ -1,4 +1,5 @@
 <script>
+	import Icon from './Icon.svelte';
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import MaterialButton from './MaterialButton.svelte';
@@ -236,22 +237,7 @@
 		<span class="md-datepicker-value" class:placeholder={!value}>
 			{value ? displayValue : 'yyyy/mm/dd'}
 		</span>
-		<svg
-			class="md-datepicker-icon"
-			width="20"
-			height="20"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-		>
-			<rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-			<line x1="16" y1="2" x2="16" y2="6" />
-			<line x1="8" y1="2" x2="8" y2="6" />
-			<line x1="3" y1="10" x2="21" y2="10" />
-		</svg>
+		<Icon name="calendar" size={20} className="md-datepicker-icon" />
 	</button>
 </div>
 
@@ -289,18 +275,7 @@
 						type="button"
 						aria-label="Previous month"
 					>
-						<svg
-							width="20"
-							height="20"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						>
-							<path d="M15 18l-6-6 6-6" />
-						</svg>
+						<Icon name="chevronLeft" size={20} />
 					</button>
 					<button
 						class="md-datepicker-nav-label"
@@ -317,18 +292,7 @@
 						type="button"
 						aria-label="Next month"
 					>
-						<svg
-							width="20"
-							height="20"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						>
-							<path d="M9 18l6-6-6-6" />
-						</svg>
+						<Icon name="chevronRight" size={20} />
 					</button>
 				</div>
 				<div class="md-datepicker-weekdays">
@@ -381,18 +345,7 @@
 						type="button"
 						aria-label="Previous year range"
 					>
-						<svg
-							width="20"
-							height="20"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						>
-							<path d="M15 18l-6-6 6-6" />
-						</svg>
+						<Icon name="chevronLeft" size={20} />
 					</button>
 					<span class="md-datepicker-nav-label">
 						{yearGrid.start} – {yearGrid.start + 11}
@@ -403,18 +356,7 @@
 						type="button"
 						aria-label="Next year range"
 					>
-						<svg
-							width="20"
-							height="20"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						>
-							<path d="M9 18l6-6-6-6" />
-						</svg>
+						<Icon name="chevronRight" size={20} />
 					</button>
 				</div>
 				<div class="md-datepicker-year-grid">
@@ -493,7 +435,7 @@
 	.md-datepicker-value.placeholder {
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.md-datepicker-icon {
+	:global(.md-datepicker-icon) {
 		flex-shrink: 0;
 		color: var(--md-sys-color-on-surface-variant);
 		margin-left: var(--md-sys-space-sm);
