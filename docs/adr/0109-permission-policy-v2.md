@@ -20,8 +20,9 @@
    只保留在后端待确认状态中，确认结果仍由后端按 step id、效果和范围重新校验。
 5. 设置页提供“权限中心”，显示可读规则标签、精确键和效果，并提供撤销单条规则与
    清除全部规则；清除规则不改变用户选中的默认策略。
-6. 旧配置不做隐式字段迁移。检测到 `confirmation_mode` 或 `min_risk_level` 时备份
-   配置并使用平衡默认值，用户需要重新建立权限策略。
+6. 旧配置不做隐式字段迁移。`[security]` 使用严格字段解析；出现
+   `confirmation_mode` 或 `min_risk_level` 等未知字段时，配置解析失败并按发布说明
+   备份后重置，用户需要手工建立新的权限策略。
 7. 一次性确认不再以 `bool` 传递。`ConfirmationReceipt` 绑定
    `confirmation_id`、精确 `permission_key`、规范化输入 SHA-256、有效风险、策略
    revision 和过期时间；恢复执行前必须重新校验全部字段，风险升高、Critical、策略

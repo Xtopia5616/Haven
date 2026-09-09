@@ -106,14 +106,9 @@ fn backup_unparsable_config(path: &Path, err: &str) {
 }
 
 /// Removed settings are a hard reset boundary. A backup preserves the source
-/// file, but the running process must never silently reinterpret old safety
-/// or tool semantics.
+/// file, but the running process must never silently reinterpret old tool or
+/// media semantics.
 fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
-    if let Some(security) = value.get("security").and_then(toml::Value::as_table)
-        && (security.contains_key("confirmation_mode") || security.contains_key("min_risk_level"))
-    {
-        return Some("removed split permission policy settings");
-    }
     if value.get("audio").is_some() {
         return Some("top-level [audio]");
     }
@@ -893,6 +888,49 @@ mod tests {
     }
 
     #[test]
+    fn load_keeps_configured_default_model_with_new_permission_policy() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[llm]
+
+[[llm.providers]]
+name = "test-provider"
+provider = "openai"
+api_style = "openai-chat"
+base_url = "https://example.test/v1"
+api_key = "test-key"
+
+[[llm.roles]]
+role = "default_model"
+provider = "test-provider"
+model = "test-model"
+
+[security]
+permission_mode = "balanced"
+encrypt_sensitive = true
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert!(
+            loader
+                .config()
+                .llm
+                .is_configured(EndpointRole::DefaultModel)
+        );
+        assert_eq!(
+            loader.config().security.permission_mode,
+            PermissionMode::Balanced
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_backs_up_removed_tool_names_without_migrating_them() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1037,7 +1075,7 @@ vad_threshold = 0.25
     }
 
     #[test]
-    fn load_backs_up_removed_permission_policy_shape() {
+    fn load_backs_up_unknown_security_fields() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -1051,10 +1089,7 @@ confirmation_mode = "always"
         .unwrap();
 
         let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(
-            loader.config().security.permission_mode,
-            PermissionMode::Balanced
-        );
+        assert_eq!(loader.config(), &AppConfig::default());
         let backups: Vec<_> = dir
             .read_dir()
             .unwrap()
@@ -1064,7 +1099,11 @@ confirmation_mode = "always"
                 name.starts_with("config.toml.") && name.ends_with(".bak")
             })
             .collect();
-        assert_eq!(backups.len(), 1, "removed aliases must require reset");
+        assert_eq!(
+            backups.len(),
+            1,
+            "unknown security fields must require reset"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

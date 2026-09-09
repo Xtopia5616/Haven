@@ -6,8 +6,8 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 
 本版本将安全策略改为单一的 `security.permission_mode`；有效值为
 `balanced`、`careful`、`manual`、`autonomous`。旧的 `confirmation_mode` / `min_risk_level`
-组合不再自动解释，旧配置会被备份为 `config.toml.*.bak` 并以平衡策略启动；请按下文完整
-重置或仅手工重建新的 `[security]` 段。
+组合不再自动解释，`[security]` 中的未知字段会使配置解析失败；原配置会被备份为
+`config.toml.*.bak` 并以默认配置启动。请按下文完整重置或仅手工重建新的 `[security]` 段。
 
 本版本同样不再迁移顶层 `[audio]` 或已删除的 `[tool_settings.*]` 名称；这两类配置会备份后以默认值启动。
 旧工具名称不再迁移或兼容：`[tool_settings.file]`、`file[:operation]`、

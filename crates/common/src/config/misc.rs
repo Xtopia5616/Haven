@@ -332,7 +332,7 @@ pub struct StoredPermission {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Single source of truth for when an agent action needs approval.
     pub permission_mode: PermissionMode,
