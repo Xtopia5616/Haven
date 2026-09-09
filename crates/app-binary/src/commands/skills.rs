@@ -110,7 +110,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
     }
     match state
         .tools
-        .safety_gateway
+        .authorization
         .check(None, "open_skills_dir", &Value::Null, RiskLevel::Low)
         .await
     {
@@ -170,7 +170,7 @@ pub async fn execute_skill(
         return Err(format!("skill '{}' is not enabled", name));
     }
 
-    // Always run SafetyGateway — `confirmed` must not bypass permanent deny /
+    // Always run AuthorizationEngine — `confirmed` must not bypass permanent deny /
     // path/op blocks. Use the same qualified name as SkillToolAdapter so
     // Always grants from agent confirms apply to UI preview.
     let _ = confirmed; // ignored; kept for IPC compat
@@ -178,7 +178,7 @@ pub async fn execute_skill(
     let risk_level = RiskLevel::High;
     match state
         .tools
-        .safety_gateway
+        .authorization
         .check(None, &tool_key, &params, risk_level)
         .await
     {

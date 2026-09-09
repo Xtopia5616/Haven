@@ -8,7 +8,6 @@
 	// Interactive dialog countdown (starts when shown). Backend keeps a
 	// longer absolute fail-closed ceiling for closed/crashed UI.
 	const TIMEOUT_SECONDS = 120;
-	const PARAMS_MAX_CHARS = 4000;
 
 	// `deadlineAt` (epoch ms) is the backend's deadline for this confirmation:
 	// it starts when the request was created, not when the dialog is shown.
@@ -21,7 +20,7 @@
 		sessionId,
 		sessionTitle,
 		riskLevel,
-		params,
+		summary,
 		permissionKey,
 		deadlineAt,
 		onConfirm,
@@ -29,21 +28,9 @@
 	let remaining = $state(TIMEOUT_SECONDS);
 	let showDenyMenu = $state(false);
 
-	let paramsText = $derived.by(() => {
-		if (params == null || (typeof params === 'object' && Object.keys(params).length === 0)) {
-			return '';
-		}
-		try {
-			const raw = typeof params === 'string' ? params : JSON.stringify(params, null, 2);
-			if (raw.length <= PARAMS_MAX_CHARS) return raw;
-			return raw.slice(0, PARAMS_MAX_CHARS) + '\n… (truncated)';
-		} catch {
-			return String(params);
-		}
-	});
 
 	// Unbounded tools: Always allow covers every future invocation, not just
-	// the params shown above.
+	// the summary shown above.
 	const UNBOUNDED_ALWAYS = new Set(['shell']);
 	let alwaysWarn = $derived(
 		UNBOUNDED_ALWAYS.has(String(toolName || '').split(':')[0]) ||
@@ -118,9 +105,7 @@
 					<span class="risk risk-{riskLevel || 'medium'}">{riskLevel || 'medium'}</span>
 				</div>
 			</div>
-			{#if paramsText}
-				<pre class="params">{paramsText}</pre>
-			{/if}
+			<div class="summary">{summary || '此操作需要你的许可。'}</div>
 			<div class="timeout" class:warn={remaining <= 15} class:danger={remaining <= 5}>
 				<div class="timeout-bar" style="width: {(remaining / TIMEOUT_SECONDS) * 100}%"></div>
 				<span>未确认将于 {remaining} 秒后自动拒绝</span>
@@ -211,19 +196,14 @@
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);
 	}
-	.params {
+	.summary {
 		margin: 0 0 var(--md-sys-space-lg);
 		padding: var(--md-sys-space-md);
-		max-height: 180px;
-		overflow: auto;
 		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface-container-lowest, rgba(0, 0, 0, 0.04));
-		color: var(--md-sys-color-on-surface);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		white-space: pre-wrap;
-		word-break: break-word;
+		background: var(--md-sys-color-secondary-container);
+		color: var(--md-sys-color-on-secondary-container);
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
 	.risk { font-weight: 700; text-transform: capitalize; }
 	.risk-high, .risk-critical { color: var(--md-sys-color-error); }

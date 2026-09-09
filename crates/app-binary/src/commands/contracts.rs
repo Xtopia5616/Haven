@@ -175,7 +175,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "McpToolCallRequest",
         response: "McpToolCallResponse",
         boundary: CommandBoundary::Execute,
-        security: "MCP adapter name and args pass SafetyGateway",
+        security: "MCP adapter name and args pass AuthorizationEngine",
     },
     CommandContract {
         name: "add_mcp_server",
@@ -449,6 +449,13 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "non-empty exact key; persisted atomically",
     },
     CommandContract {
+        name: "reset_permissions",
+        request: "-",
+        response: "()",
+        boundary: CommandBoundary::Mutate,
+        security: "clears permanent and session rules atomically; keeps selected default policy",
+    },
+    CommandContract {
         name: "check_shell_available",
         request: "CheckShellAvailableRequest",
         response: "ShellAvailability",
@@ -517,7 +524,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "ExecuteSkillRequest",
         response: "SkillExecutionResponse",
         boundary: CommandBoundary::Execute,
-        security: "qualified skill name and params pass SafetyGateway",
+        security: "qualified skill name and params pass AuthorizationEngine",
     },
     CommandContract {
         name: "get_tools",
@@ -597,7 +604,7 @@ mod tests {
     #[test]
     fn command_registry_is_unique_and_covers_the_current_handler_set() {
         assert_eq!(IPC_CONTRACT_VERSION, 1);
-        assert_eq!(COMMAND_CONTRACTS.len(), 69);
+        assert_eq!(COMMAND_CONTRACTS.len(), 70);
         let names: HashSet<_> = COMMAND_CONTRACTS
             .iter()
             .map(|contract| contract.name)
@@ -606,6 +613,7 @@ mod tests {
         assert!(names.contains(&"mcp_tool_call"));
         assert!(names.contains(&"execute_skill"));
         assert!(names.contains(&"resolve_confirmation"));
+        assert!(names.contains(&"reset_permissions"));
     }
 
     #[test]

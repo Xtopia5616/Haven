@@ -4,9 +4,10 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
-本版本删除了安全确认模式 `confirmation_mode = "always"` 的兼容别名；有效值仅为
-`ask`、`paranoid`、`autopilot`。旧配置会被备份为 `config.toml.*.bak` 并以安全默认值启动；请在
-备份中将该字段改为 `ask` 后再手工合并，或按下文完整重置。
+本版本将安全策略改为单一的 `security.permission_mode`；有效值为
+`balanced`、`careful`、`manual`、`autonomous`。旧的 `confirmation_mode` / `min_risk_level`
+组合不再自动解释，旧配置会被备份为 `config.toml.*.bak` 并以平衡策略启动；请按下文完整
+重置或仅手工重建新的 `[security]` 段。
 
 本版本同样不再迁移顶层 `[audio]` 或已删除的 `[tool_settings.*]` 名称；这两类配置会备份后以默认值启动。
 旧工具名称不再迁移或兼容：`[tool_settings.file]`、`file[:operation]`、

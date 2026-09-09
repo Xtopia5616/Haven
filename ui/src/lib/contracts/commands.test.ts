@@ -7,8 +7,8 @@ import {
 
 describe('Tauri command contract directory', () => {
 	it('contains the complete unique command set', () => {
-		expect(TAURI_COMMAND_NAMES).toHaveLength(69);
-		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(69);
+		expect(TAURI_COMMAND_NAMES).toHaveLength(70);
+		expect(new Set(TAURI_COMMAND_NAMES).size).toBe(70);
 		expect(TAURI_COMMAND_NAMES).toEqual(Object.keys(TAURI_COMMAND_CONTRACTS));
 	});
 

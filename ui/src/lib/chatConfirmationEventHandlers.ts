@@ -7,7 +7,7 @@ export interface ConfirmationQueueEntry {
 	sessionId: string;
 	sessionTitle: string;
 	riskLevel: ConfirmationRequestedPayload['riskLevel'];
-	params: unknown;
+	summary: string;
 	permissionKey: string;
 }
 
@@ -43,7 +43,7 @@ export function createChatConfirmationEventHandlers({
 				sessionId,
 				sessionTitle: getSessionTitle(sessionId),
 				riskLevel: data.riskLevel || 'medium',
-				params: data.params ?? null,
+				summary: data.summary ?? '此操作需要你的许可。',
 				permissionKey: data.permissionKey || data.toolName || '',
 			});
 			showNextConfirm();

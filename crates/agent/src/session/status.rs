@@ -226,7 +226,7 @@ impl SessionExecutor {
         }
         self.clear_has_children(session_id).await;
         self.tools
-            .safety_gateway
+            .authorization
             .clear_session_trust(session_id)
             .await;
     }
@@ -329,7 +329,7 @@ impl SessionExecutor {
         self.await_run_finished(session_id).await;
         self.tools.unregister_session(session_id).await;
         self.tools
-            .safety_gateway
+            .authorization
             .clear_session_trust(session_id)
             .await;
         self.sessions.lock().await.remove(session_id);
@@ -391,7 +391,7 @@ impl SessionExecutor {
         for session_id in running_ids {
             self.await_run_finished(&session_id).await;
         }
-        self.tools.safety_gateway.clear_all_trust().await;
+        self.tools.authorization.clear_all_trust().await;
         self.sessions.lock().await.clear();
         self.pending_queue.lock().await.clear();
         self.running_sessions.lock().await.clear();

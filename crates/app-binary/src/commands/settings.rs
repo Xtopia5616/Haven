@@ -143,10 +143,9 @@ pub async fn update_settings(
     if plan.contains(RuntimeConfigTarget::Security) {
         state
             .tools
-            .safety_gateway
+            .authorization
             .apply_security(
-                config.security.confirmation_mode,
-                config.security.min_risk_level,
+                config.security.permission_mode,
                 &config.security.permissions,
             )
             .await;
@@ -154,7 +153,7 @@ pub async fn update_settings(
     if plan.contains(RuntimeConfigTarget::ToolSettings) {
         state
             .tools
-            .safety_gateway
+            .authorization
             .set_tool_settings(config.tool_settings.clone())
             .await;
     }
@@ -264,7 +263,7 @@ pub async fn update_settings(
 pub async fn list_permissions(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<haven_common::config::StoredPermission>, String> {
-    Ok(state.tools.safety_gateway.list_permanent().await)
+    Ok(state.tools.authorization.list_permanent().await)
 }
 
 #[tauri::command]
@@ -273,7 +272,6 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
     if key.is_empty() {
         return Err("permission key cannot be empty".into());
     }
-    state.tools.safety_gateway.revoke_permanent(&key).await;
     state
         .config_service
         .edit(|config| {
@@ -284,6 +282,22 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
             Ok(())
         })
         .map_err(|e| log_err("revoke_permission", e))?;
+    state.tools.authorization.revoke_permanent(&key).await;
+    Ok(())
+}
+
+/// Remove all user-created permission rules and restore the selected default
+/// policy. This intentionally does not change the policy mode itself.
+#[tauri::command]
+pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state
+        .config_service
+        .edit(|config| {
+            config.security.permissions.clear();
+            Ok(())
+        })
+        .map_err(|e| log_err("reset_permissions", e))?;
+    state.tools.authorization.clear_permanent().await;
     Ok(())
 }
 

@@ -22,7 +22,7 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
 
     match state
         .tools
-        .safety_gateway
+        .authorization
         .check(None, "open_external", &Value::Null, RiskLevel::Low)
         .await
     {

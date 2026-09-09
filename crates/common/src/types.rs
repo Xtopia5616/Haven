@@ -157,17 +157,24 @@ pub enum RiskLevel {
     Critical,
 }
 
-/// How the safety gateway decides when to prompt the user.
+/// User-facing authorization policy for agent actions.
+///
+/// A single mode is the source of truth for prompting. This replaces the old
+/// pair of `confirmation_mode` and `min_risk_level` settings, which described
+/// one policy in two independent and confusing ways.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum ConfirmationMode {
-    /// Ask when `risk >= min_risk_level` (default).
+pub enum PermissionMode {
+    /// Safe/low operations run automatically; medium and above ask.
     #[default]
-    Ask,
-    /// Ask for every non-`Safe` operation.
-    Paranoid,
-    /// Auto-approve everything except permanent/session denies and disabled ops.
-    Autopilot,
+    Balanced,
+    /// Ask before every non-read-only operation.
+    Careful,
+    /// Ask before every operation, including read-only operations.
+    Manual,
+    /// Run non-critical approved operations automatically; critical actions
+    /// still require explicit confirmation.
+    Autonomous,
 }
 
 /// Allow or deny a permission grant.
@@ -1274,10 +1281,10 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_mode_rejects_removed_always_alias() {
-        assert!(serde_json::from_str::<ConfirmationMode>("\"always\"").is_err());
-        let mode: ConfirmationMode = serde_json::from_str("\"ask\"").unwrap();
-        assert_eq!(mode, ConfirmationMode::Ask);
+    fn permission_mode_has_only_named_profiles() {
+        assert!(serde_json::from_str::<PermissionMode>("\"always\"").is_err());
+        let mode: PermissionMode = serde_json::from_str("\"balanced\"").unwrap();
+        assert_eq!(mode, PermissionMode::Balanced);
     }
 
     #[test]

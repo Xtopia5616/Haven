@@ -324,7 +324,8 @@ pub(crate) struct ConfirmationRequestedEvent {
     pub tool_name: String,
     pub risk_level: haven_common::types::RiskLevel,
     pub session_id: String,
-    pub params: Value,
+    /// Renderer-safe explanation. Raw tool parameters remain backend-only.
+    pub summary: String,
     pub permission_key: String,
 }
 

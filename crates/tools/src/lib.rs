@@ -16,7 +16,7 @@ pub(crate) mod tool_contract;
 pub mod util;
 
 use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
-use haven_common::types::{RiskLevel, ShellChoice};
+use haven_common::types::{PermissionMode, RiskLevel, ShellChoice};
 use haven_llm::LlmRouter;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -56,8 +56,8 @@ pub use output::{
 pub(crate) use process::{read_stream_capped, take_tail_if_changed};
 pub use registry::{RegistryProbe, SessionCatalog, ToolRegistry};
 pub use security::{
-    ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, SafetyGateway,
-    is_safe_local_path,
+    AuthorizationEngine, ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase,
+    is_safe_local_path, permission_prompt_summary,
 };
 #[cfg(windows)]
 pub use shell_runtime::CREATE_NO_WINDOW;
@@ -80,8 +80,7 @@ pub struct StartupWiring {
     pub tool_settings: HashMap<String, ToolConfig>,
     pub default_shell: ShellChoice,
     pub context_limits: ContextLimitsConfig,
-    pub confirmation_mode: haven_common::types::ConfirmationMode,
-    pub min_risk_level: RiskLevel,
+    pub permission_mode: PermissionMode,
     pub security_permissions: Vec<haven_common::config::StoredPermission>,
     pub router: Arc<LlmRouter>,
     pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
@@ -139,7 +138,7 @@ pub struct ToolsManager {
     pub mcp_server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
     pub skills_engine: SkillsEngine,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
-    pub safety_gateway: SafetyGateway,
+    pub authorization: AuthorizationEngine,
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
     /// Unified context limits. `max_observation_chars` is the observation
     /// budget for tool outputs fed back into the conversation; per-tool
@@ -210,7 +209,7 @@ impl ToolsManager {
                 VenvManager::new(exec_config.venv_root.clone()),
                 exec_config,
             ))),
-            safety_gateway: SafetyGateway::new(RiskLevel::Medium),
+            authorization: AuthorizationEngine::new(),
             tool_settings: RwLock::new(HashMap::new()),
             context_limits: RwLock::new(ContextLimitsConfig::default()),
             default_shell: RwLock::new(ShellChoice::default()),
@@ -273,8 +272,7 @@ impl ToolsManager {
             tool_settings,
             default_shell,
             context_limits,
-            confirmation_mode,
-            min_risk_level,
+            permission_mode,
             security_permissions,
             router,
             audio_pipeline,
@@ -288,10 +286,10 @@ impl ToolsManager {
         self.live_outputs.set_limits(&context_limits).await;
         self.scheduled_actions.set_limits(&context_limits).await;
         *self.context_limits.write().await = context_limits;
-        self.safety_gateway
-            .apply_security(confirmation_mode, min_risk_level, &security_permissions)
+        self.authorization
+            .apply_security(permission_mode, &security_permissions)
             .await;
-        self.safety_gateway.set_tool_settings(tool_settings).await;
+        self.authorization.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
         *self.audio_pipeline.write().await = audio_pipeline;
         self.scheduled_actions
@@ -318,7 +316,7 @@ impl ToolsManager {
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
         *self.tool_settings.write().await = settings.clone();
-        self.safety_gateway.set_tool_settings(settings).await;
+        self.authorization.set_tool_settings(settings).await;
         self.rebuild_catalog().await;
     }
 
@@ -990,9 +988,7 @@ impl ToolsManager {
             .await
             .map(|t| t.risk_level(input))
             .unwrap_or(RiskLevel::Safe);
-        self.safety_gateway
-            .effective_risk(tool_name, reported)
-            .await
+        self.authorization.effective_risk(tool_name, reported).await
     }
 
     /// Return the tool's batch scheduling contract. Keeping this lookup in

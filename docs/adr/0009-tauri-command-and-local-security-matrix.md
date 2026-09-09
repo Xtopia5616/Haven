@@ -11,7 +11,7 @@ Haven 的 Tauri 命令分布在多个 app command module，过去只有会话、
 ## 决定
 
 1. 使用 `crates/app-binary/src/commands/contracts.rs` 作为 v1 命令目录唯一 Rust
-   登记点，当前覆盖 67 个 `#[tauri::command]`。每项包含命令名、请求 DTO 名称、
+   登记点，当前覆盖 70 个 `#[tauri::command]`。每项包含命令名、请求 DTO 名称、
    响应 DTO/标量、边界类型和安全不变量。
 2. 保持当前 Tauri 的扁平请求 wire shape；DTO 名称是稳定 schema 标识，不把请求
    额外包成 `{ request: ... }`。现有 camelCase 前端调用不需要整体迁移。
@@ -49,7 +49,7 @@ Haven 的 Tauri 命令分布在多个 app command module，过去只有会话、
   保持兼容；变更仅把实现从匿名 JSON 改为命名 DTO。
 - 不存在的路径允许在已 canonicalize 的可信父目录下继续比较；现有路径只要遇到
   reparse point 即拒绝，可能比旧 lexical 行为更严格。
-- 旧的 68 命令描述按实际 handler 数量修正为 67；没有数据库迁移。若未来需要
+- 旧的 68 命令描述按实际 handler 数量修正为 70；没有数据库迁移。若未来需要
   改 wire shape，应提升 IPC contract version 并在 release/reset 文档说明。
 
 ## 验证

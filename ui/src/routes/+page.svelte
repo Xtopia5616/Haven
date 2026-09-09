@@ -114,14 +114,14 @@
 	// Backend uses a longer absolute fail-closed ceiling for closed UI.
 	const CONFIRM_TIMEOUT_MS = 120_000;
 	let confirmDialog =
-		/** @type {{ stepId: string | null, toolName: string, sessionId: string, sessionTitle: string, riskLevel: string, params: unknown, permissionKey: string, deadlineAt: number | null }} */ (
+		/** @type {{ stepId: string | null, toolName: string, sessionId: string, sessionTitle: string, riskLevel: string, summary: string, permissionKey: string, deadlineAt: number | null }} */ (
 			$state({
 				stepId: null,
 				toolName: '',
 				sessionId: '',
 				sessionTitle: '',
 				riskLevel: 'medium',
-				params: null,
+				summary: '',
 				permissionKey: '',
 				deadlineAt: null,
 			})
@@ -1495,7 +1495,7 @@
 			sessionId: '',
 			sessionTitle: '',
 			riskLevel: 'medium',
-			params: null,
+			summary: '',
 			permissionKey: '',
 			deadlineAt: null,
 		};
@@ -1555,7 +1555,7 @@
 		sessionId={confirmDialog.sessionId}
 		sessionTitle={confirmDialog.sessionTitle}
 		riskLevel={confirmDialog.riskLevel}
-		params={confirmDialog.params}
+		summary={confirmDialog.summary}
 		permissionKey={confirmDialog.permissionKey}
 		deadlineAt={confirmDialog.deadlineAt}
 		onConfirm={handleConfirm}

@@ -193,7 +193,7 @@ pub async fn register_builtin_tools(
         self_tool_arc = Some(tool.clone());
         // The broad native surface is retained only for app commands. The
         // model receives capability-scoped adapters, each with its own
-        // schema and SafetyGateway permission key.
+        // schema and AuthorizationEngine permission key.
         for capability in admin::AdminCapability::ALL {
             if capability == admin::AdminCapability::Config {
                 tools.push(config_admin.clone());

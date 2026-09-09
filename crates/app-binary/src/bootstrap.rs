@@ -38,7 +38,7 @@ pub(crate) fn run() {
     // well as in CI/docs. A drift in the source registry is a startup error,
     // not a silently stale contract inventory.
     debug_assert_eq!(commands::contracts::IPC_CONTRACT_VERSION, 1);
-    debug_assert_eq!(commands::contracts::COMMAND_CONTRACTS.len(), 69);
+    debug_assert_eq!(commands::contracts::COMMAND_CONTRACTS.len(), 70);
 
     // Load config early so we can initialize tracing with the right level
     let config_loader = match haven_common::config::ConfigLoader::load() {
@@ -412,6 +412,8 @@ pub(crate) fn run() {
                                   tool_call_id: Option<String>| {
                                 let permission_key =
                                     haven_common::types::permission_key(&tool_name, &params);
+                                let summary =
+                                    haven_tools::permission_prompt_summary(&tool_name, &params);
                                 log_ignored_result!(
                                     "event.confirm_requested",
                                     app_h.emit(
@@ -424,7 +426,7 @@ pub(crate) fn run() {
                                             tool_name,
                                             risk_level,
                                             session_id,
-                                            params,
+                                            summary,
                                             permission_key,
                                         },
                                     )
@@ -604,6 +606,7 @@ pub(crate) fn run() {
             commands::settings::update_settings,
             commands::settings::list_permissions,
             commands::settings::revoke_permission,
+            commands::settings::reset_permissions,
             commands::settings::check_shell_available,
             commands::history::export_history,
             commands::settings::enable_autostart,

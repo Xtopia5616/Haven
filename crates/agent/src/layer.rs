@@ -515,7 +515,7 @@ impl AgentLayer {
                             let gate = agent
                                 .executor
                                 .get_tools()
-                                .safety_gateway
+                                .authorization
                                 .check(fired.session_id.as_deref(), &tool_name, &args, risk_level)
                                 .await;
                             match gate {

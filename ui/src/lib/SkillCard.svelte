@@ -59,7 +59,7 @@
 		}
 		try {
 			const { invoke } = await import('$lib/tauri.ts');
-			// Do not bypass SafetyGateway — preview must respect the same
+			// Do not bypass AuthorizationEngine — preview must respect the same
 			// confirmation / permanent-deny rules as agent-invoked skills.
 			const result = await invoke('execute_skill', {
 				name: skill.name,

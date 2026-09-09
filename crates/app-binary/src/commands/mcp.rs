@@ -260,7 +260,7 @@ pub async fn mcp_tool_call(
     let tool_key = haven_tools::McpToolAdapter::qualified_name_of(&client, &tool);
     match state
         .tools
-        .safety_gateway
+        .authorization
         .check(None, &tool_key, &args, RiskLevel::High)
         .await
     {

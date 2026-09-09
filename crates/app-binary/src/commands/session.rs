@@ -139,7 +139,7 @@ pub async fn resolve_confirmation(
     };
     state
         .tools
-        .safety_gateway
+        .authorization
         .grant(
             resolution.session_id.as_deref(),
             &key,

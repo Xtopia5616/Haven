@@ -1,7 +1,7 @@
 # 本机工具安全回归矩阵
 
 本矩阵覆盖 `haven-tools` 的 builtin 工具、MCP/skill 适配器和所有进入
-`SafetyGateway` 的执行路径。风险级别的可执行代表行位于
+`AuthorizationEngine` 的执行路径。风险级别的可执行代表行位于
 `crates/tools/src/security.rs` 的 `LOCAL_TOOL_SECURITY_MATRIX`；这里补充每个工具的
 操作面、路径字段、授权继承、取消与竞态要求。矩阵中的“拒绝”是 fail-closed，
 不得降级为确认或依赖前端传入的 `confirmed`。
@@ -37,7 +37,7 @@
 
 | 入口 | 必须执行的检查 | 回归断言 |
 |---|---|---|
-| ReAct 工具执行 | `AgentExecutor::execute_gated` → `SafetyGateway::check` → 执行 | 未获批不能调用 tool；执行前再次检查以覆盖 TOCTOU |
+| ReAct 工具执行 | `AgentExecutor::execute_gated` → `AuthorizationEngine::check` → 执行 | 未获批不能调用 tool；执行前再次检查以覆盖 TOCTOU |
 | 定时任务触发 | 设定时按 registry 风险检查，触发时再次经过 executor gate | 设定时的允许不能替代触发时的当前拒绝 |
 | MCP 适配器 | `mcp__server__tool` 使用 adapter 的 high 风险和同一授权 key | UI 预览与 Agent 调用共享 permanent grant；session grant 不泄漏到无 session 入口 |
 | skill 适配器 | `skill__name` 使用 adapter 的 high 风险和同一授权 key | skill 脚本不能由 `confirmed` 参数绕过 deny/path gate |
@@ -67,7 +67,7 @@
 | race/TOCTOU | check 后替换路径 component 为 reparse point | 执行入口重新 check；发现不一致即拒绝并记录净化错误 |
 | 输出泄漏 | denial、tool error、日志 tail、MCP env | 不返回 key/token、完整命令输出或原始 provider/MCP secret |
 
-以上矩阵由 `haven-tools` 的 SafetyGateway 单元测试覆盖核心判定；文件系统
+以上矩阵由 `haven-tools` 的 AuthorizationEngine 单元测试覆盖核心判定；文件系统
 重解析点测试在 Unix 使用 symlink fixture，Windows 使用同一实现的
 `FILE_ATTRIBUTE_REPARSE_POINT` 检测路径编译验证。真实用户目录、注册表、网络、
 电源和桌面输入不属于自动化 fixture 的目标。

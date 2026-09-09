@@ -120,8 +120,8 @@
 	});
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
 	let memoryMaintenance = $state({ running: false, lastCount: null });
-	/** @type {{ confirmation_mode: string, min_risk_level: string, permissions: any[] }} */
-	let security = $state({ confirmation_mode: 'ask', min_risk_level: 'medium', permissions: [] });
+	/** @type {{ permission_mode: string, permissions: any[] }} */
+	let security = $state({ permission_mode: 'balanced', permissions: [] });
 	let stt = $state({
 		provider: 'llm',
 		mcp_server: '',
@@ -248,8 +248,7 @@
 				history_retention_days: asNumber(memory.history_retention_days),
 			},
 			security: {
-				confirmation_mode: security.confirmation_mode,
-				min_risk_level: security.min_risk_level,
+				permission_mode: security.permission_mode,
 				permissions: [],
 			},
 			context_limits: contextLimits,
@@ -580,8 +579,7 @@
 				contextLimits = settings.context_limits || contextLimits;
 				memory = settings.memory || memory;
 				security = {
-					confirmation_mode: settings.security?.confirmation_mode || 'ask',
-					min_risk_level: settings.security?.min_risk_level || 'medium',
+					permission_mode: settings.security?.permission_mode || 'balanced',
 					permissions: Array.isArray(settings.security?.permissions)
 						? settings.security.permissions
 						: [],
@@ -687,6 +685,17 @@
 			reportError(e, { context: 'SettingsView', message: '撤销权限失败', log: false });
 		}
 	}
+
+	async function resetPermissions() {
+		if (!window.confirm('清除所有权限规则？之后 Haven 会按默认策略重新询问。')) return;
+		try {
+			await invoke('reset_permissions');
+			security.permissions = [];
+			addNotification('权限规则已清除', 'success');
+		} catch (e) {
+			reportError(e, { context: 'SettingsView', message: '清除权限规则失败', log: false });
+		}
+	}
 	/** @param {string} value */
 	function setHotkeyMode(value) {
 		hotkeyMode = value;
@@ -726,8 +735,7 @@
 						history_retention_days: memory.history_retention_days,
 					},
 					security: {
-						confirmation_mode: security.confirmation_mode,
-						min_risk_level: security.min_risk_level,
+						permission_mode: security.permission_mode,
 						permissions: [],
 					},
 					context_limits: contextLimits,
@@ -895,6 +903,7 @@
 				onRunMaintenance={runMaintenance}
 				onOpenLogViewer={openLogViewer}
 				onRevokePermission={revokePermission}
+				onResetPermissions={resetPermissions}
 			/>
 		{:else if settingsTab === 'models' || settingsTab === 'media'}
 			{#if settingsLoaded}<ModelSettings

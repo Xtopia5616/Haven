@@ -109,3 +109,4 @@
 - [0106：统一记忆中心 UI](0106-ui-memory-center.md)
 - [0107：事实抽取使用可恢复的持久化 outbox](0107-durable-memory-extraction-outbox.md)
 - [0108：UI 上下文 token 指示与工具卡片完成态折叠](0108-ui-context-token-and-tool-card-collapse.md)
+- [0109：统一权限策略与安全确认边界](0109-permission-policy-v2.md)

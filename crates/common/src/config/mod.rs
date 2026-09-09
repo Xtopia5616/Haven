@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::types::{ConfirmationMode, HotkeyMode, McpTransportType, RiskLevel, ShellChoice};
+use crate::types::{HotkeyMode, McpTransportType, PermissionMode, ShellChoice};
 
 mod endpoint;
 mod loader;

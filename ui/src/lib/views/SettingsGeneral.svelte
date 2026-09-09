@@ -41,6 +41,7 @@
 		onRunMaintenance = () => {},
 		onOpenLogViewer = () => {},
 		onRevokePermission = async () => {},
+		onResetPermissions = async () => {},
 	} = $props();
 
 	const SHELL_BASE_OPTIONS = [
@@ -78,6 +79,50 @@
 	/** @param {string} key */
 	async function revokePermission(key) {
 		await onRevokePermission(key);
+	}
+
+	async function resetPermissions() {
+		await onResetPermissions();
+	}
+
+	const PERMISSION_MODES = [
+		{
+			value: 'balanced',
+			label: '平衡',
+			detail: '读取自动完成，修改与外部操作先询问',
+		},
+		{
+			value: 'careful',
+			label: '谨慎',
+			detail: '所有非只读操作都先询问',
+		},
+		{
+			value: 'manual',
+			label: '手动',
+			detail: '包括读取在内的每一步都需要确认',
+		},
+		{
+			value: 'autonomous',
+			label: '自动',
+			detail: '已允许的操作自动执行，但关键操作仍会询问',
+		},
+	];
+
+	/** @param {string} key */
+	function permissionRuleLabel(key) {
+		/** @type {Record<string, string>} */
+		const labels = {
+			shell: '本机命令',
+			files: '文件操作',
+			'files:delete': '删除文件',
+			process: '进程管理',
+			http: '网络请求',
+			system: '系统设置',
+			window: '窗口控制',
+			input: '模拟输入',
+			memory: '长期记忆',
+		};
+		return labels[key] || key;
 	}
 </script>
 
@@ -268,49 +313,42 @@
 		</SettingsField>
 	</SettingsSection>
 
-	<SettingsSection title="安全">
-		<SettingsField label="确认模式" id="security-mode">
+	<SettingsSection title="权限中心">
+		<SettingsField label="默认策略" id="security-mode">
 			<MaterialSelect
 				id="security-mode"
-				value={security.confirmation_mode}
-				options={[
-					{ value: 'ask', label: '询问（按风险阈值）' },
-					{ value: 'paranoid', label: '谨慎（所有非安全操作）' },
-					{ value: 'autopilot', label: '自动驾驶（不询问）' },
-				]}
+				value={security.permission_mode}
+				options={PERMISSION_MODES.map((mode) => ({ value: mode.value, label: mode.label }))}
 				onChange={withStringValue((v) => {
-					security.confirmation_mode = v;
+					security.permission_mode = v;
 				})}
 			/>
 		</SettingsField>
-		<SettingsField label="最低确认级别" id="security-min-level">
-			<MaterialSelect
-				id="security-min-level"
-				value={security.min_risk_level}
-				options={[
-					{ value: 'safe', label: 'None (all auto-approved)' },
-					{ value: 'low', label: 'Low & above' },
-					{ value: 'medium', label: 'Medium & above' },
-					{ value: 'high', label: 'High & above' },
-					{ value: 'critical', label: 'Critical only' },
-				]}
-				onChange={withStringValue((v) => {
-					security.min_risk_level = v;
-				})}
-			/>
-		</SettingsField>
-		<p class="model-hint">
-			仅 Ask 模式使用风险阈值。永久允许/拒绝优先于阈值；禁用操作与路径沙箱始终拦截。Autopilot
-			仍会执行永久拒绝。
-		</p>
+		{#if PERMISSION_MODES.find((mode) => mode.value === security.permission_mode)}
+			<p class="permission-mode-detail">
+				{PERMISSION_MODES.find((mode) => mode.value === security.permission_mode)?.detail}
+			</p>
+		{/if}
+		<div class="permission-callout">
+			<div class="permission-callout-icon" aria-hidden="true">✓</div>
+			<div>
+				<strong>安全边界始终有效</strong>
+				<p>
+					永久拒绝、禁用的操作、路径沙箱和关键系统操作不会被默认策略或会话允许绕过。
+				</p>
+			</div>
+		</div>
 		{#if security.permissions.length > 0}
 			<div class="perm-list">
-				<div class="perm-list-title">永久权限</div>
+				<div class="perm-list-title">已保存的规则</div>
 				{#each security.permissions as perm (perm.key)}
 					<div class="perm-row">
-						<code class="perm-key">{perm.key}</code>
+						<div class="perm-copy">
+							<strong>{permissionRuleLabel(perm.key)}</strong>
+							<code class="perm-key">{perm.key}</code>
+						</div>
 						<span class="perm-effect" class:deny={perm.effect === 'deny'}
-							>{perm.effect === 'deny' ? '拒绝' : '允许'}</span
+							>{perm.effect === 'deny' ? '始终拒绝' : '始终允许'}</span
 						>
 						<MaterialButton
 							variant="text"
@@ -320,10 +358,16 @@
 						/>
 					</div>
 				{/each}
+				<MaterialButton
+					variant="text"
+					className="permission-reset"
+					label="清除所有规则"
+					onclick={resetPermissions}
+				/>
 			</div>
 		{:else}
 			<p class="model-hint">
-				暂无永久权限。确认弹窗中选「始终允许 / 始终拒绝」后会出现在这里。
+				还没有覆盖规则。你可以在权限弹窗中选择「始终允许」或「始终拒绝」，精确控制某个工具或操作。
 			</p>
 		{/if}
 	</SettingsSection>
@@ -480,6 +524,42 @@
 		font-family: var(--md-sys-typescale-mono);
 		user-select: all;
 	}
+	.permission-mode-detail {
+		margin: calc(-1 * var(--md-sys-space-sm)) 0 var(--md-sys-space-md);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.permission-callout {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--md-sys-space-sm);
+		margin: var(--md-sys-space-md) 0;
+		padding: var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.permission-callout-icon {
+		display: grid;
+		place-items: center;
+		width: 24px;
+		height: 24px;
+		flex: 0 0 24px;
+		border-radius: 50%;
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+		font-weight: 700;
+	}
+	.permission-callout strong,
+	.permission-callout p {
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.permission-callout p {
+		margin: var(--md-sys-space-2xs) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+	}
 	.perm-list {
 		margin-top: var(--md-sys-space-md);
 		display: flex;
@@ -502,12 +582,22 @@
 		background: var(--md-sys-color-surface-container-low, rgba(0, 0, 0, 0.03));
 	}
 	.perm-key {
-		flex: 1;
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.perm-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+		flex: 1;
+	}
+	.perm-copy strong {
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.perm-effect {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -530,6 +620,11 @@
 		padding: 2px 6px;
 	}
 	:global(.md-btn.perm-revoke:hover) {
+		color: var(--md-sys-color-error);
+	}
+	:global(.md-btn.permission-reset) {
+		align-self: flex-start;
+		margin-top: var(--md-sys-space-xs);
 		color: var(--md-sys-color-error);
 	}
 	.notify-grid-header,

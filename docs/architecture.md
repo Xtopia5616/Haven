@@ -61,7 +61,7 @@
 
 `haven-tools` 的工具核心按稳定边界分为 `tool_contract.rs`（Tool、ToolResult、typed
 operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog、版本快照与 probe）和
-`security.rs`（SafetyGateway、权限继承、disabled operation、路径沙箱与本机安全矩阵）；
+`security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）；
 `lib.rs` 只从这些模块重新导出 crate 公共 API，builtin 直接依赖对应模块。安全矩阵只有
 `security.rs` 一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。
 
@@ -253,7 +253,7 @@ Temp（全局约束）。
 
 实现依赖：`sysinfo` + Windows `windows-sys`（Gdi / Globalization / Power）。电源寿命字段为秒（Win32 `SYSTEM_POWER_STATUS`）。
 
-### 2.5.3 权限 / 确认（SafetyGateway）
+### 2.5.3 权限 / 确认（AuthorizationEngine）
 
 决策顺序（fail-closed）：
 
@@ -261,21 +261,21 @@ Temp（全局约束）。
 2. 永久拒绝（`SecurityConfig.permissions`，Always）→ **Blocked**
 3. 会话拒绝 → **Blocked**
 4. 永久允许 / 会话允许 → **AutoApproved**
-5. `ConfirmationMode`：`Ask`（`risk >= min_risk_level`）/ `Paranoid`（非 Safe）/ `Autopilot`（不弹窗，但仍对 Critical 弹窗；永久/会话拒绝始终生效）
-6. 否则 → `RequiresConfirmation`（事件带 `params` + `permission_key`）
+5. `PermissionMode`：`Balanced`（Medium+）/ `Careful`（Low+）/ `Manual`（所有操作）/ `Autonomous`（仅 Critical 弹窗）
+6. 否则 → `RequiresConfirmation`（事件只带后端生成的安全摘要 + `permission_key`）
 
 决策细化：永久拒绝 → 会话拒绝 → 永久允许 → 会话允许。拒绝授权写工具根键（覆盖同工具全部子操作）；允许写精确键。
 
 权限键：`permission_key(tool, params)` → `tool` / `tool:op` / `system:power:lock`；授予父键可覆盖子操作。
 
-确认 UI：拒绝 / 仅本次 / 本对话允许 / 始终允许；拒绝菜单含本对话拒绝、始终拒绝。永久授权写入 `config.toml`，设置页可撤销。
+确认 UI：拒绝 / 仅本次 / 本对话允许 / 始终允许；拒绝菜单含本对话拒绝、始终拒绝。永久授权写入 `config.toml`，设置页可按工具查看、撤销或一键清除。原始 shell、网络、文件和扩展参数不进入 renderer。
 
 ### 2.5.4 Admin Surface
 
 模型不再看到跨域的 `haven` 超级 dispatcher，而看到按 capability 分组的
 `haven_diagnostics`、`haven_config`、`haven_skills`、`haven_tools` 和 `haven_mcp`。
 `haven_diagnostics` 统一承载应用健康、日志摘要和会话诊断，但仍按 operation allowlist
-及独立资源并发边界执行；其它工具的 SafetyGateway permission key 与风险等级不会因此混在一起。
+及独立资源并发边界执行；其它工具的 AuthorizationEngine permission key 与风险等级不会因此混在一起。
 
 配置写入使用 `ConfigService::apply_patch` 的 typed patch；普通模型路径没有任意
 `config_set(path, value)`。诊断结果只提供脱敏、截断后的日志和 session 元数据，不能
@@ -356,7 +356,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
-| 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 SafetyGateway 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
+| 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |
 | 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |

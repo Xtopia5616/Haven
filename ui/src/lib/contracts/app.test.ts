@@ -14,7 +14,7 @@ describe('app-shell IPC contract', () => {
 				tool_name: 'run_command',
 				risk_level: 'high',
 				session_id: 'ses-1',
-				params: { command: 'dir' },
+				summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
 				permission_key: 'tool.run_command',
 			},
 		});
@@ -27,7 +27,7 @@ describe('app-shell IPC contract', () => {
 			toolName: 'run_command',
 			riskLevel: 'high',
 			sessionId: 'ses-1',
-			params: { command: 'dir' },
+			summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
 			permissionKey: 'tool.run_command',
 		});
 		expect(event.payload).not.toHaveProperty('step_id');

@@ -35,7 +35,7 @@ export interface ConfirmationRequestedPayload {
 	toolName: string;
 	riskLevel: RiskLevel;
 	sessionId: string;
-	params: unknown;
+	summary: string;
 	permissionKey: string;
 }
 export interface HotkeyConflictPayload { binding: string; error: string; }
@@ -67,7 +67,7 @@ interface AppWirePayloadMap {
 		tool_name: string;
 		risk_level: RiskLevel;
 		session_id: string;
-		params: unknown;
+		summary: string;
 		permission_key: string;
 	};
 	'hotkey:conflict': { binding: string; error: string };
@@ -101,7 +101,7 @@ export function mapAppEvent<K extends AppEventName>(
 				toolName: payload.tool_name,
 				riskLevel: payload.risk_level,
 				sessionId: payload.session_id,
-				params: payload.params,
+				summary: payload.summary,
 				permissionKey: payload.permission_key,
 			} } as unknown as TauriEvent<AppEventPayloadMap[K]>;
 		}

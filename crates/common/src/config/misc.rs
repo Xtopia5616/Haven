@@ -334,11 +334,11 @@ pub struct StoredPermission {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SecurityConfig {
-    pub confirmation_mode: ConfirmationMode,
-    pub min_risk_level: RiskLevel,
+    /// Single source of truth for when an agent action needs approval.
+    pub permission_mode: PermissionMode,
     pub encrypt_sensitive: bool,
     /// Permanent allow/deny grants (Always scope). Session grants live only
-    /// in the in-memory SafetyGateway.
+    /// in the in-memory AuthorizationEngine.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<StoredPermission>,
 }
@@ -346,14 +346,7 @@ pub struct SecurityConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            confirmation_mode: ConfirmationMode::Ask,
-            // Medium: Safe and Low operations (file reads, window listing,
-            // clipboard reads, ...) auto-approve in the agent loop, while
-            // anything that mutates state (file edits, network, env vars,
-            // MCP/skill tools, shell) still requires confirmation. A Low
-            // default would gate virtually every non-Safe step and flip
-            // existing autonomous sessions into per-step confirmation dialogs.
-            min_risk_level: RiskLevel::Medium,
+            permission_mode: PermissionMode::Balanced,
             encrypt_sensitive: true,
             permissions: Vec::new(),
         }

@@ -1,6 +1,6 @@
 use haven_common::config::{StoredPermission, ToolConfig};
 use haven_common::types::{
-    ConfirmationMode, PermissionEffect, PermissionScope, RiskLevel, permission_key,
+    PermissionEffect, PermissionMode, PermissionScope, RiskLevel, permission_key,
     permission_key_candidates,
 };
 use serde_json::Value;
@@ -138,6 +138,30 @@ pub fn is_safe_local_path(path: &Path) -> bool {
     resolve_path_without_reparse(path).is_some()
 }
 
+/// Build a concise, non-sensitive explanation for a permission prompt.
+///
+/// Raw tool arguments are intentionally kept inside the backend confirmation
+/// state. They can contain shell commands, URLs with credentials, file
+/// contents, or MCP/skill secrets and must never be sent to the renderer.
+pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
+    let operation = params
+        .get("operation")
+        .and_then(Value::as_str)
+        .or_else(|| params.get("scope").and_then(Value::as_str))
+        .unwrap_or("execute");
+    let family = tool_name.split(':').next().unwrap_or(tool_name);
+    match family {
+        "files" => format!("文件操作：{operation}（目标详情已隐藏）"),
+        "shell" => "将执行一条受保护的本机命令（命令内容不会显示在弹窗中）".into(),
+        "http" => "将向外部网络发起请求（请求内容已隐藏）".into(),
+        "process" => format!("进程操作：{operation}（目标详情已隐藏）"),
+        "system" => format!("系统操作：{operation}（参数详情已隐藏）"),
+        "window" => format!("窗口操作：{operation}（目标详情已隐藏）"),
+        "mcp" | "skill" => format!("扩展能力将执行：{tool_name}（参数已隐藏）"),
+        _ => format!("工具 {tool_name} 将执行受保护操作：{operation}"),
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ConfirmationResult {
     AutoApproved,
@@ -164,8 +188,7 @@ struct SessionGrants {
 /// Combined safety config under a single RwLock so `check` reads atomically.
 #[derive(Clone)]
 struct SafetyConfig {
-    confirmation_mode: ConfirmationMode,
-    min_risk_level: RiskLevel,
+    permission_mode: PermissionMode,
     /// Permanent (Always) grants from `SecurityConfig.permissions`.
     permanent: HashMap<String, PermissionEffect>,
     /// Per-conversation grants keyed by session id.
@@ -175,16 +198,22 @@ struct SafetyConfig {
     tool_settings: HashMap<String, ToolConfig>,
 }
 
-pub struct SafetyGateway {
+/// Central authorization engine for every tool, adapter and scheduled action.
+///
+/// The engine owns policy evaluation; callers never decide based on a
+/// frontend-provided `confirmed` flag. Hard safety boundaries run before
+/// grants, deny rules always win, and a policy change invalidates session
+/// trust. The historical `SafetyGateway` name is intentionally gone so the
+/// API describes authorization rather than a vague security perimeter.
+pub struct AuthorizationEngine {
     config: RwLock<SafetyConfig>,
 }
 
-impl SafetyGateway {
-    pub fn new(min_risk_level: RiskLevel) -> Self {
+impl AuthorizationEngine {
+    pub fn new() -> Self {
         Self {
             config: RwLock::new(SafetyConfig {
-                confirmation_mode: ConfirmationMode::Ask,
-                min_risk_level,
+                permission_mode: PermissionMode::Balanced,
                 permanent: HashMap::new(),
                 session_grants: HashMap::new(),
                 tool_settings: HashMap::new(),
@@ -192,17 +221,15 @@ impl SafetyGateway {
         }
     }
 
-    /// Replace threshold + mode + permanent grants from settings. Clears
-    /// session grants so a policy change cannot leave stale trusts.
+    /// Replace the policy and permanent rules atomically. Clears session
+    /// grants so a policy change cannot leave stale trusts.
     pub async fn apply_security(
         &self,
-        mode: ConfirmationMode,
-        min_risk_level: RiskLevel,
+        permission_mode: PermissionMode,
         permissions: &[StoredPermission],
     ) {
         let mut cfg = self.config.write().await;
-        cfg.confirmation_mode = mode;
-        cfg.min_risk_level = min_risk_level;
+        cfg.permission_mode = permission_mode;
         cfg.permanent.clear();
         for p in permissions {
             cfg.permanent.insert(p.key.clone(), p.effect);
@@ -210,10 +237,10 @@ impl SafetyGateway {
         cfg.session_grants.clear();
     }
 
-    /// Update the minimum risk level threshold. Clears session grants.
-    pub async fn set_min_risk_level(&self, level: RiskLevel) {
+    /// Update the policy profile. Clears session grants.
+    pub async fn set_permission_mode(&self, mode: PermissionMode) {
         let mut cfg = self.config.write().await;
-        cfg.min_risk_level = level;
+        cfg.permission_mode = mode;
         cfg.session_grants.clear();
     }
 
@@ -262,22 +289,28 @@ impl SafetyGateway {
                 reason: format!("denied for this session: {key}"),
             };
         }
-        if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Allow) {
-            return ConfirmationResult::AutoApproved;
-        }
-        if let Some(sid) = session_id
-            && let Some(grants) = cfg.session_grants.get(sid)
-            && match_key_set(&grants.allow, &key)
-        {
-            return ConfirmationResult::AutoApproved;
+        // Critical operations are a hard confirmation floor. An allow grant
+        // can streamline ordinary work, but it must never turn an
+        // irreversible operation into an unattended one.
+        if risk < RiskLevel::Critical {
+            if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Allow) {
+                return ConfirmationResult::AutoApproved;
+            }
+            if let Some(sid) = session_id
+                && let Some(grants) = cfg.session_grants.get(sid)
+                && match_key_set(&grants.allow, &key)
+            {
+                return ConfirmationResult::AutoApproved;
+            }
         }
 
-        // Autopilot skips prompts except Critical — keep a hard floor for
-        // irreversible ops (e.g. power hibernate).
-        let needs_prompt = match cfg.confirmation_mode {
-            ConfirmationMode::Autopilot => risk >= RiskLevel::Critical,
-            ConfirmationMode::Paranoid => risk > RiskLevel::Safe,
-            ConfirmationMode::Ask => risk >= cfg.min_risk_level,
+        // Autonomous skips prompts except Critical; the other profiles define
+        // their own lower-risk boundaries below.
+        let needs_prompt = match cfg.permission_mode {
+            PermissionMode::Autonomous => risk >= RiskLevel::Critical,
+            PermissionMode::Manual => true,
+            PermissionMode::Careful => risk > RiskLevel::Safe,
+            PermissionMode::Balanced => risk >= RiskLevel::Medium,
         };
 
         if !needs_prompt {
@@ -350,6 +383,16 @@ impl SafetyGateway {
         self.config.write().await.permanent.remove(key).is_some()
     }
 
+    /// Remove every persisted rule. Session grants are also cleared because a
+    /// reset is an explicit request to return to the selected default policy.
+    pub async fn clear_permanent(&self) -> usize {
+        let mut cfg = self.config.write().await;
+        let removed = cfg.permanent.len();
+        cfg.permanent.clear();
+        cfg.session_grants.clear();
+        removed
+    }
+
     /// Drop one session's grants (conversation ended / deleted).
     pub async fn clear_session_trust(&self, session_id: &str) {
         self.config.write().await.session_grants.remove(session_id);
@@ -358,6 +401,12 @@ impl SafetyGateway {
     /// Drop every session grant (history cleared / app reset).
     pub async fn clear_all_trust(&self) {
         self.config.write().await.session_grants.clear();
+    }
+}
+
+impl Default for AuthorizationEngine {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -612,12 +661,52 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
+
+    // Keep the test fixtures terse while the production API uses the new
+    // authorization vocabulary. All tests exercise the same engine instance.
+    struct SafetyGateway;
+    impl SafetyGateway {
+        fn new(_: RiskLevel) -> AuthorizationEngine {
+            AuthorizationEngine::new()
+        }
+    }
     #[tokio::test]
     async fn test_safety_gateway_new_default_threshold() {
         let gw = SafetyGateway::new(RiskLevel::Low);
         // Safe is below Low → auto approved
         let result = gw.check(None, "tool1", &json!({}), RiskLevel::Safe).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
+    }
+
+    #[test]
+    fn permission_prompt_summary_never_includes_raw_sensitive_arguments() {
+        let summary = permission_prompt_summary(
+            "shell",
+            &json!({"command": "curl https://example.test?token=super-secret"}),
+        );
+        assert!(summary.contains("受保护的本机命令"));
+        assert!(!summary.contains("super-secret"));
+        assert!(!summary.contains("curl"));
+    }
+
+    #[tokio::test]
+    async fn permission_modes_have_predictable_prompt_boundaries() {
+        let gw = AuthorizationEngine::new();
+        gw.set_permission_mode(PermissionMode::Careful).await;
+        assert!(matches!(
+            gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(matches!(
+            gw.check(None, "tool", &json!({}), RiskLevel::Low).await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+
+        gw.set_permission_mode(PermissionMode::Manual).await;
+        assert!(matches!(
+            gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
     }
 
     #[tokio::test]
@@ -757,7 +846,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_set_threshold_clears_session_grants() {
+    async fn clear_permanent_resets_permanent_and_session_rules() {
+        let gw = AuthorizationEngine::new();
+        gw.grant(
+            None,
+            "shell",
+            PermissionEffect::Allow,
+            PermissionScope::Always,
+        )
+        .await;
+        gw.grant(
+            Some("ses-a"),
+            "files",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+
+        assert_eq!(gw.clear_permanent().await, 1);
+        assert!(gw.list_permanent().await.is_empty());
+        assert!(matches!(
+            gw.check(Some("ses-a"), "files", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn critical_operations_cannot_be_bypassed_by_allow_grants() {
+        let gw = AuthorizationEngine::new();
+        gw.grant(
+            None,
+            "system:hibernate",
+            PermissionEffect::Allow,
+            PermissionScope::Always,
+        )
+        .await;
+        assert!(matches!(
+            gw.check(None, "system:hibernate", &json!({}), RiskLevel::Critical)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_set_mode_clears_session_grants() {
         let gw = SafetyGateway::new(RiskLevel::Low);
         gw.grant(
             Some("ses-a"),
@@ -772,14 +905,14 @@ mod tests {
             ConfirmationResult::AutoApproved
         ));
 
-        gw.set_min_risk_level(RiskLevel::High).await;
+        gw.set_permission_mode(PermissionMode::Manual).await;
         assert!(matches!(
             gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
                 .await,
-            ConfirmationResult::AutoApproved
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
-            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::High)
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Low)
                 .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
@@ -809,10 +942,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_autopilot_skips_prompt_except_critical() {
+    async fn test_autonomous_mode_skips_prompt_except_critical() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.apply_security(ConfirmationMode::Autopilot, RiskLevel::Medium, &[])
-            .await;
+        gw.apply_security(PermissionMode::Autonomous, &[]).await;
         assert!(matches!(
             gw.check(None, "shell", &json!({}), RiskLevel::High).await,
             ConfirmationResult::AutoApproved

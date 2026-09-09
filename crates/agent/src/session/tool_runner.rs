@@ -685,7 +685,7 @@ impl SessionExecutor {
         let mut confirmed: Option<bool> = None;
         match self
             .tools
-            .safety_gateway
+            .authorization
             .check(session_id, tool_name, &input, risk_level)
             .await
         {
@@ -920,7 +920,7 @@ impl SessionExecutor {
             .get_risk_level(Some(session_id), tool_name, input)
             .await;
         self.tools
-            .safety_gateway
+            .authorization
             .check(Some(session_id), tool_name, input, risk_level)
             .await
     }

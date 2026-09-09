@@ -109,6 +109,11 @@ fn backup_unparsable_config(path: &Path, err: &str) {
 /// file, but the running process must never silently reinterpret old safety
 /// or tool semantics.
 fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
+    if let Some(security) = value.get("security").and_then(toml::Value::as_table)
+        && (security.contains_key("confirmation_mode") || security.contains_key("min_risk_level"))
+    {
+        return Some("removed split permission policy settings");
+    }
     if value.get("audio").is_some() {
         return Some("top-level [audio]");
     }
@@ -504,28 +509,29 @@ mod tests {
     }
 
     #[test]
-    fn security_missing_min_risk_level_uses_medium_default() {
-        // A `[security]` table that omits the field falls back to the
-        // struct default (Medium) — there is no legacy-Low behavior.
+    fn security_explicit_permission_mode_uses_named_profile() {
         let parsed: SecurityConfig = toml::from_str(
             r#"
-                confirmation_mode = "ask"
+                permission_mode = "balanced"
                 encrypt_sensitive = true
             "#,
         )
         .unwrap();
-        assert_eq!(parsed.min_risk_level, RiskLevel::Medium);
+        assert_eq!(parsed.permission_mode, PermissionMode::Balanced);
     }
 
     #[test]
-    fn security_explicit_min_risk_level_wins() {
-        let parsed: SecurityConfig = toml::from_str(r#"min_risk_level = "medium""#).unwrap();
-        assert_eq!(parsed.min_risk_level, RiskLevel::Medium);
+    fn security_explicit_careful_mode_wins() {
+        let parsed: SecurityConfig = toml::from_str(r#"permission_mode = "careful""#).unwrap();
+        assert_eq!(parsed.permission_mode, PermissionMode::Careful);
     }
 
     #[test]
-    fn security_missing_table_uses_medium_default() {
-        assert_eq!(SecurityConfig::default().min_risk_level, RiskLevel::Medium);
+    fn security_missing_table_uses_balanced_default() {
+        assert_eq!(
+            SecurityConfig::default().permission_mode,
+            PermissionMode::Balanced
+        );
     }
 
     #[test]
@@ -1031,7 +1037,7 @@ vad_threshold = 0.25
     }
 
     #[test]
-    fn load_backs_up_removed_confirmation_mode_alias() {
+    fn load_backs_up_removed_permission_policy_shape() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -1046,8 +1052,8 @@ confirmation_mode = "always"
 
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(
-            loader.config().security.confirmation_mode,
-            ConfirmationMode::Ask
+            loader.config().security.permission_mode,
+            PermissionMode::Balanced
         );
         let backups: Vec<_> = dir
             .read_dir()
