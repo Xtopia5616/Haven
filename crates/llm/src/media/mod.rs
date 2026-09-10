@@ -21,6 +21,7 @@ pub mod gateway;
 pub mod intent;
 pub mod modality;
 pub mod multimodal;
+pub mod projection;
 
 pub use coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
 pub use gateway::{AttachmentOutcome, GenerateOutcome, MediaGateway};
@@ -30,3 +31,4 @@ pub use modality::{
     extension_for_media_type,
 };
 pub use multimodal::{audio_part, audio_part_from_bytes, image_part, image_part_from_bytes};
+pub use projection::project_media_plan;

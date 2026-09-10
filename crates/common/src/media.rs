@@ -411,7 +411,7 @@ pub struct MediaInput {
 }
 
 /// What a provider-neutral request projection will expose for one asset.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaProjectionMode {
     Raw,

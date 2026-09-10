@@ -22,6 +22,7 @@ pub use openai::OpenAiAdapter;
 use crate::client::LlmClient;
 use crate::types::LlmError;
 use haven_common::config::ModelEndpoint;
+use haven_common::media::{CapabilityProfile, CapabilitySupport};
 use haven_common::types::{ContentPart, InjectSource};
 
 pub(crate) use embedding::{openai_compatible_embed, openai_embeddings_url};
@@ -36,6 +37,21 @@ pub(crate) use transport::{
 };
 pub use web_search::web_search_result_of;
 pub(crate) use web_search::{normalize_web_search_call_item, upsert_web_search_call};
+
+/// Capabilities guaranteed by a chat wire protocol. Model-specific limits
+/// remain unknown; this helper only records representations the adapter can
+/// serialize without inferring a model name.
+pub(crate) fn chat_capability_profile(
+    image: CapabilitySupport,
+    audio: CapabilitySupport,
+) -> CapabilityProfile {
+    CapabilityProfile {
+        image,
+        audio,
+        tools: CapabilitySupport::Supported,
+        ..CapabilityProfile::default()
+    }
+}
 
 /// Adapter returned when endpoint construction fails. Keeping the failure in
 /// the client preserves the router's existing factory API while ensuring the

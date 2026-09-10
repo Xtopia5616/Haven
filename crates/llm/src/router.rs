@@ -22,6 +22,7 @@ use crate::types::{
 };
 use futures_util::future::join_all;
 use haven_common::config::{ModelEndpoint, RouterConfig, compute_cost_usd};
+use haven_common::media::CapabilityProfile;
 
 /// Model slot roles. The canonical definition lives next to the config it
 /// routes to (`haven_common::config::EndpointRole`); re-exported here so
@@ -383,6 +384,13 @@ impl LlmRouter {
             EndpointRole::AudioModel => self.audio_model.clone(),
             EndpointRole::EmbeddingModel => self.embedding_model.clone(),
         }
+    }
+
+    /// Return the selected adapter's wire-level media profile. This is kept
+    /// separate from role selection so the pure planner can make a request
+    /// projection without inferring capabilities from a model id.
+    pub fn capability_profile(&self, role: EndpointRole) -> CapabilityProfile {
+        self.select_endpoint(role).capability_profile()
     }
 
     /// Resolve the model context window using the same endpoint metadata and

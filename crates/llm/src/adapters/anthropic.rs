@@ -15,6 +15,7 @@ use crate::adapters::{
 use crate::client::LlmClient;
 use haven_common::prompts::split_system_prompt_cache_boundary;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_common::{CapabilityProfile, CapabilitySupport};
 
 use crate::types::{
     CacheAccounting, CacheDiagnostics, FinishReason, LlmError, LlmResponse, StreamChunk,
@@ -1488,6 +1489,13 @@ impl AnthropicAdapter {
 impl LlmClient for AnthropicAdapter {
     fn style(&self) -> &'static str {
         "anthropic"
+    }
+
+    fn capability_profile(&self) -> CapabilityProfile {
+        crate::adapters::chat_capability_profile(
+            CapabilitySupport::Supported,
+            CapabilitySupport::Unsupported,
+        )
     }
 
     fn validate_content(&self, messages: &[CanonicalMessage]) -> Result<(), LlmError> {

@@ -23,6 +23,7 @@ use haven_common::prompts::{
     split_system_prompt_cache_boundary, split_system_prompt_cache_sections,
 };
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_common::{CapabilityProfile, CapabilitySupport};
 
 use crate::types::{
     CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
@@ -1317,6 +1318,13 @@ impl OpenAiAdapter {
 impl LlmClient for OpenAiAdapter {
     fn style(&self) -> &'static str {
         self.style
+    }
+
+    fn capability_profile(&self) -> CapabilityProfile {
+        crate::adapters::chat_capability_profile(
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+        )
     }
 
     async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {

@@ -14,6 +14,7 @@ use crate::adapters::{
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_common::{CapabilityProfile, CapabilitySupport};
 
 use crate::types::{
     CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
@@ -1123,6 +1124,13 @@ impl GeminiAdapter {
 impl LlmClient for GeminiAdapter {
     fn style(&self) -> &'static str {
         "gemini"
+    }
+
+    fn capability_profile(&self) -> CapabilityProfile {
+        crate::adapters::chat_capability_profile(
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+        )
     }
 
     async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {

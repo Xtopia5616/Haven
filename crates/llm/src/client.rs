@@ -3,6 +3,7 @@ use futures_util::Stream;
 use std::pin::Pin;
 use std::time::Duration;
 
+use haven_common::media::CapabilityProfile;
 use haven_common::types::CanonicalMessage;
 
 use crate::types::{Embedding, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition};
@@ -55,6 +56,13 @@ pub trait LlmClient: Send + Sync {
     /// assertions. Defaults to "unknown"; adapters override it.
     fn style(&self) -> &'static str {
         "unknown"
+    }
+
+    /// Wire-level media capabilities exposed by this adapter. The profile is
+    /// intentionally about what the adapter can serialize, not a model-name
+    /// guess; unknown model-specific limits stay conservative in the planner.
+    fn capability_profile(&self) -> CapabilityProfile {
+        CapabilityProfile::default()
     }
 
     /// Validate provider-neutral content before a request is sent. Adapters
