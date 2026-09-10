@@ -1019,7 +1019,7 @@
 		justify-items: start;
 		gap: var(--md-sys-space-xs);
 		min-width: 132px;
-		min-height: var(--md-comp-button-height);
+		min-height: var(--md-comp-button-small-height);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
 		text-align: left;
 	}

@@ -9,6 +9,7 @@
 	 * @prop {boolean} loading — whether the refresh is in flight
 	 * @prop {boolean} compact — use the 32dp compact action size
 	 * @prop {boolean} iconOnly — use the shared compact icon action style
+	 * @prop {'default'|'toolbar'|'dense'} size — icon-only visual size
 	 * @prop {function} onclick — refresh callback
 	 * @prop {boolean} disabled — disables the action independently of loading
 	 * @prop {string} title — optional tooltip for icon-only mode
@@ -20,6 +21,7 @@
 		loading = false,
 		compact = false,
 		iconOnly = false,
+		size = 'default',
 		onclick,
 		disabled = false,
 		title = '',
@@ -46,6 +48,7 @@
 		label={currentLabel}
 		title={title || currentLabel}
 		ariaBusy={loading}
+		{size}
 		disabled={disabled || loading}
 		{onclick}
 	/>

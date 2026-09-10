@@ -5,7 +5,7 @@
 	 * Material Icon Button — reusable icon button with compact and toolbar sizes.
 	 * @prop {string} label — aria-label
 	 * @prop {'default'|'ghost'|'danger'|'danger-outline'|'primary'|'tonal'} variant
-	 * @prop {'default'|'toolbar'} size — visual size used by the surrounding layout
+	 * @prop {'default'|'toolbar'|'dense'} size — visual size used by the surrounding layout
 	 * @prop {string|undefined} icon — optional shared icon name
 	 * @prop {function} onclick
 	 * @prop {boolean} disabled
@@ -80,6 +80,17 @@
 		min-width: var(--md-comp-icon-button-size);
 		min-height: var(--md-comp-icon-button-size);
 		border-radius: var(--md-comp-button-radius);
+	}
+	.md-icon-btn[data-size='dense'] {
+		width: var(--md-comp-icon-button-dense-size);
+		height: var(--md-comp-icon-button-dense-size);
+		min-width: var(--md-comp-icon-button-dense-size);
+		min-height: var(--md-comp-icon-button-dense-size);
+		border-radius: var(--md-sys-shape-small);
+	}
+	.md-icon-btn[data-size='dense'] :global(.icon) {
+		inline-size: var(--md-comp-icon-button-dense-icon-size);
+		block-size: var(--md-comp-icon-button-dense-icon-size);
 	}
 	.md-icon-btn[data-size='toolbar']::after {
 		content: '';

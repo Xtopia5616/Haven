@@ -677,8 +677,8 @@
 		max-width: 760px;
 	}
 	:global(.media-section) .form-row :global(.md-number-field) {
-		width: min(100%, var(--md-comp-settings-number-width));
-		flex: 0 1 var(--md-comp-settings-number-width);
+		width: min(100%, var(--md-comp-settings-control-width));
+		flex: 0 1 var(--md-comp-settings-control-width);
 	}
 	.card-list {
 		display: flex;
@@ -851,7 +851,7 @@
 			gap: var(--md-sys-space-xs);
 		}
 		:global(.media-section) .form-row :global(.md-number-field) {
-			width: min(100%, var(--md-comp-settings-number-width));
+			width: min(100%, var(--md-comp-settings-control-width));
 			flex: 0 1 auto;
 		}
 		.form-row label {

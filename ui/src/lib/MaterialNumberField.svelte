@@ -108,6 +108,9 @@
 		border-radius: 0 var(--md-comp-textfield-corner) var(--md-comp-textfield-corner) 0;
 		overflow: hidden;
 		flex-shrink: 0;
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			border-width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
 	}
 	.stepper-btn {
 		display: flex;

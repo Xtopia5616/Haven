@@ -236,7 +236,7 @@
 		<p class="model-hint">维护会清理重复、敏感、过期的事实与残留向量。</p>
 		<div class="form-row">
 			<MaterialButton
-				variant="text"
+				variant="filled"
 				label={memoryMaintenance.running ? '运行中…' : '执行记忆维护'}
 				onclick={() => onRunMaintenance()}
 				disabled={memoryMaintenance.running}
@@ -289,8 +289,17 @@
 						}}
 					/>
 				{/each}
-				<label class="accent-custom" for="custom-accent">
-					<span>Custom</span>
+				<label
+					class="accent-custom"
+					class:accent-custom-selected={!themeStore.isPreset}
+					for="custom-accent"
+				>
+					<span
+						class="accent-custom-preview"
+						style={`background-color: ${customAccentHex};`}
+						aria-hidden="true"
+					></span>
+					<span class="accent-custom-label">自定义</span>
 					<input
 						id="custom-accent"
 						type="text"
@@ -675,28 +684,64 @@
 		outline-offset: -2px;
 	}
 	.accent-custom {
+		position: relative;
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
-		min-height: var(--md-comp-button-height);
-		padding: 0 var(--md-sys-space-sm);
+		height: var(--md-comp-button-small-height);
+		min-height: var(--md-comp-button-small-height);
+		padding: 0 var(--md-sys-space-sm) 0 var(--md-sys-space-xs);
 		border: 1px solid var(--md-sys-color-outline);
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-surface);
-		color: var(--md-sys-color-on-surface-variant);
+		border-radius: var(--md-comp-button-radius);
+		background: var(--md-sys-color-surface-container-low);
+		color: var(--md-sys-color-on-surface);
 		font-size: var(--md-sys-typescale-label-small-size);
+		cursor: text;
+		transition:
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard);
+	}
+	.accent-custom:hover {
+		border-color: var(--md-sys-color-on-surface);
+		background: var(--md-sys-color-surface-container);
+	}
+	.accent-custom:focus-within,
+	.accent-custom.accent-custom-selected {
+		border-color: var(--md-sys-color-primary);
+		box-shadow: inset 0 0 0 1px var(--md-sys-color-primary);
+	}
+	.accent-custom-preview {
+		width: 28px;
+		height: 28px;
+		flex: 0 0 28px;
+		border-radius: var(--md-sys-shape-small);
+		box-shadow: inset 0 0 0 1px
+			color-mix(in srgb, var(--md-sys-color-on-surface) 18%, transparent);
+	}
+	.accent-custom-label {
+		font-weight: 600;
+		white-space: nowrap;
 	}
 	.custom-hex-input {
-		width: 84px;
+		width: 76px;
+		height: 28px;
+		box-sizing: border-box;
+		padding: 0 var(--md-sys-space-xs);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container);
 		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-body-medium-size);
-		line-height: var(--md-sys-typescale-body-medium-line-height);
-		background: transparent;
-		border: none;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 		outline: none;
-		color: inherit;
-		padding: 0;
+		color: var(--md-sys-color-on-surface);
 		text-align: center;
+	}
+	.custom-hex-input:focus {
+		border-color: var(--md-sys-color-primary);
+		box-shadow: var(--md-sys-focus-ring);
 	}
 	.custom-hex-input::placeholder {
 		color: var(--md-sys-color-on-surface-variant);

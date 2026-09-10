@@ -30,7 +30,7 @@ describe('ApiKeyField', () => {
 		expect(getByText('OpenAI Chat')).toBeTruthy();
 		expect(getByText('已配置')).toBeTruthy();
 		expect(container.querySelector('.api-key-badge-mask')).toBeNull();
-		expect(container.querySelector('.api-key-badge-icon')).toBeTruthy();
+		expect(container.querySelector('.api-key-badge-icon')).toBeNull();
 	});
 
 	it('renders an editable password field', () => {

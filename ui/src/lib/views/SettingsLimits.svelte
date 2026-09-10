@@ -625,8 +625,8 @@
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		width: min(100%, var(--md-comp-settings-number-width));
-		flex: 0 1 var(--md-comp-settings-number-width);
+		width: min(100%, var(--md-comp-settings-control-width));
+		flex: 0 1 var(--md-comp-settings-control-width);
 		min-width: 0;
 	}
 	.limit-input :global(.md-number-field) {
@@ -666,7 +666,7 @@
 		}
 		.limit-input {
 			justify-content: space-between;
-			width: min(100%, var(--md-comp-settings-number-width));
+			width: min(100%, var(--md-comp-settings-control-width));
 			flex: 0 1 auto;
 		}
 		:global(.format-card) {

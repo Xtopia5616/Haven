@@ -445,17 +445,20 @@
 							<RefreshButton
 								compact
 								iconOnly
+								size="dense"
 								loading={refreshingAll || !!modelFetching[provider.name]}
 								title="刷新模型列表"
 								onclick={() => refreshProviderModels(provider.name)}
 							/>
 							<MaterialIconButton
+								size="dense"
 								icon="edit"
 								label="编辑"
 								title="编辑 Provider"
 								onclick={() => startEditProvider(idx)}
 							/>
 							<MaterialIconButton
+								size="dense"
 								variant="danger"
 								icon="delete"
 								label="删除"

@@ -22,6 +22,7 @@ describe('InputRouter context menu', () => {
 		expect(screen.getByRole('button', { name: '发送' }).getAttribute('data-variant')).toBe(
 			'primary',
 		);
+		expect(inputRouterSource).toContain("icon={recordingState.isRecording ? 'pause' : 'mic'}");
 		expect(screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder')).toContain(
 			'录音',
 		);

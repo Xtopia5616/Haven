@@ -58,9 +58,7 @@
 			<span class="api-key-badge-prefix">{badgePrefix}</span>
 			<span class="api-key-badge-divider" aria-hidden="true">·</span>
 		{/if}
-		{#if configured}
-			<Icon name="checkmark" size={14} strokeWidth={2.5} className="api-key-badge-icon" />
-		{:else}
+		{#if !configured}
 			<Icon name="key" size={14} className="api-key-badge-icon" />
 		{/if}
 		<span class="api-key-badge-label">{configured ? '已配置' : '未配置'}</span>

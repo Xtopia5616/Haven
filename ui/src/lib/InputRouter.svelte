@@ -587,7 +587,7 @@
 				variant={recordingState.isRecording ? 'danger' : 'default'}
 				label={recordingState.isRecording ? '停止录音' : '开始录音'}
 				title={recordingState.isRecording ? '停止录音' : '开始录音'}
-				icon={recordingState.isRecording ? 'stop' : 'mic'}
+				icon={recordingState.isRecording ? 'pause' : 'mic'}
 				onclick={handleRecordClick}
 			>
 			</MaterialIconButton>

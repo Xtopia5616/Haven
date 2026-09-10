@@ -235,6 +235,8 @@
 	--md-comp-tab-indicator-bottom: 3px;
 	--md-comp-icon-button-size: 40px;
 	--md-comp-icon-button-compact-size: 32px;
+	--md-comp-icon-button-dense-size: 28px;
+	--md-comp-icon-button-dense-icon-size: 16px;
 	--md-comp-icon-button-touch: 48px;
 	--md-sys-icon-size: 20px;
 	--md-comp-refresh-button-width: 128px;
@@ -250,7 +252,6 @@
 	--md-comp-switch-icon-size: 16px;
 	--md-comp-settings-label-width: 168px;
 	--md-comp-settings-control-width: 280px;
-	--md-comp-settings-number-width: 180px;
 
 	/* ---------- State-layer opacity (M3 spec) ---------- */
 	--md-sys-state-hover-opacity: 0.08;

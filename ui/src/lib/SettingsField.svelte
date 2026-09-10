@@ -64,6 +64,14 @@
 		min-width: 0;
 	}
 
+	.settings-field__control > :global(.md-input),
+	.settings-field__control > :global(.md-select-container),
+	.settings-field__control > :global(.md-number-field),
+	.settings-field__control > :global(.hotkey-input-wrap),
+	.settings-field__control > :global(.api-key-field) {
+		width: min(100%, var(--md-comp-settings-control-width));
+	}
+
 	.settings-field--stacked {
 		grid-template-columns: 1fr;
 		align-items: start;
