@@ -30,6 +30,7 @@
 		ocr,
 		tts,
 		imageGen,
+		mediaInputStrategy,
 		contextLimits,
 		keyConfigured,
 		keyConfiguredProviders = {},
@@ -43,6 +44,12 @@
 		{ value: 'azure', label: 'Azure AI Vision' },
 		{ value: 'tencent', label: 'Tencent 通用印刷体' },
 		{ value: 'none', label: '未配置（透传图片）' },
+	];
+	const MEDIA_INPUT_STRATEGY_OPTIONS = [
+		{ value: 'auto', label: '自动（推荐）' },
+		{ value: 'raw_preferred', label: '优先原始媒体' },
+		{ value: 'extracted_preferred', label: '优先 OCR / STT / 描述' },
+		{ value: 'text_only_safe', label: '仅安全文本' },
 	];
 
 	/** @param {string} name */
@@ -187,6 +194,25 @@
 		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 Audio / Image Model；TTS /
 		文生图复用「模型」页已添加的 Provider（Base URL + API Key）。
 	</p>
+	<MaterialCard variant="outlined" className="settings-card media-strategy-card">
+		<div class="card-head">
+			<span class="card-title">附件输入策略</span>
+			<p class="card-hint">
+				控制附件进入模型请求时优先使用原始媒体还是 OCR / STT 等派生表示；策略不会把本机路径发送给模型。
+			</p>
+		</div>
+		<div class="model-field strategy-field">
+			<span class="field-label">Provider-facing projection</span><MaterialSelect
+				id="media-input-strategy"
+				value={mediaInputStrategy}
+				options={MEDIA_INPUT_STRATEGY_OPTIONS}
+				ariaLabel="附件输入策略"
+				onChange={withStringValue((v) => {
+					mediaInputStrategy = v;
+				})}
+			/>
+		</div>
+	</MaterialCard>
 	<div class="card-list">
 		{#each inputFormats as format (format.id)}
 			<MaterialCard variant="outlined" className="settings-card">

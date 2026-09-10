@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use haven_common::media::MediaInputStrategy;
 use haven_common::types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
     MessageAttachment,
@@ -237,10 +238,28 @@ impl ReActSnapshot {
         project_transcript(&self.events)
     }
 
+    /// Project with the current provider-facing media input policy.
+    pub fn project_with_strategy(
+        &self,
+        strategy: MediaInputStrategy,
+    ) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
+        project_transcript_with_strategy(&self.events, strategy)
+    }
+
     /// Project `events[..cursor]` (cursor clamped to `events.len()`).
     pub fn project_at(&self, cursor: usize) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
         let end = cursor.min(self.events.len());
         project_transcript(&self.events[..end])
+    }
+
+    /// Project a bounded event prefix with the current media policy.
+    pub fn project_at_with_strategy(
+        &self,
+        cursor: usize,
+        strategy: MediaInputStrategy,
+    ) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
+        let end = cursor.min(self.events.len());
+        project_transcript_with_strategy(&self.events[..end], strategy)
     }
 }
 
@@ -248,6 +267,16 @@ impl ReActSnapshot {
 /// rounds. Pure — no I/O. Parallel `ToolResult`s with the same `step_number`
 /// become siblings on one [`ReActRound`].
 pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
+    project_transcript_with_strategy(events, MediaInputStrategy::Auto)
+}
+
+/// Project an append-only event log using an explicit media input policy.
+/// This remains pure so resume and live apply share the same attachment
+/// selection semantics.
+pub fn project_transcript_with_strategy(
+    events: &[TranscriptRecord],
+    strategy: MediaInputStrategy,
+) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
     let mut canonical: Vec<CanonicalMessage> = Vec::new();
     let mut rounds: Vec<ReActRound> = Vec::new();
 
@@ -334,7 +363,11 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
                 ..
             } => {
                 let mut content = vec![ContentPart::text(text.clone())];
-                content.extend(attachments.iter().map(attachment_to_content_part));
+                content.extend(
+                    attachments
+                        .iter()
+                        .map(|attachment| attachment_to_content_part(attachment, strategy)),
+                );
                 canonical.push(CanonicalMessage::user_with_source(content, *source));
             }
             TranscriptRecord::CompactSummary { compacted, .. } => {
@@ -346,9 +379,12 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
     (canonical, rounds)
 }
 
-fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
-    // Single helper shared with the live react path (via re-export).
-    crate::react::attachment_to_content_part(att)
+fn attachment_to_content_part(
+    att: &MessageAttachment,
+    strategy: MediaInputStrategy,
+) -> ContentPart {
+    // Single helper shared with the live ReAct path.
+    crate::react::attachment_to_content_part_with_strategy(att, strategy)
 }
 
 /// Test/helper: wrap a pre-built canonical list as a single CompactSummary

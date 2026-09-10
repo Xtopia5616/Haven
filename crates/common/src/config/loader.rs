@@ -423,6 +423,10 @@ mod tests {
     #[test]
     fn default_config_has_expected_values() {
         let cfg = AppConfig::default();
+        assert_eq!(
+            cfg.media.input_strategy,
+            crate::media::MediaInputStrategy::Auto
+        );
         assert_eq!(cfg.media.audio.sample_rate, 16000);
         assert_eq!(cfg.hotkey.key_binding, "Ctrl+Shift+Space");
         assert_eq!(cfg.session.max_concurrent, 3);

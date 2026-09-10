@@ -40,6 +40,7 @@
 		ocr,
 		tts,
 		imageGen,
+		mediaInputStrategy,
 		contextLimits,
 		keyConfigured,
 		keyConfiguredProviders = {},
@@ -388,6 +389,7 @@
 		{ocr}
 		{tts}
 		{imageGen}
+		{mediaInputStrategy}
 		{contextLimits}
 		{keyConfigured}
 		{keyConfiguredProviders}

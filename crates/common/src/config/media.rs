@@ -4,6 +4,7 @@
 //! (context_limits) + OCR.
 
 use super::*;
+use crate::media::MediaInputStrategy;
 
 /// Microphone capture / VAD parameters. Lives under `[media.audio]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -168,6 +169,8 @@ impl Default for ImageGenConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MediaConfig {
+    /// Provider-facing input selection policy for user attachments.
+    pub input_strategy: MediaInputStrategy,
     /// Microphone capture / VAD (voice input card).
     pub audio: AudioConfig,
     /// Speech-to-text (voice input transcription).

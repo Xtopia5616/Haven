@@ -35,7 +35,7 @@ use crate::rollback_support::trim_dangling_tool_call;
 
 use crate::session::SessionStatus;
 use crate::types::{
-    BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript,
+    BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript_with_strategy,
     seed_events_from_canonical,
 };
 use haven_common::types::{CanonicalMessage, ContentPart};
@@ -499,7 +499,8 @@ impl AgentLayer {
         description: &str,
     ) -> anyhow::Result<Vec<ReActRound>> {
         let events = snapshot.events;
-        let (mut canonical, _) = project_transcript(&events);
+        let (mut canonical, _) =
+            project_transcript_with_strategy(&events, self.react_engine.media_strategy());
         let start_step = snapshot.step_number;
         let branch_points = snapshot.branch_points;
 
@@ -608,7 +609,13 @@ impl AgentLayer {
 
         let emitter_arc = match self.events.emitter_arc() {
             Some(e) => e,
-            None => return Ok(project_transcript(&events).1),
+            None => {
+                return Ok(project_transcript_with_strategy(
+                    &events,
+                    self.react_engine.media_strategy(),
+                )
+                .1);
+            }
         };
         let mut state = ReActState::new(events, canonical, branch_points);
         let exit = self
@@ -628,7 +635,11 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => Ok(project_transcript(&state.events).1),
+            | crate::react::LoopExit::Completed => Ok(project_transcript_with_strategy(
+                &state.events,
+                self.react_engine.media_strategy(),
+            )
+            .1),
         }
     }
 
@@ -700,11 +711,10 @@ impl AgentLayer {
         tracing::debug!("run_session: system_prompt {} chars", system_prompt.len());
 
         let mut initial_content = vec![ContentPart::text(context.to_string())];
-        initial_content.extend(
-            initial_attachments
-                .iter()
-                .map(crate::react::attachment_to_content_part),
-        );
+        let media_strategy = self.react_engine.media_strategy();
+        initial_content.extend(initial_attachments.iter().map(|attachment| {
+            crate::react::attachment_to_content_part_with_strategy(attachment, media_strategy)
+        }));
 
         let mut canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage::system(vec![ContentPart::text(system_prompt)]),
@@ -735,7 +745,7 @@ impl AgentLayer {
         let branch_points: HashMap<u32, BranchPoint> = HashMap::new();
         let emitter_arc = match self.events.emitter_arc() {
             Some(e) => e,
-            None => return Ok(project_transcript(&events).1),
+            None => return Ok(project_transcript_with_strategy(&events, media_strategy).1),
         };
         let mut state = ReActState::new(events, canonical, branch_points);
         let run_id = self.react_engine.next_run_id();
@@ -753,7 +763,9 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => Ok(project_transcript(&state.events).1),
+            | crate::react::LoopExit::Completed => {
+                Ok(project_transcript_with_strategy(&state.events, media_strategy).1)
+            }
         }
     }
 }

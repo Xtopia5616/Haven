@@ -109,6 +109,11 @@ impl AgentLayer {
         self.react_engine.set_context_limits(limits);
     }
 
+    /// Hot-reload the provider-facing media projection policy.
+    pub fn set_media_strategy(&self, strategy: haven_common::media::MediaInputStrategy) {
+        self.react_engine.set_media_strategy(strategy);
+    }
+
     pub(crate) fn limits(&self) -> ContextLimitsConfig {
         self.context_limits.lock().unwrap().clone()
     }

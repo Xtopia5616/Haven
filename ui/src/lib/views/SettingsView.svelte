@@ -139,6 +139,7 @@
 	});
 	let tts = $state({ provider: 'none', model: '', voice: '', timeout_secs: 60 });
 	let imageGen = $state({ provider: 'none', model: '', timeout_secs: 120 });
+	let mediaInputStrategy = $state('auto');
 	/** @type {Record<string, any>} */
 	let notification = $state({
 		session_created: { in_app: true, windows: false },
@@ -253,6 +254,7 @@
 			},
 			context_limits: contextLimits,
 			media: {
+				input_strategy: mediaInputStrategy,
 				audio: {
 					sample_rate: asNumber(audio.sample_rate),
 					channels: asNumber(audio.channels),
@@ -464,6 +466,8 @@
 			if (snapshot.context_limits)
 				contextLimits = { ...contextLimits, ...snapshot.context_limits };
 			if (snapshot.media?.audio) audio = { ...audio, ...snapshot.media.audio };
+			if (snapshot.media?.input_strategy)
+				mediaInputStrategy = snapshot.media.input_strategy;
 			if (snapshot.media?.stt)
 				stt = {
 					provider: snapshot.media.stt.provider || 'llm',
@@ -585,6 +589,7 @@
 						: [],
 				};
 				const media = settings.media || {};
+				mediaInputStrategy = media.input_strategy || 'auto';
 				audio = media.audio || audio;
 				stt = {
 					provider: media.stt?.provider || 'llm',
@@ -740,6 +745,7 @@
 					},
 					context_limits: contextLimits,
 					media: {
+						input_strategy: mediaInputStrategy,
 						audio: {
 							sample_rate: audio.sample_rate,
 							channels: audio.channels,
@@ -914,6 +920,7 @@
 					{ocr}
 					{tts}
 					{imageGen}
+					mediaInputStrategy={mediaInputStrategy}
 					{contextLimits}
 					{keyConfigured}
 					{keyConfiguredProviders}

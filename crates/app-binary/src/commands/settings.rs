@@ -80,6 +80,7 @@ pub async fn update_settings(
             .pipeline
             .update_config(config.media.audio.clone())
             .await;
+        state.agent.set_media_strategy(config.media.input_strategy);
         tick("pipeline.update_config");
     }
 

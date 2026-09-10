@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::session::{SessionExecutor, SessionStatus};
 use haven_common::config::ContextLimitsConfig;
 use haven_common::media::{
-    CapabilityProfile, CapabilitySupport, build_media_plan, legacy_attachment_to_media_input,
+    CapabilityProfile, CapabilitySupport, MediaInputStrategy, build_media_plan,
+    legacy_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
@@ -58,12 +59,15 @@ pub(crate) use snapshot_io::set_status_and_emit;
 #[cfg(test)]
 use tool_batch_policy::FailureKind;
 
-/// Convert a stored message attachment into a content part for the LLM.
-/// Legacy attachments first pass through the common media plan and the llm
+/// Project a legacy attachment using the current user-selected media policy.
+/// Legacy attachments first pass through the common media plan and the LLM
 /// projection boundary. Ordinary files deliberately do not expose their
 /// persisted absolute path to provider-facing text; managed-file resolution
 /// is a later trusted-tool stage.
-pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
+pub(crate) fn attachment_to_content_part_with_strategy(
+    att: &MessageAttachment,
+    strategy: MediaInputStrategy,
+) -> ContentPart {
     let input = legacy_attachment_to_media_input(att);
     let capabilities = CapabilityProfile {
         // These are the current canonical inline parts, not a model-name
@@ -72,11 +76,7 @@ pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart
         audio: CapabilitySupport::Supported,
         ..CapabilityProfile::default()
     };
-    let plan = build_media_plan(
-        std::slice::from_ref(&input),
-        &capabilities,
-        Default::default(),
-    );
+    let plan = build_media_plan(std::slice::from_ref(&input), &capabilities, strategy);
     if let Ok(mut parts) = haven_llm::media::project_media_plan(&plan, &[input])
         && let Some(part) = parts.pop()
     {
@@ -180,6 +180,8 @@ pub struct ReActEngine {
     session_max_steps: Mutex<Option<u32>>,
     /// Hot-reloaded via [`Self::set_context_limits`] on settings save.
     context_limits: std::sync::Mutex<ContextLimitsConfig>,
+    /// Hot-reloaded provider-facing media projection policy.
+    media_strategy: Mutex<MediaInputStrategy>,
     run_counter: AtomicU64,
     /// Queue/inbox source adapter; projection remains in `inject`.
     context_source: ContextSource,
@@ -249,6 +251,7 @@ impl ReActEngine {
             max_steps: Mutex::new(max_steps),
             session_max_steps: Mutex::new(None),
             context_limits: std::sync::Mutex::new(context_limits),
+            media_strategy: Mutex::new(MediaInputStrategy::Auto),
             run_counter: AtomicU64::new(0),
             context_source,
             usage: UsageTracker::new(),
@@ -338,6 +341,15 @@ impl ReActEngine {
     pub fn set_context_limits(&self, limits: ContextLimitsConfig) {
         *self.context_limits.lock().unwrap() = limits;
         self.context_windows.clear();
+    }
+
+    /// Hot-reload the provider-facing media projection policy.
+    pub fn set_media_strategy(&self, strategy: MediaInputStrategy) {
+        *self.media_strategy.lock().unwrap() = strategy;
+    }
+
+    pub(crate) fn media_strategy(&self) -> MediaInputStrategy {
+        *self.media_strategy.lock().unwrap()
     }
 
     pub fn set_max_steps(&self, max_steps: u32) {
@@ -1158,7 +1170,7 @@ mod tests {
     fn audio_attachment_becomes_inline_content_part() {
         let attachment = MessageAttachment::new("audio/wav", "UklGRg==");
         assert!(matches!(
-            attachment_to_content_part(&attachment),
+            attachment_to_content_part_with_strategy(&attachment, MediaInputStrategy::Auto),
             ContentPart::Audio {
                 ref media_type,
                 ref data,
@@ -1168,11 +1180,29 @@ mod tests {
     }
 
     #[test]
+    fn media_strategy_controls_raw_attachment_projection() {
+        let attachment = MessageAttachment::new("image/png", "iVBORw0KGgo=");
+        assert!(matches!(
+            attachment_to_content_part_with_strategy(&attachment, MediaInputStrategy::RawPreferred),
+            ContentPart::Image { .. }
+        ));
+
+        let ContentPart::Text(text) =
+            attachment_to_content_part_with_strategy(&attachment, MediaInputStrategy::TextOnlySafe)
+        else {
+            panic!("text_only_safe must not project raw image bytes");
+        };
+        assert!(text.contains("当前请求没有可安全投影的表示"));
+    }
+
+    #[test]
     fn ordinary_file_attachment_does_not_leak_absolute_path() {
         let mut attachment = MessageAttachment::new("application/pdf", "");
         attachment.filename = Some("report.pdf".into());
         attachment.path = Some(r"C:\Users\olive\uploads\report.pdf".into());
-        let ContentPart::Text(text) = attachment_to_content_part(&attachment) else {
+        let ContentPart::Text(text) =
+            attachment_to_content_part_with_strategy(&attachment, MediaInputStrategy::Auto)
+        else {
             panic!("ordinary files use a safe text fallback until managed tools resolve them");
         };
         assert!(text.contains("report.pdf"));

@@ -146,6 +146,7 @@ impl AppState {
             conversation_window_size,
             context_limits,
         ));
+        agent.set_media_strategy(cfg.media.input_strategy);
         agent.set_session_max_steps(session_max_steps);
 
         // Plan A multi-agent: `agent` spawn creates real peer sessions through
