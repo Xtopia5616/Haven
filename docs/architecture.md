@@ -302,6 +302,9 @@ Tauri command 的迁移期 structured surface，未注册进模型目录；后�
   `config_service` / gateway / stt_client）。
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
   `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
+- `commands/recording.rs`：host 校验并落盘上传附件、分配 `asset_id`，并由 app-binary
+  在启动/每日维护时清理超过历史保留期的 `file-{uuid32}` 批次；模型工具不能触发这条
+  清理路径（ADR 0115）。
 - `event_bridge.rs`：`AgentEvent` → 前端 channel 和显式 wire DTO 映射，包含 action
   生命周期投影与通知副通道。
 - `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配，包含

@@ -401,6 +401,73 @@ async fn persist_file_attachments(
     persist_file_attachments_to(uploads_root(), attachments).await
 }
 
+/// Remove only generated upload batches that have outlived the session
+/// history retention window. This is a host-maintenance operation, never a
+/// model-facing file operation: the target is constrained to the dedicated
+/// uploads root and the `file-{uuid32}` batch naming contract.
+pub(crate) async fn cleanup_stale_upload_batches(
+    root: std::path::PathBuf,
+    max_age: std::time::Duration,
+) -> Result<usize, String> {
+    tokio::task::spawn_blocking(move || cleanup_stale_upload_batches_sync(&root, max_age))
+        .await
+        .map_err(|error| format!("上传目录清理任务失败: {error}"))?
+}
+
+fn cleanup_stale_upload_batches_sync(
+    root: &std::path::Path,
+    max_age: std::time::Duration,
+) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("读取上传目录失败: {error}")),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!(error = %error, "跳过不可读取的上传目录项");
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                tracing::debug!(error = %error, "跳过无法判断类型的上传目录项");
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !file_type.is_dir() || !is_generated_upload_batch(&name) {
+            continue;
+        }
+        let modified = match entry.metadata().and_then(|metadata| metadata.modified()) {
+            Ok(modified) => modified,
+            Err(error) => {
+                tracing::debug!(batch = %name, error = %error, "跳过没有修改时间的上传批次");
+                continue;
+            }
+        };
+        if modified.elapsed().map_or(true, |age| age <= max_age) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) => tracing::debug!(batch = %name, error = %error, "上传批次清理失败"),
+        }
+    }
+    Ok(removed)
+}
+
+fn is_generated_upload_batch(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("file-") else {
+        return false;
+    };
+    suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 async fn persist_file_attachments_to(
     root: std::path::PathBuf,
     attachments: Vec<haven_common::types::MessageAttachment>,
@@ -613,6 +680,34 @@ mod tests {
         let imgs = vec![att("image/png", "not-base64!!!")];
         let err = validate_attachments(imgs, &limits()).unwrap_err();
         assert!(err.contains("base64"));
+    }
+
+    #[test]
+    fn test_generated_upload_batch_name_is_strict() {
+        assert!(is_generated_upload_batch(
+            "file-0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_generated_upload_batch("file-user-created"));
+        assert!(!is_generated_upload_batch(
+            "file-0123456789abcdef0123456789abcdeg"
+        ));
+        assert!(!is_generated_upload_batch("uploads-file-0123456789abcdef"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_upload_batches_only_removes_generated_dirs() {
+        let root = tempfile::TempDir::new().unwrap();
+        let stale = root.path().join("file-0123456789abcdef0123456789abcdef");
+        let unrelated = root.path().join("file-user-created");
+        tokio::fs::create_dir_all(&stale).await.unwrap();
+        tokio::fs::create_dir_all(&unrelated).await.unwrap();
+        let removed =
+            cleanup_stale_upload_batches(root.path().to_path_buf(), std::time::Duration::ZERO)
+                .await
+                .unwrap();
+        assert_eq!(removed, 1);
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
     }
 
     #[tokio::test]

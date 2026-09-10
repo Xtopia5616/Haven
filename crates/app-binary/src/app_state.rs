@@ -288,11 +288,37 @@ impl AppState {
                     ),
                 }
             });
+
+            let upload_root = haven_common::default_work_dir().join("uploads");
+            let upload_ttl = std::time::Duration::from_secs(
+                u64::from(retention_days).saturating_mul(24 * 60 * 60),
+            );
+            tokio::spawn(async move {
+                match crate::commands::recording::cleanup_stale_upload_batches(
+                    upload_root,
+                    upload_ttl,
+                )
+                .await
+                {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("cleaned up {} stale upload batch(es)", n);
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error),
+                        "deferred upload retention cleanup failed"
+                    ),
+                }
+            });
         }
 
         // Spawn background cleanup every 24 hours
         let db_clone = db.clone();
         let retention = retention_days;
+        let upload_root = haven_common::default_work_dir().join("uploads");
+        let upload_ttl = std::time::Duration::from_secs(
+            u64::from(retention_days.max(1)).saturating_mul(24 * 60 * 60),
+        );
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
             loop {
@@ -306,6 +332,26 @@ impl AppState {
                         Err(error) => tracing::warn!(
                             error = %haven_common::error::sanitize_error_text(&error.to_string()),
                             "background session retention cleanup failed"
+                        ),
+                    }
+                }
+                if retention > 0 {
+                    match crate::commands::recording::cleanup_stale_upload_batches(
+                        upload_root.clone(),
+                        upload_ttl,
+                    )
+                    .await
+                    {
+                        Ok(n) if n > 0 => {
+                            tracing::info!(
+                                "background cleanup: removed {} stale upload batch(es)",
+                                n
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error),
+                            "background upload retention cleanup failed"
                         ),
                     }
                 }
