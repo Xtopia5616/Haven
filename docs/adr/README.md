@@ -119,3 +119,4 @@
 - [0116：多模态请求与受管上传边界加固](0116-media-boundary-hardening.md)
 - [0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)
 - [0122：工具媒体请求统一入口](0122-unified-tool-media-entrypoints.md)
+- [0123：Agent 原生媒体工具契约](0123-agent-native-media-tool-contract.md)

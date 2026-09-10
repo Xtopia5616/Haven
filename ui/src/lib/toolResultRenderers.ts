@@ -12,6 +12,7 @@ import ToolInputResult from './ToolInputResult.svelte';
 import ToolAdminResult from './ToolAdminResult.svelte';
 import ToolAudioResult from './ToolAudioResult.svelte';
 import ToolMemoryResult from './ToolMemoryResult.svelte';
+import ToolMediaResult from './ToolMediaResult.svelte';
 import ToolScheduleResult from './ToolScheduleResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolWebSearchResult from './ToolWebSearchResult.svelte';
@@ -41,6 +42,14 @@ export function getToolResultRenderer(
 		toolName === 'files' &&
 		typeof _data === 'object' &&
 		_data !== null &&
+		'media' in _data
+	)
+		return ToolMediaResult;
+	if (
+		kind === 'custom' &&
+		toolName === 'files' &&
+		typeof _data === 'object' &&
+		_data !== null &&
 		!('results' in _data)
 	)
 		return ToolFileResult;
@@ -64,6 +73,7 @@ export function getToolResultRenderer(
 	if (kind === 'custom' && toolName === 'memory') return ToolMemoryResult;
 	if (kind === 'custom' && toolName === 'input') return ToolInputResult;
 	if (kind === 'custom' && toolName === 'audio') return ToolAudioResult;
+	if (kind === 'custom' && toolName === 'media') return ToolMediaResult;
 	if (
 		kind === 'custom' &&
 		['haven_config', 'haven_diagnostics', 'haven_mcp', 'haven_skills', 'haven_tools'].includes(toolName)

@@ -173,6 +173,7 @@
 		if (toolName === 'clipboard') return 'clipboard';
 		if (toolName === 'agent') return 'users';
 		if (toolName === 'memory') return 'memory';
+		if (toolName === 'media') return 'image';
 		return 'tools';
 	});
 	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));

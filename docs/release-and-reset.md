@@ -31,6 +31,11 @@ FTS/embedding 形状。`user_version` 不是 v17 的数据库，
 `haven.db-shm` 后重新创建。这样会同时清除会话、记忆、任务、快照和用量；若配置仍需保留，
 只删除这三个数据库文件即可，不必删除整个数据根目录。
 
+本版本的模型工具媒体契约也已收敛：`media` 只接受 `asset_id`，`window.screenshot`/
+`window.ocr` 不再接受宿主 `path`；窗口截图会登记到生成媒体目录，图片、音频和支持的
+文档通过 `media` 派生。含旧 window path 调用的未完成 ReAct snapshot 不保证恢复；请删除
+数据库与媒体缓存后重新开始会话，不要混用新旧运行态数据。
+
 ## 用户数据位置
 
 Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：

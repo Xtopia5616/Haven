@@ -11,6 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_search::FileSearchEngine;
+use super::media::{MediaOperation, MediaParams, MediaTool, classify_media};
 use crate::document::{
     DocumentExtraction, MAX_DOCUMENT_BYTES, extract_document_with_cancel, supports_document_path,
 };
@@ -901,6 +902,50 @@ impl FilesTool {
             anyhow::bail!("managed asset changed or is no longer inside its managed root");
         }
 
+        // Managed binary media has one canonical agent-facing entry point.
+        // Keep filesystem reads focused on text; the media tool owns the
+        // representation derivation and returns a reusable MediaInput.
+        if op == FilesOperation::Read
+            && params.start_line.is_none()
+            && params.end_line.is_none()
+            && params.offset.is_none()
+            && params.limit.is_none()
+            && let Some(asset) = managed_asset.as_ref()
+            && matches!(
+                classify_media(asset),
+                (haven_common::media::MediaModality::Image, _)
+                    | (haven_common::media::MediaModality::Audio, _)
+            )
+        {
+            let operation = match classify_media(asset).0 {
+                haven_common::media::MediaModality::Image => MediaOperation::Describe,
+                haven_common::media::MediaModality::Audio => MediaOperation::Transcribe,
+                _ => unreachable!("media dispatch was guarded by modality"),
+            };
+            let result = MediaTool::new(
+                self.summarizer.clone(),
+                self.managed_assets.clone(),
+                self.vision_max_bytes,
+                self.summary_timeout_secs,
+                self.max_output_chars,
+            )
+            .run(
+                MediaParams {
+                    operation,
+                    asset_id: asset.asset_id.clone(),
+                    focus: params.focus.clone(),
+                },
+                cancel,
+            )
+            .await?;
+            return Ok(annotate_file_result(
+                result,
+                FilesOperation::Read,
+                None,
+                None,
+            ));
+        }
+
         let operation_result: anyhow::Result<ToolResult> = match op {
             FilesOperation::Read => {
                 let has_line_args = params.start_line.is_some() || params.end_line.is_some();
@@ -1139,7 +1184,7 @@ impl Tool for FilesTool {
         "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, create directories, edit, copy, move, delete, list, summarize, or search files (images are analyzed with vision; audio is transcribed on read)".into()
+        "Read, write, create directories, edit, copy, move, delete, list, summarize, or search files. Managed images and audio are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

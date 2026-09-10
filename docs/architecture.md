@@ -65,10 +65,17 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 `lib.rs` 只从这些模块重新导出 crate 公共 API，builtin 直接依赖对应模块。安全矩阵只有
 `security.rs` 一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。
 
-`document.rs` 是受管附件的本地派生边界：只在 `files` 完整 read 中对 PDF/DOCX/XLSX/PPTX
-执行有资源上限的文本/表格抽取，输出带 `document_extract` provenance 的不可信内容；
+`document.rs` 是受管附件的本地派生边界：由 `media.extract`（以及文件摘要所需的内部
+文本源）对 PDF/DOCX/XLSX/PPTX 执行有资源上限的文本/表格抽取，输出带
+`document_extract` provenance 的不可信内容；
 不执行脚本、不解析外部实体、不向模型暴露宿主路径。抽取失败显式返回不可用结果，不能
 把空文本当成成功（ADR 0114）。
+
+`builtin/media.rs` 是 Agent 原生的媒体工具边界：模型只传 `asset_id`，由 `inspect`、
+`describe`、`transcribe`、`extract` 选择统一的图片、音频或文档派生表示；结果通过
+`media: MediaInput` 回到工具 observation，后续调用可以复用同一个 asset id。窗口截图
+进入生成媒体根目录并登记 session lease，`files.read` 对 managed 图片/音频转交到该入口；
+宿主路径和 base64 不进入模型工具契约（ADR 0123）。
 
 Builtin 的模型目录保持聚合边界：`system` 内的 `env`、`power`、`registry` 是私有实现模块，
 不作为独立模型工具注册。后台任务取消、目录创建和窗口 PID 目标属于既有聚合工具的
@@ -345,8 +352,9 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 工具和 gateway 的一次性图片理解统一调用 `LlmRouter::analyze_image`；该入口在
 `haven-llm` 内完成 capability planning、base64 与 canonical image part 构造。工具层
-不再各自拼装 provider-facing 图片消息。`files.read` 的音频也通过
-`LlmRouter::transcribe_audio` 提供转写，避免工具说明与实际能力不一致（ADR 0122）。
+不再各自拼装 provider-facing 图片消息。`media` 的音频也通过
+`LlmRouter::transcribe_audio` 提供转写；媒体派生结果携带 canonical `MediaInput`，不再
+以宿主路径作为跨工具引用（ADR 0122、0123）。
 
 ### 3.3 agent 对 input 的依赖（2026-08-18 清理）
 
@@ -452,3 +460,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-08 | §2.3 Memory / §2.5 Agent：事实抽取 outbox 增加可恢复的 `kv_store` pending marker，session 删除与 orphan cleanup 统一回收 cursor、节流和队列状态；移除启动时伪造的默认姓名事实（ADR 0107） |
 | 2026-09-10 | §2.3 Memory / §2.5 Agent / §2.6 App：消息新增 v17 `media_inputs` canonical 投影；managed uploads 统一覆盖图片/音频/文件；OCR/STT 表示持久化并保留 raw；旧快照与 compact summary 在 snapshot 边界剥离 inline bytes（ADR 0121） |
 | 2026-09-10 | §2.5 Tools / §2.6 LLM：工具与 media gateway 统一走 `LlmRouter::analyze_image`；`files.read` 增加音频转写；删除 raw-byte multimodal helper（ADR 0122） |
+| 2026-09-10 | §2.5 Tools / §2.6 App：新增 asset_id-only `media` 工具；窗口截图改为受管生成媒体并返回可继续消费的 asset id；managed 图片/音频从 `files.read` 转交 canonical media 派生入口（ADR 0123） |

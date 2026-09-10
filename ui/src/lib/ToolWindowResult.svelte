@@ -1,5 +1,4 @@
 <script>
-	import ExternalRef from '$lib/ExternalRef.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 
 	let { data = {} } = $props();
@@ -35,12 +34,12 @@
 	</div>
 {:else if data.operation === 'screenshot'}
 	<div class="window-detail">
-		<span class="window-op">截图已保存</span>
-		{#if data.path}<ExternalRef class="window-path" target={data.path} />{/if}
+		<span class="window-op">截图已生成</span>
+		{#if data.asset_id}<span class="window-asset">{data.asset_id}</span>{/if}
 	</div>
 	{#if data.width != null && data.height != null}<div class="tool-card-meta">{data.width}×{data.height}{data.format ? ` · ${data.format.toUpperCase()}` : ''}</div>{/if}
 {:else if data.operation === 'ocr'}
-	<div class="window-detail"><span class="window-op">{data.ocr_error ? 'OCR 失败' : data.ocr_unavailable ? 'OCR 不可用' : data.too_large ? '截图过大' : 'OCR 完成'}</span>{#if data.path}<ExternalRef class="window-path" target={data.path} />{/if}</div>
+	<div class="window-detail"><span class="window-op">{data.ocr_error ? 'OCR 失败' : data.ocr_unavailable ? 'OCR 不可用' : data.too_large ? '截图过大' : 'OCR 完成'}</span>{#if data.asset_id}<span class="window-asset">{data.asset_id}</span>{/if}</div>
 	{#if data.text}<pre class="content-preview">{data.text}</pre>{:else if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
 {:else if data.operation === 'wait'}
 	<div class="window-detail">
@@ -103,13 +102,15 @@
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
 	}
-	:global(.window-path) {
+	.window-asset {
 		min-width: 0;
 		flex: 1;
-		color: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-surface-variant);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-code-size);
 	}
 	.window-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);

@@ -11,6 +11,7 @@ pub mod http;
 pub mod input;
 pub mod load_mcp;
 pub mod load_skill;
+pub mod media;
 pub mod memory;
 pub mod messaging;
 pub mod notify;
@@ -96,8 +97,19 @@ pub async fn register_builtin_tools(
         tts_client,
     )));
     tools.push(Arc::new(ask::AskTool));
-    // Clone before FilesTool consumes `router` so WindowTool can OCR via vision.
+    // Media, files, and window share the same router boundary. Media owns the
+    // agent-facing asset operations; files remains the text/filesystem tool.
+    let media_router = router.clone();
     let window_router = router.clone();
+    let media_assets = managed_assets.clone();
+    let window_assets = managed_assets.clone();
+    tools.push(Arc::new(media::MediaTool::new(
+        media_router,
+        media_assets,
+        limits.file_vision_max_bytes,
+        limits.file_summary_timeout_secs,
+        tool_output_cap(settings, "media", limits.max_observation_chars),
+    )));
     tools.push(Arc::new(files::FilesTool::new(
         router,
         tool_output_cap(settings, "files", limits.max_observation_chars),
@@ -146,7 +158,10 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(system::SystemTool {
         max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
     }));
-    tools.push(Arc::new(window::WindowTool::new(window_router)));
+    tools.push(Arc::new(window::WindowTool::new(
+        window_router,
+        window_assets,
+    )));
     tools.push(Arc::new(http::HttpTool {
         max_retries: limits.network_max_retries,
         backoff_base_secs: limits.network_backoff_base_secs,
@@ -267,7 +282,7 @@ mod tests {
         let http = http::HttpTool::default();
         let input = input::InputTool;
         let system = system::SystemTool::default();
-        let window = window::WindowTool::new(None);
+        let window = window::WindowTool::new(None, crate::ManagedAssetRegistry::default());
         let schedule = scheduled_action::ScheduledActionTool {
             center: Arc::new(scheduled_action::ScheduledActionCenter::new()),
             registry: None,

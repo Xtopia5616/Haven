@@ -3,6 +3,9 @@
 日期：2026-09-10
 状态：已采纳
 
+说明：本 ADR 的请求入口决定仍然有效；模型工具契约与跨工具资产引用由后续 ADR 0123
+进一步收敛。
+
 关联：[ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)、
 [ADR 0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)
 

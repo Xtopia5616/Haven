@@ -1,13 +1,16 @@
 use async_trait::async_trait;
+use haven_common::config::default_generated_media_dir;
 use haven_common::prompts::OCR_SYSTEM_PROMPT;
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolConcurrency, ToolResult};
+use super::media::{add_derived_text, managed_media_input, register_generated_asset};
+use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
 /// Default vision byte / timeout limits (aligned with FilesTool defaults).
 const DEFAULT_VISION_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -18,8 +21,16 @@ const UI_TREE_CAP: usize = 100;
 const WAIT_POLL_MS: u64 = 200;
 const WAIT_UI_POLL_MS: u64 = 500;
 
+struct ManagedCapture {
+    asset: ManagedAsset,
+    width: u64,
+    height: u64,
+}
+
 pub struct WindowTool {
     router: Option<Arc<LlmRouter>>,
+    managed_assets: ManagedAssetRegistry,
+    capture_root: PathBuf,
     vision_max_bytes: u64,
     vision_timeout_secs: u64,
 }
@@ -60,9 +71,6 @@ pub struct WindowParams {
     /// Filter windows by PID.
     #[serde(default)]
     pub pid: Option<i64>,
-    /// Optional output path for screenshot; defaults to a temp file.
-    #[serde(default)]
-    pub path: Option<String>,
     /// Wait condition (`title_contains` / `foreground_contains` / `ui_text`).
     #[serde(default)]
     pub condition: Option<WaitCondition>,
@@ -72,12 +80,18 @@ pub struct WindowParams {
     /// Wait timeout in seconds (default 10, max 120).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Private runtime context injected by `ToolsManager`; never part of the
+    /// LLM-facing schema.
+    #[serde(rename = "_session_id", default, skip_serializing)]
+    pub(crate) session_id: Option<String>,
 }
 
 impl WindowTool {
-    pub fn new(router: Option<Arc<LlmRouter>>) -> Self {
+    pub fn new(router: Option<Arc<LlmRouter>>, managed_assets: ManagedAssetRegistry) -> Self {
         Self {
             router,
+            managed_assets,
+            capture_root: default_generated_media_dir(),
             vision_max_bytes: DEFAULT_VISION_MAX_BYTES,
             vision_timeout_secs: DEFAULT_VISION_TIMEOUT_SECS,
         }
@@ -143,14 +157,23 @@ impl WindowTool {
                 Ok(window_target_result("close", target, filter_pid))
             }
             WindowOperation::Screenshot => {
-                let path = params
-                    .path
-                    .filter(|p| !p.trim().is_empty())
-                    .map(|p| std::path::PathBuf::from(p.trim()));
-                let shot = imp::capture_screen(path)?;
-                Ok(with_operation(ToolResult::ok(shot), "screenshot"))
+                let capture = self
+                    .capture_screen(params.session_id.as_deref(), cancel)
+                    .await?;
+                Ok(ToolResult::ok(serde_json::json!({
+                    "operation": "screenshot",
+                    "asset_id": capture.asset.asset_id,
+                    "media": managed_media_input(
+                        &capture.asset,
+                        haven_common::media::MediaAssetSource::WindowCapture,
+                        haven_common::media::MediaAssetLifecycle::Session,
+                    ),
+                    "width": capture.width,
+                    "height": capture.height,
+                    "format": "png",
+                })))
             }
-            WindowOperation::Ocr => self.ocr(params.path, cancel).await,
+            WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
             WindowOperation::UiTree => {
                 let title_owned = title;
                 let elements = tokio::task::spawn_blocking(move || {
@@ -170,9 +193,74 @@ impl WindowTool {
         }
     }
 
+    async fn capture_screen(
+        &self,
+        session_id: Option<&str>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ManagedCapture> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        tokio::fs::create_dir_all(&self.capture_root).await?;
+        let path = self
+            .capture_root
+            .join(format!("{}.png", haven_common::types::new_id("file")));
+        let capture_path = path.clone();
+        let shot =
+            match tokio::task::spawn_blocking(move || imp::capture_screen(capture_path)).await {
+                Ok(Ok(shot)) => shot,
+                Ok(Err(error)) => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return Err(error);
+                }
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return Err(error.into());
+                }
+            };
+        if cancel.is_cancelled() {
+            let _ = tokio::fs::remove_file(&path).await;
+            anyhow::bail!("cancelled");
+        }
+        let (Some(width), Some(height)) = (
+            shot.get("width").and_then(Value::as_u64),
+            shot.get("height").and_then(Value::as_u64),
+        ) else {
+            let _ = tokio::fs::remove_file(&path).await;
+            anyhow::bail!("screenshot dimensions missing");
+        };
+        let size = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(error.into());
+            }
+        };
+        let asset = match register_generated_asset(
+            &self.managed_assets,
+            session_id,
+            &self.capture_root,
+            path.clone(),
+            Some("screenshot.png".into()),
+            "image/png",
+            size,
+        ) {
+            Ok(asset) => asset,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(error);
+            }
+        };
+        Ok(ManagedCapture {
+            asset,
+            width,
+            height,
+        })
+    }
+
     async fn ocr(
         &self,
-        path: Option<String>,
+        session_id: Option<&str>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         // Capturing the desktop is a high-risk operation in its own right.
@@ -187,26 +275,18 @@ impl WindowTool {
                 "reason": "No LLM router installed, so OCR cannot run."
             })));
         };
-        let path_buf = path
-            .filter(|p| !p.trim().is_empty())
-            .map(|p| std::path::PathBuf::from(p.trim()));
-        let shot = tokio::task::spawn_blocking(move || imp::capture_screen(path_buf)).await??;
-        let shot_path = shot["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("screenshot path missing"))?
-            .to_string();
-
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-
-        let meta = tokio::fs::metadata(&shot_path).await?;
-        let size = meta.len();
+        let capture = self.capture_screen(session_id, cancel.clone()).await?;
+        let size = capture.asset.size_bytes.unwrap_or_default();
         if size > self.vision_max_bytes {
             return Ok(ToolResult::ok(serde_json::json!({
                 "operation": "ocr",
                 "ocr": true,
-                "path": shot_path,
+                "asset_id": capture.asset.asset_id,
+                "media": managed_media_input(
+                    &capture.asset,
+                    haven_common::media::MediaAssetSource::WindowCapture,
+                    haven_common::media::MediaAssetLifecycle::Session,
+                ),
                 "size": size,
                 "too_large": true,
                 "hint": format!(
@@ -216,7 +296,7 @@ impl WindowTool {
             })));
         }
 
-        let bytes = tokio::fs::read(&shot_path).await?;
+        let bytes = tokio::fs::read(&capture.asset.path).await?;
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
@@ -234,7 +314,7 @@ impl WindowTool {
                     output: serde_json::json!({
                         "operation": "ocr",
                         "ocr": true,
-                        "path": shot_path,
+                        "asset_id": capture.asset.asset_id,
                         "ocr_error": true,
                     }),
                     error: Some(format!("OCR vision call failed: {e}")),
@@ -250,7 +330,7 @@ impl WindowTool {
                     output: serde_json::json!({
                         "operation": "ocr",
                         "ocr": true,
-                        "path": shot_path,
+                        "asset_id": capture.asset.asset_id,
                         "ocr_error": true,
                     }),
                     error: Some(format!("OCR vision call timed out after {timeout}s")),
@@ -262,15 +342,29 @@ impl WindowTool {
             }
         };
 
+        let text = response.text.trim().to_string();
+        let media = add_derived_text(
+            managed_media_input(
+                &capture.asset,
+                haven_common::media::MediaAssetSource::WindowCapture,
+                haven_common::media::MediaAssetLifecycle::Session,
+            ),
+            haven_common::media::MediaRepresentationKind::OcrText,
+            haven_common::media::MediaDerivation::Ocr,
+            Some(haven_common::media::MediaRepresentationKind::RawImage),
+            text.clone(),
+            response.model.clone(),
+        );
         Ok(ToolResult::ok(serde_json::json!({
             "operation": "ocr",
             "ocr": true,
-            "path": shot_path,
+            "asset_id": capture.asset.asset_id,
+            "media": media,
             "size": size,
-            "text": response.text.trim().to_string(),
+            "text": text,
             "model": response.model,
-            "width": shot["width"],
-            "height": shot["height"],
+            "width": capture.width,
+            "height": capture.height,
         })))
     }
 
@@ -372,6 +466,7 @@ impl Tool for WindowTool {
     }
     fn description(&self) -> String {
         "List, query, and manage desktop windows: list/foreground/focus/close/screenshot; \
+         `screenshot` returns a managed asset_id for follow-up media operations; \
          `ocr` captures the screen and extracts text via vision; `ui_tree` enumerates \
          interactive UI Automation elements; `wait` polls until a title/UI text condition \
          matches. For monitor layout use system scope=display."
@@ -387,6 +482,10 @@ impl Tool for WindowTool {
             Some("ui_tree") | Some("wait") => RiskLevel::Low,
             _ => RiskLevel::Low,
         }
+    }
+
+    fn requires_session_id(&self) -> bool {
+        true
     }
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
@@ -405,7 +504,6 @@ impl Tool for WindowTool {
                 "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close", "screenshot", "ocr", "ui_tree", "wait"] },
                 "title": { "type": "string" },
                 "pid": { "type": "integer", "minimum": 1 },
-                "path": { "type": "string", "minLength": 1 },
                 "condition": { "type": "string", "enum": ["title_contains", "foreground_contains", "ui_text"] },
                 "text": { "type": "string", "minLength": 1 },
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120 }
@@ -454,13 +552,13 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "screenshot" }, "path": { "type": "string", "minLength": 1 } },
+                    "properties": { "operation": { "const": "screenshot" } },
                     "required": ["operation"]
                 },
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "ocr" }, "path": { "type": "string", "minLength": 1 } },
+                    "properties": { "operation": { "const": "ocr" } },
                     "required": ["operation"]
                 },
                 {
@@ -653,11 +751,11 @@ mod imp {
             .unwrap_or(false))
     }
 
-    /// Capture the primary screen and save it as a PNG. `path` defaults to a
-    /// fresh file in the system temp directory. The pixel buffer is copied
+    /// Capture the primary screen and save it as a PNG at the host-selected
+    /// managed path. The pixel buffer is copied
     /// out of the GDI device context before it is released, then encoded
     /// with the `image` crate — the capture itself never touches the file.
-    pub fn capture_screen(path: Option<std::path::PathBuf>) -> anyhow::Result<Value> {
+    pub fn capture_screen(path: std::path::PathBuf) -> anyhow::Result<Value> {
         use windows_sys::Win32::Foundation::GetLastError;
         use windows_sys::Win32::Graphics::Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
@@ -772,13 +870,6 @@ mod imp {
             let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba)
                 .ok_or_else(|| anyhow::anyhow!("invalid screenshot buffer"))?;
 
-            let path = match path {
-                Some(p) => p,
-                None => std::env::temp_dir().join(format!(
-                    "haven-screenshot-{}.png",
-                    uuid::Uuid::new_v4().simple()
-                )),
-            };
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
             {
@@ -1054,7 +1145,7 @@ mod imp {
         anyhow::bail!("window operations require Windows")
     }
 
-    pub fn capture_screen(_path: Option<std::path::PathBuf>) -> anyhow::Result<Value> {
+    pub fn capture_screen(_path: std::path::PathBuf) -> anyhow::Result<Value> {
         anyhow::bail!("screenshot requires Windows")
     }
 
@@ -1082,7 +1173,7 @@ mod tests {
     use serde_json::json;
 
     fn tool() -> WindowTool {
-        WindowTool::new(None)
+        WindowTool::new(None, ManagedAssetRegistry::default())
     }
 
     #[test]
@@ -1143,6 +1234,14 @@ mod tests {
             tool()
                 .validate_input(&json!({"operation": "close", "pid": 1}))
                 .is_ok()
+        );
+        assert!(
+            tool()
+                .validate_input(&json!({
+                    "operation": "screenshot",
+                    "path": "C:\\Temp\\shot.png"
+                }))
+                .is_err()
         );
     }
 
@@ -1250,10 +1349,10 @@ mod tests {
                     operation: Some(WindowOperation::Focus),
                     title: Some("haven-test-no-such-window-xyz".into()),
                     pid: None,
-                    path: None,
                     condition: None,
                     text: None,
                     timeout_secs: None,
+                    session_id: None,
                 },
                 CancellationToken::new(),
             )

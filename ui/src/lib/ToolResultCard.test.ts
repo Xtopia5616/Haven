@@ -16,7 +16,7 @@ describe('canRenderToolResult', () => {
 	it('accepts search with a results array', () => {
 		expect(canRenderToolResult('files', searchJson([{ path: 'a.rs' }]))).toBe(true);
 	});
-	it('accepts system, process, window, actions, schedule, memory, admin, files, http, clipboard', () => {
+	it('accepts system, process, window, actions, schedule, memory, admin, files, http, clipboard, media', () => {
 		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
 			true,
 		);
@@ -54,6 +54,7 @@ describe('canRenderToolResult', () => {
 		).toBe(true);
 		expect(canRenderToolResult('audio', JSON.stringify({ played: true }))).toBe(true);
 		expect(canRenderToolResult('audio', JSON.stringify({ operation: 'volume_get', volume: 0.5 }))).toBe(true);
+		expect(canRenderToolResult('media', JSON.stringify({ operation: 'inspect', asset_id: 'asset-1', media: {} }))).toBe(true);
 		expect(canRenderToolResult('input', JSON.stringify({ operation: 'click', clicked: [10, 20] }))).toBe(true);
 		expect(canRenderToolResult('files', JSON.stringify({ nope: 1 }))).toBe(true);
 	});
@@ -73,7 +74,10 @@ describe('canRenderToolResult', () => {
 			parseToolResult('process', JSON.stringify({ operation: 'kill', killed: 42 })),
 		).toMatchObject({ kind: 'custom' });
 		expect(
-			parseToolResult('window', JSON.stringify({ operation: 'screenshot', path: 'shot.png' })),
+			parseToolResult('window', JSON.stringify({ operation: 'screenshot', asset_id: 'asset-1' })),
+		).toMatchObject({ kind: 'custom' });
+		expect(
+			parseToolResult('media', JSON.stringify({ operation: 'describe', asset_id: 'asset-1', text: 'a screen' })),
 		).toMatchObject({ kind: 'custom' });
 		expect(
 			parseToolResult('actions', JSON.stringify({ operation: 'cancel', action_id: 'act-1' })),
@@ -799,25 +803,44 @@ describe('ToolResultCard actions', () => {
 });
 
 describe('ToolResultCard window', () => {
-	it('renders screenshot results with a file reference and dimensions', async () => {
+	it('renders screenshot results with a managed asset reference and dimensions', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'window',
 			content: JSON.stringify({
 				operation: 'screenshot',
-				path: 'C:\\tmp\\screen.png',
+				asset_id: 'asset-0123456789abcdef0123456789abcdef',
 				width: 1920,
 				height: 1080,
 				format: 'png',
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('截图已保存')).toBeTruthy();
-		expect(screen.getByText('C:\\tmp\\screen.png')).toBeTruthy();
+		expect(screen.getByText('截图已生成')).toBeTruthy();
+		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
 		expect(screen.getByText('1920×1080 · PNG')).toBeTruthy();
 	});
 });
 
 describe('ToolResultCard files', () => {
+	it('renders managed binary media through the canonical media card', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'files',
+			content: JSON.stringify({
+				operation: 'read',
+				asset_id: 'asset-0123456789abcdef0123456789abcdef',
+				media: {
+					asset: { asset_id: 'asset-0123456789abcdef0123456789abcdef', filename: 'diagram.png' },
+				},
+				text: 'A flow diagram with three nodes.',
+				representation: 'image_description',
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
+		expect(screen.getByText('diagram.png')).toBeTruthy();
+		expect(screen.getByText('A flow diagram with three nodes.')).toBeTruthy();
+	});
+
 	it('renders image analysis results instead of a blank read state', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',

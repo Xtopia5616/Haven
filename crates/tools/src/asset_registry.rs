@@ -64,8 +64,14 @@ impl ManagedAssetRegistry {
         )
     }
 
+    /// Register a host-produced asset with integrity and expiry metadata.
+    ///
+    /// This is the non-session variant for short-lived tool outputs. Callers
+    /// that have a session should prefer
+    /// [`Self::register_under_root_for_session_with_metadata`] so cleanup
+    /// cannot reclaim the file while the ReAct run is still using it.
     #[allow(clippy::too_many_arguments)]
-    fn register_under_root_with_metadata(
+    pub fn register_under_root_with_metadata(
         &self,
         root: &Path,
         asset_id: String,

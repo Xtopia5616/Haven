@@ -145,6 +145,11 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 			return typeof data.operation === 'string' ? data : null;
 		case 'audio':
 			return typeof data.operation === 'string' ? data : null;
+		case 'media':
+			return typeof data.operation === 'string' &&
+				(typeof data.asset_id === 'string' || isObject(data.media))
+				? data
+				: null;
 		case 'haven_config':
 		case 'haven_diagnostics':
 		case 'haven_mcp':
