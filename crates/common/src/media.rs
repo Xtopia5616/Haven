@@ -410,6 +410,57 @@ pub struct MediaInput {
     pub representations: Vec<MediaRepresentation>,
 }
 
+/// Adapt the legacy message attachment shape into the stage-1 media
+/// contract. This is intentionally metadata-only for ordinary files: the
+/// legacy absolute `path` is never copied into the asset or representation
+/// payload. The trusted files/asset boundary will resolve the opaque id in a
+/// later migration stage.
+pub fn legacy_attachment_to_media_input(
+    attachment: &crate::types::MessageAttachment,
+) -> MediaInput {
+    let asset = MediaAsset::new(
+        attachment.media_type.clone(),
+        // Base64 length is a conservative upper bound when the legacy
+        // attachment is still inline; a persisted file has no bytes here and
+        // is therefore represented with size 0 until the managed store owns
+        // the metadata.
+        attachment.data.len() as u64,
+        attachment.filename.clone(),
+        MediaAssetSource::RestoredLegacy,
+        if attachment.path.is_some() {
+            MediaAssetLifecycle::Managed
+        } else {
+            MediaAssetLifecycle::Session
+        },
+    );
+    let kind = if attachment.is_image() {
+        MediaRepresentationKind::RawImage
+    } else if attachment.is_audio() {
+        MediaRepresentationKind::RawAudio
+    } else {
+        MediaRepresentationKind::ManagedFileRef
+    };
+    let payload = if kind.is_raw() && !attachment.data.is_empty() {
+        MediaRepresentationPayload::InlineData {
+            media_type: attachment.media_type.clone(),
+            data: attachment.data.clone(),
+        }
+    } else {
+        MediaRepresentationPayload::ManagedFileRef {
+            asset_id: asset.asset_id.clone(),
+            filename: attachment.filename.clone(),
+        }
+    };
+    MediaInput {
+        asset,
+        representations: vec![MediaRepresentation::available(
+            kind,
+            MediaProvenance::Original,
+            payload,
+        )],
+    }
+}
+
 /// What a provider-neutral request projection will expose for one asset.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -752,6 +803,43 @@ mod tests {
         assert_eq!(asset.content_hash.len(), 64);
         let json = serde_json::to_string(&asset).unwrap();
         assert!(!json.contains("path"));
+    }
+
+    #[test]
+    fn legacy_attachment_adapter_keeps_raw_data_but_drops_path_metadata() {
+        let mut attachment = crate::types::MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.filename = Some("photo.png".into());
+        attachment.path = Some(r"C:\Users\olive\uploads\photo.png".into());
+        let input = legacy_attachment_to_media_input(&attachment);
+
+        assert_eq!(
+            input.representations[0].representation,
+            MediaRepresentationKind::RawImage
+        );
+        assert!(matches!(
+            &input.representations[0].payload,
+            MediaRepresentationPayload::InlineData { data, .. } if data == "aGVsbG8="
+        ));
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(!json.contains("C:\\Users\\olive"));
+        assert!(!json.contains("\\uploads\\"));
+    }
+
+    #[test]
+    fn legacy_file_adapter_emits_opaque_managed_reference() {
+        let mut attachment = crate::types::MessageAttachment::new("application/pdf", "");
+        attachment.filename = Some("report.pdf".into());
+        attachment.path = Some(r"C:\Users\olive\uploads\report.pdf".into());
+        let input = legacy_attachment_to_media_input(&attachment);
+        let MediaRepresentationPayload::ManagedFileRef { asset_id, filename } =
+            &input.representations[0].payload
+        else {
+            panic!("expected managed file reference");
+        };
+        assert_eq!(asset_id, &input.asset.asset_id);
+        assert_eq!(filename.as_deref(), Some("report.pdf"));
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(!json.contains("C:\\Users\\olive"));
     }
 
     #[test]

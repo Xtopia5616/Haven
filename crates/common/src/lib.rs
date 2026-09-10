@@ -20,6 +20,7 @@ pub use media::{
     MediaPlanNoticeCode, MediaProjection, MediaProjectionMode, MediaProvenance,
     MediaRepresentation, MediaRepresentationAvailability, MediaRepresentationCost,
     MediaRepresentationKind, MediaRepresentationPayload, build_media_plan,
+    legacy_attachment_to_media_input,
 };
 
 pub use tools::ToolDef;

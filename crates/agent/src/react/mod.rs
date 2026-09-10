@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::session::{SessionExecutor, SessionStatus};
 use haven_common::config::ContextLimitsConfig;
+use haven_common::media::{
+    CapabilityProfile, CapabilitySupport, build_media_plan, legacy_attachment_to_media_input,
+};
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
@@ -56,21 +59,39 @@ pub(crate) use snapshot_io::set_status_and_emit;
 use tool_batch_policy::FailureKind;
 
 /// Convert a stored message attachment into a content part for the LLM.
-/// Inline image/audio attachments keep their base64 payload; ordinary file
-/// attachments (persisted on disk with a `path`) become a short text reference
-/// so the agent knows where to read them with the file tool.
+/// Legacy attachments first pass through the common media plan and the llm
+/// projection boundary. Ordinary files deliberately do not expose their
+/// persisted absolute path to provider-facing text; managed-file resolution
+/// is a later trusted-tool stage.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
-    if att.is_image() {
-        haven_llm::media::image_part(&att.media_type, att.data.clone())
-    } else if att.is_audio() && !att.data.is_empty() {
-        haven_llm::media::audio_part(&att.media_type, att.data.clone())
-    } else {
-        let name = att.filename.as_deref().unwrap_or("attachment");
-        match &att.path {
-            Some(path) => ContentPart::text(format!("[附件: {name}，路径: {path}]")),
-            None => ContentPart::text(format!("[附件: {name}]")),
-        }
+    let input = legacy_attachment_to_media_input(att);
+    let capabilities = CapabilityProfile {
+        // These are the current canonical inline parts, not a model-name
+        // guess. The selected adapter still validates the final request.
+        image: CapabilitySupport::Supported,
+        audio: CapabilitySupport::Supported,
+        ..CapabilityProfile::default()
+    };
+    let plan = build_media_plan(
+        std::slice::from_ref(&input),
+        &capabilities,
+        Default::default(),
+    );
+    if let Ok(mut parts) = haven_llm::media::project_media_plan(&plan, &[input])
+        && let Some(part) = parts.pop()
+    {
+        return part;
     }
+
+    let name = att
+        .filename
+        .as_deref()
+        .map(|value| haven_common::text::sanitize_prompt_field(value, 120))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "attachment".into());
+    ContentPart::text(format!(
+        "[附件: {name}；当前请求没有可安全投影的表示，文件路径不会发送给模型]"
+    ))
 }
 
 /// Media requirements of one provider request. This is deliberately a small
@@ -1144,6 +1165,19 @@ mod tests {
                 ..
             } if media_type == "audio/wav" && data == "UklGRg=="
         ));
+    }
+
+    #[test]
+    fn ordinary_file_attachment_does_not_leak_absolute_path() {
+        let mut attachment = MessageAttachment::new("application/pdf", "");
+        attachment.filename = Some("report.pdf".into());
+        attachment.path = Some(r"C:\Users\olive\uploads\report.pdf".into());
+        let ContentPart::Text(text) = attachment_to_content_part(&attachment) else {
+            panic!("ordinary files use a safe text fallback until managed tools resolve them");
+        };
+        assert!(text.contains("report.pdf"));
+        assert!(text.contains("不会发送给模型"));
+        assert!(!text.contains(r"C:\Users\olive"));
     }
 
     fn text_msg(role: CanonicalRole, text: &str) -> CanonicalMessage {
