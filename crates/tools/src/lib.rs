@@ -17,6 +17,7 @@ pub mod skill_runner;
 pub(crate) mod tool_contract;
 pub mod util;
 
+use chrono::{DateTime, Utc};
 use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
 use haven_common::types::{MessageAttachment, PermissionMode, RiskLevel, ShellChoice};
 use haven_llm::LlmRouter;
@@ -284,18 +285,51 @@ impl ToolsManager {
         attachments: &[MessageAttachment],
     ) {
         let uploads_root = haven_common::default_work_dir().join("uploads");
+        let generated_root = haven_common::config::default_generated_media_dir();
         for attachment in attachments {
             let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
                 continue;
             };
-            if !self.managed_assets.register_under_root_for_session(
+            let path = std::path::PathBuf::from(path);
+            if self.managed_assets.register_under_root_for_session(
                 session_id,
                 &uploads_root,
                 asset_id.clone(),
-                std::path::PathBuf::from(path),
+                path.clone(),
                 attachment.filename.clone(),
                 attachment.media_type.clone(),
             ) {
+                continue;
+            }
+            let expires_at = match attachment.expires_at.as_deref() {
+                Some(value) => match DateTime::parse_from_rfc3339(value) {
+                    Ok(value) => Some(value.with_timezone(&Utc)),
+                    Err(error) => {
+                        tracing::warn!(
+                            asset_id = %asset_id,
+                            session_id = %session_id,
+                            error = %error,
+                            "rejecting generated attachment with invalid expiry metadata"
+                        );
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            if !self
+                .managed_assets
+                .register_under_root_for_session_with_metadata(
+                    session_id,
+                    &generated_root,
+                    asset_id.clone(),
+                    path,
+                    attachment.filename.clone(),
+                    attachment.media_type.clone(),
+                    attachment.sha256.clone(),
+                    attachment.size_bytes,
+                    expires_at,
+                )
+            {
                 tracing::warn!(
                     asset_id = %asset_id,
                     session_id = %session_id,

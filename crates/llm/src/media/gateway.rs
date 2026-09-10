@@ -10,7 +10,8 @@
 //!   below `min_confidence` (or an error / empty result) falls back to the
 //!   main model, which is called directly with the media as a content part.
 //! - [`MediaGateway::process_generate`] — pure-text image-generation
-//!   requests, saving the generated file under the app data media directory.
+//!   requests, saving the generated file under the dedicated generated-media
+//!   directory.
 //!
 //! Everything is in-process: there is no separate HTTP service, the agent
 //! calls these methods while building the user message.
@@ -19,9 +20,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{ImageGenClient, LlmRouter, OcrClient, SttClient};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use haven_common::config::MediaConfig;
 use haven_common::prompts::OCR_SYSTEM_PROMPT;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
+use sha2::Digest;
 
 use crate::media::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
 use crate::media::intent::{GenerateKind, Intent, detect_intent};
@@ -29,6 +32,9 @@ use crate::media::modality::{
     Modality, detect_media_type_with_filename, detect_modality, extension_for_media_type,
 };
 use crate::media::multimodal;
+
+/// Maximum decoded media bytes accepted from an image-generation provider.
+pub const MAX_GENERATED_MEDIA_BYTES: usize = 16 * 1024 * 1024;
 
 /// Outcome of processing a binary attachment.
 #[derive(Debug, Clone)]
@@ -48,16 +54,28 @@ pub enum AttachmentOutcome {
 /// Outcome of a pure-text generate request.
 #[derive(Debug, Clone)]
 pub enum GenerateOutcome {
-    /// A media file was generated and saved; `file_path` points at it.
+    /// A media file was generated and saved with host-managed metadata.
     Generated {
         kind: GenerateKind,
-        file_path: PathBuf,
+        media: GeneratedMedia,
         decision: MediaDecision,
     },
     /// The user text was not a generate request.
     NotGenerate,
     /// Generate intent, but the capability is not configured.
     Unsupported { reason: String },
+}
+
+/// Host-managed metadata for generated media. The path is only used inside
+/// the host boundary; model-facing attachments use the opaque `asset_id`.
+#[derive(Debug, Clone)]
+pub struct GeneratedMedia {
+    pub asset_id: String,
+    pub file_path: PathBuf,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 /// The in-process multi-modal gateway.
@@ -272,10 +290,10 @@ impl MediaGateway {
                     .generate(user_text)
                     .await
                     .map_err(|e| anyhow::anyhow!("文生图失败: {e}"))?;
-                let path = self.save_media_file(&img.data, &img.media_type)?;
+                let media = self.save_media_file(&img.data, &img.media_type)?;
                 Ok(GenerateOutcome::Generated {
                     kind,
-                    file_path: path,
+                    media,
                     decision,
                 })
             }
@@ -283,19 +301,51 @@ impl MediaGateway {
     }
 }
 
-/// Save generated media under `<data_dir>/media` with a canonical
-/// `file-{uuid32}.{ext}` name.
+/// Save generated media under the dedicated generated-media root with a
+/// canonical `file-{uuid32}.{ext}` name and lifecycle metadata.
 impl MediaGateway {
-    fn save_media_file(&self, bytes: &[u8], media_type: &str) -> anyhow::Result<PathBuf> {
+    fn save_media_file(&self, bytes: &[u8], media_type: &str) -> anyhow::Result<GeneratedMedia> {
+        if bytes.is_empty() {
+            anyhow::bail!("文生图返回空媒体");
+        }
+        if bytes.len() > MAX_GENERATED_MEDIA_BYTES {
+            anyhow::bail!(
+                "文生图输出超过大小限制（{} bytes）",
+                MAX_GENERATED_MEDIA_BYTES
+            );
+        }
+        if !media_type.starts_with("image/") {
+            anyhow::bail!("文生图返回了非图片媒体类型");
+        }
         let dir = self
             .output_dir
             .clone()
-            .unwrap_or_else(|| haven_common::config::ConfigLoader::data_dir().join("media"));
+            .unwrap_or_else(haven_common::config::default_generated_media_dir);
         std::fs::create_dir_all(&dir)?;
         let ext = extension_for_media_type(media_type);
         let path = dir.join(format!("{}.{}", new_id("file"), ext));
-        std::fs::write(&path, bytes)?;
-        Ok(path)
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        use std::io::Write;
+        if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error.into());
+        }
+        let expires_at = Utc::now()
+            + ChronoDuration::seconds(
+                haven_common::config::GENERATED_MEDIA_RETENTION_SECS.min(i64::MAX as u64) as i64,
+            );
+        Ok(GeneratedMedia {
+            asset_id: new_id("asset"),
+            file_path: path,
+            media_type: media_type.to_string(),
+            size_bytes: bytes.len() as u64,
+            sha256: format!("{:x}", sha2::Sha256::digest(bytes)),
+            expires_at,
+        })
     }
 }
 
@@ -638,6 +688,18 @@ mod tests {
         }
     }
 
+    struct OversizedImageGen;
+
+    #[async_trait]
+    impl ImageGenClient for OversizedImageGen {
+        async fn generate(&self, _prompt: &str) -> anyhow::Result<crate::GeneratedImage> {
+            Ok(crate::GeneratedImage {
+                media_type: "image/png".into(),
+                data: vec![0; MAX_GENERATED_MEDIA_BYTES + 1],
+            })
+        }
+    }
+
     #[tokio::test]
     async fn generate_image_saves_png() {
         let ig: Arc<dyn ImageGenClient> = Arc::new(MockImageGen);
@@ -645,15 +707,27 @@ mod tests {
         let gw = MediaGateway::new(mock_router("unused"), None, None, Some(ig), test_config())
             .with_output_dir(output_dir.path().to_path_buf());
         let outcome = gw.process_generate("画一只猫", None).await.unwrap();
-        let GenerateOutcome::Generated {
-            kind, file_path, ..
-        } = outcome
-        else {
+        let GenerateOutcome::Generated { kind, media, .. } = outcome else {
             panic!("expected Generated");
         };
         assert_eq!(kind, GenerateKind::Image);
-        assert!(file_path.to_string_lossy().ends_with(".png"));
-        assert!(file_path.exists());
+        assert!(media.file_path.to_string_lossy().ends_with(".png"));
+        assert!(media.file_path.exists());
+        assert!(media.asset_id.starts_with("asset-"));
+        assert_eq!(media.size_bytes, b"png-bytes".len() as u64);
+        assert_eq!(media.sha256.len(), 64);
+        assert!(media.expires_at > Utc::now());
+    }
+
+    #[tokio::test]
+    async fn generate_image_rejects_oversized_output() {
+        let ig: Arc<dyn ImageGenClient> = Arc::new(OversizedImageGen);
+        let output_dir = tempfile::tempdir().unwrap();
+        let gw = MediaGateway::new(mock_router("unused"), None, None, Some(ig), test_config())
+            .with_output_dir(output_dir.path().to_path_buf());
+        let error = gw.process_generate("画一只猫", None).await.unwrap_err();
+        assert!(error.to_string().contains("大小限制"));
+        assert_eq!(std::fs::read_dir(output_dir.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]

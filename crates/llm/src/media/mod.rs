@@ -11,7 +11,8 @@
 //!   result below `min_confidence` (or an error / empty result) falls back to
 //!   the main model, which is called directly with the media as a content part.
 //! - [gateway::MediaGateway::process_generate] — pure-text image-generation
-//!   requests, saving the generated file under the app data media directory.
+//!   requests, saving the generated file under the dedicated generated-media
+//!   directory.
 //!
 //! Everything is in-process: there is no separate HTTP service, the agent
 //! calls these methods while building the user message.
@@ -24,7 +25,9 @@ pub mod multimodal;
 pub mod projection;
 
 pub use coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
-pub use gateway::{AttachmentOutcome, GenerateOutcome, MediaGateway};
+pub use gateway::{
+    AttachmentOutcome, GenerateOutcome, GeneratedMedia, MAX_GENERATED_MEDIA_BYTES, MediaGateway,
+};
 pub use intent::{GenerateKind, Intent, detect_intent};
 pub use modality::{
     Modality, detect_media_type, detect_media_type_with_filename, detect_modality,

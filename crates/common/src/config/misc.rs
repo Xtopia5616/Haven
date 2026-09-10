@@ -428,6 +428,17 @@ pub fn default_work_dir() -> PathBuf {
     dir
 }
 
+/// Dedicated root for generated media. Generated artifacts have a shorter,
+/// independent lifecycle than user-uploaded files and must never share the
+/// upload batch namespace.
+pub fn default_generated_media_dir() -> PathBuf {
+    ConfigLoader::data_dir().join("media").join("generated")
+}
+
+/// Fallback lifetime for generated media when an attachment's persisted
+/// expiry metadata is unavailable after a restart.
+pub const GENERATED_MEDIA_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Per-tool settings (refine §4.8).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]

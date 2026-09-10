@@ -12,8 +12,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
+use futures_util::TryStreamExt;
 use haven_common::config::{ImageGenConfig, ProviderConfig, provider_config_wire_style};
 use std::time::Duration;
+
+/// Bound the provider response before JSON parsing or base64 decoding. The
+/// decoded generated-media cap is enforced separately by the gateway.
+pub const MAX_IMAGE_GEN_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// A generated image: raw bytes plus the media type the provider returned.
 #[derive(Debug, Clone)]
@@ -135,6 +140,40 @@ fn imagegen_body_error(kind: &str, status: reqwest::StatusCode, body: &str) -> a
     }
 }
 
+async fn response_bytes_bounded(resp: reqwest::Response, operation: &str) -> Result<Vec<u8>> {
+    if resp
+        .content_length()
+        .is_some_and(|length| length > MAX_IMAGE_GEN_RESPONSE_BYTES as u64)
+    {
+        anyhow::bail!(
+            "{operation} response exceeds the {} byte limit",
+            MAX_IMAGE_GEN_RESPONSE_BYTES
+        );
+    }
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream
+        .try_next()
+        .await
+        .map_err(|e| anyhow::anyhow!("{operation} response read failed: {e}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_IMAGE_GEN_RESPONSE_BYTES {
+            anyhow::bail!(
+                "{operation} response exceeds the {} byte limit",
+                MAX_IMAGE_GEN_RESPONSE_BYTES
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn response_text_bounded(resp: reqwest::Response, operation: &str) -> Result<String> {
+    let body = response_bytes_bounded(resp, operation).await?;
+    String::from_utf8(body)
+        .map_err(|e| anyhow::anyhow!("{operation} response was not valid UTF-8: {e}"))
+}
+
 /// Extract the generated image from an OpenAI `/v1/images/generations`
 /// response. Handles both `b64_json` (default for gpt-image-1) and `url`
 /// (dall-e-3 default) data items.
@@ -171,23 +210,13 @@ async fn openai_image_from_response(
         })?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "OpenAI image error response read failed: {}",
-                    haven_common::error::sanitize_error_text(&e.to_string())
-                )
-            })?;
+            let body = response_text_bounded(resp, "OpenAI image error response").await?;
             return Err(imagegen_body_error("OpenAI image fetch", status, &body));
         }
-        let bytes = resp.bytes().await.map_err(|e| {
-            anyhow::anyhow!(
-                "OpenAI image fetch read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let bytes = response_bytes_bounded(resp, "OpenAI image fetch").await?;
         return Ok(GeneratedImage {
             media_type: "image/png".into(),
-            data: bytes.to_vec(),
+            data: bytes,
         });
     }
     anyhow::bail!("OpenAI image response item has neither 'b64_json' nor 'url'")
@@ -284,12 +313,7 @@ impl ImageGenClient for OpenAiImageGenClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp.text().await.map_err(|e| {
-            anyhow::anyhow!(
-                "OpenAI image response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let body = response_text_bounded(resp, "OpenAI image response").await?;
         if !status.is_success() {
             return Err(imagegen_body_error("OpenAI image", status, &body));
         }
@@ -354,12 +378,7 @@ impl ImageGenClient for GeminiImageGenClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp.text().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Gemini image response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let body = response_text_bounded(resp, "Gemini image response").await?;
         if !status.is_success() {
             return Err(imagegen_body_error("Gemini image", status, &body));
         }

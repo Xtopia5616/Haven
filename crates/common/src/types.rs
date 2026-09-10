@@ -742,9 +742,8 @@ fn repair_truncated_json(input: &str) -> Option<RepairOutcome> {
 /// A binary attachment on a message (e.g. a user-provided image or file).
 /// `data` holds base64-encoded bytes; `media_type` is the MIME type
 /// (e.g. "image/png"). Non-image attachments (user-uploaded files)
-/// additionally carry `filename` (the original name) and `path` (absolute
-/// path on disk, set after the backend persists the bytes so the agent can
-/// read them with the file tool).
+/// additionally carry `filename` (the original name) and `path` (an absolute
+/// host path for persisted user uploads or generated media).
 ///
 /// Lives in the shared types layer (not the memory crate) so the input /
 /// session / agent layers that carry attachments never depend on the
@@ -764,6 +763,17 @@ pub struct MessageAttachment {
     /// Absolute path where a non-image attachment was persisted on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// SHA-256 of generated media bytes. Uploads and legacy attachments omit
+    /// this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// Exact byte length recorded for generated media.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// RFC3339 expiry for generated media. Uploads and legacy attachments
+    /// omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 impl MessageAttachment {
@@ -776,6 +786,9 @@ impl MessageAttachment {
             data: data.into(),
             filename: None,
             path: None,
+            sha256: None,
+            size_bytes: None,
+            expires_at: None,
         }
     }
 

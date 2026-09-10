@@ -9,7 +9,8 @@ use crate::session::SessionStatus;
 use crate::types::ProcessResult;
 use base64::Engine;
 use haven_common::types::MessageAttachment;
-use haven_llm::media::{AttachmentOutcome, GenerateOutcome, MediaDecision};
+use haven_llm::media::{AttachmentOutcome, GenerateOutcome, GeneratedMedia, MediaDecision};
+use sha2::Digest;
 
 /// Human-readable label for a gateway extraction decision, shown in the
 /// message content so the user (and the model) see where the text came from.
@@ -58,21 +59,30 @@ fn apply_successful_gateway_outcome(
 
 /// Build a message attachment from a gateway-generated media file so the
 /// generated images show up in the chat like a user attachment.
-fn attachment_from_generated_file(path: &std::path::Path) -> anyhow::Result<MessageAttachment> {
-    let bytes = std::fs::read(path)?;
-    let media_type = haven_llm::media::detect_media_type_with_filename(
-        &bytes,
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default(),
-    )
-    .to_string();
+fn attachment_from_generated_media(media: &GeneratedMedia) -> anyhow::Result<MessageAttachment> {
+    let bytes = std::fs::read(&media.file_path)?;
+    if bytes.len() as u64 != media.size_bytes {
+        anyhow::bail!("generated media size changed before attachment");
+    }
+    let digest = format!("{:x}", sha2::Sha256::digest(&bytes));
+    if digest != media.sha256 {
+        anyhow::bail!("generated media hash changed before attachment");
+    }
+    if !media.media_type.starts_with("image/") {
+        anyhow::bail!("generated media has a non-image media type");
+    }
     Ok(MessageAttachment {
-        asset_id: Some(haven_common::types::new_id("asset")),
-        media_type,
+        asset_id: Some(media.asset_id.clone()),
+        media_type: media.media_type.clone(),
         data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-        filename: path.file_name().map(|n| n.to_string_lossy().into_owned()),
-        path: Some(path.to_string_lossy().into_owned()),
+        filename: media
+            .file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
+        path: Some(media.file_path.to_string_lossy().into_owned()),
+        sha256: Some(media.sha256.clone()),
+        size_bytes: Some(media.size_bytes),
+        expires_at: Some(media.expires_at.to_rfc3339()),
     })
 }
 
@@ -135,10 +145,11 @@ impl AgentLayer {
             }
         } else if !transcript.trim().is_empty() {
             match gateway.process_generate(transcript, None).await {
-                Ok(GenerateOutcome::Generated { file_path, .. }) => {
-                    match attachment_from_generated_file(&file_path) {
+                Ok(GenerateOutcome::Generated { media, .. }) => {
+                    match attachment_from_generated_media(&media) {
                         Ok(att) => {
-                            let name = file_path
+                            let name = media
+                                .file_path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| "media".into());

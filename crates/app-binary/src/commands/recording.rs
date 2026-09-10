@@ -616,6 +616,100 @@ fn cleanup_stale_upload_staging_sync(
     Ok(removed)
 }
 
+/// Remove expired generated-media files from the dedicated generated root.
+/// Active session leases override expiry so a running session can finish using
+/// its generated attachment; durable history alone does not extend this
+/// artifact's independent lifetime.
+pub(crate) async fn cleanup_stale_generated_media(
+    root: std::path::PathBuf,
+    registry: haven_tools::ManagedAssetRegistry,
+) -> Result<usize, String> {
+    let _write_guard = upload_write_lock().lock().await;
+    tokio::task::spawn_blocking(move || cleanup_stale_generated_media_sync(&root, &registry))
+        .await
+        .map_err(|error| format!("生成媒体清理任务失败: {error}"))?
+}
+
+fn cleanup_stale_generated_media_sync(
+    root: &std::path::Path,
+    registry: &haven_tools::ManagedAssetRegistry,
+) -> Result<usize, String> {
+    let root_metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("读取生成媒体根目录失败: {error}")),
+    };
+    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+        return Ok(0);
+    }
+    let expired_paths = registry.expired_paths();
+    let leased_paths = registry.leased_paths();
+    let fallback_max_age =
+        std::time::Duration::from_secs(haven_common::config::GENERATED_MEDIA_RETENTION_SECS);
+    let entries =
+        std::fs::read_dir(root).map_err(|error| format!("读取生成媒体目录失败: {error}"))?;
+    let mut removed = 0;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!(error = %error, "跳过不可读取的生成媒体目录项");
+                continue;
+            }
+        };
+        let path = entry.path();
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::debug!(error = %error, "跳过无法判断类型的生成媒体目录项");
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !metadata.is_file() || is_link_or_reparse(&metadata) || !is_generated_media_file(&name) {
+            continue;
+        }
+        if leased_paths
+            .iter()
+            .any(|candidate| path_is_equal(candidate, &path))
+        {
+            tracing::debug!(file = %name, "保留仍被活动会话引用的生成媒体");
+            continue;
+        }
+        let expired = expired_paths
+            .iter()
+            .any(|candidate| path_is_equal(candidate, &path));
+        let old_enough = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > fallback_max_age);
+        if !expired && !old_enough {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(error) => tracing::debug!(file = %name, error = %error, "生成媒体清理失败"),
+        }
+    }
+    registry.prune_missing();
+    Ok(removed)
+}
+
+fn is_generated_media_file(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("file-") else {
+        return false;
+    };
+    let Some((id, extension)) = suffix.split_once('.') else {
+        return false;
+    };
+    id.len() == 32
+        && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !extension.is_empty()
+        && extension.len() <= 16
+        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 fn is_generated_upload_batch(name: &str) -> bool {
     let Some(suffix) = name.strip_prefix("file-") else {
         return false;
@@ -834,6 +928,17 @@ fn path_is_equal_or_child(root: &std::path::Path, candidate: &std::path::Path) -
     }
 }
 
+fn path_is_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
 /// Server-side validation for user attachments, mirroring the frontend
 /// limits (configurable via `[context_limits]`: max images/files, per-item
 /// byte caps, decodable base64, files must carry a name). The webview must
@@ -856,6 +961,9 @@ fn validate_attachments(
         // persistence boundary below mints a fresh id after validation.
         att.asset_id = None;
         att.path = None;
+        att.sha256 = None;
+        att.size_bytes = None;
+        att.expires_at = None;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&att.data)
             .map_err(|_| "附件数据不是有效的 base64".to_string())?;
@@ -1005,6 +1113,20 @@ mod tests {
         assert!(!is_generated_upload_batch("uploads-file-0123456789abcdef"));
     }
 
+    #[test]
+    fn test_generated_media_file_name_is_strict() {
+        assert!(is_generated_media_file(
+            "file-0123456789abcdef0123456789abcdef.png"
+        ));
+        assert!(!is_generated_media_file("file-user-created.png"));
+        assert!(!is_generated_media_file(
+            "file-0123456789abcdef0123456789abcdef.png.tmp"
+        ));
+        assert!(!is_generated_media_file(
+            "file-0123456789abcdef0123456789abcdeg.png"
+        ));
+    }
+
     #[tokio::test]
     async fn test_cleanup_stale_upload_batches_only_removes_generated_dirs() {
         let root = tempfile::TempDir::new().unwrap();
@@ -1041,6 +1163,44 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(!stale.exists());
         assert!(unrelated.exists());
+    }
+
+    #[tokio::test]
+    async fn test_generated_media_expiry_respects_active_session_lease() {
+        let root = tempfile::TempDir::new().unwrap();
+        let file = root
+            .path()
+            .join("file-0123456789abcdef0123456789abcdef.png");
+        tokio::fs::write(&file, b"png-bytes").await.unwrap();
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        assert!(registry.register_under_root_for_session_with_metadata(
+            "ses-active",
+            root.path(),
+            "asset-generated",
+            file.clone(),
+            Some("generated.png".into()),
+            "image/png",
+            Some("hash".into()),
+            Some(9),
+            Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+        ));
+
+        assert_eq!(
+            cleanup_stale_generated_media(root.path().to_path_buf(), registry.clone())
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(file.exists());
+
+        registry.release_session("ses-active");
+        assert_eq!(
+            cleanup_stale_generated_media(root.path().to_path_buf(), registry)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!file.exists());
     }
 
     #[tokio::test]

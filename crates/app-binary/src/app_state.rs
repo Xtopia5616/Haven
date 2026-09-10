@@ -329,6 +329,8 @@ impl AppState {
         // Crash leftovers in private upload staging directories are temporary
         // state, so their cleanup is independent from history retention.
         let staging_root = haven_common::default_work_dir().join("uploads");
+        let generated_root = haven_common::config::default_generated_media_dir();
+        let generated_registry = tools.managed_assets.clone();
         tokio::spawn(async move {
             match crate::commands::recording::cleanup_stale_upload_staging(staging_root).await {
                 Ok(n) if n > 0 => {
@@ -338,6 +340,21 @@ impl AppState {
                 Err(error) => tracing::warn!(
                     error = %haven_common::error::sanitize_error_text(&error),
                     "deferred upload staging cleanup failed"
+                ),
+            }
+            match crate::commands::recording::cleanup_stale_generated_media(
+                generated_root,
+                generated_registry,
+            )
+            .await
+            {
+                Ok(n) if n > 0 => {
+                    tracing::info!("cleaned up {} expired generated media file(s)", n);
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error),
+                    "deferred generated media cleanup failed"
                 ),
             }
         });
@@ -350,6 +367,8 @@ impl AppState {
             u64::from(retention_days.max(1)).saturating_mul(24 * 60 * 60),
         );
         let upload_registry = tools.managed_assets.clone();
+        let generated_root = haven_common::config::default_generated_media_dir();
+        let generated_registry = tools.managed_assets.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
             loop {
@@ -409,6 +428,24 @@ impl AppState {
                     Err(error) => tracing::warn!(
                         error = %haven_common::error::sanitize_error_text(&error),
                         "background upload staging cleanup failed"
+                    ),
+                }
+                match crate::commands::recording::cleanup_stale_generated_media(
+                    generated_root.clone(),
+                    generated_registry.clone(),
+                )
+                .await
+                {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(
+                            "background cleanup: removed {} expired generated media file(s)",
+                            n
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error),
+                        "background generated media cleanup failed"
                     ),
                 }
             }

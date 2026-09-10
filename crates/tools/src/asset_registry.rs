@@ -9,6 +9,8 @@ use std::fs::Metadata;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use chrono::{DateTime, Utc};
+
 /// Host-owned metadata needed to resolve a managed attachment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedAsset {
@@ -16,6 +18,9 @@ pub struct ManagedAsset {
     pub path: PathBuf,
     pub filename: Option<String>,
     pub media_type: String,
+    pub sha256: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// In-process mapping from opaque asset ids to host-owned files.
@@ -46,6 +51,30 @@ impl ManagedAssetRegistry {
         media_type: impl Into<String>,
     ) -> bool {
         let asset_id = asset_id.into();
+        self.register_under_root_with_metadata(
+            root,
+            asset_id,
+            path,
+            filename,
+            media_type.into(),
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn register_under_root_with_metadata(
+        &self,
+        root: &Path,
+        asset_id: String,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: String,
+        sha256: Option<String>,
+        size_bytes: Option<u64>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> bool {
         if asset_id.trim().is_empty()
             || path.as_os_str().is_empty()
             || !is_safe_managed_file(root, &path)
@@ -56,7 +85,10 @@ impl ManagedAssetRegistry {
             asset_id: asset_id.clone(),
             path,
             filename,
-            media_type: media_type.into(),
+            media_type,
+            sha256,
+            size_bytes,
+            expires_at,
         };
         self.assets
             .write()
@@ -81,7 +113,60 @@ impl ManagedAssetRegistry {
             return false;
         }
         let asset_id = asset_id.into();
-        if !self.register_under_root_pending(root, asset_id.clone(), path, filename, media_type) {
+        self.pending_assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(asset_id.clone());
+        if !self.register_under_root_with_metadata(
+            root,
+            asset_id.clone(),
+            path,
+            filename,
+            media_type.into(),
+            None,
+            None,
+            None,
+        ) {
+            self.release_pending(&asset_id);
+            return false;
+        }
+        self.bind_pending_to_session(session_id, &asset_id)
+    }
+
+    /// Register generated media with its integrity and expiry metadata and
+    /// hold it for the lifetime of a session.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_under_root_for_session_with_metadata(
+        &self,
+        session_id: &str,
+        root: &Path,
+        asset_id: impl Into<String>,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: impl Into<String>,
+        sha256: Option<String>,
+        size_bytes: Option<u64>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> bool {
+        if session_id.trim().is_empty() {
+            return false;
+        }
+        let asset_id = asset_id.into();
+        self.pending_assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(asset_id.clone());
+        if !self.register_under_root_with_metadata(
+            root,
+            asset_id.clone(),
+            path,
+            filename,
+            media_type.into(),
+            sha256,
+            size_bytes,
+            expires_at,
+        ) {
+            self.release_pending(&asset_id);
             return false;
         }
         self.bind_pending_to_session(session_id, &asset_id)
@@ -98,13 +183,14 @@ impl ManagedAssetRegistry {
         media_type: impl Into<String>,
     ) -> bool {
         let asset_id = asset_id.into();
-        if !self.register_under_root(root, asset_id.clone(), path, filename, media_type) {
-            return false;
-        }
         self.pending_assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(asset_id);
+            .insert(asset_id.clone());
+        if !self.register_under_root(root, asset_id.clone(), path, filename, media_type) {
+            self.release_pending(&asset_id);
+            return false;
+        }
         true
     }
 
@@ -192,16 +278,27 @@ impl ManagedAssetRegistry {
                     path,
                     filename,
                     media_type: media_type.into(),
+                    sha256: None,
+                    size_bytes: None,
+                    expires_at: None,
                 },
             );
     }
 
     pub fn resolve(&self, asset_id: &str) -> Option<ManagedAsset> {
-        self.assets
+        let asset = self
+            .assets
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(asset_id)
-            .cloned()
+            .cloned()?;
+        if asset
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= Utc::now())
+        {
+            return None;
+        }
+        Some(asset)
     }
 
     pub fn contains(&self, asset_id: &str) -> bool {
@@ -217,6 +314,18 @@ impl ManagedAssetRegistry {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
+            .map(|asset| asset.path.clone())
+            .collect()
+    }
+
+    /// Return generated-media paths whose persisted expiry has elapsed.
+    pub fn expired_paths(&self) -> Vec<PathBuf> {
+        let now = Utc::now();
+        self.assets
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|asset| asset.expires_at.is_some_and(|expires_at| expires_at <= now))
             .map(|asset| asset.path.clone())
             .collect()
     }
