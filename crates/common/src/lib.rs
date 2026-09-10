@@ -2,6 +2,7 @@ pub mod config;
 pub mod encoding;
 pub mod error;
 pub mod hooks;
+pub mod media;
 pub mod prompts;
 pub mod text;
 pub mod tools;
@@ -12,6 +13,14 @@ pub use config::{
     SkillsExecConfig, default_work_dir,
 };
 pub use types::McpTransportType;
+
+pub use media::{
+    CapabilityProfile, CapabilitySupport, MediaAsset, MediaAssetLifecycle, MediaAssetSource,
+    MediaDerivation, MediaInput, MediaInputStrategy, MediaModality, MediaPlan, MediaPlanNotice,
+    MediaPlanNoticeCode, MediaProjection, MediaProjectionMode, MediaProvenance,
+    MediaRepresentation, MediaRepresentationAvailability, MediaRepresentationCost,
+    MediaRepresentationKind, MediaRepresentationPayload, build_media_plan,
+};
 
 pub use tools::ToolDef;
 

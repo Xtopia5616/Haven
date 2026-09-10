@@ -83,6 +83,9 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / newtype）、`CanonicalMessage` /
   `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`Supplement`、`RiskLevel`、
   `HotkeyMode` / `ShellChoice` 等。
+- `media.rs`：provider-neutral 的 `MediaAsset`、`MediaRepresentation`、能力画像和纯
+  `MediaPlan` 计划器；只选择安全的 raw/derived/managed 表示，不执行文件 I/O 或
+  provider 路由。
 - `prompts.rs`：系统提示词与各专用 prompt 常量（含 `STT_SYSTEM_PROMPT`）。
 - `encoding.rs` / `text.rs`：编码解码（UTF-8 → GBK 回退）、文本工具。
 
