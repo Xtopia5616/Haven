@@ -88,6 +88,7 @@ pub async fn register_builtin_tools(
     session_catalog: SessionCatalog,
     agent_spawner: messaging::AgentSpawnerSlot,
     memory_recall: memory::MemoryRecallSlot,
+    managed_assets: crate::ManagedAssetRegistry,
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     tools.push(Arc::new(audio::AudioTool::with_tts(
@@ -114,6 +115,7 @@ pub async fn register_builtin_tools(
             limits.search_max_file_size_bytes,
             limits.search_window_bytes,
         ),
+        managed_assets,
     )));
     tools.push(Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),

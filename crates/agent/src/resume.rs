@@ -499,6 +499,13 @@ impl AgentLayer {
         description: &str,
     ) -> anyhow::Result<Vec<ReActRound>> {
         let events = snapshot.events;
+        for event in &events {
+            if let TranscriptRecord::UserInject { attachments, .. } = event {
+                self.executor
+                    .get_tools()
+                    .register_managed_assets(attachments);
+            }
+        }
         let (mut canonical, _) =
             project_transcript_with_strategy(&events, self.react_engine.media_strategy());
         let start_step = snapshot.step_number;
@@ -681,6 +688,9 @@ impl AgentLayer {
         conversation_history: &[ConversationMessage],
         initial_attachments: &[haven_common::types::MessageAttachment],
     ) -> anyhow::Result<Vec<ReActRound>> {
+        self.executor
+            .get_tools()
+            .register_managed_assets(initial_attachments);
         tracing::debug!(
             "run_session start: session_id={:?} context={:?} attachments={}",
             session_id,

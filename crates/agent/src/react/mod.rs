@@ -74,6 +74,14 @@ pub(crate) fn attachment_to_content_part_with_strategy(
         // guess. The selected adapter still validates the final request.
         image: CapabilitySupport::Supported,
         audio: CapabilitySupport::Supported,
+        // A persisted ordinary attachment is addressable through the trusted
+        // `files` tool using its opaque asset id. Legacy/in-memory attachments
+        // without both host markers stay on the safe fallback path.
+        tools: if att.asset_id.is_some() && att.path.is_some() {
+            CapabilitySupport::Supported
+        } else {
+            CapabilitySupport::Unknown
+        },
         ..CapabilityProfile::default()
     };
     let plan = build_media_plan(std::slice::from_ref(&input), &capabilities, strategy);
@@ -1207,6 +1215,22 @@ mod tests {
         };
         assert!(text.contains("report.pdf"));
         assert!(text.contains("不会发送给模型"));
+        assert!(!text.contains(r"C:\Users\olive"));
+    }
+
+    #[test]
+    fn managed_file_attachment_projects_to_opaque_reference() {
+        let mut attachment = MessageAttachment::new("application/pdf", "");
+        attachment.asset_id = Some("asset-report".into());
+        attachment.filename = Some("report.pdf".into());
+        attachment.path = Some(r"C:\Users\olive\uploads\report.pdf".into());
+        let ContentPart::Text(text) =
+            attachment_to_content_part_with_strategy(&attachment, MediaInputStrategy::Auto)
+        else {
+            panic!("managed files use a text reference for the files tool");
+        };
+        assert!(text.contains("asset-report"));
+        assert!(text.contains("report.pdf"));
         assert!(!text.contains(r"C:\Users\olive"));
     }
 

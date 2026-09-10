@@ -323,6 +323,7 @@ pub async fn process_transcript(
     let attachments = persist_file_attachments(attachments)
         .await
         .map_err(|e| log_err("process_transcript", e))?;
+    state.tools.register_managed_assets(&attachments);
     let voice = voice.unwrap_or(false);
     tracing::debug!(
         "process_transcript called: text={:?} active_session_id={:?} attachments={} voice={}",

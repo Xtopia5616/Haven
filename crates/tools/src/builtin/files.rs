@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_search::FileSearchEngine;
-use crate::{Tool, ToolConcurrency, ToolResult};
+use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
 /// Classify a file by its extension into a coarse kind used to route binary
 /// reads. Returns `(kind, mime)` where kind is one of: image, pdf, archive,
@@ -262,6 +262,22 @@ fn annotate_file_result(
             .or_insert_with(|| serde_json::json!(truncated));
     }
     result
+}
+
+/// Remove host paths from a result produced for a managed attachment. The
+/// filesystem operation already ran on the host; its provider-facing
+/// observation only needs the opaque id and safe display metadata.
+fn redact_managed_file_result(result: &mut ToolResult, asset: &ManagedAsset) {
+    let Some(output) = result.output.as_object_mut() else {
+        return;
+    };
+    for key in ["path", "root", "from", "to"] {
+        output.remove(key);
+    }
+    output.insert("asset_id".into(), serde_json::json!(asset.asset_id));
+    if let Some(filename) = asset.filename.as_deref() {
+        output.insert("filename".into(), serde_json::json!(filename));
+    }
 }
 
 /// Read a file in full. Refuses files larger than `max_read_chars` and
@@ -557,6 +573,8 @@ pub struct FilesTool {
     summary_timeout_secs: u64,
     /// Search engine for the `search` operation (filename / content modes).
     search: FileSearchEngine,
+    /// Host-owned attachment registry used by read-only managed references.
+    managed_assets: ManagedAssetRegistry,
 }
 
 impl Default for FilesTool {
@@ -573,6 +591,7 @@ impl Default for FilesTool {
             vision_max_bytes: 8 * 1024 * 1024,
             summary_timeout_secs: 120,
             search: FileSearchEngine::default(),
+            managed_assets: ManagedAssetRegistry::default(),
         }
     }
 }
@@ -603,6 +622,10 @@ pub struct FilesParams {
     /// File or directory path to operate on.
     #[serde(default)]
     pub path: Option<String>,
+    /// Opaque host-owned attachment id. Only read and summary accept this
+    /// field; mutation and search operations remain path-based.
+    #[serde(default)]
+    pub asset_id: Option<String>,
     /// Destination path (copy/move).
     #[serde(default)]
     pub destination: Option<String>,
@@ -670,6 +693,7 @@ impl FilesTool {
         vision_max_bytes: u64,
         summary_timeout_secs: u64,
         search: FileSearchEngine,
+        managed_assets: ManagedAssetRegistry,
     ) -> Self {
         Self {
             summarizer,
@@ -683,6 +707,7 @@ impl FilesTool {
             vision_max_bytes,
             summary_timeout_secs,
             search,
+            managed_assets,
         }
     }
 
@@ -695,14 +720,33 @@ impl FilesTool {
     ) -> anyhow::Result<ToolResult> {
         let op = params.operation.unwrap_or(FilesOperation::Read);
         let search_root = params.root.clone();
-        let path = sanitize_path(params.path.as_deref().unwrap_or_default())?;
+        let managed_asset = if let Some(asset_id) = params.asset_id.as_deref() {
+            if params.path.is_some() {
+                anyhow::bail!("provide either asset_id or path, not both");
+            }
+            if !matches!(op, FilesOperation::Read | FilesOperation::Summary) {
+                anyhow::bail!("asset_id is supported only for read and summary operations");
+            }
+            Some(
+                self.managed_assets
+                    .resolve(asset_id)
+                    .ok_or_else(|| anyhow::anyhow!("managed asset is unavailable or expired"))?,
+            )
+        } else {
+            None
+        };
+        let path = managed_asset
+            .as_ref()
+            .map(|asset| asset.path.to_string_lossy().into_owned())
+            .map(Ok)
+            .unwrap_or_else(|| sanitize_path(params.path.as_deref().unwrap_or_default()))?;
         let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
 
-        let result = match op {
+        let operation_result: anyhow::Result<ToolResult> = match op {
             FilesOperation::Read => {
                 let has_line_args = params.start_line.is_some() || params.end_line.is_some();
                 let has_byte_args = params.offset.is_some() || params.limit.is_some();
@@ -911,19 +955,26 @@ impl FilesTool {
                 let search_input = serde_json::to_value(params.clone())?;
                 self.search.search(search_input, cancel).await
             }
-        }?;
+        };
+        let mut result = match operation_result {
+            Ok(result) => result,
+            Err(error) if managed_asset.is_some() => {
+                tracing::debug!(error = %error, "managed asset operation failed");
+                anyhow::bail!("managed asset operation failed")
+            }
+            Err(error) => return Err(error),
+        };
 
-        let result_path = if matches!(op, FilesOperation::Search) {
+        let result_path = if matches!(op, FilesOperation::Search) || managed_asset.is_some() {
             None
         } else {
             Some(path.as_str())
         };
-        Ok(annotate_file_result(
-            result,
-            op,
-            result_path,
-            search_root.as_deref(),
-        ))
+        result = annotate_file_result(result, op, result_path, search_root.as_deref());
+        if let Some(asset) = managed_asset.as_ref() {
+            redact_managed_file_result(&mut result, asset);
+        }
+        Ok(result)
     }
 }
 
@@ -963,7 +1014,8 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; all other operations use path." }
+                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; read/summary may use asset_id instead of path; other operations use path." },
+                "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment; use this instead of guessing a local path" }
             },
             "required": ["operation"],
             "oneOf": [
@@ -973,13 +1025,15 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "read" },
                         "path": { "type": "string", "minLength": 1, "description": "File path to read" },
+                        "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
                         "offset": { "type": "integer", "minimum": 0, "description": "Byte offset; use with limit for a byte-range read" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_byte_read, "description": "Maximum bytes for a byte-range read" },
                         "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line; use with end_line for a line-range read" },
                         "end_line": { "type": "integer", "minimum": 0, "description": format!("1-based last line; omit for up to {} lines", self.line_span) },
                         "focus": { "type": "string", "description": "Optional focus when reading an image" }
                     },
-                    "required": ["operation", "path"]
+                    "oneOf": [{ "required": ["path"] }, { "required": ["asset_id"] }],
+                    "required": ["operation"]
                 },
                 {
                     "type": "object",
@@ -1036,12 +1090,14 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "summary" },
                         "path": { "type": "string", "minLength": 1, "description": "Text file path to summarize" },
+                        "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
                         "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line; defaults to 1" },
                         "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; 0 or omitted means through EOF" },
                         "focus": { "type": "string", "description": "Optional topic to focus the summary on" },
                         "max_chars": { "type": "integer", "minimum": 1, "maximum": self.summary_input_chars, "description": "Maximum characters sent to the summarizer" }
                     },
-                    "required": ["operation", "path"]
+                    "oneOf": [{ "required": ["path"] }, { "required": ["asset_id"] }],
+                    "required": ["operation"]
                 },
                 {
                     "type": "object",
@@ -1986,6 +2042,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_managed_asset_read_uses_id_and_redacts_host_path() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("report.txt");
+        tokio::fs::write(&file, "managed content").await.unwrap();
+        let path_str = file.to_string_lossy().to_string();
+        let registry = ManagedAssetRegistry::default();
+        registry.register("asset-test", file, Some("report.txt".into()), "text/plain");
+        let mut tool = FilesTool::default();
+        tool.managed_assets = registry;
+
+        let result = tool
+            .execute(
+                json!({"operation": "read", "asset_id": "asset-test"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["content"], "managed content");
+        assert_eq!(result.output["asset_id"], "asset-test");
+        assert_eq!(result.output["filename"], "report.txt");
+        assert!(result.output.get("path").is_none());
+        assert!(
+            !serde_json::to_string(&result.output)
+                .unwrap()
+                .contains(&path_str)
+        );
+
+        let mutation = tool
+            .execute(
+                json!({"operation": "write", "asset_id": "asset-test", "content": "nope"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(mutation.is_err(), "managed assets are read-only");
+    }
+
+    #[tokio::test]
     async fn test_file_native_entry_lands_in_run() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("native.txt");
@@ -1995,6 +2088,7 @@ mod tests {
                 FilesParams {
                     operation: Some(FilesOperation::Write),
                     path: Some(path_str.clone()),
+                    asset_id: None,
                     destination: None,
                     content: Some("native content".into()),
                     old_string: None,

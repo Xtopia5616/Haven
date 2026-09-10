@@ -1,4 +1,5 @@
 pub mod adapters;
+mod asset_registry;
 mod background_actions;
 pub mod builtin;
 pub mod circuit;
@@ -16,7 +17,7 @@ pub(crate) mod tool_contract;
 pub mod util;
 
 use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
-use haven_common::types::{PermissionMode, RiskLevel, ShellChoice};
+use haven_common::types::{MessageAttachment, PermissionMode, RiskLevel, ShellChoice};
 use haven_llm::LlmRouter;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -35,6 +36,7 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 }
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
+pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub(crate) use background_actions::EventSinkState;
 pub use background_actions::{BackgroundActionCompletion, BackgroundActions, EventSink};
 pub use builtin::{
@@ -140,6 +142,8 @@ pub struct ToolsManager {
     pub skills_engine: SkillsEngine,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub authorization: AuthorizationEngine,
+    /// Host-owned attachment ids resolved by the `files` tool.
+    pub managed_assets: ManagedAssetRegistry,
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
     /// Unified context limits. `max_observation_chars` is the observation
     /// budget for tool outputs fed back into the conversation; per-tool
@@ -213,6 +217,7 @@ impl ToolsManager {
                 exec_config,
             ))),
             authorization: AuthorizationEngine::new(),
+            managed_assets: ManagedAssetRegistry::default(),
             tool_settings: RwLock::new(HashMap::new()),
             context_limits: RwLock::new(ContextLimitsConfig::default()),
             default_shell: RwLock::new(ShellChoice::default()),
@@ -242,6 +247,23 @@ impl ToolsManager {
     /// Install History-aligned recall for `memory` operation=recall.
     pub async fn set_memory_recall(&self, recall: builtin::MemoryRecallFn) {
         *self.memory_recall.write().await = Some(recall);
+    }
+
+    /// Register host-persisted attachments for the trusted files boundary.
+    /// Renderer-provided ids are not accepted because validation clears them
+    /// before persistence mints a fresh host-owned id.
+    pub fn register_managed_assets(&self, attachments: &[MessageAttachment]) {
+        for attachment in attachments {
+            let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
+                continue;
+            };
+            self.managed_assets.register(
+                asset_id.clone(),
+                std::path::PathBuf::from(path),
+                attachment.filename.clone(),
+                attachment.media_type.clone(),
+            );
+        }
     }
 
     /// Monotonic catalog version (see `catalog_version`). Consumers cache
@@ -457,6 +479,7 @@ impl ToolsManager {
             self.session_catalog.clone(),
             self.agent_spawner.clone(),
             self.memory_recall.clone(),
+            self.managed_assets.clone(),
         )
         .await;
         *self.admin_surface.write().await = self_tool_arc;
