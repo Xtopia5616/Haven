@@ -206,18 +206,14 @@ pub async fn get_api_key_status(app: tauri::AppHandle) -> Result<ApiKeyStatus, S
 }
 
 /// Probe the configured default-model endpoint for live connectivity.
-/// Returns `"ready"` (reachable), `"disconnected"` (configured but
-/// unreachable) or `"unconfigured"` (no api_key configured — no network
-/// probe was attempted). The top-right status indicator maps these to
-/// 就绪 / 已断开 / 未配置.
+/// Returns a typed status plus a non-sensitive failure category. Detailed
+/// transport causes are retained in the backend log, never returned with the
+/// Tauri response.
 #[tauri::command]
-pub async fn check_llm_connection(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    Ok(state
-        .agent
-        .check_llm_connection()
-        .await
-        .as_str()
-        .to_string())
+pub async fn check_llm_connection(
+    state: State<'_, Arc<AppState>>,
+) -> Result<haven_llm::LlmConnectionReport, String> {
+    Ok(state.agent.check_llm_connection().await)
 }
 
 /// Resolve the auth scheme (header name, prefix) for an STT provider during
@@ -327,15 +323,30 @@ pub async fn discover_models(
     })?;
 
     let mut reg = ModelRegistry::new();
-    tracing::info!("discovering models from {}", base_url);
+    tracing::info!(
+        endpoint_host = %haven_llm::endpoint_host(&base_url),
+        provider = provider.as_deref().unwrap_or("unknown"),
+        "discovering models"
+    );
     let models = reg
         .discover_from(&base_url, &key, Some((header.as_str(), value.as_str())))
         .await
         .map_err(|e| {
-            tracing::warn!("model discovery failed for {}: {}", base_url, e);
-            e.to_string()
+            tracing::warn!(
+                endpoint_host = %haven_llm::endpoint_host(&base_url),
+                provider = provider.as_deref().unwrap_or("unknown"),
+                reason = e.connection_failure_reason().as_str(),
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "model discovery failed"
+            );
+            log_err("discover_models", &e)
         })?;
-    tracing::info!("discovered {} models from {}", models.len(), base_url);
+    tracing::info!(
+        endpoint_host = %haven_llm::endpoint_host(&base_url),
+        provider = provider.as_deref().unwrap_or("unknown"),
+        model_count = models.len(),
+        "model discovery completed"
+    );
     Ok(models)
 }
 
@@ -380,7 +391,13 @@ pub async fn discover_all_models(
             match reg.discover_from(&base_url, &api_key, auth_ref).await {
                 Ok(list) => (name.clone(), list),
                 Err(e) => {
-                    tracing::warn!("discover_all_models failed for {}: {}", name, e);
+                    tracing::warn!(
+                        provider = %name,
+                        endpoint_host = %haven_llm::endpoint_host(&base_url),
+                        reason = e.connection_failure_reason().as_str(),
+                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        "discover_all_models failed"
+                    );
                     (name.clone(), Vec::new())
                 }
             }

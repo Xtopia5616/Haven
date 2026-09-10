@@ -245,6 +245,54 @@ impl LlmConnectionStatus {
     }
 }
 
+/// Non-sensitive classification for a failed connectivity probe. The raw
+/// provider error stays in the backend log after sanitization; only this
+/// stable category crosses the Tauri boundary so the UI can explain the
+/// failure without exposing request details or credentials.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmConnectionFailureReason {
+    Network,
+    Timeout,
+    Authentication,
+    RateLimited,
+    Server,
+    RequestRejected,
+    InvalidResponse,
+    Configuration,
+    Unknown,
+}
+
+impl LlmConnectionFailureReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Timeout => "timeout",
+            Self::Authentication => "authentication",
+            Self::RateLimited => "rate_limited",
+            Self::Server => "server",
+            Self::RequestRejected => "request_rejected",
+            Self::InvalidResponse => "invalid_response",
+            Self::Configuration => "configuration",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Result returned by the live default-model connectivity probe.
+///
+/// `provider` and `model` are display metadata only. `reason` is omitted for
+/// successful and unconfigured probes. No endpoint URL or provider response
+/// body is included in this DTO.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LlmConnectionReport {
+    pub status: LlmConnectionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<LlmConnectionFailureReason>,
+    pub provider: String,
+    pub model: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
@@ -997,6 +1045,9 @@ pub enum LlmError {
     #[error("network timeout: {0}")]
     Timeout(String),
 
+    #[error("network error: {0}")]
+    Network(String),
+
     #[error("authentication failed: {0}")]
     Auth(String),
 
@@ -1055,10 +1106,28 @@ impl LlmError {
         matches!(
             self,
             LlmError::Timeout(_)
+                | LlmError::Network(_)
                 | LlmError::ServerError(_)
                 | LlmError::RateLimit { .. }
                 | LlmError::StreamTruncated
         )
+    }
+
+    /// Map a provider error to the stable category exposed by the
+    /// connectivity probe. Request details remain available to backend
+    /// logging through `Display`, but never need to cross the UI boundary.
+    pub fn connection_failure_reason(&self) -> LlmConnectionFailureReason {
+        match self {
+            Self::Configuration(_) => LlmConnectionFailureReason::Configuration,
+            Self::Timeout(_) => LlmConnectionFailureReason::Timeout,
+            Self::Network(_) => LlmConnectionFailureReason::Network,
+            Self::Auth(_) => LlmConnectionFailureReason::Authentication,
+            Self::RateLimit { .. } => LlmConnectionFailureReason::RateLimited,
+            Self::ServerError(_) => LlmConnectionFailureReason::Server,
+            Self::RequestFailed(_) => LlmConnectionFailureReason::RequestRejected,
+            Self::InvalidResponse(_) => LlmConnectionFailureReason::InvalidResponse,
+            _ => LlmConnectionFailureReason::Unknown,
+        }
     }
 
     /// True when the adapter lacks the requested capability (STT, embeddings,
@@ -1070,24 +1139,51 @@ impl LlmError {
 
 impl From<reqwest::Error> for LlmError {
     fn from(e: reqwest::Error) -> Self {
+        let detail = error_chain(&e);
         if e.is_timeout() {
-            LlmError::Timeout(e.to_string())
+            LlmError::Timeout(detail)
         } else if e.is_connect() || e.is_body() || e.is_request() {
-            LlmError::ServerError(e.to_string())
+            LlmError::Network(detail)
         } else if let Some(status) = e.status() {
             if status.as_u16() == 401 || status.as_u16() == 403 {
-                LlmError::Auth(e.to_string())
+                LlmError::Auth(detail)
             } else if status.as_u16() == 429 {
                 LlmError::RateLimit { retry_after: None }
             } else if status.is_server_error() {
-                LlmError::ServerError(e.to_string())
+                LlmError::ServerError(detail)
             } else {
-                LlmError::RequestFailed(e.to_string())
+                LlmError::RequestFailed(detail)
             }
         } else {
-            LlmError::Unknown(e.to_string())
+            LlmError::Unknown(detail)
         }
     }
+}
+
+/// Keep the underlying transport cause when reqwest's top-level Display only
+/// says "error sending request". This is used for backend diagnostics; callers
+/// must sanitize it before logging or returning it across a UI boundary.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut parts = Vec::new();
+    let mut current = Some(error);
+    while let Some(error) = current {
+        let text = redact_request_url(&error.to_string());
+        if !text.is_empty() && parts.last() != Some(&text) {
+            parts.push(text);
+        }
+        current = error.source();
+    }
+    parts.join(": ")
+}
+
+fn redact_request_url(text: &str) -> String {
+    let Some(start) = text.find(" for url (") else {
+        return text.to_string();
+    };
+    let Some(_) = text[start..].find(')') else {
+        return text.to_string();
+    };
+    format!("{} [URL redacted]", &text[..start])
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1284,6 +1380,54 @@ mod tests {
     #[test]
     fn llm_error_is_retryable_timeout() {
         assert!(LlmError::Timeout("t".into()).is_retryable());
+    }
+
+    #[test]
+    fn connection_failure_reason_preserves_transport_categories() {
+        assert_eq!(
+            LlmError::Network("dns failed".into()).connection_failure_reason(),
+            LlmConnectionFailureReason::Network
+        );
+        assert_eq!(
+            LlmError::Timeout("deadline".into()).connection_failure_reason(),
+            LlmConnectionFailureReason::Timeout
+        );
+        assert_eq!(
+            LlmError::Auth("unauthorized".into()).connection_failure_reason(),
+            LlmConnectionFailureReason::Authentication
+        );
+        assert_eq!(
+            LlmError::RequestFailed("bad request".into()).connection_failure_reason(),
+            LlmConnectionFailureReason::RequestRejected
+        );
+    }
+
+    #[test]
+    fn connection_report_serializes_without_reason_when_ready() {
+        let report = LlmConnectionReport {
+            status: LlmConnectionStatus::Ready,
+            reason: None,
+            provider: "PackyAPI".into(),
+            model: "grok-4.6".into(),
+        };
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(json["status"], "ready");
+        assert_eq!(json["provider"], "PackyAPI");
+        assert_eq!(json["model"], "grok-4.6");
+        assert!(json.get("reason").is_none());
+        assert!(json.get("endpoint").is_none());
+    }
+
+    #[test]
+    fn error_chain_redacts_request_url() {
+        assert_eq!(
+            redact_request_url("error sending request for url (https://example.test/v1/models)"),
+            "error sending request [URL redacted]"
+        );
+        assert_eq!(
+            redact_request_url("dns error: host not found"),
+            "dns error: host not found"
+        );
     }
 
     #[test]

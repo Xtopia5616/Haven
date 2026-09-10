@@ -46,7 +46,7 @@
 | `add_fact` | `AddFactRequest` | `Fact` | mutate | 拒绝凭据样式内容 |
 | `delete_fact` | `DeleteFactRequest` | `()` | mutate | 按 fact id 删除 |
 | `get_api_key_status` | `-` | `ApiKeyStatus` | read | 只返回 presence，不返回凭据 |
-| `check_llm_connection` | `-` | `string` | read | 只返回状态 |
+| `check_llm_connection` | `-` | `LlmConnectionReport` | read | 返回状态与非敏感原因分类，不返回 endpoint 或 provider 响应 |
 | `discover_models` | `DiscoverModelsRequest` | `ModelInfo[]` | execute | endpoint 与已保存 key 主机匹配 |
 | `discover_all_models` | `-` | `Record<string, ModelInfo[]>` | execute | 只查询已配置 provider |
 | `switch_model` | `SwitchModelRequest` | `()` | mutate | role 先校验再保存 |

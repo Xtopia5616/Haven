@@ -18,7 +18,7 @@ pub use adapters::{
     is_openai_family_wire_style, is_stt_only_style, is_tts_only_style, normalize_api_style,
     parse_web_search_mode, supports_builtin_web_search, web_search_result_of,
 };
-pub use client::{LlmClient, with_retry};
+pub use client::{LlmClient, endpoint_host, with_retry};
 pub use image_gen::{
     GeneratedImage, ImageGenClient, ResolvedImageGenConfig, build_image_gen_client,
     resolve_image_gen_config,
@@ -34,6 +34,7 @@ pub use stt::{
 };
 pub use tts::{ResolvedTtsConfig, TtsClient, build_tts_client, resolve_tts_config};
 pub use types::{
-    CacheAccounting, CacheDiagnostics, FinishReason, LlmConnectionStatus, LlmError, LlmResponse,
-    StreamChunk, SttResult, ToolDefinition, ToolFunction, Usage,
+    CacheAccounting, CacheDiagnostics, FinishReason, LlmConnectionFailureReason,
+    LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, SttResult,
+    ToolDefinition, ToolFunction, Usage,
 };

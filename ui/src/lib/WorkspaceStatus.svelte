@@ -11,6 +11,7 @@
 		runtime = 'tauri',
 		bootstrapReady = true,
 		llmConnected = null,
+		llmConnectionDetail = null,
 		awaitingBackgroundActive = false,
 		runningActionCount = 0,
 		pendingScheduledActions = [],
@@ -63,6 +64,12 @@
 	const statusTitle = $derived.by(() => {
 		if (runtime === 'browser') {
 			return '当前是浏览器预览，Rust/Tauri 后端未启动；运行 cargo tauri dev 启动桌面应用';
+		}
+		if (llmConnected === 'disconnected') {
+			return `模型连接失败：${llmConnectionDetail || '暂时无法确定具体原因'}。请到模型设置检查 API 地址、API Key 和代理`;
+		}
+		if (llmConnected === 'unconfigured') {
+			return '默认模型未配置，请到模型设置填写 Provider、模型和 API Key';
 		}
 		const parts = [];
 		if (runningActionCount > 0) {

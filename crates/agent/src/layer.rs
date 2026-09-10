@@ -240,7 +240,7 @@ impl AgentLayer {
 
     /// Live three-way connectivity probe to the default-model endpoint. Used
     /// by the top-right status indicator to show 就绪 / 已断开 / 未配置.
-    pub async fn check_llm_connection(&self) -> haven_llm::LlmConnectionStatus {
+    pub async fn check_llm_connection(&self) -> haven_llm::LlmConnectionReport {
         self.react_engine.check_connection().await
     }
 

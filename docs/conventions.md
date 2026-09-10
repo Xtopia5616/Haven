@@ -299,6 +299,8 @@ try {
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
 | `action:finished`（后台任务，非当前会话） | success/error：`后台任务完成/失败: {action_id}`（4s） |
 | 命令 invoke 失败 | error toast（`e.message` 或兜底，4s） |
+| `check_llm_connection` 返回 disconnected | error toast：包含非敏感原因分类，并提示检查 API 地址、API Key 和代理（5s；仅状态首次变化时） |
+| `check_llm_connection` 从 disconnected 恢复 ready | success toast：`默认模型已恢复连接`（3s） |
 
 ### 4.3 只更新状态、不弹 toast
 

@@ -30,6 +30,21 @@ pub fn http_client_builder() -> reqwest::ClientBuilder {
         .connect_timeout(Duration::from_secs(10))
 }
 
+/// Return only the host (and optional port) from an endpoint URL for
+/// diagnostics. Provider base URLs may contain paths or query parameters, so
+/// logging the raw URL would unnecessarily widen the sensitive-data surface.
+pub fn endpoint_host(raw: &str) -> String {
+    url::Url::parse(raw)
+        .ok()
+        .and_then(|url| {
+            url.host_str().map(|host| match url.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_string(),
+            })
+        })
+        .unwrap_or_else(|| "[invalid endpoint]".to_string())
+}
+
 /// Unified interface implemented by every provider adapter. Adapters convert
 /// the provider's native wire protocol to/from the provider-neutral
 /// `CanonicalMessage` / `LlmResponse` / `StreamChunk` types (see `adapters/`).
@@ -342,6 +357,19 @@ mod tests {
             ua.contains(env!("CARGO_PKG_VERSION")),
             "UA must carry the version: {ua}"
         );
+    }
+
+    #[test]
+    fn endpoint_host_keeps_only_safe_host_identity() {
+        assert_eq!(
+            endpoint_host("https://api.example.test/v1?api_key=secret"),
+            "api.example.test"
+        );
+        assert_eq!(
+            endpoint_host("https://example.test:8443/v1"),
+            "example.test:8443"
+        );
+        assert_eq!(endpoint_host("not a url"), "[invalid endpoint]");
     }
 
     #[test]

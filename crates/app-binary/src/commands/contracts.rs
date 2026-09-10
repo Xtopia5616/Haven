@@ -252,9 +252,9 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "check_llm_connection",
         request: "-",
-        response: "string",
+        response: "LlmConnectionReport",
         boundary: CommandBoundary::Read,
-        security: "status only; no provider payload",
+        security: "status and non-sensitive reason only; no endpoint or provider payload",
     },
     CommandContract {
         name: "discover_models",

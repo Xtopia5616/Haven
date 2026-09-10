@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::adapter_for;
-use crate::client::LlmClient;
+use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
 use crate::endpoint_health::{CircuitBreaker, CircuitState};
 use crate::endpoint_health::{
@@ -17,7 +17,8 @@ use haven_common::types::{CanonicalMessage, ContentPart};
 use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
 use crate::streaming;
 use crate::types::{
-    Embedding, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
+    Embedding, LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk,
+    ToolDefinition, Usage,
 };
 use futures_util::future::join_all;
 use haven_common::config::{ModelEndpoint, RouterConfig, compute_cost_usd};
@@ -1060,22 +1061,47 @@ impl LlmRouter {
 
     /// Tri-state connectivity probe for the top-right status chip.
     ///
-    /// - A role without a configured api_key short-circuits to
+    /// - A role without configured credentials short-circuits to
     ///   [`LlmConnectionStatus::Unconfigured`] **without any network I/O** —
     ///   neither the TCP/TLS handshake nor the GET is attempted, so an
     ///   unset-up install never wastes a probe on a bare default base_url.
     /// - A configured role runs the same `/models` health check as
     ///   [`LlmRouter::health_check`] and reports Ready on success /
     ///   Disconnected on failure.
-    pub async fn connection_status(&self, role: EndpointRole) -> LlmConnectionStatus {
-        if !self.is_role_configured(role).await {
-            return LlmConnectionStatus::Unconfigured;
+    pub async fn connection_status(&self, role: EndpointRole) -> LlmConnectionReport {
+        let endpoint = self.config.read().await.endpoint(role).clone();
+        if !haven_common::config::endpoint_credentials_ready(&endpoint) {
+            return LlmConnectionReport {
+                status: LlmConnectionStatus::Unconfigured,
+                reason: None,
+                provider: String::new(),
+                model: String::new(),
+            };
         }
         match self.health_check(role).await {
-            Ok(()) => LlmConnectionStatus::Ready,
+            Ok(()) => LlmConnectionReport {
+                status: LlmConnectionStatus::Ready,
+                reason: None,
+                provider: endpoint.provider,
+                model: endpoint.model_name,
+            },
             Err(e) => {
-                tracing::debug!("LLM connection probe failed for {}: {}", role.as_str(), e);
-                LlmConnectionStatus::Disconnected
+                let reason = e.connection_failure_reason();
+                tracing::warn!(
+                    role = role.as_str(),
+                    provider = %endpoint.provider,
+                    model = %endpoint.model_name,
+                    endpoint_host = %endpoint_host(&endpoint.base_url),
+                    reason = reason.as_str(),
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "LLM connection probe failed"
+                );
+                LlmConnectionReport {
+                    status: LlmConnectionStatus::Disconnected,
+                    reason: Some(reason),
+                    provider: endpoint.provider,
+                    model: endpoint.model_name,
+                }
             }
         }
     }
@@ -1119,9 +1145,10 @@ impl LlmRouter {
                     tracing::debug!("LLM endpoint {} pre-warmed", role.as_str());
                 }
                 Err(e) => tracing::warn!(
-                    "LLM pre-warm failed for {} (will retry on first request): {}",
-                    role.as_str(),
-                    e
+                    role = role.as_str(),
+                    reason = e.connection_failure_reason().as_str(),
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "LLM pre-warm failed (will retry on first request)"
                 ),
             }
         }

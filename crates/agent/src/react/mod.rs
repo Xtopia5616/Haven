@@ -334,7 +334,7 @@ impl ReActEngine {
 
     /// Live three-way connectivity probe to the default-model endpoint. Used
     /// by the top-right status indicator to show 就绪 / 已断开 / 未配置.
-    pub async fn check_connection(&self) -> haven_llm::LlmConnectionStatus {
+    pub async fn check_connection(&self) -> haven_llm::LlmConnectionReport {
         let router = self.router();
         router
             .connection_status(haven_llm::EndpointRole::DefaultModel)

@@ -46,7 +46,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	add_fact: { request: 'AddFactRequest', response: 'Fact', boundary: 'mutate', security: 'credential-like predicates and values rejected' },
 	delete_fact: { request: 'DeleteFactRequest', response: 'void', boundary: 'mutate', security: 'delete one fact by id' },
 	get_api_key_status: { request: '-', response: 'ApiKeyStatus', boundary: 'read', security: 'boolean presence only; credentials excluded' },
-	check_llm_connection: { request: '-', response: 'string', boundary: 'read', security: 'status only; no provider payload' },
+	check_llm_connection: { request: '-', response: 'LlmConnectionReport', boundary: 'read', security: 'status and non-sensitive reason only; no endpoint or provider payload' },
 	discover_models: { request: 'DiscoverModelsRequest', response: 'ModelInfo[]', boundary: 'execute', security: 'http(s) endpoint plus stored-key host match' },
 	discover_all_models: { request: '-', response: 'Record<string, ModelInfo[]>', boundary: 'execute', security: 'only configured providers are queried' },
 	switch_model: { request: 'SwitchModelRequest', response: 'void', boundary: 'mutate', security: 'role slot validated before config save' },

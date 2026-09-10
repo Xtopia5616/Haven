@@ -38,6 +38,12 @@
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 	import {
+		formatLlmConnectionFailure,
+		formatLlmConnectionRecovery,
+		llmConnectionReasonText,
+		normalizeLlmConnectionReport,
+	} from '$lib/llmConnection.ts';
+	import {
 		BOOTSTRAP_PROBE_INTERVAL_MS,
 		isBootstrapReady,
 		nextBootstrapProbeInterval,
@@ -232,11 +238,15 @@
 	// `subscribe` fires synchronously (SSR/mount) with the current value, and
 	// `probeLlmConnection` reads these bindings without awaiting first, so
 	// they must be initialized already.
-	// `llmConnected` is a three-way status from the backend's
-	// `check_llm_connection`: 'ready' | 'disconnected' | 'unconfigured'.
+	// `llmConnected` is the status projection from the backend's typed
+	// `check_llm_connection` report. The full report is kept for the status-chip
+	// title and transition notifications.
 	// `null` = probe in-flight / never completed (show 检测中, never a false
 	// 就绪).
 	let llmConnected = /** @type {string | null} */ ($state(null));
+	let llmConnectionReport = /** @type {import('$lib/llmConnection.ts').LlmConnectionReport | null} */ (
+		$state(null)
+	);
 	let llmProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
 	let llmProbeInFlight = false;
 	let llmProbeFailureStreak = 0;
@@ -283,6 +293,24 @@
 		modelState = v;
 		if (v === 'ready') probeLlmConnection();
 	});
+	/** @param {unknown} value */
+	function applyLlmConnectionReport(value) {
+		const report = normalizeLlmConnectionReport(value);
+		const previous = llmConnected;
+		llmConnectionReport = report;
+		llmConnected = report.status;
+		llmProbeFailureStreak = report.status === 'ready' ? 0 : Math.min(llmProbeFailureStreak + 1, 4);
+
+		// A probe runs repeatedly, so notify only when the user-visible state
+		// changes. The first disconnected result is still important at startup.
+		if (report.status === 'disconnected' && previous !== 'disconnected') {
+			addNotification(formatLlmConnectionFailure(report), 'error', 5000);
+		} else if (report.status === 'ready' && previous === 'disconnected') {
+			addNotification(formatLlmConnectionRecovery(report), 'success', 3000);
+		} else if (report.status === 'unconfigured' && previous && previous !== 'unconfigured') {
+			addNotification('默认模型未配置，请到模型设置填写 Provider、模型和 API Key', 'warning', 4000);
+		}
+	}
 	async function probeLlmConnection() {
 		if (modelState !== 'ready' || llmProbeInFlight) return;
 		// Browser / SSR / tests have no backend — skip without WARN spam or
@@ -290,14 +318,10 @@
 		if (!isTauri()) return;
 		llmProbeInFlight = true;
 		try {
-			const status = await invoke('check_llm_connection');
-			llmConnected =
-				status === 'ready' || status === 'disconnected' || status === 'unconfigured'
-					? status
-					: 'disconnected';
-			llmProbeFailureStreak = status === 'ready' ? 0 : Math.min(llmProbeFailureStreak + 1, 4);
+			applyLlmConnectionReport(await invoke('check_llm_connection'));
 		} catch (e) {
-			logger.warn('+layout', 'check_llm_connection error', e);
+			reportError(e, { context: '+layout', message: '检查模型连接失败', log: false });
+			llmConnectionReport = { status: 'disconnected', reason: 'unknown' };
 			llmConnected = 'disconnected';
 			llmProbeFailureStreak = Math.min(llmProbeFailureStreak + 1, 4);
 		} finally {
@@ -974,6 +998,7 @@
 			{runtime}
 			{bootstrapReady}
 			{llmConnected}
+			llmConnectionDetail={llmConnectionReport ? llmConnectionReasonText(llmConnectionReport.reason) : null}
 			{awaitingBackgroundActive}
 			{runningActionCount}
 			{pendingScheduledActions}

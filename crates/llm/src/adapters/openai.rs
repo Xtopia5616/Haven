@@ -1493,6 +1493,7 @@ mod tests {
             matches!(
                 e,
                 LlmError::Timeout(_)
+                    | LlmError::Network(_)
                     | LlmError::ServerError(_)
                     | LlmError::RequestFailed(_)
                     | LlmError::Unknown(_)

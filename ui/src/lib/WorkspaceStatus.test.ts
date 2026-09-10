@@ -21,6 +21,19 @@ describe('WorkspaceStatus', () => {
 		expect(screen.getByRole('button', { name: /就绪/ })).toBeTruthy();
 	});
 
+	it('shows the connection reason in the disconnected status title', () => {
+		render(WorkspaceStatus, {
+			runtime: 'tauri',
+			bootstrapReady: true,
+			llmConnected: 'disconnected',
+			llmConnectionDetail: '网络请求失败，可能与网络、代理、DNS 或 TLS 有关',
+		});
+
+		const status = screen.getByRole('button', { name: /已断开/ });
+		expect(status.getAttribute('title')).toContain('网络请求失败');
+		expect(status.getAttribute('title')).toContain('检查 API 地址、API Key 和代理');
+	});
+
 	it('mirrors the active conversation and keeps the status dot moving', () => {
 		render(WorkspaceStatus, {
 			runtime: 'tauri',
