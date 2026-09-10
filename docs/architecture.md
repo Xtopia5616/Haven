@@ -343,6 +343,11 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 `haven-llm::media` 来源是原 `haven-gateway` crate（早期挂在 input 下）。实现已在
 `llm/src/media/`，读代码时以 `llm/media/mod.rs` 的模块注释为准；input 只负责采集与转写。
 
+工具和 gateway 的一次性图片理解统一调用 `LlmRouter::analyze_image`；该入口在
+`haven-llm` 内完成 capability planning、base64 与 canonical image part 构造。工具层
+不再各自拼装 provider-facing 图片消息。`files.read` 的音频也通过
+`LlmRouter::transcribe_audio` 提供转写，避免工具说明与实际能力不一致（ADR 0122）。
+
 ### 3.3 agent 对 input 的依赖（2026-08-18 清理）
 
 - **改前**：`agent → input` 的唯一理由是重导出 `Supplement`（`session.rs`），agent 不调用任何
@@ -446,3 +451,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-08 | §2.3 Memory：删除历史 schema/data migration，数据库收敛为严格 v16 当前契约；统一 FTS5、事实/episode 类型域、向量维度与 RRF 混合召回，并在 provenance 落库前限长脱敏（ADR 0105） |
 | 2026-09-08 | §2.3 Memory / §2.5 Agent：事实抽取 outbox 增加可恢复的 `kv_store` pending marker，session 删除与 orphan cleanup 统一回收 cursor、节流和队列状态；移除启动时伪造的默认姓名事实（ADR 0107） |
 | 2026-09-10 | §2.3 Memory / §2.5 Agent / §2.6 App：消息新增 v17 `media_inputs` canonical 投影；managed uploads 统一覆盖图片/音频/文件；OCR/STT 表示持久化并保留 raw；旧快照与 compact summary 在 snapshot 边界剥离 inline bytes（ADR 0121） |
+| 2026-09-10 | §2.5 Tools / §2.6 LLM：工具与 media gateway 统一走 `LlmRouter::analyze_image`；`files.read` 增加音频转写；删除 raw-byte multimodal helper（ADR 0122） |

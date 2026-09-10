@@ -1,8 +1,7 @@
 use async_trait::async_trait;
-use base64::Engine;
 use haven_common::prompts::{FILE_SUMMARY_SYSTEM_PROMPT, IMAGE_ANALYSIS_SYSTEM_PROMPT};
 use haven_common::types::RiskLevel;
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
+use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::EndpointRole;
 use haven_llm::LlmRouter;
 use serde_json::Value;
@@ -92,7 +91,6 @@ async fn understand_image(
     // Use the same vision routing policy as chat images (the router's
     // `vision_role`): dedicated image_model when enabled and configured,
     // otherwise the default model.
-    let role = client.vision_role().await;
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
@@ -114,47 +112,10 @@ async fn understand_image(
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-
-    let mut sys = String::from(IMAGE_ANALYSIS_SYSTEM_PROMPT);
-    if let Some(f) = focus {
-        sys.push_str(" Pay special attention to: ");
-        sys.push_str(f);
-    }
-
-    let messages = vec![
-        CanonicalMessage {
-            role: CanonicalRole::System,
-            content: vec![ContentPart::text(sys)],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-            source: None,
-            id: None,
-        },
-        CanonicalMessage {
-            role: CanonicalRole::User,
-            content: vec![ContentPart::Image {
-                content_type: "image_url".into(),
-                media_type: media_type.into(),
-                data,
-            }],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-            source: None,
-            id: None,
-        },
-    ];
-
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(summary_timeout_secs),
-            client.chat(role, messages),
+            client.analyze_image(&bytes, media_type, IMAGE_ANALYSIS_SYSTEM_PROMPT, focus),
         )
         .await
     };
@@ -222,7 +183,9 @@ fn binary_result(path: &str, size: u64) -> ToolResult {
             "Archive file (zip/tar/...). Extract it with the shell tool to inspect contents."
         }
         "office" => "Office document. Its binary format cannot be read as text.",
-        "audio" => "Audio file. Use the audio tool to play or transcribe it.",
+        "audio" => {
+            "Audio file. Read it to request a bounded transcript, or use the audio tool to play it."
+        }
         "video" => "Video file. It cannot be read as text.",
         "executable" => "Executable/binary file. It cannot be read as text.",
         _ => {
@@ -315,6 +278,16 @@ async fn read_full(
         )
         .await;
     }
+    if kind == "audio" {
+        return transcribe_audio(
+            path,
+            summarizer,
+            cancel,
+            vision_max_bytes,
+            summary_timeout_secs,
+        )
+        .await;
+    }
     if matches!(kind, "pdf" | "office") {
         return extract_document_result(path, max_chars, cancel).await;
     }
@@ -370,6 +343,90 @@ async fn read_full(
     } else {
         ToolResult::ok(result)
     })
+}
+
+/// Transcribe an audio file through the router's shared STT boundary. This
+/// keeps uploaded audio useful to the model instead of returning the stale
+/// "use audio tool to transcribe" hint, even though that tool only records or
+/// plays audio.
+async fn transcribe_audio(
+    path: &str,
+    router: Option<Arc<LlmRouter>>,
+    cancel: CancellationToken,
+    max_bytes: u64,
+    timeout_secs: u64,
+) -> anyhow::Result<ToolResult> {
+    let Some(router) = router else {
+        return Ok(ToolResult::ok(serde_json::json!({
+            "audio": true,
+            "path": path,
+            "transcription_unavailable": true,
+            "reason": "No router installed, so audio content cannot be transcribed."
+        })));
+    };
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+    let size = tokio::fs::metadata(path).await?.len();
+    if size > max_bytes {
+        return Ok(ToolResult::ok(serde_json::json!({
+            "audio": true,
+            "path": path,
+            "size": size,
+            "too_large": true,
+            "hint": format!(
+                "Audio is {} bytes, above the {} byte transcription limit.",
+                size, max_bytes
+            )
+        })));
+    }
+    let bytes = tokio::fs::read(path).await?;
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+    let result = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        router.transcribe_audio(&bytes),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            return Ok(ToolResult::failed(
+                serde_json::json!({
+                    "audio": true,
+                    "path": path,
+                    "transcription_error": true,
+                }),
+                format!("audio transcription failed: {error}"),
+            ));
+        }
+        Err(_) => {
+            return Ok(ToolResult {
+                success: false,
+                output: serde_json::json!({
+                    "audio": true,
+                    "path": path,
+                    "transcription_error": true,
+                }),
+                error: Some(format!(
+                    "audio transcription timed out after {timeout_secs}s"
+                )),
+                truncated: false,
+                outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
+                attempts: 1,
+                signals: crate::tool_contract::ToolSignals::default(),
+            });
+        }
+    };
+
+    Ok(ToolResult::ok(serde_json::json!({
+        "audio": true,
+        "path": path,
+        "size": size,
+        "transcript": result.text.trim(),
+        "untrusted_content": true,
+    })))
 }
 
 async fn extract_document_result(
@@ -639,9 +696,10 @@ async fn read_lines(
 pub struct FilesTool {
     /// Shared LlmRouter. `None` means the router has not been installed yet
     /// (transient state during startup). When present, the `summary` and image
-    /// understanding operations route through `router.chat(...)`: image
-    /// understanding uses the image_model role, text summarization uses
-    /// small_model. The router handles retries for each selected endpoint.
+    /// understanding operations route through the router's canonical media
+    /// methods: image understanding uses the vision role, audio uses the STT
+    /// role, and text summarization uses small_model. The router handles
+    /// capability validation and retries for each selected endpoint.
     summarizer: Option<Arc<LlmRouter>>,
     /// Output cap (chars) for file reads.
     max_output_chars: usize,
@@ -1081,7 +1139,7 @@ impl Tool for FilesTool {
         "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, create directories, edit, copy, move, delete, list, summarize, or search files (text files; images via vision)".into()
+        "Read, write, create directories, edit, copy, move, delete, list, summarize, or search files (images are analyzed with vision; audio is transcribed on read)".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -1667,6 +1725,28 @@ mod tests {
         )
         .await;
         assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_transcribe_audio_no_client_reports_unavailable() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("recording.wav");
+        tokio::fs::write(&path, b"RIFF....WAVE").await.unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let result = transcribe_audio(
+            &path_str,
+            None,
+            CancellationToken::new(),
+            8 * 1024 * 1024,
+            120,
+        )
+        .await
+        .unwrap();
+        assert!(result.success);
+        assert_eq!(
+            result.output["transcription_unavailable"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]

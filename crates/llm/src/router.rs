@@ -534,6 +534,19 @@ impl LlmRouter {
         }
     }
 
+    /// Analyze an image through the canonical media planner and the selected
+    /// vision role. Tools and gateways should use this entry point instead of
+    /// constructing base64 image parts themselves.
+    pub async fn analyze_image(
+        &self,
+        bytes: &[u8],
+        media_type: &str,
+        system_prompt: &str,
+        focus: Option<&str>,
+    ) -> Result<LlmResponse, LlmError> {
+        crate::media::analyze_image(self, bytes, media_type, system_prompt, focus).await
+    }
+
     // §2.6: check circuit breaker before dispatching
     async fn check_circuit(&self, role: &EndpointRole) -> Result<(), LlmError> {
         let idx = self.health(role);

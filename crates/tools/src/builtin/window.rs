@@ -1,8 +1,6 @@
 use async_trait::async_trait;
-use base64::Engine;
 use haven_common::prompts::OCR_SYSTEM_PROMPT;
 use haven_common::types::RiskLevel;
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::LlmRouter;
 use serde_json::Value;
 use std::sync::Arc;
@@ -222,77 +220,47 @@ impl WindowTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let role = client.vision_role().await;
-
-        let messages = vec![
-            CanonicalMessage {
-                role: CanonicalRole::System,
-                content: vec![ContentPart::text(OCR_SYSTEM_PROMPT)],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-                thinking_blocks: Vec::new(),
-                source: None,
-                id: None,
-            },
-            CanonicalMessage {
-                role: CanonicalRole::User,
-                content: vec![ContentPart::Image {
-                    content_type: "image_url".into(),
-                    media_type: "image/png".into(),
-                    data,
-                }],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-                thinking_blocks: Vec::new(),
-                source: None,
-                id: None,
-            },
-        ];
-
         let timeout = self.vision_timeout_secs;
-        let response =
-            match tokio::time::timeout(Duration::from_secs(timeout), client.chat(role, messages))
-                .await
-            {
-                Ok(Ok(resp)) => resp,
-                Ok(Err(e)) => {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: serde_json::json!({
-                            "operation": "ocr",
-                            "ocr": true,
-                            "path": shot_path,
-                            "ocr_error": true,
-                        }),
-                        error: Some(format!("OCR vision call failed: {e}")),
-                        truncated: false,
-                        outcome: crate::ToolExecutionOutcome::Failed,
-                        attempts: 1,
-                        signals: crate::tool_contract::ToolSignals::default(),
-                    });
-                }
-                Err(_) => {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: serde_json::json!({
-                            "operation": "ocr",
-                            "ocr": true,
-                            "path": shot_path,
-                            "ocr_error": true,
-                        }),
-                        error: Some(format!("OCR vision call timed out after {timeout}s")),
-                        truncated: false,
-                        outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
-                        attempts: 1,
-                        signals: crate::tool_contract::ToolSignals::default(),
-                    });
-                }
-            };
+        let response = match tokio::time::timeout(
+            Duration::from_secs(timeout),
+            client.analyze_image(&bytes, "image/png", OCR_SYSTEM_PROMPT, None),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: serde_json::json!({
+                        "operation": "ocr",
+                        "ocr": true,
+                        "path": shot_path,
+                        "ocr_error": true,
+                    }),
+                    error: Some(format!("OCR vision call failed: {e}")),
+                    truncated: false,
+                    outcome: crate::ToolExecutionOutcome::Failed,
+                    attempts: 1,
+                    signals: crate::tool_contract::ToolSignals::default(),
+                });
+            }
+            Err(_) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: serde_json::json!({
+                        "operation": "ocr",
+                        "ocr": true,
+                        "path": shot_path,
+                        "ocr_error": true,
+                    }),
+                    error: Some(format!("OCR vision call timed out after {timeout}s")),
+                    truncated: false,
+                    outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
+                    attempts: 1,
+                    signals: crate::tool_contract::ToolSignals::default(),
+                });
+            }
+        };
 
         Ok(ToolResult::ok(serde_json::json!({
             "operation": "ocr",

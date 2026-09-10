@@ -23,7 +23,7 @@ use crate::{ImageGenClient, LlmRouter, OcrClient, SttClient};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use haven_common::config::MediaConfig;
 use haven_common::prompts::OCR_SYSTEM_PROMPT;
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
+use haven_common::types::new_id;
 use sha2::Digest;
 
 use crate::media::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
@@ -31,7 +31,8 @@ use crate::media::intent::{GenerateKind, Intent, detect_intent};
 use crate::media::modality::{
     Modality, detect_media_type_with_filename, detect_modality, extension_for_media_type,
 };
-use crate::media::multimodal;
+#[cfg(test)]
+use haven_common::types::CanonicalMessage;
 
 /// Maximum decoded media bytes accepted from an image-generation provider.
 pub const MAX_GENERATED_MEDIA_BYTES: usize = 16 * 1024 * 1024;
@@ -222,24 +223,9 @@ impl MediaGateway {
         };
         let text = match decision.action {
             CoverageAction::Ocr => {
-                let role = self.router.vision_role().await;
-                let messages = vec![
-                    CanonicalMessage::system(vec![ContentPart::text(OCR_SYSTEM_PROMPT)]),
-                    CanonicalMessage {
-                        role: CanonicalRole::User,
-                        content: vec![multimodal::image_part_from_bytes(media_type, bytes)],
-                        tool_calls: None,
-                        tool_call_id: None,
-                        reasoning: None,
-                        web_search_calls: Vec::new(),
-                        thinking_blocks: Vec::new(),
-                        source: None,
-                        id: None,
-                    },
-                ];
                 let resp = self
                     .router
-                    .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
+                    .analyze_image(bytes, media_type, OCR_SYSTEM_PROMPT, None)
                     .await
                     .map_err(|e| anyhow::anyhow!("主模型提取失败: {e}"))?;
                 resp.text.trim().to_string()
@@ -411,6 +397,13 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for MockLlm {
+        fn capability_profile(&self) -> haven_common::media::CapabilityProfile {
+            haven_common::media::CapabilityProfile {
+                image: haven_common::media::CapabilitySupport::Supported,
+                ..Default::default()
+            }
+        }
+
         async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(LlmResponse {
