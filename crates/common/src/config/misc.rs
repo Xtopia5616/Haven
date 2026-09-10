@@ -94,6 +94,8 @@ pub struct ContextLimitsConfig {
     pub max_attachment_image_bytes: usize,
     /// Max decoded bytes per file attachment.
     pub max_attachment_file_bytes: usize,
+    /// Total bytes retained under the managed uploads root.
+    pub max_upload_total_bytes: u64,
     /// Downscale images so the longest edge does not exceed this (px) before
     /// upload. Applied by the webview when compressing to JPEG.
     pub max_attachment_image_dim_px: u32,
@@ -251,6 +253,7 @@ impl Default for ContextLimitsConfig {
             max_attachment_files: 5,
             max_attachment_image_bytes: 10 * 1024 * 1024,
             max_attachment_file_bytes: 20 * 1024 * 1024,
+            max_upload_total_bytes: 512 * 1024 * 1024,
             max_attachment_image_dim_px: 1568,
             attachment_image_jpeg_quality: 0.85,
             file_read_max_chars: 128_000,

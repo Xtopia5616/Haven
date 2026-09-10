@@ -111,6 +111,17 @@ impl ReActEngine {
         let tools = self.build_tool_definitions_for_session(session_id).await;
         let router = self.router();
         let role = choose_agent_role(&router, request_context.media_requirements()).await;
+        let (request_context, media_notices) = request_context
+            .with_capabilities(&router.capability_profile(role), self.media_strategy());
+        super::emit_media_plan_notices(
+            &ctx.emitter,
+            session_id,
+            step_num,
+            ctx.run_id,
+            role,
+            media_notices,
+        )
+        .await;
         let partial_thought = Arc::new(std::sync::Mutex::new(String::new()));
         let partial_reasoning = Arc::new(std::sync::Mutex::new(String::new()));
 
@@ -162,7 +173,6 @@ impl ReActEngine {
         // failed/empty candidate is only visible as streamed scratch output;
         // the accepted response below is the first response that may become
         // durable assistant state.
-        let request_context = RequestContext::from_state(state, retry_nudge.as_ref());
         let (thought, actions) = Self::parse_default_model_response(&response, step_num);
         let limits = self.limits();
         let pending_ask = self

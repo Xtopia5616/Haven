@@ -9,6 +9,7 @@ export const AGENT_EVENT_NAMES = [
 	'agent:thought_chunk',
 	'agent:reasoning_chunk',
 	'agent:stream_reset',
+	'agent:media_plan',
 	'agent:web_search',
 	'agent:stream_stalled',
 	'agent:supplement',
@@ -74,6 +75,14 @@ export interface AgentStreamResetPayload {
 	runId: number;
 	thoughtMessageId: string;
 	reasoningMessageId: string;
+}
+
+export interface AgentMediaPlanPayload {
+	sessionId: string;
+	stepNumber: number;
+	runId: number;
+	role: string;
+	notices: Array<{ assetId: string; code: string }>;
 }
 
 export interface AgentWebSearchPayload {
@@ -157,6 +166,7 @@ export interface AgentEventPayloadMap {
 	'agent:thought_chunk': AgentChunkPayload;
 	'agent:reasoning_chunk': AgentChunkPayload;
 	'agent:stream_reset': AgentStreamResetPayload;
+	'agent:media_plan': AgentMediaPlanPayload;
 	'agent:web_search': AgentWebSearchPayload;
 	'agent:stream_stalled': AgentStreamStalledPayload;
 	'agent:supplement': AgentSupplementPayload;
@@ -219,6 +229,13 @@ interface AgentStreamResetWirePayload {
 	run_id: number;
 	thought_message_id: string;
 	reasoning_message_id: string;
+}
+interface AgentMediaPlanWirePayload {
+	session_id: string;
+	step_number: number;
+	run_id: number;
+	role: string;
+	notices: Array<{ asset_id: string; code: string }>;
 }
 interface AgentWebSearchWirePayload {
 	session_id: string;
@@ -289,6 +306,7 @@ interface AgentWirePayloadMap {
 	'agent:thought_chunk': AgentChunkWirePayload;
 	'agent:reasoning_chunk': AgentChunkWirePayload;
 	'agent:stream_reset': AgentStreamResetWirePayload;
+	'agent:media_plan': AgentMediaPlanWirePayload;
 	'agent:web_search': AgentWebSearchWirePayload;
 	'agent:stream_stalled': AgentStreamStalledWirePayload;
 	'agent:supplement': AgentSupplementWirePayload;
@@ -387,6 +405,19 @@ export function mapAgentEvent<K extends AgentEventName>(
 			const payload = p as AgentStreamStalledWirePayload;
 			return { ...event, payload: { sessionId: payload.session_id } } as unknown as
 				TauriEvent<AgentEventPayloadMap[K]>;
+		}
+		case 'agent:media_plan': {
+			const payload = p as AgentMediaPlanWirePayload;
+			return { ...event, payload: {
+				sessionId: payload.session_id,
+				stepNumber: payload.step_number,
+				runId: payload.run_id,
+				role: payload.role,
+				notices: payload.notices.map((notice) => ({
+					assetId: notice.asset_id,
+					code: notice.code,
+				})),
+			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:supplement': {
 			const payload = p as AgentSupplementWirePayload;

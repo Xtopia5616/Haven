@@ -13,6 +13,7 @@ use std::path::Path;
 use flate2::read::ZlibDecoder;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use tokio_util::sync::CancellationToken;
 use zip::ZipArchive;
 
 /// Hard upper bound for one document read, independent of the model context
@@ -21,6 +22,8 @@ use zip::ZipArchive;
 pub const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ZIP_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ZIP_TOTAL_BYTES: u64 = 24 * 1024 * 1024;
+const MAX_PDF_STREAM_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_PDF_TOTAL_DECODED_BYTES: u64 = 24 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentFormat {
@@ -58,11 +61,33 @@ pub struct DocumentExtraction {
 }
 
 /// Extract a bounded textual representation from a supported document.
+#[cfg(test)]
 pub fn extract_document(
     path: &Path,
     max_chars: usize,
     max_document_bytes: u64,
 ) -> anyhow::Result<DocumentExtraction> {
+    extract_document_inner(path, max_chars, max_document_bytes, None)
+}
+
+/// Cancellable variant used by the files tool while parsing untrusted
+/// documents. The ordinary helper remains synchronous for existing callers.
+pub fn extract_document_with_cancel(
+    path: &Path,
+    max_chars: usize,
+    max_document_bytes: u64,
+    cancel: &CancellationToken,
+) -> anyhow::Result<DocumentExtraction> {
+    extract_document_inner(path, max_chars, max_document_bytes, Some(cancel))
+}
+
+fn extract_document_inner(
+    path: &Path,
+    max_chars: usize,
+    max_document_bytes: u64,
+    cancel: Option<&CancellationToken>,
+) -> anyhow::Result<DocumentExtraction> {
+    check_cancel(cancel)?;
     let format = format_for_path(path)
         .ok_or_else(|| anyhow::anyhow!("document extraction is unsupported for this file type"))?;
     let metadata = std::fs::metadata(path)?;
@@ -74,16 +99,20 @@ pub fn extract_document(
 
     let file = File::open(path)?;
     let mut bytes = Vec::with_capacity(size_bytes.min(byte_limit) as usize);
-    file.take(byte_limit.saturating_add(1))
-        .read_to_end(&mut bytes)?;
+    CancellableReader {
+        inner: file,
+        cancel,
+    }
+    .take(byte_limit.saturating_add(1))
+    .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > byte_limit {
         anyhow::bail!("document exceeds the local extraction size limit");
     }
 
     let (text, sections) = match format {
-        DocumentFormat::Pdf => extract_pdf(&bytes)?,
+        DocumentFormat::Pdf => extract_pdf(&bytes, cancel)?,
         DocumentFormat::Docx | DocumentFormat::Xlsx | DocumentFormat::Pptx => {
-            extract_open_xml(path, format)?
+            extract_open_xml(path, format, cancel)?
         }
     };
     let (text, _) = haven_common::encoding::truncate_output(&normalize_text(&text), max_chars);
@@ -97,6 +126,30 @@ pub fn extract_document(
         sections: sections.max(1),
         size_bytes,
     })
+}
+
+fn check_cancel(cancel: Option<&CancellationToken>) -> anyhow::Result<()> {
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        anyhow::bail!("document extraction cancelled");
+    }
+    Ok(())
+}
+
+struct CancellableReader<'a, R> {
+    inner: R,
+    cancel: Option<&'a CancellationToken>,
+}
+
+impl<R: Read> Read for CancellableReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "document extraction cancelled",
+            ));
+        }
+        self.inner.read(buffer)
+    }
 }
 
 fn format_for_path(path: &Path) -> Option<DocumentFormat> {
@@ -135,7 +188,10 @@ fn normalize_text(text: &str) -> String {
     normalized.trim_end().to_string()
 }
 
-fn extract_pdf(bytes: &[u8]) -> anyhow::Result<(String, usize)> {
+fn extract_pdf(
+    bytes: &[u8],
+    cancel: Option<&CancellationToken>,
+) -> anyhow::Result<(String, usize)> {
     if !bytes.starts_with(b"%PDF") {
         anyhow::bail!("file is not a PDF document");
     }
@@ -149,7 +205,9 @@ fn extract_pdf(bytes: &[u8]) -> anyhow::Result<(String, usize)> {
     let mut cursor = 0;
     let mut output = String::new();
     let mut streams = 0;
+    let mut total_decoded_bytes = 0u64;
     while let Some(stream_offset) = find_bytes(&bytes[cursor..], b"stream") {
+        check_cancel(cancel)?;
         let stream_offset = cursor + stream_offset;
         let data_start = skip_stream_eol(bytes, stream_offset + b"stream".len());
         let Some(end_offset) = find_bytes(&bytes[data_start..], b"endstream") else {
@@ -165,15 +223,33 @@ fn extract_pdf(bytes: &[u8]) -> anyhow::Result<(String, usize)> {
             .windows(b"/FlateDecode".len())
             .any(|window| window == b"/FlateDecode")
         {
-            let mut decoder = ZlibDecoder::new(&bytes[data_start..end_offset]);
+            let input = CancellableReader {
+                inner: &bytes[data_start..end_offset],
+                cancel,
+            };
+            let mut decoder = ZlibDecoder::new(input);
             let mut decoded = Vec::new();
-            decoder.read_to_end(&mut decoded)?;
+            decoder
+                .by_ref()
+                .take(MAX_PDF_STREAM_BYTES.saturating_add(1))
+                .read_to_end(&mut decoded)?;
+            if decoded.len() as u64 > MAX_PDF_STREAM_BYTES {
+                anyhow::bail!("PDF decompressed stream exceeds the extraction limit");
+            }
             decoded
         } else if dictionary.windows(7).any(|window| window == b"/Filter") {
             anyhow::bail!("PDF uses an unsupported stream filter");
         } else {
-            bytes[data_start..end_offset].to_vec()
+            let raw = &bytes[data_start..end_offset];
+            if raw.len() as u64 > MAX_PDF_STREAM_BYTES {
+                anyhow::bail!("PDF stream exceeds the extraction limit");
+            }
+            raw.to_vec()
         };
+        total_decoded_bytes = total_decoded_bytes.saturating_add(stream.len() as u64);
+        if total_decoded_bytes > MAX_PDF_TOTAL_DECODED_BYTES {
+            anyhow::bail!("PDF decompressed content exceeds the extraction limit");
+        }
         let text = extract_pdf_stream_text(&stream);
         if !text.trim().is_empty() {
             if !output.is_empty() {
@@ -426,11 +502,16 @@ fn decode_pdf_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn extract_open_xml(path: &Path, format: DocumentFormat) -> anyhow::Result<(String, usize)> {
+fn extract_open_xml(
+    path: &Path,
+    format: DocumentFormat,
+    cancel: Option<&CancellationToken>,
+) -> anyhow::Result<(String, usize)> {
     let file = File::open(path)?;
     let mut archive = ZipArchive::new(file)?;
     let mut names = Vec::new();
     for index in 0..archive.len() {
+        check_cancel(cancel)?;
         let name = archive.by_index(index)?.name().to_string();
         let keep = match format {
             DocumentFormat::Docx => {
@@ -454,13 +535,21 @@ fn extract_open_xml(path: &Path, format: DocumentFormat) -> anyhow::Result<(Stri
         anyhow::bail!("Office document has no supported content parts");
     }
 
+    let mut total_bytes = 0u64;
     let shared_strings = if format == DocumentFormat::Xlsx {
         names
             .iter()
             .find(|name| name.as_str() == "xl/sharedStrings.xml")
-            .map(|name| read_zip_entry(&mut archive, name, MAX_ZIP_ENTRY_BYTES))
+            .map(|name| read_zip_entry(&mut archive, name, MAX_ZIP_ENTRY_BYTES, cancel))
             .transpose()?
-            .map(|bytes| extract_xml_units(&bytes, b"si"))
+            .map(|bytes| {
+                total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+                if total_bytes > MAX_ZIP_TOTAL_BYTES {
+                    anyhow::bail!("Office document content exceeds the extraction limit");
+                }
+                extract_xml_units(&bytes, b"si", cancel)
+            })
+            .transpose()?
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -468,20 +557,20 @@ fn extract_open_xml(path: &Path, format: DocumentFormat) -> anyhow::Result<(Stri
 
     let mut output = String::new();
     let mut sections = 0;
-    let mut total_bytes = 0u64;
     for name in names {
+        check_cancel(cancel)?;
         if format == DocumentFormat::Xlsx && name == "xl/sharedStrings.xml" {
             continue;
         }
-        let bytes = read_zip_entry(&mut archive, &name, MAX_ZIP_ENTRY_BYTES)?;
+        let bytes = read_zip_entry(&mut archive, &name, MAX_ZIP_ENTRY_BYTES, cancel)?;
         total_bytes = total_bytes.saturating_add(bytes.len() as u64);
         if total_bytes > MAX_ZIP_TOTAL_BYTES {
             anyhow::bail!("Office document content exceeds the extraction limit");
         }
         let section = if format == DocumentFormat::Xlsx {
-            extract_xlsx_sheet(&bytes, &shared_strings)
+            extract_xlsx_sheet(&bytes, &shared_strings, cancel)?
         } else {
-            extract_xml_text(&bytes)
+            extract_xml_text(&bytes, cancel)?
         };
         if !section.trim().is_empty() {
             if !output.is_empty() {
@@ -498,40 +587,58 @@ fn read_zip_entry(
     archive: &mut ZipArchive<File>,
     name: &str,
     max_bytes: u64,
+    cancel: Option<&CancellationToken>,
 ) -> anyhow::Result<Vec<u8>> {
     let mut entry = archive.by_name(name)?;
     let mut bytes = Vec::new();
-    entry
-        .by_ref()
-        .take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
+    CancellableReader {
+        inner: &mut entry,
+        cancel,
+    }
+    .take(max_bytes.saturating_add(1))
+    .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max_bytes {
         anyhow::bail!("Office XML part exceeds the extraction limit");
     }
     Ok(bytes)
 }
 
-fn extract_xml_units(bytes: &[u8], boundary: &[u8]) -> Vec<String> {
+fn extract_xml_units(
+    bytes: &[u8],
+    boundary: &[u8],
+    cancel: Option<&CancellationToken>,
+) -> anyhow::Result<Vec<String>> {
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut depth = 0usize;
+    let mut xml_depth = 0usize;
     let mut current = String::new();
     let mut units = Vec::new();
     loop {
+        check_cancel(cancel)?;
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(event)) if local_name(event.name().as_ref()) == boundary => {
-                depth += 1;
-                current.clear();
+            Ok(Event::Start(event)) => {
+                xml_depth += 1;
+                if local_name(event.name().as_ref()) == boundary {
+                    depth += 1;
+                    current.clear();
+                }
             }
-            Ok(Event::End(event)) if local_name(event.name().as_ref()) == boundary => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 && !current.trim().is_empty() {
-                    units.push(current.trim().to_string());
+            Ok(Event::End(event)) => {
+                if xml_depth == 0 {
+                    anyhow::bail!("invalid Office XML: unmatched closing tag");
+                }
+                xml_depth -= 1;
+                if local_name(event.name().as_ref()) == boundary {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && !current.trim().is_empty() {
+                        units.push(current.trim().to_string());
+                    }
                 }
             }
             Ok(Event::Text(event)) if depth > 0 => {
-                append_xml_text(&mut current, &event);
+                append_xml_text(&mut current, &event)?;
             }
             Ok(Event::CData(event)) if depth > 0 => {
                 current.push_str(&String::from_utf8_lossy(event.as_ref()));
@@ -540,42 +647,61 @@ fn extract_xml_units(bytes: &[u8], boundary: &[u8]) -> Vec<String> {
                 append_xml_ref(&mut current, &event);
             }
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(error) => anyhow::bail!("invalid Office XML: {error}"),
             _ => {}
         }
         buf.clear();
     }
-    units
+    if xml_depth != 0 {
+        anyhow::bail!("invalid Office XML: unclosed tag");
+    }
+    Ok(units)
 }
 
-fn extract_xml_text(bytes: &[u8]) -> String {
+fn extract_xml_text(bytes: &[u8], cancel: Option<&CancellationToken>) -> anyhow::Result<String> {
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut output = String::new();
+    let mut xml_depth = 0usize;
     loop {
+        check_cancel(cancel)?;
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Text(event)) => append_xml_text(&mut output, &event),
+            Ok(Event::Start(_)) => xml_depth += 1,
+            Ok(Event::Text(event)) => append_xml_text(&mut output, &event)?,
             Ok(Event::CData(event)) => output.push_str(&String::from_utf8_lossy(event.as_ref())),
             Ok(Event::GeneralRef(event)) => append_xml_ref(&mut output, &event),
             Ok(Event::Empty(event)) => match local_name(event.name().as_ref()) {
                 b"br" | b"tab" => output.push('\n'),
                 _ => {}
             },
-            Ok(Event::End(event)) => match local_name(event.name().as_ref()) {
-                b"p" | b"tr" | b"slide" => output.push('\n'),
-                _ => {}
-            },
+            Ok(Event::End(event)) => {
+                if xml_depth == 0 {
+                    anyhow::bail!("invalid Office XML: unmatched closing tag");
+                }
+                xml_depth -= 1;
+                match local_name(event.name().as_ref()) {
+                    b"p" | b"tr" | b"slide" => output.push('\n'),
+                    _ => {}
+                }
+            }
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(error) => anyhow::bail!("invalid Office XML: {error}"),
             _ => {}
         }
         buf.clear();
     }
-    output
+    if xml_depth != 0 {
+        anyhow::bail!("invalid Office XML: unclosed tag");
+    }
+    Ok(output)
 }
 
-fn extract_xlsx_sheet(bytes: &[u8], shared_strings: &[String]) -> String {
+fn extract_xlsx_sheet(
+    bytes: &[u8],
+    shared_strings: &[String],
+    cancel: Option<&CancellationToken>,
+) -> anyhow::Result<String> {
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
@@ -583,21 +709,33 @@ fn extract_xlsx_sheet(bytes: &[u8], shared_strings: &[String]) -> String {
     let mut cell_type = None;
     let mut cell_value = String::new();
     let mut in_value = false;
+    let mut xml_depth = 0usize;
     loop {
+        check_cancel(cancel)?;
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(event)) if local_name(event.name().as_ref()) == b"c" => {
-                cell_type = event
-                    .attributes()
-                    .flatten()
-                    .find(|attribute| local_name(attribute.key.as_ref()) == b"t")
-                    .map(|attribute| String::from_utf8_lossy(&attribute.value).into_owned());
-                cell_value.clear();
-            }
-            Ok(Event::Start(event)) if local_name(event.name().as_ref()) == b"v" => {
-                in_value = true;
+            Ok(Event::Start(event)) => {
+                xml_depth += 1;
+                match local_name(event.name().as_ref()) {
+                    b"c" => {
+                        cell_type = event
+                            .attributes()
+                            .flatten()
+                            .find(|attribute| local_name(attribute.key.as_ref()) == b"t")
+                            .map(|attribute| {
+                                String::from_utf8_lossy(&attribute.value).into_owned()
+                            });
+                        cell_value.clear();
+                    }
+                    b"v" => in_value = true,
+                    _ => {}
+                }
             }
             Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"v" => {
                 in_value = false;
+                if xml_depth == 0 {
+                    anyhow::bail!("invalid Office XML: unmatched closing tag");
+                }
+                xml_depth -= 1;
             }
             Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"c" => {
                 let value = if cell_type.as_deref() == Some("s") {
@@ -617,25 +755,44 @@ fn extract_xlsx_sheet(bytes: &[u8], shared_strings: &[String]) -> String {
                 }
                 cell_type = None;
                 cell_value.clear();
+                if xml_depth == 0 {
+                    anyhow::bail!("invalid Office XML: unmatched closing tag");
+                }
+                xml_depth -= 1;
             }
             Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"row" => {
                 output.push('\n');
+                if xml_depth == 0 {
+                    anyhow::bail!("invalid Office XML: unmatched closing tag");
+                }
+                xml_depth -= 1;
             }
-            Ok(Event::Text(event)) if in_value => append_xml_text(&mut cell_value, &event),
+            Ok(Event::End(_)) => {
+                if xml_depth == 0 {
+                    anyhow::bail!("invalid Office XML: unmatched closing tag");
+                }
+                xml_depth -= 1;
+            }
+            Ok(Event::Text(event)) if in_value => append_xml_text(&mut cell_value, &event)?,
             Ok(Event::GeneralRef(event)) if in_value => append_xml_ref(&mut cell_value, &event),
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(error) => anyhow::bail!("invalid Office XML: {error}"),
             _ => {}
         }
         buf.clear();
     }
-    output
+    if xml_depth != 0 {
+        anyhow::bail!("invalid Office XML: unclosed tag");
+    }
+    Ok(output)
 }
 
-fn append_xml_text(output: &mut String, event: &quick_xml::events::BytesText<'_>) {
-    if let Ok(text) = event.xml_content() {
-        output.push_str(&text);
-    }
+fn append_xml_text(
+    output: &mut String,
+    event: &quick_xml::events::BytesText<'_>,
+) -> anyhow::Result<()> {
+    output.push_str(&event.xml_content()?);
+    Ok(())
 }
 
 fn append_xml_ref(output: &mut String, event: &quick_xml::events::BytesRef<'_>) {
@@ -731,6 +888,32 @@ mod tests {
     }
 
     #[test]
+    fn rejects_pdf_flate_streams_that_exceed_the_decompressed_limit() {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&vec![b'x'; (MAX_PDF_STREAM_BYTES + 1) as usize])
+            .unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut file = NamedTempFile::with_suffix(".pdf").unwrap();
+        writeln!(file, "%PDF-1.4").unwrap();
+        writeln!(
+            file,
+            "<< /Length {} /Filter /FlateDecode >>",
+            compressed.len()
+        )
+        .unwrap();
+        writeln!(file, "stream").unwrap();
+        file.write_all(&compressed).unwrap();
+        writeln!(file, "\nendstream").unwrap();
+        file.flush().unwrap();
+
+        let error = extract_document(file.path(), 1_000, MAX_DOCUMENT_BYTES)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("decompressed stream"));
+    }
+
+    #[test]
     fn extracts_docx_text_from_bounded_xml_parts() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("report.docx");
@@ -776,6 +959,36 @@ mod tests {
         let extracted = extract_document(&path, 1_000, MAX_DOCUMENT_BYTES).unwrap();
         assert_eq!(extracted.format, DocumentFormat::Xlsx);
         assert!(extracted.text.contains("Name\tAda\t42"));
+    }
+
+    #[test]
+    fn rejects_malformed_office_xml_instead_of_returning_partial_text() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("broken.docx");
+        let handle = File::create(&path).unwrap();
+        let mut archive = ZipWriter::new(handle);
+        archive
+            .start_file("word/document.xml", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(br#"<w:document><w:p>broken"#).unwrap();
+        archive.finish().unwrap();
+
+        let error = extract_document(&path, 1_000, MAX_DOCUMENT_BYTES).unwrap_err();
+        assert!(error.to_string().contains("invalid Office XML"));
+    }
+
+    #[test]
+    fn cancellation_is_checked_before_document_work() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = extract_document_with_cancel(
+            Path::new("missing.pdf"),
+            1_000,
+            MAX_DOCUMENT_BYTES,
+            &cancel,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]

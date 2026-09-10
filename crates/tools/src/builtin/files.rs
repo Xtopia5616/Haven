@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_search::FileSearchEngine;
-use crate::document::{DocumentExtraction, MAX_DOCUMENT_BYTES, extract_document};
+use crate::document::{DocumentExtraction, MAX_DOCUMENT_BYTES, extract_document_with_cancel};
 use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
 /// Classify a file by its extension into a coarse kind used to route binary
@@ -375,8 +375,14 @@ async fn extract_document_result(
         anyhow::bail!("cancelled");
     }
     let owned_path = path.to_string();
+    let cancel_for_worker = cancel.clone();
     let extraction = tokio::task::spawn_blocking(move || {
-        extract_document(Path::new(&owned_path), max_chars, MAX_DOCUMENT_BYTES)
+        extract_document_with_cancel(
+            Path::new(&owned_path),
+            max_chars,
+            MAX_DOCUMENT_BYTES,
+            &cancel_for_worker,
+        )
     })
     .await
     .map_err(|error| anyhow::anyhow!("document extraction task failed: {error}"))?;
@@ -2100,7 +2106,7 @@ mod tests {
         tokio::fs::write(&file, "managed content").await.unwrap();
         let path_str = file.to_string_lossy().to_string();
         let registry = ManagedAssetRegistry::default();
-        registry.register("asset-test", file, Some("report.txt".into()), "text/plain");
+        registry.register_for_test("asset-test", file, Some("report.txt".into()), "text/plain");
         let mut tool = FilesTool::default();
         tool.managed_assets = registry;
 
@@ -2142,7 +2148,7 @@ mod tests {
         tokio::fs::write(&file, bytes).await.unwrap();
         let path_str = file.to_string_lossy().to_string();
         let registry = ManagedAssetRegistry::default();
-        registry.register(
+        registry.register_for_test(
             "asset-pdf",
             file,
             Some("report.pdf".into()),

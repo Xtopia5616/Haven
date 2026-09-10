@@ -293,10 +293,24 @@ impl AppState {
             let upload_ttl = std::time::Duration::from_secs(
                 u64::from(retention_days).saturating_mul(24 * 60 * 60),
             );
+            let upload_registry = tools.managed_assets.clone();
+            let db_upload_cleanup = db.clone();
             tokio::spawn(async move {
-                match crate::commands::recording::cleanup_stale_upload_batches(
+                let referenced_paths = match db_upload_cleanup.list_managed_attachment_paths() {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "deferred upload cleanup skipped: could not read attachment references"
+                        );
+                        return;
+                    }
+                };
+                match crate::commands::recording::cleanup_stale_upload_batches_with_references(
                     upload_root,
                     upload_ttl,
+                    upload_registry,
+                    Some(referenced_paths),
                 )
                 .await
                 {
@@ -319,6 +333,7 @@ impl AppState {
         let upload_ttl = std::time::Duration::from_secs(
             u64::from(retention_days.max(1)).saturating_mul(24 * 60 * 60),
         );
+        let upload_registry = tools.managed_assets.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
             loop {
@@ -336,22 +351,32 @@ impl AppState {
                     }
                 }
                 if retention > 0 {
-                    match crate::commands::recording::cleanup_stale_upload_batches(
-                        upload_root.clone(),
-                        upload_ttl,
-                    )
-                    .await
-                    {
-                        Ok(n) if n > 0 => {
-                            tracing::info!(
-                                "background cleanup: removed {} stale upload batch(es)",
-                                n
-                            );
+                    match db_clone.list_managed_attachment_paths() {
+                        Ok(referenced_paths) => {
+                            match crate::commands::recording::cleanup_stale_upload_batches_with_references(
+                                upload_root.clone(),
+                                upload_ttl,
+                                upload_registry.clone(),
+                                Some(referenced_paths),
+                            )
+                            .await
+                            {
+                                Ok(n) if n > 0 => {
+                                    tracing::info!(
+                                        "background cleanup: removed {} stale upload batch(es)",
+                                        n
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(error) => tracing::warn!(
+                                    error = %haven_common::error::sanitize_error_text(&error),
+                                    "background upload retention cleanup failed"
+                                ),
+                            }
                         }
-                        Ok(_) => {}
                         Err(error) => tracing::warn!(
-                            error = %haven_common::error::sanitize_error_text(&error),
-                            "background upload retention cleanup failed"
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "background upload cleanup skipped: could not read attachment references"
                         ),
                     }
                 }

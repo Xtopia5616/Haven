@@ -420,11 +420,10 @@ pub fn legacy_attachment_to_media_input(
 ) -> MediaInput {
     let mut asset = MediaAsset::new(
         attachment.media_type.clone(),
-        // Base64 length is a conservative upper bound when the legacy
-        // attachment is still inline; a persisted file has no bytes here and
-        // is therefore represented with size 0 until the managed store owns
-        // the metadata.
-        attachment.data.len() as u64,
+        // A persisted file has no inline bytes here and remains a managed
+        // reference. For raw legacy media, recover the decoded byte count
+        // without allocating a second copy of the payload.
+        inline_base64_size(attachment.data.as_str()),
         attachment.filename.clone(),
         MediaAssetSource::RestoredLegacy,
         if attachment.path.is_some() {
@@ -462,6 +461,20 @@ pub fn legacy_attachment_to_media_input(
             payload,
         )],
     }
+}
+
+fn inline_base64_size(data: &str) -> u64 {
+    let len = data.len() as u64;
+    let padding = data
+        .as_bytes()
+        .iter()
+        .rev()
+        .take(2)
+        .filter(|byte| **byte == b'=')
+        .count() as u64;
+    len.saturating_mul(3)
+        .saturating_div(4)
+        .saturating_sub(padding)
 }
 
 /// What a provider-neutral request projection will expose for one asset.

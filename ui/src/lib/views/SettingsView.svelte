@@ -69,6 +69,7 @@
 		max_attachment_files: 5,
 		max_attachment_image_bytes: 10 * 1024 * 1024,
 		max_attachment_file_bytes: 20 * 1024 * 1024,
+		max_upload_total_bytes: 512 * 1024 * 1024,
 		max_attachment_image_dim_px: 1568,
 		attachment_image_jpeg_quality: 0.85,
 		file_read_max_chars: 128000,

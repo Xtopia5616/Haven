@@ -142,6 +142,35 @@ pub(super) async fn choose_agent_role(
     }
 }
 
+pub(super) async fn emit_media_plan_notices(
+    emitter: &Arc<dyn AgentEventEmitter>,
+    session_id: &str,
+    step_number: u32,
+    run_id: u64,
+    role: EndpointRole,
+    notices: Vec<haven_common::media::MediaPlanNotice>,
+) {
+    if notices.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        session_id,
+        step_number,
+        role = role.as_str(),
+        notices = ?notices,
+        "media request was downgraded to match the selected adapter capability profile"
+    );
+    emitter
+        .emit(AgentEvent::MediaPlan {
+            session_id: session_id.to_string(),
+            step_number,
+            run_id,
+            role: role.as_str().to_string(),
+            notices,
+        })
+        .await;
+}
+
 /// A tool input that cannot be executed without changing the model's
 /// intended semantics. Invalid input is reported as a failed tool result;
 /// the agent never invents an enum member, default-like placeholder, or

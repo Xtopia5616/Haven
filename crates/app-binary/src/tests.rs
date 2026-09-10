@@ -145,6 +145,19 @@ fn channel_maps_every_variant_to_expected_channel() {
             "agent:stream_reset",
         ),
         (
+            AgentEvent::MediaPlan {
+                session_id: "t".into(),
+                step_number: 1,
+                run_id: 1,
+                role: "image_model".into(),
+                notices: vec![haven_common::media::MediaPlanNotice {
+                    asset_id: "asset-1".into(),
+                    code: haven_common::media::MediaPlanNoticeCode::RawCapabilityUnknown,
+                }],
+            },
+            "agent:media_plan",
+        ),
+        (
             AgentEvent::WebSearch {
                 session_id: "t".into(),
                 phase: "searching".into(),

@@ -134,6 +134,7 @@ impl TauriEmitter {
             AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
             AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
             AgentEvent::StreamReset { .. } => AGENT_STREAM_RESET_EVENT,
+            AgentEvent::MediaPlan { .. } => AGENT_MEDIA_PLAN_EVENT,
             AgentEvent::WebSearch { .. } => AGENT_WEB_SEARCH_EVENT,
             AgentEvent::StreamStalled { .. } => AGENT_STREAM_STALLED_EVENT,
             AgentEvent::Supplement { .. } => AGENT_SUPPLEMENT_EVENT,
@@ -296,6 +297,19 @@ impl TauriEmitter {
                 run_id: *run_id,
                 thought_message_id: thought_message_id.clone(),
                 reasoning_message_id: reasoning_message_id.clone(),
+            }),
+            AgentEvent::MediaPlan {
+                session_id,
+                step_number,
+                run_id,
+                role,
+                notices,
+            } => serialize(AgentMediaPlanEvent {
+                session_id: session_id.clone(),
+                step_number: *step_number,
+                run_id: *run_id,
+                role: role.clone(),
+                notices: notices.clone(),
             }),
             AgentEvent::WebSearch {
                 session_id,

@@ -635,7 +635,20 @@ impl ReActEngine {
                         )
                         .await;
                         *role = retry_role;
-                        let retry_context = RequestContext::from_state(state, retry_nudge);
+                        let raw_retry_context = RequestContext::from_state(state, retry_nudge);
+                        let (retry_context, media_notices) = raw_retry_context.with_capabilities(
+                            &router.capability_profile(retry_role),
+                            self.media_strategy(),
+                        );
+                        super::emit_media_plan_notices(
+                            &ctx.emitter,
+                            &ctx.session_id,
+                            ctx.step_num,
+                            ctx.run_id,
+                            retry_role,
+                            media_notices,
+                        )
+                        .await;
                         match self
                             .stream_llm_call(
                                 ctx,

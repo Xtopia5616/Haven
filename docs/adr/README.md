@@ -116,3 +116,4 @@
 - [0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)
 - [0114：受限本地文档抽取与派生表示](0114-bounded-document-extraction.md)
 - [0115：受管上传资产生命周期与清理](0115-managed-upload-lifecycle-and-cleanup.md)
+- [0116：多模态请求与受管上传边界加固](0116-media-boundary-hardening.md)

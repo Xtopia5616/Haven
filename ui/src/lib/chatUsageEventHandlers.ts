@@ -1,4 +1,8 @@
-import type { AgentCompactionPayload, AgentUsagePayload } from './contracts/agent.ts';
+import type {
+	AgentCompactionPayload,
+	AgentMediaPlanPayload,
+	AgentUsagePayload,
+} from './contracts/agent.ts';
 import type { TauriEvent } from './contracts/session.ts';
 import { addNotification } from './stores.ts';
 import {
@@ -10,6 +14,7 @@ import {
 
 type UsageEvent = TauriEvent<AgentUsagePayload>;
 type CompactionEvent = TauriEvent<AgentCompactionPayload>;
+type MediaPlanEvent = TauriEvent<AgentMediaPlanPayload>;
 
 /**
  * Build the usage-related Agent event handlers used by the chat route. Usage
@@ -19,6 +24,7 @@ type CompactionEvent = TauriEvent<AgentCompactionPayload>;
 export function createChatUsageEventHandlers(): {
 	'agent:usage': (event: UsageEvent) => void;
 	'agent:compaction': (event: CompactionEvent) => void;
+	'agent:media_plan': (event: MediaPlanEvent) => void;
 } {
 	return {
 		'agent:usage': (event) => {
@@ -111,5 +117,33 @@ export function createChatUsageEventHandlers(): {
 				addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
 			}
 		},
+		'agent:media_plan': (event: MediaPlanEvent) => {
+			const d = event.payload;
+			const reasons = d.notices
+				.map((notice) => mediaPlanNoticeLabel(notice.code))
+				.filter((label, index, all) => all.indexOf(label) === index);
+			if (reasons.length > 0) {
+				addNotification(
+					`已按 ${d.role} 模型能力调整附件：${reasons.join('、')}`,
+					'warning',
+					4500,
+				);
+			}
+		},
 	};
+}
+
+function mediaPlanNoticeLabel(code: string): string {
+	const labels: Record<string, string> = {
+		raw_capability_unsupported: '模型不支持该媒体类型',
+		raw_capability_unknown: '模型能力未知，已安全降级',
+		raw_mime_unsupported: '媒体格式不受支持',
+		raw_size_exceeded: '媒体超过模型输入上限',
+		input_part_limit: '媒体数量超过模型上限',
+		no_compatible_representation: '没有兼容的附件表示',
+		strategy_excluded: '当前媒体策略已排除原始附件',
+		derived_fallback: '已改用派生内容',
+		managed_reference_fallback: '已改用受管附件引用',
+	};
+	return labels[code] || '附件表示已调整';
 }

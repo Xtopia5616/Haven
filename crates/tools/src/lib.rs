@@ -254,16 +254,23 @@ impl ToolsManager {
     /// Renderer-provided ids are not accepted because validation clears them
     /// before persistence mints a fresh host-owned id.
     pub fn register_managed_assets(&self, attachments: &[MessageAttachment]) {
+        let uploads_root = haven_common::default_work_dir().join("uploads");
         for attachment in attachments {
             let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
                 continue;
             };
-            self.managed_assets.register(
+            if !self.managed_assets.register_under_root(
+                &uploads_root,
                 asset_id.clone(),
                 std::path::PathBuf::from(path),
                 attachment.filename.clone(),
                 attachment.media_type.clone(),
-            );
+            ) {
+                tracing::warn!(
+                    asset_id = %asset_id,
+                    "rejecting managed attachment outside the host uploads root"
+                );
+            }
         }
     }
 

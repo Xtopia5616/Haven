@@ -55,6 +55,7 @@ pub(crate) const AGENT_OBSERVATION_EVENT: &str = "agent:observation";
 pub(crate) const AGENT_THOUGHT_CHUNK_EVENT: &str = "agent:thought_chunk";
 pub(crate) const AGENT_REASONING_CHUNK_EVENT: &str = "agent:reasoning_chunk";
 pub(crate) const AGENT_STREAM_RESET_EVENT: &str = "agent:stream_reset";
+pub(crate) const AGENT_MEDIA_PLAN_EVENT: &str = "agent:media_plan";
 pub(crate) const AGENT_WEB_SEARCH_EVENT: &str = "agent:web_search";
 pub(crate) const AGENT_STREAM_STALLED_EVENT: &str = "agent:stream_stalled";
 pub(crate) const AGENT_SUPPLEMENT_EVENT: &str = "agent:supplement";
@@ -431,6 +432,15 @@ pub(crate) struct AgentWebSearchEvent {
 #[derive(Clone, Serialize)]
 pub(crate) struct AgentStreamStalledEvent {
     pub session_id: String,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct AgentMediaPlanEvent {
+    pub session_id: String,
+    pub step_number: u32,
+    pub run_id: u64,
+    pub role: String,
+    pub notices: Vec<haven_common::media::MediaPlanNotice>,
 }
 
 #[derive(Clone, Serialize)]

@@ -320,7 +320,7 @@ pub async fn process_transcript(
         .clone();
     let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)
         .map_err(|e| log_err("process_transcript", e))?;
-    let attachments = persist_file_attachments(attachments)
+    let attachments = persist_file_attachments(attachments, limits.max_upload_total_bytes)
         .await
         .map_err(|e| log_err("process_transcript", e))?;
     state.tools.register_managed_assets(&attachments);
@@ -397,30 +397,72 @@ fn sanitize_filename(name: &str) -> String {
 /// base64 payload directly.
 async fn persist_file_attachments(
     attachments: Vec<haven_common::types::MessageAttachment>,
+    max_total_bytes: u64,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
-    persist_file_attachments_to(uploads_root(), attachments).await
+    persist_file_attachments_to_with_limit(uploads_root(), attachments, max_total_bytes).await
 }
 
-/// Remove only generated upload batches that have outlived the session
-/// history retention window. This is a host-maintenance operation, never a
-/// model-facing file operation: the target is constrained to the dedicated
-/// uploads root and the `file-{uuid32}` batch naming contract.
+/// Remove only generated upload batches/staging directories that have
+/// outlived the session history retention window. This is a host-maintenance
+/// operation, never a model-facing file operation: the target is constrained
+/// to the dedicated uploads root and the `file-{uuid32}` naming contract.
+#[cfg(test)]
 pub(crate) async fn cleanup_stale_upload_batches(
     root: std::path::PathBuf,
     max_age: std::time::Duration,
 ) -> Result<usize, String> {
-    tokio::task::spawn_blocking(move || cleanup_stale_upload_batches_sync(&root, max_age))
-        .await
-        .map_err(|error| format!("上传目录清理任务失败: {error}"))?
+    cleanup_stale_upload_batches_with_registry(
+        root,
+        max_age,
+        haven_tools::ManagedAssetRegistry::default(),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn cleanup_stale_upload_batches_with_registry(
+    root: std::path::PathBuf,
+    max_age: std::time::Duration,
+    registry: haven_tools::ManagedAssetRegistry,
+) -> Result<usize, String> {
+    cleanup_stale_upload_batches_with_references(root, max_age, registry, None).await
+}
+
+pub(crate) async fn cleanup_stale_upload_batches_with_references(
+    root: std::path::PathBuf,
+    max_age: std::time::Duration,
+    registry: haven_tools::ManagedAssetRegistry,
+    referenced_paths: Option<Vec<std::path::PathBuf>>,
+) -> Result<usize, String> {
+    let _write_guard = upload_write_lock().lock().await;
+    tokio::task::spawn_blocking(move || {
+        cleanup_stale_upload_batches_sync(&root, max_age, &registry, referenced_paths.as_deref())
+    })
+    .await
+    .map_err(|error| format!("上传目录清理任务失败: {error}"))?
+}
+
+static UPLOAD_WRITE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn upload_write_lock() -> &'static tokio::sync::Mutex<()> {
+    UPLOAD_WRITE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn cleanup_stale_upload_batches_sync(
     root: &std::path::Path,
     max_age: std::time::Duration,
+    registry: &haven_tools::ManagedAssetRegistry,
+    referenced_paths: Option<&[std::path::PathBuf]>,
 ) -> Result<usize, String> {
+    if let Some(referenced_paths) = referenced_paths {
+        registry.prune_unreferenced(referenced_paths);
+    }
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            registry.prune_missing();
+            return Ok(0);
+        }
         Err(error) => return Err(format!("读取上传目录失败: {error}")),
     };
     let mut removed = 0;
@@ -432,18 +474,20 @@ fn cleanup_stale_upload_batches_sync(
                 continue;
             }
         };
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
             Err(error) => {
                 tracing::debug!(error = %error, "跳过无法判断类型的上传目录项");
                 continue;
             }
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !file_type.is_dir() || !is_generated_upload_batch(&name) {
+        let is_batch = is_generated_upload_batch(&name);
+        let is_staging = is_generated_upload_staging(&name);
+        if !metadata.is_dir() || is_link_or_reparse(&metadata) || (!is_batch && !is_staging) {
             continue;
         }
-        let modified = match entry.metadata().and_then(|metadata| metadata.modified()) {
+        let modified = match metadata.modified() {
             Ok(modified) => modified,
             Err(error) => {
                 tracing::debug!(batch = %name, error = %error, "跳过没有修改时间的上传批次");
@@ -453,11 +497,24 @@ fn cleanup_stale_upload_batches_sync(
         if modified.elapsed().map_or(true, |age| age <= max_age) {
             continue;
         }
+        if is_batch
+            && registry
+                .protected_paths()
+                .iter()
+                .any(|path| path_is_equal_or_child(&entry.path(), path))
+        {
+            tracing::debug!(batch = %name, "保留仍被活动会话引用的上传批次");
+            continue;
+        }
         match std::fs::remove_dir_all(entry.path()) {
-            Ok(()) => removed += 1,
+            Ok(()) => {
+                removed += 1;
+                registry.prune_paths_under(&entry.path());
+            }
             Err(error) => tracing::debug!(batch = %name, error = %error, "上传批次清理失败"),
         }
     }
+    registry.prune_missing();
     Ok(removed)
 }
 
@@ -468,15 +525,56 @@ fn is_generated_upload_batch(name: &str) -> bool {
     suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn is_generated_upload_staging(name: &str) -> bool {
+    name.strip_prefix(".file-")
+        .and_then(|value| value.strip_suffix(".tmp"))
+        .is_some_and(|suffix| {
+            suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+#[cfg(test)]
 async fn persist_file_attachments_to(
     root: std::path::PathBuf,
     attachments: Vec<haven_common::types::MessageAttachment>,
+) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
+    persist_file_attachments_to_with_limit(root, attachments, DEFAULT_MAX_UPLOAD_TOTAL_BYTES).await
+}
+
+#[cfg(test)]
+const DEFAULT_MAX_UPLOAD_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+
+struct UploadBatchGuard {
+    path: std::path::PathBuf,
+    committed: bool,
+}
+
+impl Drop for UploadBatchGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            // This also runs when an in-flight upload task is cancelled. The
+            // staging directory is private to this operation, so a best-
+            // effort synchronous cleanup is preferable to leaving bytes
+            // behind until the next retention pass.
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+async fn persist_file_attachments_to_with_limit(
+    root: std::path::PathBuf,
+    attachments: Vec<haven_common::types::MessageAttachment>,
+    max_total_bytes: u64,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     use base64::Engine as _;
 
     let mut inline_media = Vec::new();
     let mut files = Vec::new();
     for mut att in attachments {
+        // `persist_file_attachments_to` is also used by compatibility and
+        // test paths. Clear legacy renderer metadata here as a second
+        // defense, not only in the Tauri validation command.
+        att.path = None;
         // Asset identity is host-owned; never allow the renderer to alias a
         // previously registered managed asset.
         if att.asset_id.is_none() {
@@ -492,16 +590,50 @@ async fn persist_file_attachments_to(
         return Ok(inline_media);
     }
 
-    let batch_dir = root.join(haven_common::types::new_id("file"));
-    tokio::fs::create_dir_all(&batch_dir)
+    // Serialize quota accounting and staging-directory commits so concurrent
+    // transcript submissions cannot each observe the same free capacity.
+    let _write_guard = upload_write_lock().lock().await;
+
+    let existing_bytes = tokio::task::spawn_blocking({
+        let root = root.clone();
+        move || upload_tree_size(&root)
+    })
+    .await
+    .map_err(|error| format!("计算上传目录容量失败: {error}"))??;
+    let batch_id = haven_common::types::new_id("file");
+    let staging_dir = root.join(format!(".{batch_id}.tmp"));
+    let batch_dir = root.join(&batch_id);
+    tokio::fs::create_dir_all(&root)
         .await
         .map_err(|e| format!("创建上传目录失败: {e}"))?;
+    let root_metadata = tokio::fs::symlink_metadata(&root)
+        .await
+        .map_err(|e| format!("读取上传目录元数据失败: {e}"))?;
+    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+        return Err("上传目录不能是符号链接或重解析点".to_string());
+    }
+    tokio::fs::create_dir(&staging_dir)
+        .await
+        .map_err(|e| format!("创建上传临时目录失败: {e}"))?;
+    let mut guard = UploadBatchGuard {
+        path: staging_dir.clone(),
+        committed: false,
+    };
 
     let mut used_names = std::collections::HashSet::new();
+    let mut total_bytes = existing_bytes;
     for mut att in files {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&att.data)
             .map_err(|_| "附件数据不是有效的 base64".to_string())?;
+        let decoded_len = bytes.len() as u64;
+        if total_bytes.saturating_add(decoded_len) > max_total_bytes {
+            return Err(format!(
+                "上传目录超过 {}MB 总容量上限",
+                max_total_bytes / 1024 / 1024
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(decoded_len);
         let base_name = att
             .filename
             .as_deref()
@@ -511,7 +643,7 @@ async fn persist_file_attachments_to(
         // same-named uploads in one batch never overwrite each other.
         let mut name = base_name.clone();
         let mut n = 2;
-        while !used_names.insert(name.clone()) {
+        while !used_names.insert(filename_collision_key(&name)) {
             let stem = std::path::Path::new(&base_name)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -525,15 +657,83 @@ async fn persist_file_attachments_to(
             name = format!("{stem}_{n}{ext}");
             n += 1;
         }
-        let file_path = batch_dir.join(&name);
+        let file_path = staging_dir.join(&name);
         tokio::fs::write(&file_path, bytes)
             .await
             .map_err(|e| format!("保存附件失败: {e}"))?;
-        att.path = Some(file_path.to_string_lossy().into_owned());
+        att.path = Some(batch_dir.join(&name).to_string_lossy().into_owned());
         att.data = String::new();
         inline_media.push(att);
     }
+    tokio::fs::rename(&staging_dir, &batch_dir)
+        .await
+        .map_err(|e| format!("提交上传批次失败: {e}"))?;
+    guard.committed = true;
     Ok(inline_media)
+}
+
+fn filename_collision_key(name: &str) -> String {
+    #[cfg(windows)]
+    {
+        name.to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        name.to_string()
+    }
+}
+
+fn upload_tree_size(path: &std::path::Path) -> Result<u64, String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("读取上传目录元数据失败: {error}")),
+    };
+    if is_link_or_reparse(&metadata) {
+        return Ok(0);
+    }
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path).map_err(|error| format!("读取上传目录失败: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("读取上传目录项失败: {error}"))?;
+        total = total.saturating_add(upload_tree_size(&entry.path())?);
+    }
+    Ok(total)
+}
+
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+fn path_is_equal_or_child(root: &std::path::Path, candidate: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        let root = root.to_string_lossy().to_lowercase();
+        let candidate = candidate.to_string_lossy().to_lowercase();
+        candidate == root
+            || candidate.starts_with(&format!("{root}\\"))
+            || candidate.starts_with(&format!("{root}/"))
+    }
+    #[cfg(not(windows))]
+    {
+        candidate == root || candidate.strip_prefix(root).is_ok()
+    }
 }
 
 /// Server-side validation for user attachments, mirroring the frontend
@@ -557,6 +757,7 @@ fn validate_attachments(
         // The renderer cannot choose an existing managed asset id. The
         // persistence boundary below mints a fresh id after validation.
         att.asset_id = None;
+        att.path = None;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&att.data)
             .map_err(|_| "附件数据不是有效的 base64".to_string())?;
@@ -683,6 +884,18 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_attachments_drops_renderer_managed_metadata() {
+        let mut image = att("image/png", "aGVsbG8=");
+        image.asset_id = Some("asset-attacker-choice".into());
+        image.path = Some(r"C:\Windows\win.ini".into());
+
+        let out = validate_attachments(vec![image], &limits()).unwrap();
+
+        assert!(out[0].asset_id.is_none());
+        assert!(out[0].path.is_none());
+    }
+
+    #[test]
     fn test_generated_upload_batch_name_is_strict() {
         assert!(is_generated_upload_batch(
             "file-0123456789abcdef0123456789abcdef"
@@ -708,6 +921,22 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(!stale.exists());
         assert!(unrelated.exists());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_missing_upload_root_is_idempotent() {
+        let root = tempfile::TempDir::new().unwrap();
+        let missing = root.path().join("uploads");
+
+        let first = cleanup_stale_upload_batches(missing.clone(), std::time::Duration::ZERO)
+            .await
+            .unwrap();
+        let second = cleanup_stale_upload_batches(missing, std::time::Duration::ZERO)
+            .await
+            .unwrap();
+
+        assert_eq!(first, 0);
+        assert_eq!(second, 0);
     }
 
     #[tokio::test]
@@ -793,6 +1022,161 @@ mod tests {
             paths[0].ends_with("same.txt") && paths[1].ends_with("same_2.txt")
                 || paths[1].ends_with("same.txt") && paths[0].ends_with("same_2.txt")
         );
+    }
+
+    #[tokio::test]
+    async fn test_persist_file_attachments_rolls_back_failed_batch() {
+        use base64::Engine as _;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut valid = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"valid"),
+        );
+        valid.filename = Some("valid.txt".into());
+        let mut invalid = att("text/plain", "not-base64");
+        invalid.filename = Some("invalid.txt".into());
+
+        let result =
+            persist_file_attachments_to(tmp.path().to_path_buf(), vec![valid, invalid]).await;
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_persist_file_attachments_enforces_total_upload_quota() {
+        use base64::Engine as _;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut file = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"12345"),
+        );
+        file.filename = Some("quota.txt".into());
+
+        let result =
+            persist_file_attachments_to_with_limit(tmp.path().to_path_buf(), vec![file], 4).await;
+
+        assert!(result.unwrap_err().contains("总容量"));
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_preserves_registered_asset_and_prunes_deleted_entry() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let batch = root.path().join("file-0123456789abcdef0123456789abcdef");
+        let file = batch.join("keep.txt");
+        tokio::fs::create_dir_all(&batch).await.unwrap();
+        tokio::fs::write(&file, "keep").await.unwrap();
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        assert!(registry.register_under_root(
+            root.path(),
+            "asset-live",
+            file.clone(),
+            Some("keep.txt".into()),
+            "text/plain",
+        ));
+
+        let removed = cleanup_stale_upload_batches_with_registry(
+            root.path().to_path_buf(),
+            std::time::Duration::ZERO,
+            registry.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(removed, 0);
+        assert!(file.exists());
+        assert!(registry.contains("asset-live"));
+
+        tokio::fs::remove_dir_all(&batch).await.unwrap();
+        assert_eq!(registry.prune_missing(), 1);
+        assert!(!registry.contains("asset-live"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_removes_registered_assets_deleted_from_history() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let keep_batch = root.path().join("file-0123456789abcdef0123456789abcdef");
+        let old_batch = root.path().join("file-fedcba9876543210fedcba9876543210");
+        let keep_file = keep_batch.join("keep.txt");
+        let old_file = old_batch.join("old.txt");
+        tokio::fs::create_dir_all(&keep_batch).await.unwrap();
+        tokio::fs::create_dir_all(&old_batch).await.unwrap();
+        tokio::fs::write(&keep_file, "keep").await.unwrap();
+        tokio::fs::write(&old_file, "old").await.unwrap();
+
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        assert!(registry.register_under_root(
+            root.path(),
+            "asset-keep",
+            keep_file.clone(),
+            Some("keep.txt".into()),
+            "text/plain",
+        ));
+        assert!(registry.register_under_root(
+            root.path(),
+            "asset-old",
+            old_file,
+            Some("old.txt".into()),
+            "text/plain",
+        ));
+
+        let removed = cleanup_stale_upload_batches_with_references(
+            root.path().to_path_buf(),
+            std::time::Duration::ZERO,
+            registry.clone(),
+            Some(vec![keep_file]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(keep_batch.exists());
+        assert!(!old_batch.exists());
+        assert!(registry.contains("asset-keep"));
+        assert!(!registry.contains("asset-old"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_persist_file_attachments_dedupes_case_insensitive_windows_names() {
+        use base64::Engine as _;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut upper = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"upper"),
+        );
+        upper.filename = Some("A.txt".into());
+        let mut lower = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"lower"),
+        );
+        lower.filename = Some("a.txt".into());
+
+        let out = persist_file_attachments_to(tmp.path().to_path_buf(), vec![upper, lower])
+            .await
+            .unwrap();
+        let names: Vec<_> = out
+            .iter()
+            .map(|attachment| {
+                std::path::Path::new(attachment.path.as_deref().unwrap())
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_lowercase()
+            })
+            .collect();
+        assert!(names.contains(&"a.txt".into()));
+        assert!(names.contains(&"a_2.txt".into()));
     }
 
     #[test]

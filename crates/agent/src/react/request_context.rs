@@ -8,7 +8,8 @@
 //! paths to each invent their own clone/append/sanitize sequence.
 
 use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_requirements};
-use haven_common::types::CanonicalMessage;
+use haven_common::media::{CapabilityProfile, MediaInputStrategy, MediaPlanNotice};
+use haven_common::types::{CanonicalMessage, ContentPart, MessageAttachment};
 
 /// One immutable provider request snapshot.
 #[derive(Debug, Clone)]
@@ -43,6 +44,49 @@ impl RequestContext {
         Self::from_messages(messages)
     }
 
+    /// Re-project raw media against the selected adapter's actual wire
+    /// capabilities. Durable canonical state stays provider-neutral; this
+    /// request-only copy may replace an unsafe raw part with an explicit safe
+    /// text fallback and returns stable diagnostics for the UI/log.
+    pub(super) fn with_capabilities(
+        &self,
+        capabilities: &CapabilityProfile,
+        strategy: MediaInputStrategy,
+    ) -> (Self, Vec<MediaPlanNotice>) {
+        let mut messages = self.messages.clone();
+        let mut notices = Vec::new();
+        for message in &mut messages {
+            let mut content = Vec::with_capacity(message.content.len());
+            for part in &message.content {
+                let Some(attachment) = attachment_from_content_part(part) else {
+                    content.push(part.clone());
+                    continue;
+                };
+                let input = haven_common::media::legacy_attachment_to_media_input(&attachment);
+                let plan = haven_common::media::build_media_plan(
+                    std::slice::from_ref(&input),
+                    capabilities,
+                    strategy,
+                );
+                notices.extend(plan.notices.clone());
+                match haven_llm::media::project_media_plan(&plan, std::slice::from_ref(&input)) {
+                    Ok(mut projected) if !projected.is_empty() => content.append(&mut projected),
+                    _ => content.push(ContentPart::text(format!(
+                        "[附件: {}；当前模型不支持安全的媒体输入，已降级为文本占位]",
+                        if attachment.is_image() {
+                            "图片"
+                        } else {
+                            "音频"
+                        }
+                    ))),
+                }
+            }
+            message.content = content;
+        }
+        let repairs = crate::sanitize_canonical(&mut messages);
+        (Self { messages, repairs }, notices)
+    }
+
     pub(super) fn messages(&self) -> &[CanonicalMessage] {
         &self.messages
     }
@@ -59,6 +103,23 @@ impl RequestContext {
         let repairs = crate::sanitize_canonical(&mut messages);
         Self { messages, repairs }
     }
+}
+
+fn attachment_from_content_part(part: &ContentPart) -> Option<MessageAttachment> {
+    let (media_type, data) = match part {
+        ContentPart::Image {
+            media_type, data, ..
+        }
+        | ContentPart::Audio {
+            media_type, data, ..
+        } => (media_type, data),
+        ContentPart::Text(_) => return None,
+    };
+    let mut attachment = MessageAttachment::new(media_type.clone(), data.clone());
+    // Keep this metadata-only adapter explicit. Paths and managed ids are not
+    // recoverable from provider-neutral raw parts and must never be guessed.
+    attachment.asset_id = None;
+    Some(attachment)
 }
 
 #[cfg(test)]
@@ -134,5 +195,34 @@ mod tests {
                 .iter()
                 .any(|part| { matches!(part, ContentPart::Text(text) if text == "first") })
         );
+    }
+
+    #[test]
+    fn media_is_replanned_against_the_selected_adapter_profile() {
+        let image = CanonicalMessage::user(vec![ContentPart::Image {
+            content_type: "image".into(),
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }]);
+        let context = RequestContext::from_state(&state(vec![image]), None);
+        let profile = CapabilityProfile {
+            image: haven_common::media::CapabilitySupport::Unsupported,
+            ..CapabilityProfile::default()
+        };
+
+        let (planned, notices) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
+
+        assert!(
+            !planned.messages()[0]
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Image { .. }))
+        );
+        assert!(planned.messages()[0].content.iter().any(|part| {
+            matches!(part, ContentPart::Text(text) if text.contains("降级为文本占位"))
+        }));
+        assert!(notices.iter().any(|notice| {
+            notice.code == haven_common::media::MediaPlanNoticeCode::RawCapabilityUnsupported
+        }));
     }
 }

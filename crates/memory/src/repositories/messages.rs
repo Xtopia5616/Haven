@@ -2,6 +2,8 @@ use crate::db::Database;
 use chrono::{SecondsFormat, Utc};
 use haven_common::types::MessageAttachment;
 use rusqlite::OptionalExtension;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 /// Milliseconds-precision RFC3339: rows written within the same second must
 /// remain distinguishable for the resume timeline rebuild (the messages and
@@ -211,6 +213,35 @@ impl Database {
         }
         self.cache_put_messages(session_id, msgs.clone(), 30, cache_gen);
         Ok(msgs)
+    }
+
+    /// Return host-managed attachment paths still referenced by persisted
+    /// messages. Retention cleanup uses this reference set so paused or
+    /// long-running sessions keep their files, while assets belonging to
+    /// deleted history can be removed from the process-local registry.
+    pub fn list_managed_attachment_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let conn = self.conn();
+        let mut statement = conn.prepare(
+            "SELECT attachments FROM messages
+             WHERE attachments IS NOT NULL AND attachments != ''",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut paths = HashSet::new();
+        while let Some(row) = rows.next()? {
+            let raw: String = row.get(0)?;
+            let attachments: Vec<MessageAttachment> =
+                serde_json::from_str(&raw).map_err(|error| {
+                    anyhow::anyhow!("invalid persisted attachment metadata: {error}")
+                })?;
+            for attachment in attachments {
+                if let Some(path) = attachment.path
+                    && !path.trim().is_empty()
+                {
+                    paths.insert(PathBuf::from(path));
+                }
+            }
+        }
+        Ok(paths.into_iter().collect())
     }
 
     pub fn get_session_messages_limit(
@@ -719,6 +750,39 @@ mod tests {
         db.add_message(&tid, "user", "plain", None, None).unwrap();
         let msgs = db.get_session_messages(&tid).unwrap();
         assert!(msgs[0].attachments.is_empty());
+    }
+
+    #[test]
+    fn list_managed_attachment_paths_returns_only_non_empty_paths() {
+        let db = test_db();
+        let tid = test_session(&db);
+        let mut file = MessageAttachment::new("application/pdf", "");
+        file.path = Some(r"C:\uploads\file-a\report.pdf".into());
+        db.add_message_full(
+            &tid,
+            "user",
+            "read this",
+            Some("text"),
+            None,
+            std::slice::from_ref(&file),
+            false,
+            None,
+        )
+        .unwrap();
+        db.add_message_full(
+            &tid,
+            "user",
+            "look at this",
+            Some("text"),
+            None,
+            &[MessageAttachment::new("image/png", "aGVsbG8=")],
+            false,
+            None,
+        )
+        .unwrap();
+
+        let paths = db.list_managed_attachment_paths().unwrap();
+        assert_eq!(paths, vec![PathBuf::from(r"C:\uploads\file-a\report.pdf")]);
     }
 
     #[test]

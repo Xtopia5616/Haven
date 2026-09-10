@@ -104,6 +104,16 @@ pub enum AgentEvent {
         thought_message_id: String,
         reasoning_message_id: String,
     },
+    /// The selected adapter caused one or more media representations to be
+    /// downgraded or omitted. This is ephemeral request diagnostics; the
+    /// durable transcript remains provider-neutral.
+    MediaPlan {
+        session_id: String,
+        step_number: u32,
+        run_id: u64,
+        role: String,
+        notices: Vec<haven_common::media::MediaPlanNotice>,
+    },
     /// Live status of the provider's built-in web search tool. Forwarded from
     /// the stream events (`in_progress` → `searching` → `completed`) so the
     /// UI can render one card per call. DeepSeek may emit several

@@ -96,6 +96,28 @@ describe('agent IPC contract', () => {
 		});
 	});
 
+	it('maps media planning notices to the UI contract', () => {
+		const event = mapAgentEvent({
+			event: 'agent:media_plan',
+			id: 7,
+			payload: {
+				session_id: 'ses-1',
+				step_number: 4,
+				run_id: 8,
+				role: 'image_model',
+				notices: [{ asset_id: 'asset-1', code: 'raw_capability_unknown' }],
+			},
+		});
+
+		expect(event.payload).toEqual({
+			sessionId: 'ses-1',
+			stepNumber: 4,
+			runId: 8,
+			role: 'image_model',
+			notices: [{ assetId: 'asset-1', code: 'raw_capability_unknown' }],
+		});
+	});
+
 	it('maps outcome and event sequence for ordered tool observations', () => {
 		const event = mapAgentEvent({
 			event: 'agent:observation',

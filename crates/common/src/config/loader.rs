@@ -443,6 +443,7 @@ mod tests {
         assert_eq!(cfg.context_limits.max_transcript_chars, 4_000);
         assert_eq!(cfg.context_limits.max_attachment_images, 4);
         assert_eq!(cfg.context_limits.max_attachment_files, 5);
+        assert_eq!(cfg.context_limits.max_upload_total_bytes, 512 * 1024 * 1024);
         assert_eq!(
             cfg.context_limits.max_attachment_image_bytes,
             10 * 1024 * 1024
