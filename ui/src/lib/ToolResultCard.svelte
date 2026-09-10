@@ -354,7 +354,7 @@
 			<div class="ask-actions">
 				<div class="ask-action-buttons">
 					<MaterialButton
-						variant="outlined"
+						variant="text"
 						className="ask-ignore"
 						label="忽略"
 						onclick={() => onIgnore?.(messageId)}

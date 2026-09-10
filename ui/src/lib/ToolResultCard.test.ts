@@ -241,7 +241,7 @@ describe('ToolResultCard ask', () => {
 			messageId: 'ask-7',
 			onIgnore,
 		});
-		expect(screen.getByRole('button', { name: '忽略' }).classList).toContain('md-btn--outlined');
+		expect(screen.getByRole('button', { name: '忽略' }).classList).toContain('md-btn--text');
 		await fireEvent.click(screen.getByText('忽略'));
 		expect(onIgnore).toHaveBeenCalledWith('ask-7');
 	});
