@@ -2114,6 +2114,58 @@ mod tests {
     }
 
     #[test]
+    fn capability_profile_image_reaches_anthropic_wire_payload() {
+        let client = AnthropicAdapter::new(ModelEndpoint::default());
+        let asset = haven_common::media::MediaAsset::new(
+            "image/png",
+            5,
+            None,
+            haven_common::media::MediaAssetSource::UserAttachment,
+            haven_common::media::MediaAssetLifecycle::Request,
+        );
+        let representation = haven_common::media::MediaRepresentation::available(
+            haven_common::media::MediaRepresentationKind::RawImage,
+            haven_common::media::MediaProvenance::Original,
+            haven_common::media::MediaRepresentationPayload::InlineData {
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+        );
+        assert_eq!(
+            client
+                .capability_profile()
+                .supports(&representation, &asset),
+            CapabilitySupport::Supported
+        );
+        let messages = vec![CanonicalMessage {
+            role: CanonicalRole::User,
+            content: vec![ContentPart::Image {
+                content_type: "image_url".into(),
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        }];
+        let wire =
+            serde_json::to_value(client.build_request_body(messages, Vec::new(), false)).unwrap();
+        assert_eq!(wire["messages"][0]["content"][0]["type"], "image");
+        assert_eq!(
+            wire["messages"][0]["content"][0]["source"]["type"],
+            "base64"
+        );
+        assert_eq!(
+            wire["messages"][0]["content"][0]["source"]["media_type"],
+            "image/png"
+        );
+    }
+
+    #[test]
     fn convert_messages_empty_user_content_skipped() {
         let msgs = vec![CanonicalMessage {
             role: CanonicalRole::User,

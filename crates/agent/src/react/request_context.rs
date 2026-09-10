@@ -8,7 +8,10 @@
 //! paths to each invent their own clone/append/sanitize sequence.
 
 use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_requirements};
-use haven_common::media::{CapabilityProfile, MediaInputStrategy, MediaPlanNotice};
+use haven_common::media::{
+    CapabilityProfile, MediaInputStrategy, MediaPlanNotice, MediaProjectionMode, build_media_plan,
+    legacy_attachment_to_media_input,
+};
 use haven_common::types::{CanonicalMessage, ContentPart, MessageAttachment};
 
 /// One immutable provider request snapshot.
@@ -54,31 +57,52 @@ impl RequestContext {
         strategy: MediaInputStrategy,
     ) -> (Self, Vec<MediaPlanNotice>) {
         let mut messages = self.messages.clone();
-        let mut notices = Vec::new();
-        for message in &mut messages {
-            let mut content = Vec::with_capacity(message.content.len());
-            for part in &message.content {
+        let mut media_inputs = Vec::new();
+        let mut media_positions = Vec::new();
+        for (message_index, message) in messages.iter().enumerate() {
+            for (part_index, part) in message.content.iter().enumerate() {
                 let Some(attachment) = attachment_from_content_part(part) else {
-                    content.push(part.clone());
                     continue;
                 };
-                let input = haven_common::media::legacy_attachment_to_media_input(&attachment);
-                let plan = haven_common::media::build_media_plan(
-                    std::slice::from_ref(&input),
-                    capabilities,
-                    strategy,
-                );
-                notices.extend(plan.notices.clone());
-                match haven_llm::media::project_media_plan(&plan, std::slice::from_ref(&input)) {
-                    Ok(mut projected) if !projected.is_empty() => content.append(&mut projected),
-                    _ => content.push(ContentPart::text(format!(
+                let input = legacy_attachment_to_media_input(&attachment);
+                media_positions.push((message_index, part_index, input.asset.asset_id.clone()));
+                media_inputs.push(input);
+            }
+        }
+
+        let plan = build_media_plan(&media_inputs, capabilities, strategy);
+        let notices = plan.notices.clone();
+        let projected = haven_llm::media::project_media_plan(&plan, &media_inputs).ok();
+        let projected_by_asset = projected
+            .into_iter()
+            .flatten()
+            .zip(plan.projections.iter())
+            .map(|(part, projection)| (projection.asset_id.clone(), part))
+            .collect::<std::collections::HashMap<_, _>>();
+        let asset_ids_by_position = media_positions
+            .into_iter()
+            .map(|(message_index, part_index, asset_id)| ((message_index, part_index), asset_id))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        for (message_index, message) in messages.iter_mut().enumerate() {
+            let original = std::mem::take(&mut message.content);
+            let mut content = Vec::with_capacity(original.len());
+            for (part_index, part) in original.into_iter().enumerate() {
+                let Some(asset_id) = asset_ids_by_position.get(&(message_index, part_index)) else {
+                    content.push(part);
+                    continue;
+                };
+                if let Some(projected) = projected_by_asset.get(asset_id) {
+                    content.push((*projected).clone());
+                } else {
+                    content.push(ContentPart::text(format!(
                         "[附件: {}；当前模型不支持安全的媒体输入，已降级为文本占位]",
-                        if attachment.is_image() {
+                        if matches!(part, ContentPart::Image { .. }) {
                             "图片"
                         } else {
                             "音频"
                         }
-                    ))),
+                    )));
                 }
             }
             message.content = content;
@@ -93,6 +117,35 @@ impl RequestContext {
 
     pub(super) fn media_requirements(&self) -> MediaRequirements {
         canonical_media_requirements(&self.messages)
+    }
+
+    /// Check whether every raw image/audio part can remain raw for a role.
+    /// This is used before choosing a dedicated modality role, so an
+    /// unsupported MIME, size limit, part limit, or malformed raw projection
+    /// can trigger a retry through the default role instead of silently
+    /// becoming a placeholder on the specialized endpoint.
+    pub(super) fn raw_media_fits_profile(&self, capabilities: &CapabilityProfile) -> bool {
+        let inputs: Vec<_> = self
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(attachment_from_content_part)
+            .map(|attachment| legacy_attachment_to_media_input(&attachment))
+            .collect();
+        if inputs.is_empty() {
+            return true;
+        }
+        let plan = build_media_plan(&inputs, capabilities, MediaInputStrategy::RawPreferred);
+        if plan.projections.len() != inputs.len()
+            || plan
+                .projections
+                .iter()
+                .any(|projection| projection.mode != MediaProjectionMode::Raw)
+        {
+            return false;
+        }
+        haven_llm::media::project_media_plan(&plan, &inputs)
+            .is_ok_and(|parts| parts.len() == inputs.len())
     }
 
     pub(super) fn repairs(&self) -> usize {
@@ -223,6 +276,47 @@ mod tests {
         }));
         assert!(notices.iter().any(|notice| {
             notice.code == haven_common::media::MediaPlanNoticeCode::RawCapabilityUnsupported
+        }));
+    }
+
+    #[test]
+    fn media_replanning_applies_request_level_part_limits() {
+        let image = |data: &str| ContentPart::Image {
+            content_type: "image".into(),
+            media_type: "image/png".into(),
+            data: data.into(),
+        };
+        let context = RequestContext::from_state(
+            &state(vec![CanonicalMessage::user(vec![
+                image("aGVsbG8="),
+                image("d29ybGQ="),
+            ])]),
+            None,
+        );
+        let profile = CapabilityProfile {
+            image: haven_common::media::CapabilitySupport::Supported,
+            max_input_parts: Some(1),
+            ..CapabilityProfile::default()
+        };
+
+        let (planned, notices) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
+        let content = &planned.messages()[0].content;
+        assert_eq!(
+            content
+                .iter()
+                .filter(|part| matches!(part, ContentPart::Image { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            content
+                .iter()
+                .filter(|part| matches!(part, ContentPart::Text(text) if text.contains("降级为文本占位")))
+                .count(),
+            1
+        );
+        assert!(notices.iter().any(|notice| {
+            notice.code == haven_common::media::MediaPlanNoticeCode::InputPartLimit
         }));
     }
 }

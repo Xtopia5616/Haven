@@ -2409,6 +2409,38 @@ mod tests {
             source: None,
             id: None,
         };
+        let client = OpenAiAdapter::new(ModelEndpoint::default());
+        let asset = haven_common::media::MediaAsset::new(
+            "image/png",
+            5,
+            None,
+            haven_common::media::MediaAssetSource::UserAttachment,
+            haven_common::media::MediaAssetLifecycle::Request,
+        );
+        let representation = haven_common::media::MediaRepresentation::available(
+            haven_common::media::MediaRepresentationKind::RawImage,
+            haven_common::media::MediaProvenance::Original,
+            haven_common::media::MediaRepresentationPayload::InlineData {
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+        );
+        assert_eq!(
+            client
+                .capability_profile()
+                .supports(&representation, &asset),
+            CapabilitySupport::Supported
+        );
+        let wire =
+            serde_json::to_value(client.build_request_body(vec![msg.clone()], Vec::new(), false))
+                .unwrap();
+        assert_eq!(wire["messages"][0]["content"][1]["type"], "image_url");
+        assert!(
+            wire["messages"][0]["content"][1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .contains("data:image/png;base64,aGVsbG8=")
+        );
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
             false,

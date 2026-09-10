@@ -2118,6 +2118,56 @@ mod tests {
     }
 
     #[test]
+    fn capability_profile_image_reaches_responses_wire_payload() {
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
+        let asset = haven_common::media::MediaAsset::new(
+            "image/png",
+            5,
+            None,
+            haven_common::media::MediaAssetSource::UserAttachment,
+            haven_common::media::MediaAssetLifecycle::Request,
+        );
+        let representation = haven_common::media::MediaRepresentation::available(
+            haven_common::media::MediaRepresentationKind::RawImage,
+            haven_common::media::MediaProvenance::Original,
+            haven_common::media::MediaRepresentationPayload::InlineData {
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+        );
+        assert_eq!(
+            client
+                .capability_profile()
+                .supports(&representation, &asset),
+            CapabilitySupport::Supported
+        );
+        let messages = vec![CanonicalMessage {
+            role: CanonicalRole::User,
+            content: vec![ContentPart::Image {
+                content_type: "image_url".into(),
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        }];
+        let wire =
+            serde_json::to_value(client.build_request_body(messages, Vec::new(), false)).unwrap();
+        assert_eq!(wire["input"][0]["content"][0]["type"], "input_image");
+        assert!(
+            wire["input"][0]["content"][0]["image_url"]
+                .as_str()
+                .unwrap()
+                .contains("data:image/png;base64,aGVsbG8=")
+        );
+    }
+
+    #[test]
     fn build_request_body_fields() {
         let ep = ModelEndpoint {
             model_name: "gpt-5".into(),

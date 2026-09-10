@@ -127,19 +127,39 @@ pub(crate) fn canonical_media_requirements(messages: &[CanonicalMessage]) -> Med
 }
 
 /// Pick the endpoint role for an agent step. Image content routes through the
-/// vision role and audio-only content through the audio role; both roles fall
-/// back to the default model when their dedicated slot is unavailable.
+/// vision role and audio-only content through the audio role; a configured
+/// dedicated role is used only when its capability profile can preserve every
+/// raw media part. Otherwise the default role gets the first opportunity to
+/// carry the request.
 pub(super) async fn choose_agent_role(
     router: &LlmRouter,
-    requirements: MediaRequirements,
+    request_context: &RequestContext,
 ) -> EndpointRole {
-    if requirements.image {
+    let requirements = request_context.media_requirements();
+    let preferred = if requirements.image {
         router.vision_role().await
     } else if requirements.audio {
         router.audio_role().await
     } else {
         EndpointRole::DefaultModel
+    };
+    if preferred == EndpointRole::DefaultModel
+        || request_context.raw_media_fits_profile(&router.capability_profile(preferred))
+    {
+        return preferred;
     }
+
+    let default_role = EndpointRole::DefaultModel;
+    if request_context.raw_media_fits_profile(&router.capability_profile(default_role)) {
+        tracing::info!(
+            preferred_role = preferred.as_str(),
+            fallback_role = default_role.as_str(),
+            "dedicated media role cannot represent the request; using default role"
+        );
+        return default_role;
+    }
+
+    preferred
 }
 
 pub(super) async fn emit_media_plan_notices(
@@ -1027,10 +1047,16 @@ mod tests {
     use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use std::pin::Pin;
 
-    struct MockLlm;
+    struct MockLlm {
+        profile: CapabilityProfile,
+    }
 
     #[async_trait]
     impl LlmClient for MockLlm {
+        fn capability_profile(&self) -> CapabilityProfile {
+            self.profile.clone()
+        }
+
         async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown("mock: chat not implemented".into()))
         }
@@ -1072,8 +1098,30 @@ mod tests {
     }
 
     fn mock_router() -> LlmRouter {
-        let client: Arc<dyn LlmClient> = Arc::new(MockLlm);
+        let client: Arc<dyn LlmClient> = Arc::new(MockLlm {
+            profile: CapabilityProfile::default(),
+        });
         LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client)
+    }
+
+    fn mock_router_with_profiles(
+        default_profile: CapabilityProfile,
+        image_profile: CapabilityProfile,
+        audio_profile: CapabilityProfile,
+    ) -> LlmRouter {
+        let small: Arc<dyn LlmClient> = Arc::new(MockLlm {
+            profile: default_profile.clone(),
+        });
+        let default: Arc<dyn LlmClient> = Arc::new(MockLlm {
+            profile: default_profile,
+        });
+        let image: Arc<dyn LlmClient> = Arc::new(MockLlm {
+            profile: image_profile,
+        });
+        let audio: Arc<dyn LlmClient> = Arc::new(MockLlm {
+            profile: audio_profile,
+        });
+        LlmRouter::new_with_clients(small, default, image, audio)
     }
 
     // ── failure classification & retry nudge (G5: nudge text only; attach
@@ -1313,6 +1361,10 @@ mod tests {
         }
     }
 
+    fn request_context(messages: Vec<CanonicalMessage>) -> RequestContext {
+        RequestContext::from_state(&ReActState::new(Vec::new(), messages, HashMap::new()), None)
+    }
+
     #[tokio::test]
     async fn choose_agent_role_default_without_images() {
         let router = mock_router();
@@ -1320,9 +1372,9 @@ mod tests {
             text_msg(CanonicalRole::System, "be concise"),
             text_msg(CanonicalRole::User, "hello"),
         ];
-        let requirements = canonical_media_requirements(&messages);
+        let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, requirements).await,
+            choose_agent_role(&router, &context).await,
             EndpointRole::DefaultModel
         );
     }
@@ -1331,9 +1383,9 @@ mod tests {
     async fn choose_agent_role_default_when_image_model_unconfigured() {
         let router = mock_router();
         let messages = [image_msg(CanonicalRole::User)];
-        let requirements = canonical_media_requirements(&messages);
+        let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, requirements).await,
+            choose_agent_role(&router, &context).await,
             EndpointRole::DefaultModel
         );
     }
@@ -1345,9 +1397,9 @@ mod tests {
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
         let messages = [image_msg(CanonicalRole::User)];
-        let requirements = canonical_media_requirements(&messages);
+        let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, requirements).await,
+            choose_agent_role(&router, &context).await,
             EndpointRole::ImageModel
         );
     }
@@ -1360,9 +1412,9 @@ mod tests {
             .await;
         router.force_routing_flags(true, false).await;
         let messages = [image_msg(CanonicalRole::User)];
-        let requirements = canonical_media_requirements(&messages);
+        let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, requirements).await,
+            choose_agent_role(&router, &context).await,
             EndpointRole::DefaultModel
         );
     }
@@ -1374,9 +1426,48 @@ mod tests {
             .force_role_configured(EndpointRole::AudioModel, true)
             .await;
         let messages = [audio_msg(CanonicalRole::User)];
+        let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, canonical_media_requirements(&messages)).await,
+            choose_agent_role(&router, &context).await,
             EndpointRole::AudioModel
+        );
+    }
+
+    #[tokio::test]
+    async fn choose_agent_role_falls_back_when_specialized_mime_is_unsupported() {
+        let mut default_profile = CapabilityProfile::default();
+        default_profile.image = CapabilitySupport::Supported;
+        let mut image_profile = default_profile.clone();
+        image_profile.accepted_mime_types = vec!["image/jpeg".into()];
+        let router =
+            mock_router_with_profiles(default_profile, image_profile, CapabilityProfile::default());
+        router
+            .force_role_configured(EndpointRole::ImageModel, true)
+            .await;
+        let context = request_context(vec![image_msg(CanonicalRole::User)]);
+
+        assert_eq!(
+            choose_agent_role(&router, &context).await,
+            EndpointRole::DefaultModel
+        );
+    }
+
+    #[tokio::test]
+    async fn choose_agent_role_falls_back_when_specialized_size_is_exceeded() {
+        let mut default_profile = CapabilityProfile::default();
+        default_profile.image = CapabilitySupport::Supported;
+        let mut image_profile = default_profile.clone();
+        image_profile.max_input_bytes = Some(4);
+        let router =
+            mock_router_with_profiles(default_profile, image_profile, CapabilityProfile::default());
+        router
+            .force_role_configured(EndpointRole::ImageModel, true)
+            .await;
+        let context = request_context(vec![image_msg(CanonicalRole::User)]);
+
+        assert_eq!(
+            choose_agent_role(&router, &context).await,
+            EndpointRole::DefaultModel
         );
     }
 

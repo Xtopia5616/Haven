@@ -629,13 +629,10 @@ impl ReActEngine {
                         // Retry streams the *compacted* canonical in place; the
                         // role must be re-resolved: summarizing away the last
                         // image-bearing turn changes routing for the retry.
-                        let retry_role = super::choose_agent_role(
-                            &router,
-                            super::canonical_media_requirements(&state.canonical),
-                        )
-                        .await;
-                        *role = retry_role;
                         let raw_retry_context = RequestContext::from_state(state, retry_nudge);
+                        let retry_role =
+                            super::choose_agent_role(&router, &raw_retry_context).await;
+                        *role = retry_role;
                         let (retry_context, media_notices) = raw_retry_context.with_capabilities(
                             &router.capability_profile(retry_role),
                             self.media_strategy(),

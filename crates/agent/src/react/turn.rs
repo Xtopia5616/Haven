@@ -110,7 +110,7 @@ impl ReActEngine {
 
         let tools = self.build_tool_definitions_for_session(session_id).await;
         let router = self.router();
-        let role = choose_agent_role(&router, request_context.media_requirements()).await;
+        let role = choose_agent_role(&router, &request_context).await;
         let (request_context, media_notices) = request_context
             .with_capabilities(&router.capability_profile(role), self.media_strategy());
         super::emit_media_plan_notices(
