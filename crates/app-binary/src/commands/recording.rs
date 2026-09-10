@@ -408,7 +408,12 @@ async fn persist_file_attachments_to(
 
     let mut inline_media = Vec::new();
     let mut files = Vec::new();
-    for att in attachments {
+    for mut att in attachments {
+        // Asset identity is host-owned; never allow the renderer to alias a
+        // previously registered managed asset.
+        if att.asset_id.is_none() {
+            att.asset_id = Some(haven_common::types::new_id("asset"));
+        }
         if att.is_inline_media() {
             inline_media.push(att);
         } else {
@@ -481,6 +486,9 @@ fn validate_attachments(
     // values are optional and can be wrong; content signatures win, with the
     // filename as a controlled fallback for formats such as SVG and AAC.
     for att in &mut attachments {
+        // The renderer cannot choose an existing managed asset id. The
+        // persistence boundary below mints a fresh id after validation.
+        att.asset_id = None;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&att.data)
             .map_err(|_| "附件数据不是有效的 base64".to_string())?;
@@ -625,6 +633,7 @@ mod tests {
         assert_eq!(out.len(), 2);
 
         let saved = out.iter().find(|a| !a.is_image()).unwrap();
+        assert!(saved.asset_id.as_deref().unwrap().starts_with("asset-"));
         assert!(
             saved.data.is_empty(),
             "file bytes must not be kept in the message"
@@ -638,6 +647,7 @@ mod tests {
         assert_eq!(on_disk, b"hello pdf");
 
         let image = out.iter().find(|a| a.is_image()).unwrap();
+        assert!(image.asset_id.as_deref().unwrap().starts_with("asset-"));
         assert_eq!(image.data, "aGVsbG8=", "images keep their base64 payload");
         assert!(image.path.is_none());
     }
@@ -655,6 +665,7 @@ mod tests {
             .unwrap();
         assert_eq!(out.len(), 1);
         assert!(out[0].is_audio());
+        assert!(out[0].asset_id.as_deref().unwrap().starts_with("asset-"));
         assert_eq!(out[0].data, "UklGRg==");
         assert!(out[0].path.is_none());
     }

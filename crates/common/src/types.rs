@@ -751,6 +751,11 @@ fn repair_truncated_json(input: &str) -> Option<RepairOutcome> {
 /// persistence crate just for this data structure.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct MessageAttachment {
+    /// Opaque managed-asset id. Legacy rows may omit it; host ingress mints
+    /// one before persistence, while the compatibility adapter can mint an
+    /// ephemeral id for read-only projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
     pub media_type: String,
     pub data: String,
     /// Original file name for non-image attachments (e.g. "report.pdf").
@@ -766,6 +771,7 @@ impl MessageAttachment {
     /// tests). `filename`/`path` are left empty and skipped in serialization.
     pub fn new(media_type: impl Into<String>, data: impl Into<String>) -> Self {
         Self {
+            asset_id: None,
             media_type: media_type.into(),
             data: data.into(),
             filename: None,

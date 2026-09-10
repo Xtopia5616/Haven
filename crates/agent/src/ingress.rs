@@ -68,6 +68,7 @@ fn attachment_from_generated_file(path: &std::path::Path) -> anyhow::Result<Mess
     )
     .to_string();
     Ok(MessageAttachment {
+        asset_id: Some(haven_common::types::new_id("asset")),
         media_type,
         data: base64::engine::general_purpose::STANDARD.encode(&bytes),
         filename: path.file_name().map(|n| n.to_string_lossy().into_owned()),

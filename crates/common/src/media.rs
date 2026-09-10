@@ -418,7 +418,7 @@ pub struct MediaInput {
 pub fn legacy_attachment_to_media_input(
     attachment: &crate::types::MessageAttachment,
 ) -> MediaInput {
-    let asset = MediaAsset::new(
+    let mut asset = MediaAsset::new(
         attachment.media_type.clone(),
         // Base64 length is a conservative upper bound when the legacy
         // attachment is still inline; a persisted file has no bytes here and
@@ -433,6 +433,9 @@ pub fn legacy_attachment_to_media_input(
             MediaAssetLifecycle::Session
         },
     );
+    if let Some(asset_id) = attachment.asset_id.as_ref() {
+        asset.asset_id = asset_id.clone();
+    }
     let kind = if attachment.is_image() {
         MediaRepresentationKind::RawImage
     } else if attachment.is_audio() {
