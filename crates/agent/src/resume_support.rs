@@ -213,6 +213,7 @@ mod tests {
             created_at: "2026-08-27T00:00:00.000Z".into(),
             tool_call_id: None,
             attachments: Vec::new(),
+            media_inputs: Vec::new(),
             voice: false,
             ingress_seq: 0,
         }

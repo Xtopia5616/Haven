@@ -38,6 +38,7 @@ use crate::types::{
     BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript_with_strategy,
     seed_events_from_canonical,
 };
+use haven_common::media::MediaInput;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use std::collections::HashMap;
 
@@ -163,20 +164,40 @@ impl AgentLayer {
         // be duplicated.
         let db = self.db.clone();
         let sid = session_id.to_string();
-        let (initial_attachments, react_state) = db
+        let (initial_attachments, initial_media_inputs, all_attachments, react_state) = db
             .run_blocking(move |db| {
                 let messages = db.get_session_messages(&sid)?;
-                let attachments = messages
-                    .into_iter()
-                    .find(|m| m.role == "user")
+                let all_attachments = messages
+                    .iter()
+                    .flat_map(|message| message.attachments.iter().cloned())
+                    .collect::<Vec<_>>();
+                let initial_message = messages.iter().find(|m| m.role == "user").cloned();
+                let initial_attachments = initial_message
+                    .as_ref()
                     .filter(|m| !m.attachments.is_empty())
-                    .map(|m| m.attachments)
+                    .map(|m| m.attachments.clone())
+                    .unwrap_or_default();
+                let initial_media_inputs = initial_message
+                    .filter(|m| !m.media_inputs.is_empty())
+                    .map(|m| m.media_inputs)
                     .unwrap_or_default();
                 let react_state = db.get_react_state(&sid)?;
-                Ok((attachments, react_state))
+                Ok((
+                    initial_attachments,
+                    initial_media_inputs,
+                    all_attachments,
+                    react_state,
+                ))
             })
             .await
             .map_err(|error| anyhow::anyhow!("failed to load session resume data: {error}"))?;
+
+        // Snapshot events now carry metadata-only media inputs. Re-register
+        // the host-owned files from the materialized compatibility projection
+        // before a resumed request can ask the `files` tool to resolve them.
+        self.executor
+            .get_tools()
+            .register_managed_assets_for_session(session_id, &all_attachments);
 
         let result = match react_state {
             Some(state_json) => match ReActSnapshot::from_json(&state_json) {
@@ -385,6 +406,7 @@ impl AgentLayer {
                     &context,
                     &conv_history,
                     &initial_attachments,
+                    &initial_media_inputs,
                 )
                 .await
             }
@@ -576,6 +598,9 @@ impl AgentLayer {
             let mut restored = 0usize;
             let mut answer_pending = self.executor.is_ask_gated(session_id).await;
             for msg in merge_recovery_candidates(pending, undelivered) {
+                self.executor
+                    .get_tools()
+                    .register_managed_assets_for_session(session_id, &msg.attachments);
                 let is_answer = answer_pending;
                 let queued = if is_answer {
                     self.executor
@@ -687,6 +712,7 @@ impl AgentLayer {
         context: &str,
         conversation_history: &[ConversationMessage],
         initial_attachments: &[haven_common::types::MessageAttachment],
+        initial_media_inputs: &[MediaInput],
     ) -> anyhow::Result<Vec<ReActRound>> {
         self.executor
             .get_tools()
@@ -722,9 +748,23 @@ impl AgentLayer {
 
         let mut initial_content = vec![ContentPart::text(context.to_string())];
         let media_strategy = self.react_engine.media_strategy();
-        initial_content.extend(initial_attachments.iter().map(|attachment| {
-            crate::react::attachment_to_content_part_with_strategy(attachment, media_strategy)
-        }));
+        // A host-owned path is rehydrated into the legacy attachment preview
+        // during the same process, which lets the request keep the raw image
+        // or audio bytes. If only the durable media projection is available
+        // (for example after a legacy row without a readable host file), use
+        // its metadata-only fallback instead of reviving an inline payload.
+        if initial_attachments
+            .iter()
+            .any(|attachment| !attachment.data.is_empty())
+        {
+            initial_content.extend(initial_attachments.iter().map(|attachment| {
+                crate::react::attachment_to_content_part_with_strategy(attachment, media_strategy)
+            }));
+        } else {
+            initial_content.extend(initial_media_inputs.iter().map(|input| {
+                crate::react::media_input_to_content_part_with_strategy(input, media_strategy)
+            }));
+        }
 
         let mut canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage::system(vec![ContentPart::text(system_prompt)]),

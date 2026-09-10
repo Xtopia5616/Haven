@@ -130,6 +130,7 @@ mod tests {
         MediaInput {
             asset,
             representations: vec![representation],
+            preferred_representation: None,
         }
     }
 

@@ -408,6 +408,44 @@ pub struct MediaInput {
     pub asset: MediaAsset,
     #[serde(default)]
     pub representations: Vec<MediaRepresentation>,
+    /// A gateway-selected representation for this request.  This is a
+    /// preference, not a capability override: the planner still validates
+    /// the preferred representation and falls back safely when unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_representation: Option<MediaRepresentationKind>,
+}
+
+impl MediaInput {
+    /// Remove inline bytes before putting an input in a ReAct snapshot.  A
+    /// snapshot is an event authority, not a binary blob store.  New ingress
+    /// assets always have a host-owned id; the managed reference is therefore
+    /// sufficient for safe resume even when the provider cannot receive raw
+    /// media in the next process.
+    pub fn for_snapshot(&self) -> Self {
+        let representations = self
+            .representations
+            .iter()
+            .map(|representation| {
+                let mut representation = representation.clone();
+                if let MediaRepresentationPayload::InlineData { .. } = representation.payload {
+                    representation.payload = MediaRepresentationPayload::ManagedFileRef {
+                        asset_id: self.asset.asset_id.clone(),
+                        filename: self.asset.filename.clone(),
+                    };
+                    representation.representation = MediaRepresentationKind::ManagedFileRef;
+                }
+                representation
+            })
+            .collect();
+        Self {
+            asset: self.asset.clone(),
+            representations,
+            preferred_representation: match self.preferred_representation {
+                Some(kind) if kind.is_raw() => Some(MediaRepresentationKind::ManagedFileRef),
+                preferred => preferred,
+            },
+        }
+    }
 }
 
 /// Adapt the legacy message attachment shape into the stage-1 media
@@ -425,7 +463,11 @@ pub fn legacy_attachment_to_media_input(
         // without allocating a second copy of the payload.
         inline_base64_size(attachment.data.as_str()),
         attachment.filename.clone(),
-        MediaAssetSource::RestoredLegacy,
+        if attachment.asset_id.is_some() && attachment.path.is_some() {
+            MediaAssetSource::UserAttachment
+        } else {
+            MediaAssetSource::RestoredLegacy
+        },
         if attachment.path.is_some() {
             MediaAssetLifecycle::Managed
         } else {
@@ -434,6 +476,12 @@ pub fn legacy_attachment_to_media_input(
     );
     if let Some(asset_id) = attachment.asset_id.as_ref() {
         asset.asset_id = asset_id.clone();
+    }
+    if let Some(hash) = attachment.sha256.as_ref() {
+        asset.content_hash = hash.clone();
+    }
+    if let Some(size_bytes) = attachment.size_bytes {
+        asset.size_bytes = size_bytes;
     }
     let kind = if attachment.is_image() {
         MediaRepresentationKind::RawImage
@@ -453,13 +501,16 @@ pub fn legacy_attachment_to_media_input(
             filename: attachment.filename.clone(),
         }
     };
+    let mut representations = vec![MediaRepresentation::available(
+        kind,
+        MediaProvenance::Original,
+        payload,
+    )];
+    representations.extend(attachment.representations.clone());
     MediaInput {
         asset,
-        representations: vec![MediaRepresentation::available(
-            kind,
-            MediaProvenance::Original,
-            payload,
-        )],
+        representations,
+        preferred_representation: attachment.preferred_representation,
     }
 }
 
@@ -564,7 +615,15 @@ pub fn build_media_plan(
 
         let mut selected: Option<(&MediaRepresentation, MediaProjectionMode)> = None;
 
-        if strategy != MediaInputStrategy::TextOnlySafe
+        // Gateway extraction is an explicit semantic decision.  Prefer it
+        // over raw media for this request, but keep the raw representation in
+        // the input so a later request can choose it again.
+        if let Some(preferred) = input.preferred_representation {
+            selected = select_preferred(preferred, input, capabilities, &mut notices);
+        }
+
+        if selected.is_none()
+            && strategy != MediaInputStrategy::TextOnlySafe
             && matches!(
                 strategy,
                 MediaInputStrategy::Auto | MediaInputStrategy::RawPreferred
@@ -713,6 +772,56 @@ fn select_raw<'a>(
     None
 }
 
+fn select_preferred<'a>(
+    preferred: MediaRepresentationKind,
+    input: &'a MediaInput,
+    capabilities: &CapabilityProfile,
+    notices: &mut Vec<MediaPlanNotice>,
+) -> Option<(&'a MediaRepresentation, MediaProjectionMode)> {
+    let Some(representation) = input
+        .representations
+        .iter()
+        .find(|representation| representation.representation == preferred)
+    else {
+        notices.push(MediaPlanNotice {
+            asset_id: input.asset.asset_id.clone(),
+            code: MediaPlanNoticeCode::NoCompatibleRepresentation,
+        });
+        return None;
+    };
+    if !representation.is_available() {
+        notices.push(MediaPlanNotice {
+            asset_id: input.asset.asset_id.clone(),
+            code: MediaPlanNoticeCode::NoCompatibleRepresentation,
+        });
+        return None;
+    }
+    let mode = if preferred.is_raw() {
+        MediaProjectionMode::Raw
+    } else if preferred.is_textual() {
+        MediaProjectionMode::Derived
+    } else {
+        MediaProjectionMode::ManagedReference
+    };
+    match capabilities.supports(representation, &input.asset) {
+        CapabilitySupport::Supported => Some((representation, mode)),
+        CapabilitySupport::Unsupported => {
+            notices.push(MediaPlanNotice {
+                asset_id: input.asset.asset_id.clone(),
+                code: MediaPlanNoticeCode::RawCapabilityUnsupported,
+            });
+            None
+        }
+        CapabilitySupport::Unknown => {
+            notices.push(MediaPlanNotice {
+                asset_id: input.asset.asset_id.clone(),
+                code: MediaPlanNoticeCode::RawCapabilityUnknown,
+            });
+            None
+        }
+    }
+}
+
 fn select_derived<'a>(
     candidates: impl Iterator<Item = &'a MediaRepresentation>,
     input: &'a MediaInput,
@@ -809,6 +918,7 @@ mod tests {
         MediaInput {
             asset,
             representations,
+            preferred_representation: None,
         }
     }
 

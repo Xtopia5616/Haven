@@ -117,3 +117,4 @@
 - [0114：受限本地文档抽取与派生表示](0114-bounded-document-extraction.md)
 - [0115：受管上传资产生命周期与清理](0115-managed-upload-lifecycle-and-cleanup.md)
 - [0116：多模态请求与受管上传边界加固](0116-media-boundary-hardening.md)
+- [0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)

@@ -13,4 +13,5 @@ rusqlite.workspace = true
 flate2.workspace = true
 tracing.workspace = true
 tokio.workspace = true
+base64.workspace = true
 haven-common = { path = "../common" }

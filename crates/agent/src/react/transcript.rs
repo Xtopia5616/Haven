@@ -22,7 +22,9 @@
 //! - **Terminal action-result**: no live loop left — history-only persist.
 
 use super::*;
-use crate::types::{Action, TranscriptRecord};
+use crate::types::{
+    Action, TranscriptRecord, attachment_media_inputs_for_snapshot, canonical_for_snapshot,
+};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_tools::{OperationIdempotency, ToolExecutionOutcome, ToolOperationScope};
@@ -157,7 +159,8 @@ impl TranscriptEvent {
                 step_number,
                 source: *source,
                 text: text.clone(),
-                attachments: attachments.clone(),
+                media_inputs: attachment_media_inputs_for_snapshot(attachments),
+                attachments: Vec::new(),
                 message_id: message_id.clone(),
             },
             Self::CompactSummary {
@@ -168,7 +171,7 @@ impl TranscriptEvent {
                 episode_id,
                 degraded,
             } => TranscriptRecord::CompactSummary {
-                compacted: compacted.clone(),
+                compacted: canonical_for_snapshot(compacted),
                 summary: summary.clone(),
                 tokens_before: *tokens_before,
                 tokens_after: *tokens_after,

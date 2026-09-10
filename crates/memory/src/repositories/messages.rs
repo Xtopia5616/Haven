@@ -1,5 +1,7 @@
 use crate::db::Database;
+use base64::Engine as _;
 use chrono::{SecondsFormat, Utc};
+use haven_common::media::{MediaInput, legacy_attachment_to_media_input};
 use haven_common::types::MessageAttachment;
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
@@ -22,8 +24,8 @@ pub fn undelivered_recovery_since() -> String {
     (Utc::now() - UNDELIVERED_RECOVERY_MAX_AGE).to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Map a `messages` row (10 columns: id, session_id, role, content, message_type,
-/// created_at, tool_call_id, attachments, voice, ingress_seq) into a `Message`. Shared by
+/// Map a `messages` row (11 columns: id, session_id, role, content, message_type,
+/// created_at, tool_call_id, attachments, voice, ingress_seq, media_inputs) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
 fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
     Ok(Message {
@@ -37,6 +39,7 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
         attachments: Database::parse_attachments(row.get(7)?),
         voice: row.get::<_, i32>(8)? != 0,
         ingress_seq: row.get(9)?,
+        media_inputs: Database::parse_media_inputs(row.get(10)?),
     })
 }
 
@@ -51,6 +54,10 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
+    /// Durable provider-neutral media representations. This is the canonical
+    /// persistence projection; `attachments` remains a UI/legacy projection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_inputs: Vec<MediaInput>,
     /// True for user messages that came from voice transcription (mic style
     /// in the UI survives reloads). Assistant/tool messages are always false.
     #[serde(default)]
@@ -96,6 +103,37 @@ impl Database {
         // block ids minted at stream start); `None` mints a fresh `msg-*`.
         id: Option<&str>,
     ) -> anyhow::Result<Message> {
+        let media_inputs: Vec<MediaInput> = attachments
+            .iter()
+            .map(legacy_attachment_to_media_input)
+            .map(|input| input.for_snapshot())
+            .collect();
+        self.add_message_full_with_media(
+            session_id,
+            role,
+            content,
+            message_type,
+            tool_call_id,
+            attachments,
+            voice,
+            id,
+            &media_inputs,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_message_full_with_media(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        tool_call_id: Option<&str>,
+        attachments: &[MessageAttachment],
+        voice: bool,
+        id: Option<&str>,
+        media_inputs: &[MediaInput],
+    ) -> anyhow::Result<Message> {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));
@@ -124,8 +162,8 @@ impl Database {
                 |row| row.get(0),
             )?;
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice, ingress_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice, ingress_seq, media_inputs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 rusqlite::params![
                     id,
                     session_id,
@@ -137,6 +175,7 @@ impl Database {
                     Self::serialize_attachments(attachments),
                     voice,
                     ingress_seq,
+                    Self::serialize_media_inputs(media_inputs),
                 ],
             )?;
             Ok(ingress_seq)
@@ -162,6 +201,7 @@ impl Database {
             created_at,
             tool_call_id: tool_call_id.map(String::from),
             attachments: attachments.to_vec(),
+            media_inputs: media_inputs.to_vec(),
             voice,
             ingress_seq,
         })
@@ -182,13 +222,51 @@ impl Database {
         if attachments.is_empty() {
             None
         } else {
-            serde_json::to_string(attachments).ok()
+            let metadata: Vec<_> = attachments
+                .iter()
+                .map(|attachment| {
+                    let mut attachment = attachment.clone();
+                    // Never persist base64 in the legacy projection. The
+                    // canonical media_inputs column carries metadata and a
+                    // trusted host path is rehydrated only for UI previews.
+                    attachment.data.clear();
+                    attachment
+                })
+                .collect();
+            serde_json::to_string(&metadata).ok()
         }
     }
 
     fn parse_attachments(raw: Option<String>) -> Vec<MessageAttachment> {
-        match raw {
+        let mut attachments: Vec<MessageAttachment> = match raw {
             Some(s) if !s.is_empty() => serde_json::from_str(&s).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        // `messages.attachments` is a compatibility/UI projection. Rehydrate
+        // a preview only from the two host-owned media roots; the durable
+        // provider-neutral representation remains `media_inputs`.
+        for attachment in &mut attachments {
+            if attachment.data.is_empty()
+                && let Some(path) = attachment.path.as_deref()
+                && let Some(bytes) = read_host_media(path)
+            {
+                attachment.data = base64::engine::general_purpose::STANDARD.encode(bytes);
+            }
+        }
+        attachments
+    }
+
+    fn serialize_media_inputs(media_inputs: &[MediaInput]) -> Option<String> {
+        if media_inputs.is_empty() {
+            None
+        } else {
+            serde_json::to_string(media_inputs).ok()
+        }
+    }
+
+    fn parse_media_inputs(raw: Option<String>) -> Vec<MediaInput> {
+        match raw {
+            Some(value) if !value.is_empty() => serde_json::from_str(&value).unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -203,7 +281,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq
+                    attachments, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], map_message_row)?;
@@ -252,7 +330,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq
+                    attachments, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text' OR message_type = 'peer_kickoff')
               ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
@@ -278,7 +356,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq
+                    attachments, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 AND created_at > ?2
              ORDER BY created_at ASC, rowid ASC",
         )?;
@@ -301,7 +379,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq
+                    attachments, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 AND ingress_seq > ?2
              ORDER BY ingress_seq ASC, rowid ASC",
         )?;
@@ -341,7 +419,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
-                    m.tool_call_id, m.attachments, m.voice, m.ingress_seq
+                    m.tool_call_id, m.attachments, m.voice, m.ingress_seq, m.media_inputs
              FROM messages m
              WHERE m.session_id = ?1
                AND m.role = 'user'
@@ -543,6 +621,23 @@ impl Database {
     }
 }
 
+fn read_host_media(path: &str) -> Option<Vec<u8>> {
+    let path = std::path::Path::new(path);
+    let roots = [
+        haven_common::default_work_dir().join("uploads"),
+        haven_common::config::default_generated_media_dir(),
+    ];
+    let canonical_path = std::fs::canonicalize(path).ok()?;
+    if !roots.iter().any(|root| {
+        std::fs::canonicalize(root)
+            .ok()
+            .is_some_and(|root| canonical_path.starts_with(root))
+    }) {
+        return None;
+    }
+    std::fs::read(canonical_path).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,8 +834,67 @@ mod tests {
         .unwrap();
         let msgs = db.get_session_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].attachments, vec![att]);
+        assert_eq!(msgs[0].attachments[0].media_type, att.media_type);
+        assert!(msgs[0].attachments[0].data.is_empty());
+        assert_eq!(msgs[0].media_inputs.len(), 1);
+        assert!(matches!(
+            msgs[0].media_inputs[0].representations[0].payload,
+            haven_common::media::MediaRepresentationPayload::ManagedFileRef { .. }
+        ));
         assert_eq!(msgs[0].content, "看图");
+    }
+
+    #[test]
+    fn managed_attachment_persists_metadata_and_rehydrates_only_host_preview() -> anyhow::Result<()>
+    {
+        let db = test_db();
+        let tid = test_session(&db);
+        let dir = haven_common::default_work_dir()
+            .join("uploads")
+            .join(format!("message-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("photo.png");
+        std::fs::write(&path, b"hello").unwrap();
+
+        let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.asset_id = Some(haven_common::types::new_id("asset"));
+        attachment.filename = Some("photo.png".into());
+        attachment.path = Some(path.to_string_lossy().into_owned());
+        attachment.size_bytes = Some(5);
+        db.add_message_full(
+            &tid,
+            "user",
+            "看图",
+            Some("text"),
+            None,
+            std::slice::from_ref(&attachment),
+            false,
+            None,
+        )
+        .unwrap();
+
+        let raw = db.conn().query_row(
+            "SELECT attachments, media_inputs FROM messages WHERE session_id = ?1",
+            rusqlite::params![tid],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )?;
+        assert!(!raw.0.unwrap_or_default().contains("aGVsbG8="));
+        assert!(!raw.1.unwrap_or_default().contains("aGVsbG8="));
+
+        let message = db.get_session_messages(&tid).unwrap().remove(0);
+        assert_eq!(message.attachments[0].data, "aGVsbG8=");
+        assert_eq!(message.media_inputs.len(), 1);
+        assert!(matches!(
+            message.media_inputs[0].representations[0].payload,
+            haven_common::media::MediaRepresentationPayload::ManagedFileRef { .. }
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
     }
 
     #[test]
@@ -796,6 +950,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
             attachments: vec![MessageAttachment::new("image/jpeg", "abc")],
+            media_inputs: vec![],
             voice: true,
             ingress_seq: 0,
         };

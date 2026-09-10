@@ -760,7 +760,6 @@ async fn persist_file_attachments_to_with_limit(
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     use base64::Engine as _;
 
-    let mut inline_media = Vec::new();
     let mut files = Vec::new();
     for mut att in attachments {
         // `persist_file_attachments_to` is also used by compatibility and
@@ -772,14 +771,13 @@ async fn persist_file_attachments_to_with_limit(
         if att.asset_id.is_none() {
             att.asset_id = Some(haven_common::types::new_id("asset"));
         }
-        if att.is_inline_media() {
-            inline_media.push(att);
-        } else {
-            files.push(att);
-        }
+        // All binary inputs now become managed assets.  Inline base64 is an
+        // ingress-only transport representation; keeping it in messages and
+        // snapshots made the same bytes live in multiple authorities.
+        files.push(att);
     }
     if files.is_empty() {
-        return Ok(inline_media);
+        return Ok(Vec::new());
     }
 
     // Serialize quota accounting and staging-directory commits so concurrent
@@ -813,6 +811,7 @@ async fn persist_file_attachments_to_with_limit(
     };
 
     let mut used_names = std::collections::HashSet::new();
+    let mut persisted = Vec::with_capacity(files.len());
     let mut total_bytes = existing_bytes;
     for mut att in files {
         let bytes = base64::engine::general_purpose::STANDARD
@@ -854,14 +853,18 @@ async fn persist_file_attachments_to_with_limit(
             .await
             .map_err(|e| format!("保存附件失败: {e}"))?;
         att.path = Some(batch_dir.join(&name).to_string_lossy().into_owned());
-        att.data = String::new();
-        inline_media.push(att);
+        // Keep the decoded transport data in the returned in-memory value so
+        // the media gateway can still perform OCR/STT before persistence.
+        // `messages.attachments` strips it at the DB boundary and snapshots
+        // use `MediaInput::for_snapshot`, so this is not a second durable
+        // authority.
+        persisted.push(att);
     }
     tokio::fs::rename(&staging_dir, &batch_dir)
         .await
         .map_err(|e| format!("提交上传批次失败: {e}"))?;
     guard.committed = true;
-    Ok(inline_media)
+    Ok(persisted)
 }
 
 fn filename_collision_key(name: &str) -> String {
@@ -1220,7 +1223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_persist_file_attachments_writes_disk_and_clears_data() {
+    async fn test_persist_file_attachments_writes_every_binary_asset() {
         use base64::Engine as _;
         use tempfile::TempDir;
 
@@ -1239,9 +1242,9 @@ mod tests {
 
         let saved = out.iter().find(|a| !a.is_image()).unwrap();
         assert!(saved.asset_id.as_deref().unwrap().starts_with("asset-"));
-        assert!(
-            saved.data.is_empty(),
-            "file bytes must not be kept in the message"
+        assert_eq!(
+            saved.data,
+            base64::engine::general_purpose::STANDARD.encode(b"hello pdf")
         );
         let path = saved.path.as_ref().unwrap();
         assert!(
@@ -1253,12 +1256,12 @@ mod tests {
 
         let image = out.iter().find(|a| a.is_image()).unwrap();
         assert!(image.asset_id.as_deref().unwrap().starts_with("asset-"));
-        assert_eq!(image.data, "aGVsbG8=", "images keep their base64 payload");
-        assert!(image.path.is_none());
+        assert_eq!(image.data, "aGVsbG8=", "gateway keeps a transient payload");
+        assert!(image.path.is_some());
     }
 
     #[tokio::test]
-    async fn test_persist_file_attachments_keeps_audio_inline() {
+    async fn test_persist_file_attachments_manages_audio_assets() {
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
@@ -1272,7 +1275,7 @@ mod tests {
         assert!(out[0].is_audio());
         assert!(out[0].asset_id.as_deref().unwrap().starts_with("asset-"));
         assert_eq!(out[0].data, "UklGRg==");
-        assert!(out[0].path.is_none());
+        assert!(out[0].path.is_some());
     }
 
     #[tokio::test]

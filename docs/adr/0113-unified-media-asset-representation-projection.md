@@ -1,7 +1,7 @@
 # ADR 0113：统一多模态资产、表示与请求投影
 
 日期：2026-09-10
-状态：分阶段实施（阶段 0 已采纳）
+状态：分阶段实施（阶段 0 已采纳；持久化收口见 ADR 0121）
 
 ## 背景与当前契约盘点
 
@@ -12,8 +12,8 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 | 当前入口 | 当前权威实现 | 现状与风险 |
 |---|---|---|
 | 浏览器附件 | `ui/src/lib/InputRouter.svelte`、`process_transcript` | 附件以 base64 进入 Tauri；前端限制不是安全边界 |
-| host 校验/落盘 | `crates/app-binary/src/commands/recording.rs` | 普通文件写入 `uploads/<batch>` 并清空 `data`；图片/音频继续把 base64 带入消息 |
-| 消息持久化 | `crates/memory/src/repositories/messages.rs` | `MessageAttachment` JSON 直接写入 `messages.attachments` |
+| host 校验/落盘 | `crates/app-binary/src/commands/recording.rs` | 所有二进制附件写入 `uploads/<batch>`；gateway 只在进程内暂留 bytes |
+| 消息持久化 | `crates/memory/src/repositories/messages.rs` | `media_inputs` 保存 canonical 表示；`messages.attachments` 只保留兼容元数据 |
 | 媒体派生 | `crates/llm/src/media/gateway.rs` | OCR/STT 成功后返回文本，但调用方仍保留原始附件 |
 | ReAct 投影 | `crates/agent/src/react/mod.rs`、`types.rs`、`resume.rs` | 依据附件类型直接构造 `ContentPart`；普通文件可能把绝对路径写入模型文本 |
 | provider 路由 | `crates/agent/src/react/turn.rs`、`crates/llm/src/router.rs`、`adapters/` | 根据已有 `ContentPart::Image/Audio` 选角色；没有统一的能力画像和降级理由 |

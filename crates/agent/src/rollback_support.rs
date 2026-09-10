@@ -139,6 +139,7 @@ mod tests {
             step_number: 1,
             source: InjectSource::FollowUp,
             text: text.into(),
+            media_inputs: Vec::new(),
             attachments: Vec::new(),
             message_id: id.map(str::to_string),
         }

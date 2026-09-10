@@ -774,6 +774,16 @@ pub struct MessageAttachment {
     /// omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// Provider-neutral derived views of this asset (OCR/STT/document
+    /// extraction, etc.).  The attachment remains the compatibility/UI
+    /// projection; the media planner consumes these representations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub representations: Vec<crate::media::MediaRepresentation>,
+    /// A successful gateway extraction can be the preferred view for the
+    /// current request while the original bytes remain available for a later
+    /// provider retry or a different user intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_representation: Option<crate::media::MediaRepresentationKind>,
 }
 
 impl MessageAttachment {
@@ -789,6 +799,8 @@ impl MessageAttachment {
             sha256: None,
             size_bytes: None,
             expires_at: None,
+            representations: Vec::new(),
+            preferred_representation: None,
         }
     }
 

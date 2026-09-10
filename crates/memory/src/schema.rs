@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 16;
+pub const SCHEMA_VERSION: i32 = 17;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -32,7 +32,8 @@ const SCHEMA_SQL: &[&str] = &[
         tool_call_id TEXT,
         attachments TEXT,
         voice INTEGER NOT NULL DEFAULT 0,
-        ingress_seq INTEGER NOT NULL DEFAULT 0
+        ingress_seq INTEGER NOT NULL DEFAULT 0,
+        media_inputs TEXT
     )",
     "CREATE TABLE IF NOT EXISTS message_ingress_cursors (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -421,6 +422,7 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
 const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("sessions", "transcript"),
     ("messages", "voice"),
+    ("messages", "media_inputs"),
     ("session_steps", "thought"),
     ("memory_nodes", "kind"),
     ("memory_items", "content"),

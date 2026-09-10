@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::session::{SessionExecutor, SessionStatus};
 use haven_common::config::ContextLimitsConfig;
 use haven_common::media::{
-    CapabilityProfile, CapabilitySupport, MediaInputStrategy, build_media_plan,
+    CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, build_media_plan,
     legacy_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
@@ -69,6 +69,16 @@ pub(crate) fn attachment_to_content_part_with_strategy(
     strategy: MediaInputStrategy,
 ) -> ContentPart {
     let input = legacy_attachment_to_media_input(att);
+    media_input_to_content_part_with_strategy(&input, strategy)
+}
+
+/// Project an already normalized media input. Snapshot resume and live
+/// ingress both use this helper, so provider-facing content cannot drift based
+/// on which path produced the input.
+pub(crate) fn media_input_to_content_part_with_strategy(
+    input: &MediaInput,
+    strategy: MediaInputStrategy,
+) -> ContentPart {
     let capabilities = CapabilityProfile {
         // These are the current canonical inline parts, not a model-name
         // guess. The selected adapter still validates the final request.
@@ -77,21 +87,32 @@ pub(crate) fn attachment_to_content_part_with_strategy(
         // A persisted ordinary attachment is addressable through the trusted
         // `files` tool using its opaque asset id. Legacy/in-memory attachments
         // without both host markers stay on the safe fallback path.
-        tools: if att.asset_id.is_some() && att.path.is_some() {
+        tools: if matches!(
+            input.asset.source,
+            haven_common::media::MediaAssetSource::UserAttachment
+                | haven_common::media::MediaAssetSource::Generated
+                | haven_common::media::MediaAssetSource::ToolOutput
+        ) && input.representations.iter().any(|representation| {
+            matches!(
+                &representation.payload,
+                haven_common::media::MediaRepresentationPayload::ManagedFileRef { .. }
+            )
+        }) {
             CapabilitySupport::Supported
         } else {
             CapabilitySupport::Unknown
         },
         ..CapabilityProfile::default()
     };
-    let plan = build_media_plan(std::slice::from_ref(&input), &capabilities, strategy);
-    if let Ok(mut parts) = haven_llm::media::project_media_plan(&plan, &[input])
+    let plan = build_media_plan(std::slice::from_ref(input), &capabilities, strategy);
+    if let Ok(mut parts) = haven_llm::media::project_media_plan(&plan, std::slice::from_ref(input))
         && let Some(part) = parts.pop()
     {
         return part;
     }
 
-    let name = att
+    let name = input
+        .asset
         .filename
         .as_deref()
         .map(|value| haven_common::text::sanitize_prompt_field(value, 120))

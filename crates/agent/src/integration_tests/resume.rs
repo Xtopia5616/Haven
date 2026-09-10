@@ -1,5 +1,25 @@
 use super::support::*;
 use super::*;
+use base64::Engine as _;
+
+fn managed_test_image() -> (haven_common::types::MessageAttachment, std::path::PathBuf) {
+    let dir = haven_common::default_work_dir()
+        .join("uploads")
+        .join(format!("test-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("image.png");
+    let bytes = b"hello";
+    std::fs::write(&path, bytes).unwrap();
+    let mut attachment = haven_common::types::MessageAttachment::new(
+        "image/png",
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    );
+    attachment.asset_id = Some(haven_common::types::new_id("asset"));
+    attachment.filename = Some("image.png".into());
+    attachment.path = Some(path.to_string_lossy().into_owned());
+    attachment.size_bytes = Some(bytes.len() as u64);
+    (attachment, dir)
+}
 
 #[tokio::test]
 async fn restore_per_session_tools_rebuilds_from_history() {
@@ -562,14 +582,14 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
 }
 
 #[tokio::test]
-async fn run_session_from_id_attaches_first_user_message_images() {
+async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor
         .create_session_with_summary("看图", "看图")
         .await
         .unwrap();
-    let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
+    let (att, asset_dir) = managed_test_image();
     agent
         .persist_message_parts(&session.id, "user", "看图", Some("text"), &[att], false)
         .await
@@ -582,17 +602,15 @@ async fn run_session_from_id_attaches_first_user_message_images() {
         .iter()
         .find(|m| m.role == CanonicalRole::User)
         .expect("initial user message exists");
-    assert!(
-        user_msg
-            .content
-            .iter()
-            .any(|p| matches!(p, ContentPart::Image { .. })),
-        "initial user message should carry the image part"
-    );
+    assert!(user_msg.content.iter().any(|p| matches!(
+        p,
+        ContentPart::Text(text) if text.contains("managed image omitted from snapshot")
+    )));
+    let _ = std::fs::remove_dir_all(asset_dir);
 }
 
 #[tokio::test]
-async fn run_session_from_id_ignores_later_image_supplement() {
+async fn run_session_from_id_keeps_later_media_as_managed_reference() {
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor
@@ -612,7 +630,7 @@ async fn run_session_from_id_ignores_later_image_supplement() {
         .unwrap();
     // Image arrives AFTER the session input (a supplement) ??it must not be
     // attached to the initial user turn.
-    let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
+    let (att, asset_dir) = managed_test_image();
     agent
         .process_input_with_attachments("补充看图", Some(session.id.clone()), &[att], false)
         .await
@@ -632,14 +650,16 @@ async fn run_session_from_id_ignores_later_image_supplement() {
             .any(|p| matches!(p, ContentPart::Image { .. })),
         "image supplement must not be attached to the initial user turn"
     );
-    // The supplement itself is still injected (with its image) later.
+    // The supplement itself is still injected later, but the snapshot carries
+    // only the opaque managed reference rather than inline image bytes.
     assert!(
         canonical.iter().any(|m| m
             .content
             .iter()
-            .any(|p| matches!(p, ContentPart::Image { .. }))),
-        "supplement image should be injected into the conversation"
+            .any(|p| matches!(p, ContentPart::Text(text) if text.contains("asset_id=")))),
+        "supplement media should be injected as a managed reference"
     );
+    let _ = std::fs::remove_dir_all(asset_dir);
 }
 
 #[tokio::test]

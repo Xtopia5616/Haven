@@ -628,6 +628,7 @@ mod tests {
             created_at: String::new(),
             tool_call_id: None,
             attachments: vec![MessageAttachment::new("image/png", "aGVsbG8=")],
+            media_inputs: vec![],
             voice: false,
             ingress_seq: 0,
         };
@@ -669,6 +670,7 @@ mod tests {
             created_at: String::new(),
             tool_call_id: None,
             attachments: vec![],
+            media_inputs: vec![],
             voice: false,
             ingress_seq: 0,
         };
@@ -681,6 +683,7 @@ mod tests {
             created_at: String::new(),
             tool_call_id: None,
             attachments: vec![],
+            media_inputs: vec![],
             voice: false,
             ingress_seq: 0,
         };

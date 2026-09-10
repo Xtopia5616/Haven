@@ -154,12 +154,14 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；其中
   `fact_graph.rs` 集中负责 `memory_edges` 写入与图谱不变量，`fact_query.rs`
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
-  扫描，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。
+  扫描，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。消息的
+  `media_inputs` 是多模态 canonical 持久化投影；`attachments` 仅保留元数据兼容
+  投影，并由受信 host 根目录重建历史预览。
 - `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
 
 schema 初始化不改变 X12：`messages` / `session_steps` 仍是投影，
-`ReActSnapshot.events` 仍是恢复唯一权威；reset 只替换持久化载体，不成为新的
-业务真源。
+`ReActSnapshot.events` 仍是恢复唯一权威；`UserInject` snapshot 只保存
+`MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
 
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
 provider 协议和 UI 展示逻辑不得进入本 crate。
@@ -188,7 +190,7 @@ provider（STT 客户端来自 `haven-llm`）。
 
 - `react/`：ReAct 循环（`loop` / `turn` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责阶段编排，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
-- **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
+- **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。多模态输入在 ingress 仍接受兼容 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；无快照恢复只读取步骤投影中的身份，旧行才按 `step-{row_id}` 生成确定性 fallback。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
@@ -443,3 +445,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-08 | §2.5 Tools：将 `haven_session_diagnostics` 合并到 `haven_diagnostics`，统一模型可见诊断入口并保留会话数据脱敏与独立并发资源（ADR 0103） |
 | 2026-09-08 | §2.3 Memory：删除历史 schema/data migration，数据库收敛为严格 v16 当前契约；统一 FTS5、事实/episode 类型域、向量维度与 RRF 混合召回，并在 provenance 落库前限长脱敏（ADR 0105） |
 | 2026-09-08 | §2.3 Memory / §2.5 Agent：事实抽取 outbox 增加可恢复的 `kv_store` pending marker，session 删除与 orphan cleanup 统一回收 cursor、节流和队列状态；移除启动时伪造的默认姓名事实（ADR 0107） |
+| 2026-09-10 | §2.3 Memory / §2.5 Agent / §2.6 App：消息新增 v17 `media_inputs` canonical 投影；managed uploads 统一覆盖图片/音频/文件；OCR/STT 表示持久化并保留 raw；旧快照与 compact summary 在 snapshot 边界剥离 inline bytes（ADR 0121） |

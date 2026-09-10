@@ -203,7 +203,15 @@ async fn persist_message_with_attachments_roundtrips() {
     let msg = found.unwrap();
     assert_eq!(msg.attachments.len(), 1);
     assert_eq!(msg.attachments[0].media_type, "image/png");
-    assert_eq!(msg.attachments[0].data, "aGVsbG8=");
+    assert!(
+        msg.attachments[0].data.is_empty(),
+        "the legacy DB projection must not retain inline bytes"
+    );
+    assert_eq!(msg.media_inputs.len(), 1);
+    assert!(matches!(
+        msg.media_inputs[0].representations[0].payload,
+        haven_common::media::MediaRepresentationPayload::ManagedFileRef { .. }
+    ));
 }
 
 #[test]

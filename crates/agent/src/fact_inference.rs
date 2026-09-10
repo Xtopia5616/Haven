@@ -174,6 +174,7 @@ fn push_turn_context(
                 created_at: ts.to_string(),
                 tool_call_id: None,
                 attachments: vec![],
+                media_inputs: vec![],
                 voice: false,
                 ingress_seq: 0,
             });

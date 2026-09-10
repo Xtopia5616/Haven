@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use haven_common::media::MediaInputStrategy;
+use haven_common::media::{MediaInput, MediaInputStrategy, legacy_attachment_to_media_input};
 use haven_common::types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
     MessageAttachment,
@@ -73,12 +73,19 @@ pub enum TranscriptRecord {
         source: InjectSource,
         /// Raw text — adapters prepend wire prefixes (Phase 8 / B3).
         text: String,
+        /// Durable provider-neutral media metadata. Inline bytes are removed
+        /// before this record is serialized into a snapshot.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media_inputs: Vec<MediaInput>,
+        /// Legacy snapshot field. It remains readable for the reset boundary,
+        /// but new event records never serialize attachment bytes here.
+        #[serde(default, skip_serializing)]
         attachments: Vec<MessageAttachment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
     },
     CompactSummary {
+        #[serde(serialize_with = "serialize_snapshot_canonical")]
         compacted: Vec<CanonicalMessage>,
         summary: String,
         tokens_before: u32,
@@ -214,8 +221,26 @@ impl ReActSnapshot {
     /// Snapshot upgrades are deliberately unsupported: a snapshot without
     /// `events` belongs to an incompatible Haven version and must be reset.
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        let snapshot: Self = serde_json::from_str(json)
+        let mut snapshot: Self = serde_json::from_str(json)
             .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;
+        // Older snapshots stored attachments directly on UserInject. Convert
+        // them once at the read boundary so a later checkpoint cannot write
+        // their inline bytes back out. The legacy field is intentionally
+        // cleared after conversion; the new media_inputs field is the only
+        // durable representation for subsequent saves.
+        for event in &mut snapshot.events {
+            if let TranscriptRecord::UserInject {
+                media_inputs,
+                attachments,
+                ..
+            } = event
+            {
+                if media_inputs.is_empty() && !attachments.is_empty() {
+                    *media_inputs = attachment_media_inputs_for_snapshot(attachments);
+                }
+                attachments.clear();
+            }
+        }
         if snapshot.events.iter().any(|event| match event {
             TranscriptRecord::UserInject { text, .. } => text.starts_with("[conversation] "),
             TranscriptRecord::CompactSummary { compacted, .. } => compacted.iter().any(|message| {
@@ -359,15 +384,22 @@ pub fn project_transcript_with_strategy(
             TranscriptRecord::UserInject {
                 source,
                 text,
+                media_inputs,
                 attachments,
                 ..
             } => {
                 let mut content = vec![ContentPart::text(text.clone())];
-                content.extend(
-                    attachments
-                        .iter()
-                        .map(|attachment| attachment_to_content_part(attachment, strategy)),
-                );
+                if media_inputs.is_empty() {
+                    content.extend(
+                        attachments
+                            .iter()
+                            .map(|attachment| attachment_to_content_part(attachment, strategy)),
+                    );
+                } else {
+                    content.extend(media_inputs.iter().map(|input| {
+                        crate::react::media_input_to_content_part_with_strategy(input, strategy)
+                    }));
+                }
                 canonical.push(CanonicalMessage::user_with_source(content, *source));
             }
             TranscriptRecord::CompactSummary { compacted, .. } => {
@@ -385,6 +417,56 @@ fn attachment_to_content_part(
 ) -> ContentPart {
     // Single helper shared with the live ReAct path.
     crate::react::attachment_to_content_part_with_strategy(att, strategy)
+}
+
+/// Remove inline media bytes from a canonical compaction root before it is
+/// persisted in a snapshot. Canonical messages are still the hot request
+/// projection, so the live state keeps the original image/audio parts; the
+/// durable root gets a typed text marker instead of an unbounded base64 blob.
+pub(crate) fn canonical_for_snapshot(messages: &[CanonicalMessage]) -> Vec<CanonicalMessage> {
+    messages
+        .iter()
+        .cloned()
+        .map(|mut message| {
+            message.content = message
+                .content
+                .into_iter()
+                .map(|part| match part {
+                    ContentPart::Text(text) => ContentPart::Text(text),
+                    ContentPart::Image { media_type, .. } => ContentPart::text(format!(
+                        "[managed image omitted from snapshot; media_type={media_type}]"
+                    )),
+                    ContentPart::Audio { media_type, .. } => ContentPart::text(format!(
+                        "[managed audio omitted from snapshot; media_type={media_type}]"
+                    )),
+                })
+                .collect();
+            message
+        })
+        .collect()
+}
+
+fn serialize_snapshot_canonical<S>(
+    messages: &[CanonicalMessage],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    canonical_for_snapshot(messages).serialize(serializer)
+}
+
+/// Convert a legacy attachment to the same request projection used by the
+/// durable media event. Kept here so old snapshots and new snapshots share
+/// exactly one projection implementation.
+pub(crate) fn attachment_media_inputs_for_snapshot(
+    attachments: &[MessageAttachment],
+) -> Vec<MediaInput> {
+    attachments
+        .iter()
+        .map(legacy_attachment_to_media_input)
+        .map(|input| input.for_snapshot())
+        .collect()
 }
 
 /// Test/helper: wrap a pre-built canonical list as a single CompactSummary
@@ -448,6 +530,10 @@ impl ProcessResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::media::{
+        MediaDerivation, MediaProvenance, MediaRepresentation, MediaRepresentationKind,
+        MediaRepresentationPayload,
+    };
     use haven_common::types::CanonicalRole;
 
     fn canonical_msg(role: CanonicalRole, text: &str) -> CanonicalMessage {
@@ -602,6 +688,100 @@ mod tests {
     }
 
     #[test]
+    fn new_user_inject_snapshot_contains_media_metadata_not_inline_bytes() {
+        let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
+        attachment.filename = Some("photo.png".into());
+        attachment.path = Some(r"C:\haven\uploads\photo.png".into());
+        attachment
+            .representations
+            .push(MediaRepresentation::available(
+                MediaRepresentationKind::OcrText,
+                MediaProvenance::Derived {
+                    operation: MediaDerivation::Ocr,
+                    provider: Some("ocr".into()),
+                    source_kind: Some(MediaRepresentationKind::RawImage),
+                },
+                MediaRepresentationPayload::Text("recognized text".into()),
+            ));
+
+        let record = TranscriptRecord::UserInject {
+            step_number: 1,
+            source: InjectSource::FollowUp,
+            text: "请看图".into(),
+            media_inputs: attachment_media_inputs_for_snapshot(&[attachment]),
+            attachments: Vec::new(),
+            message_id: Some("msg-0123456789abcdef0123456789abcdef".into()),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+
+        assert!(!json.contains("aGVsbG8="));
+        assert!(!json.contains(r"C:\\haven\\uploads"));
+        assert!(json.contains("managed_file_ref"));
+        assert!(json.contains("recognized text"));
+        assert!(json.contains("ocr_text"));
+    }
+
+    #[test]
+    fn compact_summary_snapshot_replaces_inline_media_with_safe_marker() {
+        let snapshot = ReActSnapshot {
+            events: seed_events_from_canonical(vec![CanonicalMessage {
+                role: CanonicalRole::User,
+                content: vec![ContentPart::Image {
+                    content_type: "image_url".into(),
+                    media_type: "image/png".into(),
+                    data: "aGVsbG8=".into(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+                source: None,
+                id: None,
+            }]),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+
+        assert!(!json.contains("aGVsbG8="));
+        assert!(json.contains("managed image omitted from snapshot"));
+        assert!(json.contains("image/png"));
+    }
+
+    #[test]
+    fn reading_legacy_attachment_snapshot_migrates_without_reserializing_bytes() {
+        let json = serde_json::json!({
+            "events": [{
+                "type": "user_inject",
+                "step_number": 1,
+                "source": "follow_up",
+                "text": "请看图",
+                "attachments": [{
+                    "media_type": "image/png",
+                    "data": "aGVsbG8="
+                }]
+            }],
+            "step_number": 1
+        })
+        .to_string();
+
+        let snapshot = ReActSnapshot::from_json(&json).unwrap();
+        let saved = serde_json::to_string(&snapshot).unwrap();
+
+        assert!(!saved.contains("aGVsbG8="));
+        assert!(saved.contains("managed_file_ref"));
+        assert!(matches!(
+            &snapshot.events[0],
+            TranscriptRecord::UserInject {
+                media_inputs,
+                attachments,
+                ..
+            } if media_inputs.len() == 1 && attachments.is_empty()
+        ));
+    }
+
+    #[test]
     fn snapshot_from_json_rejects_legacy_phase7_shape() {
         // ContentPart::Text is an untagged string on the wire.
         let legacy = serde_json::json!({
@@ -739,6 +919,7 @@ mod tests {
                 step_number: 1,
                 source: InjectSource::FollowUp,
                 text: "a".into(),
+                media_inputs: vec![],
                 attachments: vec![],
                 message_id: None,
             },
@@ -746,6 +927,7 @@ mod tests {
                 step_number: 1,
                 source: InjectSource::FollowUp,
                 text: "b".into(),
+                media_inputs: vec![],
                 attachments: vec![],
                 message_id: None,
             },

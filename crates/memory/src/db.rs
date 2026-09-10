@@ -515,6 +515,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
             attachments: vec![],
+            media_inputs: vec![],
             voice: false,
             ingress_seq: 0,
         }
