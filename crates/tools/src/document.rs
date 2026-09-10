@@ -58,6 +58,14 @@ pub struct DocumentExtraction {
     pub text: String,
     pub sections: usize,
     pub size_bytes: u64,
+    pub truncated: bool,
+}
+
+/// Whether the bounded extractor has a parser for this path's extension.
+/// Callers use this to distinguish a deliberately unsupported format from a
+/// supported document that failed validation or parsing.
+pub fn supports_document_path(path: &Path) -> bool {
+    format_for_path(path).is_some()
 }
 
 /// Extract a bounded textual representation from a supported document.
@@ -115,7 +123,8 @@ fn extract_document_inner(
             extract_open_xml(path, format, cancel)?
         }
     };
-    let (text, _) = haven_common::encoding::truncate_output(&normalize_text(&text), max_chars);
+    let (text, truncated) =
+        haven_common::encoding::truncate_output(&normalize_text(&text), max_chars);
     if text.trim().is_empty() {
         anyhow::bail!("document contains no extractable text");
     }
@@ -125,6 +134,7 @@ fn extract_document_inner(
         text,
         sections: sections.max(1),
         size_bytes,
+        truncated,
     })
 }
 

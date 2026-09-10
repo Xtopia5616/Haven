@@ -21,8 +21,10 @@
 - 结果带 `provenance=document_extract`、表示类型、段数、大小和
   `untrusted_content=true`，正文用既有派生内容围栏包裹；
 - `asset_id` 调用只读，返回结果删除 `path`/`root`/`from`/`to` 等宿主路径字段；
-- 加密 PDF、未知压缩过滤器、损坏/空内容和超限文档返回明确的
-  `document_extract_unavailable`，不伪造空文本，也不回传原始字节。
+- 没有解析器的格式返回明确的 `unsupported_format` 降级结果；加密 PDF、未知
+  压缩过滤器、损坏/空内容和超限文档返回 `success=false` 的
+  `document_extract_failed`，不伪造空文本，也不回传原始字节。摘要请求还遵守
+  ADR 0117 的静态 system + user/data 边界。
 
 ## 资源与安全边界
 
