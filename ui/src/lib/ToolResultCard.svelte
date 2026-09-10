@@ -353,12 +353,15 @@
 		{#if awaiting}
 			<div class="ask-actions">
 				<span class="ask-waiting">
-					<span class="ask-waiting-dot"></span>
-					<span>
+					<span class="ask-guidance-icon" aria-hidden="true">
+						<Icon name="info" size={14} />
+					</span>
+					<span class="ask-guidance-copy">
+						<strong>回答方式</strong>
 						{#if options && options.length > 0}
-							选择后回车提交
+							<span>选择上方选项，或在输入框中输入答案 / 补充</span>
 						{:else}
-							等待你的回答...
+							<span>在输入框中输入答案或补充</span>
 						{/if}
 					</span>
 				</span>
@@ -592,23 +595,19 @@
 	.tool-card--ask {
 		position: relative;
 		overflow: hidden;
+		border-radius: var(--md-sys-shape-medium);
 		border-left: 4px solid var(--md-sys-color-primary);
 		border-color: color-mix(
 			in srgb,
 			var(--md-sys-color-primary) 32%,
 			var(--md-sys-color-outline-variant)
 		);
-		background:
-			radial-gradient(
-				circle at 100% 0%,
-				color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent),
-				transparent 42%
-			),
-			color-mix(
-				in srgb,
-				var(--md-sys-color-surface-container-high) 88%,
-				var(--md-sys-color-primary) 12%
-			);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary-container) 16%,
+			var(--md-sys-color-surface-container-low)
+		);
+		box-shadow: none;
 	}
 	.tool-card.embedded.tool-card--ask {
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
@@ -616,14 +615,8 @@
 			color-mix(in srgb, var(--md-sys-color-primary) 28%, var(--md-sys-color-outline-variant));
 		border-left: 4px solid var(--md-sys-color-primary);
 		border-radius: var(--md-sys-shape-medium);
-		background:
-			radial-gradient(
-				circle at 100% 0%,
-				color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent),
-				transparent 44%
-			),
-			color-mix(in srgb, var(--md-sys-color-primary-container) 26%, transparent);
-		box-shadow: var(--md-sys-elevation-1);
+		background: color-mix(in srgb, var(--md-sys-color-primary-container) 20%, transparent);
+		box-shadow: none;
 	}
 	.tool-card--ask[data-state='waiting'] {
 		border-color: color-mix(
@@ -632,7 +625,7 @@
 			var(--md-sys-color-outline-variant)
 		);
 		border-left-color: var(--md-sys-color-primary);
-		box-shadow: var(--md-sys-elevation-2);
+		box-shadow: none;
 	}
 	.tool-card--ask[data-state='completed'],
 	.tool-card--ask[data-state='resolved'] {
@@ -644,13 +637,7 @@
 		);
 	}
 	.tool-card.embedded.tool-card--ask[data-state='waiting'] {
-		background:
-			radial-gradient(
-				circle at 100% 0%,
-				color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent),
-				transparent 44%
-			),
-			color-mix(in srgb, var(--md-sys-color-primary-container) 34%, transparent);
+		background: color-mix(in srgb, var(--md-sys-color-primary-container) 28%, transparent);
 	}
 	.ask-header {
 		display: flex;
@@ -662,13 +649,12 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 38px;
-		height: 38px;
+		width: 36px;
+		height: 36px;
 		flex: none;
-		border-radius: var(--md-sys-shape-full);
+		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
-		box-shadow: 0 5px 12px color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
 	}
 	.ask-heading {
 		display: flex;
@@ -710,8 +696,8 @@
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
 		border: 1px solid
 			color-mix(in srgb, var(--md-sys-color-primary) 16%, var(--md-sys-color-outline-variant));
-		border-radius: var(--md-sys-shape-medium);
-		background: color-mix(in srgb, var(--md-sys-color-surface) 66%, transparent);
+		border-radius: var(--md-sys-shape-small);
+		background: color-mix(in srgb, var(--md-sys-color-surface) 72%, transparent);
 	}
 	.ask-question-label,
 	.ask-section-heading {
@@ -764,21 +750,25 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 650;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		box-shadow: 0 1px 0 color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+		border-radius: var(--md-sys-shape-small);
+		box-shadow: none;
 		transition:
 			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
 			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	:global(.md-choice-chip.ask-option:hover) {
-		transform: translateY(-1px);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary-container) 38%,
+			var(--md-sys-color-surface)
+		);
 	}
 	:global(.md-choice-chip.ask-option.selected) {
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
 		border-color: var(--md-sys-color-primary);
-		box-shadow: 0 4px 10px color-mix(in srgb, var(--md-sys-color-primary) 22%, transparent);
+		box-shadow: none;
 	}
 	.ask-actions {
 		display: flex;
@@ -802,7 +792,7 @@
 		min-width: 0;
 		height: 36px;
 		padding: 0 var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-full);
+		border-radius: var(--md-sys-shape-small);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
@@ -810,7 +800,7 @@
 		min-width: 0;
 		height: 36px;
 		padding-inline: var(--md-sys-space-lg);
-		border-radius: var(--md-sys-shape-full);
+		border-radius: var(--md-sys-shape-small);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
@@ -823,7 +813,7 @@
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border: 1px solid
 			color-mix(in srgb, var(--md-sys-color-success) 24%, var(--md-sys-color-outline-variant));
-		border-radius: var(--md-sys-shape-medium);
+		border-radius: var(--md-sys-shape-small);
 		background: color-mix(in srgb, var(--md-sys-color-success-container) 52%, transparent);
 		color: var(--md-sys-color-on-surface);
 		font-size: var(--md-sys-typescale-label-medium-size);
@@ -850,20 +840,39 @@
 	}
 	.ask-waiting {
 		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
+		align-items: flex-start;
+		gap: var(--md-sys-space-sm);
 		min-width: 0;
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.ask-waiting-dot {
-		width: 8px;
-		height: 8px;
+	.ask-guidance-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
 		flex: none;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-primary);
-		animation: ask-pulse 1.2s ease-in-out infinite;
+		border-radius: var(--md-sys-shape-small);
+		background: color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent);
+		color: var(--md-sys-color-primary);
+	}
+	.ask-guidance-copy {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-2xs);
+		min-width: 0;
+	}
+	.ask-guidance-copy strong {
+		color: var(--md-sys-color-primary);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.ask-guidance-copy > span {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.tool-card-icon {
 		display: inline-flex;
@@ -1007,17 +1016,6 @@
 	.tool-args {
 		min-width: 0;
 	}
-	@keyframes ask-pulse {
-		0%,
-		100% {
-			opacity: 1;
-			transform: scale(1);
-		}
-		50% {
-			opacity: 0.35;
-			transform: scale(0.8);
-		}
-	}
 	.tool-card-empty {
 		margin: 0;
 		font-size: var(--md-sys-typescale-label-medium-size);
@@ -1050,9 +1048,6 @@
 	@media (prefers-reduced-motion: reduce) {
 		.tool-state[data-state='running'] .tool-state-dot,
 		.tool-state[data-state='waiting'] .tool-state-dot {
-			animation: none;
-		}
-		.ask-waiting-dot {
 			animation: none;
 		}
 		:global(.md-choice-chip.ask-option) {

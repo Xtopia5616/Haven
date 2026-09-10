@@ -67,7 +67,7 @@
 	}
 
 	.md-choice-chip:hover::after {
-		opacity: var(--md-state-hover-opacity);
+		opacity: var(--md-sys-state-hover-opacity);
 	}
 
 	.md-choice-chip:focus-visible {

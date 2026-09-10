@@ -165,7 +165,7 @@ describe('ToolResultCard ask', () => {
 		expect(container.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('Haven 需要你的回答')).toBeTruthy();
 		expect(screen.getByText('你想怎么做？')).toBeTruthy();
-		expect(screen.getByText('选择后回车提交')).toBeTruthy();
+		expect(screen.getByText('选择上方选项，或在输入框中输入答案 / 补充')).toBeTruthy();
 		expect(screen.getByText('方案 A')).toBeTruthy();
 		expect(screen.getByText('方案 B')).toBeTruthy();
 	});
@@ -190,7 +190,7 @@ describe('ToolResultCard ask', () => {
 			awaiting: true,
 			messageId: 'ask-free',
 		});
-		expect(screen.getByText('等待你的回答...')).toBeTruthy();
+		expect(screen.getByText('在输入框中输入答案或补充')).toBeTruthy();
 	});
 
 	it('toggles option selection and notifies onAskSelectionChange without submitting', async () => {
