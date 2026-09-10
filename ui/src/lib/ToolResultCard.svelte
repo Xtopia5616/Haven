@@ -367,7 +367,7 @@
 				</span>
 				<div class="ask-action-buttons">
 					<MaterialButton
-						variant="text"
+						variant="outlined"
 						className="ask-ignore"
 						label="忽略"
 						onclick={() => onIgnore?.(messageId)}
@@ -786,24 +786,24 @@
 		gap: var(--md-sys-space-xs);
 		flex: none;
 	}
-	:global(.md-btn.ask-ignore) {
-		--_btn-fg: var(--md-sys-color-on-surface-variant);
-		--_btn-state: var(--md-sys-color-on-surface-variant);
-		min-width: 0;
+	:global(.md-btn.ask-ignore),
+	:global(.md-btn.ask-submit) {
+		box-sizing: border-box;
 		height: 36px;
-		padding: 0 var(--md-sys-space-sm);
+		min-height: 36px;
+		min-width: 0;
 		border-radius: var(--md-sys-shape-small);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
+	:global(.md-btn.ask-ignore) {
+		--_btn-fg: var(--md-sys-color-on-surface-variant);
+		--_btn-state: var(--md-sys-color-on-surface-variant);
+		padding: 0 var(--md-sys-space-sm);
+	}
 	:global(.md-btn.ask-submit) {
-		min-width: 0;
-		height: 36px;
 		padding-inline: var(--md-sys-space-lg);
-		border-radius: var(--md-sys-shape-small);
-		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.ask-resolved {
 		display: flex;
