@@ -42,7 +42,7 @@ describe('InputRouter context menu', () => {
 
 		expect(
 			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
-		).toBe('输入答案或补充，Enter 提交；也可选择上方选项');
+		).toBe('从上方的选项中选择，或者在此处输入答案或补充，Enter 提交');
 	});
 
 	it('uses the same shared toolbar control for interrupting active output', () => {

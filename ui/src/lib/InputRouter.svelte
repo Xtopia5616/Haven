@@ -82,8 +82,8 @@
 	const chatInputPlaceholder = $derived.by(() => {
 		if (askAwaiting) {
 			return askHasOptions
-				? '输入答案或补充，Enter 提交；也可选择上方选项'
-				: '输入答案或补充，Enter 提交';
+				? '从上方的选项中选择，或者在此处输入答案或补充，Enter 提交'
+				: '在此处输入答案或补充，Enter 提交';
 		}
 		return activeSessionId
 			? `追加指令，Enter 发送，Shift+Enter 换行；按 ${hotkeyBinding} 录音`
