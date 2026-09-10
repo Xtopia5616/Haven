@@ -837,6 +837,11 @@ impl FilesTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
+        if let Some(asset) = managed_asset.as_ref()
+            && !self.managed_assets.revalidate(asset)
+        {
+            anyhow::bail!("managed asset changed or is no longer inside its managed root");
+        }
 
         let operation_result: anyhow::Result<ToolResult> = match op {
             FilesOperation::Read => {
@@ -2354,6 +2359,38 @@ mod tests {
             )
             .await;
         assert!(mutation.is_err(), "managed assets are read-only");
+    }
+
+    #[tokio::test]
+    async fn test_managed_asset_revalidates_before_read() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("report.txt");
+        tokio::fs::write(&file, "managed content").await.unwrap();
+        let registry = ManagedAssetRegistry::default();
+        assert!(registry.register_under_root(
+            tmp.path(),
+            "asset-race",
+            file.clone(),
+            Some("report.txt".into()),
+            "text/plain",
+        ));
+        tokio::fs::remove_file(&file).await.unwrap();
+        let mut tool = FilesTool::default();
+        tool.managed_assets = registry;
+
+        let result = tool
+            .execute(
+                json!({"operation": "read", "asset_id": "asset-race"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("managed asset changed")
+        );
     }
 
     #[tokio::test]

@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 pub struct ManagedAsset {
     pub asset_id: String,
     pub path: PathBuf,
+    managed_root: PathBuf,
     pub filename: Option<String>,
     pub media_type: String,
     pub sha256: Option<String>,
@@ -84,6 +85,7 @@ impl ManagedAssetRegistry {
         let asset = ManagedAsset {
             asset_id: asset_id.clone(),
             path,
+            managed_root: root.to_path_buf(),
             filename,
             media_type,
             sha256,
@@ -268,6 +270,10 @@ impl ManagedAssetRegistry {
         if asset_id.trim().is_empty() || path.as_os_str().is_empty() {
             return;
         }
+        let managed_root = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         self.assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -276,6 +282,7 @@ impl ManagedAssetRegistry {
                 ManagedAsset {
                     asset_id,
                     path,
+                    managed_root,
                     filename,
                     media_type: media_type.into(),
                     sha256: None,
@@ -299,6 +306,16 @@ impl ManagedAssetRegistry {
             return None;
         }
         Some(asset)
+    }
+
+    /// Re-run the managed-root and reparse-point checks immediately before a
+    /// read. Registration is intentionally not treated as permanent proof:
+    /// a file or parent directory may be replaced after the asset enters the
+    /// registry.
+    pub fn revalidate(&self, asset: &ManagedAsset) -> bool {
+        self.resolve(&asset.asset_id)
+            .is_some_and(|current| current == *asset)
+            && is_safe_managed_file(&asset.managed_root, &asset.path)
     }
 
     pub fn contains(&self, asset_id: &str) -> bool {
