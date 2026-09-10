@@ -3,6 +3,7 @@ mod asset_registry;
 mod background_actions;
 pub mod builtin;
 pub mod circuit;
+mod document;
 pub mod inbox;
 pub mod live_output;
 pub mod messaging_service;

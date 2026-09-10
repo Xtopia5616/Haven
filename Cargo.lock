@@ -2421,6 +2421,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "flate2",
  "futures-util",
  "grep-regex",
  "grep-searcher",
@@ -2433,6 +2434,7 @@ dependencies = [
  "ignore",
  "image",
  "jsonschema",
+ "quick-xml",
  "regex",
  "reqwest",
  "scraper",
@@ -2448,6 +2450,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winreg 0.56.0",
+ "zip",
 ]
 
 [[package]]

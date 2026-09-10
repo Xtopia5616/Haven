@@ -17,6 +17,9 @@ reqwest = { version = "0.13.4", features = ["json", "multipart", "stream"] }
 sha2.workspace = true
 scraper = "0.27"
 tokio-util.workspace = true
+flate2.workspace = true
+quick-xml = "0.38"
+zip = { version = "6", default-features = false, features = ["deflate"] }
 haven-memory = { path = "../memory" }
 haven-common = { path = "../common" }
 haven-mcp = { path = "../mcp" }

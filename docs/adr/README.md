@@ -114,3 +114,4 @@
 - [0111：多模态附件与模型能力边界](0111-multimodal-attachment-boundary.md)
 - [0112：LLM 连通性探测与可诊断报告](0112-llm-connectivity-diagnostics.md)
 - [0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)
+- [0114：受限本地文档抽取与派生表示](0114-bounded-document-extraction.md)

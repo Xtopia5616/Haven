@@ -65,6 +65,11 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 `lib.rs` 只从这些模块重新导出 crate 公共 API，builtin 直接依赖对应模块。安全矩阵只有
 `security.rs` 一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。
 
+`document.rs` 是受管附件的本地派生边界：只在 `files` 完整 read 中对 PDF/DOCX/XLSX/PPTX
+执行有资源上限的文本/表格抽取，输出带 `document_extract` provenance 的不可信内容；
+不执行脚本、不解析外部实体、不向模型暴露宿主路径。抽取失败显式返回不可用结果，不能
+把空文本当成成功（ADR 0114）。
+
 Builtin 的模型目录保持聚合边界：`system` 内的 `env`、`power`、`registry` 是私有实现模块，
 不作为独立模型工具注册。后台任务取消、目录创建和窗口 PID 目标属于既有聚合工具的
 operation，不新增顶层入口；环境变量读取只暴露名称或脱敏值。
@@ -364,6 +369,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |

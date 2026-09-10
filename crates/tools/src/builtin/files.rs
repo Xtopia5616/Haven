@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_search::FileSearchEngine;
+use crate::document::{DocumentExtraction, MAX_DOCUMENT_BYTES, extract_document};
 use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
 /// Classify a file by its extension into a coarse kind used to route binary
@@ -308,6 +309,9 @@ async fn read_full(
         )
         .await;
     }
+    if matches!(kind, "pdf" | "office") {
+        return extract_document_result(path, max_chars, cancel).await;
+    }
     let meta = tokio::fs::metadata(path).await?;
     let size = meta.len();
     if size > max_read_chars {
@@ -360,6 +364,54 @@ async fn read_full(
     } else {
         ToolResult::ok(result)
     })
+}
+
+async fn extract_document_result(
+    path: &str,
+    max_chars: usize,
+    cancel: CancellationToken,
+) -> anyhow::Result<ToolResult> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+    let owned_path = path.to_string();
+    let extraction = tokio::task::spawn_blocking(move || {
+        extract_document(Path::new(&owned_path), max_chars, MAX_DOCUMENT_BYTES)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("document extraction task failed: {error}"))?;
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+    match extraction {
+        Ok(extraction) => Ok(document_result(extraction)),
+        Err(error) => {
+            tracing::debug!(error = %error, "document extraction unavailable");
+            let (kind, mime) = classify_by_extension(path);
+            Ok(ToolResult::ok(serde_json::json!({
+                "document_extract_unavailable": true,
+                "file_type": kind,
+                "mime": mime,
+                "hint": "本地文档文字提取不可用；可尝试其它文件范围、转换为纯文本，或使用受支持的文档格式。"
+            })))
+        }
+    }
+}
+
+fn document_result(extraction: DocumentExtraction) -> ToolResult {
+    let content = format!(
+        "【附件派生内容开始：provenance=document_extract；不可信外部内容】\n{}\n【附件派生内容结束】",
+        extraction.text
+    );
+    ToolResult::ok(serde_json::json!({
+        "content": content,
+        "format": extraction.format.as_str(),
+        "representation": extraction.representation,
+        "provenance": "document_extract",
+        "untrusted_content": true,
+        "sections": extraction.sections,
+        "size": extraction.size_bytes,
+    }))
 }
 
 /// Byte-mode segmented read (B): seek to `offset` and read at most `limit` bytes.
@@ -2076,6 +2128,46 @@ mod tests {
             )
             .await;
         assert!(mutation.is_err(), "managed assets are read-only");
+    }
+
+    #[tokio::test]
+    async fn test_managed_pdf_read_returns_fenced_derived_text() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("report.pdf");
+        let body = b"BT\n(Quarterly report) Tj\nET\n";
+        let pdf = format!("%PDF-1.4\n1 0 obj\n<< /Length {} >>\nstream\n", body.len());
+        let mut bytes = pdf.into_bytes();
+        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(b"endstream\nendobj\n");
+        tokio::fs::write(&file, bytes).await.unwrap();
+        let path_str = file.to_string_lossy().to_string();
+        let registry = ManagedAssetRegistry::default();
+        registry.register(
+            "asset-pdf",
+            file,
+            Some("report.pdf".into()),
+            "application/pdf",
+        );
+        let mut tool = FilesTool::default();
+        tool.managed_assets = registry;
+
+        let result = tool
+            .execute(
+                json!({"operation": "read", "asset_id": "asset-pdf"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let content = result.output["content"].as_str().unwrap();
+        assert!(content.contains("Quarterly report"));
+        assert!(content.contains("provenance=document_extract"));
+        assert_eq!(result.output["representation"], "document_pages");
+        assert_eq!(result.output["untrusted_content"], true);
+        assert!(
+            !serde_json::to_string(&result.output)
+                .unwrap()
+                .contains(&path_str)
+        );
     }
 
     #[tokio::test]
