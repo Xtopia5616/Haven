@@ -352,19 +352,6 @@
 		{/if}
 		{#if awaiting}
 			<div class="ask-actions">
-				<span class="ask-waiting">
-					<span class="ask-guidance-icon" aria-hidden="true">
-						<Icon name="info" size={14} />
-					</span>
-					<span class="ask-guidance-copy">
-						<strong>回答方式</strong>
-						{#if options && options.length > 0}
-							<span>选择上方选项，或在输入框中输入答案 / 补充</span>
-						{:else}
-							<span>在输入框中输入答案或补充</span>
-						{/if}
-					</span>
-				</span>
 				<div class="ask-action-buttons">
 					<MaterialButton
 						variant="outlined"
@@ -750,7 +737,7 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 650;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		border-radius: var(--md-sys-shape-small);
+		border-radius: var(--md-sys-shape-full);
 		box-shadow: none;
 		transition:
 			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
@@ -773,10 +760,10 @@
 	.ask-actions {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		gap: var(--md-sys-space-md);
 		margin-top: var(--md-sys-space-lg);
 		padding-top: var(--md-sys-space-md);
+		justify-content: flex-end;
 		border-top: 1px solid
 			color-mix(in srgb, var(--md-sys-color-primary) 14%, var(--md-sys-color-outline-variant));
 	}
@@ -837,42 +824,6 @@
 	}
 	.ask-resolved-answer {
 		color: var(--md-sys-color-on-surface-variant);
-	}
-	.ask-waiting {
-		display: flex;
-		align-items: flex-start;
-		gap: var(--md-sys-space-sm);
-		min-width: 0;
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.ask-guidance-icon {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		flex: none;
-		border-radius: var(--md-sys-shape-small);
-		background: color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent);
-		color: var(--md-sys-color-primary);
-	}
-	.ask-guidance-copy {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-2xs);
-		min-width: 0;
-	}
-	.ask-guidance-copy strong {
-		color: var(--md-sys-color-primary);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.ask-guidance-copy > span {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.tool-card-icon {
 		display: inline-flex;
@@ -1057,13 +1008,6 @@
 	@media (max-width: 520px) {
 		.tool-card {
 			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		}
-		.ask-actions {
-			align-items: stretch;
-			flex-direction: column;
-		}
-		.ask-waiting {
-			flex: none;
 		}
 		.ask-action-buttons {
 			width: 100%;

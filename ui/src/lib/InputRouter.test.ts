@@ -37,6 +37,14 @@ describe('InputRouter context menu', () => {
 		expect(document.querySelector('.input-meta')).toBeNull();
 	});
 
+	it('moves ask guidance into the input placeholder', () => {
+		render(InputRouter, { askAwaiting: true, askHasOptions: true, onsubmit: vi.fn() });
+
+		expect(
+			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
+		).toBe('输入答案或补充，Enter 提交；也可选择上方选项');
+	});
+
 	it('uses the same shared toolbar control for interrupting active output', () => {
 		const onstop = vi.fn();
 		render(InputRouter, { isGenerating: true, onstop });

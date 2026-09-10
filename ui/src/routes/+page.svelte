@@ -99,6 +99,18 @@
 		maxFileBytes: 20 * 1024 * 1024,
 	});
 	let messages = /** @type {Array<any>} */ ($state([]));
+	const askAwaiting = $derived(
+		messages.some((message) => message?.type === 'ask' && message?.awaiting),
+	);
+	const askHasOptions = $derived(
+		messages.some(
+			(message) =>
+				message?.type === 'ask' &&
+				message?.awaiting &&
+				Array.isArray(message?.options) &&
+				message.options.length > 0,
+		),
+	);
 	let initialLoading = $state(true);
 	let sessions = /** @type {Array<any>} */ ($state([]));
 	// Pending security confirmations not yet shown, in arrival order. A
@@ -1645,6 +1657,8 @@
 		{isGenerating}
 		{sessionRunning}
 		interrupting={interruptPending}
+		{askAwaiting}
+		{askHasOptions}
 		allowEmptySubmit={askSelectionsReady}
 		{...inputLimits}
 		onsubmit={handleInputSubmit}

@@ -414,7 +414,7 @@ describe('ChatBubble', () => {
 		);
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('你想怎么做？')).toBeTruthy();
-		expect(screen.getByText('选择上方选项，或在输入框中输入答案 / 补充')).toBeTruthy();
+		expect(screen.queryByText('回答方式')).toBeNull();
 		expect(screen.getByText('方案 A')).toBeTruthy();
 		expect(screen.getByText('方案 B')).toBeTruthy();
 	});
@@ -484,7 +484,7 @@ describe('ChatBubble', () => {
 			}),
 		);
 		expect(screen.getByText('已选择：方案 A')).toBeTruthy();
-		expect(screen.queryByText('选择上方选项，或在输入框中输入答案 / 补充')).toBeNull();
+		expect(screen.queryByText('回答方式')).toBeNull();
 	});
 
 	it('calls onContextMenu with bubble metadata', async () => {

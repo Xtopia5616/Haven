@@ -18,6 +18,9 @@
 		isGenerating = false,
 		sessionRunning = false,
 		interrupting = false,
+		// While an ask card is waiting, guide the user from the input itself.
+		askAwaiting = false,
+		askHasOptions = false,
 		// When true, Enter may submit even with an empty draft (e.g. ask option
 		// chips are selected and the page will compose the answer).
 		allowEmptySubmit = false,
@@ -76,6 +79,16 @@
 	// and the agent is actively working (generating output, a running/pending
 	// session). With fresh input present, it always stays a send button.
 	const stopMode = $derived(!hasInput && (interrupting || isGenerating || sessionRunning));
+	const chatInputPlaceholder = $derived.by(() => {
+		if (askAwaiting) {
+			return askHasOptions
+				? '输入答案或补充，Enter 提交；也可选择上方选项'
+				: '输入答案或补充，Enter 提交';
+		}
+		return activeSessionId
+			? `追加指令，Enter 发送，Shift+Enter 换行；按 ${hotkeyBinding} 录音`
+			: `输入指令，Enter 发送，或按 ${hotkeyBinding} 录音`;
+	});
 
 	// Allow the host page to populate the draft box programmatically (e.g.
 	// restoring a message after rollback) via `bind:this`.
@@ -552,9 +565,7 @@
 			bind:this={transcriptTextarea}
 			id="chat-input"
 			rows="1"
-			placeholder={activeSessionId
-				? `追加指令，Enter 发送，Shift+Enter 换行；按 ${hotkeyBinding} 录音`
-				: `输入指令，Enter 发送，或按 ${hotkeyBinding} 录音`}
+			placeholder={chatInputPlaceholder}
 			bind:value={transcriptInput}
 			onkeydown={handleKeydown}
 			onpaste={handlePaste}
