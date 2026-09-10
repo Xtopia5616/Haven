@@ -1,3 +1,4 @@
+use haven_common::config::EndpointRole;
 use haven_common::types::CanonicalToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -123,6 +124,18 @@ pub struct Usage {
     // §2.14: model name and cost tracking
     pub model_name: Option<String>,
     pub cost: Option<f64>,
+}
+
+/// Runtime-only metadata for one model call owned by a higher-level
+/// capability (for example media ingress or a tool). The Agent layer maps
+/// this shared shape to durable `llm_usage` rows after it knows the owning
+/// session. It deliberately contains no prompt, media bytes, or cache key.
+#[derive(Debug, Clone)]
+pub struct LlmCallUsage {
+    pub role: EndpointRole,
+    pub usage: Usage,
+    pub model: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 impl Usage {

@@ -150,7 +150,7 @@ export interface AgentUsagePayload {
 	stepNumber?: number;
 	durationMs?: number;
 	role?: string;
-	callKind?: 'agent' | 'media' | string;
+	callKind?: 'agent' | 'media' | 'tool' | string;
 	hasCost: boolean;
 }
 

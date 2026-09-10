@@ -119,6 +119,15 @@ describe('buildTokenUsageDetails', () => {
 					cost_usd: 0.02,
 					has_cost: true,
 				},
+				{
+					call_kind: 'tool',
+					prompt_tokens: 40,
+					completion_tokens: 10,
+					total_tokens: 50,
+					cache_accounting: 'unknown',
+					cost_usd: 0.01,
+					has_cost: true,
+				},
 			],
 		);
 
@@ -126,6 +135,9 @@ describe('buildTokenUsageDetails', () => {
 		expect(details.mediaCallCount).toBe(1);
 		expect(details.mediaTotalTokens).toBe(900);
 		expect(details.mediaCostUsd).toBe(0.02);
+		expect(details.toolCallCount).toBe(1);
+		expect(details.toolTotalTokens).toBe(50);
+		expect(details.toolCostUsd).toBe(0.01);
 		expect(details.cumulativeCacheRatePercent).toBe(50);
 		expect(details.cumulativeTotalTokens).toBe(120);
 	});

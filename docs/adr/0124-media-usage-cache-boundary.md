@@ -23,9 +23,9 @@ LLM 请求。此前工具结果既可能重复携带派生文本，也可能把�
    和 OCR 后填充 endpoint role、provider usage、model 和 duration。该字段跳过工具结果
    JSON 序列化，只在 Agent 提交有序工具结果时处理。
 3. `llm_usage.call_kind` 是持久化用量的封闭字段：`agent` 表示 Agent 主循环，`media`
-   表示工具拥有的媒体推理。`session_usage` 只从 `agent` 行聚合；两类明细都可恢复和
-   在 UI 中查看。
-4. `agent:usage` 携带同一 `call_kind`。媒体事件只追加媒体明细，不更新工具栏的 Agent
+   表示工具拥有的媒体推理，`tool` 表示其它工具内部的 LLM 调用。`session_usage` 只从
+   `agent` 行聚合；三类明细都可恢复和在 UI 中查看。
+4. `agent:usage` 携带同一 `call_kind`。媒体与工具事件只追加对应明细，不更新工具栏的 Agent
    当前/累计统计；主循环缓存率仅使用 `call_kind=agent` 且 accounting 已知的行。
 
 ## 替代方案
@@ -38,7 +38,7 @@ LLM 请求。此前工具结果既可能重复携带派生文本，也可能把�
 
 ## 影响与安全边界
 
-- schema 从 v17 提升到 v18；项目没有运行时迁移，升级需删除 `haven.db`、WAL 和 SHM，
+- schema 从 v18 提升到 v19；项目没有运行时迁移，升级需删除 `haven.db`、WAL 和 SHM，
   详见发布与数据重置说明。
 - 媒体请求仍受原有资产 revalidation、字节上限、超时和不可信内容标记约束；usage
   只保存 token、缓存诊断、角色、模型、费用和耗时，不保存 prompt、原始 bytes 或 cache key。
@@ -55,5 +55,5 @@ LLM 请求。此前工具结果既可能重复携带派生文本，也可能把�
 - `cargo clippy --workspace --locked -- -D warnings`
 - `cd ui; corepack pnpm run check; corepack pnpm run test:run`
 
-回滚代码提交即可；若新版本已经写入 v18 数据，回退前必须按发布说明备份并删除数据库，
+回滚代码提交即可；若新版本已经写入 v19 数据，回退前必须按发布说明备份并删除数据库，
 不得让旧二进制读取新的 `call_kind` schema。

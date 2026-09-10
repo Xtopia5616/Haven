@@ -313,6 +313,7 @@ impl WindowTool {
             "untrusted_content": true,
         }));
         result.llm_usage.push(ToolLlmUsage {
+            call_kind: "media",
             role,
             usage: response.usage,
             model: response.model,

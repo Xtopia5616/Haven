@@ -83,6 +83,22 @@ describe('submitTranscript', () => {
 		expect(draft[0].voice).toBe(true);
 	});
 
+	it('passes the recording id so ingress STT usage can bind to the session', async () => {
+		invokeMock.mockResolvedValue({});
+		await submitTranscript('voice text', {
+			voice: true,
+			recordingSessionId: 'rec-00000000000000000000000000000000',
+		});
+
+		expect(invoke).toHaveBeenCalledWith('process_transcript', {
+			transcript: 'voice text',
+			activeSessionId: null,
+			attachments: null,
+			voice: true,
+			recordingSessionId: 'rec-00000000000000000000000000000000',
+		});
+	});
+
 	it('passes images through to process_transcript and tags the optimistic bubble', async () => {
 		invokeMock.mockResolvedValue({});
 		activeSessionIdStore.set('session-img');

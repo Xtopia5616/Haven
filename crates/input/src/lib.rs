@@ -589,10 +589,12 @@ impl InputPipeline {
     }
 
     /// Run STT on a previously-captured result, mutating `transcript` /
-    /// `transcript_error` in place. Safe to call after `stop_capture`.
-    pub async fn transcribe(&self, result: &mut RecordingResult) {
+    /// `transcript_error` in place. Returns usage for an LLM-backed route;
+    /// native STT providers intentionally return no token usage. Safe to call
+    /// after `stop_capture`.
+    pub async fn transcribe(&self, result: &mut RecordingResult) -> Vec<haven_llm::LlmCallUsage> {
         if result.pcm.is_empty() {
-            return;
+            return Vec::new();
         }
         // Diagnostic: report how much audio was captured and whether the
         // opening seconds actually carry signal.
@@ -621,7 +623,7 @@ impl InputPipeline {
                 let msg = "麦克风没有检测到声音，请检查系统麦克风是否被静音或已禁用".to_string();
                 tracing::error!("captured audio is digital silence (RMS={total_rms:.6}): {msg}");
                 result.transcript_error = Some(msg);
-                return;
+                return Vec::new();
             }
         }
 
@@ -632,18 +634,30 @@ impl InputPipeline {
         let router = self.stt_router.lock().await.clone();
         // `result.pcm` is always the resampled mono stream at TARGET_SAMPLE_RATE.
         let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
+        let mut llm_usage = Vec::new();
 
         let stt_result = if let Some(client) = client {
             client.transcribe(&wav).await
         } else if let Some(router) = router {
-            router
-                .transcribe_audio(&wav)
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
+            let role = router.stt_role().await;
+            let started = std::time::Instant::now();
+            let response = router.transcribe_audio(&wav).await;
+            if let Ok(stt) = &response
+                && let Some(role) = role
+                && let Some(usage) = stt.usage.clone()
+            {
+                llm_usage.push(haven_llm::LlmCallUsage {
+                    role,
+                    usage,
+                    model: stt.model.clone(),
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                });
+            }
+            response.map_err(|e| anyhow::anyhow!(e))
         } else {
             result.transcript_error =
                 Some("未配置 STT 服务（设置 → 输入 → Voice → STT Provider）".into());
-            return;
+            return Vec::new();
         };
 
         match stt_result {
@@ -662,6 +676,7 @@ impl InputPipeline {
                 result.transcript_error = Some(e.to_string());
             }
         }
+        llm_usage
     }
 
     async fn stop_capture_inner(&self) -> Result<RecordingResult> {
@@ -1049,7 +1064,7 @@ mod tests {
             transcript: None,
             transcript_error: None,
         };
-        pipeline.transcribe(&mut result).await;
+        let _ = pipeline.transcribe(&mut result).await;
         assert!(result.transcript.is_none());
         assert!(result.transcript_error.is_none());
     }

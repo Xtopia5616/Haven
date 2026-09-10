@@ -840,16 +840,68 @@ impl ReActEngine {
         .await;
     }
 
-    /// Persist and emit usage for model calls owned by a tool. These calls are
-    /// intentionally outside the ReAct cumulative tracker: they are useful
-    /// diagnostics and cost data, but they do not occupy the Agent's next
-    /// prompt prefix and must not distort its cache-hit rate.
+    /// Persist and emit usage for model calls owned by a tool. These
+    /// calls are intentionally outside the ReAct cumulative tracker: they are
+    /// useful diagnostics and cost data, but they do not occupy the Agent's
+    /// next prompt prefix and must not distort its cache-hit rate.
     pub(super) async fn record_tool_usage(
         &self,
         session_id: &str,
         step_number: i32,
         usages: &[haven_tools::ToolLlmUsage],
         emitter: &Arc<dyn AgentEventEmitter>,
+    ) {
+        for tool_usage in usages {
+            let usage = haven_llm::LlmCallUsage {
+                role: tool_usage.role,
+                usage: tool_usage.usage.clone(),
+                model: tool_usage.model.clone(),
+                duration_ms: tool_usage.duration_ms,
+            };
+            let call_kind = match tool_usage.call_kind {
+                "media" => "media",
+                "tool" => "tool",
+                other => {
+                    tracing::warn!(
+                        call_kind = other,
+                        "unknown tool usage kind; recording it as a generic tool call"
+                    );
+                    "tool"
+                }
+            };
+            self.record_usage_at_step(
+                session_id,
+                Some(step_number),
+                std::slice::from_ref(&usage),
+                call_kind,
+                Some(emitter),
+            )
+            .await;
+        }
+    }
+
+    /// Persist and optionally emit usage for a model call owned by a media
+    /// capability. Ingress calls have no ReAct step, so `step_number` is
+    /// nullable; tool calls pass their enclosing step. Both paths share the
+    /// same `call_kind=media` persistence and event contract.
+    pub(crate) async fn record_media_usage_at_step(
+        &self,
+        session_id: &str,
+        step_number: Option<i32>,
+        usages: &[haven_llm::LlmCallUsage],
+        emitter: Option<&Arc<dyn AgentEventEmitter>>,
+    ) {
+        self.record_usage_at_step(session_id, step_number, usages, "media", emitter)
+            .await;
+    }
+
+    async fn record_usage_at_step(
+        &self,
+        session_id: &str,
+        step_number: Option<i32>,
+        usages: &[haven_llm::LlmCallUsage],
+        call_kind: &str,
+        emitter: Option<&Arc<dyn AgentEventEmitter>>,
     ) {
         for tool_usage in usages {
             let usage = tool_usage.usage.clone().normalize();
@@ -877,6 +929,7 @@ impl ReActEngine {
             let cache_diagnostics_for_event = usage.cache_diagnostics.clone();
             let db = self.db.clone();
             let session_id_for_persist = session_id.to_string();
+            let call_kind_for_persist = call_kind.to_string();
             let model_for_persist = model.clone();
             let call_cost = step_cost.unwrap_or(0.0);
             let call_has_cost = step_cost.is_some();
@@ -885,9 +938,9 @@ impl ReActEngine {
             let persist = tokio::task::spawn_blocking(move || {
                 db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
                     &session_id_for_persist,
-                    Some(step_number),
+                    step_number,
                     role.as_str(),
-                    "media",
+                    &call_kind_for_persist,
                     model_for_persist.as_deref(),
                     usage_prompt,
                     usage_completion,
@@ -907,19 +960,24 @@ impl ReActEngine {
             match persist.await {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => tracing::warn!(
-                    "ReAct: failed to persist media usage for session {} step {}: {}",
+                    "ReAct: failed to persist {} usage for session {} step {:?}: {}",
+                    call_kind,
                     session_id,
                     step_number,
                     error
                 ),
                 Err(error) => tracing::warn!(
-                    "ReAct: media usage persistence task failed for session {} step {}: {}",
+                    "ReAct: {} usage persistence task failed for session {} step {:?}: {}",
+                    call_kind,
                     session_id,
                     step_number,
                     error
                 ),
             }
 
+            let Some(emitter) = emitter else {
+                continue;
+            };
             EventDispatcher::emit_usage_from(
                 emitter,
                 UsagePayload {
@@ -944,10 +1002,10 @@ impl ReActEngine {
                     cache_diagnostics: cache_diagnostics_for_event,
                     cumulative_cost_usd: None,
                     context_window: None,
-                    step_number: Some(step_number as u32),
+                    step_number: step_number.and_then(|step| u32::try_from(step).ok()),
                     duration_ms,
                     role: Some(role.as_str().to_string()),
-                    call_kind: "media".into(),
+                    call_kind: call_kind.to_string(),
                     has_cost: call_has_cost,
                 },
             )
@@ -981,11 +1039,11 @@ impl ReActEngine {
     }
 
     /// Resolve the model's true context window for the endpoint used by
-    /// Explicit `context_window` on the role/endpoint when set. Callers fall
-    /// back to `context_limits.default_context_window`. Prefer writing the
-    /// window from provider `/models` metadata into the role slot when the
-    /// user picks a model. This is the real input budget for the token-usage
-    /// display, not the per-response output cap (`max_tokens`).
+    /// `role`. Explicit `context_window` on the role/endpoint takes
+    /// precedence; callers fall back to the context-limit default. Prefer
+    /// writing the window from provider `/models` metadata into the role slot
+    /// when the user picks a model. This is the real input budget for the
+    /// token-usage display, not the per-response output cap (`max_tokens`).
     pub(super) fn context_window_for_role(
         cfg: &haven_common::config::RouterConfig,
         role: EndpointRole,

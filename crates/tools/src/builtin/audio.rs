@@ -329,7 +329,7 @@ impl AudioTool {
                 return Err(anyhow::anyhow!("audio tool: recording cancelled"));
             }
         };
-        pipeline.transcribe(&mut result).await;
+        let _ = pipeline.transcribe(&mut result).await;
 
         if let Some(text) = result.transcript.filter(|t| !t.trim().is_empty()) {
             return Ok(ToolResult::ok(serde_json::json!({

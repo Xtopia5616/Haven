@@ -370,6 +370,113 @@ async fn run_session_executes_tool_then_final_answer() {
 }
 
 #[tokio::test]
+async fn media_tool_usage_flows_to_event_and_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let image_path = temp.path().join("picture.png");
+    tokio::fs::write(&image_path, b"test image bytes")
+        .await
+        .unwrap();
+    let asset_id = "asset-00000000000000000000000000000000";
+    let registry = haven_tools::ManagedAssetRegistry::default();
+    assert!(registry.register_under_root(
+        temp.path(),
+        asset_id,
+        image_path,
+        Some("picture.png".into()),
+        "image/png",
+    ));
+
+    let vision_client = Arc::new(VisionUsageMock) as Arc<dyn LlmClient>;
+    let vision_router = Arc::new(LlmRouter::new_with_clients(
+        vision_client.clone(),
+        vision_client.clone(),
+        vision_client.clone(),
+        vision_client,
+    ));
+    let media_tool = Arc::new(haven_tools::builtin::media::MediaTool::new(
+        Some(vision_router),
+        registry,
+        1024 * 1024,
+        10,
+        2_000,
+    )) as ToolBox;
+
+    let tools = Arc::new(ToolsManager::new());
+    tools
+        .authorization
+        .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+        .await;
+    tools.registry.register(media_tool).await;
+    let main_client = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("I will inspect the image.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "media-call".into(),
+                name: "media".into(),
+                arguments: serde_json::json!({
+                    "operation": "describe",
+                    "asset_id": asset_id,
+                }),
+            }],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("The image was inspected.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "final".into(),
+                name: "final_answer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+    ]));
+    let (agent, executor) = make_test_agent_with(main_client, tools);
+    let collector = Arc::new(EventCollector::new());
+    agent.set_emitter(collector.clone());
+    let session = executor.create_session("describe the image").await.unwrap();
+
+    agent.run_session_from_id(&session.id).await.unwrap();
+
+    let calls = agent.db.get_session_llm_usage(&session.id).unwrap();
+    assert_eq!(calls.len(), 1, "only the media client reports usage");
+    assert_eq!(calls[0].call_kind, "media");
+    assert_eq!(calls[0].step_number, Some(1));
+    assert_eq!(calls[0].role, "default_model");
+    assert_eq!(calls[0].model.as_deref(), Some("vision-test"));
+    assert_eq!(calls[0].prompt_tokens, 11);
+    assert_eq!(calls[0].completion_tokens, 7);
+    assert_eq!(calls[0].total_tokens, 18);
+
+    let events = collector.events.lock().unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            AgentEvent::Usage {
+                session_id,
+                call_kind,
+                step_number: Some(1),
+                prompt_tokens: 11,
+                completion_tokens: 7,
+                total_tokens: 18,
+                ..
+            } if session_id == &session.id && call_kind == "media"
+        )
+    }));
+}
+
+#[tokio::test]
 async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     // Some providers return an empty tool_call_id. The Action side
     // synthesizes a UUID; the canonical assistant declaration must echo

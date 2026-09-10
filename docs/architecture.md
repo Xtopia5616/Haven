@@ -77,7 +77,8 @@ compact `media` reference 回到工具 observation，后续调用可以复用同
 附件仍使用 common 层的 `MediaInput`。窗口截图
 进入生成媒体根目录并登记 session lease，`files.read` 对 managed 图片/音频转交到该入口；
 宿主路径和 base64 不进入模型工具契约（ADR 0123）。媒体派生调用的 usage 作为
-`llm_usage.call_kind=media` 单独保留，不污染 Agent 主循环的累计 cache rate（ADR 0124）。
+`llm_usage.call_kind=media` 与 `call_kind=tool` 单独保留，不污染 Agent 主循环的累计
+cache rate（ADR 0124）。
 
 Builtin 的模型目录保持聚合边界：`system` 内的 `env`、`power`、`registry` 是私有实现模块，
 不作为独立模型工具注册。后台任务取消、目录创建和窗口 PID 目标属于既有聚合工具的
@@ -463,4 +464,4 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 2026-09-10 | §2.3 Memory / §2.5 Agent / §2.6 App：消息新增 v17 `media_inputs` canonical 投影；managed uploads 统一覆盖图片/音频/文件；OCR/STT 表示持久化并保留 raw；旧快照与 compact summary 在 snapshot 边界剥离 inline bytes（ADR 0121） |
 | 2026-09-10 | §2.5 Tools / §2.6 LLM：工具与 media gateway 统一走 `LlmRouter::analyze_image`；`files.read` 增加音频转写；删除 raw-byte multimodal helper（ADR 0122） |
 | 2026-09-10 | §2.5 Tools / §2.6 App：新增 asset_id-only `media` 工具；窗口截图改为受管生成媒体并返回可继续消费的 asset id；managed 图片/音频从 `files.read` 转交 canonical media 派生入口（ADR 0123） |
-| 2026-09-10 | §2.3 Memory / §2.4 Agent / §2.6 UI：媒体派生结果只保留一个 `media.content`，模型观察移除运行时元数据；工具拥有的媒体 LLM 调用以 `call_kind=media` 单独持久化与展示，Agent 缓存率只统计 `call_kind=agent`（ADR 0124） |
+| 2026-09-10 | §2.3 Memory / §2.4 Agent / §2.6 UI：媒体派生结果只保留一个 `media.content`，模型观察移除运行时元数据；工具拥有的媒体 LLM 调用以 `call_kind=media`、其它工具内部 LLM 调用以 `call_kind=tool` 单独持久化与展示，Agent 缓存率只统计 `call_kind=agent`（ADR 0124） |

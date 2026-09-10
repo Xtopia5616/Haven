@@ -684,7 +684,7 @@
 							// appends the voice message, submits with the current
 							// `activeSessionId`, and migrates the message into the session if
 							// the backend created a fresh one.
-							submitVoiceTranscript(text).catch((e) => {
+							submitVoiceTranscript(text, data.sessionId).catch((e) => {
 								reportError(e, {
 									context: '+layout',
 									message: '语音提交失败',

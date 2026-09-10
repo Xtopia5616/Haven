@@ -258,6 +258,7 @@ impl MediaTool {
             ToolResult::ok(output)
         };
         result.llm_usage.push(ToolLlmUsage {
+            call_kind: "media",
             role,
             usage: response.usage,
             model: response.model,
@@ -323,6 +324,7 @@ impl MediaTool {
             && let Some(usage) = result.usage
         {
             tool_result.llm_usage.push(ToolLlmUsage {
+                call_kind: "media",
                 role,
                 usage,
                 model: result.model,

@@ -103,6 +103,16 @@ impl AgentLayer {
         *self.gateway.write().await = gateway;
     }
 
+    /// Persist usage from media work performed before a ReAct step exists.
+    /// The caller supplies the already-resolved durable session, while the
+    /// event dispatcher is optional for headless/test embeddings.
+    pub async fn record_media_usage(&self, session_id: &str, usages: &[haven_llm::LlmCallUsage]) {
+        let emitter = self.events.emitter_arc();
+        self.react_engine
+            .record_media_usage_at_step(session_id, None, usages, emitter.as_ref())
+            .await;
+    }
+
     /// Hot-reload `[context_limits]` into the layer + ReAct engine (settings save).
     pub fn set_context_limits(&self, limits: ContextLimitsConfig) {
         *self.context_limits.lock().unwrap() = limits.clone();

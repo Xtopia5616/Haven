@@ -51,6 +51,9 @@ export interface TokenUsageDetails {
 	mediaCallCount: number;
 	mediaTotalTokens: number;
 	mediaCostUsd: number | null;
+	toolCallCount: number;
+	toolTotalTokens: number;
+	toolCostUsd: number | null;
 	model: string | null;
 	costUsd: number | null;
 }
@@ -136,6 +139,7 @@ export function buildTokenUsageDetails(
 ): TokenUsageDetails {
 	const agentCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'agent');
 	const mediaCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'media');
+	const toolCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'tool');
 	const lastCall = agentCalls.at(-1);
 	const useLastCall = !!stats.restored && !!lastCall;
 	const currentPromptTokens = useLastCall
@@ -225,6 +229,23 @@ export function buildTokenUsageDetails(
 		mediaCostUsd: mediaCalls.some((call) => call.has_cost)
 			? mediaCalls.reduce((total, call) => total + (call.has_cost ? call.cost_usd || 0 : 0), 0)
 			: null,
+		toolCallCount: toolCalls.length,
+		toolTotalTokens: toolCalls.reduce(
+			(total, call) =>
+				total +
+				coalesceTokenTotal(
+					call.prompt_tokens || 0,
+					call.completion_tokens || 0,
+					call.total_tokens || 0,
+					call.cached_tokens || 0,
+					call.cache_creation_tokens || 0,
+					call.cache_accounting || 'unknown',
+				),
+			0,
+		),
+		toolCostUsd: toolCalls.some((call) => call.has_cost)
+			? toolCalls.reduce((total, call) => total + (call.has_cost ? call.cost_usd || 0 : 0), 0)
+			: null,
 		model: stats.model || lastCall?.model || null,
 		costUsd: stats.cumulativeCostUsd ?? null,
 	};
@@ -279,6 +300,18 @@ export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUs
 			' tokens';
 		if (details.mediaCostUsd != null) {
 			line += ' / 费用 ' + (formatCostUsd(details.mediaCostUsd) || '');
+		}
+		parts.push(line);
+	}
+	if (details.toolCallCount > 0) {
+		let line =
+			'工具内部推理 ' +
+			details.toolCallCount +
+			' 次 / ' +
+			formatTokenCount(details.toolTotalTokens) +
+			' tokens';
+		if (details.toolCostUsd != null) {
+			line += ' / 费用 ' + (formatCostUsd(details.toolCostUsd) || '');
 		}
 		parts.push(line);
 	}

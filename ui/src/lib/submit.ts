@@ -62,6 +62,7 @@ function isMidTurnSubmit(sessionId: string): boolean {
 interface InflightSubmission {
 	text: string;
 	voice: boolean;
+	recordingSessionId?: string;
 	hasAttachments: boolean;
 	pinnedSessionId: string | null;
 	freshStartAtEnqueue: boolean;
@@ -101,6 +102,7 @@ function startSubmission(payload: SubmitPayload) {
 	inflight = {
 		text: payload.text,
 		voice: !!payload.voice,
+		recordingSessionId: payload.recordingSessionId,
 		hasAttachments: hasAttachmentsOf(payload),
 		pinnedSessionId: payload.pinnedSessionId,
 		freshStartAtEnqueue: payload.freshStartAtEnqueue,
@@ -157,17 +159,19 @@ interface SubmitOptions {
 	images?: Array<{ media_type: string; data: string }> | null;
 	files?: Array<{ media_type: string; data: string; filename: string }> | null;
 	voice?: boolean;
+	recordingSessionId?: string;
 }
 
 export async function submitTranscript(
 	text: string,
-	{ images = null, files = null, voice = false }: SubmitOptions = {},
+	{ images = null, files = null, voice = false, recordingSessionId }: SubmitOptions = {},
 ): Promise<any> {
 	const payload: SubmitPayload = {
 		text,
 		images,
 		files,
 		voice,
+		recordingSessionId,
 		pinnedSessionId: get(activeSessionIdStore),
 		freshStartAtEnqueue: get(newSessionIntentStore),
 	};
@@ -179,6 +183,7 @@ export async function submitTranscript(
 		const duplicate =
 			inflight.text === text &&
 			inflight.voice === !!voice &&
+			inflight.recordingSessionId === payload.recordingSessionId &&
 			!inflight.hasAttachments &&
 			!hasAttachmentsOf(payload) &&
 			inflight.pinnedSessionId === payload.pinnedSessionId &&
@@ -200,6 +205,7 @@ async function doSubmit({
 	images = null,
 	files = null,
 	voice = false,
+	recordingSessionId,
 	pinnedSessionId,
 	freshStartAtEnqueue,
 }: SubmitPayload): Promise<any> {
@@ -241,12 +247,14 @@ async function doSubmit({
 		return list.filter((m) => !m.id.startsWith('placeholder-'));
 	});
 	try {
-		const result = await invoke('process_transcript', {
+		const request = {
 			transcript: text,
 			activeSessionId: activeId || null,
 			attachments: hasAttachments ? attachments : null,
 			voice,
-		});
+			...(recordingSessionId ? { recordingSessionId } : {}),
+		};
+		const result = await invoke('process_transcript', request);
 		const createdId = processResultSessionId(result);
 		const dbMsgId = processResultMessageId(result);
 		// Prefer the destination session after a SessionCreated migrate so the

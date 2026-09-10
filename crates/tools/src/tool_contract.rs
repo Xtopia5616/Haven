@@ -78,13 +78,13 @@ pub struct ToolResult {
     pub llm_usage: Vec<ToolLlmUsage>,
 }
 
-/// One model call made inside a tool (for example vision/OCR or audio
-/// transcription). Keeping this beside [`ToolResult`] avoids teaching the
-/// tool batcher about individual multimodal tools while preserving the
-/// distinction between Agent turns and tool-owned inference.
+/// One model call made inside a tool. The runtime-only `call_kind` keeps
+/// media inference distinct from other internal tool calls even when a
+/// composite tool (such as `files`) owns both kinds of work.
 #[derive(Debug, Clone)]
 pub struct ToolLlmUsage {
-    pub role: haven_llm::EndpointRole,
+    pub call_kind: &'static str,
+    pub role: haven_common::config::EndpointRole,
     pub usage: haven_llm::Usage,
     pub model: Option<String>,
     pub duration_ms: Option<u64>,

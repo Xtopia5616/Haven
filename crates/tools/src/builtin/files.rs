@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use haven_common::prompts::{FILE_SUMMARY_SYSTEM_PROMPT, IMAGE_ANALYSIS_SYSTEM_PROMPT};
+use haven_common::prompts::FILE_SUMMARY_SYSTEM_PROMPT;
 use haven_common::types::RiskLevel;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::EndpointRole;
@@ -60,102 +60,6 @@ fn classify_by_extension(path: &str) -> (&'static str, &'static str) {
         "exe" | "msi" | "dll" => ("executable", "application/octet-stream"),
         _ => ("unknown", "application/octet-stream"),
     }
-}
-
-/// Send an image file to the `image_model` (vision-capable) endpoint and
-/// return the model's description / extracted text. Routes through the shared
-/// LlmRouter. Returns a `ToolResult` even on failure so the agent can reason
-/// about partial results.
-async fn understand_image(
-    path: &str,
-    focus: Option<&str>,
-    summarizer: Option<Arc<LlmRouter>>,
-    cancel: CancellationToken,
-    vision_max_bytes: u64,
-    summary_timeout_secs: u64,
-) -> anyhow::Result<ToolResult> {
-    // Validate the extension first so a non-image path is rejected even when
-    // no summarizer is configured — otherwise arbitrary bytes could be
-    // shipped to the model on a misnamed path.
-    let (_kind, media_type) = classify_by_extension(path);
-    if !media_type.starts_with("image/") {
-        anyhow::bail!("path does not look like an image: {}", path);
-    }
-    let Some(client) = summarizer else {
-        return Ok(ToolResult::ok(serde_json::json!({
-            "image": true,
-            "path": path,
-            "understand_unavailable": true,
-            "reason": "No router installed, so image content cannot be analyzed."
-        })));
-    };
-    // Use the same vision routing policy as chat images (the router's
-    // `vision_role`): dedicated image_model when enabled and configured,
-    // otherwise the default model.
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    let meta = tokio::fs::metadata(path).await?;
-    let size = meta.len();
-    if size > vision_max_bytes {
-        return Ok(ToolResult::ok(serde_json::json!({
-            "image": true,
-            "path": path,
-            "size": size,
-            "too_large": true,
-            "hint": format!(
-                "Image is {} bytes, above the {} byte vision limit.",
-                size, vision_max_bytes
-            )
-        })));
-    }
-    let bytes = tokio::fs::read(path).await?;
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    let role = client.vision_role().await;
-    let started = std::time::Instant::now();
-    let call = async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(summary_timeout_secs),
-            client.analyze_image(&bytes, media_type, IMAGE_ANALYSIS_SYSTEM_PROMPT, focus),
-        )
-        .await
-    };
-
-    let response = match call.await {
-        Ok(Ok(resp)) => resp,
-        Ok(Err(e)) => {
-            return Ok(ToolResult::failed(
-                serde_json::json!({"image": true, "path": path, "understand_error": true}),
-                format!("vision call failed: {}", e),
-            ));
-        }
-        Err(_) => {
-            return Ok(ToolResult::timed_out(
-                crate::ToolExecutionOutcome::TimedOutUnknown,
-                format!("vision call timed out after {}s", summary_timeout_secs),
-            ));
-        }
-    };
-
-    let mut result = ToolResult::ok(serde_json::json!({
-        "image": true,
-        "path": path,
-        "media": {
-            "media_type": media_type,
-            "representation": "image_description",
-            "content": response.text.trim(),
-        },
-        "untrusted_content": true,
-    }));
-    result.llm_usage.push(ToolLlmUsage {
-        role,
-        usage: response.usage,
-        model: response.model,
-        duration_ms: Some(started.elapsed().as_millis() as u64),
-    });
-    Ok(result)
 }
 
 fn sanitize_path(path: &str) -> anyhow::Result<String> {
@@ -250,49 +154,25 @@ fn redact_managed_file_result(result: &mut ToolResult, asset: &ManagedAsset) {
     }
 }
 
-/// Read a file in full. Refuses files larger than `max_read_chars` and
-/// rejects binary content. Only reads what the output budget can hold,
-/// instead of pulling the whole file into memory first.
-#[allow(clippy::too_many_arguments)]
+/// Read a text file in full. Multimodal path inputs are deliberately treated
+/// as binary; managed media must enter through the `media(asset_id)` tool.
+/// Refuses files larger than `max_read_chars` and reads only what the output
+/// budget can hold instead of pulling the whole file into memory first.
 async fn read_full(
     path: &str,
     max_chars: usize,
     max_read_chars: u64,
-    vision_max_bytes: u64,
-    focus: Option<&str>,
-    summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
-    summary_timeout_secs: u64,
 ) -> anyhow::Result<ToolResult> {
     let (kind, _mime) = classify_by_extension(path);
-    // Non-text files: route images to the vision model instead of returning a
-    // useless binary blob. Other rich files fall through to the binary hint.
-    if kind == "image" {
-        return understand_image(
-            path,
-            focus,
-            summarizer,
-            cancel,
-            vision_max_bytes,
-            summary_timeout_secs,
-        )
-        .await;
-    }
-    if kind == "audio" {
-        return transcribe_audio(
-            path,
-            summarizer,
-            cancel,
-            vision_max_bytes,
-            summary_timeout_secs,
-        )
-        .await;
-    }
     if matches!(kind, "pdf" | "office") {
         return extract_document_result(path, max_chars, cancel).await;
     }
     let meta = tokio::fs::metadata(path).await?;
     let size = meta.len();
+    if matches!(kind, "image" | "audio") {
+        return Ok(binary_result(path, size));
+    }
     if size > max_read_chars {
         // Still return a bounded content prefix (budget-sized read, never the
         // whole file) so callers can see the head and reconstruct if needed.
@@ -343,95 +223,6 @@ async fn read_full(
     } else {
         ToolResult::ok(result)
     })
-}
-
-/// Transcribe an audio file through the router's shared STT boundary. This
-/// keeps uploaded audio useful to the model instead of returning the stale
-/// "use audio tool to transcribe" hint, even though that tool only records or
-/// plays audio.
-async fn transcribe_audio(
-    path: &str,
-    router: Option<Arc<LlmRouter>>,
-    cancel: CancellationToken,
-    max_bytes: u64,
-    timeout_secs: u64,
-) -> anyhow::Result<ToolResult> {
-    let Some(router) = router else {
-        return Ok(ToolResult::ok(serde_json::json!({
-            "audio": true,
-            "path": path,
-            "transcription_unavailable": true,
-            "reason": "No router installed, so audio content cannot be transcribed."
-        })));
-    };
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    let size = tokio::fs::metadata(path).await?.len();
-    if size > max_bytes {
-        return Ok(ToolResult::ok(serde_json::json!({
-            "audio": true,
-            "path": path,
-            "size": size,
-            "too_large": true,
-            "hint": format!(
-                "Audio is {} bytes, above the {} byte transcription limit.",
-                size, max_bytes
-            )
-        })));
-    }
-    let bytes = tokio::fs::read(path).await?;
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    let role = router.stt_role().await;
-    let started = std::time::Instant::now();
-    let result = match tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        router.transcribe_audio(&bytes),
-    )
-    .await
-    {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => {
-            return Ok(ToolResult::failed(
-                serde_json::json!({
-                    "audio": true,
-                    "path": path,
-                    "transcription_error": true,
-                }),
-                format!("audio transcription failed: {error}"),
-            ));
-        }
-        Err(_) => {
-            return Ok(ToolResult::timed_out(
-                crate::ToolExecutionOutcome::TimedOutUnknown,
-                format!("audio transcription timed out after {timeout_secs}s"),
-            ));
-        }
-    };
-
-    let mut tool_result = ToolResult::ok(serde_json::json!({
-        "audio": true,
-        "path": path,
-        "media": {
-            "media_type": "audio/*",
-            "representation": "transcript",
-            "content": result.text.trim(),
-        },
-        "untrusted_content": true,
-    }));
-    if let Some(role) = role
-        && let Some(usage) = result.usage
-    {
-        tool_result.llm_usage.push(ToolLlmUsage {
-            role,
-            usage,
-            model: result.model,
-            duration_ms: Some(started.elapsed().as_millis() as u64),
-        });
-    }
-    Ok(tool_result)
 }
 
 async fn extract_document_result(
@@ -966,17 +757,7 @@ impl FilesTool {
                     let limit = params.limit.unwrap_or(self.max_read_chars);
                     read_bytes(&path, offset, limit, max_chars, self.max_byte_read).await
                 } else {
-                    read_full(
-                        &path,
-                        max_chars,
-                        self.max_read_chars,
-                        self.vision_max_bytes,
-                        params.focus.as_deref(),
-                        self.summarizer.clone(),
-                        cancel.clone(),
-                        self.summary_timeout_secs,
-                    )
-                    .await
+                    read_full(&path, max_chars, self.max_read_chars, cancel.clone()).await
                 }
             }
             FilesOperation::Write => {
@@ -1428,6 +1209,7 @@ async fn summarize(
 
     let messages = build_summary_messages(&source.content, focus, source.provenance);
 
+    let started = std::time::Instant::now();
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(summary_timeout_secs),
@@ -1467,12 +1249,13 @@ async fn summarize(
         }
     };
 
+    let model = response.model.clone();
     let mut result = serde_json::json!({
         "summary": response.text.trim().to_string(),
         "path": path,
         "size": source.size,
         "lines": [source.actual_start, source.actual_end],
-        "model": response.model,
+        "model": model,
         "input_provenance": source.provenance,
         "untrusted_content": true,
     });
@@ -1482,7 +1265,15 @@ async fn summarize(
             "Only part of the file was sent to the summarizer due to the max_chars budget. Use start_line/end_line ranges for full coverage."
         );
     }
-    Ok(ToolResult::ok(result))
+    let mut tool_result = ToolResult::ok(result);
+    tool_result.llm_usage.push(ToolLlmUsage {
+        call_kind: "tool",
+        role: EndpointRole::SmallModel,
+        usage: response.usage,
+        model: response.model,
+        duration_ms: Some(started.elapsed().as_millis() as u64),
+    });
+    Ok(tool_result)
 }
 
 struct SummaryInput {
@@ -1731,74 +1522,103 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_understand_image_no_client() {
-        // Without a summarizer the call must not fail; it reports the feature
-        // as unavailable so the agent can fall back.
+    async fn test_path_media_read_stays_binary_without_llm_dispatch() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("img.png");
-        // 1x1 transparent PNG.
-        let png = [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
-            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
-            0x9C, 0x62, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-        ];
-        tokio::fs::write(&path, png).await.unwrap();
-        let path_str = path.to_string_lossy().to_string();
-        let r = understand_image(
-            &path_str,
-            None,
-            None,
-            CancellationToken::new(),
-            8 * 1024 * 1024,
-            120,
-        )
-        .await
-        .unwrap();
-        assert!(r.success);
-        assert_eq!(r.output["understand_unavailable"], serde_json::json!(true));
+        let image = tmp.path().join("img.png");
+        let audio = tmp.path().join("recording.wav");
+        tokio::fs::write(&image, b"not decoded by files")
+            .await
+            .unwrap();
+        tokio::fs::write(&audio, b"RIFF....WAVE").await.unwrap();
+
+        for path in [image, audio] {
+            let result = FilesTool::default()
+                .execute(
+                    json!({"operation": "read", "path": path.to_string_lossy()}),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.output["binary"], serde_json::json!(true));
+            assert!(result.llm_usage.is_empty());
+        }
+    }
+
+    struct SummaryUsageMock;
+
+    #[async_trait]
+    impl haven_llm::LlmClient for SummaryUsageMock {
+        async fn chat(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<haven_llm::LlmResponse, haven_llm::LlmError> {
+            Ok(haven_llm::LlmResponse {
+                text: "summary".into(),
+                usage: haven_llm::Usage {
+                    prompt_tokens: 13,
+                    completion_tokens: 5,
+                    total_tokens: 18,
+                    ..Default::default()
+                },
+                model: Some("small-test".into()),
+                ..Default::default()
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            std::pin::Pin<
+                Box<
+                    dyn futures_util::Stream<
+                            Item = Result<haven_llm::StreamChunk, haven_llm::LlmError>,
+                        > + Send,
+                >,
+            >,
+            haven_llm::LlmError,
+        > {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn health_check(&self) -> Result<(), haven_llm::LlmError> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
-    async fn test_understand_image_rejects_non_image() {
-        // A path with a non-image extension must error rather than ship bytes.
+    async fn test_summary_reports_tool_usage_without_agent_accounting() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("data.txt");
-        tokio::fs::write(&path, b"hello").await.unwrap();
-        let path_str = path.to_string_lossy().to_string();
-        let r = understand_image(
-            &path_str,
-            None,
-            None,
-            CancellationToken::new(),
-            8 * 1024 * 1024,
-            120,
-        )
-        .await;
-        assert!(r.is_err());
-    }
+        let file = tmp.path().join("notes.txt");
+        tokio::fs::write(&file, "notes for summarization")
+            .await
+            .unwrap();
+        let client = Arc::new(SummaryUsageMock);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        router
+            .force_role_configured(EndpointRole::SmallModel, true)
+            .await;
+        let mut tool = FilesTool::default();
+        tool.summarizer = Some(router);
 
-    #[tokio::test]
-    async fn test_transcribe_audio_no_client_reports_unavailable() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("recording.wav");
-        tokio::fs::write(&path, b"RIFF....WAVE").await.unwrap();
-        let path_str = path.to_string_lossy().to_string();
-        let result = transcribe_audio(
-            &path_str,
-            None,
-            CancellationToken::new(),
-            8 * 1024 * 1024,
-            120,
-        )
-        .await
-        .unwrap();
-        assert!(result.success);
-        assert_eq!(
-            result.output["transcription_unavailable"],
-            serde_json::json!(true)
-        );
+        let result = tool
+            .execute(
+                json!({"operation": "summary", "path": file.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["summary"], "summary");
+        assert_eq!(result.llm_usage.len(), 1);
+        assert_eq!(result.llm_usage[0].call_kind, "tool");
+        assert_eq!(result.llm_usage[0].role, EndpointRole::SmallModel);
+        assert_eq!(result.llm_usage[0].usage.total_tokens, 18);
     }
 
     #[test]

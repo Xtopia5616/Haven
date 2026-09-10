@@ -405,6 +405,55 @@ impl LlmClient for ScriptedMock {
     }
 }
 
+/// Vision client used by the media usage integration test. It returns a
+/// provider-shaped response so the usage can be followed from the media tool
+/// result through the ReAct event and durable call-detail row.
+pub(super) struct VisionUsageMock;
+
+#[async_trait]
+impl LlmClient for VisionUsageMock {
+    fn capability_profile(&self) -> haven_common::media::CapabilityProfile {
+        haven_common::media::CapabilityProfile {
+            image: haven_common::media::CapabilitySupport::Supported,
+            ..Default::default()
+        }
+    }
+
+    async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+        assert!(messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Image { .. }))
+        }));
+        Ok(LlmResponse {
+            text: "a test image description".into(),
+            usage: Usage {
+                prompt_tokens: 11,
+                completion_tokens: 7,
+                total_tokens: 18,
+                ..Usage::default()
+            },
+            model: Some("vision-test".into()),
+            ..LlmResponse::default()
+        })
+    }
+
+    async fn chat_stream(
+        &self,
+        _: Vec<CanonicalMessage>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        Err(LlmError::Unknown("mock: stream not implemented".into()))
+    }
+
+    async fn health_check(&self) -> Result<(), LlmError> {
+        Ok(())
+    }
+}
+
 pub(super) struct EventCollector {
     pub(super) events: std::sync::Mutex<Vec<AgentEvent>>,
 }

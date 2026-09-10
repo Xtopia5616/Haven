@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{ImageGenClient, LlmRouter, OcrClient, SttClient};
+use crate::{ImageGenClient, LlmCallUsage, LlmRouter, OcrClient, SttClient};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use haven_common::config::MediaConfig;
 use haven_common::prompts::OCR_SYSTEM_PROMPT;
@@ -46,6 +46,9 @@ pub enum AttachmentOutcome {
     Extracted {
         text: String,
         decision: MediaDecision,
+        /// Usage from an LLM-backed extraction. Native OCR/STT providers do
+        /// not fabricate token usage, so this remains empty for those paths.
+        llm_usage: Vec<LlmCallUsage>,
     },
     /// No dedicated coverage: the media passes through to the agent as
     /// content parts (image_model / audio_model / default model routing).
@@ -161,6 +164,7 @@ impl MediaGateway {
                         Ok(AttachmentOutcome::Extracted {
                             text: res.text.trim().to_string(),
                             decision,
+                            llm_usage: Vec::new(),
                         })
                     }
                     Ok(_) | Err(_) => {
@@ -192,6 +196,7 @@ impl MediaGateway {
                         Ok(AttachmentOutcome::Extracted {
                             text: res.text.trim().to_string(),
                             decision,
+                            llm_usage: Vec::new(),
                         })
                     }
                     Ok(_) | Err(_) => {
@@ -221,14 +226,28 @@ impl MediaGateway {
             CoverageAction::Stt => "llm:audio".to_string(),
             _ => decision.action.as_str().to_string(),
         };
-        let text = match decision.action {
+        let role = match decision.action {
+            CoverageAction::Ocr => Some(self.router.vision_role().await),
+            CoverageAction::Stt => self.router.stt_role().await,
+            _ => unreachable!("extract_via_llm only called for Ocr/Stt actions"),
+        };
+        let started = std::time::Instant::now();
+        let (text, usage) = match decision.action {
             CoverageAction::Ocr => {
                 let resp = self
                     .router
                     .analyze_image(bytes, media_type, OCR_SYSTEM_PROMPT, None)
                     .await
                     .map_err(|e| anyhow::anyhow!("主模型提取失败: {e}"))?;
-                resp.text.trim().to_string()
+                (
+                    resp.text.trim().to_string(),
+                    role.map(|role| LlmCallUsage {
+                        role,
+                        usage: resp.usage,
+                        model: resp.model,
+                        duration_ms: Some(started.elapsed().as_millis() as u64),
+                    }),
+                )
             }
             CoverageAction::Stt => {
                 let res = self
@@ -236,14 +255,26 @@ impl MediaGateway {
                     .transcribe_audio(bytes)
                     .await
                     .map_err(|e| anyhow::anyhow!("主模型转写失败: {e}"))?;
-                res.text.trim().to_string()
+                (
+                    res.text.trim().to_string(),
+                    role.zip(res.usage).map(|(role, usage)| LlmCallUsage {
+                        role,
+                        usage,
+                        model: res.model,
+                        duration_ms: Some(started.elapsed().as_millis() as u64),
+                    }),
+                )
             }
             _ => unreachable!("extract_via_llm only called for Ocr/Stt actions"),
         };
         if text.is_empty() {
             anyhow::bail!("主模型提取失败: 返回为空");
         }
-        Ok(AttachmentOutcome::Extracted { text, decision })
+        Ok(AttachmentOutcome::Extracted {
+            text,
+            decision,
+            llm_usage: usage.into_iter().collect(),
+        })
     }
 
     /// Handle a pure-text image-generation request. Returns
@@ -481,7 +512,7 @@ mod tests {
             .process_attachment(&image_bytes(), "a.png", "提取文字", None)
             .await
             .unwrap();
-        let AttachmentOutcome::Extracted { text, decision } = outcome else {
+        let AttachmentOutcome::Extracted { text, decision, .. } = outcome else {
             panic!("expected Extracted");
         };
         assert_eq!(text, "识别出的文字");
@@ -507,7 +538,7 @@ mod tests {
             .process_attachment(&image_bytes(), "a.png", "提取文字", None)
             .await
             .unwrap();
-        let AttachmentOutcome::Extracted { text, decision } = outcome else {
+        let AttachmentOutcome::Extracted { text, decision, .. } = outcome else {
             panic!("expected Extracted");
         };
         assert_eq!(text, "主模型提取的文本");
@@ -528,7 +559,7 @@ mod tests {
             .process_attachment(&image_bytes(), "a.png", "提取文字", None)
             .await
             .unwrap();
-        let AttachmentOutcome::Extracted { text, decision } = outcome else {
+        let AttachmentOutcome::Extracted { text, decision, .. } = outcome else {
             panic!("expected Extracted");
         };
         assert_eq!(text, "无置信度结果");
@@ -570,7 +601,7 @@ mod tests {
             .process_attachment(&wav_bytes(), "a.wav", "转文字", None)
             .await
             .unwrap();
-        let AttachmentOutcome::Extracted { text, decision } = outcome else {
+        let AttachmentOutcome::Extracted { text, decision, .. } = outcome else {
             panic!("expected Extracted");
         };
         assert_eq!(text, "转写结果");
@@ -661,12 +692,22 @@ mod tests {
             .process_attachment(&image_bytes(), "a.png", "提取文字", None)
             .await
             .unwrap();
-        let AttachmentOutcome::Extracted { text, decision } = outcome else {
+        let AttachmentOutcome::Extracted {
+            text,
+            decision,
+            llm_usage,
+        } = outcome
+        else {
             panic!("expected Extracted");
         };
         assert_eq!(text, "vision OCR 文本");
         assert_eq!(decision.routed_to, "llm:image");
         assert!(!decision.fallback);
+        assert_eq!(llm_usage.len(), 1);
+        assert_eq!(
+            llm_usage[0].role,
+            haven_common::config::EndpointRole::DefaultModel
+        );
     }
 
     // --- generate ----------------------------------------------------------

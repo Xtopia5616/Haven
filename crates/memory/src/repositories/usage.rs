@@ -109,8 +109,8 @@ pub struct LlmCallUsage {
     /// Endpoint role that produced the call (e.g. "default_model").
     pub role: String,
     /// Call surface that owns the usage. Agent turns feed session totals;
-    /// tool-owned media inference is retained for diagnostics but excluded
-    /// from those totals.
+    /// tool-owned media and other tool inference are retained for diagnostics
+    /// but excluded from those totals.
     #[serde(default = "default_call_kind")]
     pub call_kind: String,
     pub model: Option<String>,

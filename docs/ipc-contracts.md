@@ -177,7 +177,7 @@ exit_code?, preview? }`。它不包含动态 `tool_args`、续接 `prompt`、`to
 |---|---|---|---|
 | `get_recording_state` | 无 | `RecordingState { is_recording, is_toggle }` | 当前采集状态；不会暴露设备或 provider 细节。 |
 | `start_recording` / `stop_recording` / `cancel_recording` | 无 | `()` | 采集与转写生命周期由下列事件报告。 |
-| `process_transcript` | `{ text, session_id? }` | `()` | 将已确认的纯文本提交为会话输入。 |
+| `process_transcript` | `{ text, session_id?, recording_session_id? }` | `()` | 将已确认的纯文本提交为会话输入；语音转写的 `rec-*` 仅用于把入口侧媒体 usage 绑定到最终 `ses-*` 会话。 |
 
 Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界是
 `ui/src/lib/contracts/recording.ts` 与 `recordingEventListeners`。`rec-*` 为单次录音 ID，
@@ -220,7 +220,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。 |
 | `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 run/step 顺序消费；只发送补充上下文，不发送快照内部对象。 |
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id? }` | 聊天页 | 按事件顺序消费；`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
-| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 固定 token/cost/cache/context 字段；`call_kind=agent` 为 Agent 主循环，`call_kind=media` 为工具拥有的媒体推理，后者不更新主循环累计统计；`cache_diagnostics` 仅为 provider 诊断扩展点；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
+| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 固定 token/cost/cache/context 字段；`call_kind=agent` 为 Agent 主循环，`call_kind=media` 为工具拥有的媒体推理，`call_kind=tool` 为其它工具内部 LLM 调用，后二者均不更新主循环累计统计；`cache_diagnostics` 仅为 provider 诊断扩展点；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
 | `notification:show` | `AgentNotificationEvent` | 根布局 | 纯文本 toast/系统通知；不承载密钥、完整命令输出或原始 provider 错误。 |
 

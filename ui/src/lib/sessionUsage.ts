@@ -19,7 +19,7 @@ export interface LlmUsage {
 	id?: string;
 	step_number?: number | null;
 	role?: string;
-	call_kind?: 'agent' | 'media' | string;
+	call_kind?: 'agent' | 'media' | 'tool' | string;
 	model?: string | null;
 	prompt_tokens?: number;
 	completion_tokens?: number;

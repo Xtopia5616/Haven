@@ -44,10 +44,9 @@ export function createChatUsageEventHandlers(): {
 				creation,
 				d.cacheAccounting || 'unknown',
 			);
-			if (callKind === 'media') {
-				if (d.stepNumber != null) {
-					appendSessionLlmUsage(d.sessionId, {
-						step_number: d.stepNumber,
+			if (callKind === 'media' || callKind === 'tool') {
+				appendSessionLlmUsage(d.sessionId, {
+						step_number: d.stepNumber ?? null,
 						call_kind: callKind,
 						role: d.role || undefined,
 						model: d.model ?? null,
@@ -65,7 +64,6 @@ export function createChatUsageEventHandlers(): {
 						has_cost: !!d.hasCost,
 						duration_ms: d.durationMs ?? null,
 					});
-				}
 				return;
 			}
 			const cumPrompt = d.cumulativePromptTokens || 0;

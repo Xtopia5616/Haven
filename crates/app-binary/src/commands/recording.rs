@@ -148,10 +148,31 @@ pub(crate) async fn finalize_transcription(
         "transcription_started",
     );
 
-    state.pipeline.transcribe(&mut result).await;
+    let llm_usage = state.pipeline.transcribe(&mut result).await;
 
     match result.transcript {
         Some(text) => {
+            if !llm_usage.is_empty() {
+                let mut pending = state
+                    .pending_recording_usage
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                // The input pipeline permits only one active recording, but
+                // transcript submission is asynchronous. Keep a small
+                // bounded map so a delayed renderer cannot mix two `rec-*`
+                // results while also preventing a stale client from growing
+                // memory without limit.
+                if pending.len() >= 8
+                    && let Some(oldest) = pending.keys().next().cloned()
+                {
+                    pending.remove(&oldest);
+                    tracing::warn!(
+                        recording_id = %oldest,
+                        "dropping stale pending recording usage"
+                    );
+                }
+                pending.insert(session_id.to_string(), llm_usage);
+            }
             emit_event_logged(
                 app,
                 TRANSCRIPTION_RESULT_EVENT,
@@ -166,6 +187,11 @@ pub(crate) async fn finalize_transcription(
             Some(text)
         }
         None => {
+            state
+                .pending_recording_usage
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(session_id.as_str());
             if let Some(err) = result.transcript_error {
                 emit_event_logged(
                     app,
@@ -295,10 +321,18 @@ pub async fn cancel_recording(
     state.shell.sync_recording(false).await;
     // No transcription follows a cancel: drop the session id so the next
     // recording starts a fresh one instead of reusing the cancelled id.
-    *state
+    let cancelled_recording_id = state
         .recording_session
         .lock()
-        .unwrap_or_else(|p| p.into_inner()) = None;
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    if let Some(recording_id) = cancelled_recording_id {
+        state
+            .pending_recording_usage
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(recording_id.as_str());
+    }
     emit_recording_stopped(&app, "cancel", None);
     Ok(())
 }
@@ -310,6 +344,7 @@ pub async fn process_transcript(
     active_session_id: Option<String>,
     attachments: Option<Vec<haven_common::types::MessageAttachment>>,
     voice: Option<bool>,
+    recording_session_id: Option<String>,
 ) -> Result<haven_agent::ProcessResult, String> {
     let limits = state
         .config_service
@@ -360,6 +395,35 @@ pub async fn process_transcript(
         state
             .tools
             .bind_pending_managed_assets_to_session(session_id, &attachments);
+    }
+    let pending_recording_usage = recording_session_id.as_deref().and_then(|id| {
+        state
+            .pending_recording_usage
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id)
+    });
+    if let Some(usages) = pending_recording_usage {
+        // A stale active id can be replaced by ingress when the old session
+        // disappears, so prefer the actual SessionCreated owner when one is
+        // returned. The recording's `rec-*` id never becomes a DB session id.
+        let target_session_id = match &result {
+            haven_agent::ProcessResult::SessionCreated { session_id, .. } => {
+                Some(session_id.as_str())
+            }
+            _ => active_session_id.as_deref(),
+        };
+        if let Some(target_session_id) = target_session_id {
+            state
+                .agent
+                .record_media_usage(target_session_id, &usages)
+                .await;
+        } else {
+            tracing::warn!(
+                recording_session_id,
+                "discarding transcription usage without a target session"
+            );
+        }
     }
     tracing::debug!("process_transcript result: {:?}", result);
     Ok(result)

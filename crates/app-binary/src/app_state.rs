@@ -74,6 +74,11 @@ pub struct AppState {
     /// recording (`recording:started` / `transcription:*` events) so the
     /// frontend can correlate them by id.
     pub recording_session: Arc<std::sync::Mutex<Option<haven_common::types::SessionId>>>,
+    /// LLM-backed ingress transcription usage waiting for the frontend to
+    /// submit the transcript to its concrete conversation session. The
+    /// `rec-*` key is deliberately kept separate from durable `ses-*` ids.
+    pub(crate) pending_recording_usage:
+        Arc<std::sync::Mutex<HashMap<String, Vec<haven_llm::LlmCallUsage>>>>,
     /// True once deferred startup (MCP discover + skills scan + audio
     /// prewarm) has finished. The UI polls / listens so the status chip can
     /// show 加载中 → 就绪 without blocking window creation.
@@ -537,6 +542,7 @@ impl AppState {
             log_filter_handles: filter_handles,
             config_service,
             recording_session: Arc::new(std::sync::Mutex::new(None)),
+            pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
             ui_confirmations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
