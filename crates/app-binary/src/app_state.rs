@@ -326,6 +326,22 @@ impl AppState {
             });
         }
 
+        // Crash leftovers in private upload staging directories are temporary
+        // state, so their cleanup is independent from history retention.
+        let staging_root = haven_common::default_work_dir().join("uploads");
+        tokio::spawn(async move {
+            match crate::commands::recording::cleanup_stale_upload_staging(staging_root).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!("cleaned up {} stale upload staging director(ies)", n);
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error),
+                    "deferred upload staging cleanup failed"
+                ),
+            }
+        });
+
         // Spawn background cleanup every 24 hours
         let db_clone = db.clone();
         let retention = retention_days;
@@ -379,6 +395,21 @@ impl AppState {
                             "background upload cleanup skipped: could not read attachment references"
                         ),
                     }
+                }
+                match crate::commands::recording::cleanup_stale_upload_staging(upload_root.clone())
+                    .await
+                {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(
+                            "background cleanup: removed {} stale upload staging director(ies)",
+                            n
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error),
+                        "background upload staging cleanup failed"
+                    ),
                 }
             }
         });

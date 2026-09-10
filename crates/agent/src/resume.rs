@@ -503,7 +503,7 @@ impl AgentLayer {
             if let TranscriptRecord::UserInject { attachments, .. } = event {
                 self.executor
                     .get_tools()
-                    .register_managed_assets(attachments);
+                    .register_managed_assets_for_session(session_id, attachments);
             }
         }
         let (mut canonical, _) =
@@ -690,7 +690,7 @@ impl AgentLayer {
     ) -> anyhow::Result<Vec<ReActRound>> {
         self.executor
             .get_tools()
-            .register_managed_assets(initial_attachments);
+            .register_managed_assets_for_session(session_id, initial_attachments);
         tracing::debug!(
             "run_session start: session_id={:?} context={:?} attachments={}",
             session_id,

@@ -4,7 +4,7 @@
 //! is the trusted boundary that resolves that id to a host path for a narrow
 //! read-only files operation; paths never need to enter the LLM transcript.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::Metadata;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -22,6 +22,12 @@ pub struct ManagedAsset {
 #[derive(Debug, Clone, Default)]
 pub struct ManagedAssetRegistry {
     assets: Arc<RwLock<HashMap<String, ManagedAsset>>>,
+    /// Assets held by a live session remain protected even before the
+    /// attachment has been projected into `messages`.
+    session_leases: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    /// Assets registered just before a new session id is allocated. These
+    /// short-lived ingress leases close the pre-session handoff window.
+    pending_assets: Arc<RwLock<HashSet<String>>>,
 }
 
 impl ManagedAssetRegistry {
@@ -57,6 +63,111 @@ impl ManagedAssetRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(asset_id, asset);
         true
+    }
+
+    /// Register an asset and hold it for the lifetime of a session. The
+    /// session lease closes the GC window between event persistence and the
+    /// materialized `messages.attachments` projection.
+    pub fn register_under_root_for_session(
+        &self,
+        session_id: &str,
+        root: &Path,
+        asset_id: impl Into<String>,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: impl Into<String>,
+    ) -> bool {
+        if session_id.trim().is_empty() {
+            return false;
+        }
+        let asset_id = asset_id.into();
+        if !self.register_under_root_pending(root, asset_id.clone(), path, filename, media_type) {
+            return false;
+        }
+        self.bind_pending_to_session(session_id, &asset_id)
+    }
+
+    /// Register an asset while ingress is creating a new session. The caller
+    /// must bind or release this pending lease when ingress returns.
+    pub fn register_under_root_pending(
+        &self,
+        root: &Path,
+        asset_id: impl Into<String>,
+        path: PathBuf,
+        filename: Option<String>,
+        media_type: impl Into<String>,
+    ) -> bool {
+        let asset_id = asset_id.into();
+        if !self.register_under_root(root, asset_id.clone(), path, filename, media_type) {
+            return false;
+        }
+        self.pending_assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(asset_id);
+        true
+    }
+
+    /// Associate an already registered asset with a live session.
+    pub fn lease_for_session(&self, session_id: &str, asset_id: &str) -> bool {
+        if session_id.trim().is_empty() || asset_id.trim().is_empty() || !self.contains(asset_id) {
+            return false;
+        }
+        self.session_leases
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(asset_id.to_string());
+        true
+    }
+
+    /// Convert a pending ingress lease into a session lease.
+    pub fn bind_pending_to_session(&self, session_id: &str, asset_id: &str) -> bool {
+        if !self.lease_for_session(session_id, asset_id) {
+            return false;
+        }
+        self.pending_assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(asset_id);
+        true
+    }
+
+    /// Release a pending ingress lease after session creation failed.
+    pub fn release_pending(&self, asset_id: &str) -> bool {
+        self.pending_assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(asset_id)
+    }
+
+    /// Release every asset lease owned by a terminal session.
+    pub fn release_session(&self, session_id: &str) -> usize {
+        self.session_leases
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(session_id)
+            .map_or(0, |assets| assets.len())
+    }
+
+    /// Return paths protected specifically by active session leases.
+    pub fn leased_paths(&self) -> Vec<PathBuf> {
+        let leased_ids: HashSet<String> = self
+            .session_leases
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .flat_map(|assets| assets.iter().cloned())
+            .collect();
+        let assets = self
+            .assets
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        leased_ids
+            .iter()
+            .filter_map(|asset_id| assets.get(asset_id).map(|asset| asset.path.clone()))
+            .collect()
     }
 
     #[cfg(test)]
@@ -117,13 +228,37 @@ impl ManagedAssetRegistry {
             .assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let before = assets.len();
-        assets.retain(|_, asset| {
-            std::fs::symlink_metadata(&asset.path)
-                .map(|metadata| metadata.is_file() && !is_link_or_reparse(&metadata))
-                .unwrap_or(false)
+        let removed: HashSet<String> = assets
+            .iter()
+            .filter_map(|(asset_id, asset)| {
+                let exists = std::fs::symlink_metadata(&asset.path)
+                    .map(|metadata| metadata.is_file() && !is_link_or_reparse(&metadata))
+                    .unwrap_or(false);
+                (!exists).then_some(asset_id.clone())
+            })
+            .collect();
+        assets.retain(|asset_id, _| !removed.contains(asset_id));
+        drop(assets);
+        self.remove_leases_for_assets(&removed);
+        self.pending_assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|asset_id| !removed.contains(asset_id));
+        removed.len()
+    }
+
+    fn remove_leases_for_assets(&self, removed: &HashSet<String>) {
+        if removed.is_empty() {
+            return;
+        }
+        let mut leases = self
+            .session_leases
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        leases.retain(|_, assets| {
+            assets.retain(|asset_id| !removed.contains(asset_id));
+            !assets.is_empty()
         });
-        before.saturating_sub(assets.len())
     }
 
     /// Remove entries that point into a successfully deleted managed batch.
@@ -132,24 +267,51 @@ impl ManagedAssetRegistry {
             .assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let before = assets.len();
-        assets.retain(|_, asset| !path_is_equal_or_child(root, &asset.path));
-        before.saturating_sub(assets.len())
+        let removed: HashSet<String> = assets
+            .iter()
+            .filter_map(|(asset_id, asset)| {
+                path_is_equal_or_child(root, &asset.path).then_some(asset_id.clone())
+            })
+            .collect();
+        assets.retain(|asset_id, _| !removed.contains(asset_id));
+        drop(assets);
+        self.remove_leases_for_assets(&removed);
+        self.pending_assets
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|asset_id| !removed.contains(asset_id));
+        removed.len()
     }
 
     /// Remove registry entries that are no longer referenced by persisted
-    /// messages. This lets retention GC distinguish active/history-backed
-    /// assets from old rows that were already deleted from the database.
+    /// messages or an active session lease. This lets retention GC distinguish
+    /// active/event-backed assets from old rows that were already deleted from
+    /// the database.
     pub fn prune_unreferenced(&self, referenced_paths: &[PathBuf]) -> usize {
+        let mut leased_ids: HashSet<String> = self
+            .session_leases
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .flat_map(|assets| assets.iter().cloned())
+            .collect();
+        leased_ids.extend(
+            self.pending_assets
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .cloned(),
+        );
         let mut assets = self
             .assets
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let before = assets.len();
-        assets.retain(|_, asset| {
-            referenced_paths
-                .iter()
-                .any(|path| path_is_equal(path, &asset.path))
+        assets.retain(|asset_id, asset| {
+            leased_ids.contains(asset_id)
+                || referenced_paths
+                    .iter()
+                    .any(|path| path_is_equal(path, &asset.path))
         });
         before.saturating_sub(assets.len())
     }
@@ -329,5 +491,50 @@ mod tests {
         assert_eq!(registry.prune_unreferenced(&[keep]), 1);
         assert!(registry.contains("asset-keep"));
         assert!(!registry.contains("asset-old"));
+    }
+
+    #[test]
+    fn active_session_lease_survives_missing_message_projection() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("active.txt");
+        std::fs::write(&path, "active").unwrap();
+        let registry = ManagedAssetRegistry::default();
+
+        assert!(registry.register_under_root_for_session(
+            "ses-active",
+            root.path(),
+            "asset-active",
+            path.clone(),
+            Some("active.txt".into()),
+            "text/plain",
+        ));
+        assert_eq!(registry.prune_unreferenced(&[]), 0);
+        assert_eq!(registry.leased_paths(), vec![path.clone()]);
+
+        assert_eq!(registry.release_session("ses-active"), 1);
+        assert_eq!(registry.prune_unreferenced(&[]), 1);
+        assert!(!registry.contains("asset-active"));
+    }
+
+    #[test]
+    fn pruning_deleted_batch_also_releases_session_lease() {
+        let root = TempDir::new().unwrap();
+        let batch = root.path().join("file-0123456789abcdef0123456789abcdef");
+        let path = batch.join("active.txt");
+        std::fs::create_dir_all(&batch).unwrap();
+        std::fs::write(&path, "active").unwrap();
+        let registry = ManagedAssetRegistry::default();
+
+        assert!(registry.register_under_root_for_session(
+            "ses-active",
+            root.path(),
+            "asset-active",
+            path,
+            Some("active.txt".into()),
+            "text/plain",
+        ));
+        assert_eq!(registry.prune_paths_under(&batch), 1);
+        assert!(registry.leased_paths().is_empty());
+        assert_eq!(registry.release_session("ses-active"), 0);
     }
 }

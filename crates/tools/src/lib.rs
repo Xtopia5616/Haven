@@ -250,16 +250,17 @@ impl ToolsManager {
         *self.memory_recall.write().await = Some(recall);
     }
 
-    /// Register host-persisted attachments for the trusted files boundary.
-    /// Renderer-provided ids are not accepted because validation clears them
-    /// before persistence mints a fresh host-owned id.
+    /// Register host-persisted attachments for the trusted files boundary and
+    /// hold them in an ingress lease until a newly created session can claim
+    /// them. Renderer-provided ids are not accepted because validation clears
+    /// them before persistence mints a fresh host-owned id.
     pub fn register_managed_assets(&self, attachments: &[MessageAttachment]) {
         let uploads_root = haven_common::default_work_dir().join("uploads");
         for attachment in attachments {
             let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
                 continue;
             };
-            if !self.managed_assets.register_under_root(
+            if !self.managed_assets.register_under_root_pending(
                 &uploads_root,
                 asset_id.clone(),
                 std::path::PathBuf::from(path),
@@ -272,6 +273,75 @@ impl ToolsManager {
                 );
             }
         }
+    }
+
+    /// Register attachments and hold them for the lifetime of a live session.
+    /// This protects event-backed assets before their `messages` projection is
+    /// visible to retention cleanup.
+    pub fn register_managed_assets_for_session(
+        &self,
+        session_id: &str,
+        attachments: &[MessageAttachment],
+    ) {
+        let uploads_root = haven_common::default_work_dir().join("uploads");
+        for attachment in attachments {
+            let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
+                continue;
+            };
+            if !self.managed_assets.register_under_root_for_session(
+                session_id,
+                &uploads_root,
+                asset_id.clone(),
+                std::path::PathBuf::from(path),
+                attachment.filename.clone(),
+                attachment.media_type.clone(),
+            ) {
+                tracing::warn!(
+                    asset_id = %asset_id,
+                    session_id = %session_id,
+                    "rejecting managed attachment outside the host uploads root or session lease"
+                );
+            }
+        }
+    }
+
+    /// Bind assets registered before new-session allocation to the resulting
+    /// session lease.
+    pub fn bind_pending_managed_assets_to_session(
+        &self,
+        session_id: &str,
+        attachments: &[MessageAttachment],
+    ) {
+        for attachment in attachments {
+            let Some(asset_id) = attachment.asset_id.as_deref() else {
+                continue;
+            };
+            if !self
+                .managed_assets
+                .bind_pending_to_session(session_id, asset_id)
+            {
+                tracing::warn!(
+                    asset_id = %asset_id,
+                    session_id = %session_id,
+                    "failed to bind pending managed attachment to session lease"
+                );
+            }
+        }
+    }
+
+    /// Release assets registered for an ingress request whose new session was
+    /// never created. Unreferenced entries are removed by the next GC pass.
+    pub fn release_pending_managed_assets(&self, attachments: &[MessageAttachment]) {
+        for attachment in attachments {
+            if let Some(asset_id) = attachment.asset_id.as_deref() {
+                self.managed_assets.release_pending(asset_id);
+            }
+        }
+    }
+
+    /// Release the process-local asset lease held by a terminal session.
+    pub fn release_managed_assets_for_session(&self, session_id: &str) {
+        self.managed_assets.release_session(session_id);
     }
 
     /// Monotonic catalog version (see `catalog_version`). Consumers cache

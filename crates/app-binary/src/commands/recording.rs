@@ -323,7 +323,16 @@ pub async fn process_transcript(
     let attachments = persist_file_attachments(attachments, limits.max_upload_total_bytes)
         .await
         .map_err(|e| log_err("process_transcript", e))?;
-    state.tools.register_managed_assets(&attachments);
+    if let Some(session_id) = active_session_id.as_deref() {
+        state
+            .tools
+            .register_managed_assets_for_session(session_id, &attachments);
+    } else {
+        // The new session id is allocated only after ingress persists the
+        // first message. Keep the registry entry protected across that small
+        // pre-session window, then bind it to the returned session lease.
+        state.tools.register_managed_assets(&attachments);
+    }
     let voice = voice.unwrap_or(false);
     tracing::debug!(
         "process_transcript called: text={:?} active_session_id={:?} attachments={} voice={}",
@@ -332,11 +341,26 @@ pub async fn process_transcript(
         attachments.len(),
         voice
     );
-    let result = state
+    let result = match state
         .agent
         .process_input_with_attachments(&transcript, active_session_id.clone(), &attachments, voice)
         .await
-        .map_err(|e| log_err("process_transcript", e))?;
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if active_session_id.is_none() {
+                state.tools.release_pending_managed_assets(&attachments);
+            }
+            return Err(log_err("process_transcript", error));
+        }
+    };
+    if active_session_id.is_none()
+        && let haven_agent::ProcessResult::SessionCreated { session_id, .. } = &result
+    {
+        state
+            .tools
+            .bind_pending_managed_assets_to_session(session_id, &attachments);
+    }
     tracing::debug!("process_transcript result: {:?}", result);
     Ok(result)
 }
@@ -442,6 +466,28 @@ pub(crate) async fn cleanup_stale_upload_batches_with_references(
     .map_err(|error| format!("上传目录清理任务失败: {error}"))?
 }
 
+/// Staging directories are crash leftovers, not durable session history. They
+/// therefore have their own short retention window and are cleaned even when
+/// `history_retention_days` is disabled.
+pub(crate) const UPLOAD_STAGING_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
+
+pub(crate) async fn cleanup_stale_upload_staging(
+    root: std::path::PathBuf,
+) -> Result<usize, String> {
+    cleanup_stale_upload_staging_with_age(root, UPLOAD_STAGING_MAX_AGE).await
+}
+
+async fn cleanup_stale_upload_staging_with_age(
+    root: std::path::PathBuf,
+    max_age: std::time::Duration,
+) -> Result<usize, String> {
+    let _write_guard = upload_write_lock().lock().await;
+    tokio::task::spawn_blocking(move || cleanup_stale_upload_staging_sync(&root, max_age))
+        .await
+        .map_err(|error| format!("上传暂存目录清理任务失败: {error}"))?
+}
+
 static UPLOAD_WRITE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 fn upload_write_lock() -> &'static tokio::sync::Mutex<()> {
@@ -515,6 +561,58 @@ fn cleanup_stale_upload_batches_sync(
         }
     }
     registry.prune_missing();
+    Ok(removed)
+}
+
+fn cleanup_stale_upload_staging_sync(
+    root: &std::path::Path,
+    max_age: std::time::Duration,
+) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("读取上传暂存目录失败: {error}")),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!(error = %error, "跳过不可读取的上传暂存目录项");
+                continue;
+            }
+        };
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::debug!(error = %error, "跳过无法判断类型的上传暂存目录项");
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !metadata.is_dir()
+            || is_link_or_reparse(&metadata)
+            || !is_generated_upload_staging(&name)
+        {
+            continue;
+        }
+        let modified = match metadata.modified() {
+            Ok(modified) => modified,
+            Err(error) => {
+                tracing::debug!(staging = %name, error = %error, "跳过没有修改时间的上传暂存目录");
+                continue;
+            }
+        };
+        if modified.elapsed().map_or(true, |age| age <= max_age) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) => {
+                tracing::debug!(staging = %name, error = %error, "上传暂存目录清理失败")
+            }
+        }
+    }
     Ok(removed)
 }
 
@@ -924,6 +1022,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cleanup_stale_upload_staging_is_independent_from_batch_retention() {
+        let root = tempfile::TempDir::new().unwrap();
+        let stale = root
+            .path()
+            .join(".file-0123456789abcdef0123456789abcdef.tmp");
+        let unrelated = root.path().join("file-user-created");
+        tokio::fs::create_dir_all(&stale).await.unwrap();
+        tokio::fs::create_dir_all(&unrelated).await.unwrap();
+
+        let removed = cleanup_stale_upload_staging_with_age(
+            root.path().to_path_buf(),
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
+    }
+
+    #[tokio::test]
     async fn test_cleanup_missing_upload_root_is_idempotent() {
         let root = tempfile::TempDir::new().unwrap();
         let missing = root.path().join("uploads");
@@ -1096,6 +1216,49 @@ mod tests {
         tokio::fs::remove_dir_all(&batch).await.unwrap();
         assert_eq!(registry.prune_missing(), 1);
         assert!(!registry.contains("asset-live"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_preserves_active_session_lease_without_message_reference() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let batch = root.path().join("file-0123456789abcdef0123456789abcdef");
+        let file = batch.join("active.txt");
+        tokio::fs::create_dir_all(&batch).await.unwrap();
+        tokio::fs::write(&file, "active").await.unwrap();
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        assert!(registry.register_under_root_for_session(
+            "ses-active",
+            root.path(),
+            "asset-live",
+            file.clone(),
+            Some("active.txt".into()),
+            "text/plain",
+        ));
+
+        let removed = cleanup_stale_upload_batches_with_references(
+            root.path().to_path_buf(),
+            std::time::Duration::ZERO,
+            registry.clone(),
+            Some(Vec::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(removed, 0);
+        assert!(file.exists());
+
+        registry.release_session("ses-active");
+        let removed = cleanup_stale_upload_batches_with_references(
+            root.path().to_path_buf(),
+            std::time::Duration::ZERO,
+            registry,
+            Some(Vec::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(removed, 1);
+        assert!(!batch.exists());
     }
 
     #[tokio::test]

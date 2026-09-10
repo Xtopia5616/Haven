@@ -173,6 +173,7 @@ impl SessionExecutor {
                 );
                 return Err(e);
             }
+            self.tools.release_managed_assets_for_session(session_id);
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
@@ -618,6 +619,16 @@ impl SessionExecutor {
         self.session_cancellations.lock().await.remove(session_id);
         if let Some(gate) = self.run_exit.lock().await.remove(session_id) {
             let _ = gate.tx.send(());
+        }
+        // A paused session keeps its asset lease for future follow-ups. A
+        // terminal session (or one removed from the working set) releases it
+        // only after the handler has fully unwound.
+        if self
+            .get_session_state(session_id)
+            .await
+            .is_none_or(|status| status.is_terminal())
+        {
+            self.tools.release_managed_assets_for_session(session_id);
         }
         if let Some(cb) = self.on_session_cleanup.snap() {
             cb(session_id.to_string());
