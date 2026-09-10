@@ -278,6 +278,7 @@ impl ShellTool {
                 outcome: ToolExecutionOutcome::Failed,
                 attempts: 1,
                 signals: crate::tool_contract::ToolSignals::default(),
+                llm_usage: Vec::new(),
             })
         }
     }

@@ -628,6 +628,25 @@ describe('token usage helpers', () => {
 			]),
 		).toBeNull();
 	});
+
+	it('excludes media-owned calls from the Agent cache rate', () => {
+		expect(
+			cumulativeCacheHitRatePercent([
+				{
+					call_kind: 'agent',
+					prompt_tokens: 100,
+					cached_tokens: 50,
+					cache_accounting: 'inclusive',
+				},
+				{
+					call_kind: 'media',
+					prompt_tokens: 10_000,
+					cached_tokens: 0,
+					cache_accounting: 'unknown',
+				},
+			]),
+		).toBe(50);
+	});
 });
 
 describe('formatTokenCount', () => {

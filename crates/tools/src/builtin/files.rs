@@ -15,7 +15,7 @@ use super::media::{MediaOperation, MediaParams, MediaTool, classify_media};
 use crate::document::{
     DocumentExtraction, MAX_DOCUMENT_BYTES, extract_document_with_cancel, supports_document_path,
 };
-use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
+use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolLlmUsage, ToolResult};
 
 const MAX_SUMMARY_FOCUS_CHARS: usize = 2_000;
 const UNTRUSTED_DOCUMENT_START: &str = "【附件派生内容开始";
@@ -113,6 +113,8 @@ async fn understand_image(
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
+    let role = client.vision_role().await;
+    let started = std::time::Instant::now();
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(summary_timeout_secs),
@@ -124,39 +126,36 @@ async fn understand_image(
     let response = match call.await {
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
-            return Ok(ToolResult {
-                success: false,
-                output: serde_json::json!({"image": true, "path": path, "understand_error": true}),
-                error: Some(format!("vision call failed: {}", e)),
-                truncated: false,
-                outcome: crate::ToolExecutionOutcome::Failed,
-                attempts: 1,
-                signals: crate::tool_contract::ToolSignals::default(),
-            });
+            return Ok(ToolResult::failed(
+                serde_json::json!({"image": true, "path": path, "understand_error": true}),
+                format!("vision call failed: {}", e),
+            ));
         }
         Err(_) => {
-            return Ok(ToolResult {
-                success: false,
-                output: serde_json::json!({"image": true, "path": path, "understand_error": true}),
-                error: Some(format!(
-                    "vision call timed out after {}s",
-                    summary_timeout_secs
-                )),
-                truncated: false,
-                outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
-                attempts: 1,
-                signals: crate::tool_contract::ToolSignals::default(),
-            });
+            return Ok(ToolResult::timed_out(
+                crate::ToolExecutionOutcome::TimedOutUnknown,
+                format!("vision call timed out after {}s", summary_timeout_secs),
+            ));
         }
     };
 
-    Ok(ToolResult::ok(serde_json::json!({
+    let mut result = ToolResult::ok(serde_json::json!({
         "image": true,
         "path": path,
-        "size": size,
-        "description": response.text.trim().to_string(),
-        "model": response.model,
-    })))
+        "media": {
+            "media_type": media_type,
+            "representation": "image_description",
+            "content": response.text.trim(),
+        },
+        "untrusted_content": true,
+    }));
+    result.llm_usage.push(ToolLlmUsage {
+        role,
+        usage: response.usage,
+        model: response.model,
+        duration_ms: Some(started.elapsed().as_millis() as u64),
+    });
+    Ok(result)
 }
 
 fn sanitize_path(path: &str) -> anyhow::Result<String> {
@@ -385,6 +384,8 @@ async fn transcribe_audio(
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
+    let role = router.stt_role().await;
+    let started = std::time::Instant::now();
     let result = match tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
         router.transcribe_audio(&bytes),
@@ -403,31 +404,34 @@ async fn transcribe_audio(
             ));
         }
         Err(_) => {
-            return Ok(ToolResult {
-                success: false,
-                output: serde_json::json!({
-                    "audio": true,
-                    "path": path,
-                    "transcription_error": true,
-                }),
-                error: Some(format!(
-                    "audio transcription timed out after {timeout_secs}s"
-                )),
-                truncated: false,
-                outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
-                attempts: 1,
-                signals: crate::tool_contract::ToolSignals::default(),
-            });
+            return Ok(ToolResult::timed_out(
+                crate::ToolExecutionOutcome::TimedOutUnknown,
+                format!("audio transcription timed out after {timeout_secs}s"),
+            ));
         }
     };
 
-    Ok(ToolResult::ok(serde_json::json!({
+    let mut tool_result = ToolResult::ok(serde_json::json!({
         "audio": true,
         "path": path,
-        "size": size,
-        "transcript": result.text.trim(),
+        "media": {
+            "media_type": "audio/*",
+            "representation": "transcript",
+            "content": result.text.trim(),
+        },
         "untrusted_content": true,
-    })))
+    }));
+    if let Some(role) = role
+        && let Some(usage) = result.usage
+    {
+        tool_result.llm_usage.push(ToolLlmUsage {
+            role,
+            usage,
+            model: result.model,
+            duration_ms: Some(started.elapsed().as_millis() as u64),
+        });
+    }
+    Ok(tool_result)
 }
 
 async fn extract_document_result(
@@ -904,7 +908,7 @@ impl FilesTool {
 
         // Managed binary media has one canonical agent-facing entry point.
         // Keep filesystem reads focused on text; the media tool owns the
-        // representation derivation and returns a reusable MediaInput.
+        // representation derivation and returns a compact media reference.
         if op == FilesOperation::Read
             && params.start_line.is_none()
             && params.end_line.is_none()
@@ -1049,6 +1053,7 @@ impl FilesTool {
                         outcome: crate::ToolExecutionOutcome::Succeeded,
                         attempts: 1,
                         signals: crate::tool_contract::ToolSignals::default(),
+                        llm_usage: Vec::new(),
                     });
                 }
                 let result = content.replace(old, &new);
@@ -1442,6 +1447,7 @@ async fn summarize(
                 outcome: crate::ToolExecutionOutcome::Failed,
                 attempts: 1,
                 signals: crate::tool_contract::ToolSignals::default(),
+                llm_usage: Vec::new(),
             });
         }
         Err(_) => {
@@ -1456,6 +1462,7 @@ async fn summarize(
                 outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                 attempts: 1,
                 signals: crate::tool_contract::ToolSignals::default(),
+                llm_usage: Vec::new(),
             });
         }
     };

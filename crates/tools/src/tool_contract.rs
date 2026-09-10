@@ -70,6 +70,24 @@ pub struct ToolResult {
     /// instead of name-matching and re-parsing output JSON.
     #[serde(default)]
     pub signals: ToolSignals,
+    /// Usage produced by an internal model call owned by the tool. This is a
+    /// runtime side channel: it is consumed by the Agent layer for separate
+    /// persistence/telemetry and is never serialized into the model-facing
+    /// observation.
+    #[serde(skip)]
+    pub llm_usage: Vec<ToolLlmUsage>,
+}
+
+/// One model call made inside a tool (for example vision/OCR or audio
+/// transcription). Keeping this beside [`ToolResult`] avoids teaching the
+/// tool batcher about individual multimodal tools while preserving the
+/// distinction between Agent turns and tool-owned inference.
+#[derive(Debug, Clone)]
+pub struct ToolLlmUsage {
+    pub role: haven_llm::EndpointRole,
+    pub usage: haven_llm::Usage,
+    pub model: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 /// Side-channel signals a tool declares through its result. Declared by the
@@ -198,6 +216,7 @@ impl ToolResult {
             outcome: ToolExecutionOutcome::Succeeded,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         }
     }
 
@@ -210,6 +229,7 @@ impl ToolResult {
             outcome: ToolExecutionOutcome::Succeeded,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         }
     }
 
@@ -222,6 +242,7 @@ impl ToolResult {
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         }
     }
 
@@ -234,6 +255,7 @@ impl ToolResult {
             outcome: ToolExecutionOutcome::Cancelled,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         }
     }
 
@@ -250,6 +272,7 @@ impl ToolResult {
             outcome,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         }
     }
 
@@ -733,6 +756,7 @@ pub(crate) mod tests {
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         };
         assert_eq!(result.summary_text(), "boom");
     }
@@ -747,6 +771,7 @@ pub(crate) mod tests {
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         };
         assert_eq!(result.summary_text(), "unknown failure");
     }
@@ -764,6 +789,7 @@ pub(crate) mod tests {
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         };
         assert_eq!(result.summary_text(), r#"{"output":"some stdout"}"#);
     }
@@ -778,6 +804,7 @@ pub(crate) mod tests {
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
             signals: ToolSignals::default(),
+            llm_usage: Vec::new(),
         };
         assert_eq!(result.summary_text(), "unknown failure");
     }

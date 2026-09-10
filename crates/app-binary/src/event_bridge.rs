@@ -402,6 +402,7 @@ impl TauriEmitter {
                 step_number,
                 duration_ms,
                 role,
+                call_kind,
                 has_cost,
             } => serialize(AgentUsageEvent {
                 session_id: session_id.clone(),
@@ -428,6 +429,7 @@ impl TauriEmitter {
                 step_number: *step_number,
                 duration_ms: *duration_ms,
                 role: role.clone(),
+                call_kind: call_kind.clone(),
                 has_cost: *has_cost,
             }),
         }

@@ -86,4 +86,47 @@ describe('buildTokenUsageDetails', () => {
 
 		expect(details.currentCacheRatePercent).toBe(0);
 	});
+
+	it('reports media inference separately without changing Agent totals', () => {
+		const details = buildTokenUsageDetails(
+			{
+				promptTokens: 100,
+				completionTokens: 20,
+				totalTokens: 120,
+				cachedTokens: 50,
+				cacheAccounting: 'inclusive',
+				cumulativePromptTokens: 100,
+				cumulativeCompletionTokens: 20,
+				cumulativeCachedTokens: 50,
+				cumulativeTotalTokens: 120,
+				cumulativeCostUsd: 0.01,
+			},
+			[
+				{
+					call_kind: 'agent',
+					prompt_tokens: 100,
+					completion_tokens: 20,
+					total_tokens: 120,
+					cached_tokens: 50,
+					cache_accounting: 'inclusive',
+				},
+				{
+					call_kind: 'media',
+					prompt_tokens: 800,
+					completion_tokens: 100,
+					total_tokens: 900,
+					cache_accounting: 'unknown',
+					cost_usd: 0.02,
+					has_cost: true,
+				},
+			],
+		);
+
+		expect(details.callCount).toBe(1);
+		expect(details.mediaCallCount).toBe(1);
+		expect(details.mediaTotalTokens).toBe(900);
+		expect(details.mediaCostUsd).toBe(0.02);
+		expect(details.cumulativeCacheRatePercent).toBe(50);
+		expect(details.cumulativeTotalTokens).toBe(120);
+	});
 });

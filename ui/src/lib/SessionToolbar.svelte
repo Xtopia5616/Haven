@@ -241,6 +241,27 @@
 				{/if}
 			</div>
 
+			{#if tokenUsageDetails.mediaCallCount > 0}
+				<div class="token-detail-section">
+					<div class="token-detail-section-title">媒体推理（不计入 Agent 累计）</div>
+					<div class="token-detail-line">
+						<span>调用</span><strong>{tokenUsageDetails.mediaCallCount} 次</strong>
+					</div>
+					<div class="token-detail-line">
+						<span>总计</span><strong
+							>{formatTokenCount(tokenUsageDetails.mediaTotalTokens)} tokens</strong
+						>
+					</div>
+					{#if tokenUsageDetails.mediaCostUsd != null}
+						<div class="token-detail-line">
+							<span>费用</span><strong
+								>{tokenUsageDetails.mediaCostUsd.toFixed(4)} USD</strong
+							>
+						</div>
+					{/if}
+				</div>
+			{/if}
+
 			{#if tokenStats.estimated}
 				<div class="token-detail-estimated">历史会话数据为估算值，未计费</div>
 			{/if}

@@ -16,7 +16,7 @@ use crate::types::Action;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{
-    OperationIdempotency, ToolConcurrency, ToolExecutionOutcome, ToolOperationScope,
+    OperationIdempotency, ToolConcurrency, ToolExecutionOutcome, ToolLlmUsage, ToolOperationScope,
     is_silent_action,
 };
 use std::collections::HashMap;
@@ -71,6 +71,7 @@ impl ToolBatchState {
             outcome,
             idempotency,
             operation_scope,
+            llm_usage,
             ask_question,
             ask_options,
             notify_title,
@@ -78,6 +79,15 @@ impl ToolBatchState {
             step_id,
             action_index,
         } = result;
+
+        engine
+            .record_tool_usage(
+                &ctx.session_id,
+                ctx.step_num as i32,
+                &llm_usage,
+                &ctx.emitter,
+            )
+            .await;
 
         if is_error
             && !matches!(idempotency, OperationIdempotency::Idempotent)
@@ -236,6 +246,7 @@ pub(super) struct CompletedTool {
     pub(super) outcome: ToolExecutionOutcome,
     pub(super) idempotency: OperationIdempotency,
     pub(super) operation_scope: ToolOperationScope,
+    llm_usage: Vec<ToolLlmUsage>,
     ask_question: Option<String>,
     ask_options: Vec<String>,
     notify_title: Option<String>,
@@ -260,6 +271,7 @@ impl CompletedTool {
             outcome,
             idempotency: OperationIdempotency::Unknown,
             operation_scope: ToolOperationScope::Session,
+            llm_usage: Vec::new(),
             ask_question: None,
             ask_options: Vec::new(),
             notify_title: None,
@@ -331,58 +343,68 @@ pub(super) async fn execute_tool_action(
             .await
     };
 
-    let (step_result, is_error, outcome, ask_question, ask_options, notify_title, notify_body) =
-        match result {
-            Ok(result) => {
-                let output_len = serde_json::to_string(&result.output)
-                    .map(|text| text.len())
-                    .unwrap_or(0);
-                tracing::debug!(
-                    "tool '{}' at step {} completed: success={}, {} chars",
-                    tool_name,
-                    step_num,
-                    result.success,
-                    output_len
-                );
-                tracing::trace!(
-                    "tool '{}' at step {} full output: {} chars",
-                    tool_name,
-                    step_num,
-                    output_len
-                );
-                let step_result = executor.observation_text(&tool_name, &result).await;
-                (
-                    step_result,
-                    !result.success,
-                    result.outcome,
-                    result.signals.ask_question,
-                    result.signals.ask_options,
-                    result.signals.notify_title,
-                    result.signals.notify_body,
-                )
-            }
-            Err(error) => {
-                tracing::debug!(
-                    "tool '{}' at step {} failed: {}",
-                    tool_name,
-                    step_num,
-                    error
-                );
-                (
-                    error.to_string(),
-                    true,
-                    if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
-                        ToolExecutionOutcome::TimedOutUnknown
-                    } else {
-                        ToolExecutionOutcome::Failed
-                    },
-                    None,
-                    Vec::new(),
-                    None,
-                    None,
-                )
-            }
-        };
+    let (
+        step_result,
+        is_error,
+        outcome,
+        llm_usage,
+        ask_question,
+        ask_options,
+        notify_title,
+        notify_body,
+    ) = match result {
+        Ok(result) => {
+            let output_len = serde_json::to_string(&result.output)
+                .map(|text| text.len())
+                .unwrap_or(0);
+            tracing::debug!(
+                "tool '{}' at step {} completed: success={}, {} chars",
+                tool_name,
+                step_num,
+                result.success,
+                output_len
+            );
+            tracing::trace!(
+                "tool '{}' at step {} full output: {} chars",
+                tool_name,
+                step_num,
+                output_len
+            );
+            let step_result = executor.observation_text(&tool_name, &result).await;
+            (
+                step_result,
+                !result.success,
+                result.outcome,
+                result.llm_usage,
+                result.signals.ask_question,
+                result.signals.ask_options,
+                result.signals.notify_title,
+                result.signals.notify_body,
+            )
+        }
+        Err(error) => {
+            tracing::debug!(
+                "tool '{}' at step {} failed: {}",
+                tool_name,
+                step_num,
+                error
+            );
+            (
+                error.to_string(),
+                true,
+                if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
+                    ToolExecutionOutcome::TimedOutUnknown
+                } else {
+                    ToolExecutionOutcome::Failed
+                },
+                Vec::new(),
+                None,
+                Vec::new(),
+                None,
+                None,
+            )
+        }
+    };
 
     let idempotency = executor
         .tool_idempotency(&session_id, &tool_name, &action.tool_input)
@@ -399,6 +421,7 @@ pub(super) async fn execute_tool_action(
         outcome,
         idempotency,
         operation_scope,
+        llm_usage,
         ask_question,
         ask_options,
         notify_title,

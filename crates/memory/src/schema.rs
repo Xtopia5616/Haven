@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 17;
+pub const SCHEMA_VERSION: i32 = 18;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -160,14 +160,16 @@ const SCHEMA_SQL: &[&str] = &[
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
     // Per-LLM-call usage detail: one row per successful model response,
-    // carrying the endpoint role, model name, token counts, cost and
-    // wall-clock duration. `session_usage` keeps the ses-level cumulative
-    // counters; this table keeps the granular history behind them.
+    // carrying the call surface, endpoint role, model name, token counts,
+    // cost and wall-clock duration. `session_usage` keeps only Agent-level
+    // cumulative counters; this table keeps the granular history behind them.
     "CREATE TABLE IF NOT EXISTS llm_usage (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         step_number INTEGER,
         role TEXT NOT NULL,
+        call_kind TEXT NOT NULL DEFAULT 'agent'
+            CHECK(call_kind IN ('agent', 'media')),
         model TEXT,
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
@@ -199,6 +201,7 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_memory_nodes_label ON memory_nodes(label)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_usage_session_kind ON llm_usage(session_id, call_kind)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
 ];
@@ -428,6 +431,7 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("memory_items", "content"),
     ("memory_edges", "durability"),
     ("actions", "kind"),
+    ("llm_usage", "call_kind"),
 ];
 
 fn column_exists(conn: &rusqlite::Connection, table: &str, column: &str) -> anyhow::Result<bool> {

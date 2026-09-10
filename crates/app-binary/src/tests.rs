@@ -224,6 +224,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 step_number: Some(1),
                 duration_ms: Some(42),
                 role: Some("default".into()),
+                call_kind: "agent".into(),
                 has_cost: false,
             },
             "agent:usage",

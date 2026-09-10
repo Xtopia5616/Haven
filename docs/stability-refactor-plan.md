@@ -135,6 +135,7 @@
 - 2026-09-08：P2 Memory 当前契约重置：删除历史 schema/data migration，数据库收敛为严格 v16；FTS5、fact/episode embedding 域、模型维度和 provenance 写入均强校验，混合召回改用 RRF，旧数据库按发布说明重置（ADR 0105）。
 - 2026-09-08：P1 Agent/Memory 事实抽取恢复性：outbox 写入可恢复的 `kv_store` pending marker，session 删除、批量清空、保留期删除与 orphan maintenance 统一清理抽取状态；删除启动时伪造的 `Xtopia` 身份事实（ADR 0107）。
 - 2026-09-10：P1/P2 Tools/Agent 多模态工具契约重构：新增 asset_id-only `media` 工具，窗口截图改为受管媒体资产，managed 图片/音频转交统一派生入口；删除窗口截图路径参数，旧未完成 snapshot 不保证恢复（ADR 0123）。
+- 2026-09-10：P1/P2 Tools/Agent/Memory/UI 多模态用量边界收口：媒体派生文本只保留一个 `media.content`，模型观察去除运行时元数据；媒体 LLM 调用单独记录为 `call_kind=media`，不降低 Agent 主循环缓存率，UI 分组展示媒体推理用量（ADR 0124）。
 
 ## 完成标准
 

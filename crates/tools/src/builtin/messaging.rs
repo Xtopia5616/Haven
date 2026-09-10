@@ -721,6 +721,7 @@ impl AgentTool {
                     outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                     attempts: 1,
                     signals: crate::tool_contract::ToolSignals::default(),
+                    llm_usage: Vec::new(),
                 });
             }
             let wait = (deadline - now).min(REQUEST_WAIT_FALLBACK);

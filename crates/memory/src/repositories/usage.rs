@@ -108,6 +108,11 @@ pub struct LlmCallUsage {
     pub step_number: Option<i32>,
     /// Endpoint role that produced the call (e.g. "default_model").
     pub role: String,
+    /// Call surface that owns the usage. Agent turns feed session totals;
+    /// tool-owned media inference is retained for diagnostics but excluded
+    /// from those totals.
+    #[serde(default = "default_call_kind")]
+    pub call_kind: String,
     pub model: Option<String>,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -148,6 +153,10 @@ impl LlmCallUsage {
             &self.cache_accounting,
         );
     }
+}
+
+fn default_call_kind() -> String {
+    "agent".into()
 }
 
 impl Database {
@@ -218,6 +227,7 @@ impl Database {
             session_id,
             step_number,
             role,
+            "agent",
             model,
             prompt_tokens,
             completion_tokens,
@@ -239,6 +249,7 @@ impl Database {
             session_id: session_id.into(),
             step_number,
             role: role.into(),
+            call_kind: "agent".into(),
             model: model.map(String::from),
             prompt_tokens,
             completion_tokens,
@@ -360,6 +371,50 @@ impl Database {
         context_tokens: u32,
         context_window: Option<u32>,
     ) -> anyhow::Result<LlmCallUsage> {
+        self.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
+            session_id,
+            step_number,
+            role,
+            "agent",
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            cache_miss_tokens,
+            cache_accounting,
+            cache_diagnostics,
+            cost_usd,
+            has_cost,
+            duration_ms,
+            context_tokens,
+            context_window,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn persist_llm_call_and_refresh_session_usage_with_kind_and_context(
+        &self,
+        session_id: &str,
+        step_number: Option<i32>,
+        role: &str,
+        call_kind: &str,
+        model: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_miss_tokens: u32,
+        cache_accounting: &str,
+        cache_diagnostics: Option<&str>,
+        cost_usd: f64,
+        has_cost: bool,
+        duration_ms: Option<u64>,
+        context_tokens: u32,
+        context_window: Option<u32>,
+    ) -> anyhow::Result<LlmCallUsage> {
         let id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
@@ -371,6 +426,7 @@ impl Database {
                 session_id,
                 step_number,
                 role,
+                call_kind,
                 model,
                 prompt_tokens,
                 completion_tokens,
@@ -393,6 +449,7 @@ impl Database {
                 session_id: session_id.into(),
                 step_number,
                 role: role.into(),
+                call_kind: call_kind.into(),
                 model: model.map(String::from),
                 prompt_tokens,
                 completion_tokens,
@@ -458,6 +515,7 @@ impl Database {
         session_id: &str,
         step_number: Option<i32>,
         role: &str,
+        call_kind: &str,
         model: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -484,15 +542,16 @@ impl Database {
         );
         conn.execute(
             "INSERT INTO llm_usage
-                 (id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
+                 (id, session_id, step_number, role, call_kind, model, prompt_tokens, completion_tokens,
                    total_tokens, cached_tokens, cache_creation_tokens, cache_miss_tokens, cache_accounting,
                    cache_diagnostics, context_tokens, context_window, cost_usd, has_cost, duration_ms, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             rusqlite::params![
                 id,
                 session_id,
                 step_number,
                 role,
+                call_kind,
                 model,
                 prompt_tokens,
                 completion_tokens,
@@ -535,7 +594,7 @@ impl Database {
                     COALESCE(SUM(cache_miss_tokens), 0),
                     COALESCE(SUM(CASE WHEN has_cost != 0 THEN cost_usd ELSE 0 END), 0),
                     COALESCE(MAX(CASE WHEN has_cost != 0 THEN 1 ELSE 0 END), 0)
-             FROM llm_usage WHERE session_id = ?1",
+             FROM llm_usage WHERE session_id = ?1 AND call_kind = 'agent'",
             rusqlite::params![session_id],
             |row| {
                 Ok((
@@ -554,7 +613,7 @@ impl Database {
             .query_row(
                 "SELECT context_tokens, context_window
                    FROM llm_usage
-                  WHERE session_id = ?1
+                  WHERE session_id = ?1 AND call_kind = 'agent'
                   ORDER BY created_at DESC, rowid DESC
                   LIMIT 1",
                 rusqlite::params![session_id],
@@ -605,7 +664,7 @@ impl Database {
     pub fn get_session_llm_usage(&self, session_id: &str) -> anyhow::Result<Vec<LlmCallUsage>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
+            "SELECT id, session_id, step_number, role, call_kind, model, prompt_tokens, completion_tokens,
                     total_tokens, cached_tokens, cache_creation_tokens, cache_miss_tokens, cache_accounting,
                     cache_diagnostics, context_tokens, context_window, cost_usd, has_cost, duration_ms, created_at
              FROM llm_usage WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
@@ -616,23 +675,24 @@ impl Database {
                 session_id: row.get(1)?,
                 step_number: row.get(2)?,
                 role: row.get(3)?,
-                model: row.get(4)?,
-                prompt_tokens: row.get(5)?,
-                completion_tokens: row.get(6)?,
-                total_tokens: row.get(7)?,
-                cached_tokens: row.get(8)?,
-                cache_creation_tokens: row.get(9)?,
-                cache_miss_tokens: row.get(10)?,
-                cache_accounting: row.get(11)?,
+                call_kind: row.get(4)?,
+                model: row.get(5)?,
+                prompt_tokens: row.get(6)?,
+                completion_tokens: row.get(7)?,
+                total_tokens: row.get(8)?,
+                cached_tokens: row.get(9)?,
+                cache_creation_tokens: row.get(10)?,
+                cache_miss_tokens: row.get(11)?,
+                cache_accounting: row.get(12)?,
                 cache_diagnostics: row
-                    .get::<_, Option<String>>(12)?
+                    .get::<_, Option<String>>(13)?
                     .and_then(|value| serde_json::from_str(&value).ok()),
-                context_tokens: row.get(13)?,
-                context_window: row.get(14)?,
-                cost_usd: row.get(15)?,
-                has_cost: row.get::<_, i32>(16)? != 0,
-                duration_ms: row.get(17)?,
-                created_at: row.get(18)?,
+                context_tokens: row.get(14)?,
+                context_window: row.get(15)?,
+                cost_usd: row.get(16)?,
+                has_cost: row.get::<_, i32>(17)? != 0,
+                duration_ms: row.get(18)?,
+                created_at: row.get(19)?,
             })
         })?;
         let mut usage = Vec::new();
@@ -717,6 +777,59 @@ mod tests {
         let calls = db.get_session_llm_usage(&session.id).unwrap();
         assert_eq!(calls[0].context_tokens, 900);
         assert_eq!(calls[0].context_window, Some(4096));
+    }
+
+    #[test]
+    fn media_usage_is_retained_but_excluded_from_agent_session_totals() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            "default_model",
+            Some("agent-model"),
+            100,
+            20,
+            120,
+            50,
+            0,
+            0.1,
+            true,
+            Some(10),
+        )
+        .unwrap();
+        db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
+            &session.id,
+            Some(1),
+            "image_model",
+            "media",
+            Some("vision-model"),
+            80,
+            10,
+            90,
+            40,
+            0,
+            40,
+            "inclusive",
+            None,
+            0.2,
+            true,
+            Some(20),
+            80,
+            None,
+        )
+        .unwrap();
+
+        let summary = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(summary.prompt_tokens, 100);
+        assert_eq!(summary.completion_tokens, 20);
+        assert_eq!(summary.cached_tokens, 50);
+        assert_eq!(summary.cost_usd, 0.1);
+
+        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].call_kind, "agent");
+        assert_eq!(calls[1].call_kind, "media");
     }
 
     #[test]

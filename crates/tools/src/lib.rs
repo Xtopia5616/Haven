@@ -72,9 +72,9 @@ pub use shell_runtime::{
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
     OperationIdempotency, Tool, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef,
-    ToolExecutionOutcome, ToolOperationMetadata, ToolOperationScope, ToolRegistration, ToolResult,
-    ToolSignals, TypedToolAdapter, TypedToolOperation, extract_ask_signal, extract_notify_signal,
-    is_silent_action, parse_tool_input,
+    ToolExecutionOutcome, ToolLlmUsage, ToolOperationMetadata, ToolOperationScope,
+    ToolRegistration, ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation,
+    extract_ask_signal, extract_notify_signal, is_silent_action, parse_tool_input,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.

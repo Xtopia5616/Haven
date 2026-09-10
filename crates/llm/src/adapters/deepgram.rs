@@ -137,7 +137,12 @@ impl LlmClient for DeepgramAdapter {
             .trim()
             .to_string();
         let confidence = alternative["confidence"].as_f64().map(|c| c as f32);
-        Ok(SttResult { text, confidence })
+        Ok(SttResult {
+            text,
+            confidence,
+            usage: None,
+            model: None,
+        })
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

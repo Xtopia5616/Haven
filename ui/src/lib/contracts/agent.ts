@@ -150,6 +150,7 @@ export interface AgentUsagePayload {
 	stepNumber?: number;
 	durationMs?: number;
 	role?: string;
+	callKind?: 'agent' | 'media' | string;
 	hasCost: boolean;
 }
 
@@ -291,6 +292,7 @@ interface AgentUsageWirePayload {
 	step_number?: number;
 	duration_ms?: number;
 	role?: string;
+	call_kind?: string;
 	has_cost: boolean;
 }
 interface AgentToolOutputWirePayload {
@@ -470,6 +472,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				...(payload.step_number !== undefined ? { stepNumber: payload.step_number } : {}),
 				...(payload.duration_ms !== undefined ? { durationMs: payload.duration_ms } : {}),
 				...(payload.role !== undefined ? { role: payload.role } : {}),
+				callKind: payload.call_kind || 'agent',
 				hasCost: payload.has_cost,
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}

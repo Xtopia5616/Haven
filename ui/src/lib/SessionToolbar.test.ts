@@ -57,6 +57,9 @@ describe('SessionToolbar', () => {
 				cumulativeCacheMissTokens: 700,
 				cumulativeCacheRatePercent: 50,
 				callCount: 4,
+				mediaCallCount: 0,
+				mediaTotalTokens: 0,
+				mediaCostUsd: null,
 				model: 'model-a',
 				costUsd: 0.12,
 			},
@@ -85,5 +88,41 @@ describe('SessionToolbar', () => {
 
 		await fireEvent.click(document.body);
 		expect(tokenButton.classList.contains('selected')).toBe(false);
+	});
+
+	it('shows media inference separately from Agent totals', async () => {
+		render(SessionToolbar, {
+			tokenStats: { cumulativeTotalTokens: 100 },
+			tokenUsageDetails: {
+				currentPromptTokens: 100,
+				currentCompletionTokens: 20,
+				currentTotalTokens: 120,
+				currentCachedTokens: 50,
+				currentCacheCreationTokens: 0,
+				currentCacheMissTokens: 50,
+				currentCacheRatePercent: 50,
+				contextTokens: 100,
+				contextWindow: 1000,
+				contextRatePercent: 10,
+				cumulativePromptTokens: 100,
+				cumulativeCompletionTokens: 20,
+				cumulativeTotalTokens: 120,
+				cumulativeCachedTokens: 50,
+				cumulativeCacheCreationTokens: 0,
+				cumulativeCacheMissTokens: 50,
+				cumulativeCacheRatePercent: 50,
+				callCount: 1,
+				mediaCallCount: 1,
+				mediaTotalTokens: 900,
+				mediaCostUsd: 0.02,
+				model: 'agent-model',
+				costUsd: 0.01,
+			},
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '打开 token 使用明细' }));
+		expect(screen.getByText('媒体推理（不计入 Agent 累计）')).toBeTruthy();
+		expect(screen.getByText('900 tokens')).toBeTruthy();
+		expect(screen.getByText('0.0200 USD')).toBeTruthy();
 	});
 });

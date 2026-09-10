@@ -921,6 +921,8 @@ mod tests {
                 Ok(haven_llm::SttResult {
                     text: "dummy".into(),
                     confidence: None,
+                    usage: None,
+                    model: None,
                 })
             }
         }
@@ -1031,6 +1033,8 @@ mod tests {
                 Ok(haven_llm::SttResult {
                     text: "   ".into(),
                     confidence: None,
+                    usage: None,
+                    model: None,
                 })
             }
         }

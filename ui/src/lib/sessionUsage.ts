@@ -19,6 +19,7 @@ export interface LlmUsage {
 	id?: string;
 	step_number?: number | null;
 	role?: string;
+	call_kind?: 'agent' | 'media' | string;
 	model?: string | null;
 	prompt_tokens?: number;
 	completion_tokens?: number;
@@ -209,9 +210,10 @@ export function coalesceTokenTotal(
  * return null rather than silently using an incorrect aggregate denominator.
  */
 export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null {
+	const agentCalls = calls.filter((call) => (call.call_kind || 'agent') === 'agent');
 	if (
-		!calls.length ||
-		calls.some(
+		!agentCalls.length ||
+		agentCalls.some(
 			(call) => !['inclusive', 'exclusive'].includes(call.cache_accounting || 'unknown'),
 		)
 	) {
@@ -219,7 +221,7 @@ export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null 
 	}
 	let cached = 0;
 	let eligibleInput = 0;
-	for (const call of calls) {
+	for (const call of agentCalls) {
 		const prompt = call.prompt_tokens || 0;
 		const read = call.cached_tokens || 0;
 		const creation = call.cache_creation_tokens || 0;

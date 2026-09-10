@@ -3,6 +3,9 @@
 日期：2026-09-10
 状态：已采纳
 
+用量统计与模型观察收敛由 [ADR 0124：媒体推理用量与 Agent 缓存率边界](0124-media-usage-cache-boundary.md)
+补充；本 ADR 的媒体入口和资产边界仍然有效。
+
 关联：[ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)、
 [ADR 0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)、
 [ADR 0122：工具媒体请求统一入口](0122-unified-tool-media-entrypoints.md)
@@ -27,9 +30,9 @@
    生命周期；工具和 UI 都不再把宿主路径作为交互对象。
 4. 对已经登记的图片/音频，`files.read` 转交到 `media` 的对应派生操作；`files` 的
    主职责收敛为文件系统读写、文本读取、搜索和文本摘要。
-5. 不增加新的 `ToolResult`/数据库列：媒体结果以结构化工具 observation 中的
-   `media: MediaInput` 传递，因此沿用现有 ReAct event authority 和 UI tool-card 投影，
-   不再维护第二条媒体 side channel。
+5. 媒体结果以结构化工具 observation 中的 compact `media` reference 传递，因此沿用
+   现有 ReAct event authority 和 UI tool-card 投影，不维护第二条媒体 side channel。
+   媒体内部 LLM usage 的持久化边界由 ADR 0124 定义。
 
 ## 安全与边界
 

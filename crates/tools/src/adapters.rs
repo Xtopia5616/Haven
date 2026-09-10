@@ -83,6 +83,7 @@ impl Tool for McpToolAdapter {
             },
             attempts: 1,
             signals: crate::tool_contract::ToolSignals::default(),
+            llm_usage: Vec::new(),
         })
     }
 }

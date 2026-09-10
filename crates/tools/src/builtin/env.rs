@@ -87,6 +87,7 @@ impl EnvTool {
                         outcome: crate::ToolExecutionOutcome::Succeeded,
                         attempts: 1,
                         signals: crate::tool_contract::ToolSignals::default(),
+                        llm_usage: Vec::new(),
                     }),
                     Err(e) => anyhow::bail!("failed to read env var '{}': {}", name, e),
                 }

@@ -386,6 +386,8 @@ mod tests {
             Ok(crate::SttResult {
                 text: self.text.clone(),
                 confidence: self.confidence,
+                usage: None,
+                model: None,
             })
         }
     }

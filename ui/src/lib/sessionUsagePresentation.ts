@@ -48,6 +48,9 @@ export interface TokenUsageDetails {
 	cumulativeCacheMissTokens: number;
 	cumulativeCacheRatePercent: number | null;
 	callCount: number;
+	mediaCallCount: number;
+	mediaTotalTokens: number;
+	mediaCostUsd: number | null;
 	model: string | null;
 	costUsd: number | null;
 }
@@ -131,7 +134,9 @@ export function buildTokenUsageDetails(
 	stats: SessionTokenStats,
 	llmUsage: LlmUsage[],
 ): TokenUsageDetails {
-	const lastCall = llmUsage.at(-1);
+	const agentCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'agent');
+	const mediaCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'media');
+	const lastCall = agentCalls.at(-1);
 	const useLastCall = !!stats.restored && !!lastCall;
 	const currentPromptTokens = useLastCall
 		? lastCall?.prompt_tokens || 0
@@ -202,7 +207,24 @@ export function buildTokenUsageDetails(
 		cumulativeCacheCreationTokens,
 		cumulativeCacheMissTokens,
 		cumulativeCacheRatePercent: cumulativeCacheHitRatePercent(llmUsage),
-		callCount: llmUsage.length || (stats.totalTokens ? 1 : 0),
+		callCount: agentCalls.length || (stats.totalTokens ? 1 : 0),
+		mediaCallCount: mediaCalls.length,
+		mediaTotalTokens: mediaCalls.reduce(
+			(total, call) =>
+				total +
+				coalesceTokenTotal(
+					call.prompt_tokens || 0,
+					call.completion_tokens || 0,
+					call.total_tokens || 0,
+					call.cached_tokens || 0,
+					call.cache_creation_tokens || 0,
+					call.cache_accounting || 'unknown',
+				),
+			0,
+		),
+		mediaCostUsd: mediaCalls.some((call) => call.has_cost)
+			? mediaCalls.reduce((total, call) => total + (call.has_cost ? call.cost_usd || 0 : 0), 0)
+			: null,
 		model: stats.model || lastCall?.model || null,
 		costUsd: stats.cumulativeCostUsd ?? null,
 	};
@@ -247,7 +269,19 @@ export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUs
 		if (cumulativeCreation > 0) line += ` / 写入 ${formatTokenCount(cumulativeCreation)}`;
 		parts.push(line);
 	}
-	if (llmUsage.length > 0) parts.push(`调用 ${llmUsage.length} 次`);
+	if (details.callCount > 0) parts.push(`调用 ${details.callCount} 次`);
+	if (details.mediaCallCount > 0) {
+		let line =
+			'媒体推理 ' +
+			details.mediaCallCount +
+			' 次 / ' +
+			formatTokenCount(details.mediaTotalTokens) +
+			' tokens';
+		if (details.mediaCostUsd != null) {
+			line += ' / 费用 ' + (formatCostUsd(details.mediaCostUsd) || '');
+		}
+		parts.push(line);
+	}
 	if (details.model) parts.push(`模型 ${details.model}`);
 	if (details.costUsd != null) parts.push(`费用 ${formatCostUsd(details.costUsd)}`);
 	if (stats.estimated) parts.push('估算值（历史对话，未计费）');

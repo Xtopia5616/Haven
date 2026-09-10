@@ -1439,6 +1439,8 @@ impl LlmClient for OpenAiAdapter {
         Ok(SttResult {
             text,
             confidence: None,
+            usage: None,
+            model: None,
         })
     }
 

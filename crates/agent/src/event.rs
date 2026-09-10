@@ -247,6 +247,8 @@ pub enum AgentEvent {
         /// Endpoint role that produced the response (`default` / `small` / …).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
+        #[serde(default = "default_usage_call_kind")]
+        call_kind: String,
         /// Whether `cost_usd` is a real priced value (vs absent pricing).
         #[serde(default)]
         has_cost: bool,
@@ -944,6 +946,7 @@ impl EventDispatcher {
                 step_number: usage.step_number,
                 duration_ms: usage.duration_ms,
                 role: usage.role,
+                call_kind: usage.call_kind,
                 has_cost: usage.has_cost,
             })
             .await;
@@ -979,7 +982,12 @@ pub struct UsagePayload {
     pub step_number: Option<u32>,
     pub duration_ms: Option<u64>,
     pub role: Option<String>,
+    pub call_kind: String,
     pub has_cost: bool,
+}
+
+fn default_usage_call_kind() -> String {
+    "agent".into()
 }
 
 #[cfg(test)]

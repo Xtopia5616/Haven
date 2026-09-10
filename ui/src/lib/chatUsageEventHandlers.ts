@@ -30,6 +30,7 @@ export function createChatUsageEventHandlers(): {
 		'agent:usage': (event) => {
 			const d = event.payload;
 			if (!d.sessionId) return;
+			const callKind = d.callKind || 'agent';
 			const prompt = d.promptTokens || 0;
 			const completion = d.completionTokens || 0;
 			const cached = d.cachedTokens || 0;
@@ -43,6 +44,30 @@ export function createChatUsageEventHandlers(): {
 				creation,
 				d.cacheAccounting || 'unknown',
 			);
+			if (callKind === 'media') {
+				if (d.stepNumber != null) {
+					appendSessionLlmUsage(d.sessionId, {
+						step_number: d.stepNumber,
+						call_kind: callKind,
+						role: d.role || undefined,
+						model: d.model ?? null,
+						prompt_tokens: prompt,
+						completion_tokens: completion,
+						total_tokens: total,
+						cached_tokens: cached,
+						cache_creation_tokens: creation,
+						cache_miss_tokens: miss,
+						cache_accounting: d.cacheAccounting || 'unknown',
+						cache_diagnostics: d.cacheDiagnostics || undefined,
+						context_tokens: d.contextTokens || 0,
+						context_window: d.contextWindow ?? null,
+						cost_usd: d.costUsd ?? null,
+						has_cost: !!d.hasCost,
+						duration_ms: d.durationMs ?? null,
+					});
+				}
+				return;
+			}
 			const cumPrompt = d.cumulativePromptTokens || 0;
 			const cumCompletion = d.cumulativeCompletionTokens || 0;
 			const cumCached = d.cumulativeCachedTokens || 0;
@@ -85,6 +110,7 @@ export function createChatUsageEventHandlers(): {
 			if (d.stepNumber != null) {
 				appendSessionLlmUsage(d.sessionId, {
 					step_number: d.stepNumber,
+					call_kind: callKind,
 					role: d.role || undefined,
 					model: d.model ?? null,
 					prompt_tokens: prompt,

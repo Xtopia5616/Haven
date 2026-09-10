@@ -290,7 +290,12 @@ impl SttClient for McpSttClient {
             .ok_or_else(|| anyhow::anyhow!("STT response missing 'text' field"))?
             .to_string();
         let confidence = result.output["confidence"].as_f64().map(|c| c as f32);
-        Ok(SttResult { text, confidence })
+        Ok(SttResult {
+            text,
+            confidence,
+            usage: None,
+            model: None,
+        })
     }
 }
 
@@ -343,6 +348,8 @@ pub(crate) async fn transcribe_via_chat(
     Ok(SttResult {
         text: resp.text.trim().to_string(),
         confidence: None,
+        usage: Some(resp.usage),
+        model: resp.model,
     })
 }
 
@@ -370,6 +377,8 @@ mod tests {
             Ok(SttResult {
                 text: self.response.clone(),
                 confidence: None,
+                usage: None,
+                model: None,
             })
         }
     }

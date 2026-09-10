@@ -833,10 +833,126 @@ impl ReActEngine {
                 step_number: Some(step_number as u32),
                 duration_ms,
                 role: Some(role.as_str().to_string()),
+                call_kind: "agent".into(),
                 has_cost: call_has_cost,
             },
         )
         .await;
+    }
+
+    /// Persist and emit usage for model calls owned by a tool. These calls are
+    /// intentionally outside the ReAct cumulative tracker: they are useful
+    /// diagnostics and cost data, but they do not occupy the Agent's next
+    /// prompt prefix and must not distort its cache-hit rate.
+    pub(super) async fn record_tool_usage(
+        &self,
+        session_id: &str,
+        step_number: i32,
+        usages: &[haven_tools::ToolLlmUsage],
+        emitter: &Arc<dyn AgentEventEmitter>,
+    ) {
+        for tool_usage in usages {
+            let usage = tool_usage.usage.clone().normalize();
+            if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
+                continue;
+            }
+            let role = tool_usage.role;
+            let step_cost = self.router().compute_cost(role, &usage).await;
+            let model = tool_usage
+                .model
+                .clone()
+                .or_else(|| usage.model_name.clone());
+            let usage_prompt = usage.prompt_tokens;
+            let usage_completion = usage.completion_tokens;
+            let usage_total = usage.total_tokens;
+            let usage_cached = usage.cached_tokens;
+            let usage_cache_creation = usage.cache_creation_tokens;
+            let usage_cache_miss = usage.cache_miss_tokens();
+            let usage_cache_accounting = usage.cache_accounting.as_str().to_string();
+            let usage_cache_accounting_for_persist = usage_cache_accounting.clone();
+            let cache_diagnostics = usage
+                .cache_diagnostics
+                .as_ref()
+                .and_then(|value| serde_json::to_string(value).ok());
+            let cache_diagnostics_for_event = usage.cache_diagnostics.clone();
+            let db = self.db.clone();
+            let session_id_for_persist = session_id.to_string();
+            let model_for_persist = model.clone();
+            let call_cost = step_cost.unwrap_or(0.0);
+            let call_has_cost = step_cost.is_some();
+            let duration_ms = tool_usage.duration_ms;
+            let usage_context_tokens = usage.context_tokens();
+            let persist = tokio::task::spawn_blocking(move || {
+                db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
+                    &session_id_for_persist,
+                    Some(step_number),
+                    role.as_str(),
+                    "media",
+                    model_for_persist.as_deref(),
+                    usage_prompt,
+                    usage_completion,
+                    usage_total,
+                    usage_cached,
+                    usage_cache_creation,
+                    usage_cache_miss,
+                    &usage_cache_accounting_for_persist,
+                    cache_diagnostics.as_deref(),
+                    call_cost,
+                    call_has_cost,
+                    duration_ms,
+                    usage_context_tokens,
+                    None,
+                )
+            });
+            match persist.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => tracing::warn!(
+                    "ReAct: failed to persist media usage for session {} step {}: {}",
+                    session_id,
+                    step_number,
+                    error
+                ),
+                Err(error) => tracing::warn!(
+                    "ReAct: media usage persistence task failed for session {} step {}: {}",
+                    session_id,
+                    step_number,
+                    error
+                ),
+            }
+
+            EventDispatcher::emit_usage_from(
+                emitter,
+                UsagePayload {
+                    session_id: session_id.to_string(),
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    total_tokens: usage.total_tokens,
+                    cached_tokens: usage.cached_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                    cache_miss_tokens: usage.cache_miss_tokens(),
+                    context_tokens: usage_context_tokens,
+                    cache_exclusive: usage.cache_exclusive_of_prompt(),
+                    cache_accounting: usage_cache_accounting,
+                    cost_usd: step_cost,
+                    model,
+                    cumulative_prompt_tokens: 0,
+                    cumulative_completion_tokens: 0,
+                    cumulative_total_tokens: 0,
+                    cumulative_cached_tokens: 0,
+                    cumulative_cache_creation_tokens: 0,
+                    cumulative_cache_miss_tokens: 0,
+                    cache_diagnostics: cache_diagnostics_for_event,
+                    cumulative_cost_usd: None,
+                    context_window: None,
+                    step_number: Some(step_number as u32),
+                    duration_ms,
+                    role: Some(role.as_str().to_string()),
+                    call_kind: "media".into(),
+                    has_cost: call_has_cost,
+                },
+            )
+            .await;
+        }
     }
 
     /// Drop cumulative counters, the token-estimate cache, the snapshot

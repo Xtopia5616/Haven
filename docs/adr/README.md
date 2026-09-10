@@ -120,3 +120,4 @@
 - [0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)
 - [0122：工具媒体请求统一入口](0122-unified-tool-media-entrypoints.md)
 - [0123：Agent 原生媒体工具契约](0123-agent-native-media-tool-contract.md)
+- [0124：媒体推理用量与 Agent 缓存率边界](0124-media-usage-cache-boundary.md)

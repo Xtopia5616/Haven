@@ -1032,6 +1032,12 @@ fn sanitize_schema_object(map: &mut serde_json::Map<String, Value>) {
 pub struct SttResult {
     pub text: String,
     pub confidence: Option<f32>,
+    /// Provider-reported usage when transcription is implemented by a chat
+    /// model. Native STT providers may leave this unset.
+    pub usage: Option<Usage>,
+    /// Model identifier for chat-based transcription when the provider
+    /// returns one.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Error)]

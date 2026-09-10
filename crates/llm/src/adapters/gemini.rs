@@ -1273,6 +1273,8 @@ impl LlmClient for GeminiAdapter {
         Ok(SttResult {
             text,
             confidence: None,
+            usage: None,
+            model: None,
         })
     }
 

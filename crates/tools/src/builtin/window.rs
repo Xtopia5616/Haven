@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::media::{add_derived_text, managed_media_input, register_generated_asset};
-use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
+use super::media::{model_media_reference, register_generated_asset};
+use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolLlmUsage, ToolResult};
 
 /// Default vision byte / timeout limits (aligned with FilesTool defaults).
 const DEFAULT_VISION_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -23,8 +23,6 @@ const WAIT_UI_POLL_MS: u64 = 500;
 
 struct ManagedCapture {
     asset: ManagedAsset,
-    width: u64,
-    height: u64,
 }
 
 pub struct WindowTool {
@@ -163,14 +161,7 @@ impl WindowTool {
                 Ok(ToolResult::ok(serde_json::json!({
                     "operation": "screenshot",
                     "asset_id": capture.asset.asset_id,
-                    "media": managed_media_input(
-                        &capture.asset,
-                        haven_common::media::MediaAssetSource::WindowCapture,
-                        haven_common::media::MediaAssetLifecycle::Session,
-                    ),
-                    "width": capture.width,
-                    "height": capture.height,
-                    "format": "png",
+                    "media": model_media_reference(&capture.asset, "managed_file_ref", None),
                 })))
             }
             WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
@@ -222,7 +213,7 @@ impl WindowTool {
             let _ = tokio::fs::remove_file(&path).await;
             anyhow::bail!("cancelled");
         }
-        let (Some(width), Some(height)) = (
+        let (Some(_width), Some(_height)) = (
             shot.get("width").and_then(Value::as_u64),
             shot.get("height").and_then(Value::as_u64),
         ) else {
@@ -251,11 +242,7 @@ impl WindowTool {
                 return Err(error);
             }
         };
-        Ok(ManagedCapture {
-            asset,
-            width,
-            height,
-        })
+        Ok(ManagedCapture { asset })
     }
 
     async fn ocr(
@@ -270,7 +257,6 @@ impl WindowTool {
         let Some(client) = &self.router else {
             return Ok(ToolResult::ok(serde_json::json!({
                 "operation": "ocr",
-                "ocr": true,
                 "ocr_unavailable": true,
                 "reason": "No LLM router installed, so OCR cannot run."
             })));
@@ -280,19 +266,10 @@ impl WindowTool {
         if size > self.vision_max_bytes {
             return Ok(ToolResult::ok(serde_json::json!({
                 "operation": "ocr",
-                "ocr": true,
                 "asset_id": capture.asset.asset_id,
-                "media": managed_media_input(
-                    &capture.asset,
-                    haven_common::media::MediaAssetSource::WindowCapture,
-                    haven_common::media::MediaAssetLifecycle::Session,
-                ),
-                "size": size,
+                "media": model_media_reference(&capture.asset, "managed_file_ref", None),
                 "too_large": true,
-                "hint": format!(
-                    "Screenshot is {} bytes, above the {} byte vision limit.",
-                    size, self.vision_max_bytes
-                ),
+                "reason": "Screenshot exceeds the configured vision input limit.",
             })));
         }
 
@@ -301,6 +278,8 @@ impl WindowTool {
             anyhow::bail!("cancelled");
         }
         let timeout = self.vision_timeout_secs;
+        let role = client.vision_role().await;
+        let started = Instant::now();
         let response = match tokio::time::timeout(
             Duration::from_secs(timeout),
             client.analyze_image(&bytes, "image/png", OCR_SYSTEM_PROMPT, None),
@@ -309,63 +288,37 @@ impl WindowTool {
         {
             Ok(Ok(resp)) => resp,
             Ok(Err(e)) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: serde_json::json!({
+                return Ok(ToolResult::failed(
+                    serde_json::json!({
                         "operation": "ocr",
-                        "ocr": true,
                         "asset_id": capture.asset.asset_id,
                         "ocr_error": true,
                     }),
-                    error: Some(format!("OCR vision call failed: {e}")),
-                    truncated: false,
-                    outcome: crate::ToolExecutionOutcome::Failed,
-                    attempts: 1,
-                    signals: crate::tool_contract::ToolSignals::default(),
-                });
+                    format!("OCR vision call failed: {e}"),
+                ));
             }
             Err(_) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: serde_json::json!({
-                        "operation": "ocr",
-                        "ocr": true,
-                        "asset_id": capture.asset.asset_id,
-                        "ocr_error": true,
-                    }),
-                    error: Some(format!("OCR vision call timed out after {timeout}s")),
-                    truncated: false,
-                    outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
-                    attempts: 1,
-                    signals: crate::tool_contract::ToolSignals::default(),
-                });
+                return Ok(ToolResult::timed_out(
+                    crate::ToolExecutionOutcome::TimedOutUnknown,
+                    format!("OCR vision call timed out after {timeout}s"),
+                ));
             }
         };
 
         let text = response.text.trim().to_string();
-        let media = add_derived_text(
-            managed_media_input(
-                &capture.asset,
-                haven_common::media::MediaAssetSource::WindowCapture,
-                haven_common::media::MediaAssetLifecycle::Session,
-            ),
-            haven_common::media::MediaRepresentationKind::OcrText,
-            haven_common::media::MediaDerivation::Ocr,
-            Some(haven_common::media::MediaRepresentationKind::RawImage),
-            text.clone(),
-            response.model.clone(),
-        );
-        Ok(ToolResult::ok(serde_json::json!({
+        let mut result = ToolResult::ok(serde_json::json!({
             "operation": "ocr",
-            "ocr": true,
             "asset_id": capture.asset.asset_id,
-            "media": media,
-            "size": size,
-            "text": text,
-            "model": response.model,
-            "width": capture.width,
-            "height": capture.height,
-        })))
+            "media": model_media_reference(&capture.asset, "ocr_text", Some(&text)),
+            "untrusted_content": true,
+        }));
+        result.llm_usage.push(ToolLlmUsage {
+            role,
+            usage: response.usage,
+            model: response.model,
+            duration_ms: Some(started.elapsed().as_millis() as u64),
+        });
+        Ok(result)
     }
 
     async fn wait(

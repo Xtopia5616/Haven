@@ -146,7 +146,12 @@ impl LlmClient for AssemblyAiAdapter {
                 "completed" => {
                     let text = job["text"].as_str().unwrap_or("").trim().to_string();
                     let confidence = job["confidence"].as_f64().map(|c| c as f32);
-                    return Ok(SttResult { text, confidence });
+                    return Ok(SttResult {
+                        text,
+                        confidence,
+                        usage: None,
+                        model: None,
+                    });
                 }
                 "error" => {
                     let err = job["error"].as_str().unwrap_or("unknown error");
