@@ -140,9 +140,7 @@
 		type === 'tool' ? estimateToolDataTokens(toolName, toolArgs, displayContent) : null,
 	);
 
-	let parsed = $derived(
-		type === 'tool' ? parseToolResult(toolName, displayContent) : null,
-	);
+	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, displayContent) : null);
 
 	// Keep live output visible while a tool is running, then collapse the card
 	// once its output is complete. Manual clicks after completion persist until
@@ -312,64 +310,88 @@
 		role="status"
 		oncontextmenu={handleContextMenu}
 	>
-		<div class="tool-card-header">
-			<span class="tool-card-icon" aria-hidden="true">&#63;</span>
-			<span class="tool-card-label">Haven 需要你的回答</span>
+		<div class="ask-header">
+			<span class="ask-mark" aria-hidden="true">
+				<Icon name="help" size={18} strokeWidth={2.2} />
+			</span>
+			<div class="ask-heading">
+				<span class="ask-eyebrow">需要你的决定</span>
+				<strong class="ask-title">Haven 需要你的回答</strong>
+			</div>
 			<span class="tool-state" data-state={awaiting ? 'waiting' : 'completed'}>
 				<span class="tool-state-dot" aria-hidden="true"></span>
 				{awaiting ? '等待回答' : '已处理'}
 			</span>
 		</div>
 		{#if content}
-			<p class="ask-question">{content}</p>
+			<div class="ask-question-block">
+				<span class="ask-question-label">问题</span>
+				<p class="ask-question">{content}</p>
+			</div>
 		{/if}
 		{#if awaiting && options && options.length > 0}
-			<div class="ask-options">
-				{#each options as opt (opt)}
-					<MaterialChoiceChip
-						label={opt}
-						className="ask-option"
-						selected={selectedOptions.includes(opt)}
-						onSelect={() => toggleAskOption(opt)}
-						onKeydown={handleAskKeydown}
-					/>
-				{/each}
+			<div class="ask-options-block">
+				<div class="ask-section-heading">
+					<span>快速选择</span>
+					<span class="ask-selection-count"
+						>{selectedOptions.length}/{options.length}</span
+					>
+				</div>
+				<div class="ask-options" role="group" aria-label="回答选项">
+					{#each options as opt (opt)}
+						<MaterialChoiceChip
+							label={opt}
+							className="ask-option"
+							selected={selectedOptions.includes(opt)}
+							onSelect={() => toggleAskOption(opt)}
+							onKeydown={handleAskKeydown}
+						/>
+					{/each}
+				</div>
 			</div>
 		{/if}
 		{#if awaiting}
 			<div class="ask-actions">
-				<MaterialButton
-					variant="outlined"
-					className="ask-ignore"
-					label="忽略"
-					onclick={() => onIgnore?.(messageId)}
-				/>
 				<span class="ask-waiting">
 					<span class="ask-waiting-dot"></span>
-					{#if options && options.length > 0}
-						选择后回车提交
-					{:else}
-						等待你的回答...
-					{/if}
+					<span>
+						{#if options && options.length > 0}
+							选择后回车提交
+						{:else}
+							等待你的回答...
+						{/if}
+					</span>
 				</span>
-				{#if options && options.length > 0}
+				<div class="ask-action-buttons">
 					<MaterialButton
-						variant="filled"
-						className="ask-submit"
-						label="提交回答"
-						disabled={selectedOptions.length === 0}
-						onclick={() => onAskSubmit?.(messageId)}
+						variant="text"
+						className="ask-ignore"
+						label="忽略"
+						onclick={() => onIgnore?.(messageId)}
 					/>
-				{/if}
+					{#if options && options.length > 0}
+						<MaterialButton
+							variant="filled"
+							className="ask-submit"
+							label="提交回答"
+							disabled={selectedOptions.length === 0}
+							onclick={() => onAskSubmit?.(messageId)}
+						/>
+					{/if}
+				</div>
 			</div>
 		{/if}
 		{#if resolved}
 			<div class="ask-resolved">
-				{#if resolved.ignored}
-					已忽略
-				{:else}
-					已选择：{resolved.answer}
-				{/if}
+				<span class="ask-resolved-icon" aria-hidden="true">
+					<Icon name={resolved.ignored ? 'close' : 'check'} size={14} strokeWidth={2.5} />
+				</span>
+				<span>
+					<strong>{resolved.ignored ? '已忽略' : '回答已记录'}</strong>
+					{#if !resolved.ignored}<span class="ask-resolved-answer"
+							>已选择：{resolved.answer}</span
+						>{/if}
+				</span>
 			</div>
 		{/if}
 	</div>
@@ -516,14 +538,23 @@
 	.tool-card.embedded[data-state='failed'],
 	.tool-card.embedded[data-state='cancelled'],
 	.tool-card.embedded[data-state='timed_out'],
-	.tool-card.embedded[data-state='unknown'],
-	.tool-card.embedded.tool-card--ask[data-state='waiting'] {
+	.tool-card.embedded[data-state='unknown'] {
 		background: transparent;
 		border: none;
 		box-shadow: none;
 	}
 	.tool-card.embedded :global(.md-collapsible-header) {
-		min-height: 28px;
+		min-height: 32px;
+	}
+	.tool-card :global(.md-collapsible-header) {
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm) var(--md-sys-space-xs)
+			var(--md-sys-space-2xs);
+		border-radius: var(--md-sys-shape-small);
+		transition: background-color var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
+	}
+	.tool-card :global(.md-collapsible-header:hover) {
+		background: color-mix(in srgb, var(--md-sys-color-primary) 7%, transparent);
 	}
 	.tool-card.embedded :global(.md-collapsible-body) {
 		margin-top: var(--md-sys-space-md);
@@ -558,25 +589,281 @@
 			var(--md-sys-color-surface)
 		);
 	}
+	.tool-card--ask {
+		position: relative;
+		overflow: hidden;
+		border-left: 4px solid var(--md-sys-color-primary);
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-primary) 32%,
+			var(--md-sys-color-outline-variant)
+		);
+		background:
+			radial-gradient(
+				circle at 100% 0%,
+				color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent),
+				transparent 42%
+			),
+			color-mix(
+				in srgb,
+				var(--md-sys-color-surface-container-high) 88%,
+				var(--md-sys-color-primary) 12%
+			);
+	}
+	.tool-card.embedded.tool-card--ask {
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 28%, var(--md-sys-color-outline-variant));
+		border-left: 4px solid var(--md-sys-color-primary);
+		border-radius: var(--md-sys-shape-medium);
+		background:
+			radial-gradient(
+				circle at 100% 0%,
+				color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent),
+				transparent 44%
+			),
+			color-mix(in srgb, var(--md-sys-color-primary-container) 26%, transparent);
+		box-shadow: var(--md-sys-elevation-1);
+	}
 	.tool-card--ask[data-state='waiting'] {
 		border-color: color-mix(
 			in srgb,
-			var(--md-sys-color-warning) 58%,
+			var(--md-sys-color-primary) 52%,
 			var(--md-sys-color-outline-variant)
 		);
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-warning-container) 28%,
-			var(--md-sys-color-surface)
-		);
-		border-left-color: var(--md-sys-color-warning);
+		border-left-color: var(--md-sys-color-primary);
+		box-shadow: var(--md-sys-elevation-2);
 	}
-	.tool-card-header {
+	.tool-card--ask[data-state='completed'],
+	.tool-card--ask[data-state='resolved'] {
+		border-left-color: var(--md-sys-color-success);
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-success) 28%,
+			var(--md-sys-color-outline-variant)
+		);
+	}
+	.tool-card.embedded.tool-card--ask[data-state='waiting'] {
+		background:
+			radial-gradient(
+				circle at 100% 0%,
+				color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent),
+				transparent 44%
+			),
+			color-mix(in srgb, var(--md-sys-color-primary-container) 34%, transparent);
+	}
+	.ask-header {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		min-width: 0;
+	}
+	.ask-mark {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 38px;
+		height: 38px;
+		flex: none;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
+		box-shadow: 0 5px 12px color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
+	}
+	.ask-heading {
+		display: flex;
+		flex: 1 1 auto;
+		flex-direction: column;
+		gap: var(--md-sys-space-2xs);
+		min-width: 0;
+	}
+	.ask-eyebrow {
+		color: var(--md-sys-color-primary);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.ask-title {
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-title-medium-size);
+		font-weight: 750;
+		line-height: var(--md-sys-typescale-title-medium-line-height);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.ask-header .tool-state {
+		padding: 5px 9px;
+		border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+		border-radius: var(--md-sys-shape-full);
+		background: color-mix(in srgb, currentColor 9%, transparent);
+	}
+	.ask-header .tool-state[data-state='waiting'] {
+		color: var(--md-sys-color-primary);
+	}
+	.ask-header .tool-state[data-state='completed'] {
+		color: var(--md-sys-color-success);
+	}
+	.ask-question-block {
+		margin-top: var(--md-sys-space-lg);
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 16%, var(--md-sys-color-outline-variant));
+		border-radius: var(--md-sys-shape-medium);
+		background: color-mix(in srgb, var(--md-sys-color-surface) 66%, transparent);
+	}
+	.ask-question-label,
+	.ask-section-heading {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.ask-question-label {
+		color: var(--md-sys-color-primary);
+	}
+	.ask-options-block {
+		margin-top: var(--md-sys-space-lg);
+	}
+	.ask-section-heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+		margin-bottom: var(--md-sys-space-sm);
+	}
+	.ask-selection-count {
+		padding: 2px 7px;
+		border-radius: var(--md-sys-shape-full);
+		background: color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent);
+		color: var(--md-sys-color-primary);
+		font-family: var(--md-sys-typescale-mono);
+		letter-spacing: 0;
+	}
+	.ask-question {
+		margin: var(--md-sys-space-xs) 0 0;
+		font-size: var(--md-sys-typescale-body-large-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-large-line-height);
+		color: var(--md-sys-color-on-surface);
+	}
+	.ask-options {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-sm);
+	}
+	:global(.md-choice-chip.ask-option) {
+		min-width: 0;
+		height: 38px;
+		padding: 0 var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline);
+		background: var(--md-sys-color-surface);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 650;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+		box-shadow: 0 1px 0 color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+		transition:
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	:global(.md-choice-chip.ask-option:hover) {
+		transform: translateY(-1px);
+	}
+	:global(.md-choice-chip.ask-option.selected) {
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
+		border-color: var(--md-sys-color-primary);
+		box-shadow: 0 4px 10px color-mix(in srgb, var(--md-sys-color-primary) 22%, transparent);
+	}
+	.ask-actions {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		margin-top: var(--md-sys-space-lg);
+		padding-top: var(--md-sys-space-md);
+		border-top: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 14%, var(--md-sys-color-outline-variant));
+	}
+	.ask-action-buttons {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		flex: none;
+	}
+	:global(.md-btn.ask-ignore) {
+		--_btn-fg: var(--md-sys-color-on-surface-variant);
+		--_btn-state: var(--md-sys-color-on-surface-variant);
+		min-width: 0;
+		height: 36px;
+		padding: 0 var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-full);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	:global(.md-btn.ask-submit) {
+		min-width: 0;
+		height: 36px;
+		padding-inline: var(--md-sys-space-lg);
+		border-radius: var(--md-sys-shape-full);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 700;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.ask-resolved {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
-		margin-bottom: var(--md-sys-space-xs);
+		margin-top: var(--md-sys-space-lg);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-success) 24%, var(--md-sys-color-outline-variant));
+		border-radius: var(--md-sys-shape-medium);
+		background: color-mix(in srgb, var(--md-sys-color-success-container) 52%, transparent);
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.ask-resolved-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		flex: none;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-success);
+		color: var(--md-sys-color-on-success-container);
+	}
+	.ask-resolved > span:last-child {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-2xs);
+	}
+	.ask-resolved-answer {
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.ask-waiting {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
 		min-width: 0;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.ask-waiting-dot {
+		width: 8px;
+		height: 8px;
+		flex: none;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-primary);
+		animation: ask-pulse 1.2s ease-in-out infinite;
 	}
 	.tool-card-icon {
 		display: inline-flex;
@@ -720,77 +1007,6 @@
 	.tool-args {
 		min-width: 0;
 	}
-	.ask-question {
-		margin: 0 0 var(--md-sys-space-sm);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		color: var(--md-sys-color-on-surface);
-	}
-	.ask-options {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-xs);
-		margin-bottom: var(--md-sys-space-sm);
-	}
-	:global(.md-choice-chip.ask-option) {
-		min-width: 0;
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	:global(.md-choice-chip.ask-option.selected) {
-		background: var(--md-sys-color-primary);
-		color: var(--md-sys-color-on-primary);
-		border-color: var(--md-sys-color-primary);
-	}
-	.ask-actions {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		margin-bottom: var(--md-sys-space-sm);
-	}
-	:global(.md-btn.ask-ignore) {
-		--_btn-fg: var(--md-sys-color-on-surface-variant);
-		--_btn-state: var(--md-sys-color-on-surface-variant);
-		min-width: 0;
-		height: var(--md-comp-button-xs-height);
-		padding: 0 var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-full);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	:global(.md-btn.ask-submit) {
-		min-width: 0;
-		height: var(--md-comp-button-xs-height);
-		margin-left: auto;
-		border-radius: var(--md-sys-shape-full);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.ask-resolved {
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.ask-waiting {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.ask-waiting-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--md-sys-color-secondary);
-		animation: ask-pulse 1.2s ease-in-out infinite;
-	}
 	@keyframes ask-pulse {
 		0%,
 		100% {
@@ -836,20 +1052,30 @@
 		.tool-state[data-state='waiting'] .tool-state-dot {
 			animation: none;
 		}
+		.ask-waiting-dot {
+			animation: none;
+		}
+		:global(.md-choice-chip.ask-option) {
+			transition: none;
+		}
 	}
 	@media (max-width: 520px) {
 		.tool-card {
 			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		}
 		.ask-actions {
-			align-items: flex-start;
-			flex-wrap: wrap;
+			align-items: stretch;
+			flex-direction: column;
 		}
 		.ask-waiting {
-			flex: 1 1 8rem;
+			flex: none;
 		}
-		:global(.md-btn.ask-submit) {
-			margin-left: 0;
+		.ask-action-buttons {
+			width: 100%;
+			justify-content: flex-end;
+		}
+		.ask-question-block {
+			padding-inline: var(--md-sys-space-md);
 		}
 	}
 </style>

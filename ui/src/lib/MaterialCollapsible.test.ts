@@ -39,6 +39,16 @@ describe('MaterialCollapsible', () => {
 		expect(container.querySelector('.md-collapsible-body')).toBeTruthy();
 	});
 
+	it('keeps the lazy body mounted while it collapses', async () => {
+		const { container } = render(MaterialCollapsible, { open: true, lazy: true });
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+
+		await fireEvent.click(header);
+
+		expect(header.getAttribute('aria-expanded')).toBe('false');
+		expect(container.querySelector('.md-collapsible-body')).toBeTruthy();
+	});
+
 	it('applies the error variant', () => {
 		const { container } = render(MaterialCollapsible, {
 			open: false,

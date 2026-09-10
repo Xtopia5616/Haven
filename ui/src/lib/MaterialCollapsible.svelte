@@ -1,5 +1,7 @@
 <script>
 	import Icon from './Icon.svelte';
+	import { cubicOut } from 'svelte/easing';
+	import { slide } from 'svelte/transition';
 	/**
 	 * Material Collapsible — header with a rotating caret.
 	 * Same expand/collapse chrome as the settings Limits danger groups.
@@ -18,6 +20,14 @@
 	function toggle() {
 		open = !open;
 	}
+
+	/** @param {number} duration Keep disclosure motion respectful of the user's system preference. */
+	function motionDuration(duration) {
+		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+			return duration;
+		}
+		return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration;
+	}
 </script>
 
 <div class="md-collapsible" data-variant={variant} data-open={open} data-lazy={lazy}>
@@ -31,7 +41,10 @@
 	</button>
 	{#if lazy}
 		{#if open}
-			<div class="md-collapsible-body">
+			<div
+				class="md-collapsible-body"
+				transition:slide={{ duration: motionDuration(240), easing: cubicOut }}
+			>
 				{@render children?.()}
 			</div>
 		{/if}
