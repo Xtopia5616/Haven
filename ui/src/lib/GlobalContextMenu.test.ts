@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { copyText } from '$lib/clipboard.ts';
+import { openContextMenu } from './contextMenu.ts';
 
 vi.mock('$lib/clipboard.ts', () => ({
 	copyText: vi.fn().mockResolvedValue(true),
@@ -60,6 +61,21 @@ describe('GlobalContextMenu', () => {
 
 		expect(event.defaultPrevented).toBe(true);
 		expect(container.querySelector('.ctx-menu')).toBeNull();
+	});
+
+	it('allows a local area to provide arbitrary actions', async () => {
+		const { container } = render(GlobalContextMenu);
+		const action = vi.fn();
+		const target = document.createElement('div');
+		target.addEventListener('contextmenu', (event) => {
+			openContextMenu(event, [{ id: 'custom', label: '执行自定义操作', action }]);
+		});
+		container.append(target);
+
+		await fireEvent.contextMenu(target, { clientX: 10, clientY: 20 });
+		await fireEvent.click(screen.getByRole('menuitem', { name: '执行自定义操作' }));
+
+		expect(action).toHaveBeenCalledTimes(1);
 	});
 
 	it('does not replace the native editing menu for form controls', () => {

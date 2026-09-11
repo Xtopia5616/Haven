@@ -1,7 +1,7 @@
 <script>
 	import { untrack } from 'svelte';
 	import JsonView from '$lib/JsonView.svelte';
-	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { getSelectedTextWithin, openContextMenu } from '$lib/contextMenu.ts';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialChoiceChip from '$lib/MaterialChoiceChip.svelte';
@@ -237,29 +237,14 @@
 		}
 		return displayContent || content || '';
 	});
-	let ctxMenu = $state({ open: false, x: 0, y: 0, selected: '' });
-
 	/** @param {any} e */
 	function handleContextMenu(e) {
-		e.preventDefault();
-		e.stopPropagation();
-		let selected = '';
-		const selection = window.getSelection();
-		if (selection && !selection.isCollapsed && selection.toString().trim()) {
-			const el = e.currentTarget;
-			if (el && el.contains(selection.anchorNode) && el.contains(selection.focusNode)) {
-				selected = selection.toString().trim();
-			}
-		}
-		ctxMenu = { open: true, x: e.clientX, y: e.clientY, selected };
+		const selected = getSelectedTextWithin(e.currentTarget);
+		openContextMenu(e, buildContextMenuItems(selected));
 	}
 
-	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0, selected: '' };
-	}
-
-	let ctxMenuItems = $derived.by(() => {
-		const selected = ctxMenu.selected;
+	/** @param {string} selected */
+	function buildContextMenuItems(selected) {
 		const copyAllLabel = type === 'ask' ? '复制问题' : '复制输出';
 		/** @type {any[]} */
 		const items = [];
@@ -300,7 +285,7 @@
 			});
 		}
 		return items;
-	});
+	}
 </script>
 
 {#if type === 'ask'}
@@ -480,14 +465,6 @@
 		</MaterialCollapsible>
 	</div>
 {/if}
-
-<ContextMenu
-	open={ctxMenu.open}
-	x={ctxMenu.x}
-	y={ctxMenu.y}
-	items={ctxMenuItems}
-	onClose={closeCtxMenu}
-/>
 
 <style>
 	.tool-card {

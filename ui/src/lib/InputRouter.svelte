@@ -7,7 +7,7 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';
-	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { openContextMenu } from '$lib/contextMenu.ts';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
@@ -393,12 +393,6 @@
 		return () => observer.disconnect();
 	});
 
-	let ctxMenu = $state({ open: false, x: 0, y: 0, selStart: 0, selEnd: 0, selText: '' });
-
-	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0, selStart: 0, selEnd: 0, selText: '' };
-	}
-
 	function selectedRange() {
 		const el = transcriptTextarea;
 		if (!el) return { start: 0, end: 0, text: '' };
@@ -420,38 +414,24 @@
 
 	/** @param {MouseEvent} e */
 	function handleContextMenu(e) {
-		e.preventDefault();
-		e.stopPropagation();
-		const { start, end, text } = selectedRange();
-		ctxMenu = {
-			open: true,
-			x: e.clientX,
-			y: e.clientY,
-			selStart: start,
-			selEnd: end,
-			selText: text,
-		};
+		openContextMenu(e, buildContextMenuItems(selectedRange()));
 	}
 
-	async function handleCtxCopy() {
-		const selected = ctxMenu.selText;
+	/** @param {{ text: string }} range */
+	async function handleCtxCopy({ text: selected }) {
 		await copyText(selected || transcriptInput, selected ? '选中' : '输入');
 	}
 
-	async function handleCtxCut() {
-		const { selText, selStart, selEnd } = ctxMenu;
+	/** @param {{ start: number; end: number; text: string }} range */
+	async function handleCtxCut({ start, end, text: selText }) {
 		if (!selText) return;
 		const ok = await copyText(selText, '选中');
 		if (!ok) return;
-		setDraftAndCaret(
-			transcriptInput.slice(0, selStart) + transcriptInput.slice(selEnd),
-			selStart,
-		);
+		setDraftAndCaret(transcriptInput.slice(0, start) + transcriptInput.slice(end), start);
 	}
 
-	async function handleCtxPaste() {
-		const start = ctxMenu.selStart;
-		const end = ctxMenu.selEnd;
+	/** @param {{ start: number; end: number }} range */
+	async function handleCtxPaste({ start, end }) {
 		try {
 			const text = await navigator.clipboard.readText();
 			setDraftAndCaret(
@@ -476,19 +456,26 @@
 		tick().then(() => transcriptTextarea?.focus());
 	}
 
-	let ctxMenuItems = $derived.by(() => {
-		const hasSel = ctxMenu.selText.length > 0;
+	/** @param {{ start: number; end: number; text: string }} range */
+	function buildContextMenuItems(range) {
+		const hasSel = range.text.length > 0;
 		const hasText = transcriptInput.length > 0;
 		return [
-			{ id: 'cut', label: '剪切', icon: 'cut', disabled: !hasSel, action: handleCtxCut },
+			{
+				id: 'cut',
+				label: '剪切',
+				icon: 'cut',
+				disabled: !hasSel,
+				action: () => handleCtxCut(range),
+			},
 			{
 				id: 'copy',
 				label: hasSel ? '复制选中' : '复制',
 				icon: 'copy',
 				disabled: !hasText,
-				action: handleCtxCopy,
+				action: () => handleCtxCopy(range),
 			},
-			{ id: 'paste', label: '粘贴', icon: 'paste', action: handleCtxPaste },
+			{ id: 'paste', label: '粘贴', icon: 'paste', action: () => handleCtxPaste(range) },
 			{ id: 'sep', separator: true },
 			{
 				id: 'selectAll',
@@ -506,7 +493,7 @@
 				action: handleCtxClear,
 			},
 		];
-	});
+	}
 </script>
 
 <div class="input-area">
@@ -617,14 +604,6 @@
 		</div>
 	</div>
 </div>
-
-<ContextMenu
-	open={ctxMenu.open}
-	x={ctxMenu.x}
-	y={ctxMenu.y}
-	items={ctxMenuItems}
-	onClose={closeCtxMenu}
-/>
 
 <style>
 	.input-area {

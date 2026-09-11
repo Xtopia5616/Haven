@@ -76,7 +76,7 @@
 	} from '$lib/chatScroll.ts';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
-	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { closeContextMenu as closeGlobalContextMenu, openContextMenuAt } from '$lib/contextMenu.ts';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -367,9 +367,6 @@
 
 	// Right-click context menu state
 	let ctxMenu = $state({
-		open: false,
-		x: 0,
-		y: 0,
 		stepNumber: null,
 		content: '',
 		role: '',
@@ -379,16 +376,27 @@
 
 	/** @param {any} ev */
 	function handleContextMenu(ev) {
-		ctxMenu = {
-			open: true,
-			x: ev.x,
-			y: ev.y,
+		const next = {
 			stepNumber: ev.stepNumber,
 			content: ev.content,
 			role: ev.role,
 			msgId: ev.messageId,
 			selectedContent: ev.selectedContent || '',
 		};
+		ctxMenu = next;
+		openContextMenuAt(ev.x, ev.y, [
+			...(isDisplayOnlyMessageId(next.msgId)
+				? []
+				: [
+						{
+							id: 'rollback',
+							label: '回退到此消息',
+							icon: 'rollback',
+							action: handleCtxRollback,
+						},
+					]),
+			{ id: 'copy', label: '复制', icon: 'copy', action: handleCtxCopy },
+		]);
 	}
 
 	// Rollback: find step number from click context or parse from message id
@@ -453,30 +461,14 @@
 
 	function closeCtxMenu() {
 		ctxMenu = {
-			open: false,
-			x: 0,
-			y: 0,
 			stepNumber: null,
 			content: '',
 			role: '',
 			msgId: '',
 			selectedContent: '',
 		};
+		closeGlobalContextMenu();
 	}
-
-	let ctxMenuItems = $derived([
-		...(isDisplayOnlyMessageId(ctxMenu.msgId)
-			? []
-			: [
-					{
-						id: 'rollback',
-						label: '回退到此消息',
-						icon: 'rollback',
-						action: handleCtxRollback,
-					},
-				]),
-		{ id: 'copy', label: '复制', icon: 'copy', action: handleCtxCopy },
-	]);
 
 	/** @param {MouseEvent} e */
 	function handleWindowClick(e) {
@@ -1589,14 +1581,6 @@
 					msgId: '',
 				};
 		}}
-	/>
-
-	<ContextMenu
-		open={ctxMenu.open}
-		x={ctxMenu.x}
-		y={ctxMenu.y}
-		items={ctxMenuItems}
-		onClose={closeCtxMenu}
 	/>
 
 	<SessionHeader

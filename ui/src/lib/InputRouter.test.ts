@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import InputRouter from './InputRouter.svelte';
 import inputRouterSource from './InputRouter.svelte?raw';
+import GlobalContextMenu from './GlobalContextMenu.svelte';
 
 describe('InputRouter context menu', () => {
 	beforeEach(() => {
@@ -72,6 +73,7 @@ describe('InputRouter context menu', () => {
 			value: { writeText, readText: vi.fn() },
 			configurable: true,
 		});
+		render(GlobalContextMenu);
 		const { container } = render(InputRouter, { onsubmit: vi.fn() });
 		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
 		await fireEvent.input(textarea, { target: { value: 'hello haven' } });
@@ -89,6 +91,7 @@ describe('InputRouter context menu', () => {
 			value: { writeText: vi.fn(), readText },
 			configurable: true,
 		});
+		render(GlobalContextMenu);
 		const { container } = render(InputRouter, { onsubmit: vi.fn() });
 		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
 		await fireEvent.contextMenu(textarea);
@@ -100,6 +103,7 @@ describe('InputRouter context menu', () => {
 	});
 
 	it('clears the draft from the menu', async () => {
+		render(GlobalContextMenu);
 		const { container } = render(InputRouter, { onsubmit: vi.fn() });
 		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
 		await fireEvent.input(textarea, { target: { value: 'drop me' } });

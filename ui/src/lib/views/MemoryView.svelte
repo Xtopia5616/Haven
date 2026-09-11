@@ -26,7 +26,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import MaterialDatePicker from '$lib/MaterialDatePicker.svelte';
-	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { openContextMenu } from '$lib/contextMenu.ts';
 	import SessionHistory from './SessionHistory.svelte';
 	import MemoryCenter from './MemoryCenter.svelte';
 	import TaskCenter from '$lib/TaskCenter.svelte';
@@ -68,8 +68,6 @@
 	/** @type {string | null} */
 	let editingTitle = $state(null);
 	let renameValue = $state('');
-	/** @type {{ open: boolean; x: number; y: number; session: MemorySession | null }} */
-	let ctxMenu = $state({ open: false, x: 0, y: 0, session: null });
 	const MEMORY_TAB_IDS = ['sessions', 'tasks', 'memory'];
 	function memoryTabFromUrl() {
 		const section = get(page).url.searchParams.get('section');
@@ -407,16 +405,10 @@
 	}
 	/** @param {MouseEvent} event @param {MemorySession} session */
 	function openCtxMenu(event, session) {
-		event.preventDefault();
-		event.stopPropagation();
-		ctxMenu = { open: true, x: event.clientX, y: event.clientY, session };
+		openContextMenu(event, buildContextMenuItems(session));
 	}
-	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0, session: null };
-	}
-	let ctxMenuItems = $derived.by(() => {
-		const session = ctxMenu.session;
-		if (!session) return [];
+	/** @param {MemorySession} session */
+	function buildContextMenuItems(session) {
 		return [
 			{ id: 'open', label: '打开', icon: 'open', action: () => resumeSession(session) },
 			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(session) },
@@ -431,10 +423,12 @@
 				label: '删除',
 				icon: 'delete',
 				danger: true,
-				action: () => (deleteTarget = session),
+				action: () => {
+					deleteTarget = session;
+				},
 			},
 		];
-	});
+	}
 	function exportSelected() {
 		downloadSessions(sessions.filter((session) => selectedIds.has(session.id)));
 		cancelSelectMode();
@@ -701,13 +695,6 @@
 		<MaterialButton variant="danger" label="清空全部" onclick={clearSessions} />
 	{/snippet}
 </MaterialDialog>
-<ContextMenu
-	open={ctxMenu.open}
-	x={ctxMenu.x}
-	y={ctxMenu.y}
-	items={ctxMenuItems}
-	onClose={closeCtxMenu}
-/>
 
 <style>
 	.memory-page {

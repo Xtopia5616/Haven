@@ -1,5 +1,5 @@
 <script>
-	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { openContextMenu } from '$lib/contextMenu.ts';
 	import { slide } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 
@@ -7,14 +7,13 @@
 	 * Shared expandable card shell for resource cards with a context menu.
 	 *
 	 * @prop {string} cardKind — optional stable marker for card-specific styles
-	 * @prop {any[]} contextMenuItems — action objects consumed by ContextMenu
+	 * @prop {any[]} contextMenuItems — action objects consumed by the global menu host
 	 * @prop {any} header — header snippet
 	 * @prop {any} actions — optional header actions snippet
 	 * @prop {any} children — expanded body snippet
 	 */
 	let { cardKind = '', contextMenuItems = [], header, actions, children } = $props();
 	let expanded = $state(false);
-	let contextMenu = $state({ open: false, x: 0, y: 0 });
 
 	/** @param {number} duration */
 	function motionDuration(duration) {
@@ -29,13 +28,7 @@
 
 	/** @param {MouseEvent} event */
 	function handleContextMenu(event) {
-		event.preventDefault();
-		event.stopPropagation();
-		contextMenu = { open: true, x: event.clientX, y: event.clientY };
-	}
-
-	function closeContextMenu() {
-		contextMenu = { open: false, x: 0, y: 0 };
+		openContextMenu(event, contextMenuItems);
 	}
 
 	/** @param {KeyboardEvent} event */
@@ -83,14 +76,6 @@
 			{@render children?.()}
 		</div>
 	{/if}
-
-	<ContextMenu
-		open={contextMenu.open}
-		x={contextMenu.x}
-		y={contextMenu.y}
-		items={contextMenuItems}
-		onClose={closeContextMenu}
-	/>
 </div>
 
 <style>

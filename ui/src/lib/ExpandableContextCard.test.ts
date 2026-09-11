@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import ExpandableContextCard from './ExpandableContextCard.svelte';
+import GlobalContextMenu from './GlobalContextMenu.svelte';
 
 describe('ExpandableContextCard', () => {
 	it('toggles expansion from click and keyboard activation', async () => {
@@ -21,16 +22,17 @@ describe('ExpandableContextCard', () => {
 
 	it('opens the shared context menu and stops card activation', async () => {
 		const action = vi.fn();
-		const { container, getByRole } = render(ExpandableContextCard, {
+		render(GlobalContextMenu);
+		const { container } = render(ExpandableContextCard, {
 			contextMenuItems: [{ id: 'copy', label: '复制', action }],
 		} as any);
 		const card = container.querySelector('.expandable-context-card') as HTMLElement;
 
 		await fireEvent.contextMenu(card, { clientX: 12, clientY: 24 });
-		expect(getByRole('menu')).toBeTruthy();
+		expect(screen.getByRole('menu')).toBeTruthy();
 		expect(card.classList.contains('expanded')).toBe(false);
 
-		await fireEvent.click(getByRole('menuitem', { name: '复制' }));
+		await fireEvent.click(screen.getByRole('menuitem', { name: '复制' }));
 		expect(action).toHaveBeenCalledTimes(1);
 	});
 });

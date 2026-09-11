@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import ToolResultCard from './ToolResultCard.svelte';
+import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
 import { actionStore, upsertAction } from './stores.ts';
 
@@ -1049,6 +1050,7 @@ describe('ToolResultCard context menu', () => {
 	it('copies displayed shell output from the right-click menu', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+		render(GlobalContextMenu);
 		const { container } = render(ToolResultCard, {
 			toolName: 'shell',
 			content: JSON.stringify({ output: 'hello stdout' }),
@@ -1062,6 +1064,7 @@ describe('ToolResultCard context menu', () => {
 	it('copies the ask question from the right-click menu', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+		render(GlobalContextMenu);
 		const { container } = render(ToolResultCard, {
 			type: 'ask',
 			content: '继续吗？',

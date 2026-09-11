@@ -6,6 +6,7 @@
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { createDragScrollController } from '$lib/dragScroll.ts';
+	import { getSelectedTextWithin } from '$lib/contextMenu.ts';
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { PEER_KICKOFF_PREFIX } from '$lib/peerKickoff.ts';
@@ -87,14 +88,7 @@
 		if (onContextMenu) {
 			e.preventDefault();
 			e.stopPropagation();
-			let selectedContent = '';
-			const selection = window.getSelection();
-			if (selection && !selection.isCollapsed && selection.toString().trim()) {
-				const el = e.currentTarget;
-				if (el && el.contains(selection.anchorNode) && el.contains(selection.focusNode)) {
-					selectedContent = selection.toString().trim();
-				}
-			}
+			const selectedContent = getSelectedTextWithin(e.currentTarget);
 			onContextMenu({
 				x: e.clientX,
 				y: e.clientY,
