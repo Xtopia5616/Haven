@@ -530,9 +530,10 @@ pub fn sanitize_tool_parameters(schema: Value) -> Value {
 /// produced call before execution. This projection widens the model-visible
 /// schema by merging branch properties and fields required by every object
 /// branch. When a root union has a shared discriminator such as `operation` or
-/// `scope`, its original constraint is retained below `dependentSchemas`; this
-/// keeps nested branch unions (for example schedule timing alternatives)
-/// visible to the model without leaving a forbidden union at the schema root.
+/// `scope`, a compact form of its constraint is retained below
+/// `dependentSchemas`; this keeps nested branch unions (for example schedule
+/// timing alternatives) visible to the model without repeating every property
+/// description under both the root and each dependent branch.
 /// Unions without a usable discriminator are widened as before because JSON
 /// Schema has no equivalent object-only encoding for an arbitrary root union.
 pub(crate) fn project_tool_parameters_for_object_root(schema: Value) -> Value {
@@ -632,18 +633,104 @@ pub(crate) fn project_tool_parameters_for_object_root(schema: Value) -> Value {
         match dependent.remove(&discriminator) {
             Some(existing) if !existing.is_null() => {
                 dependent.insert(
-                    discriminator,
-                    serde_json::json!({"allOf": [existing, constraint]}),
+                    discriminator.clone(),
+                    serde_json::json!({
+                        "allOf": [
+                            compact_object_root_constraint(existing, &discriminator),
+                            compact_object_root_constraint(constraint, &discriminator)
+                        ]
+                    }),
                 );
             }
             _ => {
-                dependent.insert(discriminator, constraint);
+                dependent.insert(
+                    discriminator.clone(),
+                    compact_object_root_constraint(constraint, &discriminator),
+                );
             }
         }
         root.insert("dependentSchemas".into(), Value::Object(dependent));
     }
 
     Value::Object(root)
+}
+
+/// Keep the discriminator and validation structure in a dependent schema, but
+/// remove branch-local property definitions. The flattened root owns those
+/// definitions exactly once; required arrays and nested unions remain because
+/// they express relationships between fields rather than their descriptions.
+fn compact_object_root_constraint(value: Value, discriminator: &str) -> Value {
+    let Value::Object(object) = value else {
+        return value;
+    };
+
+    // A dependent schema may itself be an envelope (`oneOf`/`allOf`) around
+    // root branches. Compact only that direct envelope. Once inside a branch,
+    // nested unions belong to a property-local object and must keep their own
+    // property definitions.
+    let envelope_key = ["anyOf", "oneOf", "allOf"]
+        .into_iter()
+        .find(|key| object.contains_key(*key) && !object.contains_key("properties"));
+    if let Some(key) = envelope_key
+        && let Some(items) = object.get(key).and_then(Value::as_array).cloned()
+    {
+        let mut envelope = Map::new();
+        for (name, nested) in object {
+            if name == key {
+                envelope.insert(
+                    name,
+                    Value::Array(
+                        items
+                            .iter()
+                            .cloned()
+                            .map(|item| compact_object_root_branch(item, discriminator))
+                            .collect(),
+                    ),
+                );
+            } else if name != "description" && name != "additionalProperties" {
+                envelope.insert(name, nested);
+            }
+        }
+        return Value::Object(envelope);
+    }
+
+    compact_object_root_branch(Value::Object(object), discriminator)
+}
+
+fn compact_object_root_branch(value: Value, discriminator: &str) -> Value {
+    let Value::Object(object) = value else {
+        return value;
+    };
+
+    let mut compact = Map::new();
+    for key in [
+        "type",
+        "required",
+        "minProperties",
+        "maxProperties",
+        "anyOf",
+        "oneOf",
+        "allOf",
+        "not",
+        "if",
+        "then",
+        "else",
+    ] {
+        let Some(nested) = object.get(key) else {
+            continue;
+        };
+        compact.insert(key.to_string(), nested.clone());
+    }
+
+    if let Some(Value::Object(properties)) = object.get("properties")
+        && let Some(property) = properties.get(discriminator)
+    {
+        let mut discriminator_property = Map::new();
+        discriminator_property.insert(discriminator.to_string(), property.clone());
+        compact.insert("properties".into(), Value::Object(discriminator_property));
+    }
+
+    Value::Object(compact)
 }
 
 fn required_names(branches: &[Value]) -> Vec<String> {
@@ -1626,6 +1713,14 @@ mod tests {
                 .len(),
             2
         );
+        assert!(
+            projected["dependentSchemas"]["operation"]["oneOf"][0]["properties"]["body"].is_null()
+        );
+        assert!(
+            projected["dependentSchemas"]["operation"]["oneOf"][0]
+                .get("additionalProperties")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1744,7 +1839,10 @@ mod tests {
                     },
                     "required": ["operation"],
                     "oneOf": [
-                        { "required": ["delay_secs"] },
+                        {
+                            "properties": { "delay_secs": { "type": "integer", "minimum": 1 } },
+                            "required": ["delay_secs"]
+                        },
                         { "required": ["due_at"] }
                     ]
                 }
@@ -1760,6 +1858,7 @@ mod tests {
             branches[1]["oneOf"][0]["required"],
             serde_json::json!(["delay_secs"])
         );
+        assert!(branches[1]["oneOf"][0]["properties"]["delay_secs"].is_object());
     }
 
     #[test]

@@ -131,11 +131,25 @@ pub enum MemoryRecallMode {
     Hybrid,
 }
 
+/// Why a recall returned no visible hits. This makes an empty result
+/// actionable for the model instead of making `hits: []` look like proof that
+/// the user's memory store is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRecallEmptyReason {
+    NoIndex,
+    NoHits,
+    Filtered,
+    EmbeddingFailed,
+}
+
 /// Typed result from the shared retriever.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryRecall {
     pub hits: Vec<MemoryHit>,
     pub mode: MemoryRecallMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<MemoryRecallEmptyReason>,
 }
 
 impl Default for MemoryRecall {
@@ -143,6 +157,7 @@ impl Default for MemoryRecall {
         Self {
             hits: Vec::new(),
             mode: MemoryRecallMode::Keyword,
+            empty_reason: None,
         }
     }
 }
@@ -356,11 +371,16 @@ impl<'db> MemoryRetriever<'db> {
                 .then_with(|| left.entity_id.cmp(&right.entity_id))
                 .then_with(|| left.text.cmp(&right.text))
         });
-        let hits = ranked
+        let hits: Vec<MemoryHit> = ranked
             .into_iter()
             .take(query.limit)
             .map(|(hit, _)| hit)
             .collect();
+        let empty_reason = if hits.is_empty() {
+            Some(MemoryRecallEmptyReason::NoHits)
+        } else {
+            None
+        };
 
         MemoryRecall {
             hits,
@@ -369,6 +389,7 @@ impl<'db> MemoryRetriever<'db> {
             } else {
                 MemoryRecallMode::Keyword
             },
+            empty_reason,
         }
     }
 

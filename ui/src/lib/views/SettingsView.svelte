@@ -79,7 +79,7 @@
 		file_max_list_entries: 1000,
 		file_max_byte_read: 16 * 1024 * 1024,
 		file_vision_max_bytes: 8 * 1024 * 1024,
-		search_snippet_chars: 200,
+		search_snippet_chars: 640,
 		search_max_results: 1000,
 		search_max_file_size_bytes: 100 * 1024 * 1024,
 		search_window_bytes: 16 * 1024 * 1024,

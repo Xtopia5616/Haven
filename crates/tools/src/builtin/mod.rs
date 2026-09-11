@@ -5,6 +5,7 @@ pub mod ask;
 pub mod audio;
 pub mod clipboard;
 mod env;
+mod file_outline;
 pub mod file_search;
 pub mod files;
 pub mod http;
@@ -92,6 +93,24 @@ pub async fn register_builtin_tools(
     managed_assets: crate::ManagedAssetRegistry,
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
+    let (vision_available, transcribe_available) = if let Some(router) = router.as_ref() {
+        (
+            router
+                .is_role_configured(haven_llm::EndpointRole::ImageModel)
+                .await,
+            router
+                .is_role_configured(haven_llm::EndpointRole::AudioModel)
+                .await,
+        )
+    } else {
+        (false, false)
+    };
+    let has_enabled_skills = skills_engine.list().await.iter().any(|skill| skill.enabled);
+    let has_enabled_mcp = server_configs
+        .read()
+        .await
+        .values()
+        .any(|server| server.enabled);
     tools.push(Arc::new(audio::AudioTool::with_tts(
         audio_pipeline,
         tts_client,
@@ -103,13 +122,16 @@ pub async fn register_builtin_tools(
     let window_router = router.clone();
     let media_assets = managed_assets.clone();
     let window_assets = managed_assets.clone();
-    tools.push(Arc::new(media::MediaTool::new(
-        media_router,
-        media_assets,
-        limits.file_vision_max_bytes,
-        limits.file_summary_timeout_secs,
-        tool_output_cap(settings, "media", limits.max_observation_chars),
-    )));
+    tools.push(Arc::new(
+        media::MediaTool::new(
+            media_router,
+            media_assets,
+            limits.file_vision_max_bytes,
+            limits.file_summary_timeout_secs,
+            tool_output_cap(settings, "media", limits.max_observation_chars),
+        )
+        .with_capabilities(vision_available, transcribe_available),
+    ));
     tools.push(Arc::new(files::FilesTool::new(
         router,
         tool_output_cap(settings, "files", limits.max_observation_chars),
@@ -177,20 +199,24 @@ pub async fn register_builtin_tools(
         agent_spawner,
     )));
     let max_tools = limits.max_tools_per_request.max(1);
-    tools.push(Arc::new(load_skill::LoadSkillTool {
-        skills_engine: skills_engine.clone(),
-        skill_runner: skill_runner.clone(),
-        registry: registry.clone(),
-        session_catalog: session_catalog.clone(),
-        max_tools_per_request: max_tools,
-    }));
-    tools.push(Arc::new(load_mcp::LoadMcpTool {
-        mcp_manager: mcp_manager.clone(),
-        server_configs: server_configs.clone(),
-        registry: registry.clone(),
-        session_catalog,
-        max_tools_per_request: max_tools,
-    }));
+    if has_enabled_skills {
+        tools.push(Arc::new(load_skill::LoadSkillTool {
+            skills_engine: skills_engine.clone(),
+            skill_runner: skill_runner.clone(),
+            registry: registry.clone(),
+            session_catalog: session_catalog.clone(),
+            max_tools_per_request: max_tools,
+        }));
+    }
+    if has_enabled_mcp {
+        tools.push(Arc::new(load_mcp::LoadMcpTool {
+            mcp_manager: mcp_manager.clone(),
+            server_configs: server_configs.clone(),
+            registry: registry.clone(),
+            session_catalog,
+            max_tools_per_request: max_tools,
+        }));
+    }
     if let Some(ctx) = self_context {
         let config_admin = Arc::new(admin::new_config_admin_tool(admin::ConfigAdminContext {
             config_service: ctx.config_service.clone(),

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
+use super::file_outline;
 use super::file_search::FileSearchEngine;
 use super::media::{MediaOperation, MediaParams, MediaTool, classify_media};
 use crate::document::{
@@ -182,8 +183,7 @@ async fn read_full(
         let n = file.read(&mut buf).await?;
         buf.truncate(n);
         let decoded = haven_common::encoding::decode_with_encoding(&buf);
-        let content = decoded.text;
-        let (output, truncated) = haven_common::encoding::truncate_output(&content, max_chars);
+        let (output, truncated) = haven_common::encoding::truncate_output(&decoded.text, max_chars);
         let mut result = serde_json::json!({
             "too_large": true,
             "path": path,
@@ -198,6 +198,7 @@ async fn read_full(
         if truncated {
             result["truncated"] = serde_json::Value::Bool(true);
         }
+        result["next_offset"] = serde_json::json!(continuation_offset(&buf, &decoded, max_chars,));
         return Ok(ToolResult::truncated(result));
     }
     // Output is truncated to max_chars anyway; reading more bytes than 4x that
@@ -211,8 +212,7 @@ async fn read_full(
         return Ok(binary_result(path, size));
     }
     let decoded = haven_common::encoding::decode_with_encoding(&buf);
-    let content = decoded.text;
-    let (output, truncated) = haven_common::encoding::truncate_output(&content, max_chars);
+    let (output, truncated) = haven_common::encoding::truncate_output(&decoded.text, max_chars);
     let is_truncated = truncated || (n as u64) < size;
     let mut result = serde_json::json!({
         "content": output,
@@ -221,8 +221,9 @@ async fn read_full(
     });
     if is_truncated {
         result["truncated"] = serde_json::Value::Bool(true);
+        result["next_offset"] = serde_json::json!(continuation_offset(&buf, &decoded, max_chars,));
         result["hint"] = serde_json::json!(
-            "Output truncated to the max chars budget. Read specific ranges with offset/limit (bytes) or start_line/end_line (lines), or use operation=summary."
+            "Output truncated to the max chars budget. Continue with operation=read and the returned next_offset, or use start_line/end_line (lines) or operation=summary."
         );
     }
     Ok(if is_truncated {
@@ -230,6 +231,96 @@ async fn read_full(
     } else {
         ToolResult::ok(result)
     })
+}
+
+/// Return a byte cursor that resumes at the first source character omitted
+/// from a bounded decoded prefix. The cursor must be inside the bytes already
+/// read when the output character budget, rather than EOF, caused truncation;
+/// otherwise a model could resume at EOF and silently lose the remainder.
+fn continuation_offset(
+    bytes: &[u8],
+    decoded: &haven_common::encoding::DecodedText,
+    max_chars: usize,
+) -> u64 {
+    let offset = match decoded.encoding {
+        "utf-8" => utf8_offset(bytes, 0, max_chars),
+        "utf-8-bom" => utf8_offset(bytes, 3.min(bytes.len()), max_chars),
+        "utf-16le" => utf16_offset(bytes, 2.min(bytes.len()), false, max_chars),
+        "utf-16be" => utf16_offset(bytes, 2.min(bytes.len()), true, max_chars),
+        "gbk" => gbk_offset(bytes, max_chars),
+        _ => bytes.len(),
+    };
+    offset.min(bytes.len()) as u64
+}
+
+fn utf8_offset(bytes: &[u8], start: usize, max_chars: usize) -> usize {
+    let text = std::str::from_utf8(bytes.get(start..).unwrap_or_default()).unwrap_or_default();
+    start
+        + text
+            .char_indices()
+            .nth(max_chars)
+            .map(|(index, _)| index)
+            .unwrap_or(text.len())
+}
+
+fn utf16_offset(bytes: &[u8], start: usize, big_endian: bool, max_chars: usize) -> usize {
+    let data = bytes.get(start..).unwrap_or_default();
+    let mut char_count = 0;
+    let mut index = 0;
+    while index + 1 < data.len() {
+        if char_count >= max_chars {
+            return start + index;
+        }
+        let unit = if big_endian {
+            u16::from_be_bytes([data[index], data[index + 1]])
+        } else {
+            u16::from_le_bytes([data[index], data[index + 1]])
+        };
+        index += 2;
+        if (0xD800..=0xDBFF).contains(&unit) && index + 1 < data.len() && {
+            let next = if big_endian {
+                u16::from_be_bytes([data[index], data[index + 1]])
+            } else {
+                u16::from_le_bytes([data[index], data[index + 1]])
+            };
+            (0xDC00..=0xDFFF).contains(&next)
+        } {
+            index += 2;
+        }
+        char_count += 1;
+    }
+    start + index
+}
+
+fn gbk_offset(bytes: &[u8], max_chars: usize) -> usize {
+    let mut char_count = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if char_count >= max_chars {
+            return index;
+        }
+        if is_gbk_lead(bytes[index]) && index + 1 < bytes.len() && is_gbk_trail(bytes[index + 1]) {
+            index += 2;
+        } else {
+            index += 1;
+        }
+        char_count += 1;
+    }
+    // Do not resume after a dangling lead byte that the decoder represented
+    // as a replacement character; replay it together with the next chunk.
+    if bytes.last().is_some_and(|byte| is_gbk_lead(*byte)) {
+        index.saturating_sub(1)
+    } else {
+        index
+    }
+}
+
+fn is_gbk_lead(byte: u8) -> bool {
+    (0x81..=0xFE).contains(&byte)
+}
+
+fn is_gbk_trail(byte: u8) -> bool {
+    (0x40..=0xFE).contains(&byte) && byte != 0x7F
 }
 
 async fn extract_document_result(
@@ -447,7 +538,7 @@ async fn read_lines(
             if looks_like_binary(decoded.text.as_bytes()) {
                 return Ok(binary_result(path, total));
             }
-            if out.len() + decoded.text.len() > max_chars {
+            if out.chars().count() + decoded.text.chars().count() > max_chars {
                 more = true;
                 break;
             }
@@ -574,6 +665,7 @@ pub enum FilesOperation {
     List,
     Summary,
     Search,
+    Outline,
 }
 
 /// Typed parameters for `FilesTool`. Entry ① (native `run`) and entry ②
@@ -641,6 +733,9 @@ pub struct FilesParams {
     /// Skip files larger than this many bytes in content mode. 0 = unlimited.
     #[serde(default)]
     pub max_file_size: Option<u64>,
+    /// Maximum headings/declarations returned by the outline operation.
+    #[serde(default)]
+    pub max_symbols: Option<u64>,
 }
 
 impl FilesTool {
@@ -767,7 +862,7 @@ impl FilesTool {
                     let start_line = params.start_line.unwrap_or(1).max(1);
                     let end_line = params
                         .end_line
-                        .unwrap_or(start_line + self.line_span)
+                        .unwrap_or(start_line + self.line_span.saturating_sub(1))
                         .max(start_line);
                     read_lines(&path, start_line, end_line, max_chars, self.max_line_chars).await
                 } else if has_byte_args {
@@ -777,6 +872,18 @@ impl FilesTool {
                 } else {
                     read_full(&path, max_chars, self.max_read_chars, cancel.clone()).await
                 }
+            }
+            FilesOperation::Outline => {
+                let start_line = params.start_line.unwrap_or(1).max(1);
+                let max_symbols = params.max_symbols.unwrap_or(100).clamp(1, 500) as usize;
+                file_outline::outline(
+                    &path,
+                    start_line,
+                    max_symbols,
+                    self.max_line_chars,
+                    cancel.clone(),
+                )
+                .await
             }
             FilesOperation::Write => {
                 let content = params.content.unwrap_or_default();
@@ -988,7 +1095,7 @@ impl Tool for FilesTool {
         "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, create directories, edit, copy, move, delete, list, summarize, or search files. Managed images and audio are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
+        "Read, write, create directories, edit, copy, move, delete, list, outline, summarize, or search files. Managed images and audio are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -1004,7 +1111,7 @@ impl Tool for FilesTool {
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         match input["operation"].as_str() {
-            Some("read") | Some("list") | Some("summary") | Some("search") => {
+            Some("read") | Some("list") | Some("summary") | Some("search") | Some("outline") => {
                 // A file read must not overlap a write from the same batch.
                 // One shared key keeps independent reads concurrent while a
                 // writer obtains the exclusive side of the same lock.
@@ -1018,7 +1125,7 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; read/summary may use asset_id instead of path; other operations use path." },
+                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; read/summary may use asset_id instead of path; outline returns headings/declarations with line numbers; other operations use path." },
                 "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment; use this instead of guessing a local path" }
             },
             "required": ["operation"],
@@ -1055,6 +1162,17 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "create_dir" },
                         "path": { "type": "string", "minLength": 1, "description": "Directory path to create, including missing parents" }
+                    },
+                    "required": ["operation", "path"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "outline" },
+                        "path": { "type": "string", "minLength": 1, "description": "Source or Markdown file path" },
+                        "start_line": { "type": "integer", "minimum": 1, "description": "1-based line to start scanning from; use next_start_line to continue a capped outline" },
+                        "max_symbols": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum headings/declarations to return (default 100)" }
                     },
                     "required": ["operation", "path"]
                 },
@@ -1757,8 +1875,9 @@ mod tests {
         assert!(ops.contains(&"move"));
         assert!(ops.contains(&"delete"));
         assert!(ops.contains(&"list"));
+        assert!(ops.contains(&"outline"));
         assert!(ops.contains(&"search"));
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 8);
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 9);
     }
 
     #[test]
@@ -1812,6 +1931,26 @@ mod tests {
         assert!(looks_like_binary(b"text with \x00 nul inside"));
     }
 
+    #[tokio::test]
+    async fn test_full_read_cursor_points_at_first_omitted_character() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("bounded.txt");
+        tokio::fs::write(&file, "abcdefghij").await.unwrap();
+        let mut tool = FilesTool::default();
+        tool.max_output_chars = 4;
+
+        let result = tool
+            .execute(
+                json!({"operation": "read", "path": file.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.truncated);
+        assert_eq!(result.output["next_offset"], 4);
+    }
+
     /// Write `content` to `<tmp>/<name>` and run a `read` operation on it,
     /// returning the tool result. Shared by the too-large read tests.
     async fn write_and_read(tmp: &TempDir, name: &str, content: impl AsRef<[u8]>) -> ToolResult {
@@ -1839,6 +1978,7 @@ mod tests {
                 .unwrap()
                 .contains("offset/limit")
         );
+        assert!(result.output["next_offset"].as_u64().unwrap() > 0);
     }
 
     #[tokio::test]
@@ -1955,6 +2095,49 @@ mod tests {
             "line2\nline3\nline4\n"
         );
         assert_eq!(result.output["encoding"], "utf-8");
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_outline_returns_bounded_symbols_and_line_numbers() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("sample.rs");
+        tokio::fs::write(
+            &file,
+            "# heading\n\npub struct User {\n}\n\nimpl User {\n    pub fn name(&self) {}\n}\n",
+        )
+        .await
+        .unwrap();
+        let result = FilesTool::default()
+            .execute(
+                json!({"operation": "outline", "path": file.to_string_lossy(), "max_symbols": 2}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.truncated);
+        assert_eq!(result.output["count"], 2);
+        assert_eq!(result.output["symbols"][0]["line"], 1);
+        assert_eq!(result.output["symbols"][0]["kind"], "heading");
+        assert_eq!(result.output["symbols"][1]["name"], "User");
+        assert_eq!(result.output["next_start_line"], 6);
+
+        let continuation = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "outline",
+                    "path": file.to_string_lossy(),
+                    "start_line": 6,
+                    "max_symbols": 2
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(continuation.success);
+        assert_eq!(continuation.output["symbols"][0]["line"], 6);
+        assert_eq!(continuation.output["symbols"][1]["line"], 7);
     }
 
     #[tokio::test]
@@ -2523,6 +2706,7 @@ mod tests {
                     max_results: None,
                     ignore_hidden: None,
                     max_file_size: None,
+                    max_symbols: None,
                 },
                 CancellationToken::new(),
             )

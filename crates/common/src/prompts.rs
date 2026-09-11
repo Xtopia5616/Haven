@@ -149,9 +149,11 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose
 /// not to use" advice without bloating the list.
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - The short tool/skill/MCP index above is descriptive and frozen for this run; the per-step `tools[]` list is authoritative.\n\
-- `files.read`: `start_line`/`end_line` are 1-based lines; `offset`/`limit` are bytes. Truncated reads return a continuation hint such as `next_start_line` or `next_offset`.\n\
+- `files.read`: `start_line`/`end_line` are 1-based lines; `offset`/`limit` are bytes. A full read that exceeds its observation budget also returns `next_offset`; continue from that cursor instead of repeating the same call. Use `files.outline` first for unfamiliar source files.\n\
+- `files.search` returns bounded snippets plus a small before/after context window for content matches; follow its path/line metadata with a targeted `files.read` when the match is not enough.\n\
 - `http` fetches a URL; it is not a search engine. Use a provider search capability when it is present, otherwise state that web search is unavailable.\n\
-- `memory.recall` is for task-directed retrieval. Automatically injected MEMORY contains higher-confidence context; an empty recall result is not evidence that no memory exists.\n\
+- `memory.recall` is for task-directed retrieval. Automatically injected MEMORY contains higher-confidence context; `MEMORY: (none)` / `empty_reason` explain that this lookup found no usable result, not that all memory is absent.\n\
+- `workspace_root` and `context_budget` in the runtime snapshot are orientation and hard-limit hints; keep tool calls narrow and do not assume a missing optional capability is available.\n\
 - `shell` must be non-interactive. Use explicit flags or provide all input up front.\n\
 - Background actions finish asynchronously and wake the session; never turn `actions` into a polling loop.";
 

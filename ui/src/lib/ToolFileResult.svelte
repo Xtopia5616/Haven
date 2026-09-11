@@ -14,6 +14,7 @@
 		move: '移动完成',
 		delete: '删除完成',
 		list: '目录列表',
+		outline: '文件大纲',
 		summary: '摘要结果',
 		search: '搜索结果',
 	};
@@ -102,6 +103,17 @@
 	{#if data.warning}<p class="tool-card-empty">{data.warning}</p>{/if}
 	{#if data.error}<p class="tool-card-empty">{data.error}</p>{/if}
 	{#if data.matches}<JsonView value={data.matches} defaultDepth={1} />{/if}
+{:else if Array.isArray(data.symbols)}
+	<div class="tool-card-meta">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
+	<div class="tool-card-list">
+		{#each data.symbols as symbol (symbol.line)}
+			<div class="env-row">
+				<span class="file-line">L{symbol.line}</span>
+				<span class="env-name">{symbol.kind}</span>
+				<span>{symbol.name}</span>
+			</div>
+		{/each}
+	</div>
 {:else if data.operation && data.operation !== 'read' && !Array.isArray(data.entries)}
 	<div class="tool-card-meta">{operationLabel}</div>
 	<JsonView value={data} defaultDepth={1} />

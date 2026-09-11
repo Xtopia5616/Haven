@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -281,6 +282,22 @@ fn runtime_value(value: impl Into<String>) -> String {
     haven_common::text::sanitize_prompt_field(&value.into(), 320)
 }
 
+fn discover_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut cargo_candidate = None;
+    for ancestor in start.ancestors() {
+        if ancestor.join("AGENTS.md").is_file() || ancestor.join(".git").exists() {
+            return Some(ancestor.to_path_buf());
+        }
+        if cargo_candidate.is_none()
+            && ancestor.join("Cargo.toml").is_file()
+            && ancestor.join("ui").is_dir()
+        {
+            cargo_candidate = Some(ancestor.to_path_buf());
+        }
+    }
+    cargo_candidate
+}
+
 fn environment_value(names: &[&str]) -> String {
     names
         .iter()
@@ -465,9 +482,13 @@ impl SystemPromptBuilder {
         let process_cwd = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "unknown".into());
+        let workspace_root = discover_workspace_root(Path::new(&process_cwd))
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unknown".into());
         let tool_cwd = haven_common::default_work_dir()
             .to_string_lossy()
             .into_owned();
+        let limits = self.tools.context_limits().await;
         let shell = self.tools.default_shell_name().await;
         let tts = self.tools.tts_configured().await;
         let permissions = self.tools.authorization.prompt_summary().await;
@@ -506,6 +527,13 @@ impl SystemPromptBuilder {
                 if tts { "configured" } else { "unavailable" }
             )
         };
+        let context_window = if let Some(router) = &self.router {
+            router
+                .context_window_for_role(EndpointRole::DefaultModel)
+                .await
+        } else {
+            limits.default_context_window.max(1)
+        };
 
         let now = Local::now();
         format!(
@@ -515,9 +543,11 @@ impl SystemPromptBuilder {
 - locale: {}\n\
 - local_time: {} (UTC{})\n\
 - process_cwd: {}\n\
+- workspace_root: {}\n\
 - tool_default_cwd: {}\n\
 - default_shell: {}\n\
 - model_capabilities: {}\n\
+- context_budget: window_tokens={}, max_observation_chars={}, max_tools_per_request={}\n\
 - enabled_mcp_servers: {}\n\
 - discovered_skills: {}\n\
 - permissions: {}",
@@ -529,9 +559,13 @@ impl SystemPromptBuilder {
             now.format("%Y-%m-%d %H:%M:%S"),
             now.format("%:z"),
             runtime_value(process_cwd),
+            runtime_value(workspace_root),
             runtime_value(tool_cwd),
             runtime_value(shell),
             model_capabilities,
+            context_window,
+            limits.max_observation_chars,
+            limits.max_tools_per_request.max(1),
             mcp_count,
             skill_count,
             permissions,
@@ -909,7 +943,7 @@ impl SystemPromptBuilder {
     /// Wrap facts + episodes in the MEMORY fence used by fresh build and resume patch.
     pub fn render_memory_block(sections: &MemorySections) -> String {
         if sections.facts.is_empty() && sections.episodes.is_empty() {
-            return String::new();
+            return format!("{MEMORY_START}MEMORY: (none)\nreason: no_hits\n{MEMORY_END}");
         }
         let mut out = String::from(MEMORY_START);
         // facts already starts with `\n--- USER FACTS`; drop that leading newline
@@ -1515,7 +1549,9 @@ mod tests {
         assert!(prompt.contains("[assistant] prior reply"));
         assert!(prompt.contains("Runtime snapshot:"));
         assert!(prompt.contains("tool_default_cwd:"));
+        assert!(prompt.contains("workspace_root:"));
         assert!(prompt.contains("model_capabilities:"));
+        assert!(prompt.contains("context_budget:"));
         assert!(prompt.contains("permissions:"));
         let closer = prompt.find("End of stable instructions.").unwrap();
         let dynamic = prompt
@@ -1716,7 +1752,9 @@ mod tests {
 
     #[test]
     fn render_memory_block_empty_when_no_sections() {
-        assert!(SystemPromptBuilder::render_memory_block(&MemorySections::default()).is_empty());
+        let block = SystemPromptBuilder::render_memory_block(&MemorySections::default());
+        assert!(block.contains("MEMORY: (none)"));
+        assert!(block.contains("reason: no_hits"));
     }
 
     #[test]

@@ -519,6 +519,12 @@ impl ToolsManager {
         self.default_shell.read().await.as_str().to_string()
     }
 
+    /// Snapshot the limits that shape model-visible tool and observation
+    /// budgets. Prompt assembly uses this instead of duplicating defaults.
+    pub async fn context_limits(&self) -> ContextLimitsConfig {
+        self.context_limits.read().await.clone()
+    }
+
     /// Whether the model-facing `audio.speak` operation has a live TTS
     /// backend. This is intentionally separate from the audio tool's schema
     /// so prompt assembly can report the same capability state.
@@ -567,15 +573,17 @@ impl ToolsManager {
     /// Rebuild the tool catalog from the current builtin state.
     /// Called at startup and whenever MCP or Skills state changes.
     ///
-    /// Skills and MCP servers are progressively loaded (refine §4.7): only the
-    /// `load_skill` / `load_mcp` meta-tools are registered globally. Full skill
-    /// and MCP tool adapters are NOT injected into the global registry until the
-    /// LLM explicitly calls `load_skill` / `load_mcp`, which registers them
-    /// per-session (see `register_for_session`).
+    /// Skills and MCP servers are progressively loaded (refine §4.7): the
+    /// `load_skill` / `load_mcp` meta-tools are advertised only when their
+    /// corresponding enabled index/config is non-empty. Full skill and MCP
+    /// tool adapters are NOT injected into the global registry until the LLM
+    /// explicitly calls a loader, which registers them per-session (see
+    /// `register_for_session`).
     pub async fn rebuild_catalog(&self) {
         let mut all_tools: Vec<ToolBox> = Vec::new();
 
-        // Register builtin tools (including progressive load_skill and load_mcp)
+        // Register builtin tools, including capability-scoped progressive
+        // loaders when an enabled skill/MCP source is actually available.
         let router = self.router.read().await.clone();
         let self_context = self.self_context.read().await.clone();
         let settings = self.tool_settings.read().await;
@@ -1449,8 +1457,10 @@ mod tests {
         let clipboard_tool = mgr.get_tool("clipboard").await;
         assert!(clipboard_tool.is_some());
 
+        // No skills are configured in this isolated manager, so the
+        // progressive loader should not be advertised to the model.
         let load_skill_tool = mgr.get_tool("load_skill").await;
-        assert!(load_skill_tool.is_some());
+        assert!(load_skill_tool.is_none());
     }
 
     #[tokio::test]

@@ -1,5 +1,7 @@
 use grep_regex::RegexMatcher;
-use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
+use grep_searcher::{
+    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
+};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,7 +26,10 @@ pub struct FileSearchEngine {
 impl Default for FileSearchEngine {
     fn default() -> Self {
         Self {
-            snippet_chars: 200,
+            // Enough context for the model to identify a match without an
+            // immediate follow-up read; the outer observation budget remains
+            // the hard cap for the complete search result.
+            snippet_chars: 640,
             max_results_cap: 1_000,
             max_file_size: 100 * 1024 * 1024,
             max_window_bytes: 16 * 1024 * 1024,
@@ -297,6 +302,8 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
     };
     let searcher = SearcherBuilder::new()
         .line_number(true)
+        .before_context(2)
+        .after_context(2)
         .binary_detection(BinaryDetection::quit(b'\x00'))
         .build();
 
@@ -479,6 +486,8 @@ struct CollectingSink {
     line_offset: u64,
     line_filter: Option<(u64, u64)>,
     snippet_chars: usize,
+    pending_before: Vec<Value>,
+    current_result: Option<usize>,
 }
 
 impl CollectingSink {
@@ -498,6 +507,8 @@ impl CollectingSink {
             line_offset: 0,
             line_filter: None,
             snippet_chars,
+            pending_before: Vec::new(),
+            current_result: None,
         }
     }
 
@@ -509,6 +520,13 @@ impl CollectingSink {
     fn with_line_filter(mut self, start_line: u64, end_line: u64) -> Self {
         self.line_filter = Some((start_line, end_line));
         self
+    }
+
+    fn context_value(&self, line_number: u64, bytes: &[u8]) -> Value {
+        serde_json::json!({
+            "line": line_number,
+            "snippet": snippet_of(bytes, self.snippet_chars),
+        })
     }
 }
 
@@ -526,6 +544,7 @@ impl Sink for CollectingSink {
         if let Some((start, end)) = self.line_filter
             && (line_number < start || (end > 0 && line_number > end))
         {
+            self.pending_before.clear();
             return Ok(true);
         }
         // A pattern may match several times on the same line; grep reports the
@@ -543,12 +562,56 @@ impl Sink for CollectingSink {
             self.found_flag.store(true, Ordering::Relaxed);
             return Ok(false);
         }
-        guard.push(serde_json::json!({
+        let mut result = serde_json::json!({
             "path": self.path.to_string_lossy(),
             "line": line_number,
             "snippet": snippet,
-        }));
+        });
+        if !self.pending_before.is_empty() {
+            result["before"] = Value::Array(std::mem::take(&mut self.pending_before));
+        }
+        let result_index = guard.len();
+        guard.push(result);
+        self.current_result = Some(result_index);
         self.last_line = Some(line_number);
+        Ok(true)
+    }
+
+    fn context(
+        &mut self,
+        _searcher: &Searcher,
+        context: &SinkContext<'_>,
+    ) -> Result<bool, Self::Error> {
+        let line_number = context
+            .line_number()
+            .unwrap_or(0)
+            .saturating_add(self.line_offset);
+        let value = self.context_value(line_number, context.bytes());
+        match context.kind() {
+            SinkContextKind::Before => self.pending_before.push(value),
+            SinkContextKind::After => {
+                if let Some(result_index) = self.current_result {
+                    let mut guard = self.results.lock().unwrap();
+                    if let Some(result) = guard.get_mut(result_index) {
+                        result
+                            .as_object_mut()
+                            .expect("search result is an object")
+                            .entry("after")
+                            .or_insert_with(|| Value::Array(Vec::new()))
+                            .as_array_mut()
+                            .expect("search result context is an array")
+                            .push(value);
+                    }
+                }
+            }
+            SinkContextKind::Other => {}
+        }
+        Ok(true)
+    }
+
+    fn context_break(&mut self, _searcher: &Searcher) -> Result<bool, Self::Error> {
+        self.pending_before.clear();
+        self.current_result = None;
         Ok(true)
     }
 }
@@ -564,10 +627,14 @@ fn snippet_of(line: &[u8], snippet_chars: usize) -> String {
     // and falls back to GBK for non-UTF-8 (CP936) files.
     let s = haven_common::encoding::decode_preview(window);
     let s = s.trim_end();
-    if s.len() <= snippet_chars && !windowed {
+    if s.chars().count() <= snippet_chars && !windowed {
         s.to_string()
     } else {
-        let cutoff = s.floor_char_boundary(snippet_chars);
+        let cutoff = s
+            .char_indices()
+            .nth(snippet_chars)
+            .map(|(index, _)| index)
+            .unwrap_or(s.len());
         format!("{}…", &s[..cutoff])
     }
 }
@@ -637,9 +704,9 @@ mod tests {
         // A byte window cut mid-CJK-sequence must keep only the valid UTF-8
         // prefix and never garble or panic.
         let line = "中".repeat(1000).into_bytes();
-        let snippet = snippet_of(&line[..500], 200);
+        let snippet = snippet_of(&line[..1001], 200);
         assert!(snippet.is_char_boundary(snippet.len()));
-        assert!(snippet.len() < 500);
+        assert!(snippet.len() < 1001);
         assert!(snippet.ends_with('…'));
     }
 
@@ -689,6 +756,36 @@ mod tests {
             .map(|r| r["line"].as_u64().unwrap())
             .collect();
         assert_eq!(lines, vec![1, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_search_content_mode_includes_bounded_context() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("context.txt"),
+            "before one\nbefore two\nneedle\nafter one\nafter two\n",
+        )
+        .await
+        .unwrap();
+
+        let result = FileSearchEngine::default()
+            .search(
+                json!({
+                    "root": tmp.path().to_string_lossy(),
+                    "pattern": "needle",
+                    "mode": "content",
+                }),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        let match_result = &result.output["results"][0];
+        assert_eq!(match_result["line"], 3);
+        assert_eq!(match_result["before"][0]["line"], 1);
+        assert_eq!(match_result["before"][1]["line"], 2);
+        assert_eq!(match_result["after"][0]["line"], 4);
+        assert_eq!(match_result["after"][1]["line"], 5);
     }
 
     #[tokio::test]

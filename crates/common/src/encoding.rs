@@ -220,15 +220,20 @@ pub fn xml_unescape(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Truncate `text` to at most `max_chars` bytes (char-boundary safe), appending
-/// an "omitted" marker when truncation happened. Returns `(output, truncated)`.
+/// Truncate `text` to at most `max_chars` Unicode scalar values, appending an
+/// "omitted" marker when truncation happened. Returns `(output, truncated)`.
 /// The marker counts omitted *chars* (not bytes) to match its wording.
 pub fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
-    if text.len() <= max_chars {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
         (text.to_string(), false)
     } else {
-        let cutoff = text.floor_char_boundary(max_chars);
-        let omitted_chars = text[cutoff..].chars().count();
+        let cutoff = text
+            .char_indices()
+            .nth(max_chars)
+            .map(|(index, _)| index)
+            .unwrap_or(text.len());
+        let omitted_chars = char_count.saturating_sub(max_chars);
         let truncated = format!(
             "{}[truncated ... {} chars omitted]",
             &text[..cutoff],
@@ -439,13 +444,13 @@ mod tests {
 
     #[test]
     fn truncate_output_marker_counts_chars_not_bytes() {
-        // "中" is 3 bytes; 100 bytes = 33 chars, so 200 - 33 = 167 chars are
-        // omitted (byte-counting would wrongly report 501).
+        // The cap is a character budget, not a byte budget. This keeps the
+        // contract stable for CJK and other multi-byte text.
         let text = "中".repeat(200);
         let (out, truncated) = truncate_output(&text, 100);
         assert!(truncated);
         assert!(
-            out.contains("[truncated ... 167 chars omitted]"),
+            out.contains("[truncated ... 100 chars omitted]"),
             "got: {}",
             out
         );

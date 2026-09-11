@@ -82,7 +82,9 @@ cache rate（ADR 0124）。
 
 Builtin 的模型目录保持聚合边界：`system` 内的 `env`、`power`、`registry` 是私有实现模块，
 不作为独立模型工具注册。后台任务取消、目录创建和窗口 PID 目标属于既有聚合工具的
-operation，不新增顶层入口；环境变量读取只暴露名称或脱敏值。
+operation，不新增顶层入口；环境变量读取只暴露名称或脱敏值。`files` 保持聚合入口，
+但提供受限的 `outline` 结构读取；provider-facing 的 grouped schema 会在兼容约束下压平
+根级 union，并按 live capability 过滤不可用 operation / extension loader（ADR 0127）。
 
 CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖方向检查；新增或调整
 跨 crate 依赖时，必须先更新本表与该检查，并记录 ADR。
@@ -390,6 +392,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |

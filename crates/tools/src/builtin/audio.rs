@@ -199,7 +199,7 @@ impl Tool for AudioTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
+        let mut schema = serde_json::json!({
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": ["play", "speak", "record", "volume_get", "volume_set", "mute_get", "mute_set"] },
@@ -269,7 +269,21 @@ impl Tool for AudioTool {
                     "required": ["operation", "muted"]
                 }
             ]
-        })
+        });
+        if self.tts.is_none() {
+            if let Some(operations) = schema["properties"]["operation"]
+                .get_mut("enum")
+                .and_then(Value::as_array_mut)
+            {
+                operations.retain(|operation| operation.as_str() != Some("speak"));
+            }
+            if let Some(branches) = schema.get_mut("oneOf").and_then(Value::as_array_mut) {
+                branches.retain(|branch| {
+                    branch["properties"]["operation"]["const"].as_str() != Some("speak")
+                });
+            }
+        }
+        schema
     }
 
     /// Entry ②: LLM JSON entry — convert/validate into `AudioParams`, then
@@ -584,7 +598,6 @@ mod tests {
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
         for expected in [
             "play",
-            "speak",
             "record",
             "volume_get",
             "volume_set",
@@ -593,6 +606,7 @@ mod tests {
         ] {
             assert!(ops.contains(&expected), "missing op {expected}");
         }
+        assert!(!ops.contains(&"speak"));
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(req.contains(&"operation"));
@@ -601,7 +615,7 @@ mod tests {
         assert!(schema["properties"]["duration"]["type"].as_str().is_some());
         assert!(schema["properties"]["volume"]["type"].as_str().is_some());
         assert!(schema["properties"]["muted"]["type"].as_str().is_some());
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 7);
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 6);
     }
 
     #[tokio::test]

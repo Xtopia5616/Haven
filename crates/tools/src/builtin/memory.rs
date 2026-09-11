@@ -3,7 +3,7 @@ use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
-    MemoryRetriever, normalize_memory_query,
+    MemoryRecallEmptyReason, MemoryRetriever, normalize_memory_query,
 };
 use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
 use serde_json::{Value, json};
@@ -28,6 +28,20 @@ pub type MemoryRecallSlot = Arc<RwLock<Option<MemoryRecallFn>>>;
 
 pub fn new_memory_recall_slot() -> MemoryRecallSlot {
     Arc::new(RwLock::new(None))
+}
+
+fn recall_output(kind: MemoryKind, recall: MemoryRecall) -> Value {
+    let is_empty = recall.hits.is_empty();
+    let empty_reason = recall.empty_reason;
+    let mut output = json!({
+        "kind": kind.entity_type(),
+        "hits": recall.hits,
+        "mode": recall.mode,
+    });
+    if is_empty {
+        output["empty_reason"] = json!(empty_reason.unwrap_or(MemoryRecallEmptyReason::NoHits));
+    }
+    output
 }
 
 /// Agent-facing entry to Haven's exclusive memory store (`haven.db` edges +
@@ -272,22 +286,14 @@ impl MemoryTool {
 
         if let Some(recall) = self.recall.read().await.clone() {
             let recall = recall(query).await?;
-            return Ok(ToolResult::ok(json!({
-                "kind": kind.entity_type(),
-                "hits": recall.hits,
-                "mode": recall.mode,
-            })));
+            return Ok(ToolResult::ok(recall_output(kind, recall)));
         }
 
         let recall = db
             .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, None))
             .await?;
 
-        Ok(ToolResult::ok(json!({
-            "kind": kind.entity_type(),
-            "hits": recall.hits,
-            "mode": recall.mode,
-        })))
+        Ok(ToolResult::ok(recall_output(kind, recall)))
     }
 
     /// Entry ①: structured native interface (internal code calls — zero
@@ -784,6 +790,7 @@ mod tests {
                         model: "model-a".into(),
                     }],
                     mode: haven_memory::MemoryRecallMode::Hybrid,
+                    empty_reason: None,
                 })
             })
         }));
@@ -985,6 +992,20 @@ mod tests {
         let hits = result.output["hits"].as_array().unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0]["text"].as_str().unwrap().contains("Rust"));
+    }
+
+    #[tokio::test]
+    async fn test_recall_empty_exposes_reason() {
+        let (tool, _db, _dir) = test_tool();
+        let result = tool
+            .execute(
+                json!({"operation": "recall", "query": "not stored anywhere", "kind": "fact"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.output["hits"].as_array().unwrap().is_empty());
+        assert_eq!(result.output["empty_reason"], "no_hits");
     }
 
     #[tokio::test]

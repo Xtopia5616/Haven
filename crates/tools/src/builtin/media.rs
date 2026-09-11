@@ -106,6 +106,8 @@ pub struct MediaParams {
 
 pub struct MediaTool {
     router: Option<Arc<LlmRouter>>,
+    describe_available: bool,
+    transcribe_available: bool,
     managed_assets: ManagedAssetRegistry,
     max_bytes: u64,
     timeout_secs: u64,
@@ -120,13 +122,26 @@ impl MediaTool {
         timeout_secs: u64,
         max_output_chars: usize,
     ) -> Self {
+        let has_router = router.is_some();
         Self {
             router,
+            describe_available: has_router,
+            transcribe_available: has_router,
             managed_assets,
             max_bytes,
             timeout_secs,
             max_output_chars: max_output_chars.max(1),
         }
+    }
+
+    pub(crate) fn with_capabilities(
+        mut self,
+        describe_available: bool,
+        transcribe_available: bool,
+    ) -> Self {
+        self.describe_available = describe_available;
+        self.transcribe_available = transcribe_available;
+        self
     }
 
     pub async fn run(
@@ -193,6 +208,15 @@ impl MediaTool {
     ) -> anyhow::Result<ToolResult> {
         if classify_media(&asset).0 != MediaModality::Image {
             anyhow::bail!("describe requires an image asset");
+        }
+        if !self.describe_available {
+            return Ok(ToolResult::ok(json!({
+                "operation": "describe",
+                "asset_id": asset.asset_id,
+                "media": model_media_reference(&asset, "managed_file_ref", None),
+                "available": false,
+                "reason": "No vision-capable LLM router is configured.",
+            })));
         }
         let Some(router) = self.router.clone() else {
             return Ok(ToolResult::ok(json!({
@@ -274,6 +298,15 @@ impl MediaTool {
     ) -> anyhow::Result<ToolResult> {
         if classify_media(&asset).0 != MediaModality::Audio {
             anyhow::bail!("transcribe requires an audio asset");
+        }
+        if !self.transcribe_available {
+            return Ok(ToolResult::ok(json!({
+                "operation": "transcribe",
+                "asset_id": asset.asset_id,
+                "media": model_media_reference(&asset, "managed_file_ref", None),
+                "available": false,
+                "reason": "No speech-to-text LLM router is configured.",
+            })));
         }
         let Some(router) = self.router.clone() else {
             return Ok(ToolResult::ok(json!({
@@ -403,7 +436,7 @@ impl Tool for MediaTool {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
+        let mut schema = json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
@@ -418,7 +451,29 @@ impl Tool for MediaTool {
                 {"properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
                 {"properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]}
             ]
-        })
+        });
+        let unavailable = [
+            ("describe", self.describe_available),
+            ("transcribe", self.transcribe_available),
+        ];
+        if let Some(operations) = schema["properties"]["operation"]
+            .get_mut("enum")
+            .and_then(Value::as_array_mut)
+        {
+            operations.retain(|operation| {
+                unavailable
+                    .iter()
+                    .all(|(name, available)| operation.as_str() != Some(*name) || *available)
+            });
+        }
+        if let Some(branches) = schema.get_mut("oneOf").and_then(Value::as_array_mut) {
+            branches.retain(|branch| {
+                unavailable.iter().all(|(name, available)| {
+                    branch["properties"]["operation"]["const"].as_str() != Some(*name) || *available
+                })
+            });
+        }
+        schema
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -502,10 +557,17 @@ mod tests {
         let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000);
         assert!(
             tool.validate_input(&json!({
-                "operation": "describe",
+                "operation": "inspect",
                 "asset_id": "asset-0123456789abcdef0123456789abcdef"
             }))
             .is_ok()
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "describe",
+                "asset_id": "asset-0123456789abcdef0123456789abcdef"
+            }))
+            .is_err()
         );
         assert!(
             tool.validate_input(&json!({
@@ -555,8 +617,12 @@ mod tests {
         let (registry, asset_id) = registered_asset(root.path(), "photo.png", "image/png");
         let tool = MediaTool::new(None, registry, 1024, 10, 2_000);
         let result = tool
-            .execute(
-                json!({"operation": "describe", "asset_id": asset_id}),
+            .run(
+                MediaParams {
+                    operation: MediaOperation::Describe,
+                    asset_id,
+                    focus: None,
+                },
                 CancellationToken::new(),
             )
             .await
