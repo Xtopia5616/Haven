@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(cfg.context_limits.empty_response_max_retries, 3);
         assert_eq!(cfg.context_limits.stream_stall_warn_delay_ms, 10_000);
         assert_eq!(cfg.context_limits.reasoning_echo_max_chars, 3000);
-        assert_eq!(cfg.context_limits.max_observation_chars, 8_000);
+        assert_eq!(cfg.context_limits.max_observation_chars, 32_000);
         assert_eq!(cfg.context_limits.max_transcript_chars, 4_000);
         assert_eq!(cfg.context_limits.max_attachment_images, 4);
         assert_eq!(cfg.context_limits.max_attachment_files, 5);

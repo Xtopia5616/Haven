@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
 
+use chrono::Local;
 use haven_common::prompts::{
     MAIN_SYSTEM_PROMPT, SESSION_CONTEXT_FENCE_START, TOOL_USAGE_NOTES, render,
 };
@@ -275,6 +276,22 @@ const RECENT_CONTEXT_ITEM_MAX_TOKENS: u32 = 300;
 /// the whole context allocation or become an unbounded embedding query.
 const SESSION_DESCRIPTION_CHAR_BUDGET: usize = 1200;
 const SESSION_DESCRIPTION_TOKEN_BUDGET: u32 = 384;
+
+fn runtime_value(value: impl Into<String>) -> String {
+    haven_common::text::sanitize_prompt_field(&value.into(), 320)
+}
+
+fn environment_value(names: &[&str]) -> String {
+    names
+        .iter()
+        .find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .map(runtime_value)
+        .unwrap_or_else(|| "unknown".into())
+}
 fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
@@ -440,6 +457,87 @@ impl SystemPromptBuilder {
             .await
     }
 
+    /// Render host facts that are stable for the lifetime of a session. This
+    /// is deliberately assembled from live runtime owners so the prompt does
+    /// not advertise a stale shell, TTS client, MCP list, or model slot after
+    /// settings hot-reload.
+    async fn render_runtime_snapshot(&self) -> String {
+        let process_cwd = std::env::current_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "unknown".into());
+        let tool_cwd = haven_common::default_work_dir()
+            .to_string_lossy()
+            .into_owned();
+        let shell = self.tools.default_shell_name().await;
+        let tts = self.tools.tts_configured().await;
+        let permissions = self.tools.authorization.prompt_summary().await;
+        let mcp_count = self
+            .tools
+            .list_mcp_server_configs()
+            .await
+            .into_iter()
+            .filter(|server| server.enabled)
+            .count();
+        let skill_count = self.tools.build_skill_index().await.len();
+
+        let model_capabilities = if let Some(router) = &self.router {
+            let mut states = Vec::new();
+            for role in [
+                EndpointRole::DefaultModel,
+                EndpointRole::ImageModel,
+                EndpointRole::AudioModel,
+                EndpointRole::EmbeddingModel,
+            ] {
+                let state = if router.is_role_configured(role).await {
+                    "configured"
+                } else {
+                    "unavailable"
+                };
+                states.push(format!("{}={state}", role.as_str()));
+            }
+            states.push(format!(
+                "tts={}",
+                if tts { "configured" } else { "unavailable" }
+            ));
+            states.join(", ")
+        } else {
+            format!(
+                "router=unavailable, tts={}",
+                if tts { "configured" } else { "unavailable" }
+            )
+        };
+
+        let now = Local::now();
+        format!(
+            "- os: {} ({})\n\
+- user: {}\n\
+- home: {}\n\
+- locale: {}\n\
+- local_time: {} (UTC{})\n\
+- process_cwd: {}\n\
+- tool_default_cwd: {}\n\
+- default_shell: {}\n\
+- model_capabilities: {}\n\
+- enabled_mcp_servers: {}\n\
+- discovered_skills: {}\n\
+- permissions: {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            environment_value(&["USERNAME", "USER"]),
+            environment_value(&["USERPROFILE", "HOME"]),
+            environment_value(&["LC_ALL", "LANG"]),
+            now.format("%Y-%m-%d %H:%M:%S"),
+            now.format("%:z"),
+            runtime_value(process_cwd),
+            runtime_value(tool_cwd),
+            runtime_value(shell),
+            model_capabilities,
+            mcp_count,
+            skill_count,
+            permissions,
+        )
+    }
+
     /// Like [`Self::build`], excluding episodes belonging to `exclude_session_id` (S2).
     pub async fn build_for_session(
         &self,
@@ -484,8 +582,10 @@ impl SystemPromptBuilder {
         );
         let session_description =
             truncate_to_token_budget(&session_description, SESSION_DESCRIPTION_TOKEN_BUDGET);
-        let prefix =
-            format!("{SESSION_CONTEXT_FENCE_START}Current session: {session_description}\n\n");
+        let runtime_snapshot = self.render_runtime_snapshot().await;
+        let prefix = format!(
+            "{SESSION_CONTEXT_FENCE_START}Runtime snapshot:\n{runtime_snapshot}\n\nCurrent session: {session_description}\n\n"
+        );
         let fixed_chars = prefix.chars().count() + facts_section.chars().count();
         let fixed_tokens = estimate_tokens(&prefix).saturating_add(estimate_tokens(&facts_section));
         let context_budget = SESSION_CONTEXT_CHAR_BUDGET.saturating_sub(fixed_chars);
@@ -832,7 +932,7 @@ impl SystemPromptBuilder {
     /// Replace the MEMORY fence in a system prompt in place. Leaves tools /
     /// skills / MCP / Additional context / Guidelines untouched.
     ///
-    /// New layout: fence lives **after** `What is your next step?\n` so M2
+    /// New layout: fence lives **after** `End of stable instructions.\n` so M2
     /// patches only mutate the prompt suffix (prompt-cache friendly). Decoy
     /// fences inside tool/skill text sit before the closer and are ignored.
     ///
@@ -840,13 +940,18 @@ impl SystemPromptBuilder {
     /// excerpts in `{context}`) are upgraded: old blocks are stripped and the
     /// new fence is appended after the closer.
     pub fn patch_system_memory(system_prompt: &str, new_memory_block: &str) -> String {
-        const NEXT_STEP: &str = "What is your next step?\n";
+        const CURRENT_CLOSER: &str = "End of stable instructions.\n";
+        const LEGACY_CLOSER: &str = "What is your next step?\n";
         const GUIDELINES: &str = "\nGuidelines:\n";
 
         let base = strip_legacy_past_excerpts(system_prompt);
 
-        if let Some(next_at) = base.find(NEXT_STEP) {
-            let after = next_at + NEXT_STEP.len();
+        let closer = base
+            .find(CURRENT_CLOSER)
+            .map(|at| (at, CURRENT_CLOSER.len()))
+            .or_else(|| base.find(LEGACY_CLOSER).map(|at| (at, LEGACY_CLOSER.len())));
+        if let Some((closer_at, closer_len)) = closer {
+            let after = closer_at + closer_len;
             let tail = &base[after..];
             if let Some((rel_start, rel_end)) =
                 find_first_closed_fence(tail, MEMORY_START, MEMORY_END)
@@ -877,8 +982,16 @@ impl SystemPromptBuilder {
             if cleaned.rfind(SESSION_CONTEXT_FENCE_START).is_some() {
                 return format!("{cleaned}{new_memory_block}");
             }
-            if let Some(next_at) = cleaned.find(NEXT_STEP) {
-                let after = next_at + NEXT_STEP.len();
+            if let Some((next_at, next_len)) = cleaned
+                .find(CURRENT_CLOSER)
+                .map(|at| (at, CURRENT_CLOSER.len()))
+                .or_else(|| {
+                    cleaned
+                        .find(LEGACY_CLOSER)
+                        .map(|at| (at, LEGACY_CLOSER.len()))
+                })
+            {
+                let after = next_at + next_len;
                 return splice(&cleaned, after, after, new_memory_block);
             }
             return format!("{cleaned}{new_memory_block}");
@@ -1400,7 +1513,11 @@ mod tests {
             .await;
         assert!(prompt.contains("Additional context:"));
         assert!(prompt.contains("[assistant] prior reply"));
-        let closer = prompt.find("What is your next step?").unwrap();
+        assert!(prompt.contains("Runtime snapshot:"));
+        assert!(prompt.contains("tool_default_cwd:"));
+        assert!(prompt.contains("model_capabilities:"));
+        assert!(prompt.contains("permissions:"));
+        let closer = prompt.find("End of stable instructions.").unwrap();
         let dynamic = prompt
             .find(SESSION_CONTEXT_FENCE_START.trim_start())
             .unwrap();

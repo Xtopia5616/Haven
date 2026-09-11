@@ -247,7 +247,9 @@ impl Default for ContextLimitsConfig {
             // router additionally clamps to the endpoint's resolved context
             // window so the floor can never be rejected by the provider.
             max_response_tokens: 128_000,
-            max_observation_chars: 8_000,
+            // File/code observations need enough room for a useful window;
+            // the loop still applies this as a hard upper bound.
+            max_observation_chars: 32_000,
             max_transcript_chars: 4_000,
             max_attachment_images: 4,
             max_attachment_files: 5,

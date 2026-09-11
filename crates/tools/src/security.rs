@@ -305,6 +305,33 @@ impl AuthorizationEngine {
         bump_policy_revision(&mut cfg);
     }
 
+    /// Return a compact, non-sensitive policy summary for the model context.
+    /// Permission keys and paths stay private; the model only needs to know
+    /// which policy mode is active and whether explicit grants/blocks exist.
+    pub async fn prompt_summary(&self) -> String {
+        let cfg = self.config.read().await;
+        let always_allowed = cfg
+            .permanent
+            .values()
+            .filter(|effect| **effect == PermissionEffect::Allow)
+            .count();
+        let always_denied = cfg
+            .permanent
+            .values()
+            .filter(|effect| **effect == PermissionEffect::Deny)
+            .count();
+        let disabled_tools = cfg.tool_settings.values().filter(|c| !c.enabled).count();
+        let disabled_operations = cfg
+            .tool_settings
+            .values()
+            .map(|c| c.disabled_operations.len())
+            .sum::<usize>();
+        format!(
+            "mode={:?}; always_allowed={always_allowed}; always_denied={always_denied}; disabled_tools={disabled_tools}; disabled_operations={disabled_operations}; other medium/high operations may require confirmation",
+            cfg.permission_mode
+        )
+    }
+
     /// Effective risk after optional `tool_settings.risk_override`.
     pub async fn effective_risk(&self, tool_name: &str, reported: RiskLevel) -> RiskLevel {
         let cfg = self.config.read().await;

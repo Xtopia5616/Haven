@@ -514,6 +514,18 @@ impl ToolsManager {
         self.rebuild_catalog().await;
     }
 
+    /// Snapshot the shell default used by the model-facing `shell` tool.
+    pub async fn default_shell_name(&self) -> String {
+        self.default_shell.read().await.as_str().to_string()
+    }
+
+    /// Whether the model-facing `audio.speak` operation has a live TTS
+    /// backend. This is intentionally separate from the audio tool's schema
+    /// so prompt assembly can report the same capability state.
+    pub async fn tts_configured(&self) -> bool {
+        self.tts_client.read().await.is_some()
+    }
+
     /// Replace the TTS client used by the `audio` tool after a live settings
     /// update. A disabled or failed client is represented by `None`.
     pub async fn set_tts_client(&self, client: Option<Arc<dyn haven_llm::TtsClient>>) {
@@ -1027,12 +1039,6 @@ impl ToolsManager {
             {
                 obj.insert("_step_id".into(), serde_json::json!(sid));
             }
-            // Every tool invocation receives the durable step identity. Tools
-            // that call an external API can forward it as their idempotency
-            // key; tools that do not need it simply ignore this private field.
-            if let Some(sid) = step_id.filter(|s| !s.is_empty()) {
-                obj.insert("_idempotency_key".into(), serde_json::json!(sid));
-            }
         }
         let settings = self.tool_settings.read().await;
         let configured = settings.get(tool_name).cloned();
@@ -1293,6 +1299,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_tool_does_not_inject_idempotency_key_into_strict_tool_args() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct StrictArgs {}
+
+        struct StrictTool;
+
+        #[async_trait::async_trait]
+        impl Tool for StrictTool {
+            fn name(&self) -> String {
+                "strict_args".into()
+            }
+            fn description(&self) -> String {
+                "test tool with a strict serde contract".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "additionalProperties": false
+                })
+            }
+            async fn execute(
+                &self,
+                input: Value,
+                _: CancellationToken,
+            ) -> anyhow::Result<ToolResult> {
+                let _: StrictArgs = serde_json::from_value(input)?;
+                Ok(ToolResult::ok(json!({ "ok": true })))
+            }
+        }
+
+        let mgr = ToolsManager::new();
+        mgr.registry.register(Arc::new(StrictTool)).await;
+        let result = mgr
+            .execute_tool_with_step(
+                None,
+                "strict_args",
+                json!({}),
+                CancellationToken::new(),
+                Some("step-0123456789abcdef0123456789abcdef"),
+            )
+            .await
+            .expect("strict tool must execute");
+        assert!(result.success, "strict tool failed: {:?}", result.error);
+    }
+
+    #[tokio::test]
     async fn test_tools_manager_set_tool_settings() {
         let mgr = ToolsManager::new();
         let mut settings = HashMap::new();
@@ -1303,7 +1359,10 @@ mod tests {
     #[tokio::test]
     async fn test_tools_manager_set_context_limits_stores_global_cap() {
         let mgr = ToolsManager::new();
-        assert_eq!(mgr.context_limits.read().await.max_observation_chars, 8_000);
+        assert_eq!(
+            mgr.context_limits.read().await.max_observation_chars,
+            32_000
+        );
         let limits = ContextLimitsConfig {
             max_observation_chars: 5_000,
             ..Default::default()

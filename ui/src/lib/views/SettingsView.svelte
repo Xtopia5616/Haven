@@ -63,7 +63,7 @@
 		compaction_reserve_tokens: 4096,
 		default_context_window: 128000,
 		max_response_tokens: 1000000,
-		max_observation_chars: 8000,
+		max_observation_chars: 32000,
 		max_transcript_chars: 4000,
 		max_attachment_images: 4,
 		max_attachment_files: 5,

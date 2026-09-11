@@ -181,13 +181,15 @@ async fn read_full(
         let mut buf = vec![0u8; to_read];
         let n = file.read(&mut buf).await?;
         buf.truncate(n);
-        let content = haven_common::encoding::decode_preview(&buf);
+        let decoded = haven_common::encoding::decode_with_encoding(&buf);
+        let content = decoded.text;
         let (output, truncated) = haven_common::encoding::truncate_output(&content, max_chars);
         let mut result = serde_json::json!({
             "too_large": true,
             "path": path,
             "size": size,
             "content": output,
+            "encoding": decoded.encoding,
             "hint": format!(
                 "File is {} bytes, above the {} byte full-read limit. The head is included above; read specific ranges with offset/limit (bytes) or start_line/end_line (lines), or locate text with search(mode=content).",
                 size, max_read_chars
@@ -208,10 +210,15 @@ async fn read_full(
     if looks_like_binary(&buf) {
         return Ok(binary_result(path, size));
     }
-    let content = haven_common::encoding::decode_lossy(&buf);
+    let decoded = haven_common::encoding::decode_with_encoding(&buf);
+    let content = decoded.text;
     let (output, truncated) = haven_common::encoding::truncate_output(&content, max_chars);
     let is_truncated = truncated || (n as u64) < size;
-    let mut result = serde_json::json!({"content": output, "size": size});
+    let mut result = serde_json::json!({
+        "content": output,
+        "size": size,
+        "encoding": decoded.encoding,
+    });
     if is_truncated {
         result["truncated"] = serde_json::Value::Bool(true);
         result["hint"] = serde_json::json!(
@@ -340,7 +347,8 @@ async fn read_bytes(
     if looks_like_binary(&buf) {
         return Ok(binary_result(path, total));
     }
-    let content = haven_common::encoding::decode_lossy(&buf);
+    let decoded = haven_common::encoding::decode_with_encoding(&buf);
+    let content = decoded.text;
     let (output, text_truncated) = haven_common::encoding::truncate_output(&content, max_chars);
     let read_bytes = n as u64;
     let has_more = offset + read_bytes < total;
@@ -350,6 +358,7 @@ async fn read_bytes(
         "read_bytes": read_bytes,
         "total_bytes": total,
         "mode": "bytes",
+        "encoding": decoded.encoding,
         "truncated": has_more || text_truncated,
         "next_offset": offset + read_bytes,
     });
@@ -413,6 +422,7 @@ async fn read_lines(
     let mut out = String::new();
     let mut last_line: u64 = 0;
     let mut more = false;
+    let mut encoding: Option<&'static str> = None;
 
     loop {
         let Some((n, exceeded)) =
@@ -433,15 +443,16 @@ async fn read_lines(
             // Decode before the budget check: decode_lossy expands non-UTF-8
             // (GBK) bytes, so comparing the raw line bytes would under-count
             // and let `out` exceed the budget with truncated=false.
-            let decoded = haven_common::encoding::decode_lossy(&line_buf);
-            if looks_like_binary(decoded.as_bytes()) {
+            let decoded = haven_common::encoding::decode_with_encoding(&line_buf);
+            if looks_like_binary(decoded.text.as_bytes()) {
                 return Ok(binary_result(path, total));
             }
-            if out.len() + decoded.len() > max_chars {
+            if out.len() + decoded.text.len() > max_chars {
                 more = true;
                 break;
             }
-            out.push_str(&decoded);
+            encoding.get_or_insert(decoded.encoding);
+            out.push_str(&decoded.text);
             last_line = current;
         }
         current += 1;
@@ -462,6 +473,7 @@ async fn read_lines(
             "truncated": more,
         });
         if more {
+            result["next_start_line"] = serde_json::json!(start_line);
             result["hint"] = serde_json::json!(
                 "The first in-range line exceeds the output budget. Read this file with offset/limit (bytes mode), a narrower line range, or operation=summary."
             );
@@ -480,9 +492,15 @@ async fn read_lines(
         "start_line": start_line,
         "end_line": last_line,
         "mode": "lines",
+        "encoding": encoding.unwrap_or("empty"),
         "truncated": truncated,
     });
     Ok(if truncated {
+        let mut result = result;
+        result["next_start_line"] = serde_json::json!(last_line.saturating_add(1));
+        result["hint"] = serde_json::json!(
+            "Output stopped at the observation budget. Continue with the returned next_start_line using operation=read."
+        );
         ToolResult::truncated(result)
     } else {
         ToolResult::ok(result)
@@ -1863,6 +1881,7 @@ mod tests {
             "GBK head must decode to CJK text, got: {}",
             &head[..head.len().min(40)]
         );
+        assert_eq!(result.output["encoding"], "gbk");
     }
 
     #[tokio::test]
@@ -1906,7 +1925,9 @@ mod tests {
         assert_eq!(result.output["mode"].as_str().unwrap(), "bytes");
         assert_eq!(result.output["offset"].as_u64().unwrap(), 5);
         assert_eq!(result.output["total_bytes"].as_u64().unwrap(), 20);
+        assert_eq!(result.output["encoding"], "utf-8");
         assert!(result.output["truncated"].as_bool().unwrap());
+        assert_eq!(result.output["next_offset"].as_u64().unwrap(), 10);
     }
 
     #[tokio::test]
@@ -1933,6 +1954,7 @@ mod tests {
             result.output["content"].as_str().unwrap(),
             "line2\nline3\nline4\n"
         );
+        assert_eq!(result.output["encoding"], "utf-8");
     }
 
     #[tokio::test]
@@ -1977,6 +1999,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.output["content"].as_str().unwrap(), "");
         assert!(result.output["truncated"].as_bool().unwrap());
+        assert_eq!(result.output["next_start_line"], 1);
     }
 
     #[tokio::test]

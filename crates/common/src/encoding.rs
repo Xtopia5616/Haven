@@ -1,3 +1,10 @@
+/// The encoding selected for a decoded text payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedText {
+    pub text: String,
+    pub encoding: &'static str,
+}
+
 /// Decode bytes to a String, handling Windows console code pages.
 ///
 /// First tries UTF-8 (the common case for most tools/configs), stripping a
@@ -7,30 +14,85 @@
 /// emitting UTF-16 without one — is decoded before falling back to GBK
 /// (cmd.exe output on Chinese Windows using CP936).
 pub fn decode_lossy(bytes: &[u8]) -> String {
+    decode_with_encoding(bytes).text
+}
+
+/// Decode bytes and retain the encoding decision for tool results.
+///
+/// The label is intentionally a small stable vocabulary rather than a raw
+/// platform code-page name so callers can expose it safely to the model.
+pub fn decode_with_encoding(bytes: &[u8]) -> DecodedText {
+    if bytes.is_empty() {
+        return DecodedText {
+            text: String::new(),
+            encoding: "empty",
+        };
+    }
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return match std::str::from_utf8(&bytes[3..]) {
-            Ok(s) => s.to_string(),
-            Err(_) => decode_utf16_or_gbk(&bytes[3..]),
+            Ok(s) => DecodedText {
+                text: s.to_string(),
+                encoding: "utf-8-bom",
+            },
+            Err(error) if bytes[3..].len() - error.valid_up_to() <= 3 => DecodedText {
+                text: std::str::from_utf8(&bytes[3..3 + error.valid_up_to()])
+                    .expect("valid UTF-8 prefix")
+                    .to_string(),
+                encoding: "utf-8-bom",
+            },
+            Err(_) => {
+                let decoded = decode_with_encoding(&bytes[3..]);
+                DecodedText {
+                    text: decoded.text,
+                    encoding: decoded.encoding,
+                }
+            }
         };
     }
     // UTF-16 BOMs must be consumed before the no-BOM heuristic, or the BOM
     // bytes of ASCII-heavy payloads would be decoded as a leading U+FEFF.
     if bytes.starts_with(&[0xFF, 0xFE]) {
-        return decode_utf16le(&bytes[2..]);
+        return DecodedText {
+            text: decode_utf16le(&bytes[2..]),
+            encoding: "utf-16le",
+        };
     }
     if bytes.starts_with(&[0xFE, 0xFF]) {
-        return decode_utf16be(&bytes[2..]);
+        return DecodedText {
+            text: decode_utf16be(&bytes[2..]),
+            encoding: "utf-16be",
+        };
     }
     // UTF-16LE text without a BOM is usually still valid UTF-8 (ASCII code
     // units are < 0x80), so the heuristic must run before the UTF-8 check
     // or `e\0c\0h\0o…` would pass as text.
     if looks_like_utf16le(bytes) {
-        return decode_utf16le(bytes);
+        return DecodedText {
+            text: decode_utf16le(bytes),
+            encoding: "utf-16le",
+        };
     }
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        return s.to_string();
+    match std::str::from_utf8(bytes) {
+        Ok(s) => {
+            return DecodedText {
+                text: s.to_string(),
+                encoding: "utf-8",
+            };
+        }
+        Err(error) if bytes.len() - error.valid_up_to() <= 3 => {
+            return DecodedText {
+                text: std::str::from_utf8(&bytes[..error.valid_up_to()])
+                    .expect("valid UTF-8 prefix")
+                    .to_string(),
+                encoding: "utf-8",
+            };
+        }
+        Err(_) => {}
     }
-    decode_utf16_or_gbk(bytes)
+    DecodedText {
+        text: decode_utf16_or_gbk(bytes),
+        encoding: "gbk",
+    }
 }
 
 /// Decode bytes for display when the buffer may be cut mid-sequence.
@@ -202,6 +264,19 @@ mod tests {
         let gbk_bytes = [0xC4, 0xE3, 0xBA, 0xC3];
         let decoded = decode_lossy(&gbk_bytes);
         assert_eq!(decoded, "你好");
+    }
+
+    #[test]
+    fn decode_with_encoding_reports_windows_text_encoding() {
+        let gbk_bytes = [0xC4, 0xE3, 0xBA, 0xC3];
+        let decoded = decode_with_encoding(&gbk_bytes);
+        assert_eq!(decoded.text, "你好");
+        assert_eq!(decoded.encoding, "gbk");
+
+        let utf16: Vec<u8> = "hello".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let decoded = decode_with_encoding(&utf16);
+        assert_eq!(decoded.text, "hello");
+        assert_eq!(decoded.encoding, "utf-16le");
     }
 
     #[test]
