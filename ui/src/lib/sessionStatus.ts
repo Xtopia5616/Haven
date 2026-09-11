@@ -56,6 +56,11 @@ export function isBusyStatus(status: string | undefined | null): boolean {
 	return status === 'pending' || status === 'running';
 }
 
+/** Terminal failure states that should remain read-only when history is opened. */
+export function isErrorStatus(status: string | undefined | null): boolean {
+	return status === 'error' || status === 'failed';
+}
+
 export function statusColor(status: string) {
 	return COLOR_MAP[status] || '#666';
 }

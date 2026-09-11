@@ -9,6 +9,7 @@ function handlers(options: {
 	activeSessionId?: string | null;
 	setActiveSessionId?: (sessionId: string) => void;
 	flushChunksNow?: () => void;
+	showSessionError?: (sessionId: string, reason: string) => void;
 }) {
 	return createChatSessionEventHandlers({
 		getActiveSessionId: () => options.activeSessionId ?? null,
@@ -17,7 +18,7 @@ function handlers(options: {
 		setActiveSessionId: options.setActiveSessionId ?? vi.fn(),
 		getSessionErrorId: () => null,
 		clearSessionError: vi.fn(),
-		showSessionError: vi.fn(),
+		showSessionError: options.showSessionError ?? vi.fn(),
 		clearAskAwaiting: vi.fn(),
 		evictTerminalSessionMemory: vi.fn(),
 		clearStepBlockIds: vi.fn(),
@@ -93,5 +94,16 @@ describe('chat session lifecycle handlers', () => {
 		} as never);
 
 		expect(setActiveSessionId).not.toHaveBeenCalled();
+	});
+
+	it('passes the failure reason to the active-session error handler', () => {
+		const showSessionError = vi.fn();
+		const eventHandlers = handlers({ activeSessionId: 'ses-error', showSessionError });
+
+		eventHandlers['session:error']({
+			payload: { sessionId: 'ses-error', error: '网络请求超时' },
+		} as never);
+
+		expect(showSessionError).toHaveBeenCalledWith('ses-error', '网络请求超时');
 	});
 });

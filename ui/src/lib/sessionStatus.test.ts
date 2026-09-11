@@ -6,6 +6,7 @@ import {
 	isPausedStatus,
 	statusColor,
 	statusVariant,
+	isErrorStatus,
 } from './sessionStatus.ts';
 
 describe('SESSION_STATUSES', () => {
@@ -78,5 +79,14 @@ describe('statusVariant', () => {
 	it('falls back to default for unknown statuses', () => {
 		expect(statusVariant('paused_pending')).toBe('default');
 		expect(statusVariant(undefined as any)).toBe('default');
+	});
+});
+
+describe('isErrorStatus', () => {
+	it('keeps terminal failures distinct from paused sessions', () => {
+		expect(isErrorStatus('error')).toBe(true);
+		expect(isErrorStatus('failed')).toBe(true);
+		expect(isErrorStatus('paused')).toBe(false);
+		expect(isErrorStatus('completed')).toBe(false);
 	});
 });

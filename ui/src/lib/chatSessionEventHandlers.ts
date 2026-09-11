@@ -14,7 +14,7 @@ interface ChatSessionEventContext {
 	setActiveSessionId: (sessionId: string) => void;
 	getSessionErrorId: () => string | null;
 	clearSessionError: () => void;
-	showSessionError: (sessionId: string) => void;
+	showSessionError: (sessionId: string, reason: string) => void;
 	clearAskAwaiting: (sessionId: string) => void;
 	evictTerminalSessionMemory: (sessionId: string) => void;
 	clearStepBlockIds: (sessionId: string) => void;
@@ -119,9 +119,9 @@ export function createChatSessionEventHandlers({
 			loadSessions();
 		},
 		'session:error': (event) => {
-			const { sessionId } = event.payload;
+			const { sessionId, error } = event.payload;
 			if (sessionId === getActiveSessionId()) {
-				showSessionError(sessionId);
+				showSessionError(sessionId, error);
 				clearAskAwaiting(sessionId);
 				finalizeLiveMessages(sessionId);
 			}

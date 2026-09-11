@@ -3,6 +3,7 @@
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Logo from '$lib/Logo.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import SessionErrorBanner from '$lib/SessionErrorBanner.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
 	import { groupConversationMessages } from '$lib/conversationTimeline.ts';
@@ -13,6 +14,7 @@
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
 		activeSessionError = false,
+		sessionErrorReason = '',
 		showContinueButton = false,
 		continueDisabled = false,
 		continueBusy = false,
@@ -86,6 +88,9 @@
 			{/if}
 		{/each}
 	</div>
+	{#if activeSessionError}
+		<SessionErrorBanner reason={sessionErrorReason} />
+	{/if}
 	{#if showContinueButton && !continueDisabled}
 		<div class="continue-action" in:fly={{ y: 6, duration: 240 }}>
 			<MaterialButton
@@ -101,6 +106,10 @@
 			</MaterialButton>
 		</div>
 	{/if}
+{/if}
+
+{#if activeSessionError && messages.length === 0}
+	<SessionErrorBanner reason={sessionErrorReason} />
 {/if}
 
 {#if awaitingBackground && !activeSessionError}

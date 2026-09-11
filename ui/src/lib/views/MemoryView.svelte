@@ -7,6 +7,7 @@
 		formatMessageTime,
 		addNotification,
 		activeSessionIdStore,
+		getSessionErrorReason,
 		resumeTargetStore,
 	} from '$lib/stores.ts';
 	import {
@@ -15,7 +16,7 @@
 		updateSessionMessages,
 	} from '$lib/sessionMessages.ts';
 	import { restoreSessionLlmUsage, restoreSessionTokenStats } from '$lib/sessionUsage.ts';
-	import { statusVariant } from '$lib/sessionStatus.ts';
+	import { isErrorStatus, statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
@@ -270,7 +271,12 @@
 	/** @param {MemorySession} session */
 	async function resumeSession(session) {
 		try {
-			await invoke('reopen_session', { sessionId: session.id });
+			const wasError = isErrorStatus(session.status);
+			// Opening an errored conversation is read-only. Reopening it here used
+			// to change the in-memory status to Paused before the chat could render,
+			// which hid the actual failure state. Continue/retry performs the
+			// explicit transition when the user asks for it.
+			if (!wasError) await invoke('reopen_session', { sessionId: session.id });
 			const result = await invoke('get_session_for_resume', { sessionId: session.id });
 			updateSessionMessages(session.id, (existing) =>
 				mergeLiveStreaming(buildResumeMessages(result), existing),
@@ -281,7 +287,9 @@
 				sessionId: session.id,
 				summary: session.input_text,
 				title: session.title,
-				wasError: session.status === 'error' || session.status === 'failed',
+				status: result.session?.status || session.status,
+				wasError,
+				errorReason: wasError ? getSessionErrorReason(session.id) : '',
 			});
 			await goto('/');
 		} catch (e) {

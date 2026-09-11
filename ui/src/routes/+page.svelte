@@ -12,7 +12,7 @@
 		shouldResubmitOriginalUser,
 		shouldShowContinueButton,
 	} from '$lib/continueSession.ts';
-	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
+	import { isBusyStatus, isErrorStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
 	import { createChatConfirmationEventHandlers } from '$lib/chatConfirmationEventHandlers.ts';
@@ -42,6 +42,9 @@
 		addNotification,
 		resumeTargetStore,
 		activeSessionIdStore,
+		rememberSessionError,
+		forgetSessionError,
+		getSessionErrorReason,
 		updateModelState,
 		modelStateStore,
 		refreshActions,
@@ -76,7 +79,10 @@
 	} from '$lib/chatScroll.ts';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
-	import { closeContextMenu as closeGlobalContextMenu, openContextMenuAt } from '$lib/contextMenu.ts';
+	import {
+		closeContextMenu as closeGlobalContextMenu,
+		openContextMenuAt,
+	} from '$lib/contextMenu.ts';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -694,8 +700,7 @@
 				if (
 					!prevSession ||
 					prevSession.status === 'completed' ||
-					prevSession.status === 'error' ||
-					prevSession.status === 'failed'
+					isErrorStatus(prevSession.status)
 				) {
 					evictTerminalSessionMemory(prevActive);
 				}
@@ -849,6 +854,7 @@
 
 	let activeSessionError = $state(false);
 	let sessionErrorId = /** @type {string | null} */ ($state(null));
+	let sessionErrorReason = $state('');
 	let continuePending = $state(false);
 	const showContinueButton = $derived(
 		!!activeSessionId && shouldShowContinueButton(messages, activeSessionError),
@@ -866,6 +872,7 @@
 		if (sessionErrorId && activeSessionId !== sessionErrorId) {
 			sessionErrorId = null;
 			activeSessionError = false;
+			sessionErrorReason = '';
 		}
 	});
 
@@ -1034,6 +1041,29 @@
 	// stays mounted while other tabs are open, so this runs both at mount and
 	// whenever the store changes afterwards.
 	/** @param {any} resumeTarget */
+	function retainErroredSession(resumeTarget) {
+		if (!resumeTarget?.sessionId) return;
+		const existing = sessions.find((session) => session.id === resumeTarget.sessionId);
+		if (existing) {
+			sessions = sessions.map((session) =>
+				session.id === resumeTarget.sessionId ? { ...session, status: 'error' } : session,
+			);
+		} else {
+			sessions = [
+				...sessions,
+				{
+					id: resumeTarget.sessionId,
+					input: resumeTarget.summary || '',
+					input_text: resumeTarget.summary || '',
+					title: resumeTarget.title || null,
+					status: 'error',
+				},
+			];
+		}
+		sessionStore.set(sessions);
+	}
+
+	/** @param {any} resumeTarget */
 	function processResumeTarget(resumeTarget) {
 		if (resumeTarget && resumeTarget.sessionId) {
 			// Opening a reviewed conversation abandons any pending fresh-start
@@ -1061,12 +1091,16 @@
 					evictTerminalSessionMemory(prevActive);
 				}
 			}
-			// If this session was errored when reviewed, show the continue button.
-			// reopen_session already set it to Paused, but we still want the user
-			// to see the option to retry the failed step.
+			// Opening an errored session is read-only. Preserve the error state and
+			// show the reason instead of silently converting it to Paused.
 			if (resumeTarget.wasError) {
 				sessionErrorId = resumeTarget.sessionId;
 				activeSessionError = true;
+				sessionErrorReason =
+					resumeTarget.errorReason ||
+					getSessionErrorReason(resumeTarget.sessionId) ||
+					'本次会话因错误停止，暂未收到更具体的原因。';
+				retainErroredSession(resumeTarget);
 			}
 			// Defer clearing so it survives rapid remounts during init.
 			setTimeout(() => resumeTargetStore.set(null), 0);
@@ -1142,12 +1176,17 @@
 						},
 						getSessionErrorId: () => sessionErrorId,
 						clearSessionError: () => {
+							const previousErrorId = sessionErrorId;
 							sessionErrorId = null;
 							activeSessionError = false;
+							sessionErrorReason = '';
+							if (previousErrorId) forgetSessionError(previousErrorId);
 						},
-						showSessionError: (sessionId) => {
+						showSessionError: (sessionId, reason) => {
 							sessionErrorId = sessionId;
 							activeSessionError = true;
+							sessionErrorReason = reason;
+							rememberSessionError(sessionId, reason);
 						},
 						clearAskAwaiting,
 						evictTerminalSessionMemory,
@@ -1303,14 +1342,28 @@
 			// Stale response guard: a newer loadSessions call superseded this one.
 			if (seq !== loadSessionsSeq) return;
 			if (result && result.sessions) {
+				const preservedErrorSession =
+					activeSessionError && activeSessionId
+						? sessions.find((session) => session.id === activeSessionId)
+						: null;
 				sessions = result.sessions;
+				if (
+					preservedErrorSession &&
+					!sessions.some((session) => session.id === activeSessionId)
+				) {
+					sessions = [...sessions, { ...preservedErrorSession, status: 'error' }];
+				}
 				sessionStore.set(sessions);
 				// The active session can be ended (removed from the executor) while
 				// this page is open — e.g. a follow-up message targeting a
 				// terminal session is dropped server-side. Drop the stale pointer
 				// so the next message starts a new session instead of hitting the
 				// same terminal branch again.
-				if (activeSessionId && !sessions.some((t) => t.id === activeSessionId)) {
+				if (
+					activeSessionId &&
+					!sessions.some((t) => t.id === activeSessionId) &&
+					!activeSessionError
+				) {
 					activeSessionId = null;
 					activeSessionIdStore.set(null);
 				}
@@ -1348,10 +1401,9 @@
 	// the app shows where you left off. Skipped when a resume target is
 	// pending, a session is already active, or the user explicitly started a
 	// fresh conversation (新对话) and no new session has been created since.
-	// Messages render as soon as `get_last_conversation` returns; the
-	// follow-up `reopen_session` (which only lets follow-up messages continue
-	// this session instead of being dropped as a terminal-session supplement) runs
-	// afterwards without blocking the UI.
+	// Messages render as soon as `get_last_conversation` returns. Non-error
+	// sessions still use `reopen_session` afterwards so follow-up messages can
+	// continue; errored sessions remain read-only until Continue is requested.
 	/** @param {any} resumeTarget */
 	async function restoreLastConversation(resumeTarget) {
 		if (
@@ -1387,7 +1439,7 @@
 		// Paused, resurrecting an ended session). It stays reachable via the
 		// history page; the window starts blank instead.
 		if (last.session.status === 'completed') return;
-		const wasError = last.session.status === 'error' || last.session.status === 'failed';
+		const wasError = isErrorStatus(last.session.status);
 		updateSessionMessages(last.session.id, (existing) =>
 			mergeLiveStreaming(buildResumeMessages(last), existing),
 		);
@@ -1398,9 +1450,17 @@
 		if (wasError) {
 			sessionErrorId = last.session.id;
 			activeSessionError = true;
+			sessionErrorReason =
+				getSessionErrorReason(last.session.id) ||
+				'本次会话因错误停止，暂未收到更具体的原因。';
+			retainErroredSession({
+				sessionId: last.session.id,
+				summary: last.session.input_text,
+				title: last.session.title,
+			});
 		}
 		try {
-			await invoke('reopen_session', { sessionId: last.session.id });
+			if (!wasError) await invoke('reopen_session', { sessionId: last.session.id });
 		} catch (e) {
 			logger.warn('+page', 'reopen_session error', e);
 		}
@@ -1526,6 +1586,7 @@
 	/** @param {any} session */
 	function sessionStatusLabel(session) {
 		if (session.status === 'running') return '运行中';
+		if (isErrorStatus(session.status)) return '错误';
 		if (
 			session.status === 'paused' &&
 			Object.values(actionsById).some(
@@ -1608,6 +1669,7 @@
 				{awaitingBackground}
 				{awaitingBackgroundCount}
 				{activeSessionError}
+				{sessionErrorReason}
 				{showContinueButton}
 				{continueDisabled}
 				continueBusy={continuePending}
@@ -1628,8 +1690,7 @@
 					title="返回底部"
 					icon="arrowDown"
 					onclick={jumpToBottom}
-				>
-				</MaterialIconButton>
+				></MaterialIconButton>
 			</div>
 		{/if}
 	</div>
