@@ -512,7 +512,11 @@
 		box-shadow: none;
 	}
 	.tool-card.embedded :global(.md-collapsible-header) {
-		min-height: 32px;
+		/* The parent ChatBubble owns the surface padding. Removing the nested
+		 * inset keeps a collapsed tool call on the same text rail as a chat
+		 * bubble, while its icon and secondary edge retain the distinction. */
+		min-height: 28px;
+		padding: 0;
 	}
 	.tool-card :global(.md-collapsible-header) {
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm) var(--md-sys-space-xs)

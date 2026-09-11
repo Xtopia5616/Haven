@@ -107,11 +107,13 @@
 
 <style>
 	.activity-group {
-		width: 100%;
+		width: var(--md-sys-chat-agent-max-width);
+		max-width: var(--md-sys-chat-agent-max-width);
+		margin-right: auto;
 		box-sizing: border-box;
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
+		border-radius: var(--md-sys-shape-large);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-surface-container-low) 72%,
@@ -132,8 +134,8 @@
 		);
 	}
 	.activity-group :global(.md-collapsible-header) {
-		min-height: 30px;
-		padding: var(--md-sys-space-2xs) var(--md-sys-space-xs);
+		min-height: 28px;
+		padding: var(--md-sys-space-2xs) 0;
 	}
 	.activity-status {
 		display: inline-flex;
@@ -175,7 +177,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-2xs) var(--md-sys-space-2xs);
+		padding: var(--md-sys-space-sm) 0 var(--md-sys-space-xs);
 	}
 	@keyframes activity-pulse {
 		0%,
@@ -190,6 +192,8 @@
 	}
 	@media (max-width: 640px) {
 		.activity-group {
+			width: 100%;
+			max-width: 100%;
 			padding-inline: var(--md-sys-space-2xs);
 		}
 		.activity-meta {
