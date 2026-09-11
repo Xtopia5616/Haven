@@ -486,6 +486,11 @@
 html,
 body {
 	height: 100%;
+	/* Keep readable UI text selectable across every workspace. Interactive
+	 * controls and drag surfaces opt out locally where selection would compete
+	 * with their gesture. */
+	user-select: text;
+	-webkit-user-select: text;
 }
 
 body {

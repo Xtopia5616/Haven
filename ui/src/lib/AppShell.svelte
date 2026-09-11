@@ -5,6 +5,7 @@
 	import WorkspaceNav from './WorkspaceNav.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import GlobalContextMenu from './GlobalContextMenu.svelte';
 	import { dragScroll } from '$lib/dragScroll.ts';
 
 	/**
@@ -68,6 +69,7 @@
 		onCancel={onCancelRecording}
 	/>
 	<NotificationToast />
+	<GlobalContextMenu />
 </div>
 
 <style>

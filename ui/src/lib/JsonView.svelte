@@ -252,7 +252,6 @@
 		background: none;
 		border: none;
 		cursor: pointer;
-		user-select: none;
 	}
 	.jv-container:not(:disabled):hover,
 	.jv-leaf:hover {

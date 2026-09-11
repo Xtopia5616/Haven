@@ -121,3 +121,4 @@
 - [0122：工具媒体请求统一入口](0122-unified-tool-media-entrypoints.md)
 - [0123：Agent 原生媒体工具契约](0123-agent-native-media-tool-contract.md)
 - [0124：媒体推理用量与 Agent 缓存率边界](0124-media-usage-cache-boundary.md)
+- [0125：UI 全局文字选择与右键回退菜单](0125-ui-global-text-selection-context-menu.md)

@@ -122,7 +122,6 @@
 		gap: var(--md-sys-space-md);
 		padding: var(--md-sys-space-md);
 		cursor: pointer;
-		user-select: none;
 	}
 	.card-info {
 		flex: 1;
