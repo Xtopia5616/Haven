@@ -389,7 +389,7 @@ impl Default for LlmConfig {
         Self {
             providers: Vec::new(),
             roles: Vec::new(),
-            max_total_duration_secs: 180,
+            max_total_duration_secs: 600,
             stream_idle_timeout_secs: 20,
             retry_max_retries: 2,
             retry_base_secs: 2,
@@ -750,7 +750,7 @@ impl Default for RouterConfig {
             image_model: ModelEndpoint::default(),
             audio_model: ModelEndpoint::default(),
             embedding_model: ModelEndpoint::default(),
-            max_total_duration_secs: 180,
+            max_total_duration_secs: 600,
             stream_idle_timeout_secs: 20,
             retry_max_retries: 2,
             retry_base_secs: 2,
@@ -918,5 +918,11 @@ mod tests {
         };
         let config = llm.materialize(None, None);
         assert_eq!(config.retry_max_retries, 4);
+    }
+
+    #[test]
+    fn default_total_duration_is_ten_minutes() {
+        assert_eq!(LlmConfig::default().max_total_duration_secs, 600);
+        assert_eq!(RouterConfig::default().max_total_duration_secs, 600);
     }
 }
