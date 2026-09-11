@@ -33,6 +33,7 @@
 		received = false,
 		resolved = null,
 		actionId = null,
+		compact = false,
 		showFallbackIntent = false,
 		onContextMenu = null,
 		onAskSelectionChange = null,
@@ -304,6 +305,7 @@
 	class:assistant={role === 'assistant' || isPeerKickoff}
 	class:thinking={msgType === 'thought' || msgType === 'reasoning'}
 	class:tool={msgType === 'tool' || msgType === 'ask'}
+	class:compact
 	class:streaming
 	role="article"
 	oncontextmenu={handleContextMenu}
@@ -468,6 +470,21 @@
 		max-width: 100%;
 		/* Tool calls use the same outer surface as assistant messages. The
 		 * nested result component only owns the header and details. */
+	}
+	.bubble.compact {
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		box-shadow: none;
+	}
+	.bubble.compact.assistant:not(.thinking) {
+		background: transparent;
+		border-color: transparent;
+	}
+	.bubble.compact .bubble-header {
+		margin-bottom: var(--md-sys-space-xs);
+	}
+	.bubble.compact .bubble-role {
+		font-size: var(--md-sys-typescale-label-small-size);
 	}
 	.bubble.user {
 		margin-left: auto;

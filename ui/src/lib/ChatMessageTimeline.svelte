@@ -4,6 +4,8 @@
 	import Logo from '$lib/Logo.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
+	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
+	import { groupConversationMessages } from '$lib/conversationTimeline.ts';
 
 	let {
 		messages = [],
@@ -20,6 +22,8 @@
 		onAskSubmit = () => {},
 		onContinue = () => {},
 	} = $props();
+
+	let timelineItems = $derived(groupConversationMessages(messages));
 </script>
 
 {#if messages.length === 0}
@@ -36,35 +40,50 @@
 	</div>
 {:else}
 	<div class="message-list" role="log" aria-label="会话消息">
-		{#each messages as msg, index (msg.id)}
-			{@const showFallbackIntent =
-				msg.type === 'tool' &&
-				(msg.showFallbackIntent ?? !hasToolPreambleBefore(messages, index))}
-			<ChatBubble
-				role={msg.role}
-				content={msg.content}
-				type={msg.type}
-				voice={msg.voice}
-				time={msg.time}
-				streaming={!!msg.streaming}
-				toolName={msg.toolName ?? ''}
-				unrecoverable={!!msg.unrecoverable}
-				outcome={msg.outcome ?? null}
-				messageId={msg.id}
-				stepNumber={msg.stepNumber}
-				toolArgs={msg.toolArgs ?? null}
-				attachments={msg.attachments}
-				{showFallbackIntent}
-				options={msg.options ?? []}
-				awaiting={msg.awaiting ?? false}
-				received={msg.received ?? false}
-				resolved={msg.resolved ?? null}
-				actionId={msg.actionId ?? null}
-				{onContextMenu}
-				{onAskSelectionChange}
-				{onIgnore}
-				{onAskSubmit}
-			/>
+		{#each timelineItems as item (item.kind === 'activity' ? item.id : item.message.id)}
+			{#if item.kind === 'activity'}
+				<ConversationActivityGroup
+					entries={item.entries}
+					streaming={item.streaming}
+					toolCount={item.toolCount}
+					stepCount={item.stepCount}
+					allMessages={messages}
+					{onContextMenu}
+					{onAskSelectionChange}
+					{onIgnore}
+					{onAskSubmit}
+				/>
+			{:else}
+				{@const msg = item.message}
+				{@const showFallbackIntent =
+					msg.type === 'tool' &&
+					(msg.showFallbackIntent ?? !hasToolPreambleBefore(messages, item.index))}
+				<ChatBubble
+					role={msg.role}
+					content={msg.content}
+					type={msg.type}
+					voice={msg.voice}
+					time={msg.time}
+					streaming={!!msg.streaming}
+					toolName={msg.toolName ?? ''}
+					unrecoverable={!!msg.unrecoverable}
+					outcome={msg.outcome ?? null}
+					messageId={msg.id}
+					stepNumber={msg.stepNumber}
+					toolArgs={msg.toolArgs ?? null}
+					attachments={msg.attachments}
+					{showFallbackIntent}
+					options={msg.options ?? []}
+					awaiting={msg.awaiting ?? false}
+					received={msg.received ?? false}
+					resolved={msg.resolved ?? null}
+					actionId={msg.actionId ?? null}
+					{onContextMenu}
+					{onAskSelectionChange}
+					{onIgnore}
+					{onAskSubmit}
+				/>
+			{/if}
 		{/each}
 	</div>
 	{#if showContinueButton && !continueDisabled}
