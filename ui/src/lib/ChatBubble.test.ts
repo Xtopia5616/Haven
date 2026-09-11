@@ -127,15 +127,51 @@ describe('ChatBubble', () => {
 		expect(bubble.classList.contains('assistant')).toBe(true);
 	});
 
-	it('paints streamed assistant text immediately without waiting for Markdown', () => {
+	it('renders Markdown while assistant text is streaming', async () => {
 		const { container } = render(
 			ChatBubble,
-			base({ role: 'assistant', content: '第一段\n第二段', streaming: true }),
+			base({
+				role: 'assistant',
+				content: '**第一段**\n\n- 第二段',
+				streaming: true,
+			}),
 		);
 
-		expect(container.querySelector('.streaming-preview')?.textContent).toContain(
-			'第一段\n第二段',
+		await waitFor(() => expect(container.querySelector('.md-content')).toBeTruthy());
+		expect(container.querySelector('.md-content strong')?.textContent).toBe('第一段');
+		expect(container.querySelector('.md-content li')?.textContent).toBe('第二段');
+		expect(container.querySelector('.caret')).toBeTruthy();
+	});
+
+	it('updates the Markdown structure as streamed content grows', async () => {
+		const { container, rerender } = render(
+			ChatBubble,
+			base({ role: 'assistant', content: '第一段', streaming: true }),
 		);
+
+		await waitFor(() => expect(container.querySelector('.md-content')).toBeTruthy());
+		expect(container.querySelector('strong')).toBeNull();
+
+		await rerender({ content: '**第一段**' });
+		await waitFor(() => expect(container.querySelector('.md-content strong')).toBeTruthy());
+	});
+
+	it('replaces the streaming Markdown code block with the final highlighted block', async () => {
+		const { container, rerender } = render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: '```js\nconst answer = 42;\n```',
+				streaming: true,
+			}),
+		);
+
+		await waitFor(() => expect(container.querySelector('.md-code-streaming')).toBeTruthy());
+		expect(container.querySelector('.md-code-wrap')).toBeNull();
+
+		await rerender({ streaming: false });
+		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());
+		expect(container.querySelector('.md-code-copy')).toBeTruthy();
 	});
 
 	it('does not apply any pending class to finalized assistant bubbles', () => {

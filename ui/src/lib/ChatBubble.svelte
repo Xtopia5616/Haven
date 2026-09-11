@@ -72,9 +72,9 @@
 	// L11: the component may be destroyed while onMount's dynamic imports are
 	// still resolving; guard state writes against an unmounted component.
 	let mounted = true;
-	// Shared renderer resolution. Markdown/highlighting is intentionally kept
-	// off the hot streaming path: a lightweight text preview paints every
-	// chunk immediately, then the completed answer is upgraded to Markdown.
+	// Shared renderer resolution. Markdown is rendered during streaming so the
+	// answer keeps its normal structure; the renderer defers code highlighting
+	// and its toolbar until the stream is complete.
 	let rendererReady = false;
 	let rendererLoading = false;
 
@@ -271,33 +271,36 @@
 	// until the shared renderer is loaded and this bubble is still mounted.
 	// Only assistant text bubbles render markdown; everything else (user,
 	// thought, reasoning, tool, ask, supplement) skips the shared instance
-	// entirely. Streaming assistant text stays as a cheap escaped text preview
-	// so the UI cannot fall behind while markdown/highlighting reparses a long
-	// answer. The final state is rendered with the shared Markdown instance.
+	// entirely. The shared renderer's streaming mode keeps code highlighting
+	// off this path while still rendering the rest of the Markdown live.
 	$effect(() => {
-		if (!mounted || !rendersMarkdown || streaming) return;
+		if (!mounted || !rendersMarkdown) return;
+		// Read the prop in the effect itself so the streaming → final transition
+		// always schedules the upgraded render, even though the actual work lives
+		// in renderNow().
+		const isStreaming = !!streaming;
 		if (!rendererReady) {
-			// Renderer still loading — show plain text with the caret, then
-			// render once the shared instance resolves.
+			// Renderer still loading — show plain text with the caret, then render
+			// the current content once the shared instance resolves.
 			if (!rendererLoading) {
 				rendererLoading = true;
 				getMarkdownRenderer().then(() => {
 					if (!mounted) return;
 					rendererReady = true;
-					if (!streaming) renderNow();
+					renderNow();
 				});
 			}
 			mdHtml = '';
 			return;
 		}
-		renderNow();
+		renderNow(isStreaming);
 	});
 
 	// Reads the current props, so it is safe to call from the renderer-load
 	// completion.
-	function renderNow() {
+	function renderNow(isStreaming = !!streaming) {
 		const text = content || '';
-		mdHtml = text ? renderMarkdown(text) : '';
+		mdHtml = text ? renderMarkdown(text, isStreaming) : '';
 	}
 </script>
 
@@ -386,16 +389,14 @@
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if rendersMarkdown}
-			{#if streaming}
-				<p class="streaming-preview">
-					{content}{#if content}<span class="caret"></span>{/if}
-				</p>
-			{:else if mdHtml}
+			{#if mdHtml}
 				<div class="md-content" class:streaming use:mdContent>
-					{@html mdHtml}
+					{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}
 				</div>
 			{:else}
-				<p>{content}</p>
+				<p>
+					{content}{#if streaming && content}<span class="caret"></span>{/if}
+				</p>
 			{/if}
 		{:else}
 			{#if attachments && attachments.length > 0}
@@ -580,11 +581,6 @@
 		opacity: 0.88;
 	}
 	.bubble-content > p {
-		margin: 0;
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-	}
-	.streaming-preview {
 		margin: 0;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
