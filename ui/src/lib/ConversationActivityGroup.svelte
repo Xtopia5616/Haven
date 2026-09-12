@@ -142,7 +142,7 @@
 			var(--md-sys-color-surface-container-low)
 		);
 		color: var(--md-sys-color-on-surface);
-		box-shadow: var(--md-sys-elevation-1);
+		box-shadow: none;
 	}
 	.activity-group.is-streaming {
 		border-color: color-mix(
