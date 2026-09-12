@@ -1010,6 +1010,27 @@ describe('ToolResultCard audio and input', () => {
 		expect(screen.getByText('12 字')).toBeTruthy();
 	});
 
+	it('renders recorded media identity and next representation', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'audio',
+			content: JSON.stringify({
+				operation: 'record',
+				asset_id: 'asset-0123456789abcdef0123456789abcdef',
+				media: {
+					asset_id: 'asset-0123456789abcdef0123456789abcdef',
+					representation: 'transcript',
+					available_representations: ['managed_file_ref', 'transcript'],
+					recommended_next: null,
+				},
+				transcript: 'hello',
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('资产：asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
+		expect(screen.getByText('表示：transcript')).toBeTruthy();
+		expect(screen.getByText('可用表示：managed_file_ref、transcript')).toBeTruthy();
+	});
+
 	it('renders input results with the action and coordinates', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'input',

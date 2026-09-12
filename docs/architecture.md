@@ -361,11 +361,12 @@ tool usage 进入 ReAct。`haven-llm::media` 只保留 modality、provider conte
 MediaPlan 投影和 vision 等 provider-neutral 原语；`haven-agent` ingress 只负责持久化原始输入。
 本次破坏性收敛删除旧的 `MediaGateway` 与隐式 eager preprocessing，详见 ADR 0130。
 
-工具的一次性图片理解统一调用 `LlmRouter::analyze_image`；该入口在
-`haven-llm` 内完成 capability planning、base64 与 canonical image part 构造。工具层
-不再各自拼装 provider-facing 图片消息。`media` 的音频也通过
-`LlmRouter::transcribe_audio` 提供转写；媒体派生结果携带 canonical `MediaInput`，不再
-以宿主路径作为跨工具引用（ADR 0122、0123）。
+工具的一次性图片理解由共享 `MediaTool` 编排，并调用
+`LlmRouter::analyze_image` 这一 provider-wire adapter；后者只负责将已经读取的
+bytes 规范化为一次 vision 请求，不负责 asset lookup、工具权限、生命周期或跨 provider
+fallback。`media` 的音频同样由 `MediaTool` 统一处理专用 STT、超时、置信度和
+`LlmRouter::transcribe_audio` fallback；媒体派生结果携带 canonical `MediaInput`，不再
+以宿主路径作为跨工具引用（ADR 0122、0123、0130）。
 
 ### 3.3 agent 对 input 的依赖（2026-08-18 清理）
 

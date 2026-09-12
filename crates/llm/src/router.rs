@@ -534,9 +534,12 @@ impl LlmRouter {
         }
     }
 
-    /// Analyze an image through the canonical media planner and the selected
-    /// vision role. Tools and gateways should use this entry point instead of
-    /// constructing base64 image parts themselves.
+    /// Provider-wire adapter for one already-read image payload.
+    ///
+    /// This is intentionally not a model-facing media orchestration entry
+    /// point: `haven-tools::builtin::media::MediaTool` owns asset lookup,
+    /// operation policy, lifecycle, fallback and structured results. This
+    /// method only routes one image request through the provider adapter.
     pub async fn analyze_image(
         &self,
         bytes: &[u8],

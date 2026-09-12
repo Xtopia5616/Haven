@@ -10,8 +10,8 @@
 use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_requirements};
 use crate::types::TranscriptRecord;
 use haven_common::media::{
-    CapabilityProfile, MediaInput, MediaInputStrategy, MediaPlan, MediaProjectionMode,
-    build_media_plan, legacy_attachment_to_media_input,
+    CapabilityProfile, MediaInput, MediaInputStrategy, MediaModality, MediaPlan,
+    MediaProjectionMode, build_media_plan, legacy_attachment_to_media_input,
 };
 use haven_common::types::{CanonicalMessage, ContentPart, MessageAttachment};
 
@@ -213,10 +213,20 @@ fn media_inputs_for_state(
     state: &ReActState,
     messages: &[CanonicalMessage],
 ) -> Vec<Vec<Option<MediaInput>>> {
+    let mut compact_inputs: Option<Vec<MediaInput>> = None;
+    let mut compacted_messages: Option<Vec<CanonicalMessage>> = None;
     let mut event_inputs: Vec<Vec<MediaInput>> = Vec::new();
     for event in &state.events {
         match event {
-            TranscriptRecord::CompactSummary { .. } => event_inputs.clear(),
+            TranscriptRecord::CompactSummary {
+                compacted,
+                media_inputs,
+                ..
+            } => {
+                compact_inputs = Some(media_inputs.clone());
+                compacted_messages = Some(compacted.clone());
+                event_inputs.clear();
+            }
             TranscriptRecord::UserInject {
                 media_inputs,
                 attachments,
@@ -230,48 +240,192 @@ fn media_inputs_for_state(
                 } else {
                     media_inputs.clone()
                 };
-                if !inputs.is_empty() {
-                    event_inputs.push(inputs);
-                }
+                // Keep empty groups: source-tagged canonical user messages
+                // consume one UserInject per message, even when that inject
+                // has no attachments. Dropping the empty group would shift
+                // every later asset group by one.
+                event_inputs.push(inputs);
             }
             _ => {}
         }
     }
 
+    // The live state keeps raw parts for the current request, while the
+    // CompactSummary event keeps the same messages with raw parts replaced by
+    // identity-bearing markers. Use those markers to reconnect retained raw
+    // parts to their original assets, including source-tagged messages that
+    // no longer have a corresponding UserInject after compaction.
+    let compact_message_inputs = match (compacted_messages.as_deref(), compact_inputs.as_deref()) {
+        (Some(compacted), Some(inputs)) => compacted
+            .iter()
+            .map(|message| snapshot_media_inputs_for_message(message, inputs))
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+
     let mut next_event = 0;
     messages
         .iter()
-        .map(|message| {
-            let media_part_count = message
-                .content
-                .iter()
-                .filter(|part| {
-                    matches!(part, ContentPart::Image { .. } | ContentPart::Audio { .. })
-                })
-                .count();
-            let durable = if media_part_count == 0 {
+        .enumerate()
+        .map(|(message_index, message)| {
+            let is_user = message.role == haven_common::types::CanonicalRole::User;
+            let durable = if let Some(compact) = compact_message_inputs.get(message_index) {
+                Some(compact.as_slice())
+            } else if !is_user {
                 None
+            } else if message.source.is_some() {
+                // A user injection consumes its event group even when all of
+                // its attachments were projected to derived text. This is
+                // the part the old raw-count cursor got wrong.
+                let result = event_inputs.get(next_event);
+                next_event += 1;
+                result.map(Vec::as_slice)
+            } else if compact_inputs.is_some() {
+                // Legacy compact roots may not have identity-bearing
+                // per-message markers. Keep a conservative modality-only
+                // fallback for those roots.
+                compact_inputs.as_deref()
             } else {
                 let result = event_inputs.get(next_event);
                 next_event += 1;
-                result
+                result.map(Vec::as_slice)
             };
-            let mut next_input = 0;
+            let mut local_used = std::collections::HashSet::new();
             message
                 .content
                 .iter()
                 .map(|part| {
-                    if matches!(part, ContentPart::Image { .. } | ContentPart::Audio { .. }) {
-                        let input = durable.and_then(|inputs| inputs.get(next_input)).cloned();
-                        next_input += 1;
-                        input
-                    } else {
-                        None
-                    }
+                    let modality = match part {
+                        ContentPart::Image { .. } => Some(MediaModality::Image),
+                        ContentPart::Audio { .. } => Some(MediaModality::Audio),
+                        ContentPart::Text(_) => None,
+                    }?;
+                    let inputs = durable?;
+                    let index = inputs.iter().enumerate().find_map(|(index, input)| {
+                        if local_used.contains(&index) || !media_input_matches_part(input, modality)
+                        {
+                            return None;
+                        }
+                        local_used.insert(index);
+                        Some(index)
+                    })?;
+                    inputs
+                        .get(index)
+                        .cloned()
+                        .map(|input| restore_raw_part(input, part))
                 })
                 .collect()
         })
         .collect()
+}
+
+fn snapshot_media_inputs_for_message(
+    message: &CanonicalMessage,
+    inputs: &[MediaInput],
+) -> Vec<MediaInput> {
+    let mut used = std::collections::HashSet::new();
+    message
+        .content
+        .iter()
+        .filter_map(|part| {
+            let ContentPart::Text(text) = part else {
+                return None;
+            };
+            let (modality, asset_id) = snapshot_media_marker_info(text)?;
+            let index = asset_id
+                .as_deref()
+                .and_then(|asset_id| {
+                    inputs.iter().enumerate().find_map(|(index, input)| {
+                        (input.asset.asset_id == asset_id && used.insert(index)).then_some(index)
+                    })
+                })
+                .or_else(|| {
+                    inputs.iter().enumerate().find_map(|(index, input)| {
+                        if used.contains(&index) || !media_input_matches_part(input, modality) {
+                            return None;
+                        }
+                        used.insert(index);
+                        Some(index)
+                    })
+                })?;
+            inputs.get(index).cloned()
+        })
+        .collect()
+}
+
+fn snapshot_media_marker_info(text: &str) -> Option<(MediaModality, Option<String>)> {
+    let modality = if text.starts_with("[managed image omitted from snapshot;") {
+        MediaModality::Image
+    } else if text.starts_with("[managed audio omitted from snapshot;") {
+        MediaModality::Audio
+    } else {
+        return None;
+    };
+    let asset_id = text
+        .split_once("asset_id=")
+        .and_then(|(_, value)| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    Some((modality, asset_id))
+}
+
+fn restore_raw_part(mut input: MediaInput, part: &ContentPart) -> MediaInput {
+    let (kind, media_type, data) = match part {
+        ContentPart::Image {
+            media_type, data, ..
+        } => (
+            haven_common::media::MediaRepresentationKind::RawImage,
+            media_type,
+            data,
+        ),
+        ContentPart::Audio {
+            media_type, data, ..
+        } => (
+            haven_common::media::MediaRepresentationKind::RawAudio,
+            media_type,
+            data,
+        ),
+        ContentPart::Text(_) => return input,
+    };
+    let payload = haven_common::media::MediaRepresentationPayload::InlineData {
+        media_type: media_type.clone(),
+        data: data.clone(),
+    };
+    if let Some(representation) = input
+        .representations
+        .iter_mut()
+        .find(|representation| representation.representation == kind)
+    {
+        representation.payload = payload;
+        representation.availability =
+            haven_common::media::MediaRepresentationAvailability::Available;
+    } else {
+        input
+            .representations
+            .push(haven_common::media::MediaRepresentation::available(
+                kind,
+                haven_common::media::MediaProvenance::Original,
+                payload,
+            ));
+    }
+    // The current canonical part is authoritative for this request. A
+    // snapshot may have converted a raw preference into managed_file_ref only
+    // to avoid persisting bytes; restore the raw preference in the ephemeral
+    // request input while retaining the durable asset identity.
+    input.preferred_representation = None;
+    input
+}
+
+fn media_input_matches_part(input: &MediaInput, modality: MediaModality) -> bool {
+    input.asset.media_type.starts_with(match modality {
+        MediaModality::Image => "image/",
+        MediaModality::Audio => "audio/",
+        _ => return false,
+    }) || input
+        .representations
+        .iter()
+        .any(|representation| representation.representation.raw_modality() == Some(modality))
 }
 
 fn attachment_from_content_part(part: &ContentPart) -> Option<MessageAttachment> {
@@ -470,6 +624,115 @@ mod tests {
 
         let (_, plan) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
 
+        assert_eq!(plan.projections[0].asset_id, asset_id);
+    }
+
+    #[test]
+    fn mixed_derived_then_raw_media_keeps_the_later_audio_identity() {
+        let image_id = "asset-11111111111111111111111111111111";
+        let audio_id = "asset-22222222222222222222222222222222";
+        let mut image = MessageAttachment::new("image/png", "aW1hZ2U=");
+        image.asset_id = Some(image_id.into());
+        image.path = Some(r"C:\haven\uploads\image.png".into());
+        image.preferred_representation =
+            Some(haven_common::media::MediaRepresentationKind::OcrText);
+        image
+            .representations
+            .push(haven_common::media::MediaRepresentation::available(
+                haven_common::media::MediaRepresentationKind::OcrText,
+                haven_common::media::MediaProvenance::Derived {
+                    operation: haven_common::media::MediaDerivation::Ocr,
+                    provider: None,
+                    source_kind: Some(haven_common::media::MediaRepresentationKind::RawImage),
+                },
+                haven_common::media::MediaRepresentationPayload::Text("文字".into()),
+            ));
+        let mut audio = MessageAttachment::new("audio/wav", "YXVkaW8=");
+        audio.asset_id = Some(audio_id.into());
+        audio.path = Some(r"C:\haven\uploads\audio.wav".into());
+
+        let events = vec![
+            TranscriptRecord::UserInject {
+                step_number: 1,
+                source: haven_common::types::InjectSource::FollowUp,
+                text: "先读图".into(),
+                media_inputs: vec![legacy_attachment_to_media_input(&image)],
+                attachments: Vec::new(),
+                message_id: Some("msg-11111111111111111111111111111111".into()),
+            },
+            TranscriptRecord::UserInject {
+                step_number: 2,
+                source: haven_common::types::InjectSource::FollowUp,
+                text: "再听音频".into(),
+                media_inputs: vec![legacy_attachment_to_media_input(&audio)],
+                attachments: Vec::new(),
+                message_id: Some("msg-22222222222222222222222222222222".into()),
+            },
+        ];
+        let (messages, _) =
+            crate::types::project_transcript_with_strategy(&events, MediaInputStrategy::Auto);
+        assert!(matches!(messages[0].content[1], ContentPart::Text(_)));
+        assert!(matches!(messages[1].content[1], ContentPart::Audio { .. }));
+
+        let context =
+            RequestContext::from_state(&ReActState::new(events, messages, HashMap::new()), None);
+        let (_, plan) = context.with_capabilities(
+            &CapabilityProfile {
+                audio: haven_common::media::CapabilitySupport::Supported,
+                ..CapabilityProfile::default()
+            },
+            MediaInputStrategy::Auto,
+        );
+
+        assert_eq!(plan.projections.len(), 1);
+        assert_eq!(plan.projections[0].asset_id, audio_id);
+    }
+
+    #[test]
+    fn compacted_source_tagged_media_reconnects_through_snapshot_marker() {
+        let asset_id = "asset-33333333333333333333333333333333";
+        let mut attachment = MessageAttachment::new("audio/wav", "YXVkaW8=");
+        attachment.asset_id = Some(asset_id.into());
+        attachment.path = Some(r"C:\haven\uploads\recording.wav".into());
+        let input = legacy_attachment_to_media_input(&attachment);
+        let live_message = CanonicalMessage::user_with_source(
+            vec![
+                ContentPart::text("继续处理录音"),
+                ContentPart::Audio {
+                    content_type: "audio".into(),
+                    media_type: "audio/wav".into(),
+                    data: "YXVkaW8=".into(),
+                },
+            ],
+            haven_common::types::InjectSource::FollowUp,
+        );
+        let snapshot_message = crate::types::canonical_for_snapshot_with_media_inputs(
+            std::slice::from_ref(&live_message),
+            std::slice::from_ref(&input),
+        );
+        let state = ReActState::new(
+            vec![TranscriptRecord::CompactSummary {
+                compacted: snapshot_message.clone(),
+                media_inputs: vec![input.for_snapshot()],
+                summary: "older context".into(),
+                tokens_before: 100,
+                tokens_after: 20,
+                episode_id: "msg-33333333333333333333333333333333".into(),
+                degraded: false,
+            }],
+            vec![live_message],
+            HashMap::new(),
+        );
+        let context = RequestContext::from_state(&state, None);
+        let (_, plan) = context.with_capabilities(
+            &CapabilityProfile {
+                audio: haven_common::media::CapabilitySupport::Supported,
+                ..CapabilityProfile::default()
+            },
+            MediaInputStrategy::Auto,
+        );
+
+        assert_eq!(plan.projections.len(), 1);
         assert_eq!(plan.projections[0].asset_id, asset_id);
     }
 }

@@ -64,9 +64,9 @@ export function clearToolOutputPreview(stepId: string) {
 }
 
 /**
- * Ephemeral media projection diagnostics keyed by session. These describe the
- * provider request that was actually prepared; they are intentionally not
- * persisted with the transcript or snapshot.
+ * Live media-plan UI projections keyed by session. The backend also records a
+ * snapshot-safe MediaPlan event in the ReAct event authority; this bounded
+ * cache only keeps cards available while the current app run is visible.
  */
 export const mediaPlanStore = writable<Record<string, AgentMediaPlanPayload[]>>({});
 

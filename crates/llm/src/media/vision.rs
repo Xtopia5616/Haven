@@ -1,9 +1,10 @@
 //! Shared one-shot image understanding through the canonical media boundary.
 //!
-//! Callers provide bytes and a prompt; this module owns capability planning,
-//! base64 encoding and canonical content-part construction. Keeping those
-//! details here prevents tools and the ingress path from drifting into
-//! separate provider-facing implementations.
+//! Provider-wire adapter for one already-read image request. Asset lookup,
+//! tool policy, lifecycle, cross-provider fallback and structured media
+//! results belong to `haven-tools::builtin::media::MediaTool`; this module
+//! only builds the provider-neutral request and dispatches it through the
+//! selected vision role.
 
 use base64::Engine;
 use haven_common::media::{
@@ -19,9 +20,8 @@ use crate::types::{LlmError, LlmResponse};
 
 const MAX_PROMPT_FIELD_CHARS: usize = 32_000;
 
-/// Analyze one image with the same capability planner used by conversation
-/// attachments. The returned response is routed through the normal vision
-/// role, retries, rate limits and provider adapter validation.
+/// Dispatch one image request through the vision provider role. This function
+/// is a wire adapter, not an asset-aware or model-facing orchestration API.
 pub async fn analyze_image(
     router: &LlmRouter,
     bytes: &[u8],

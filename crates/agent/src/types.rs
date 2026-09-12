@@ -87,9 +87,26 @@ pub enum TranscriptRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
     },
+    /// Durable request-projection metadata. This is deliberately separate
+    /// from the canonical message: a derived transcript/OCR part is still a
+    /// media decision, not an opaque user sentence. The inputs are snapshot
+    /// safe and retain the producer-owned asset ids across compaction/resume.
+    MediaPlan {
+        step_number: u32,
+        strategy: MediaInputStrategy,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media_inputs: Vec<MediaInput>,
+        projections: Vec<haven_common::media::MediaProjection>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        notices: Vec<haven_common::media::MediaPlanNotice>,
+    },
     CompactSummary {
         #[serde(serialize_with = "serialize_snapshot_canonical")]
         compacted: Vec<CanonicalMessage>,
+        /// Snapshot-safe media metadata for raw parts represented by the
+        /// compacted canonical root.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media_inputs: Vec<MediaInput>,
         summary: String,
         tokens_before: u32,
         tokens_after: u32,
@@ -404,6 +421,10 @@ pub fn project_transcript_with_strategy(
                 }
                 canonical.push(CanonicalMessage::user_with_source(content, *source));
             }
+            TranscriptRecord::MediaPlan { .. } => {
+                // Durable diagnostics only; media plans never become model
+                // transcript text during replay.
+            }
             TranscriptRecord::CompactSummary { compacted, .. } => {
                 canonical = compacted.clone();
             }
@@ -419,10 +440,30 @@ pub(crate) fn append_media_projection(
     strategy: MediaInputStrategy,
 ) {
     let projected = crate::react::media_input_to_content_part_with_strategy(input, strategy);
-    let representation = match projected {
+    let representation = match &projected {
         ContentPart::Image { .. } => Some("raw_image"),
         ContentPart::Audio { .. } => Some("raw_audio"),
-        ContentPart::Text(_) => None,
+        ContentPart::Text(_) => {
+            crate::react::media_plan_for_inputs(std::slice::from_ref(input), strategy)
+                .projections
+                .first()
+                .map(|projection| match projection.representation {
+                    haven_common::media::MediaRepresentationKind::Transcript => "transcript",
+                    haven_common::media::MediaRepresentationKind::OcrText => "ocr_text",
+                    haven_common::media::MediaRepresentationKind::ExtractedText => "extracted_text",
+                    haven_common::media::MediaRepresentationKind::ImageDescription => {
+                        "image_description"
+                    }
+                    haven_common::media::MediaRepresentationKind::DocumentPages => "document_pages",
+                    haven_common::media::MediaRepresentationKind::TableData => "table_data",
+                    kind => match kind {
+                        haven_common::media::MediaRepresentationKind::ManagedFileRef => {
+                            "managed_file_ref"
+                        }
+                        _ => "derived",
+                    },
+                })
+        }
     };
     content.push(projected);
 
@@ -450,6 +491,18 @@ pub(crate) fn append_media_projection(
 /// projection, so the live state keeps the original image/audio parts; the
 /// durable root gets a typed text marker instead of an unbounded base64 blob.
 pub(crate) fn canonical_for_snapshot(messages: &[CanonicalMessage]) -> Vec<CanonicalMessage> {
+    canonical_for_snapshot_with_media_inputs(messages, &[])
+}
+
+/// Snapshot a canonical root while retaining the opaque identity for each
+/// raw media part. The live canonical projection intentionally has no asset
+/// field because that is provider-neutral wire data; this helper is the
+/// durable boundary where the association is restored into a safe marker.
+pub(crate) fn canonical_for_snapshot_with_media_inputs(
+    messages: &[CanonicalMessage],
+    media_inputs: &[MediaInput],
+) -> Vec<CanonicalMessage> {
+    let mut used_inputs = std::collections::HashSet::new();
     messages
         .iter()
         .cloned()
@@ -460,17 +513,89 @@ pub(crate) fn canonical_for_snapshot(messages: &[CanonicalMessage]) -> Vec<Canon
                 .filter_map(|part| match part {
                     ContentPart::Text(text) if text.starts_with("[media_plan: ") => None,
                     ContentPart::Text(text) => Some(ContentPart::Text(text)),
-                    ContentPart::Image { media_type, .. } => Some(ContentPart::text(format!(
-                        "[managed image omitted from snapshot; media_type={media_type}]"
-                    ))),
-                    ContentPart::Audio { media_type, .. } => Some(ContentPart::text(format!(
-                        "[managed audio omitted from snapshot; media_type={media_type}]"
-                    ))),
+                    ContentPart::Image { media_type, .. } => {
+                        Some(ContentPart::text(snapshot_media_marker(
+                            "image",
+                            &media_type,
+                            find_snapshot_media_input(
+                                media_inputs,
+                                &mut used_inputs,
+                                MediaModalityForPart::Image,
+                            ),
+                        )))
+                    }
+                    ContentPart::Audio { media_type, .. } => {
+                        Some(ContentPart::text(snapshot_media_marker(
+                            "audio",
+                            &media_type,
+                            find_snapshot_media_input(
+                                media_inputs,
+                                &mut used_inputs,
+                                MediaModalityForPart::Audio,
+                            ),
+                        )))
+                    }
                 })
                 .collect();
             message
         })
         .collect()
+}
+
+#[derive(Clone, Copy)]
+enum MediaModalityForPart {
+    Image,
+    Audio,
+}
+
+fn find_snapshot_media_input<'a>(
+    inputs: &'a [MediaInput],
+    used: &mut std::collections::HashSet<usize>,
+    modality: MediaModalityForPart,
+) -> Option<&'a MediaInput> {
+    inputs.iter().enumerate().find_map(|(index, input)| {
+        if used.contains(&index) || !media_input_matches_modality(input, modality) {
+            return None;
+        }
+        used.insert(index);
+        Some(input)
+    })
+}
+
+fn media_input_matches_modality(input: &MediaInput, modality: MediaModalityForPart) -> bool {
+    let media_type_matches = match modality {
+        MediaModalityForPart::Image => input.asset.media_type.starts_with("image/"),
+        MediaModalityForPart::Audio => input.asset.media_type.starts_with("audio/"),
+    };
+    media_type_matches
+        || input.representations.iter().any(|representation| {
+            representation
+                .representation
+                .raw_modality()
+                .is_some_and(|kind| {
+                    matches!(
+                        (modality, kind),
+                        (
+                            MediaModalityForPart::Image,
+                            haven_common::media::MediaModality::Image
+                        ) | (
+                            MediaModalityForPart::Audio,
+                            haven_common::media::MediaModality::Audio
+                        )
+                    )
+                })
+        })
+}
+
+fn snapshot_media_marker(label: &str, media_type: &str, input: Option<&MediaInput>) -> String {
+    let media_type = sanitize_prompt_field(media_type, 96);
+    match input {
+        Some(input) => format!(
+            "[managed {label} omitted from snapshot; asset_id={}; media_type={media_type}]",
+            sanitize_prompt_field(&input.asset.asset_id, 96)
+        ),
+        None => format!("[managed {label} omitted from snapshot; media_type={media_type}]"),
+    }
 }
 
 fn serialize_snapshot_canonical<S>(
@@ -496,11 +621,52 @@ pub(crate) fn attachment_media_inputs_for_snapshot(
         .collect()
 }
 
+/// Collect the snapshot-safe media identities carried by the current event
+/// root. A compaction boundary replaces older events, so encountering one
+/// resets the collection just like transcript projection resets canonical
+/// history.
+pub(crate) fn media_inputs_from_events(events: &[TranscriptRecord]) -> Vec<MediaInput> {
+    let mut inputs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for event in events {
+        let event_inputs: Vec<MediaInput> = match event {
+            TranscriptRecord::CompactSummary { media_inputs, .. } => {
+                inputs.clear();
+                seen.clear();
+                media_inputs.clone()
+            }
+            TranscriptRecord::UserInject {
+                media_inputs,
+                attachments,
+                ..
+            } => {
+                if media_inputs.is_empty() {
+                    attachments
+                        .iter()
+                        .map(legacy_attachment_to_media_input)
+                        .collect()
+                } else {
+                    media_inputs.clone()
+                }
+            }
+            TranscriptRecord::MediaPlan { media_inputs, .. } => media_inputs.clone(),
+            _ => Vec::new(),
+        };
+        for input in event_inputs {
+            if seen.insert(input.asset.asset_id.clone()) {
+                inputs.push(input);
+            }
+        }
+    }
+    inputs
+}
+
 /// Test/helper: wrap a pre-built canonical list as a single CompactSummary
 /// seed event so snapshots can be constructed without replaying applies.
 pub fn seed_events_from_canonical(canonical: Vec<CanonicalMessage>) -> Vec<TranscriptRecord> {
     vec![TranscriptRecord::CompactSummary {
         compacted: canonical,
+        media_inputs: Vec::new(),
         summary: String::new(),
         tokens_before: 0,
         tokens_after: 0,
@@ -774,6 +940,52 @@ mod tests {
         assert!(!json.contains("aGVsbG8="));
         assert!(json.contains("managed image omitted from snapshot"));
         assert!(json.contains("image/png"));
+    }
+
+    #[test]
+    fn compact_summary_marker_keeps_asset_identity_when_media_metadata_is_present() {
+        let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
+        attachment.path = Some(r"C:\haven\uploads\photo.png".into());
+        let input = legacy_attachment_to_media_input(&attachment);
+        let messages = vec![CanonicalMessage {
+            role: CanonicalRole::User,
+            content: vec![ContentPart::Image {
+                content_type: "image_url".into(),
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        }];
+        let snapshot = canonical_for_snapshot_with_media_inputs(&messages, &[input]);
+        let marker = match &snapshot[0].content[0] {
+            ContentPart::Text(text) => text,
+            other => panic!("expected snapshot marker, got {other:?}"),
+        };
+        assert!(marker.contains("asset_id=asset-0123456789abcdef0123456789abcdef"));
+        assert!(!marker.contains("aGVsbG8="));
+    }
+
+    #[test]
+    fn media_plan_is_a_structured_durable_event() {
+        let record = TranscriptRecord::MediaPlan {
+            step_number: 3,
+            strategy: MediaInputStrategy::ExtractedPreferred,
+            media_inputs: Vec::new(),
+            projections: Vec::new(),
+            notices: Vec::new(),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("\"type\":\"media_plan\""));
+        assert!(json.contains("extracted_preferred"));
+        let roundtrip: TranscriptRecord = serde_json::from_str(&json).unwrap();
+        assert!(matches!(roundtrip, TranscriptRecord::MediaPlan { .. }));
     }
 
     #[test]

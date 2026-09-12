@@ -104,9 +104,9 @@ pub enum AgentEvent {
         thought_message_id: String,
         reasoning_message_id: String,
     },
-    /// The request selected a non-raw representation or omitted an input.
-    /// This is ephemeral request diagnostics; the durable transcript remains
-    /// provider-neutral.
+    /// Live UI projection of a durable ingress plan or a provider-boundary
+    /// request plan. The structured durable source is
+    /// `TranscriptRecord::MediaPlan`; this event remains a transport signal.
     MediaPlan {
         session_id: String,
         step_number: u32,

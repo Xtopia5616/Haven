@@ -5,6 +5,7 @@
 //! and never constructs [`StreamForwarder`].
 
 use super::*;
+use crate::types::media_inputs_from_events;
 use haven_llm::{EndpointRole, LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
 
 struct CheckpointInflightGuard(Arc<std::sync::atomic::AtomicBool>);
@@ -593,6 +594,7 @@ impl ReActEngine {
                                 ctx,
                                 TranscriptEvent::CompactSummary {
                                     compacted: result.compacted,
+                                    media_inputs: media_inputs_from_events(&state.events),
                                     summary: result.summary,
                                     tokens_before: result.tokens_before,
                                     tokens_after: result.tokens_after,

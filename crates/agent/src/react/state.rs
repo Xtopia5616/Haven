@@ -111,6 +111,7 @@ mod tests {
 
         let record = TranscriptRecord::CompactSummary {
             compacted: Vec::new(),
+            media_inputs: Vec::new(),
             summary: "summary".into(),
             tokens_before: 100,
             tokens_after: 20,

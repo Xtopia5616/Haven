@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use super::media::{model_media_reference_with_capabilities, register_generated_asset};
-use crate::{ManagedAssetRegistry, Tool, ToolLlmUsage, ToolResult};
+use super::media::{MediaTool, register_generated_asset};
+use crate::{ManagedAssetRegistry, Tool, ToolResult};
 
 /// Default capture window when the LLM omits `duration`.
 const DEFAULT_RECORD_SECS: f64 = 10.0;
@@ -44,6 +44,8 @@ pub struct AudioTool {
     record_available: bool,
     /// Whether a later `media.transcribe` operation can use STT.
     transcribe_available: bool,
+    /// Canonical media consumer shared with the model-facing media tool.
+    media_tool: Option<Arc<MediaTool>>,
 }
 
 /// Blocking speaker boundary used by the `speak` operation.
@@ -113,6 +115,7 @@ impl AudioTool {
             capture_root: default_generated_media_dir(),
             record_available,
             transcribe_available: record_available,
+            media_tool: None,
         }
     }
 
@@ -128,6 +131,11 @@ impl AudioTool {
     ) -> Self {
         self.record_available = record_available;
         self.transcribe_available = transcribe_available;
+        self
+    }
+
+    pub(crate) fn with_media_tool(mut self, media_tool: Arc<MediaTool>) -> Self {
+        self.media_tool = Some(media_tool);
         self
     }
 
@@ -392,7 +400,7 @@ impl AudioTool {
             haven_input::RecordingState::Pending => {}
         }
 
-        let mut result = tokio::select! {
+        let result = tokio::select! {
             r = pipeline.record_for(Duration::from_secs_f64(duration)) => r.map_err(|e| {
                 anyhow::anyhow!("audio tool: recording failed: {e}")
             })?,
@@ -431,48 +439,34 @@ impl AudioTool {
             }
         };
 
-        let usages = pipeline.transcribe(&mut result).await;
-        let mut output = serde_json::json!({
-            "operation": "record",
-            "asset_id": asset.asset_id,
-            "media": model_media_reference_with_capabilities(
-                &asset,
-                "managed_file_ref",
-                None,
-                false,
-                false,
-                self.transcribe_available,
-            ),
-            "duration_ms": result.duration_ms,
-        });
-        if let Some(text) = result.transcript.filter(|t| !t.trim().is_empty()) {
-            output["transcript"] = serde_json::json!(text);
-            output["media"] = model_media_reference_with_capabilities(
-                &asset,
-                "transcript",
-                Some(&text),
-                false,
-                false,
-                self.transcribe_available,
-            );
-        }
-        let mut tool_result = if output.get("transcript").is_some() {
-            ToolResult::ok(output)
-        } else {
-            let detail = result
-                .transcript_error
-                .unwrap_or_else(|| "no speech detected in the recording".into());
-            ToolResult::failed(output, format!("audio tool: {detail}"))
+        let Some(media_tool) = self.media_tool.as_ref() else {
+            return Ok(ToolResult::failed(
+                serde_json::json!({
+                    "operation": "record",
+                    "asset_id": asset.asset_id,
+                    "media": super::media::model_media_reference_with_capabilities(
+                        &asset,
+                        "managed_file_ref",
+                        None,
+                        false,
+                        false,
+                        self.transcribe_available,
+                    ),
+                    "duration_ms": result.duration_ms,
+                    "available": false,
+                }),
+                "audio tool: media transcription runtime is not wired",
+            ));
         };
-        tool_result
-            .llm_usage
-            .extend(usages.into_iter().map(|usage| ToolLlmUsage {
-                call_kind: "media",
-                role: usage.role,
-                usage: usage.usage,
-                model: usage.model,
-                duration_ms: usage.duration_ms,
-            }));
+
+        let mut tool_result = media_tool
+            .transcribe_asset(asset, cancel)
+            .await
+            .map_err(|error| anyhow::anyhow!("audio tool: transcription failed: {error}"))?;
+        tool_result = add_operation(tool_result, "record");
+        if let Some(object) = tool_result.output.as_object_mut() {
+            object.insert("duration_ms".into(), serde_json::json!(result.duration_ms));
+        }
         Ok(tool_result)
     }
 

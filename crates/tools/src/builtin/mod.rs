@@ -132,8 +132,7 @@ pub async fn register_builtin_tools(
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     let (vision_available, transcribe_available) =
         resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
-    let record_available = audio_pipeline.is_some();
-    let audio_transcribe_available = if let Some(pipeline) = audio_pipeline.as_ref() {
+    let record_available = if let Some(pipeline) = audio_pipeline.as_ref() {
         pipeline.recording_configured().await
     } else {
         false
@@ -144,11 +143,6 @@ pub async fn register_builtin_tools(
         .await
         .values()
         .any(|server| server.enabled);
-    tools.push(Arc::new(
-        audio::AudioTool::with_tts(audio_pipeline, tts_client)
-            .with_managed_assets(managed_assets.clone())
-            .with_capabilities(record_available, audio_transcribe_available),
-    ));
     tools.push(Arc::new(ask::AskTool));
     // One media runtime serves every producer/consumer boundary. `files` and
     // `window` only create assets; interpretation and generation always land
@@ -172,6 +166,12 @@ pub async fn register_builtin_tools(
         .with_capabilities(vision_available, transcribe_available),
     );
     tools.push(media_tool.clone());
+    tools.push(Arc::new(
+        audio::AudioTool::with_tts(audio_pipeline, tts_client)
+            .with_managed_assets(managed_assets.clone())
+            .with_capabilities(record_available, transcribe_available)
+            .with_media_tool(media_tool.clone()),
+    ));
     tools.push(Arc::new(
         files::FilesTool::new(
             router.clone(),

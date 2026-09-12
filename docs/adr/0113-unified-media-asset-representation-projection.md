@@ -1,7 +1,7 @@
 # ADR 0113：统一多模态资产、表示与请求投影
 
 日期：2026-09-10
-状态：分阶段实施（阶段 0 已采纳；持久化收口见 ADR 0121）
+状态：分阶段实施（阶段 0–4 已采纳；工具编排见 ADR 0130）
 
 ## 背景与当前契约盘点
 
@@ -12,10 +12,10 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 | 当前入口 | 当前权威实现 | 现状与风险 |
 |---|---|---|
 | 浏览器附件 | `ui/src/lib/InputRouter.svelte`、`process_transcript` | 附件以 base64 进入 Tauri；前端限制不是安全边界 |
-| host 校验/落盘 | `crates/app-binary/src/commands/recording.rs` | 所有二进制附件写入 `uploads/<batch>`；gateway 只在进程内暂留 bytes |
+| host 校验/落盘 | `crates/app-binary/src/commands/recording.rs` | 所有二进制附件写入 `uploads/<batch>`；工具层只通过受管 `asset_id` 消费 |
 | 消息持久化 | `crates/memory/src/repositories/messages.rs` | `media_inputs` 保存 canonical 表示；`messages.attachments` 只保留兼容元数据 |
-| 媒体派生 | `crates/llm/src/media/gateway.rs` | OCR/STT 成功后返回文本，但调用方仍保留原始附件 |
-| ReAct 投影 | `crates/agent/src/react/mod.rs`、`types.rs`、`resume.rs` | 依据附件类型直接构造 `ContentPart`；普通文件可能把绝对路径写入模型文本 |
+| 媒体派生 | `crates/tools/src/builtin/media.rs` | `MediaTool` 统一承接 OCR/STT、fallback、超时、取消和结构化结果 |
+| ReAct 投影 | `crates/agent/src/react/mod.rs`、`types.rs`、`resume.rs` | 依据 `MediaPlan` 投影 `ContentPart`；计划事件保留 asset identity 和派生表示原因 |
 | provider 路由 | `crates/agent/src/react/turn.rs`、`crates/llm/src/router.rs`、`adapters/` | 根据已有 `ContentPart::Image/Audio` 选角色；没有统一的能力画像和降级理由 |
 | 配置热应用 | `crates/common/src/config/service.rs`、`app-binary/src/config_runtime.rs` | `MediaConfig` 已支持热更新，但尚无输入表示策略 |
 
@@ -42,8 +42,8 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
    选择的最终投影，不再重新猜附件类型。
 
 阶段 1 的兼容适配器可以从旧 `MessageAttachment` 构造临时 `MediaAsset` 和
-表示；阶段 2 以后再把 live ingress、ReAct、gateway 和 resume 逐步切换到该
-计划。旧字段读取必须继续工作，直到对应迁移阶段明确删除。
+表示；当前 live ingress、ReAct、工具和 resume 均已切换到该计划。旧字段读取
+继续工作，直到对应发布/重置阶段明确删除。
 
 ### 2. 原始与派生输入严格分离
 
@@ -89,8 +89,10 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 
 阶段 0–2 不新增 SQLite 表，也不把 base64 大对象迁移到 snapshot：
 
-- `ReActSnapshot.events` 仍是事件权威；事件只保存受限的资产元数据、引用和
-  表示 provenance，禁止保存大段 bytes。
+- `ReActSnapshot.events` 仍是事件权威；`UserInject`、`MediaPlan` 和
+  `CompactSummary` 只保存受限的资产元数据、引用和表示 provenance，禁止保存
+  大段 bytes。`CompactSummary` 的 media marker 同时保存 `asset_id` 和 MIME，
+  使 compaction/resume 能继续导航到同一资产。
 - `messages.attachments` 继续读取旧 `MessageAttachment`，作为兼容投影；新
   写路径在迁移完成前只允许存小型 inline payload，普通文件存受管引用/元数据。
 - `session_steps` 不复制资产内容，只保存执行态和关联 id。
@@ -118,7 +120,7 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 |---|---|---|---|
 | 0 | 契约盘点、ADR、错误/持久化/测试矩阵 | 文档与现状一致，默认行为不变 | 仅回滚文档提交 |
 | 1 | `haven-common` 内部类型、能力画像、纯计划器和单测；旧附件适配器不改行为 | 计划器覆盖 raw/derived/ref、三态能力、四策略、限制和安全失败 | 回滚类型/测试提交，不需重置 DB |
-| 2 | ingress、ReAct、gateway、provider projection；修复派生成功仍发送不兼容 raw 的问题 | mixed media、历史恢复、取消/失败降级、无绝对路径 provider 输入有回归测试 | 回退运行时投影提交；保留旧消息读取 |
+| 2 | ingress、ReAct、工具编排、provider projection；修复派生成功仍发送不兼容 raw 的问题 | mixed media、历史恢复、取消/失败降级、无绝对路径 provider 输入有回归测试 | 回退运行时投影提交；保留旧消息读取 |
 | 3 | files/audio/window 等工具接入 asset/representation，受管文件 TTL/清理 | 工具只通过 asset_id/representation 交互，生命周期压力测试通过 | 先回退工具接入，再处理受管文件目录 |
 | 4 | MediaConfig 策略、热应用、设置 UI、降级原因展示 | 四策略端到端验证，默认 auto 与旧配置等价 | 配置字段若需删除，按发布/重置说明处理 |
 | 5 | PDF/Office/表格/图像增强；视频/keyframe 另行 capability 评审 | 每种表示有 provider 矩阵和资源上限 | 视频不纳入此前阶段的回滚假设 |
@@ -139,7 +141,7 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 
 - 纯单元：资产 id/hash/元数据、表示 provenance、三态 capability、MIME/数量/
   大小/上下文限制、四策略选择、mixed image+audio、空派生和 unknown 能力。
-- ingress/gateway：OCR/STT 成功时 raw 与 derived 的互斥投影；失败时不伪造
+- ingress/MediaTool：OCR/STT 成功时 raw 与 derived 的互斥投影；失败时不伪造
   派生；生成附件和普通文件的生命周期。
 - ReAct：live apply 与 `project_transcript` 一致、request retry 不污染 durable
   events、snapshot/resume 只保留元数据、不因内容相同去重。
@@ -153,7 +155,7 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 ## 暂不决定
 
 - 不在本 ADR 中新增视频 `ContentPart`、keyframe 抽取或 provider 上传协议。
-- 不把图片编辑/生成能力与输入理解共享同一套执行语义；生成仍由既有 gateway
+- 不把图片编辑/生成能力与输入理解共享同一套执行语义；生成仍由 `MediaTool`
   和显式工具路径负责。
 - 不在没有真实 provider capability 来源前按模型名维护硬编码能力表；未知能力
   必须走保守降级。
@@ -165,9 +167,11 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 携带实际策略、每个资产最终选择的 representation/mode 和稳定 notice code。前端将该事件
 保留为会话内临时诊断，在对应 Agent 工作过程中显示资产表示卡，并以 toast 告知降级原因。
 
-该诊断仍是 ephemeral UI 状态，不写入 `ReActSnapshot.events`、`messages` 或
-`session_steps`，也不包含原始 bytes、绝对路径或 provider 原始响应。默认 `auto`
-策略与既有行为保持一致；没有降级或非 raw 选择时不额外发出媒体计划通知。
+`TranscriptRecord::MediaPlan` 是事件权威中的结构化诊断，保存 snapshot-safe
+`media_inputs`、最终 projection 和稳定 notice code；`agent:media_plan` 是它的
+实时 UI 投影。前端仍保留一个有界的会话内缓存用于即时展示，但它不再是唯一
+事实来源，也不包含原始 bytes、绝对路径或 provider 原始响应。raw-only 计划同样
+记录，因此 derived-only 附件不会静默退化为普通文本。
 
 ## 回滚与重置
 

@@ -18,6 +18,9 @@ const WAIT_UI_POLL_MS: u64 = 500;
 
 struct ManagedCapture {
     asset: ManagedAsset,
+    width: u64,
+    height: u64,
+    format: String,
 }
 
 pub struct WindowTool {
@@ -162,6 +165,9 @@ impl WindowTool {
                     "operation": "screenshot",
                     "asset_id": capture.asset.asset_id,
                     "media": media_tool.managed_media_reference(&capture.asset),
+                    "width": capture.width,
+                    "height": capture.height,
+                    "format": capture.format,
                 })))
             }
             WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
@@ -213,13 +219,19 @@ impl WindowTool {
             let _ = tokio::fs::remove_file(&path).await;
             anyhow::bail!("cancelled");
         }
-        let (Some(_width), Some(_height)) = (
+        let (Some(width), Some(height), Some(format)) = (
             shot.get("width").and_then(Value::as_u64),
             shot.get("height").and_then(Value::as_u64),
+            shot.get("format").and_then(Value::as_str),
         ) else {
             let _ = tokio::fs::remove_file(&path).await;
-            anyhow::bail!("screenshot dimensions missing");
+            anyhow::bail!("screenshot dimensions or format missing");
         };
+        if width == 0 || height == 0 || format.trim().is_empty() {
+            let _ = tokio::fs::remove_file(&path).await;
+            anyhow::bail!("screenshot dimensions or format are invalid");
+        }
+        let format = format.to_string();
         let size = match tokio::fs::metadata(&path).await {
             Ok(metadata) => metadata.len(),
             Err(error) => {
@@ -242,7 +254,12 @@ impl WindowTool {
                 return Err(error);
             }
         };
-        Ok(ManagedCapture { asset })
+        Ok(ManagedCapture {
+            asset,
+            width,
+            height,
+            format,
+        })
     }
 
     async fn ocr(

@@ -287,7 +287,11 @@ impl MediaTool {
             anyhow::bail!("media asset changed or is no longer inside its managed root");
         }
         if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
+            return Ok(self.cancelled_media_result(
+                operation_name(params.operation),
+                &asset,
+                "cancelled",
+            ));
         }
 
         let (modality, file_kind) = classify_media(&asset);
@@ -325,6 +329,64 @@ impl MediaTool {
 
     pub(crate) fn managed_media_reference(&self, asset: &ManagedAsset) -> Value {
         self.model_media_reference(asset, "managed_file_ref", None)
+    }
+
+    /// Shared STT consumer for model-facing `media.transcribe` and native
+    /// `audio.record`. The latter owns capture, but it must not own a second
+    /// timeout/fallback/confidence policy.
+    pub(crate) async fn transcribe_asset(
+        &self,
+        asset: ManagedAsset,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.transcribe(asset, cancel).await
+    }
+
+    fn failed_media_result(
+        &self,
+        operation: &str,
+        asset: &ManagedAsset,
+        error: impl Into<String>,
+    ) -> ToolResult {
+        ToolResult::failed(
+            json!({
+                "operation": operation,
+                "asset_id": asset.asset_id,
+                "media": self.model_media_reference(asset, "managed_file_ref", None),
+                "available": false,
+            }),
+            error,
+        )
+    }
+
+    fn timed_out_media_result(&self, operation: &str, asset: &ManagedAsset) -> ToolResult {
+        let mut result = ToolResult::timed_out(
+            crate::ToolExecutionOutcome::TimedOutUnknown,
+            format!("{operation} timed out after {}s", self.timeout_secs),
+        );
+        result.output = json!({
+            "operation": operation,
+            "asset_id": asset.asset_id,
+            "media": self.model_media_reference(asset, "managed_file_ref", None),
+            "available": false,
+        });
+        result
+    }
+
+    fn cancelled_media_result(
+        &self,
+        operation: &str,
+        asset: &ManagedAsset,
+        error: impl Into<String>,
+    ) -> ToolResult {
+        let mut result = ToolResult::cancelled(error);
+        result.output = json!({
+            "operation": operation,
+            "asset_id": asset.asset_id,
+            "media": self.model_media_reference(asset, "managed_file_ref", None),
+            "available": false,
+        });
+        result
     }
 
     pub(crate) fn ocr_available(&self) -> bool {
@@ -388,10 +450,19 @@ impl MediaTool {
             let bytes = match self.read_bounded(&asset, &cancel).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    return Ok(ToolResult::failed(
-                        json!({"operation": "ocr", "asset_id": asset.asset_id}),
-                        error.to_string(),
-                    ));
+                    return Ok(if cancel.is_cancelled() {
+                        self.cancelled_media_result("ocr", &asset, "OCR cancelled")
+                    } else {
+                        ToolResult::failed(
+                            json!({
+                                "operation": "ocr",
+                                "asset_id": asset.asset_id,
+                                "media": self.model_media_reference(&asset, "managed_file_ref", None),
+                                "available": false,
+                            }),
+                            error.to_string(),
+                        )
+                    });
                 }
             };
             let dedicated = tokio::time::timeout(
@@ -420,7 +491,12 @@ impl MediaTool {
             }
             if self.router.is_none() {
                 return Ok(ToolResult::failed(
-                    json!({"operation": "ocr", "asset_id": asset.asset_id}),
+                    json!({
+                        "operation": "ocr",
+                        "asset_id": asset.asset_id,
+                        "media": self.model_media_reference(&asset, "managed_file_ref", None),
+                        "available": false,
+                    }),
                     "OCR provider returned no acceptable result and no LLM fallback is configured",
                 ));
             }
@@ -475,10 +551,18 @@ impl MediaTool {
         let bytes = match self.read_bounded(&asset, &cancel).await {
             Ok(bytes) => bytes,
             Err(error) => {
-                return Ok(ToolResult::failed(
-                    json!({"operation": operation_name, "asset_id": asset.asset_id, "media": unavailable}),
-                    error.to_string(),
-                ));
+                return Ok(if cancel.is_cancelled() {
+                    self.cancelled_media_result(operation_name, &asset, "vision request cancelled")
+                } else {
+                    ToolResult::failed(
+                        json!({
+                            "operation": operation_name,
+                            "asset_id": asset.asset_id,
+                            "media": unavailable,
+                        }),
+                        error.to_string(),
+                    )
+                });
             }
         };
         let focus = focus
@@ -488,12 +572,19 @@ impl MediaTool {
             .map(|value| value.chars().take(MAX_FOCUS_CHARS).collect::<String>());
         let role = router.vision_role().await;
         let started = std::time::Instant::now();
-        let response = match tokio::time::timeout(
-            Duration::from_secs(self.timeout_secs),
-            router.analyze_image(&bytes, &asset.media_type, system_prompt, focus.as_deref()),
-        )
-        .await
-        {
+        let response = match tokio::select! {
+            _ = cancel.cancelled() => {
+                return Ok(self.cancelled_media_result(
+                    operation_name,
+                    &asset,
+                    "vision request cancelled",
+                ));
+            }
+            response = tokio::time::timeout(
+                Duration::from_secs(self.timeout_secs),
+                router.analyze_image(&bytes, &asset.media_type, system_prompt, focus.as_deref()),
+            ) => response,
+        } {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 return Ok(ToolResult::failed(
@@ -563,17 +654,34 @@ impl MediaTool {
                 "reason": "No speech-to-text provider is configured.",
             })));
         };
-        let bytes = self.read_bounded(&asset, &cancel).await?;
+        let bytes = match self.read_bounded(&asset, &cancel).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Ok(if cancel.is_cancelled() {
+                    self.cancelled_media_result("transcribe", &asset, "transcription cancelled")
+                } else {
+                    self.failed_media_result("transcribe", &asset, error.to_string())
+                });
+            }
+        };
         let dedicated = self.stt_client.clone();
         let router = self.router.clone();
         let started = std::time::Instant::now();
         let (result, role) = if let Some(client) = dedicated {
-            match tokio::time::timeout(
-                Duration::from_secs(self.timeout_secs),
-                client.transcribe(&bytes),
-            )
-            .await
-            {
+            let dedicated = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Ok(self.cancelled_media_result(
+                        "transcribe",
+                        &asset,
+                        "transcription cancelled",
+                    ));
+                }
+                result = tokio::time::timeout(
+                    Duration::from_secs(self.timeout_secs),
+                    client.transcribe(&bytes),
+                ) => result,
+            };
+            match dedicated {
                 Ok(Ok(result))
                     if !result.text.trim().is_empty()
                         && confidence_passes(result.confidence, self.stt_min_confidence) =>
@@ -582,23 +690,35 @@ impl MediaTool {
                 }
                 Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
                     let Some(router) = router else {
-                        return Ok(ToolResult::failed(
-                            json!({"operation": "transcribe", "asset_id": asset.asset_id}),
+                        return Ok(self.failed_media_result(
+                            "transcribe",
+                            &asset,
                             "STT provider returned no acceptable result and no LLM fallback is configured",
                         ));
                     };
                     let role = router.stt_role().await;
-                    let result = match tokio::time::timeout(
-                        Duration::from_secs(self.timeout_secs),
-                        router.transcribe_audio(&bytes),
-                    )
-                    .await
-                    {
-                        Ok(Ok(result)) => result,
-                        Ok(Err(error)) => return Err(anyhow::anyhow!(error)),
-                        Err(_) => {
-                            anyhow::bail!("transcription timed out after {}s", self.timeout_secs)
+                    let result = match tokio::select! {
+                        _ = cancel.cancelled() => {
+                            return Ok(self.cancelled_media_result(
+                                "transcribe",
+                                &asset,
+                                "transcription cancelled",
+                            ));
                         }
+                        result = tokio::time::timeout(
+                            Duration::from_secs(self.timeout_secs),
+                            router.transcribe_audio(&bytes),
+                        ) => result,
+                    } {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(error)) => {
+                            return Ok(self.failed_media_result(
+                                "transcribe",
+                                &asset,
+                                format!("STT fallback failed: {error}"),
+                            ));
+                        }
+                        Err(_) => return Ok(self.timed_out_media_result("transcribe", &asset)),
                     };
                     (result, role)
                 }
@@ -608,15 +728,28 @@ impl MediaTool {
                 unreachable!("availability checked above")
             };
             let role = router.stt_role().await;
-            let result = match tokio::time::timeout(
-                Duration::from_secs(self.timeout_secs),
-                router.transcribe_audio(&bytes),
-            )
-            .await
-            {
+            let result = match tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Ok(self.cancelled_media_result(
+                        "transcribe",
+                        &asset,
+                        "transcription cancelled",
+                    ));
+                }
+                result = tokio::time::timeout(
+                    Duration::from_secs(self.timeout_secs),
+                    router.transcribe_audio(&bytes),
+                ) => result,
+            } {
                 Ok(Ok(result)) => result,
-                Ok(Err(error)) => return Err(anyhow::anyhow!(error)),
-                Err(_) => anyhow::bail!("transcription timed out after {}s", self.timeout_secs),
+                Ok(Err(error)) => {
+                    return Ok(self.failed_media_result(
+                        "transcribe",
+                        &asset,
+                        format!("STT provider failed: {error}"),
+                    ));
+                }
+                Err(_) => return Ok(self.timed_out_media_result("transcribe", &asset)),
             };
             (result, role)
         };
@@ -625,6 +758,7 @@ impl MediaTool {
             "operation": "transcribe",
             "asset_id": asset.asset_id,
             "media": self.model_media_reference(&asset, "transcript", Some(&text)),
+            "transcript": text,
             "representation": "transcript",
             "untrusted_content": true,
         });
@@ -855,12 +989,12 @@ impl Tool for MediaTool {
             },
             "required": ["operation"],
             "oneOf": [
-                {"properties": {"operation": {"const": "inspect"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
-                {"properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
-                {"properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
-                {"properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
-                {"properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
-                {"properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"], "not": {"required": ["asset_id"]}}
+                {"additionalProperties": false, "properties": {"operation": {"const": "inspect"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"]}
             ]
         });
         let unavailable = [
@@ -1004,6 +1138,8 @@ mod tests {
 
     struct DedicatedOcrClient;
 
+    struct FailingSttClient;
+
     #[async_trait]
     impl haven_llm::OcrClient for DedicatedOcrClient {
         async fn recognize(
@@ -1040,6 +1176,13 @@ mod tests {
                 usage: None,
                 model: None,
             })
+        }
+    }
+
+    #[async_trait]
+    impl haven_llm::SttClient for FailingSttClient {
+        async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
+            Err(anyhow::anyhow!("provider unavailable"))
         }
     }
 
@@ -1086,6 +1229,34 @@ mod tests {
                 "path": "C:\\secret.png"
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn schema_rejects_cross_operation_media_arguments() {
+        let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000)
+            .with_image_gen_client(Some(Arc::new(DummyImageGenClient)))
+            .with_stt_client(Some(Arc::new(DedicatedSttClient {
+                calls: AtomicUsize::new(0),
+            })));
+        let asset_id = "asset-0123456789abcdef0123456789abcdef";
+        for invalid in [
+            json!({"operation": "inspect", "asset_id": asset_id, "focus": "text"}),
+            json!({"operation": "inspect", "asset_id": asset_id, "prompt": "text"}),
+            json!({"operation": "describe", "asset_id": asset_id, "prompt": "text"}),
+            json!({"operation": "transcribe", "asset_id": asset_id, "focus": "text"}),
+            json!({"operation": "generate", "prompt": "text", "asset_id": asset_id}),
+            json!({"operation": "generate", "prompt": "text", "focus": "text"}),
+        ] {
+            assert!(tool.validate_input(&invalid).is_err(), "accepted {invalid}");
+        }
+        assert!(
+            tool.validate_input(&json!({"operation": "inspect", "asset_id": asset_id}))
+                .is_ok()
+        );
+        assert!(
+            tool.validate_input(&json!({"operation": "generate", "prompt": "text"}))
+                .is_ok()
         );
     }
 
@@ -1192,6 +1363,64 @@ mod tests {
         assert_eq!(result.output["media"]["content"], "dedicated transcript");
         assert_eq!(client.calls.load(Ordering::SeqCst), 1);
         assert!(result.llm_usage.is_empty());
+    }
+
+    #[tokio::test]
+    async fn transcribe_provider_failure_keeps_full_media_navigation_reference() {
+        let root = TempDir::new().unwrap();
+        let (registry, asset_id) = registered_asset(root.path(), "recording.wav", "audio/wav");
+        let tool = MediaTool::new(None, registry, 1024, 10, 2_000)
+            .with_stt_client(Some(Arc::new(FailingSttClient)))
+            .with_capabilities(false, false);
+
+        let result = tool
+            .run(
+                MediaParams {
+                    operation: MediaOperation::Transcribe,
+                    asset_id: Some(asset_id.clone()),
+                    focus: None,
+                    prompt: None,
+                    session_id: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.output["asset_id"], asset_id);
+        assert_eq!(result.output["media"]["asset_id"], asset_id);
+        assert_eq!(result.output["media"]["representation"], "managed_file_ref");
+    }
+
+    #[tokio::test]
+    async fn cancelled_transcription_keeps_full_media_navigation_reference() {
+        let root = TempDir::new().unwrap();
+        let (registry, asset_id) = registered_asset(root.path(), "recording.wav", "audio/wav");
+        let tool = MediaTool::new(None, registry, 1024, 10, 2_000).with_stt_client(Some(Arc::new(
+            DedicatedSttClient {
+                calls: AtomicUsize::new(0),
+            },
+        )));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = tool
+            .run(
+                MediaParams {
+                    operation: MediaOperation::Transcribe,
+                    asset_id: Some(asset_id.clone()),
+                    focus: None,
+                    prompt: None,
+                    session_id: None,
+                },
+                cancel,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
+        assert_eq!(result.output["media"]["asset_id"], asset_id);
     }
 
     #[tokio::test]

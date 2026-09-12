@@ -23,7 +23,8 @@
 
 use super::*;
 use crate::types::{
-    Action, TranscriptRecord, attachment_media_inputs_for_snapshot, canonical_for_snapshot,
+    Action, TranscriptRecord, attachment_media_inputs_for_snapshot,
+    canonical_for_snapshot_with_media_inputs,
 };
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
@@ -97,6 +98,7 @@ pub(super) enum TranscriptEvent {
     },
     CompactSummary {
         compacted: Vec<CanonicalMessage>,
+        media_inputs: Vec<haven_common::media::MediaInput>,
         summary: String,
         tokens_before: u32,
         tokens_after: u32,
@@ -165,13 +167,18 @@ impl TranscriptEvent {
             },
             Self::CompactSummary {
                 compacted,
+                media_inputs,
                 summary,
                 tokens_before,
                 tokens_after,
                 episode_id,
                 degraded,
             } => TranscriptRecord::CompactSummary {
-                compacted: canonical_for_snapshot(compacted),
+                compacted: canonical_for_snapshot_with_media_inputs(compacted, media_inputs),
+                media_inputs: media_inputs
+                    .iter()
+                    .map(haven_common::media::MediaInput::for_snapshot)
+                    .collect(),
                 summary: summary.clone(),
                 tokens_before: *tokens_before,
                 tokens_after: *tokens_after,
@@ -412,6 +419,34 @@ impl ReActEngine {
                     .await;
                 state.events.push(record);
                 let strategy = self.media_strategy();
+                let media_inputs = attachments
+                    .iter()
+                    .map(haven_common::media::legacy_attachment_to_media_input)
+                    .collect::<Vec<_>>();
+                let media_plan = crate::react::media_plan_for_inputs(&media_inputs, strategy);
+                if !media_plan.is_empty() || !media_plan.notices.is_empty() {
+                    state.events.push(TranscriptRecord::MediaPlan {
+                        step_number: ctx.step_num,
+                        strategy,
+                        media_inputs: media_inputs
+                            .iter()
+                            .map(haven_common::media::MediaInput::for_snapshot)
+                            .collect(),
+                        projections: media_plan.projections.clone(),
+                        notices: media_plan.notices.clone(),
+                    });
+                    ctx.emitter
+                        .emit(crate::event::AgentEvent::MediaPlan {
+                            session_id: ctx.session_id.clone(),
+                            step_number: ctx.step_num,
+                            run_id: ctx.run_id,
+                            role: "ingress".into(),
+                            strategy,
+                            projections: media_plan.projections,
+                            notices: media_plan.notices,
+                        })
+                        .await;
+                }
                 let mut content = vec![ContentPart::text(text)];
                 for attachment in &attachments {
                     let input = haven_common::media::legacy_attachment_to_media_input(attachment);
@@ -423,6 +458,7 @@ impl ReActEngine {
             }
             TranscriptEvent::CompactSummary {
                 compacted,
+                media_inputs: _media_inputs,
                 summary,
                 tokens_before,
                 tokens_after,
@@ -752,6 +788,7 @@ mod tests {
                 &ctx,
                 TranscriptEvent::CompactSummary {
                     compacted: compacted.clone(),
+                    media_inputs: Vec::new(),
                     summary: "prior turns".into(),
                     tokens_before: 100,
                     tokens_after: 40,

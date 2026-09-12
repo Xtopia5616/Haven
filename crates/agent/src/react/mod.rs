@@ -17,7 +17,7 @@ use haven_memory::Database;
 
 use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
-use crate::types::{Action, BranchPoint, TranscriptRecord};
+use crate::types::{Action, BranchPoint, TranscriptRecord, media_inputs_from_events};
 use chrono::Utc;
 
 mod context;
@@ -79,7 +79,52 @@ pub(crate) fn media_input_to_content_part_with_strategy(
     input: &MediaInput,
     strategy: MediaInputStrategy,
 ) -> ContentPart {
-    let capabilities = CapabilityProfile {
+    let capabilities = media_capabilities_for_input(input);
+    let plan = build_media_plan(std::slice::from_ref(input), &capabilities, strategy);
+    if let Ok(mut parts) = haven_llm::media::project_media_plan(&plan, std::slice::from_ref(input))
+        && let Some(part) = parts.pop()
+    {
+        return part;
+    }
+
+    let name = input
+        .asset
+        .filename
+        .as_deref()
+        .map(|value| haven_common::text::sanitize_prompt_field(value, 120))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "attachment".into());
+    ContentPart::text(format!(
+        "[附件: {name}；当前请求没有可安全投影的表示，文件路径不会发送给模型]"
+    ))
+}
+
+/// Build the same one-input plan used by canonical projection. Keeping this
+/// helper here lets ingress persist a structured plan event without inventing
+/// a second capability policy just for the event log.
+pub(crate) fn media_plan_for_inputs(
+    inputs: &[MediaInput],
+    strategy: MediaInputStrategy,
+) -> MediaPlan {
+    let mut plan = MediaPlan {
+        strategy,
+        projections: Vec::new(),
+        notices: Vec::new(),
+    };
+    for input in inputs {
+        let input_plan = build_media_plan(
+            std::slice::from_ref(input),
+            &media_capabilities_for_input(input),
+            strategy,
+        );
+        plan.projections.extend(input_plan.projections);
+        plan.notices.extend(input_plan.notices);
+    }
+    plan
+}
+
+fn media_capabilities_for_input(input: &MediaInput) -> CapabilityProfile {
+    CapabilityProfile {
         // These are the current canonical inline parts, not a model-name
         // guess. The selected adapter still validates the final request.
         image: CapabilitySupport::Supported,
@@ -103,24 +148,7 @@ pub(crate) fn media_input_to_content_part_with_strategy(
             CapabilitySupport::Unknown
         },
         ..CapabilityProfile::default()
-    };
-    let plan = build_media_plan(std::slice::from_ref(input), &capabilities, strategy);
-    if let Ok(mut parts) = haven_llm::media::project_media_plan(&plan, std::slice::from_ref(input))
-        && let Some(part) = parts.pop()
-    {
-        return part;
     }
-
-    let name = input
-        .asset
-        .filename
-        .as_deref()
-        .map(|value| haven_common::text::sanitize_prompt_field(value, 120))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "attachment".into());
-    ContentPart::text(format!(
-        "[附件: {name}；当前请求没有可安全投影的表示，文件路径不会发送给模型]"
-    ))
 }
 
 /// Media requirements of one provider request. This is deliberately a small
@@ -191,14 +219,24 @@ pub(super) async fn emit_media_plan(
     role: EndpointRole,
     plan: MediaPlan,
 ) {
-    let has_non_raw_projection = plan
-        .projections
-        .iter()
-        .any(|projection| projection.mode != MediaProjectionMode::Raw);
-    if plan.notices.is_empty() && !has_non_raw_projection {
+    if plan.is_empty() && plan.notices.is_empty() {
         return;
     }
-    if plan.notices.is_empty() {
+    if plan.notices.is_empty()
+        && plan
+            .projections
+            .iter()
+            .all(|projection| projection.mode == MediaProjectionMode::Raw)
+    {
+        tracing::debug!(
+            session_id,
+            step_number,
+            role = role.as_str(),
+            strategy = plan.strategy.as_str(),
+            projections = ?plan.projections,
+            "media request plan recorded"
+        );
+    } else if plan.notices.is_empty() {
         tracing::info!(
             session_id,
             step_number,
@@ -1194,6 +1232,7 @@ impl ReActEngine {
                     ctx,
                     TranscriptEvent::CompactSummary {
                         compacted: result.compacted,
+                        media_inputs: media_inputs_from_events(&state.events),
                         summary: result.summary,
                         tokens_before: result.tokens_before,
                         tokens_after: result.tokens_after,
