@@ -102,6 +102,7 @@ pub struct StartupWiring {
     pub security_permissions: Vec<haven_common::config::StoredPermission>,
     pub router: Arc<LlmRouter>,
     pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     pub admin_context: builtin::SelfToolContext,
 }
@@ -204,6 +205,9 @@ pub struct ToolsManager {
     audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
     /// Shared TTS client for the `audio` tool's `speak` operation.
     tts_client: RwLock<Option<Arc<dyn haven_llm::TtsClient>>>,
+    /// Dedicated STT client shared by `audio.record` and `media.transcribe`.
+    /// The LLM router remains the alternate STT path for `provider = "llm"`.
+    stt_client: RwLock<Option<Arc<dyn haven_llm::SttClient>>>,
     /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
     agent_spawner: builtin::AgentSpawnerSlot,
     /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
@@ -249,6 +253,7 @@ impl ToolsManager {
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
             tts_client: RwLock::new(None),
+            stt_client: RwLock::new(None),
             agent_spawner: builtin::new_agent_spawner_slot(),
             memory_recall: builtin::new_memory_recall_slot(),
         }
@@ -415,15 +420,17 @@ impl ToolsManager {
         self.rebuild_catalog().await;
     }
 
-    /// Replace the router and TTS client together during a live settings
-    /// update, then rebuild the builtin catalog once so `audio.speak` cannot
+    /// Replace the router and media clients together during a live settings
+    /// update, then rebuild the builtin catalog once so media tools cannot
     /// observe a mixed-generation runtime.
-    pub async fn set_router_and_tts(
+    pub async fn set_router_and_media_clients(
         &self,
         router: Arc<LlmRouter>,
+        stt_client: Option<Arc<dyn haven_llm::SttClient>>,
         tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     ) {
         *self.router.write().await = Some(router);
+        *self.stt_client.write().await = stt_client;
         *self.tts_client.write().await = tts_client;
         self.rebuild_catalog().await;
     }
@@ -441,6 +448,7 @@ impl ToolsManager {
             security_permissions,
             router,
             audio_pipeline,
+            stt_client,
             tts_client,
             admin_context,
         } = wiring;
@@ -458,6 +466,7 @@ impl ToolsManager {
         self.authorization.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
         *self.audio_pipeline.write().await = audio_pipeline;
+        *self.stt_client.write().await = stt_client;
         *self.tts_client.write().await = tts_client;
         self.scheduled_actions
             .set_db(admin_context.db.clone())
@@ -551,7 +560,9 @@ impl ToolsManager {
     /// prompt snapshot from advertising a role that the tool schema removed.
     pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
         let router = self.router.read().await.clone();
-        let (vision, transcription) = builtin::resolve_media_capabilities(router.as_ref()).await;
+        let stt_client = self.stt_client.read().await.clone();
+        let (vision, transcription) =
+            builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
         let audio_pipeline = self.audio_pipeline.read().await.clone();
         // Capturing and transcribing are separate capabilities: a recording
         // must remain available even when STT is temporarily unconfigured so
@@ -649,6 +660,7 @@ impl ToolsManager {
         let settings = self.tool_settings.read().await;
         let limits = self.context_limits.read().await.clone();
         let audio_pipeline = self.audio_pipeline.read().await.clone();
+        let stt_client = self.stt_client.read().await.clone();
         let tts_client = self.tts_client.read().await.clone();
         let self_tool_arc = builtin::register_builtin_tools(
             &mut all_tools,
@@ -667,6 +679,7 @@ impl ToolsManager {
             &limits,
             *self.default_shell.read().await,
             audio_pipeline,
+            stt_client,
             tts_client,
             self.session_catalog.clone(),
             self.agent_spawner.clone(),

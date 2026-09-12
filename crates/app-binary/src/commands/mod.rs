@@ -238,7 +238,7 @@ pub(crate) async fn hot_swap_router(
     state.agent.replace_router(new_router.clone());
     state
         .tools
-        .set_router_and_tts(new_router.clone(), tts.clone())
+        .set_router_and_media_clients(new_router.clone(), stt_client.clone(), tts.clone())
         .await;
     state.pipeline.set_stt_client(stt_client.clone()).await;
     if stt_config.provider == "llm" {

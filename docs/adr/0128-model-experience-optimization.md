@@ -8,7 +8,7 @@
 
 ## Decision
 
-1. 在 `haven-tools` 目录重建时，媒体能力使用实际路由角色、角色配置和 provider capability profile 的交集；录音 operation 使用共享录音管线的实际配置状态。schema 过滤和 prompt snapshot 复用同一套 manager/builtin 判定。
+1. 在 `haven-tools` 目录重建时，媒体能力使用实际路由角色、角色配置和 provider capability profile 的交集；录音 operation 使用共享录音管线的实际配置状态。`audio.record`、`media.transcribe` 和富媒体文件转发共享同一专用 STT 客户端，未配置时才使用 LLM STT 路径。schema 过滤和 prompt snapshot 复用同一套 manager/builtin 判定。
 2. 将 `ToolResult` 的模型 observation 改为 structured-first：错误、结果元数据和恢复游标优先，正文和大集合后置压缩。纯文本结果维持原有 Unicode-safe 上限行为。
 3. 将仓库根发现收口到 `haven-common::discover_workspace_root`。`shell` / `files` 的相对路径在仓库会话中解析到工作区；显式绝对路径、受管媒体和安全授权仍由原边界处理；非仓库会话回退到 Temp。
 4. 在工具定义 JSON 中增加 `retry_safety` 静态元数据，并在具体失败 observation 中附带实际 operation 的 `idempotent` / `non_idempotent` / `unknown` 值。executor 仍只自动重试幂等且 transient 的结果，未知超时与副作用操作不自动重放。

@@ -42,9 +42,10 @@ use haven_skills::SkillsEngine;
 /// the selected adapter may explicitly reject the representation.
 pub(crate) async fn resolve_media_capabilities(
     router: Option<&Arc<haven_llm::LlmRouter>>,
+    dedicated_stt_available: bool,
 ) -> (bool, bool) {
     let Some(router) = router else {
-        return (false, false);
+        return (false, dedicated_stt_available);
     };
 
     let vision_role = router.vision_role().await;
@@ -63,7 +64,10 @@ pub(crate) async fn resolve_media_capabilities(
         false
     };
 
-    (vision_available, transcribe_available)
+    (
+        vision_available,
+        transcribe_available || dedicated_stt_available,
+    )
 }
 
 pub use admin::{
@@ -115,6 +119,7 @@ pub async fn register_builtin_tools(
     limits: &haven_common::config::ContextLimitsConfig,
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     session_catalog: SessionCatalog,
     agent_spawner: messaging::AgentSpawnerSlot,
@@ -123,7 +128,7 @@ pub async fn register_builtin_tools(
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     let (vision_available, transcribe_available) =
-        resolve_media_capabilities(router.as_ref()).await;
+        resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
     let record_available = audio_pipeline.is_some();
     let audio_transcribe_available = if let Some(pipeline) = audio_pipeline.as_ref() {
         pipeline.recording_configured().await
@@ -156,6 +161,7 @@ pub async fn register_builtin_tools(
             limits.file_summary_timeout_secs,
             tool_output_cap(settings, "media", limits.max_observation_chars),
         )
+        .with_stt_client(stt_client.clone())
         .with_capabilities(vision_available, transcribe_available),
     ));
     tools.push(Arc::new(
@@ -178,6 +184,7 @@ pub async fn register_builtin_tools(
             ),
             managed_assets.clone(),
         )
+        .with_stt_client(stt_client.clone())
         .with_media_capabilities(vision_available, transcribe_available),
     ));
     tools.push(Arc::new(process::ProcessTool {

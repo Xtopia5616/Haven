@@ -586,6 +586,9 @@ pub struct FilesTool {
     /// role, and text summarization uses small_model. The router handles
     /// capability validation and retries for each selected endpoint.
     summarizer: Option<Arc<LlmRouter>>,
+    /// Dedicated STT client shared with the canonical media tool. Rich audio
+    /// reads must preserve the same provider choice as `media.transcribe`.
+    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     /// Output cap (chars) for file reads.
     max_output_chars: usize,
     /// Full-read cap (chars): larger files need `offset`/`limit` or
@@ -621,6 +624,7 @@ impl Default for FilesTool {
     fn default() -> Self {
         Self {
             summarizer: None,
+            stt_client: None,
             max_output_chars: 20_000,
             max_read_chars: 128_000,
             line_span: 100,
@@ -746,6 +750,7 @@ impl FilesTool {
     ) -> Self {
         Self {
             summarizer,
+            stt_client: None,
             max_output_chars,
             max_read_chars,
             line_span,
@@ -769,6 +774,14 @@ impl FilesTool {
     ) -> Self {
         self.media_describe_available = describe_available;
         self.media_transcribe_available = transcribe_available;
+        self
+    }
+
+    pub(crate) fn with_stt_client(
+        mut self,
+        stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    ) -> Self {
+        self.stt_client = stt_client;
         self
     }
 
@@ -866,6 +879,7 @@ impl FilesTool {
                 self.summary_timeout_secs,
                 self.max_output_chars,
             )
+            .with_stt_client(self.stt_client.clone())
             .with_capabilities(
                 self.media_describe_available,
                 self.media_transcribe_available,

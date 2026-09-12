@@ -151,6 +151,7 @@ pub struct MediaParams {
 
 pub struct MediaTool {
     router: Option<Arc<LlmRouter>>,
+    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     describe_available: bool,
     transcribe_available: bool,
     managed_assets: ManagedAssetRegistry,
@@ -170,6 +171,7 @@ impl MediaTool {
         let has_router = router.is_some();
         Self {
             router,
+            stt_client: None,
             describe_available: has_router,
             transcribe_available: has_router,
             managed_assets,
@@ -185,7 +187,21 @@ impl MediaTool {
         transcribe_available: bool,
     ) -> Self {
         self.describe_available = describe_available;
-        self.transcribe_available = transcribe_available;
+        // Keep the schema truthful even when callers apply capability
+        // overrides after installing the dedicated STT client. The client is
+        // the authoritative live route for audio transcription.
+        self.transcribe_available = transcribe_available || self.stt_client.is_some();
+        self
+    }
+
+    pub(crate) fn with_stt_client(
+        mut self,
+        stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    ) -> Self {
+        if stt_client.is_some() {
+            self.transcribe_available = true;
+        }
+        self.stt_client = stt_client;
         self
     }
 
@@ -406,24 +422,32 @@ impl MediaTool {
                 "asset_id": asset.asset_id,
                 "media": self.model_media_reference(&asset, "managed_file_ref", None),
                 "available": false,
-                "reason": "No speech-to-text LLM router is configured.",
+                "reason": "No speech-to-text provider is configured.",
             })));
         }
-        let Some(router) = self.router.clone() else {
+        let Some(router_or_client) = self
+            .stt_client
+            .clone()
+            .map(TranscriptionRoute::Dedicated)
+            .or_else(|| self.router.clone().map(TranscriptionRoute::Router))
+        else {
             return Ok(ToolResult::ok(json!({
                 "operation": "transcribe",
                 "asset_id": asset.asset_id,
                 "media": self.model_media_reference(&asset, "managed_file_ref", None),
                 "available": false,
-                "reason": "No speech-to-text LLM router is configured.",
+                "reason": "No speech-to-text provider is configured.",
             })));
         };
         let bytes = self.read_bounded(&asset, &cancel).await?;
-        let role = router.stt_role().await;
+        let role = match &router_or_client {
+            TranscriptionRoute::Dedicated(_) => None,
+            TranscriptionRoute::Router(router) => router.stt_role().await,
+        };
         let started = std::time::Instant::now();
         let result = match tokio::time::timeout(
             Duration::from_secs(self.timeout_secs),
-            router.transcribe_audio(&bytes),
+            transcribe_with_route(router_or_client, bytes),
         )
         .await
         {
@@ -507,6 +531,24 @@ impl MediaTool {
         } else {
             ToolResult::ok(output)
         })
+    }
+}
+
+enum TranscriptionRoute {
+    Dedicated(Arc<dyn haven_llm::SttClient>),
+    Router(Arc<LlmRouter>),
+}
+
+async fn transcribe_with_route(
+    route: TranscriptionRoute,
+    bytes: Vec<u8>,
+) -> anyhow::Result<haven_llm::SttResult> {
+    match route {
+        TranscriptionRoute::Dedicated(client) => client.transcribe(&bytes).await,
+        TranscriptionRoute::Router(router) => router
+            .transcribe_audio(&bytes)
+            .await
+            .map_err(|error| anyhow::anyhow!(error)),
     }
 }
 
@@ -708,7 +750,27 @@ pub(crate) fn register_path_asset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    struct DedicatedSttClient {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl haven_llm::SttClient for DedicatedSttClient {
+        async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(haven_llm::SttResult {
+                text: "dedicated transcript".into(),
+                confidence: None,
+                usage: None,
+                model: None,
+            })
+        }
+    }
 
     fn registered_asset(
         root: &Path,
@@ -818,6 +880,42 @@ mod tests {
                 .unwrap()
                 .starts_with("asset-")
         );
+    }
+
+    #[tokio::test]
+    async fn transcribe_prefers_dedicated_stt_without_router() {
+        let root = TempDir::new().unwrap();
+        let (registry, asset_id) = registered_asset(root.path(), "recording.wav", "audio/wav");
+        let client = Arc::new(DedicatedSttClient {
+            calls: AtomicUsize::new(0),
+        });
+        let tool = MediaTool::new(None, registry, 1024, 10, 2_000)
+            .with_stt_client(Some(client.clone()))
+            .with_capabilities(false, false);
+        assert!(
+            tool.input_schema()["properties"]["operation"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|operation| operation == "transcribe")
+        );
+
+        let result = tool
+            .run(
+                MediaParams {
+                    operation: MediaOperation::Transcribe,
+                    asset_id,
+                    focus: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["media"]["content"], "dedicated transcript");
+        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        assert!(result.llm_usage.is_empty());
     }
 
     #[test]

@@ -266,7 +266,7 @@ impl AppState {
                 };
             std::sync::Arc::new(haven_llm::media::MediaGateway::new(
                 router.clone(),
-                stt_client,
+                stt_client.clone(),
                 ocr,
                 image_gen,
                 cfg.media.clone(),
@@ -522,6 +522,7 @@ impl AppState {
                 security_permissions: cfg.security.permissions.clone(),
                 router: router.clone(),
                 audio_pipeline: Some(pipeline.clone()),
+                stt_client: stt_client.clone(),
                 tts_client: tts,
                 admin_context,
             })
