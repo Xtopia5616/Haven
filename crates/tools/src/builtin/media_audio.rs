@@ -1,13 +1,20 @@
+//! Unified audio subsystem for the model-facing `media` tool.
+//!
+//! This module owns the `media` audio operation dispatch, its host runtime,
+//! and the Windows device adapter. It does not implement or register `Tool`;
+//! `media.rs` owns the public contract.
+
 use haven_common::config::default_generated_media_dir;
 use haven_input::InputPipeline;
 use haven_llm::TtsClient;
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use super::media::{MediaParams, register_generated_asset};
-use crate::{ManagedAsset, ManagedAssetRegistry};
+use super::media::{MediaOperation, MediaParams, MediaTool, register_generated_asset};
+use crate::{ManagedAsset, ManagedAssetRegistry, ToolResult};
 
 /// Default capture window when the LLM omits `duration`.
 const DEFAULT_RECORD_SECS: f64 = 10.0;
@@ -386,7 +393,6 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    use super::super::media::MediaOperation;
     use super::*;
     use async_trait::async_trait;
 
@@ -507,6 +513,92 @@ mod tests {
             assert!(data.starts_with(b"RIFF"));
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
+        }
+    }
+}
+
+impl MediaTool {
+    pub(super) async fn run_audio(
+        &self,
+        params: MediaParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        match params.operation {
+            MediaOperation::Record => {
+                let recorded = self
+                    .audio_runtime
+                    .record_asset(&params, cancel.clone())
+                    .await?;
+                let mut result = self.transcribe_asset(recorded.asset, cancel).await?;
+                result.output["operation"] = json!("record");
+                result.output["duration_ms"] = json!(recorded.duration_ms);
+                Ok(result)
+            }
+            MediaOperation::Play => {
+                let path = params
+                    .file_path
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("file_path (.wav) is required for play"))?;
+                self.audio_runtime.play(&params).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "play",
+                    "played": path,
+                    "format": "wav",
+                })))
+            }
+            MediaOperation::Speak => {
+                let characters = self.audio_runtime.speak(&params, cancel).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "speak",
+                    "spoken": true,
+                    "characters": characters,
+                    "format": "wav",
+                    "delivered_to": ["speakers"],
+                })))
+            }
+            MediaOperation::VolumeGet => {
+                let volume = self.audio_runtime.volume_get().await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "volume_get",
+                    "volume": volume,
+                })))
+            }
+            MediaOperation::VolumeSet => {
+                let volume = params
+                    .volume
+                    .ok_or_else(|| anyhow::anyhow!("volume is required for volume_set"))?;
+                if !(0.0..=1.0).contains(&volume) {
+                    anyhow::bail!("volume must be between 0 and 1");
+                }
+                let volume = self.audio_runtime.volume_set(volume).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "volume_set",
+                    "volume": volume,
+                    "set": true,
+                })))
+            }
+            MediaOperation::MuteGet => {
+                let muted = self.audio_runtime.mute_get().await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "mute_get",
+                    "muted": muted,
+                })))
+            }
+            MediaOperation::MuteSet => {
+                let muted = params
+                    .muted
+                    .ok_or_else(|| anyhow::anyhow!("muted is required for mute_set"))?;
+                self.audio_runtime.mute_set(muted).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "mute_set",
+                    "muted": muted,
+                    "set": true,
+                })))
+            }
+            _ => unreachable!("non-audio operation passed to run_audio"),
         }
     }
 }

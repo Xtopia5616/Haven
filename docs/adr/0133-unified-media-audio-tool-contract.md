@@ -24,8 +24,9 @@
    | 内容生成 | `generate` | 使用 `prompt` |
    | 音频设备/输出 | `record`, `play`, `speak`, `volume_get`, `volume_set`, `mute_get`, `mute_set` | 分支专属参数；`record` 产出受管 `asset_id`，`play` 仅接受受安全网关约束的 `.wav` 路径 |
 
-3. 保留 `builtin/audio.rs` 作为 `AudioRuntime` 宿主适配层，只封装麦克风、WinMM、默认输出端点
-   和 TTS 播放；它不实现 `Tool`，不注册工具，不拥有权限、schema 或结果 renderer。
+3. 保留 `builtin/media_audio.rs` 作为音频子系统模块，集中承载 `media` 的音频 operation 分发
+   以及 `AudioRuntime` 的麦克风、WinMM、默认输出端点和 TTS 播放；它不实现 `Tool`，不注册工具，
+   不拥有独立权限、schema 或结果 renderer。
 4. `media` 的权限 key 按 operation 统一生成，例如 `media:record`、`media:speak`、
    `media:volume_set`；父级 `media` 仍可按现有 ancestry 规则继承。音频设备操作共享
    `media:audio-device` 的并发资源锁，避免录音、播放和端点设置互相竞态。

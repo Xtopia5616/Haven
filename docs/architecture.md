@@ -82,6 +82,12 @@ compact `media` reference 回到工具 observation，后续调用可以复用同
 cache rate（ADR 0124）。原始附件的 MediaPlan 投影同时留下短的 asset→representation
 notice，避免模型重复派生或猜测资产是否已经进入上下文（ADR 0129）。
 
+媒体工具的公共契约与实现按职责拆分：`media.rs` 只保留 `MediaTool`、operation/schema、
+安全元数据和统一调度；`media_reference.rs` 负责模态分类与模型媒体引用，
+`media_content.rs` 负责图片/音频/文档派生，`media_generation.rs` 负责生成与资产登记，
+`media_audio.rs` 集中负责统一媒体工具的音频分支和本机音频设备适配（ADR 0133、0134）。这些模块共同实现一个 `media`
+工具，不重新引入分立的模型入口。
+
 Builtin 的模型目录按频率拆分 operation view：`system.info`、`files.read_text`、
 `files.outline`、`files.summary` 和 `files.search` 为高频窄入口；`system` 内的 `env`、
 `power`、`registry` 仍是私有实现模块。公共聚合工具继续保留给 native/Tauri 和低频/写
@@ -157,7 +163,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `builtin::media` 工具统一编排；图片/音频以内联 `ContentPart` 进入模型，普通文件落盘后
   以受管 `asset_id` 交给 `media`，视频暂不盲发到 provider。TTS 由
   `media(operation="speak")` 显式触发并在本机播放；Windows 设备适配仍隔离在
-  `builtin/audio.rs::AudioRuntime`。
+  `builtin/media_audio.rs::AudioRuntime`。
 - `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体工具的
   自动处理分支，因此用户文本不会因为关键词被隐式朗读。
 - `registry.rs` / `stream_rules.rs`：模型注册表、流式规则（生产 router 默认启用 `code_block_abort`）。
@@ -403,6 +409,7 @@ fallback。`media` 的音频同样由 `MediaTool` 统一处理专用 STT、超�
 |---|---|
 | 2026-09-12 | §2.5 Tools / Agent / App：删除 `MediaGateway`、coverage、intent 与 ingress eager preprocessing；由单一共享 `MediaTool` 统一 OCR、STT fallback、文档抽取和显式媒体生成，并同步 UI 媒体结果契约（ADR 0130） |
 | 2026-09-12 | §2.5 Tools / UI / Security：删除独立 `audio` 模型工具，将录音、播放、TTS、音量和静音纳入 `media` operation 分支；旧 audio 配置/权限按测试版策略重置（ADR 0133） |
+| 2026-09-12 | §2.5 Tools：按公共契约、媒体引用、内容派生、生成/资产登记和测试职责拆分 `media` 内部模块；模型入口与运行时行为不变（ADR 0134） |
 | 2026-09-12 | §2.5 Agent / Tools / LLM：统一 producer→asset_id→media consumer；files rich path、window OCR、录音均收敛到同一资产链，并在模型请求中说明 MediaPlan 表示（ADR 0129） |
 | 2026-09-12 | §2.5 Tools / Agent / Common：按实时路由能力裁剪媒体与录音 operation；structured-first observation 保留恢复字段；仓库会话默认工作区路径；区分只读重试安全性并补充 runtime capability snapshot（ADR 0128） |
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |

@@ -2,7 +2,6 @@ pub mod actions;
 pub mod admin;
 mod admin_support;
 pub mod ask;
-mod audio;
 pub mod checklist;
 pub mod clipboard;
 mod env;
@@ -14,6 +13,7 @@ pub mod input;
 pub mod load_mcp;
 pub mod load_skill;
 pub mod media;
+mod media_audio;
 pub mod memory;
 pub mod messaging;
 pub mod notify;
@@ -143,7 +143,7 @@ pub async fn register_builtin_tools(
         false
     };
     let audio_runtime = Arc::new(
-        audio::AudioRuntime::with_tts(audio_pipeline, tts_client)
+        media_audio::AudioRuntime::with_tts(audio_pipeline, tts_client)
             .with_managed_assets(managed_assets.clone())
             .with_capabilities(record_available),
     );
