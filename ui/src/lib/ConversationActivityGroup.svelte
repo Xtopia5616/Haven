@@ -162,6 +162,9 @@
 		min-height: 28px;
 		padding: var(--md-sys-space-2xs) 0;
 	}
+	.activity-group :global(.md-collapsible-caret) {
+		margin-inline-start: var(--md-sys-space-xs);
+	}
 	.activity-status {
 		display: inline-flex;
 		align-items: center;

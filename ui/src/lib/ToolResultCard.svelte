@@ -531,6 +531,10 @@
 	.tool-card :global(.md-collapsible-header:hover) {
 		background: color-mix(in srgb, var(--md-sys-color-primary) 7%, transparent);
 	}
+	.tool-card.embedded :global(.md-collapsible-header:hover) {
+		background: transparent;
+		box-shadow: none;
+	}
 	.tool-card.embedded :global(.md-collapsible-body) {
 		margin-top: var(--md-sys-space-md);
 	}
