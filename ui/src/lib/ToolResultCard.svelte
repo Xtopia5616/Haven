@@ -497,7 +497,7 @@
 	 * keep their semantic header/details but do not create a second card. */
 	.tool-card.embedded {
 		background: transparent;
-		border: none;
+		border: 0;
 		border-radius: 0;
 		padding: 0;
 		box-shadow: none;

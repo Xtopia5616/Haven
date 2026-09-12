@@ -524,9 +524,9 @@
 	}
 	/* Embedded tool calls sit inside the Agent work surface. The outer
 	 * activity group already provides the conversation edge, so remove the
-	 * nested accent rather than stacking two competing borders. */
+	 * nested border entirely rather than stacking two competing surfaces. */
 	.bubble.compact.tool.assistant {
-		border-left: none;
+		border: none;
 	}
 	.bubble.assistant.thinking {
 		background: transparent;
