@@ -528,6 +528,7 @@ impl OpenAiAdapter {
                                 "data": data
                             }
                         }])),
+                        ContentPart::Video { .. } => Some(serde_json::json!("[Haven: video input is not supported by the configured OpenAI-compatible chat wire]")),
                     }
                 } else {
                     let parts: Vec<serde_json::Value> = m
@@ -553,6 +554,10 @@ impl OpenAiAdapter {
                                     "format": media_type.rsplit('/').next().unwrap_or("wav"),
                                     "data": data
                                 }
+                            }),
+                            ContentPart::Video { .. } => serde_json::json!({
+                                "type": "text",
+                                "text": "[Haven: video input is not supported by the configured OpenAI-compatible chat wire]"
                             }),
                         })
                         .collect();

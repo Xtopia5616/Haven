@@ -152,7 +152,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            id: Some(hello_id.clone()),
         },
     ];
     let mut branch_points = HashMap::new();
@@ -530,7 +530,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            id: Some(hello_id.clone()),
         },
     ];
     let mut branch_points = HashMap::new();
@@ -586,11 +586,9 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
 }
 
 #[tokio::test]
-async fn rollback_pause_matches_prefixed_supplement_in_canonical() {
-    // Legacy CompactSummary seeds may still store historically prefixed
-    // steering text ("Steering: …") while the DB stores the raw text.
-    // Rolling back must match via InjectSource::match_prefixes so the
-    // message is removed from the restored context.
+async fn rollback_pause_matches_compacted_message_id() {
+    // Compacted canonical text may be provider-projected, but rollback uses
+    // the durable message id and never compares rendered text.
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("prefixed rollback").await.unwrap();
     agent
@@ -611,6 +609,12 @@ async fn rollback_pause_matches_prefixed_supplement_in_canonical() {
     let steering_id = msgs
         .iter()
         .find(|m| m.content == "use French")
+        .unwrap()
+        .id
+        .clone();
+    let initial_id = msgs
+        .iter()
+        .find(|m| m.content == "do it")
         .unwrap()
         .id
         .clone();
@@ -641,9 +645,10 @@ async fn rollback_pause_matches_prefixed_supplement_in_canonical() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            id: Some(initial_id),
         },
-        // The steering was pushed into the canonical with its prefix.
+        // The steering is represented in provider-facing text, but retains
+        // the same durable id as the DB message.
         CanonicalMessage {
             role: CanonicalRole::User,
             content: vec![ContentPart::text("Steering: use French")],
@@ -653,7 +658,7 @@ async fn rollback_pause_matches_prefixed_supplement_in_canonical() {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            id: Some(steering_id.clone()),
         },
     ];
     let mut branch_points = HashMap::new();

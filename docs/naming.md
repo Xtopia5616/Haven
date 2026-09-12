@@ -61,7 +61,7 @@
 - 工具 / 状态模块 → **camelCase**：`streaming.js`、`voiceSubmit.js`、`markdownRenderer.js`、`sessionStatus.js`、`modelRoles.js`。
 - 主要导出 Svelte store 的模块 → `xxxStore.js`：`themeStore.js`、`syncStore.js`（`syncStore.js` 导出同名的 `syncStore` 辅助函数，名随主导出）。
 - 聚合 store 桶文件保留 `stores.js` 命名（导出 `sessionStore`/`actionStore` 等命名导出）。
-- 常量 → **UPPER_SNAKE_CASE**：`ACTION_STATUSES`、`COLOR_MAP`、`ROLE_KEYS`。
+- 常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUSES`、`COLOR_MAP`、`ROLE_KEYS`。
 - 局部变量 / 函数参数 → **camelCase**：`newKeyValue`、`reasoningOpen`、`ctxMenuItems`。
 
 ### 路由

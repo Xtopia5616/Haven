@@ -19,7 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::document::{MAX_DOCUMENT_BYTES, extract_document_with_cancel, supports_document_path};
+use crate::document::{
+    MAX_DOCUMENT_BYTES, extract_document_page_with_cancel, supports_document_path,
+};
 use crate::{
     ManagedAsset, ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, ToolLlmUsage,
     ToolResult,
@@ -160,6 +162,9 @@ pub struct MediaParams {
     pub focus: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Zero-based document page/section cursor for `extract`.
+    #[serde(default)]
+    pub page_index: Option<u64>,
     #[serde(rename = "_session_id", default, skip_serializing)]
     pub(crate) session_id: Option<String>,
 }
@@ -306,7 +311,7 @@ impl MediaTool {
             MediaOperation::Describe => self.describe(asset, params.focus, cancel).await,
             MediaOperation::Ocr => self.ocr(asset, params.focus, cancel).await,
             MediaOperation::Transcribe => self.transcribe(asset, cancel).await,
-            MediaOperation::Extract => self.extract(asset, cancel).await,
+            MediaOperation::Extract => self.extract(asset, params.page_index, cancel).await,
             MediaOperation::Generate => unreachable!("generate handled before asset resolution"),
         }
     }
@@ -881,6 +886,7 @@ impl MediaTool {
     async fn extract(
         &self,
         asset: ManagedAsset,
+        page_index: Option<u64>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if classify_media(&asset).0 != MediaModality::Document
@@ -890,8 +896,17 @@ impl MediaTool {
         }
         let path = asset.path.clone();
         let max_chars = self.max_output_chars.min(100_000);
+        let page_index = page_index.unwrap_or(0);
+        let page_index =
+            usize::try_from(page_index).map_err(|_| anyhow::anyhow!("page_index is too large"))?;
         let extracted = tokio::task::spawn_blocking(move || {
-            extract_document_with_cancel(&path, max_chars, MAX_DOCUMENT_BYTES, &cancel)
+            extract_document_page_with_cancel(
+                &path,
+                max_chars,
+                MAX_DOCUMENT_BYTES,
+                page_index,
+                &cancel,
+            )
         })
         .await??;
         let truncated = extracted.truncated;
@@ -904,6 +919,10 @@ impl MediaTool {
             "media": self.model_media_reference(&asset, representation, Some(&text)),
             "representation": representation,
             "format": format.as_str(),
+            "page_index": extracted.page_index,
+            "total_pages": extracted.total_pages,
+            "next_page": extracted.next_page,
+            "has_more": extracted.next_page.is_some(),
             "untrusted_content": true,
         });
         Ok(if truncated {
@@ -984,6 +1003,7 @@ impl Tool for MediaTool {
             "properties": {
                 "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "generate"]},
                 "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"},
+                "page_index": {"type": "integer", "minimum": 0, "description": "Zero-based document page/section cursor; extract returns next_page when available"},
                 "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS},
                 "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}
             },
@@ -993,7 +1013,7 @@ impl Tool for MediaTool {
                 {"additionalProperties": false, "properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "page_index": {"type": "integer", "minimum": 0}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"]}
             ]
         });
@@ -1311,6 +1331,7 @@ mod tests {
                     asset_id: Some(asset_id),
                     focus: None,
                     prompt: None,
+                    page_index: None,
                     session_id: None,
                 },
                 CancellationToken::new(),
@@ -1352,6 +1373,7 @@ mod tests {
                     asset_id: Some(asset_id),
                     focus: None,
                     prompt: None,
+                    page_index: None,
                     session_id: None,
                 },
                 CancellationToken::new(),
@@ -1380,6 +1402,7 @@ mod tests {
                     asset_id: Some(asset_id.clone()),
                     focus: None,
                     prompt: None,
+                    page_index: None,
                     session_id: None,
                 },
                 CancellationToken::new(),
@@ -1412,6 +1435,7 @@ mod tests {
                     asset_id: Some(asset_id.clone()),
                     focus: None,
                     prompt: None,
+                    page_index: None,
                     session_id: None,
                 },
                 cancel,
@@ -1437,6 +1461,7 @@ mod tests {
                     asset_id: Some(asset_id),
                     focus: None,
                     prompt: None,
+                    page_index: None,
                     session_id: None,
                 },
                 CancellationToken::new(),

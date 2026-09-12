@@ -443,6 +443,7 @@ pub(crate) fn append_media_projection(
     let representation = match &projected {
         ContentPart::Image { .. } => Some("raw_image"),
         ContentPart::Audio { .. } => Some("raw_audio"),
+        ContentPart::Video { .. } => Some("raw_video"),
         ContentPart::Text(_) => {
             crate::react::media_plan_for_inputs(std::slice::from_ref(input), strategy)
                 .projections
@@ -535,6 +536,17 @@ pub(crate) fn canonical_for_snapshot_with_media_inputs(
                             ),
                         )))
                     }
+                    ContentPart::Video { media_type, .. } => {
+                        Some(ContentPart::text(snapshot_media_marker(
+                            "video",
+                            &media_type,
+                            find_snapshot_media_input(
+                                media_inputs,
+                                &mut used_inputs,
+                                MediaModalityForPart::Video,
+                            ),
+                        )))
+                    }
                 })
                 .collect();
             message
@@ -546,6 +558,7 @@ pub(crate) fn canonical_for_snapshot_with_media_inputs(
 enum MediaModalityForPart {
     Image,
     Audio,
+    Video,
 }
 
 fn find_snapshot_media_input<'a>(
@@ -566,6 +579,7 @@ fn media_input_matches_modality(input: &MediaInput, modality: MediaModalityForPa
     let media_type_matches = match modality {
         MediaModalityForPart::Image => input.asset.media_type.starts_with("image/"),
         MediaModalityForPart::Audio => input.asset.media_type.starts_with("audio/"),
+        MediaModalityForPart::Video => input.asset.media_type.starts_with("video/"),
     };
     media_type_matches
         || input.representations.iter().any(|representation| {
@@ -581,6 +595,9 @@ fn media_input_matches_modality(input: &MediaInput, modality: MediaModalityForPa
                         ) | (
                             MediaModalityForPart::Audio,
                             haven_common::media::MediaModality::Audio
+                        ) | (
+                            MediaModalityForPart::Video,
+                            haven_common::media::MediaModality::Video,
                         )
                     )
                 })

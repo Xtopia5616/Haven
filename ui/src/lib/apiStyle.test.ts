@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
 	API_STYLE_OPTIONS,
 	PROVIDER_PRESETS,
-	apiStyleFromProvider,
 	apiStylePreset,
 	applyProviderPreset,
 	displayApiStyle,
@@ -72,13 +71,12 @@ describe('apiStyle', () => {
 		);
 	});
 
-	it('derives wire style from provider when api_style is empty', () => {
-		expect(apiStyleFromProvider('anthropic')).toBe('anthropic');
-		expect(providerWireStyle({ provider: 'anthropic', api_style: '' })).toBe('anthropic');
-		expect(providerWireStyle({ provider: 'gemini', api_style: null })).toBe('gemini');
-		expect(displayApiStyle({ provider: 'anthropic', api_style: '' })).toBe('anthropic');
-		expect(displayApiStyle({ provider: 'gemini' })).toBe('gemini');
-		expect(displayApiStyle({ provider: 'llama.cpp', api_style: '' })).toBe('llama.cpp');
+	it('uses the neutral protocol when api_style is empty', () => {
+		expect(providerWireStyle({ provider: 'anthropic', api_style: '' })).toBe('openai-chat');
+		expect(providerWireStyle({ provider: 'gemini', api_style: null })).toBe('openai-chat');
+		expect(displayApiStyle({ provider: 'anthropic', api_style: '' })).toBe('openai-chat');
+		expect(displayApiStyle({ provider: 'gemini' })).toBe('openai-chat');
+		expect(displayApiStyle({ provider: 'llama.cpp', api_style: '' })).toBe('openai-chat');
 	});
 
 	it('displays vendor presets by provider hint or host', () => {
@@ -126,7 +124,6 @@ describe('apiStyle', () => {
 		expect(normalizeApiStyle('elevenlabs')).toBe('elevenlabs');
 		expect(isKnownApiStyle('elevenlabs')).toBe(true);
 		expect(isTtsOnlyStyle('elevenlabs')).toBe(true);
-		expect(apiStyleFromProvider('elevenlabs')).toBe('elevenlabs');
 		expect(apiStylePreset('elevenlabs').api_style).toBe('elevenlabs');
 		expect(apiStylePreset('elevenlabs').provider).toBe('elevenlabs');
 	});

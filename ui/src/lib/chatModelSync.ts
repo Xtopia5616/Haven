@@ -109,7 +109,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		setCurrentEffort(dmRole?.reasoning_effort || '');
 		const webSearch = dmRole?.web_search || 'off';
 		setCurrentWebSearch(webSearch);
-		const apiStyle = normalizeApiStyle(dmProvider?.api_style || dmProvider?.provider);
+		const apiStyle = normalizeApiStyle(dmProvider?.api_style || 'openai-chat');
 		setCurrentApiStyle(apiStyle);
 		const webSearchSupported = supportsBuiltinWebSearch(apiStyle);
 		setWebSearchSupported(webSearchSupported);

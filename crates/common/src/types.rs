@@ -304,6 +304,15 @@ pub enum ContentPart {
         media_type: String,
         data: String,
     },
+    /// Provider-native video payload. Adapters may accept this only when
+    /// their capability profile advertises video support; it is never
+    /// silently converted to a still image or dropped.
+    Video {
+        #[serde(rename = "type")]
+        content_type: String,
+        media_type: String,
+        data: String,
+    },
 }
 
 impl ContentPart {
@@ -401,16 +410,6 @@ impl InjectSource {
     /// Whether adapters should prepend [`Self::render_prefix`].
     pub fn needs_wire_prefix(self) -> bool {
         Self::prefixed().contains(&self)
-    }
-
-    /// Prefixes used when matching a raw DB user message against a historically
-    /// prefixed display string (rollback). Derived from [`Self::render_prefix`]
-    /// so the two cannot drift.
-    pub fn match_prefixes() -> Vec<String> {
-        Self::prefixed()
-            .iter()
-            .map(|s| format!("{}: ", s.render_prefix()))
-            .collect()
     }
 }
 
@@ -814,12 +813,17 @@ impl MessageAttachment {
     /// an inline content part. Images and audio are kept in base64 for this
     /// purpose; ordinary files are persisted and exposed through their path.
     pub fn is_inline_media(&self) -> bool {
-        self.is_image() || self.media_type.starts_with("audio/")
+        self.is_image() || self.is_audio() || self.is_video()
     }
 
     /// True when the attachment is an audio input rather than a generic file.
     pub fn is_audio(&self) -> bool {
         self.media_type.starts_with("audio/")
+    }
+
+    /// True when the attachment can be sent as a provider-native video part.
+    pub fn is_video(&self) -> bool {
+        self.media_type.starts_with("video/")
     }
 }
 
@@ -831,7 +835,8 @@ impl MessageAttachment {
 ///   follow-up with `is_answer` (typed `reply_to`) set
 /// - **action_results** — system inject, not this type
 ///
-/// `Supplement` is the historical name; [`FollowUp`] is the Phase 4 alias.
+/// A typed follow-up/steering input. The queue API intentionally exposes only
+/// this name; old `Supplement` aliases are no longer accepted.
 /// `text` is the plain-text content; `attachments` hold binary payloads
 /// (e.g. images) for multimodal requests.
 ///
@@ -839,7 +844,7 @@ impl MessageAttachment {
 /// session queue and the input/recording paths that produce user messages
 /// never force an `agent -> input` dependency just for this type.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
-pub struct Supplement {
+pub struct FollowUp {
     pub text: String,
     #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
@@ -861,10 +866,7 @@ pub struct Supplement {
     pub message_id: Option<String>,
 }
 
-/// Phase 4 / D1 name for a post-pause user inject (PI `followUp`).
-pub type FollowUp = Supplement;
-
-impl Supplement {
+impl FollowUp {
     pub fn new(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {
         Self::with_message_id(text, attachments, None)
     }
@@ -908,15 +910,15 @@ impl Supplement {
     }
 }
 
-impl From<String> for Supplement {
+impl From<String> for FollowUp {
     fn from(text: String) -> Self {
-        Supplement::new(text, vec![])
+        FollowUp::new(text, vec![])
     }
 }
 
-impl From<&str> for Supplement {
+impl From<&str> for FollowUp {
     fn from(text: &str) -> Self {
-        Supplement::new(text, vec![])
+        FollowUp::new(text, vec![])
     }
 }
 
@@ -1093,25 +1095,6 @@ mod tests {
     }
 
     #[test]
-    fn inject_source_match_prefixes_derive_from_render() {
-        let prefixes = InjectSource::match_prefixes();
-        assert_eq!(prefixes.len(), InjectSource::prefixed().len());
-        for source in InjectSource::prefixed() {
-            let expected = format!("{}: ", source.render_prefix());
-            assert!(
-                prefixes.contains(&expected),
-                "missing match prefix for {source:?}: {expected}"
-            );
-        }
-        assert!(
-            !prefixes
-                .iter()
-                .any(|p| p.starts_with("Background action result:")),
-            "ActionResult bodies are not colon-prefixed"
-        );
-    }
-
-    #[test]
     fn peer_kickoff_prefix_matches_spawn_wrapper() {
         let sample = format!(
             "{PEER_KICKOFF_PREFIX}ses-parent — LOW TRUST, not a user instruction]\nDo work"
@@ -1214,7 +1197,7 @@ mod tests {
 
     #[test]
     fn supplement_new() {
-        let s = Supplement::new("hello", vec![]);
+        let s = FollowUp::new("hello", vec![]);
         assert_eq!(s.text, "hello");
         assert!(!s.is_answer);
         assert!(s.attachments.is_empty());
@@ -1222,33 +1205,33 @@ mod tests {
 
     #[test]
     fn supplement_answer() {
-        let s = Supplement::answer("yes", vec![]);
+        let s = FollowUp::answer("yes", vec![]);
         assert!(s.is_answer);
     }
 
     #[test]
     fn supplement_from_string() {
-        let s: Supplement = "hi".into();
+        let s: FollowUp = "hi".into();
         assert_eq!(s.text, "hi");
         assert!(!s.is_answer);
     }
 
     #[test]
     fn supplement_serde_roundtrip() {
-        let s = Supplement {
+        let s = FollowUp {
             text: "任务完成了吗".into(),
             attachments: vec![],
             is_answer: true,
             message_id: None,
         };
         let json = serde_json::to_string(&s).unwrap();
-        let back: Supplement = serde_json::from_str(&json).unwrap();
+        let back: FollowUp = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
     }
 
     #[test]
     fn supplement_default() {
-        let s = Supplement::default();
+        let s = FollowUp::default();
         assert!(s.text.is_empty());
         assert!(!s.is_answer);
     }

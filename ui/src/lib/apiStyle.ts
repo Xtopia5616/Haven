@@ -85,47 +85,16 @@ export function normalizeApiStyle(style: string | null | undefined): string {
 }
 
 /**
- * Mirror `haven_common::config::api_style_from_provider` for empty `api_style`.
- */
-export function apiStyleFromProvider(provider: string | null | undefined): string {
-	const p = String(provider || '')
-		.trim()
-		.toLowerCase();
-	switch (p) {
-		case 'anthropic':
-		case 'claude':
-			return 'anthropic';
-		case 'google':
-		case 'gemini':
-			return 'gemini';
-		case 'llama':
-		case 'llama.cpp':
-		case 'llamacpp':
-			return 'llama.cpp';
-		case 'xai':
-		case 'grok':
-			return 'xai';
-		case 'deepgram':
-			return 'deepgram';
-		case 'assemblyai':
-			return 'assemblyai';
-		case 'elevenlabs':
-			return 'elevenlabs';
-		default:
-			return 'openai-chat';
-	}
-}
-
-/**
- * Effective wire style for a saved provider: non-empty `api_style` wins,
- * otherwise derived from the vendor hint (matches Rust `provider_config_wire_style`).
+ * Effective wire style for a saved provider. An omitted style uses the
+ * neutral OpenAI-compatible protocol; vendor identity is not a protocol
+ * selector.
  */
 export function providerWireStyle(
 	p: { api_style?: string | null; provider?: string | null } | null | undefined,
 ): string {
 	const raw = String(p?.api_style || '').trim();
 	if (raw) return normalizeApiStyle(raw);
-	return apiStyleFromProvider(p?.provider);
+	return 'openai-chat';
 }
 
 /** Mirror Rust `is_openai_family_wire_style`. */
@@ -869,10 +838,5 @@ export function isKeylessProvider(
 	if (preset.keyless) return true;
 	const provider = String(p.provider || '').toLowerCase();
 	const style = String(p.api_style || '').toLowerCase();
-	return (
-		style === 'llama.cpp' ||
-		provider === 'llama.cpp' ||
-		provider === 'ollama' ||
-		style === 'ollama'
-	);
+	return style === 'llama.cpp' || provider === 'ollama';
 }

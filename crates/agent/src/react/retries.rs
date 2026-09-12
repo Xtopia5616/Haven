@@ -304,52 +304,6 @@ impl ResponsePolicy {
     }
 }
 
-impl ReActEngine {
-    /// Legacy fallback for unanswered `ask` detection (Phase 4 / C5).
-    /// Prefer `SessionExecutor::get_awaiting_answer` / snapshot
-    /// `awaiting_answer`; this JSON substring scan remains only for older
-    /// snapshots that lack the explicit flag.
-    pub(super) fn canonical_has_pending_ask(canonical: &[CanonicalMessage]) -> bool {
-        for m in canonical.iter().rev() {
-            match m.role {
-                CanonicalRole::User => return false,
-                CanonicalRole::Tool
-                    if m.content.iter().any(|p| {
-                        matches!(p, ContentPart::Text(t) if t.contains("\"ask\":true") || t.contains("\"ask\": true"))
-                    }) =>
-                {
-                    return true;
-                }
-                _ => {}
-            }
-        }
-        false
-    }
-
-    /// Extract the question text of the last unanswered `ask` tool result in
-    /// the canonical. Falls back to a generic prompt when the tool output is
-    /// truncated or unparseable.
-    pub(super) fn extract_pending_ask_question(canonical: &[CanonicalMessage]) -> String {
-        for m in canonical.iter().rev() {
-            if m.role != CanonicalRole::Tool {
-                continue;
-            }
-            for p in &m.content {
-                let ContentPart::Text(t) = p else { continue };
-                if !(t.contains("\"ask\":true") || t.contains("\"ask\": true")) {
-                    continue;
-                }
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(t)
-                    && let Some(q) = v.get("question").and_then(|q| q.as_str())
-                {
-                    return q.to_string();
-                }
-            }
-        }
-        "I have a pending question for you.".into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

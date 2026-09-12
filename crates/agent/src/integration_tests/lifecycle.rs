@@ -300,7 +300,7 @@ async fn process_input_does_not_resurrect_ended_session() {
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     // Session is not reloaded into the working set and never becomes Pending.
     assert_eq!(executor.get_session_state(&session.id).await, None);
-    assert!(executor.get_supplements(&session.id).await.is_empty());
+    assert!(executor.get_follow_ups(&session.id).await.is_empty());
 }
 
 #[tokio::test]
@@ -322,7 +322,7 @@ async fn process_input_reactivates_paused_session() {
         Some(SessionStatus::Pending)
     );
     let supps: Vec<String> = executor
-        .get_supplements(&session.id)
+        .get_follow_ups(&session.id)
         .await
         .into_iter()
         .map(|s| s.text)
@@ -352,7 +352,7 @@ async fn process_input_marks_reply_as_answer_when_awaiting() {
         executor.get_session_state(&session.id).await,
         Some(SessionStatus::Pending)
     );
-    let supps = executor.get_supplements(&session.id).await;
+    let supps = executor.get_follow_ups(&session.id).await;
     assert_eq!(supps.len(), 1);
     assert!(
         supps[0].is_answer,
@@ -382,7 +382,7 @@ async fn process_input_paused_without_ask_is_plain_supplement() {
         .await
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
-    let supps = executor.get_supplements(&session.id).await;
+    let supps = executor.get_follow_ups(&session.id).await;
     assert_eq!(supps.len(), 1);
     assert!(
         !supps[0].is_answer,
@@ -417,7 +417,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         executor.get_session_state(&session.id).await,
         Some(SessionStatus::Pending)
     );
-    let supps = executor.get_supplements(&session.id).await;
+    let supps = executor.get_follow_ups(&session.id).await;
     assert_eq!(supps.len(), 1);
     assert_eq!(supps[0].text, "看图");
     assert_eq!(supps[0].attachments, vec![att]);

@@ -7,6 +7,7 @@ mod document;
 pub mod inbox;
 pub mod live_output;
 pub mod messaging_service;
+mod operation_view;
 mod output;
 mod process;
 pub(crate) mod registry;
@@ -1604,6 +1605,22 @@ mod tests {
 
         let file_tool = mgr.get_tool("files").await;
         assert!(file_tool.is_some());
+        for name in [
+            "files.read_text",
+            "files.outline",
+            "files.summary",
+            "files.search",
+            "system.info",
+        ] {
+            let view = mgr.get_tool(name).await;
+            assert!(view.is_some(), "operation view {name} should be registered");
+            assert!(
+                view.unwrap().input_schema()["properties"]
+                    .get("operation")
+                    .is_none(),
+                "operation discriminator stays fixed in {name}"
+            );
+        }
 
         let process_tool = mgr.get_tool("process").await;
         assert!(process_tool.is_some());
@@ -1637,6 +1654,8 @@ mod tests {
         assert!(mgr.get_tool("files").await.is_none());
         let schemas = mgr.registry.list_schemas().await;
         assert!(!schemas.iter().any(|s| s["name"].as_str() == Some("files")));
+        assert!(mgr.get_tool("files.read_text").await.is_none());
+        assert!(mgr.get_tool("files.search").await.is_none());
 
         // ...still listed for the UI with enabled = false...
         let all = mgr.list_builtin_tools().await;

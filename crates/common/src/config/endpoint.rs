@@ -18,10 +18,8 @@ pub struct ModelEndpoint {
     /// - `gemini`: Google Gemini `generateContent` / `streamGenerateContent`
     /// - `deepgram` / `assemblyai`: speech-to-text only
     ///
-    /// When empty/`None`, the style is derived from `provider`
-    /// (`anthropic` → anthropic, `google`/`gemini` → gemini,
-    /// `xai`/`grok` → xai, `llama`/`llama.cpp`/`llamacpp` → llama.cpp,
-    /// otherwise openai-chat).
+    /// When empty/`None`, the endpoint uses the neutral `openai-chat` default.
+    /// Vendor identity never selects a wire protocol implicitly.
     #[serde(default)]
     pub api_style: Option<String>,
     pub base_url: String,
@@ -168,12 +166,12 @@ impl Default for ModelEndpoint {
 pub struct ProviderConfig {
     /// Unique id referenced by [`RoleConfig::provider`] and the settings UI.
     pub name: String,
-    /// Legacy provider hint used to derive the wire protocol when `api_style`
-    /// is empty (e.g. `openai` / `anthropic` / `google` / `llama.cpp`).
+    /// Vendor identity used for provider-specific capabilities and display.
     #[serde(default)]
     pub provider: String,
-    /// Wire protocol style, mirroring [`ModelEndpoint::api_style`]. When empty
-    /// the style is derived from `provider`.
+    /// Explicit wire protocol style, mirroring [`ModelEndpoint::api_style`].
+    /// An empty value means the neutral `openai-chat` protocol; it is never
+    /// inferred from the vendor identity.
     #[serde(default)]
     pub api_style: Option<String>,
     pub base_url: String,
@@ -469,7 +467,7 @@ impl LlmConfig {
         ep.model_name = slot.model.clone();
         ep.api_key = p.api_key.clone();
         ep.api_style = p.api_style.clone();
-        ep.provider = wire_provider_hint(&p.provider, &p.api_style);
+        ep.provider = p.provider.clone();
         ep.base_url = p.base_url.clone();
         ep.auth_header_name = p.auth_header_name.clone();
         ep.auth_header_prefix = p.auth_header_prefix.clone();
@@ -514,7 +512,7 @@ impl LlmConfig {
             .api_style
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or(ep.provider.as_str());
+            .unwrap_or("openai-chat");
         if !supports_builtin_web_search(style) {
             ep.web_search = None;
         }
@@ -577,14 +575,14 @@ pub fn endpoint_credentials_ready(ep: &ModelEndpoint) -> bool {
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(normalize_api_style)
-        .unwrap_or_else(|| api_style_from_provider(&ep.provider));
+        .unwrap_or("openai-chat");
     style == "llama.cpp"
         || ep.provider.eq_ignore_ascii_case("ollama")
         || ep.provider.eq_ignore_ascii_case("llama.cpp")
 }
 
-/// Normalize a stored / UI `api_style` (or provider-derived label) to the
-/// canonical wire-protocol id. Unknown values fall back to `openai-chat`.
+/// Normalize a stored / UI `api_style` to the canonical wire-protocol id.
+/// Unknown values fall back to `openai-chat`.
 pub fn normalize_api_style(style: &str) -> &'static str {
     match style.trim().to_ascii_lowercase().as_str() {
         "openai-responses" | "deepseek-responses" | "responses" => "openai-responses",
@@ -626,21 +624,6 @@ pub fn is_known_api_style(style: &str) -> bool {
     )
 }
 
-/// Derive `api_style` from a legacy `provider` hint when the endpoint leaves
-/// `api_style` empty.
-pub fn api_style_from_provider(provider: &str) -> &'static str {
-    match provider.trim().to_ascii_lowercase().as_str() {
-        "anthropic" | "claude" => "anthropic",
-        "google" | "gemini" => "gemini",
-        "llama" | "llama.cpp" | "llamacpp" => "llama.cpp",
-        "xai" | "grok" => "xai",
-        "deepgram" => "deepgram",
-        "assemblyai" => "assemblyai",
-        "elevenlabs" => "elevenlabs",
-        _ => "openai-chat",
-    }
-}
-
 /// OpenAI-compatible family used by STT / TTS / image-gen allowlists.
 pub fn is_openai_family_wire_style(style: &str) -> bool {
     matches!(
@@ -654,14 +637,14 @@ pub fn is_tts_only_style(style: &str) -> bool {
     normalize_api_style(style) == "elevenlabs"
 }
 
-/// Effective wire style for a [`ProviderConfig`]: non-empty `api_style` wins
-/// (after [`normalize_api_style`]); otherwise derived from `provider`.
+/// Effective wire style for a [`ProviderConfig`]. An omitted style is the
+/// neutral OpenAI-compatible protocol; vendor identity is not consulted.
 pub fn provider_config_wire_style(p: &ProviderConfig) -> &'static str {
     p.api_style
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(normalize_api_style)
-        .unwrap_or_else(|| api_style_from_provider(&p.provider))
+        .unwrap_or("openai-chat")
 }
 
 /// True when the wire style can drive a provider built-in web search tool from
@@ -676,45 +659,6 @@ pub fn supports_builtin_web_search(style: &str) -> bool {
 /// True when the style is speech-to-text only (no chat).
 pub fn is_stt_only_style(style: &str) -> bool {
     matches!(normalize_api_style(style), "deepgram" | "assemblyai")
-}
-
-/// Normalize the legacy `provider` hint used by [`ModelEndpoint::api_style`]
-/// derivation and the `discover_models` auth scheme when no explicit
-/// `api_style` is configured.
-fn wire_provider_hint(provider_hint: &str, api_style: &Option<String>) -> String {
-    // Prefer an explicit legacy provider hint when the wire style is an
-    // OpenAI-family protocol (chat / responses / xai): DeepSeek Responses and
-    // proxied gateways need `provider` to stay `deepseek` / `xai` so reasoning
-    // echo and Live Search detection keep working.
-    let style = api_style
-        .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .unwrap_or_default();
-    match style.as_str() {
-        "anthropic" | "claude" => "anthropic".into(),
-        "gemini" | "google" => "gemini".into(),
-        "llama.cpp" | "llama" | "llamacpp" => "llama.cpp".into(),
-        "deepgram" => "deepgram".into(),
-        "assemblyai" => "assemblyai".into(),
-        "xai" | "grok" => {
-            if provider_hint.is_empty() {
-                "xai".into()
-            } else {
-                provider_hint.to_string()
-            }
-        }
-        "openai-responses" | "deepseek-responses" | "openai-chat" | "openai" | "chat" => {
-            if provider_hint.is_empty() {
-                "openai".into()
-            } else {
-                provider_hint.to_string()
-            }
-        }
-        "" if provider_hint.is_empty() => "openai".into(),
-        "" => provider_hint.to_string(),
-        _ if !provider_hint.is_empty() => provider_hint.to_string(),
-        _ => "openai".into(),
-    }
 }
 
 /// The fully materialized router configuration: five role endpoints plus the

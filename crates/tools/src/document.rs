@@ -59,6 +59,12 @@ pub struct DocumentExtraction {
     pub sections: usize,
     pub size_bytes: u64,
     pub truncated: bool,
+    /// Zero-based logical page/section selected for the model view.
+    pub page_index: usize,
+    /// Total logical pages/sections discovered by the bounded extractor.
+    pub total_pages: usize,
+    /// Cursor for the next page, if another page is available.
+    pub next_page: Option<usize>,
 }
 
 /// Whether the bounded extractor has a parser for this path's extension.
@@ -75,18 +81,26 @@ pub fn extract_document(
     max_chars: usize,
     max_document_bytes: u64,
 ) -> anyhow::Result<DocumentExtraction> {
-    extract_document_inner(path, max_chars, max_document_bytes, None)
+    extract_document_inner(path, max_chars, max_document_bytes, None, None)
 }
 
-/// Cancellable variant used by the files tool while parsing untrusted
-/// documents. The ordinary helper remains synchronous for existing callers.
-pub fn extract_document_with_cancel(
+/// Extract one logical page/section. The returned `next_page` is an explicit
+/// zero-based cursor; callers do not need to split the aggregate text or
+/// guess how a PDF/Office parser partitioned the document.
+pub fn extract_document_page_with_cancel(
     path: &Path,
     max_chars: usize,
     max_document_bytes: u64,
+    page_index: usize,
     cancel: &CancellationToken,
 ) -> anyhow::Result<DocumentExtraction> {
-    extract_document_inner(path, max_chars, max_document_bytes, Some(cancel))
+    extract_document_inner(
+        path,
+        max_chars,
+        max_document_bytes,
+        Some(cancel),
+        Some(page_index),
+    )
 }
 
 fn extract_document_inner(
@@ -94,6 +108,7 @@ fn extract_document_inner(
     max_chars: usize,
     max_document_bytes: u64,
     cancel: Option<&CancellationToken>,
+    page_index: Option<usize>,
 ) -> anyhow::Result<DocumentExtraction> {
     check_cancel(cancel)?;
     let format = format_for_path(path)
@@ -117,12 +132,24 @@ fn extract_document_inner(
         anyhow::bail!("document exceeds the local extraction size limit");
     }
 
-    let (text, sections) = match format {
+    let pages = match format {
         DocumentFormat::Pdf => extract_pdf(&bytes, cancel)?,
         DocumentFormat::Docx | DocumentFormat::Xlsx | DocumentFormat::Pptx => {
             extract_open_xml(path, format, cancel)?
         }
     };
+    let total_pages = pages.len().max(1);
+    let selected_page = page_index.unwrap_or(0);
+    if selected_page >= total_pages {
+        anyhow::bail!(
+            "page_index {} is outside the document (total_pages={})",
+            selected_page,
+            total_pages
+        );
+    }
+    let text = page_index
+        .and_then(|index| pages.get(index).cloned())
+        .unwrap_or_else(|| pages.join("\n"));
     let (text, truncated) =
         haven_common::encoding::truncate_output(&normalize_text(&text), max_chars);
     if text.trim().is_empty() {
@@ -132,9 +159,12 @@ fn extract_document_inner(
         format,
         representation: format.representation(),
         text,
-        sections: sections.max(1),
+        sections: total_pages,
         size_bytes,
         truncated,
+        page_index: selected_page,
+        total_pages,
+        next_page: page_index.and_then(|index| (index + 1 < total_pages).then_some(index + 1)),
     })
 }
 
@@ -198,10 +228,7 @@ fn normalize_text(text: &str) -> String {
     normalized.trim_end().to_string()
 }
 
-fn extract_pdf(
-    bytes: &[u8],
-    cancel: Option<&CancellationToken>,
-) -> anyhow::Result<(String, usize)> {
+fn extract_pdf(bytes: &[u8], cancel: Option<&CancellationToken>) -> anyhow::Result<Vec<String>> {
     if !bytes.starts_with(b"%PDF") {
         anyhow::bail!("file is not a PDF document");
     }
@@ -213,7 +240,7 @@ fn extract_pdf(
     }
 
     let mut cursor = 0;
-    let mut output = String::new();
+    let mut pages = Vec::new();
     let mut streams = 0;
     let mut total_decoded_bytes = 0u64;
     while let Some(stream_offset) = find_bytes(&bytes[cursor..], b"stream") {
@@ -261,19 +288,14 @@ fn extract_pdf(
             anyhow::bail!("PDF decompressed content exceeds the extraction limit");
         }
         let text = extract_pdf_stream_text(&stream);
-        if !text.trim().is_empty() {
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&text);
-        }
+        pages.push(text);
         streams += 1;
         cursor = end_offset + b"endstream".len();
     }
     if streams == 0 {
         anyhow::bail!("PDF contains no readable content streams");
     }
-    Ok((output, streams))
+    Ok(pages)
 }
 
 fn skip_stream_eol(bytes: &[u8], mut offset: usize) -> usize {
@@ -516,7 +538,7 @@ fn extract_open_xml(
     path: &Path,
     format: DocumentFormat,
     cancel: Option<&CancellationToken>,
-) -> anyhow::Result<(String, usize)> {
+) -> anyhow::Result<Vec<String>> {
     let file = File::open(path)?;
     let mut archive = ZipArchive::new(file)?;
     let mut names = Vec::new();
@@ -565,8 +587,7 @@ fn extract_open_xml(
         Vec::new()
     };
 
-    let mut output = String::new();
-    let mut sections = 0;
+    let mut pages = Vec::new();
     for name in names {
         check_cancel(cancel)?;
         if format == DocumentFormat::Xlsx && name == "xl/sharedStrings.xml" {
@@ -583,14 +604,10 @@ fn extract_open_xml(
             extract_xml_text(&bytes, cancel)?
         };
         if !section.trim().is_empty() {
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&section);
-            sections += 1;
+            pages.push(section);
         }
     }
-    Ok((output, sections))
+    Ok(pages)
 }
 
 fn read_zip_entry(
@@ -864,6 +881,48 @@ mod tests {
     }
 
     #[test]
+    fn page_cursor_returns_one_logical_pdf_stream_at_a_time() {
+        let mut file = NamedTempFile::with_suffix(".pdf").unwrap();
+        let pages = [
+            b"BT\n(Page one) Tj\nET\n".as_slice(),
+            b"BT\n(Page two) Tj\nET\n".as_slice(),
+        ];
+        writeln!(file, "%PDF-1.4").unwrap();
+        for (index, body) in pages.iter().enumerate() {
+            writeln!(file, "{} 0 obj", index + 1).unwrap();
+            writeln!(file, "<< /Length {} >>", body.len()).unwrap();
+            writeln!(file, "stream").unwrap();
+            file.write_all(body).unwrap();
+            writeln!(file, "endstream").unwrap();
+            writeln!(file, "endobj").unwrap();
+        }
+        file.flush().unwrap();
+
+        let cancel = CancellationToken::new();
+        let first =
+            extract_document_page_with_cancel(file.path(), 1_000, MAX_DOCUMENT_BYTES, 0, &cancel)
+                .unwrap();
+        assert_eq!(first.text, "Page one");
+        assert_eq!(first.page_index, 0);
+        assert_eq!(first.total_pages, 2);
+        assert_eq!(first.next_page, Some(1));
+
+        let second =
+            extract_document_page_with_cancel(file.path(), 1_000, MAX_DOCUMENT_BYTES, 1, &cancel)
+                .unwrap();
+        assert_eq!(second.text, "Page two");
+        assert_eq!(second.page_index, 1);
+        assert_eq!(second.total_pages, 2);
+        assert_eq!(second.next_page, None);
+
+        let error =
+            extract_document_page_with_cancel(file.path(), 1_000, MAX_DOCUMENT_BYTES, 2, &cancel)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("page_index 2"));
+    }
+
+    #[test]
     fn rejects_encrypted_pdf_explicitly() {
         let mut file = NamedTempFile::with_suffix(".pdf").unwrap();
         file.write_all(b"%PDF-1.7\n/Encrypt\n").unwrap();
@@ -991,10 +1050,11 @@ mod tests {
     fn cancellation_is_checked_before_document_work() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let error = extract_document_with_cancel(
+        let error = extract_document_page_with_cancel(
             Path::new("missing.pdf"),
             1_000,
             MAX_DOCUMENT_BYTES,
+            0,
             &cancel,
         )
         .unwrap_err();

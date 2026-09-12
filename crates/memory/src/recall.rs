@@ -143,6 +143,33 @@ pub enum MemoryRecallEmptyReason {
     EmbeddingFailed,
 }
 
+/// Whether a candidate source contributed to an empty recall. This is kept
+/// typed so UI/tool consumers can distinguish “not configured” from “searched
+/// and found nothing” without parsing prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRecallSourceStatus {
+    Hit,
+    NoHits,
+    NotConfigured,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRecallSuggestion {
+    BroadenQuery,
+    RemoveSubjectFilter,
+    TryOtherKind,
+    ConfigureEmbeddings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryRecallDiagnostics {
+    pub keyword: MemoryRecallSourceStatus,
+    pub vector: MemoryRecallSourceStatus,
+    pub suggestions: Vec<MemoryRecallSuggestion>,
+}
+
 /// Typed result from the shared retriever.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryRecall {
@@ -150,6 +177,8 @@ pub struct MemoryRecall {
     pub mode: MemoryRecallMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub empty_reason: Option<MemoryRecallEmptyReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<MemoryRecallDiagnostics>,
 }
 
 impl Default for MemoryRecall {
@@ -158,6 +187,7 @@ impl Default for MemoryRecall {
             hits: Vec::new(),
             mode: MemoryRecallMode::Keyword,
             empty_reason: None,
+            diagnostics: None,
         }
     }
 }
@@ -338,6 +368,7 @@ impl<'db> MemoryRetriever<'db> {
     ) -> MemoryRecall {
         const RRF_K: f64 = 60.0;
         let has_vectors = !vector_hits.is_empty();
+        let has_keyword_hits = !keyword_hits.is_empty();
         let mut candidates: HashMap<String, (MemoryHit, f64)> = HashMap::new();
 
         for (rank, hit) in vector_hits.into_iter().enumerate() {
@@ -376,8 +407,31 @@ impl<'db> MemoryRetriever<'db> {
             .take(query.limit)
             .map(|(hit, _)| hit)
             .collect();
-        let empty_reason = if hits.is_empty() {
-            Some(MemoryRecallEmptyReason::NoHits)
+        let empty_reason = hits.is_empty().then_some(MemoryRecallEmptyReason::NoHits);
+        let diagnostics = if hits.is_empty() {
+            let mut suggestions = vec![
+                MemoryRecallSuggestion::BroadenQuery,
+                MemoryRecallSuggestion::TryOtherKind,
+            ];
+            if query.fact_subject.is_some() {
+                suggestions.push(MemoryRecallSuggestion::RemoveSubjectFilter);
+            }
+            if !has_vectors {
+                suggestions.push(MemoryRecallSuggestion::ConfigureEmbeddings);
+            }
+            Some(MemoryRecallDiagnostics {
+                keyword: if has_keyword_hits {
+                    MemoryRecallSourceStatus::Hit
+                } else {
+                    MemoryRecallSourceStatus::NoHits
+                },
+                vector: if has_vectors {
+                    MemoryRecallSourceStatus::Hit
+                } else {
+                    MemoryRecallSourceStatus::NoHits
+                },
+                suggestions,
+            })
         } else {
             None
         };
@@ -390,6 +444,7 @@ impl<'db> MemoryRetriever<'db> {
                 MemoryRecallMode::Keyword
             },
             empty_reason,
+            diagnostics,
         }
     }
 
@@ -401,8 +456,16 @@ impl<'db> MemoryRetriever<'db> {
         query: &MemoryQuery,
         vector_hits: Option<Vec<MemoryHit>>,
     ) -> anyhow::Result<MemoryRecall> {
+        let vector_configured = vector_hits.is_some();
         let keyword_hits = self.keyword(query)?;
-        Ok(self.merge(query, keyword_hits, vector_hits.unwrap_or_default()))
+        let mut recall = self.merge(query, keyword_hits, vector_hits.unwrap_or_default());
+        if recall.hits.is_empty()
+            && !vector_configured
+            && let Some(diagnostics) = recall.diagnostics.as_mut()
+        {
+            diagnostics.vector = MemoryRecallSourceStatus::NotConfigured;
+        }
+        Ok(recall)
     }
 }
 
@@ -482,6 +545,34 @@ mod tests {
         assert_eq!(recall.mode, MemoryRecallMode::Keyword);
         assert_eq!(recall.hits[0].entity_id, fact.id);
         assert!(recall.hits[0].model.is_empty());
+    }
+
+    #[test]
+    fn empty_recall_reports_sources_and_actionable_suggestions() {
+        let db = Database::open_in_memory().unwrap();
+        let query = MemoryQuery::new("missing", MemoryKind::Fact, 5)
+            .unwrap()
+            .with_fact_subject(Some("user"));
+        let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();
+
+        let diagnostics = recall.diagnostics.unwrap();
+        assert_eq!(diagnostics.keyword, MemoryRecallSourceStatus::NoHits);
+        assert_eq!(diagnostics.vector, MemoryRecallSourceStatus::NotConfigured);
+        assert!(
+            diagnostics
+                .suggestions
+                .contains(&MemoryRecallSuggestion::BroadenQuery)
+        );
+        assert!(
+            diagnostics
+                .suggestions
+                .contains(&MemoryRecallSuggestion::RemoveSubjectFilter)
+        );
+        assert!(
+            diagnostics
+                .suggestions
+                .contains(&MemoryRecallSuggestion::ConfigureEmbeddings)
+        );
     }
 
     #[test]

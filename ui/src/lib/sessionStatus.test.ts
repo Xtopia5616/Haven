@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-	ACTION_STATUSES,
 	SESSION_STATUSES,
 	isBusyStatus,
 	isPausedStatus,
@@ -20,7 +19,6 @@ describe('SESSION_STATUSES', () => {
 			'completed',
 			'error',
 		]);
-		expect(ACTION_STATUSES).toEqual(SESSION_STATUSES);
 	});
 });
 

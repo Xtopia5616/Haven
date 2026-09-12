@@ -98,6 +98,7 @@ impl FileSearchEngine {
         let cancel_inner = cancel.clone();
         let snippet_chars = self.snippet_chars;
         let max_window_bytes = self.max_window_bytes;
+        let pattern_for_output = pattern_str.clone();
         let (results, truncated) = tokio::task::spawn_blocking(move || {
             search_files(SearchParams {
                 root: &root_path,
@@ -115,11 +116,13 @@ impl FileSearchEngine {
             })
         })
         .await?;
-
         let mut output = serde_json::json!({
             "results": results,
             "count": results.len(),
             "mode": mode,
+            "root": root,
+            "pattern": pattern_for_output,
+            "has_more": truncated,
         });
         if truncated {
             output["truncated"] = serde_json::Value::Bool(true);
@@ -265,6 +268,7 @@ fn search_filenames_parallel(
                 }
                 guard.push(serde_json::json!({
                     "path": entry.path().to_string_lossy(),
+                    "match_reason": "filename",
                 }));
             }
             ignore::WalkState::Continue
@@ -566,9 +570,13 @@ impl Sink for CollectingSink {
             "path": self.path.to_string_lossy(),
             "line": line_number,
             "snippet": snippet,
+            "match_reason": "content",
+            "context": { "before": [], "after": [] },
         });
         if !self.pending_before.is_empty() {
-            result["before"] = Value::Array(std::mem::take(&mut self.pending_before));
+            let before = Value::Array(std::mem::take(&mut self.pending_before));
+            result["before"] = before.clone();
+            result["context"]["before"] = before;
         }
         let result_index = guard.len();
         guard.push(result);
@@ -593,6 +601,7 @@ impl Sink for CollectingSink {
                 if let Some(result_index) = self.current_result {
                     let mut guard = self.results.lock().unwrap();
                     if let Some(result) = guard.get_mut(result_index) {
+                        let context_value = value.clone();
                         result
                             .as_object_mut()
                             .expect("search result is an object")
@@ -600,7 +609,17 @@ impl Sink for CollectingSink {
                             .or_insert_with(|| Value::Array(Vec::new()))
                             .as_array_mut()
                             .expect("search result context is an array")
-                            .push(value);
+                            .push(context_value.clone());
+                        if let Some(context) = result.get_mut("context") {
+                            context
+                                .as_object_mut()
+                                .expect("search context is an object")
+                                .entry("after")
+                                .or_insert_with(|| Value::Array(Vec::new()))
+                                .as_array_mut()
+                                .expect("search context after is an array")
+                                .push(context_value);
+                        }
                     }
                 }
             }
@@ -741,6 +760,9 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
+        assert_eq!(result.output["root"], tmp.path().to_string_lossy().as_ref());
+        assert_eq!(result.output["pattern"], "alpha");
+        assert_eq!(result.output["has_more"], false);
         let results = result.output["results"].as_array().unwrap();
         assert_eq!(results.len(), 2);
         for r in results {
@@ -750,6 +772,8 @@ mod tests {
             );
             assert!(r["line"].as_u64().is_some());
             assert!(r["snippet"].as_str().unwrap().contains("alpha"));
+            assert_eq!(r["match_reason"], "content");
+            assert!(r["context"].is_object());
         }
         let lines: Vec<u64> = results
             .iter()
@@ -786,6 +810,8 @@ mod tests {
         assert_eq!(match_result["before"][1]["line"], 2);
         assert_eq!(match_result["after"][0]["line"], 4);
         assert_eq!(match_result["after"][1]["line"], 5);
+        assert_eq!(match_result["context"]["before"], match_result["before"]);
+        assert_eq!(match_result["context"]["after"], match_result["after"]);
     }
 
     #[tokio::test]

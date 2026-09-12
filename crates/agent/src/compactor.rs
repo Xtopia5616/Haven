@@ -37,6 +37,7 @@ fn estimate_message_token_cost(msg: &CanonicalMessage) -> u32 {
             ContentPart::Text(t) => total = total.saturating_add(estimate_tokens(t)),
             ContentPart::Image { .. } => total = total.saturating_add(200), // rough image token cost
             ContentPart::Audio { .. } => total = total.saturating_add(500), // rough audio token cost
+            ContentPart::Video { .. } => total = total.saturating_add(1_500), // rough video token cost
         }
     }
     // Reasoning (thinking-mode) is echoed back to the provider on every
@@ -350,6 +351,13 @@ impl ContextCompactor {
                             role, media_type
                         );
                     }
+                    ContentPart::Video { media_type, .. } => {
+                        let _ = writeln!(
+                            line,
+                            "[{} video attachment media_type={} follows]",
+                            role, media_type
+                        );
+                    }
                 }
             }
             if let Some(calls) = &msg.tool_calls {
@@ -410,7 +418,9 @@ impl ContextCompactor {
             .iter()
             .flat_map(|message| message.content.iter())
             .filter_map(|part| match part {
-                ContentPart::Image { .. } | ContentPart::Audio { .. } => Some(part.clone()),
+                ContentPart::Image { .. }
+                | ContentPart::Audio { .. }
+                | ContentPart::Video { .. } => Some(part.clone()),
                 ContentPart::Text(_) => None,
             })
             .collect();

@@ -9,13 +9,6 @@ function isUnrecoverableHistoricalTool(name: string | null | undefined): boolean
 	return name === 'process.launch';
 }
 
-// Sentinel the backend used to persist in `messages.tool_call_id` for
-// assistant messages carrying an `ask` question text. New records no
-// longer set it: the question message is persisted under the ask step row's
-// id, so the resume builder skips it by id and renders the ask CARD from
-// the message. Legacy rows still carry the sentinel — kept for them.
-export const ASK_MSG_TOOL_CALL_ID = '__ask__';
-
 /** A resume-only bubble shown when a session has no persisted message rows. */
 export function isDisplayOnlyMessageId(id: unknown): boolean {
 	return typeof id === 'string' && id.startsWith('placeholder-');
@@ -94,7 +87,7 @@ interface ResumeData {
  * navigates back). Pure ID union: every live bubble carries the SAME id
  * the backend mints and persists its DB row under (`msg-*` for streamed
  * thought/reasoning, `step-*` for tool/ask cards), so identity is decided
- * by id alone and no content comparison is needed.
+	 * by id alone; content equality is never used as an identity fallback.
  *
  * Rules:
  * - id present in both: the DB copy wins, EXCEPT an awaiting live `ask`
@@ -210,8 +203,8 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 	const stepById = new Map((data.steps || []).map((step) => [step.id, step]));
 
 	// Message rows persisted under a step row's id (ask questions on new
-	// records, thought/supplement content on new records) are the content
-	// view of that step: lookups by id below replace all content matching.
+	// records, thought/follow-up content on new records) are the content
+	// view of that step. Stable ids are the only identity link.
 	const msgById = new Map(msgs.map((m) => [m.id, m]));
 	const askStepIds = new Set(
 		(data.steps || []).filter((s) => s.action_tool === 'ask').map((s) => s.id),
@@ -220,11 +213,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 	const msgIds = new Set();
 	for (const msg of msgs) {
 		msgIds.add(msg.id);
-		// New records persist the ask question message under the ask step
-		// row's id: skip it here (the ask CARD below renders it). Legacy
-		// records carry the `__ask__` sentinel — skip those too.
+		// Ask question messages are persisted under the ask step row's id:
+		// skip them here (the ask CARD below renders them).
 		if (askStepIds.has(msg.id)) continue;
-		if (msg.tool_call_id === ASK_MSG_TOOL_CALL_ID) continue;
 		const step = stepById.get(msg.id);
 		const isToolObservation = msg.role === 'tool' || msg.message_type === 'observation';
 		const persistedToolName = step?.action_tool;
@@ -278,10 +269,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		const unrecoverable = isUnrecoverableHistoricalTool(step.action_tool);
 		const obs = step.observation && step.observation !== '{}' ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card
-		// under the step row's id (matching the live card). New records keep
-		// the question text in the message row persisted under that id (the
-		// single content authority; the row also re-seeds resume); legacy
-		// records parse it from the observation JSON instead.
+		// under the step row's id (matching the live card). The question text
+		// must come from the message row persisted under that id; the typed
+		// observation contributes only quick-reply options.
 		// The card's LOGICAL position is when its content (the observation /
 		// question) landed — `completed_at` — not when the tool started. The
 		// step row's created_at (tool START) can fall in the same second as the
@@ -292,16 +282,12 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		const cardTs = Date.parse(step.completed_at || step.created_at) || 0;
 		if (step.action_tool === 'ask') {
 			const askMsg = msgById.get(stepId);
-			let askText = askMsg ? askMsg.content : null;
+			if (!askMsg) continue;
+			const askText = askMsg.content;
 			let askOptions: string[] = [];
 			if (obs) {
 				try {
-					const parsed: { question?: unknown; options?: unknown } = JSON.parse(obs);
-					if (parsed && typeof parsed.question === 'string') {
-						if (!askText) askText = parsed.question;
-					} else if (!askText) {
-						askText = obs;
-					}
+					const parsed: { options?: unknown } = JSON.parse(obs);
 					if (Array.isArray(parsed.options)) {
 						askOptions = parsed.options.map((o: unknown) =>
 							typeof o === 'string'
@@ -310,9 +296,8 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 						);
 					}
 				} catch {
-					// Not JSON: legacy rows store the readable question
-					// directly in the observation.
-					if (!askText) askText = obs;
+					// Options are advisory UI metadata; malformed observations fail
+					// closed without replacing the id-linked question text.
 				}
 			}
 			// The session pauses to wait for the user's answer, so a paused
@@ -321,26 +306,10 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			// buttons and the user cannot answer from the chat view.
 			// Phase 4 / F2: `paused_awaiting_answer` is distinct from `paused`.
 			const sessionPaused = isPausedStatus(data.session?.status);
-			// Legacy-only pairing: when the model batches multiple ask calls
-			// into one step, the message joins the questions with "\n\n",
-			// while each step observes only its own question. Also covers
-			// the pending-ask re-persist path (the question is re-persisted
-			// as a plain assistant message). New records match by id above,
-			// so this content comparison only ever fires for legacy rows.
-			if (askText) {
-				const matchIdx = items.findIndex(
-					(item) =>
-						item.role === 'assistant' &&
-						((item.content || '') === askText ||
-							(item.type == null &&
-								(item.content || '').startsWith(`${askText}\n\n`))),
-				);
-				if (matchIdx >= 0) items.splice(matchIdx, 1);
-			}
 			items.push({
 				id: stepId,
 				role: 'assistant',
-				content: askText || '',
+				content: askText,
 				type: 'ask',
 				toolName: 'ask',
 				options: askOptions,
@@ -379,28 +348,13 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 	// first LLM call) leave all messages without a stepNumber, breaking
 	// rollback. New records share the id between the thought/supplement
 	// message row and its step row, so the stepNumber resolves by id alone.
-	// Legacy rows carry the thought text (user steering/supplements included,
-	// whose words were stored on the thought row) — match those by trimmed
-	// content so old conversations keep working.
+	// The step id is the only identity link needed for the message projection.
 	for (const step of data.steps || []) {
 		if (step.action_tool) continue;
 		const byId = items.find((i) => i.id === step.id && i.stepNumber == null);
 		if (byId) {
 			byId.stepNumber = step.step_number;
 			continue;
-		}
-		if (step.thought == null) continue;
-		const thoughtTrimmed = step.thought.trim();
-		if (!thoughtTrimmed) continue;
-		for (const item of items) {
-			if (
-				(item.role === 'assistant' || item.role === 'user') &&
-				item.stepNumber == null &&
-				(item.content || '').trim() === thoughtTrimmed
-			) {
-				item.stepNumber = step.step_number;
-				break;
-			}
 		}
 	}
 	items.sort((a, b) => (a._ts || 0) - (b._ts || 0));

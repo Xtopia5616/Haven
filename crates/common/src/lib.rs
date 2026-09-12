@@ -28,6 +28,6 @@ pub use media::{
 pub use tools::{ToolDef, ToolRetrySafety};
 
 pub use types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
-    MessageAttachment, PEER_KICKOFF_PREFIX, Supplement,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
+    MessageAttachment, PEER_KICKOFF_PREFIX,
 };

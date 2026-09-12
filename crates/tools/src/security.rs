@@ -52,6 +52,11 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("files", "summary", Low),
     security_case!("files", "search", Low),
     security_case!("files", "search:content", Medium),
+    security_case!("files.read_text", "files.read_text", Low),
+    security_case!("files.outline", "files.outline", Low),
+    security_case!("files.summary", "files.summary", Low),
+    security_case!("files.search", "files.search", Low),
+    security_case!("files.search", "search:content", Medium),
     security_case!("process", "list", Low),
     security_case!("process", "kill", High),
     security_case!("clipboard", "read", Low),
@@ -84,6 +89,16 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("system", "power:lock", High),
     security_case!("system", "power:sleep", High),
     security_case!("system", "power:hibernate", Critical),
+    security_case!("system.info", "system.info", Safe),
+    security_case!("preferences", "get", Low),
+    security_case!("preferences", "set", Low),
+    security_case!("preferences", "clear", Low),
+    security_case!("preferences", "list", Low),
+    security_case!("checklist", "list", Low),
+    security_case!("checklist", "add", Low),
+    security_case!("checklist", "update", Low),
+    security_case!("checklist", "remove", Low),
+    security_case!("checklist", "clear", Low),
     security_case!("window", "list", Low),
     security_case!("window", "foreground", Low),
     security_case!("window", "focus", Medium),
@@ -1509,6 +1524,9 @@ mod tests {
         {
             return "search:content".into();
         }
+        if tool_name == "files.search" && input["mode"].as_str() == Some("content") {
+            return "search:content".into();
+        }
         input["operation"]
             .as_str()
             .map(str::to_owned)
@@ -1590,7 +1608,7 @@ mod tests {
             // `files:search` has a mode-dependent risk level. The schema
             // operation is one route, but both risk-bearing modes need a
             // contract assertion.
-            if name == "files" {
+            if name == "files" || name == "files.search" {
                 let content_search = serde_json::json!({
                     "operation": "search",
                     "mode": "content"

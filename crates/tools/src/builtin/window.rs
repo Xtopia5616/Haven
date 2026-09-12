@@ -286,6 +286,7 @@ impl WindowTool {
                     asset_id: Some(capture.asset.asset_id),
                     focus: None,
                     prompt: None,
+                    page_index: None,
                     session_id: session_id.map(str::to_owned),
                 },
                 cancel,

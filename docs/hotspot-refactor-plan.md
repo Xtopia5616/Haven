@@ -49,23 +49,23 @@
 
 | 优先级 | 位置 | 当前妥协 | 目标动作 |
 |---|---|---|---|
-| P0 | [`crates/common/src/types.rs`](../crates/common/src/types.rs)、[`crates/agent/src/session/queues.rs`](../crates/agent/src/session/queues.rs)、[`crates/agent/src/session/mod.rs`](../crates/agent/src/session/mod.rs) | `Supplement` 是历史 struct，`FollowUp` 只是 type alias；队列同时保留 `add_supplement*` / `get_supplements` 和 `add_follow_up*` / `get_follow_ups`。生产恢复路径仍调用旧的 `add_supplement_with_attachments`。 | 选择 `FollowUp` 作为唯一类型和队列 API，直接迁移 `resume.rs`、ask 文档、测试与导出，删除旧方法、旧 type alias 和双重 re-export。`AgentEvent::Supplement` / `ProcessResult::Supplemented` 属于跨端事件契约，如要一并改名，单独登记 IPC 破坏性变更，不要靠第二套名字长期兼容。 |
-| P0 | [`crates/app-binary/src/commands/skills.rs`](../crates/app-binary/src/commands/skills.rs) | `execute_skill` 接收 `confirmed: Option<bool>`，但代码明确忽略它；安全授权已经统一由 `SafetyGateway` 决定，当前 UI 也不发送该字段。 | 从 Tauri 命令签名、命令契约和测试中删除 `confirmed`，让 SafetyGateway 成为唯一授权入口。 |
-| P0 | [`crates/app-binary/src/commands/session.rs`](../crates/app-binary/src/commands/session.rs)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | 新的 `effect` + `scope` 已经存在，但 Rust 和 UI 仍保留 `trust_session` / `trustSession`，并在缺少新字段时猜测旧语义。 | 同一轮中迁移所有 UI 调用到 `effect` + `scope`，删除 `trust_session` bridge；下一步可将决定收窄为有类型且必填的 DTO，避免继续允许“缺字段再猜”。 |
+| P0 | [`crates/common/src/types.rs`](../crates/common/src/types.rs)、[`crates/agent/src/session/queues.rs`](../crates/agent/src/session/queues.rs)、[`crates/agent/src/session/mod.rs`](../crates/agent/src/session/mod.rs) | **已完成（2026-09-12）**：`FollowUp` 是唯一类型和队列 API，旧 `Supplement` 类型别名、旧队列方法和双重 re-export 已删除。`AgentEvent::Supplement` / `ProcessResult::Supplemented` 仍是已登记的跨端 wire 名称，不再作为内部入口。 | 保留跨端事件名作为独立 IPC 契约；内部代码只使用 `FollowUp`。 |
+| P0 | [`crates/app-binary/src/commands/skills.rs`](../crates/app-binary/src/commands/skills.rs) | **已完成（2026-09-12）**：`execute_skill` 不再接收被忽略的 `confirmed` 参数，安全授权只有 SafetyGateway。 | 保持 SafetyGateway 为唯一授权入口。 |
+| P0 | [`crates/app-binary/src/commands/session.rs`](../crates/app-binary/src/commands/session.rs)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | **已完成（2026-09-12）**：confirmation IPC 只接受必填 `effect` + `scope`，`trust_session` / `trustSession` bridge 和缺字段猜测已删除。 | 保持 typed permission decision 契约。 |
 | P1 | [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) | `ReActSnapshot.upgrade_tool_rounds` 只为进程内测试 fixture 保留，生产解析和 resume 不使用。 | **已完成（2026-09-05，ADR 0082）**：删除字段和所有测试 fixture 填充。 |
-| P1 | [`ui/src/lib/ToolResultCard.svelte`](../ui/src/lib/ToolResultCard.svelte) | `toolResultParsing.ts` 已是解析权威，但 `ToolResultCard` 仍通过 `<script module>` re-export `parseToolResult` / `canRenderToolResult`，文档也明确称其为兼容 re-export。生产代码已直接导入新模块，剩余依赖主要在测试。 | 删除 re-export，测试直接从 `toolResultParsing.ts` 导入。保留 `ToolResultCard` 组件本身作为卡片壳，不保留旧模块路径兼容。 |
+| P1 | [`ui/src/lib/ToolResultCard.svelte`](../ui/src/lib/ToolResultCard.svelte) | **已完成（2026-09-12）**：`ToolResultCard` 只消费 `toolResultParsing.ts`，不再 re-export 解析函数。 | 保留 `ToolResultCard` 作为卡片壳，不保留旧模块路径兼容。 |
 | P1 | [`crates/memory/src/embeddings.rs`](../crates/memory/src/embeddings.rs) | 旧 text-only keyword facade 没有 workspace 生产调用；typed 查询已返回 `entity_id + text`，用于正确去重。 | **已完成（2026-09-05，ADR 0082）**：删除旧方法，测试统一使用 typed hit，避免调用方丢失实体身份。 |
-| P1 | [`ui/src/lib/sessionStatus.ts`](../ui/src/lib/sessionStatus.ts) | `ACTION_STATUSES = SESSION_STATUSES` 只是旧命名 alias，workspace 生产代码没有使用，只有 alias 自己的测试。 | 删除 alias 和测试，不要继续用 action 术语污染 session 状态模型。 |
+| P1 | [`ui/src/lib/sessionStatus.ts`](../ui/src/lib/sessionStatus.ts) | **已完成（2026-09-12）**：`ACTION_STATUSES` alias 和对应测试已删除。 | 只保留 session 状态模型。 |
 
 ### B. 已经影响当前架构的兼容妥协
 
 | 优先级 | 位置 | 为什么不是简单删一行 | 目标架构 |
 |---|---|---|---|
-| P0 | [`crates/agent/src/rollback_support.rs`](../crates/agent/src/rollback_support.rs)、[`crates/common/src/types.rs`](../crates/common/src/types.rs) | rollback 已优先按 `UserInject.message_id` 精确定位，但无 id 的旧事件和 `CompactSummary` 仍按文本、wire prefix 匹配。代码明确说明：当前 compaction 没有保留原始 user message id，所以只能 content fallback；这让一个本应是身份操作的危险路径依赖文本相等。 | compaction/event provenance 必须保留被压缩 user message 的原始 `msg-*` 身份，rollback 全路径只接受精确 id；之后删除 `InjectSource::match_prefixes`、id-less content matching 和相关测试。保留 rollback 双时钟和 `last_msg_at` 语义不变。 |
+| P0 | [`crates/agent/src/rollback_support.rs`](../crates/agent/src/rollback_support.rs)、[`crates/common/src/types.rs`](../crates/common/src/types.rs) | **已完成（2026-09-12）**：rollback 全路径只接受精确 `msg-*` 身份；compaction provenance、`InjectSource` 和 UI optimistic row 均不再按内容或 prefix 猜测。 | 保留 rollback 双时钟和 `last_msg_at` 语义不变。 |
 | P1 | [`crates/agent/src/resume.rs`](../crates/agent/src/resume.rs)、[`crates/agent/src/resume_support.rs`](../crates/agent/src/resume_support.rs) | 当前有两套 resume authority：有效 snapshot 走 `events`，缺 snapshot 时从 `session_steps` 重新投影，并为缺失 provider id 生成 `call-*`。这不是单纯的模块拆分，而是两种可能不一致的 transcript 语义。 | 测试版可在发布边界选择严格方案：snapshot 缺失就提示 reset / 新会话，删除 snapshot-less projector；如果产品仍要保留灾难恢复，则必须把它命名为独立的显式 recovery mode，不能继续称为普通 resume，也不能继续扩展第二套投影语义。 |
-| P1 | [`crates/agent/src/react/retries.rs`](../crates/agent/src/react/retries.rs)、[`crates/agent/src/react/turn.rs`](../crates/agent/src/react/turn.rs) | `awaiting_answer` 已是显式状态，但 loop 仍扫描 canonical tool 文本中的 `{"ask":true}`，并从不可解析文本猜问题。这是旧 observation 形状的 JSON heuristic，与结构化 ask 信号并存。 | 让 `awaiting_answer` / typed tool result 成为唯一来源；删除 `canonical_has_pending_ask`、`extract_pending_ask_question` 及 substring scan 测试。无法恢复结构化 ask 时 fail closed，而不是猜测。 |
-| P1 | [`ui/src/lib/resumeMessages.ts`](../ui/src/lib/resumeMessages.ts)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | resume 仍识别旧的 `__ask__` sentinel、非 JSON observation、按内容删除重复 ask；rollback 还会在 optimistic bubble 没有 `msg-*` 时用“内容 + 最近时间”找 DB id。当前新路径已经按 step/message id 工作，这些是旧行和旧竞态的补丁。 | 在数据 reset / 新提交协议生效后，删除 sentinel、内容配对和内容找 id；提交时保证 optimistic bubble 与后端返回的 canonical `msg-*` 一一绑定，resume 只按稳定 id 合并。删除前必须补齐 reset 说明和并发提交回归测试。 |
-| P1 | [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) | `api_style` 已是协议字段，但空 `api_style` 时仍从历史 `provider` hint 推导；`wire_provider_hint` 又反向保留 provider 名以触发 DeepSeek/xAI 等特例。一个 `provider` 字段同时承担连接身份、厂商能力和协议选择，形成双字段/多语义模型。 | 配置模型明确拆成 `wire_protocol`（或现有 `api_style`）与必要的 `vendor`/provider identity；迁移配置后要求显式协议，不再通过 `provider` 猜测。`model`→`model_name`、`Stdio`/`Http` serde alias 也应在同一 reset 边界清理。厂商 preset 可保留为 UI 创建配置时的模板，不要继续作为运行时隐式 fallback。 |
+| P1 | [`crates/agent/src/react/retries.rs`](../crates/agent/src/react/turn.rs) | **已完成（2026-09-12）**：`awaiting_answer` / typed tool result 是唯一 ask 来源；旧 canonical JSON 扫描、问题文本猜测和 substring 测试已删除，无法恢复时 fail closed。 | 保持结构化 ask signal 为唯一来源。 |
+| P1 | [`ui/src/lib/resumeMessages.ts`](../ui/src/lib/resumeMessages.ts)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | **已完成（2026-09-12）**：ask 只从 step/message 共享 id 恢复；旧 sentinel、内容配对和 optimistic bubble 的内容+时间反查已删除。 | 保持提交时 canonical `msg-*` 与 optimistic row 一一绑定；snapshot-less recovery 仍是单独的恢复策略，不再向 UI 暴露旧猜测路径。 |
+| P1 | [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) | **已完成（2026-09-12）**：`api_style` 为空时只使用中性 `openai-chat`，`provider` 仅作为 vendor identity；`wire_provider_hint` 和 provider→wire 隐式推导已删除。 | 继续在 reset 边界清理 `model`→`model_name`、`Stdio`/`Http` serde alias；厂商 preset 只用于 UI 创建配置。 |
 | P2 | [`crates/tools/src/inbox.rs`](../crates/tools/src/inbox.rs)、[`crates/agent/src/react/context.rs`](../crates/agent/src/react/context.rs)、[`crates/tools/src/builtin/messaging.rs`](../crates/tools/src/builtin/messaging.rs) | ReAct 自动收件使用 durable `claim_and_archive` + `ack_claimed`，显式 `inbox` 工具仍使用立即 drain 的 `read_and_archive`。两条路径的崩溃和确认语义不同；代码注释直接称后者为 legacy path。 | 统一到一个 claim/project/ack 原语；显式工具如果需要同步返回，应在该原语之上做一次受控消费，而不是保留第二套文件状态机。若短期不能合并，必须写明它是用户可见的同步 adapter、禁止新增内部调用，并给出删除/合并条件。 |
 | P2 | [`crates/agent/src/prompt.rs`](../crates/agent/src/prompt.rs) | `patch_system_memory` 仍能升级旧 `USER FACTS` / `Past conversation excerpts` 布局。当前 builder 已有明确的新布局，旧 patch 主要服务旧 snapshot 中的 system prompt。 | 在 snapshot reset 边界后只保留当前布局替换；删除 `strip_legacy_past_excerpts` 及旧 fence 分支，并保留当前 prompt-cache-friendly 的局部 patch。 |
 | P2 | [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) | `ScheduledActionFired` 对旧行允许 `session_id=None`、`prompt=None` 并回退到 `body`，导致同一 DTO 同时表示当前 Tool/Continue 语义和旧唤醒语义。 | 迁移或清理旧 scheduled rows 后，按 mode 要求相应字段；`prompt` 与 `body` 的语义不要再互相兜底。 |
@@ -81,10 +81,10 @@
 
 ### D. 建议执行顺序
 
-1. 已完成无生产调用的 `upgrade_tool_rounds` 和 memory text-only search facade 删除（ADR 0082）；剩余 `ToolResultCard` parsing re-export、`ACTION_STATUSES` 可按同一原则清理。
-2. 再完成 FollowUp/Supplement、confirmation IPC 和旧 ask/retry signal 的单一命名/单一来源迁移；这些会触及跨 crate 或前端契约，按领域独立提交。
-3. 然后处理 rollback provenance 和 snapshot-less resume。它们涉及数据语义，必须先写 ADR、补身份/重置测试，再删除 fallback。
-4. 最后收敛配置双字段、inbox 双消费路径、scheduled row fallback 和 prompt 旧布局。每项都要明确是否删除旧数据；不要为了“以后可能有旧用户”把临时分支重新留回去。
+1. 已完成无生产调用的 `upgrade_tool_rounds`、memory text-only search facade、`ToolResultCard` parsing re-export 和 `ACTION_STATUSES` 删除（ADR 0082/0131）。
+2. 已完成 FollowUp、confirmation IPC、旧 ask/retry signal、rollback provenance/UI 内容匹配和 provider→wire-style 隐式推导清理（ADR 0131）。
+3. snapshot-less projector 仍作为显式灾难恢复策略保留；它不再被用于 corrupt snapshot fallback，后续如删除需以 reset/release 任务单独变更。
+4. P2 仍待收敛配置字段 alias、inbox 双消费路径、scheduled row fallback 和 prompt 旧布局；每项都要明确是否删除旧数据。
 
 本节中的“删除”均默认测试版破坏性变更：删除前同步更新旧测试、文档和发布重置说明；不得只删生产分支而保留旧 fixture 继续掩盖兼容入口。
 

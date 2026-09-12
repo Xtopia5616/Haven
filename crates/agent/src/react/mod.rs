@@ -158,6 +158,7 @@ fn media_capabilities_for_input(input: &MediaInput) -> CapabilityProfile {
 pub(crate) struct MediaRequirements {
     pub(crate) image: bool,
     pub(crate) audio: bool,
+    pub(crate) video: bool,
 }
 
 /// Scan canonical content once per step. The result is shared by compaction,
@@ -169,6 +170,7 @@ pub(crate) fn canonical_media_requirements(messages: &[CanonicalMessage]) -> Med
         match part {
             ContentPart::Image { .. } => requirements.image = true,
             ContentPart::Audio { .. } => requirements.audio = true,
+            ContentPart::Video { .. } => requirements.video = true,
             ContentPart::Text(_) => {}
         }
     }
@@ -185,7 +187,7 @@ pub(super) async fn choose_agent_role(
     request_context: &RequestContext,
 ) -> EndpointRole {
     let requirements = request_context.media_requirements();
-    let preferred = if requirements.image {
+    let preferred = if requirements.image || requirements.video {
         router.vision_role().await
     } else if requirements.audio {
         router.audio_role().await
@@ -1951,75 +1953,5 @@ mod tests {
         let r = resp("  spaced thought  ", vec![], Some(FinishReason::Stop));
         let (thought, _) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("spaced thought"));
-    }
-
-    fn ask_tool_msg(question: &str) -> CanonicalMessage {
-        CanonicalMessage::tool(
-            vec![ContentPart::text(format!(
-                r#"{{"ask":true,"question":"{question}","awaiting_answer":true,"options":[]}}"#
-            ))],
-            Some("call_ask".into()),
-        )
-    }
-    #[test]
-    fn pending_ask_true_when_ask_result_unanswered() {
-        let canonical = vec![
-            CanonicalMessage::user_text("help me"),
-            ask_tool_msg("which file?"),
-        ];
-        assert!(ReActEngine::canonical_has_pending_ask(&canonical));
-    }
-
-    #[test]
-    fn pending_ask_false_when_user_message_follows_ask() {
-        let canonical = vec![
-            CanonicalMessage::user_text("help me"),
-            ask_tool_msg("which file?"),
-            CanonicalMessage::user_text("Answer to your previous question: the first one"),
-        ];
-        assert!(!ReActEngine::canonical_has_pending_ask(&canonical));
-    }
-
-    #[test]
-    fn pending_ask_false_when_no_ask_tool_result() {
-        let canonical = vec![
-            CanonicalMessage::user_text("help me"),
-            CanonicalMessage::tool(
-                vec![ContentPart::text(r#"{"success":true,"output":"ok"}"#)],
-                Some("call_x".into()),
-            ),
-        ];
-        assert!(!ReActEngine::canonical_has_pending_ask(&canonical));
-    }
-
-    #[test]
-    fn pending_ask_false_when_user_message_before_ask() {
-        let canonical = vec![
-            CanonicalMessage::user_text("first question"),
-            ask_tool_msg("second question?"),
-        ];
-        // The user message precedes the ask result: still pending.
-        assert!(ReActEngine::canonical_has_pending_ask(&canonical));
-    }
-
-    #[test]
-    fn extract_pending_ask_question_reads_last_ask() {
-        let canonical = vec![ask_tool_msg("first?"), ask_tool_msg("second?")];
-        assert_eq!(
-            ReActEngine::extract_pending_ask_question(&canonical),
-            "second?"
-        );
-    }
-
-    #[test]
-    fn extract_pending_ask_question_falls_back_on_unparseable_output() {
-        let canonical = vec![CanonicalMessage::tool(
-            vec![ContentPart::text("truncated {\"ask\":true,\"quest")],
-            Some("call_ask".into()),
-        )];
-        assert_eq!(
-            ReActEngine::extract_pending_ask_question(&canonical),
-            "I have a pending question for you."
-        );
     }
 }

@@ -847,6 +847,7 @@ impl FilesTool {
                         asset_id: Some(asset.asset_id.clone()),
                         focus: params.focus.clone(),
                         prompt: None,
+                        page_index: None,
                         session_id: params.session_id.clone(),
                     },
                     cancel,

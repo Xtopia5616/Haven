@@ -3,6 +3,7 @@ pub mod admin;
 mod admin_support;
 pub mod ask;
 pub mod audio;
+pub mod checklist;
 pub mod clipboard;
 mod env;
 mod file_outline;
@@ -17,6 +18,7 @@ pub mod memory;
 pub mod messaging;
 pub mod notify;
 mod power;
+pub mod preferences;
 pub mod process;
 mod registry;
 pub mod scheduled_action;
@@ -32,8 +34,10 @@ use tokio::sync::RwLock;
 use crate::BackgroundActions;
 use crate::ToolBox;
 use crate::ToolRegistry;
+use crate::operation_view::OperationViewTool;
 use crate::registry::SessionCatalog;
 use crate::skill_runner::SkillRunner;
+use crate::tool_config_enabled;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
 
@@ -172,7 +176,7 @@ pub async fn register_builtin_tools(
             .with_capabilities(record_available, transcribe_available)
             .with_media_tool(media_tool.clone()),
     ));
-    tools.push(Arc::new(
+    let files_tool: ToolBox = Arc::new(
         files::FilesTool::new(
             router.clone(),
             tool_output_cap(settings, "files", limits.max_observation_chars),
@@ -192,7 +196,38 @@ pub async fn register_builtin_tools(
             managed_assets.clone(),
         )
         .with_media_tool(media_tool.clone()),
-    ));
+    );
+    tools.push(files_tool.clone());
+    if tool_config_enabled(settings, "files") {
+        tools.push(OperationViewTool::new(
+            files_tool.clone(),
+            "files.read_text",
+            "Read a text file by path with byte or line cursors.",
+            [("operation", serde_json::json!("read"))],
+            files_read_text_schema(),
+        ));
+        tools.push(OperationViewTool::new(
+            files_tool.clone(),
+            "files.outline",
+            "Return source headings and declarations with line ranges.",
+            [("operation", serde_json::json!("outline"))],
+            files_outline_schema(),
+        ));
+        tools.push(OperationViewTool::new(
+            files_tool.clone(),
+            "files.summary",
+            "Summarize a text file or a bounded line range.",
+            [("operation", serde_json::json!("summary"))],
+            files_summary_schema(),
+        ));
+        tools.push(OperationViewTool::new(
+            files_tool,
+            "files.search",
+            "Search filenames or file contents and return match context.",
+            [("operation", serde_json::json!("search"))],
+            files_search_schema(limits.search_max_results),
+        ));
+    }
     tools.push(Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
     }));
@@ -219,9 +254,21 @@ pub async fn register_builtin_tools(
         // schedule time; taken before `registry` is moved into SelfTool.
         registry: Some(registry.probe()),
     }));
-    tools.push(Arc::new(system::SystemTool {
+    let system_tool: ToolBox = Arc::new(system::SystemTool {
         max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
-    }));
+    });
+    tools.push(system_tool.clone());
+    if tool_config_enabled(settings, "system") {
+        tools.push(OperationViewTool::new(
+            system_tool,
+            "system.info",
+            "Read a bounded machine information snapshot.",
+            [("scope", serde_json::json!("info"))],
+            system_info_schema(),
+        ));
+    }
+    tools.push(Arc::new(preferences::PreferencesTool::default()));
+    tools.push(Arc::new(checklist::ChecklistTool::default()));
     tools.push(Arc::new(
         window::WindowTool::new(managed_assets).with_media_tool(media_tool),
     ));
@@ -294,6 +341,81 @@ pub async fn register_builtin_tools(
         }
     }
     self_tool_arc
+}
+
+fn files_read_text_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string", "minLength": 1, "description": "File path to read" },
+            "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
+            "offset": { "type": "integer", "minimum": 0, "description": "Byte offset" },
+            "limit": { "type": "integer", "minimum": 1, "description": "Maximum bytes" },
+            "start_line": { "type": "integer", "minimum": 1, "description": "1-based first line" },
+            "end_line": { "type": "integer", "minimum": 0, "description": "1-based last line; omit for the default span" },
+            "focus": { "type": "string", "description": "Optional focus for a rich media source" }
+        },
+        "oneOf": [{ "required": ["path"] }, { "required": ["asset_id"] }]
+    })
+}
+
+fn files_outline_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string", "minLength": 1, "description": "Source or Markdown file path" },
+            "start_line": { "type": "integer", "minimum": 1, "description": "1-based line to continue from next_start_line" },
+            "max_symbols": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum headings/declarations" }
+        },
+        "required": ["path"]
+    })
+}
+
+fn files_summary_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string", "minLength": 1, "description": "Text file path" },
+            "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment" },
+            "start_line": { "type": "integer", "minimum": 1 },
+            "end_line": { "type": "integer", "minimum": 0 },
+            "focus": { "type": "string", "maxLength": 2000 },
+            "max_chars": { "type": "integer", "minimum": 1, "description": "Maximum source characters" }
+        },
+        "oneOf": [{ "required": ["path"] }, { "required": ["asset_id"] }]
+    })
+}
+
+fn files_search_schema(max_results: usize) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "root": { "type": "string", "minLength": 1, "description": "Directory or file path to search" },
+            "pattern": { "type": "string", "minLength": 1, "description": "Filename glob or content regex" },
+            "mode": { "type": "string", "enum": ["filename", "content"], "description": "Filename matching or text matching" },
+            "max_depth": { "type": "integer", "minimum": 0 },
+            "max_results": { "type": "integer", "minimum": 1, "maximum": max_results },
+            "ignore_hidden": { "type": "boolean" },
+            "max_file_size": { "type": "integer", "minimum": 0 },
+            "start_line": { "type": "integer", "minimum": 1 },
+            "end_line": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["root", "pattern"]
+    })
+}
+
+fn system_info_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"] }
+        }
+    })
 }
 
 #[cfg(test)]

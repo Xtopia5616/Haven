@@ -113,8 +113,10 @@ impl RequestContext {
                         "[附件: {}；当前模型不支持安全的媒体输入，已降级为文本占位]",
                         if matches!(part, ContentPart::Image { .. }) {
                             "图片"
-                        } else {
+                        } else if matches!(part, ContentPart::Audio { .. }) {
                             "音频"
+                        } else {
+                            "视频"
                         }
                     )));
                 }
@@ -298,6 +300,7 @@ fn media_inputs_for_state(
                     let modality = match part {
                         ContentPart::Image { .. } => Some(MediaModality::Image),
                         ContentPart::Audio { .. } => Some(MediaModality::Audio),
+                        ContentPart::Video { .. } => Some(MediaModality::Video),
                         ContentPart::Text(_) => None,
                     }?;
                     let inputs = durable?;
@@ -358,6 +361,8 @@ fn snapshot_media_marker_info(text: &str) -> Option<(MediaModality, Option<Strin
         MediaModality::Image
     } else if text.starts_with("[managed audio omitted from snapshot;") {
         MediaModality::Audio
+    } else if text.starts_with("[managed video omitted from snapshot;") {
+        MediaModality::Video
     } else {
         return None;
     };
@@ -383,6 +388,13 @@ fn restore_raw_part(mut input: MediaInput, part: &ContentPart) -> MediaInput {
             media_type, data, ..
         } => (
             haven_common::media::MediaRepresentationKind::RawAudio,
+            media_type,
+            data,
+        ),
+        ContentPart::Video {
+            media_type, data, ..
+        } => (
+            haven_common::media::MediaRepresentationKind::RawVideo,
             media_type,
             data,
         ),
@@ -434,6 +446,9 @@ fn attachment_from_content_part(part: &ContentPart) -> Option<MessageAttachment>
             media_type, data, ..
         }
         | ContentPart::Audio {
+            media_type, data, ..
+        }
+        | ContentPart::Video {
             media_type, data, ..
         } => (media_type, data),
         ContentPart::Text(_) => return None,

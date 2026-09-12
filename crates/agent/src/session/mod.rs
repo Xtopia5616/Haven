@@ -27,9 +27,8 @@ struct RunExitGate {
 }
 
 /// User-queue payload (steering or follow-up). Defined in `haven-common`;
-/// re-exported so session code keeps using `crate::session::Supplement` /
-/// [`FollowUp`].
-pub use haven_common::types::{FollowUp, Supplement};
+/// re-exported so session code uses the canonical queue type.
+pub use haven_common::types::FollowUp;
 
 /// Runner invoked by the dispatcher for each picked session. The closure must
 /// perform the ReAct loop for `session_id` and return `Ok(())` on completion.
@@ -906,25 +905,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_get_supplements() {
+    async fn add_and_get_follow_ups() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
-        exec.add_supplement(&session.id, "extra context 1")
+        exec.add_follow_up(&session.id, "extra context 1")
             .await
             .unwrap();
-        exec.add_supplement(&session.id, "extra context 2")
+        exec.add_follow_up(&session.id, "extra context 2")
             .await
             .unwrap();
         let drained: Vec<String> = exec
-            .get_supplements(&session.id)
+            .get_follow_ups(&session.id)
             .await
             .into_iter()
             .map(|s| s.text)
             .collect();
         assert_eq!(drained, vec!["extra context 1", "extra context 2"]);
-        assert!(exec.get_supplements(&session.id).await.is_empty());
+        assert!(exec.get_follow_ups(&session.id).await.is_empty());
     }
 
     #[tokio::test]
@@ -936,10 +935,10 @@ mod tests {
         exec.add_answer_with_attachments(&session.id, "the answer", &[], None)
             .await
             .unwrap();
-        exec.add_supplement(&session.id, "plain context")
+        exec.add_follow_up(&session.id, "plain context")
             .await
             .unwrap();
-        let drained = exec.get_supplements(&session.id).await;
+        let drained = exec.get_follow_ups(&session.id).await;
         assert_eq!(drained.len(), 2);
         assert!(drained[0].is_answer, "first message is an ask reply");
         assert_eq!(drained[0].text, "the answer");
@@ -947,28 +946,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_get_supplements_with_attachments() {
+    async fn add_and_get_follow_ups_with_attachments() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
-        exec.add_supplement_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
+        exec.add_follow_up_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
             .await
             .unwrap();
-        let drained = exec.get_supplements(&session.id).await;
+        let drained = exec.get_follow_ups(&session.id).await;
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].text, "看图");
         assert_eq!(drained[0].attachments, vec![att]);
-        assert!(exec.get_supplements(&session.id).await.is_empty());
+        assert!(exec.get_follow_ups(&session.id).await.is_empty());
     }
 
     #[tokio::test]
-    async fn add_supplement_nonexistent_session_errors() {
+    async fn add_follow_up_nonexistent_session_errors() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
-        let result = exec.add_supplement("nonexistent", "ctx").await;
+        let result = exec.add_follow_up("nonexistent", "ctx").await;
         assert!(result.is_err());
     }
 

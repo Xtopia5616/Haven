@@ -90,17 +90,17 @@ pub async fn interrupt_session(
 
 /// Resolve a confirm dialog.
 ///
-/// Prefer `effect` (`allow`|`deny`) + `scope` (`once`|`session`|`always`).
-/// Legacy `trust_session=true` still maps to allow+session.
+/// Resolve a confirmation using the explicit effect/scope decision. The
+/// command deliberately has no boolean or trust-session compatibility bridge.
 #[tauri::command]
 pub async fn resolve_confirmation(
     state: State<'_, Arc<AppState>>,
     step_id: String,
-    confirmed: bool,
-    trust_session: Option<bool>,
-    effect: Option<String>,
-    scope: Option<String>,
+    effect: String,
+    scope: String,
 ) -> Result<(), String> {
+    let (perm_effect, perm_scope) = parse_permission_decision(&effect, &scope)?;
+    let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
     // Resolve the confirmation and capture tool/session context atomically
     // (under the executor's sessions lock). This avoids the previous race where
     // the resolution and a separate `list_sessions()` lookup could observe a
@@ -116,16 +116,8 @@ pub async fn resolve_confirmation(
         let Some(pending) = pending else {
             return Err("Confirmation request is stale or already resolved".into());
         };
-        return resolve_ui_confirmation(&state, pending, confirmed, trust_session, effect, scope)
-            .await;
+        return resolve_ui_confirmation(&state, pending, perm_effect, perm_scope).await;
     };
-
-    let (perm_effect, perm_scope) = parse_permission_decision(
-        confirmed,
-        trust_session,
-        effect.as_deref(),
-        scope.as_deref(),
-    )?;
 
     // Once-scope (or no grant) — nothing to record beyond the one-shot resolve.
     if matches!(perm_scope, haven_common::types::PermissionScope::Once) {
@@ -161,10 +153,8 @@ pub async fn resolve_confirmation(
 async fn resolve_ui_confirmation(
     state: &AppState,
     pending: UiConfirmationPending,
-    confirmed: bool,
-    trust_session: Option<bool>,
-    effect: Option<String>,
-    scope: Option<String>,
+    perm_effect: haven_common::types::PermissionEffect,
+    perm_scope: haven_common::types::PermissionScope,
 ) -> Result<(), String> {
     tracing::debug!(
         tool = %pending.tool_name,
@@ -172,14 +162,7 @@ async fn resolve_ui_confirmation(
         summary = %pending.summary,
         "resolving renderer-triggered confirmation"
     );
-    let (perm_effect, perm_scope) = parse_permission_decision(
-        confirmed,
-        trust_session,
-        effect.as_deref(),
-        scope.as_deref(),
-    )?;
-
-    if confirmed {
+    if matches!(perm_effect, haven_common::types::PermissionEffect::Allow) {
         let (tool_name, input) = match &pending.action {
             UiConfirmationAction::Mcp { args, .. } => (&pending.tool_name, args),
             UiConfirmationAction::Skill { params, .. } => (&pending.tool_name, params),
@@ -250,10 +233,8 @@ async fn resolve_ui_confirmation(
 }
 
 fn parse_permission_decision(
-    confirmed: bool,
-    trust_session: Option<bool>,
-    effect: Option<&str>,
-    scope: Option<&str>,
+    effect: &str,
+    scope: &str,
 ) -> Result<
     (
         haven_common::types::PermissionEffect,
@@ -263,39 +244,16 @@ fn parse_permission_decision(
 > {
     use haven_common::types::{PermissionEffect, PermissionScope};
 
-    let perm_effect = match effect.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        Some("allow") => PermissionEffect::Allow,
-        Some("deny") => PermissionEffect::Deny,
-        Some(other) => return Err(format!("invalid permission effect '{other}'")),
-        None => {
-            if confirmed {
-                PermissionEffect::Allow
-            } else {
-                PermissionEffect::Deny
-            }
-        }
+    let perm_effect = match effect.trim().to_ascii_lowercase().as_str() {
+        "allow" => PermissionEffect::Allow,
+        "deny" => PermissionEffect::Deny,
+        other => return Err(format!("invalid permission effect '{other}'")),
     };
-
-    // Reject client mismatch: deny this call cannot plant an Allow grant
-    // (and allow this call cannot plant a Deny grant).
-    let effect_is_allow = matches!(perm_effect, PermissionEffect::Allow);
-    if confirmed != effect_is_allow {
-        return Err("permission effect must match confirmed (allow↔true, deny↔false)".into());
-    }
-
-    let perm_scope = match scope.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        Some("once") => PermissionScope::Once,
-        Some("session") => PermissionScope::Session,
-        Some("always") => PermissionScope::Always,
-        Some(other) => return Err(format!("invalid permission scope '{other}'")),
-        None => {
-            // Legacy bridge: trust_session=true → session allow; else once.
-            if trust_session.unwrap_or(false) && confirmed {
-                PermissionScope::Session
-            } else {
-                PermissionScope::Once
-            }
-        }
+    let perm_scope = match scope.trim().to_ascii_lowercase().as_str() {
+        "once" => PermissionScope::Once,
+        "session" => PermissionScope::Session,
+        "always" => PermissionScope::Always,
+        other => return Err(format!("invalid permission scope '{other}'")),
     };
 
     Ok((perm_effect, perm_scope))

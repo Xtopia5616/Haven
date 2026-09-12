@@ -30,17 +30,17 @@ fn normalize_endpoint_url(url: &str) -> String {
 fn stt_only_catalog_for_url(base_url: &str) -> Option<Vec<ModelInfo>> {
     let host = base_url.to_ascii_lowercase();
     if host.contains("deepgram") {
-        stt_only_catalog(Some("deepgram"), "")
+        stt_only_catalog(Some("deepgram"))
     } else if host.contains("assemblyai") {
-        stt_only_catalog(Some("assemblyai"), "")
+        stt_only_catalog(Some("assemblyai"))
     } else {
         None
     }
 }
 
 /// Static model catalog for STT-only providers that have no `/models` list.
-fn stt_only_catalog(api_style: Option<&str>, provider_hint: &str) -> Option<Vec<ModelInfo>> {
-    let raw = api_style.unwrap_or(provider_hint);
+fn stt_only_catalog(api_style: Option<&str>) -> Option<Vec<ModelInfo>> {
+    let raw = api_style?;
     if !haven_llm::is_stt_only_style(raw) {
         return None;
     }
@@ -82,14 +82,10 @@ fn provider_auth_scheme(p: &ProviderConfig) -> (String, String) {
     if customized {
         (p.auth_header_name.clone(), p.auth_header_prefix.clone())
     } else {
-        match p.api_style.as_deref() {
+        match p.api_style.as_deref().map(haven_llm::normalize_api_style) {
             Some("anthropic") => ("x-api-key".to_string(), String::new()),
             Some("gemini") => ("x-goog-api-key".to_string(), String::new()),
-            _ => match p.provider.as_str() {
-                "anthropic" => ("x-api-key".to_string(), String::new()),
-                "google" | "gemini" => ("x-goog-api-key".to_string(), String::new()),
-                _ => ("Authorization".to_string(), "Bearer".to_string()),
-            },
+            _ => ("Authorization".to_string(), "Bearer".to_string()),
         }
     }
 }
@@ -261,7 +257,7 @@ pub async fn discover_models(
     // discovery can still use the requested URL host below.
     if let Some(name) = provider.as_deref().filter(|n| !n.is_empty())
         && let Some(p) = cfg.llm.provider(name)
-        && let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str())
+        && let Some(list) = stt_only_catalog(p.api_style.as_deref())
     {
         return Ok(list);
     }
@@ -372,7 +368,7 @@ pub async fn discover_all_models(
         if p.base_url.is_empty() || !provider_is_configured(p) {
             continue;
         }
-        if let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str()) {
+        if let Some(list) = stt_only_catalog(p.api_style.as_deref()) {
             results.insert(p.name.clone(), list);
             continue;
         }

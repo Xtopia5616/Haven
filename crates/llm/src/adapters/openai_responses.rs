@@ -557,6 +557,10 @@ impl OpenAiResponsesAdapter {
                         "data": data
                     }
                 }),
+                ContentPart::Video { .. } => json!({
+                    "type": "input_text",
+                    "text": "[Haven: video input is not supported by the configured OpenAI Responses wire]"
+                }),
             })
             .collect()
     }

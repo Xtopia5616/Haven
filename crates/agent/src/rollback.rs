@@ -288,8 +288,8 @@ impl AgentLayer {
         // Skipped for orphan rollback: the orphaned message was never in the
         // events, so truncating would drop a legitimately processed inject.
         //
-        // Match the exact `UserInject.message_id` first. Only id-less legacy
-        // records and compacted canonical rows use the content fallback.
+        // Match the exact `UserInject.message_id` or compacted canonical
+        // message id. Text is never used as an identity fallback.
         if pause
             && !is_orphan_rollback
             && let Some(target) = target_msg
@@ -298,7 +298,6 @@ impl AgentLayer {
                 &mut snapshot.branch_points,
                 target_step,
                 &target.id,
-                &target.content,
             )
         {
             return Err(anyhow::anyhow!(

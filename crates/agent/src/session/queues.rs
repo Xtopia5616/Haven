@@ -103,23 +103,6 @@ impl SessionExecutor {
             .await
     }
 
-    /// Alias for [`Self::add_follow_up`] (pre-Phase-4 name).
-    pub async fn add_supplement(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
-        self.add_follow_up(session_id, text).await
-    }
-
-    /// Alias for [`Self::add_follow_up_with_attachments`] (pre-Phase-4 name).
-    pub async fn add_supplement_with_attachments(
-        &self,
-        session_id: &str,
-        text: &str,
-        attachments: &[MessageAttachment],
-        message_id: Option<String>,
-    ) -> anyhow::Result<()> {
-        self.add_follow_up_with_attachments(session_id, text, attachments, message_id)
-            .await
-    }
-
     /// Queue a follow-up that is the user's reply to a pending `ask`
     /// question (`reply_to`). Injected as a paired answer on resume so the
     /// model no longer sees the old question as open.
@@ -187,11 +170,6 @@ impl SessionExecutor {
         std::mem::take(&mut session.follow_up_queue)
     }
 
-    /// Alias for [`Self::get_follow_ups`] (pre-Phase-4 name).
-    pub async fn get_supplements(&self, session_id: &str) -> Vec<FollowUp> {
-        self.get_follow_ups(session_id).await
-    }
-
     /// Add a steering item for the next step boundary (Phase 7 / D3).
     ///
     /// Steering does **not** interrupt in-flight tools (R1 product default):
@@ -231,7 +209,7 @@ impl SessionExecutor {
             );
             return Ok(());
         }
-        session.steering_queue.push(Supplement::with_message_id(
+        session.steering_queue.push(FollowUp::with_message_id(
             text,
             attachments.to_vec(),
             message_id,
@@ -246,7 +224,7 @@ impl SessionExecutor {
     }
 
     /// Drain the steering queue for a session.
-    pub async fn get_steering(&self, session_id: &str) -> Vec<Supplement> {
+    pub async fn get_steering(&self, session_id: &str) -> Vec<FollowUp> {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
         let Some(entry) = entry else {
             return Vec::new();

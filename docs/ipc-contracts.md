@@ -99,7 +99,7 @@
 | `rollback_session` | `{ session_id, target_step, pause, target_message_id }` | `()` | 按事件游标与投影时钟回滚 |
 | `update_session_title` | `{ session_id, title }` | `()` | 保存并广播新标题 |
 | `delete_session` / `clear_history` | `{ session_id }` / 无 | `()` / 删除数量 | 删除后广播 `session:deleted` |
-| `resolve_confirmation` | `{ step_id, confirmed, trust_session?, effect?, scope? }` | `()` | 仅确认流程使用；权限决策由后端校验 |
+| `resolve_confirmation` | `{ step_id, effect, scope }` | `()` | 仅确认流程使用；effect/scope 必填且由后端按 typed permission decision 校验 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 

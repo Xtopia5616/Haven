@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
 	buildResumeMessages,
 	mergeLiveStreaming,
-	ASK_MSG_TOOL_CALL_ID,
 	isDisplayOnlyMessageId,
 } from './resumeMessages.ts';
 import { formatMessageTime } from './stores.ts';
@@ -300,22 +299,21 @@ describe('buildResumeMessages', () => {
 	});
 
 	it('renders an ask step as a dedup question card, not a raw tool badge', () => {
-		// The ask tool persists the question BOTH as an assistant session
-		// message (marked `__ask__` in new records, or unmarked legacy) and as
-		// a step observation. It must surface once, as an `ask`-type card
-		// under the STEP row's id (the id the live card used) — no
+		// The ask tool persists the question message under the step id and
+		// keeps the structured observation as metadata. It must surface once,
+		// as an `ask`-type card under the step row's id — no
 		// "Calling ask / Result" duplicate, no extra question bubble.
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '你想要怎么处理？A 还是 B？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'assistant', content: '你想要怎么处理？A 还是 B？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
 				{
 					id: 'step-s1',
 					action_tool: 'ask',
-					observation: '你想要怎么处理？A 还是 B？',
+					observation: JSON.stringify({ ask: true }),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
@@ -331,129 +329,14 @@ describe('buildResumeMessages', () => {
 		});
 		const toolBadges = items.filter((i) => i.type === 'tool');
 		expect(toolBadges).toHaveLength(0);
-		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
-	});
-
-	it('skips the marked ask question message by the __ask__ sentinel', () => {
-		// New records mark the question message with the `__ask__`
-		// tool_call_id sentinel; the resume build drops it by marker alone —
-		// no content comparison with the step observation.
-		const items = buildResumeMessages({
-			session: sampleSession,
-			messages: [
-				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '继续吗？', message_type: 'text', tool_call_id: '__ask__', created_at: '2026-08-01T10:01:00Z', attachments: [] },
-			],
-			steps: [
-				{
-					id: 'step-s1',
-					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
-					thought: null,
-					step_number: 1,
-					created_at: '2026-08-01T10:01:00Z',
-				},
-			],
-		});
-		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({
-			id: 'step-s1',
-			type: 'ask',
-			toolName: 'ask',
-			content: '继续吗？',
-			options: ['A', 'B'],
-		});
-		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
-	});
-
-	it('extracts the question from a raw JSON ask observation for dedup', () => {
-		// The DB stores the ask tool's structured output as raw JSON, while
-		// the session message holds the readable question. The card must still
-		// match and render as ask (not a raw JSON tool badge).
-		const items = buildResumeMessages({
-			session: sampleSession,
-			messages: [
-				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '哪个文件？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
-			],
-			steps: [
-				{
-					id: 'step-s1',
-					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '哪个文件？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
-					thought: null,
-					step_number: 1,
-					created_at: '2026-08-01T10:01:00Z',
-				},
-			],
-		});
-		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'ask', content: '哪个文件？' });
-		const toolBadges = items.filter((i) => i.type === 'tool');
-		expect(toolBadges).toHaveLength(0);
-	});
-
-	it('renders a raw JSON ask observation as an ask card when no session message matches', () => {
-		// Old sessions may lack the persisted session message for the question.
-		// The step must still surface as an ask card with the extracted
-		// question, never as a raw JSON tool badge.
-		const items = buildResumeMessages({
-			session: sampleSession,
-			messages: [
-				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-			],
-			steps: [
-				{
-					id: 'step-s1',
-					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
-					thought: null,
-					step_number: 1,
-					created_at: '2026-08-01T10:01:00Z',
-				},
-			],
-		});
-		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({
-			id: 'step-s1',
-			type: 'ask',
-			toolName: 'ask',
-			content: '继续吗？',
-			options: [],
-			awaiting: false,
-		});
-		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
-	});
-
-	it('renders each ask call of a batched step as its own card', () => {
-		// When the model batches two ask calls in one step, the persisted
-		// assistant message joins the questions with "\n\n" while each step
-		// observes only its own question. The joined message is dropped
-		// (marker or legacy content match) and every step renders its own
-		// card, mirroring the live view — no raw tool badge, no duplicate
-		// text bubble.
-		const items = buildResumeMessages({
-			session: sampleSession,
-			messages: [
-				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: 'Q1？\n\nQ2？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
-			],
-			steps: [
-				{ id: 'step-s1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
-				{ id: 'step-s2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
-			],
-		});
-		expect(items).toHaveLength(3);
-		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual(['Q1？', 'Q2？']);
-		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
-		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
+		expect(items.filter((i) => i.id === 'step-s1')).toHaveLength(1);
 	});
 
 	it('links an ask card to its question message persisted under the step id', () => {
 		// New records persist ONE question message per ask step, under the
 		// step row's id (the message is the card's content authority). The
 		// resume build must skip the message by id and render the card from
-		// it — no sentinel, no content comparison.
+		// it — no sentinel or content matching.
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
@@ -536,7 +419,7 @@ describe('buildResumeMessages', () => {
 		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
 	});
 
-	it('matches an interrupted user message to its steering/supplement thought step', () => {
+	it('links an interrupted user message to its id-shared thought step', () => {
 		// A message sent mid-generation (steering) or as an answer to a paused
 		// session (supplement) is persisted as a thought step carrying the user's
 		// own words. After reload the input must resolve to that step even
@@ -549,7 +432,7 @@ describe('buildResumeMessages', () => {
 				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's2', action_tool: null, thought: '网络不好就让我帮忙', step_number: 2, created_at: '2026-08-01T10:02:00Z' },
+				{ id: 'm3', action_tool: null, thought: null, step_number: 2, created_at: '2026-08-01T10:02:00Z' },
 			],
 		});
 		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
@@ -564,6 +447,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'paused_awaiting_answer' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
 				{
@@ -590,6 +474,7 @@ describe('buildResumeMessages', () => {
 			session: { ...sampleSession, status: 'completed' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
 				{
@@ -871,15 +756,5 @@ describe('mergeLiveStreaming', () => {
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged).toEqual(db);
-	});
-});
-
-describe('ASK_MSG_TOOL_CALL_ID sentinel', () => {
-	it('pins the legacy marker old ask question messages carry', () => {
-		// New records no longer set the marker (the question message is
-		// persisted under the ask step row's id instead); the string stays
-		// pinned so legacy rows with it are still skipped by the resume
-		// builder.
-		expect(ASK_MSG_TOOL_CALL_ID).toBe('__ask__');
 	});
 });

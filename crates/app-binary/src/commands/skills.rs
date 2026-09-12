@@ -158,7 +158,6 @@ pub async fn execute_skill(
     app: tauri::AppHandle,
     name: String,
     params: serde_json::Value,
-    confirmed: Option<bool>,
 ) -> Result<SkillExecutionResponse, String> {
     let skill_info = state
         .tools
@@ -171,10 +170,9 @@ pub async fn execute_skill(
         return Err(format!("skill '{}' is not enabled", name));
     }
 
-    // Always run AuthorizationEngine — `confirmed` must not bypass permanent deny /
+    // Always run AuthorizationEngine — UI input must not bypass permanent deny /
     // path/op blocks. Use the same qualified name as SkillToolAdapter so
     // Always grants from agent confirms apply to UI preview.
-    let _ = confirmed; // ignored; kept for IPC compat
     let tool_key = haven_tools::SkillToolAdapter::qualified_name_of(&name);
     let risk_level = RiskLevel::High;
     match state

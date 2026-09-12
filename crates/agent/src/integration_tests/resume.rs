@@ -156,7 +156,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
         executor.get_session_state(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let supps = executor.get_supplements(&session.id).await;
+    let supps = executor.get_follow_ups(&session.id).await;
     assert_eq!(supps.len(), 1, "only the never-injected input is re-queued");
     assert_eq!(supps[0].text, "steering lost");
 }
@@ -186,7 +186,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
 
     agent.reopen_session(&session.id).await.unwrap();
 
-    let recovered = executor.get_supplements(&session.id).await;
+    let recovered = executor.get_follow_ups(&session.id).await;
     assert_eq!(recovered.len(), 2);
     assert!(recovered[0].is_answer);
     assert!(!recovered[1].is_answer);
@@ -213,7 +213,7 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
         executor.get_session_state(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    assert!(executor.get_supplements(&session.id).await.is_empty());
+    assert!(executor.get_follow_ups(&session.id).await.is_empty());
 }
 
 #[tokio::test]
@@ -257,7 +257,7 @@ async fn resume_rejects_legacy_conversation_prefix_snapshot() {
 
 #[tokio::test]
 async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
-    // Supplement/steering inputs are pushed into the canonical with a
+    // Follow-up/steering inputs are pushed into the canonical with a
     // text prefix ("Additional context from user: —, "Steering: —)
     // while the DB stores the raw text. A legacy snapshot (no saved_at)
     // is trusted as complete: nothing is recovered, so the already

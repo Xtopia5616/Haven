@@ -558,6 +558,18 @@ impl GeminiAdapter {
                     function_response: None,
                     thought_signature: None,
                 },
+                ContentPart::Video {
+                    media_type, data, ..
+                } => GeminiPart {
+                    text: None,
+                    inline_data: Some(json!({
+                        "mimeType": media_type,
+                        "data": data
+                    })),
+                    function_call: None,
+                    function_response: None,
+                    thought_signature: None,
+                },
             })
             .collect()
     }
@@ -1127,10 +1139,15 @@ impl LlmClient for GeminiAdapter {
     }
 
     fn capability_profile(&self) -> CapabilityProfile {
-        crate::adapters::chat_capability_profile(
+        let mut profile = crate::adapters::chat_capability_profile(
             CapabilitySupport::Supported,
             CapabilitySupport::Supported,
-        )
+        );
+        // Gemini's generateContent wire accepts inline video data. The
+        // planner therefore may select RawVideo without a still/keyframe
+        // fallback or provider-name inference.
+        profile.video = CapabilitySupport::Supported;
+        profile
     }
 
     async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {

@@ -660,7 +660,13 @@ pub(super) fn seed_hello_snapshot(
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
-            id: None,
+            id: Some(
+                msgs.iter()
+                    .find(|message| message.role == "user" && message.content == "hello")
+                    .expect("seeded hello message")
+                    .id
+                    .clone(),
+            ),
         },
     ];
     let mut branch_points = HashMap::new();

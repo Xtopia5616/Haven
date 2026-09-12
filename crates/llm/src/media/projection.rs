@@ -11,7 +11,7 @@ use haven_common::media::{
 use haven_common::text::sanitize_prompt_field;
 use haven_common::types::ContentPart;
 
-use crate::media::{audio_part, image_part};
+use crate::media::{audio_part, image_part, video_part};
 use crate::types::LlmError;
 
 /// Project a previously-built plan into canonical content parts.
@@ -59,6 +59,11 @@ pub fn project_media_plan(
                 MediaRepresentationKind::RawAudio,
                 MediaRepresentationPayload::InlineData { media_type, data },
             ) => audio_part(media_type, data.clone()),
+            (
+                MediaProjectionMode::Raw,
+                MediaRepresentationKind::RawVideo,
+                MediaRepresentationPayload::InlineData { media_type, data },
+            ) => video_part(media_type, data.clone()),
             (MediaProjectionMode::Derived, kind, MediaRepresentationPayload::Text(text))
                 if kind.is_textual() =>
             {

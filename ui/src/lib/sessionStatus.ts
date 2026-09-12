@@ -17,9 +17,6 @@ export const SESSION_STATUSES = [
 	'error',
 ];
 
-/** @deprecated Use SESSION_STATUSES; kept for older imports. */
-export const ACTION_STATUSES = SESSION_STATUSES;
-
 const COLOR_MAP: Record<string, string> = {
 	pending: '#666',
 	running: 'var(--md-sys-color-success)',

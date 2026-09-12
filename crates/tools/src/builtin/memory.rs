@@ -40,6 +40,9 @@ fn recall_output(kind: MemoryKind, recall: MemoryRecall) -> Value {
     });
     if is_empty {
         output["empty_reason"] = json!(empty_reason.unwrap_or(MemoryRecallEmptyReason::NoHits));
+        if let Some(diagnostics) = recall.diagnostics {
+            output["diagnostics"] = json!(diagnostics);
+        }
     }
     output
 }
@@ -791,6 +794,7 @@ mod tests {
                     }],
                     mode: haven_memory::MemoryRecallMode::Hybrid,
                     empty_reason: None,
+                    diagnostics: None,
                 })
             })
         }));
@@ -1006,6 +1010,15 @@ mod tests {
             .unwrap();
         assert!(result.output["hits"].as_array().unwrap().is_empty());
         assert_eq!(result.output["empty_reason"], "no_hits");
+        assert_eq!(result.output["diagnostics"]["keyword"], "no_hits");
+        assert_eq!(result.output["diagnostics"]["vector"], "not_configured");
+        assert!(
+            result.output["diagnostics"]["suggestions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|suggestion| suggestion == "broaden_query")
+        );
     }
 
     #[tokio::test]

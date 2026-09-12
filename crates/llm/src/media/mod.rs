@@ -13,6 +13,6 @@ pub use modality::{
     Modality, detect_media_type, detect_media_type_with_filename, detect_modality,
     extension_for_media_type,
 };
-pub use multimodal::{audio_part, image_part};
+pub use multimodal::{audio_part, image_part, video_part};
 pub use projection::project_media_plan;
 pub use vision::analyze_image;

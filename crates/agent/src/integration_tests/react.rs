@@ -20,7 +20,7 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
         .await
         .unwrap();
     executor
-        .add_supplement(&session.id, "extra: remember path X")
+        .add_follow_up(&session.id, "extra: remember path X")
         .await
         .unwrap();
 
@@ -42,9 +42,8 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
 #[tokio::test]
 async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
     // The model responds with text + Stop and no tool calls while an
-    // unanswered `ask` is pending: the turn must not end on the
-    // synthesized heuristic final ??the loop must pause and wait for
-    // the user's answer instead.
+    // explicit `awaiting_answer` snapshot state is pending: the turn must
+    // pause and wait for the user's answer instead of completing.
     let client = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
             text: Some("I'll stop here.".into()),
@@ -88,7 +87,10 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         branch_points: HashMap::new(),
         saved_at: None,
         last_ingress_seq: None,
-        awaiting_answer: None,
+        awaiting_answer: Some(crate::types::AskPending {
+            question: "which file?".into(),
+            step_ids: vec!["step-ask".into()],
+        }),
         awaiting_confirm: None,
         run_budget: None,
         error_partial_message_ids: None,
@@ -880,7 +882,7 @@ async fn run_session_ask_resumes_after_user_answer() {
 
     // User answers; the supplement flips the session back to Pending.
     executor
-        .add_supplement(&session.id, "Use option A.")
+        .add_follow_up(&session.id, "Use option A.")
         .await
         .unwrap();
     executor
@@ -974,7 +976,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     );
 
     // Turn 2: the user answers; the resumed step fails mid-stream.
-    executor.add_supplement(&session.id, "Yes").await.unwrap();
+    executor.add_follow_up(&session.id, "Yes").await.unwrap();
     executor
         .update_session_status(&session.id, SessionStatus::Pending)
         .await
@@ -1248,7 +1250,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     // own completed answer BEFORE the injected follow-up, so the model
     // answers with knowledge of what it already said.
     executor
-        .add_supplement(&session.id, "next question")
+        .add_follow_up(&session.id, "next question")
         .await
         .unwrap();
     executor

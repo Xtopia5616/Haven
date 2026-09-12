@@ -8,6 +8,7 @@ pub mod schema;
 pub use cache::CacheGeneration;
 pub use db::Database;
 pub use recall::{
-    MemoryHit, MemoryKind, MemoryQuery, MemoryRecall, MemoryRecallEmptyReason, MemoryRecallMode,
+    MemoryHit, MemoryKind, MemoryQuery, MemoryRecall, MemoryRecallDiagnostics,
+    MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion,
     MemoryRetriever,
 };

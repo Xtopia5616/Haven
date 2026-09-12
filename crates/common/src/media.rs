@@ -487,6 +487,8 @@ pub fn legacy_attachment_to_media_input(
         MediaRepresentationKind::RawImage
     } else if attachment.is_audio() {
         MediaRepresentationKind::RawAudio
+    } else if attachment.is_video() {
+        MediaRepresentationKind::RawVideo
     } else {
         MediaRepresentationKind::ManagedFileRef
     };

@@ -68,15 +68,22 @@ pub(crate) async fn outline(
         line_number = line_number.saturating_add(1);
     }
 
+    let scanned_until = next_start_line
+        .map(|line| line.saturating_sub(1))
+        .unwrap_or_else(|| line_number.saturating_sub(1).max(start_line));
     let mut output = json!({
         "path": path,
         "symbols": symbols,
         "count": symbols.len(),
+        "symbol_count": symbols.len(),
         "max_symbols": max_symbols,
         "truncated": truncated,
+        "has_more": truncated,
+        "range": { "start_line": start_line, "end_line": scanned_until },
     });
     if let Some(next_start_line) = next_start_line {
         output["next_start_line"] = json!(next_start_line);
+        output["next_page"] = json!({ "start_line": next_start_line });
         output["hint"] = json!(
             "Outline limit reached. Continue with operation=outline and the returned next_start_line using a narrower source read if needed."
         );

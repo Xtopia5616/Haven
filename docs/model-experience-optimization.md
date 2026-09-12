@@ -6,13 +6,15 @@
 
 ## 结论
 
-Haven 已经具备可恢复 PC agent 的骨架：runtime snapshot 固定环境，`files.outline` 与游标支持大文件续读，静态提示与动态 SESSION CONTEXT 分层，后台任务自动唤醒，工具结果有统一 observation 上限。本轮优先补齐剩余的决策摩擦：
+Haven 已经具备可恢复 PC agent 的骨架：runtime snapshot 固定环境，`files.outline` 与游标支持大文件续读，静态提示与动态 SESSION CONTEXT 分层，后台任务自动唤醒，工具结果有统一 observation 上限。本轮已补齐 P1 决策摩擦：
 
 1. 能力状态必须描述“现在能否执行”，而不只是某个模型角色是否配置；
 2. 观测截断必须保留错误、路径、hint 和续读游标；
 3. 仓库会话的相对路径应默认对齐工作区，同时保留 Temp 沙箱；
 4. 只读操作和可能造成副作用的操作必须分开处理重试；
 5. `tools[]` 和 runtime snapshot 必须使用同一份能力判断。
+
+P1 还增加了独立的 operation view、文档页游标、原生视频 ContentPart、非阻断偏好/清单和可行动的 memory 空结果诊断；聚合工具仍保留给 native/Tauri 调用和低频能力。
 
 ## P0：本轮已落地
 
@@ -21,7 +23,7 @@ Haven 已经具备可恢复 PC agent 的骨架：runtime snapshot 固定环境�
 - `media.describe` / `media.transcribe` 按实际路由角色和 provider capability profile 裁剪；不再因为 `router` 存在就默认可用。
 - `audio.record` 只有在共享录音管线确实存在时才进入 schema；录音本身可先生成受管音频资产，转写能力另由 `stt` 状态表达。
 - 录音先保存 WAV 并返回 `asset_id`；STT 失败时仍保留该资产，后续可调用 `media.transcribe`。
-- `audio.record`、`media.transcribe` 以及 `files.read/summary` 的富媒体转发共享同一专用 STT 客户端；只有未配置专用客户端时才回退到 LLM STT 路径。
+- `audio.record`、`media.transcribe` 以及 `files.read_text` / `files.summary` 的富媒体转发共享同一专用 STT 客户端；只有未配置专用客户端时才回退到 LLM STT 路径。
 - runtime snapshot 新增 `runtime_capabilities`，明确输出 `web_search`、`vision`、`stt`、`audio_recording` 和 `tts` 的实际状态。
 - 无 provider 内置搜索且没有可识别 MCP 搜索服务时，直接说明：`web_search: unavailable (no provider builtin search; no MCP search server)`。
 
@@ -40,7 +42,7 @@ Haven 已经具备可恢复 PC agent 的骨架：runtime snapshot 固定环境�
 
 ### P0.4 只读重试分离
 
-- `files.read/list/outline/summary/search` 标记为可安全重试；写入、编辑、复制、移动、删除标记为不可安全重试。
+- `files.read_text`、`files.outline`、`files.summary`、`files.search` 及 native `files.list` 标记为可安全重试；写入、编辑、复制、移动、删除标记为不可安全重试。
 - `http` 原有的 GET/POST 判定继续作为权威。
 - `ToolDef.json()` 增加静态 `retry_safety` 字段；具体调用失败时 observation 增加实际的 `retry_safety`。它是重放提示，不是权限放行。
 - executor 仍只对幂等且满足 transient 条件的调用自动重试；未知超时和副作用操作不会被自动重放。
@@ -48,32 +50,41 @@ Haven 已经具备可恢复 PC agent 的骨架：runtime snapshot 固定环境�
 ## P0 验收标准
 
 - schema 中不存在当前未配置的 `audio.record`、`audio.speak`、`media.describe` 或 `media.transcribe` 分支；能力热更新后 catalog 与 snapshot 一起刷新。
-- 在 observation 上限内，`files.read` 的 `next_offset` / `next_start_line`、路径和 hint 不被正文吞掉；失败 summary 同时保留错误与路径。
+- 在 observation 上限内，`files.read_text` 的 `next_offset` / `next_start_line`、路径和 hint 不被正文吞掉；失败 summary 同时保留错误与路径。
 - 在仓库子目录执行省略 `cwd` 的 shell 命令，工作目录为 workspace root；没有仓库时仍回退到 Temp。
 - 只读失败不会因为 `idempotency=unknown` 被迫升级为用户确认；非幂等和未知终止仍不可自动重试。
 - provider-facing 参数仍经过原有 schema 投影，公共聚合工具名称和持久化 ID 契约不变。
 
-## P1：下一步建议
+## P1：本轮已完成
 
 ### P1.1 operation 级 schema 视图
 
-当前公共工具名仍是 `system`、`files`、`window`、`audio` 等聚合入口。本轮只做了不可用 operation 裁剪和失败恢复提示；下一步可以为高频读路径提供瘦 schema 视图，例如 `system.info`、`files.read_text`、`files.search`，同时保留聚合入口承载写操作和低频能力。
+公共聚合工具继续作为 native/Tauri 入口；模型目录同时注册高频读路径的独立瘦视图：`system.info`、`files.read_text`、`files.outline`、`files.summary` 和 `files.search`。每个 view 固定 operation/scope 并复用同一个执行实现、权限、取消、重试和 session 注册逻辑。
 
-落地前需要补齐：provider tool name、权限矩阵、UI renderer、session catalog 和旧步骤恢复的联合迁移测试。不能仅按任务意图猜测隐藏 operation。
+provider tool name、权限矩阵、session catalog 和恢复路径已按独立名称接入；未知 operation 不会通过任务意图猜测。
 
 ### P1.2 搜索与 outline 的模型视图
 
-- `files.search` 命中项增加一行稳定的“匹配原因/上下文”摘要，并保留根目录和游标信息。
-- `files.outline` 在正文前给出范围、符号数量和是否还有后续，避免模型先读一段再猜文件结构。
+- `files.search` 命中项增加稳定的 `match_reason`、`context.before/after`，结果保留 `root`、`pattern`、`has_more`。
+- `files.outline` 给出 `range`、`symbol_count`、`has_more` 和 `next_page.start_line`，避免模型先读一段再猜文件结构。
+- `media(operation="extract")` 对 PDF/Office 文档返回 `page_index`、`total_pages`、`next_page`，不会要求模型从聚合文本自行分页。
 - observation 截断统一采用 structured-first，不再让每个工具自行发明裁剪格式。
 
 ### P1.3 非阻断偏好收集
 
-保留 `ask` 作为高代价决策的暂停确认；另加不暂停的 `preferences` / `checklist` 机制，用于收集低风险的风格、详细程度、是否并行等偏好。它不应承担权限确认或副作用授权。
+保留 `ask` 作为高代价决策的暂停确认；`preferences` / `checklist` 已作为按 session 隔离的不暂停、低风险机制，用于记录风格、详细程度、是否并行等偏好和待办项。它们不承担权限确认或副作用授权。
 
 ### P1.4 Memory 空结果诊断
 
-`empty_reason=no_hits` 已经清晰；可再补充命中来源（关键词、向量或两者均无）和建议动作（换 query、换 `kind`、扩大时间范围）。建议保持空结果为成功的只读结果，不能伪装成系统错误。
+`empty_reason=no_hits` 与 `diagnostics` 已同时返回 keyword/vector 来源状态和建议动作（扩大 query、尝试另一 kind、移除 subject filter、配置 embeddings）。空结果仍是成功的只读结果，不伪装成系统错误。
+
+## P1 验收标准
+
+- 模型 tool catalog 同时提供独立 operation view 与聚合入口；view 的 schema 不包含无关写操作字段。
+- 搜索/outline/文档抽取的返回值包含可继续使用的结构化游标和范围信息；`next_page` 不依赖正文切分。
+- inline 视频在具备视频能力的 provider（当前 Gemini）走原生 `ContentPart::Video`/`inline_data`；不支持的 provider 只允许显式文本占位降级，不静默转成图片或丢弃。托管视频上传和 keyframe 抽取仍需各 provider 的专用能力评审。
+- `preferences` / `checklist` 不产生 ask/confirm 暂停，且 session 之间互不泄漏。
+- memory 空结果包含来源诊断和建议动作，同时保持 `success=true`。
 
 ## P2：体验打磨
 

@@ -179,8 +179,7 @@ impl ReActEngine {
             .executor
             .get_awaiting_answer(session_id)
             .await
-            .is_some()
-            || Self::canonical_has_pending_ask(&state.canonical);
+            .is_some();
         let AcceptedResponse {
             response,
             thought,
@@ -277,22 +276,12 @@ impl ReActEngine {
 
         if actions.is_empty() {
             if pending_ask {
-                let pending = self.executor.get_awaiting_answer(session_id).await;
-                let question = pending
-                    .as_ref()
-                    .map(|pending| pending.question.clone())
-                    .unwrap_or_else(|| Self::extract_pending_ask_question(&state.canonical));
-                if pending.is_none() {
-                    self.executor
-                        .set_awaiting_answer(
-                            session_id,
-                            Some(crate::types::AskPending {
-                                question: question.clone(),
-                                step_ids: Vec::new(),
-                            }),
-                        )
-                        .await;
-                }
+                let pending = self
+                    .executor
+                    .get_awaiting_answer(session_id)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("ask state changed before resume"))?;
+                let question = pending.question;
                 self.project_chat_message(
                     session_id,
                     "assistant",

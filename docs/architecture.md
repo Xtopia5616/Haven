@@ -81,11 +81,11 @@ compact `media` reference 回到工具 observation，后续调用可以复用同
 cache rate（ADR 0124）。原始附件的 MediaPlan 投影同时留下短的 asset→representation
 notice，避免模型重复派生或猜测资产是否已经进入上下文（ADR 0129）。
 
-Builtin 的模型目录保持聚合边界：`system` 内的 `env`、`power`、`registry` 是私有实现模块，
-不作为独立模型工具注册。后台任务取消、目录创建和窗口 PID 目标属于既有聚合工具的
-operation，不新增顶层入口；环境变量读取只暴露名称或脱敏值。`files` 保持聚合入口，
-但提供受限的 `outline` 结构读取；provider-facing 的 grouped schema 会在兼容约束下压平
-根级 union，并按 live capability 过滤不可用 operation / extension loader（ADR 0127）。
+Builtin 的模型目录按频率拆分 operation view：`system.info`、`files.read_text`、
+`files.outline`、`files.summary` 和 `files.search` 为高频窄入口；`system` 内的 `env`、
+`power`、`registry` 仍是私有实现模块。公共聚合工具继续保留给 native/Tauri 和低频/写
+operation，模型的日常读路径使用窄 schema；provider-facing schema 按 live capability
+过滤不可用 operation / extension loader（ADR 0127、0131）。
 模型可见 observation 对结构化结果优先保留错误、路径、hint 与续读游标；工具定义和失败结果
 分别暴露静态/具体 retry safety，仓库会话的 shell/files 相对路径默认对齐 workspace root，
 同时保留 Temp sandbox fallback（ADR 0128）。
@@ -102,7 +102,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `config/`：TOML 配置 schema（`AppConfig` / `Settings` / 各子配置）+ `ConfigLoader` 文件边界；
   `ConfigService` 持有版本化 live snapshot、串行 typed patch、原子持久化和无密钥变更通知。
 - `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / newtype）、`CanonicalMessage` /
-  `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`Supplement`、`RiskLevel`、
+  `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`FollowUp`、`RiskLevel`、
   `HotkeyMode` / `ShellChoice` 等。
 - `media.rs`：provider-neutral 的 `MediaAsset`、`MediaRepresentation`、能力画像和纯
   `MediaPlan` 计划器；只选择安全的 raw/derived/managed 表示，不执行文件 I/O 或
@@ -370,10 +370,10 @@ fallback。`media` 的音频同样由 `MediaTool` 统一处理专用 STT、超�
 
 ### 3.3 agent 对 input 的依赖（2026-08-18 清理）
 
-- **改前**：`agent → input` 的唯一理由是重导出 `Supplement`（`session.rs`），agent 不调用任何
+- **改前**：`agent → input` 的唯一理由是重导出历史输入类型（`session.rs`），agent 不调用任何
   input 能力，属于不必要的耦合。
-- **改后**：`Supplement` 下沉到 `haven_common::types`，`agent/src/session.rs` 改为
-  `pub use haven_common::types::Supplement`，删除 `haven-input` 依赖与 `input/src/message.rs`。
+- **改后**：`FollowUp` 下沉到 `haven_common::types`，`agent/src/session.rs` 改为
+  `pub use haven_common::types::FollowUp`，删除 `haven-input` 依赖与 `input/src/message.rs`。
   现在 `agent` 与 `input` 分层不互相依赖（都只依赖 common / llm）。
 
 ### 3.4 依赖方向的守则
@@ -403,11 +403,12 @@ fallback。`media` 的音频同样由 `MediaTool` 统一处理专用 STT、超�
 | 2026-09-12 | §2.5 Agent / Tools / LLM：统一 producer→asset_id→media consumer；files rich path、window OCR、audio record 均收敛到同一资产链，并在模型请求中说明 MediaPlan 表示（ADR 0129） |
 | 2026-09-12 | §2.5 Tools / Agent / Common：按实时路由能力裁剪媒体与录音 operation；structured-first observation 保留恢复字段；仓库会话默认工作区路径；区分只读重试安全性并补充 runtime capability snapshot（ADR 0128） |
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |
+| 2026-09-12 | §2.5 Tools / LLM / Agent / UI：完成 P1 operation view、搜索/outline 结构化模型视图、文档页游标、原生视频 ContentPart、session-scoped 偏好/清单和 memory 空结果诊断；按测试版 reset 边界删除 FollowUp/confirmation/ask/rollback/provider-style 内部兼容层（ADR 0131） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |
-| 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
+| 2026-08-18 | 初版；历史输入类型从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
 | 2026-08-20 | 曾增加 memory / react 改进文档（后续合并为已归档的 backlog） |
 | 2026-08-21 | 删除 `memory-architecture.md` / `react-architecture-improvements.md` |
 | 2026-08-26 | 用 `stability-refactor-plan.md` 取代历史 backlog，重构目标改为稳定性与可维护性 |

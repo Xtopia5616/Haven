@@ -441,6 +441,15 @@ impl AnthropicAdapter {
                         "text": "[Haven: audio input is not supported by the configured Anthropic model]"
                     }));
                 }
+                ContentPart::Video { .. } => {
+                    tracing::warn!(
+                        "Anthropic Messages API does not support video input; rendering an explicit unsupported marker"
+                    );
+                    blocks.push(json!({
+                        "type": "text",
+                        "text": "[Haven: video input is not supported by the configured Anthropic model]"
+                    }));
+                }
             }
         }
         blocks

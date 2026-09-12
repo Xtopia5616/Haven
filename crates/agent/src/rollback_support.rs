@@ -7,8 +7,6 @@
 
 use std::collections::HashMap;
 
-use haven_common::types::{CanonicalRole, ContentPart, InjectSource};
-
 use crate::types::{BranchPoint, TranscriptRecord};
 
 /// Remove a dangling assistant tool call at the end of an event log.
@@ -41,18 +39,18 @@ pub(crate) fn trim_dangling_tool_call(events: &mut Vec<TranscriptRecord>) {
 
 /// Remove the target user inject and all following events.
 ///
-/// New event records carry the durable message id, so that id is always
-/// resolved first. Content matching is restricted to id-less legacy
-/// `UserInject` records (or compacted canonical user rows, which predate the
-/// message-id field). This prevents two identical user messages from rolling
-/// back the wrong branch.
+/// Event records and compacted canonical messages carry the durable message id.
+/// Rollback is an identity operation: an absent or unknown id is never matched
+/// by text, because identical user messages are valid and common.
 pub(crate) fn truncate_at_user_message(
     events: &mut Vec<TranscriptRecord>,
     branch_points: &mut HashMap<u32, BranchPoint>,
     target_step: u32,
     target_message_id: &str,
-    target_content: &str,
 ) -> bool {
+    if target_message_id.is_empty() {
+        return false;
+    }
     let exact_position = events.iter().rposition(|event| {
         matches!(
             event,
@@ -67,38 +65,13 @@ pub(crate) fn truncate_at_user_message(
         return true;
     }
 
-    let prefixes = InjectSource::match_prefixes();
-    let matches_legacy_content = |text: &str| {
-        text == target_content
-            || prefixes.iter().any(|prefix| {
-                text.strip_prefix(prefix.as_str())
-                    .is_some_and(|rest| rest == target_content)
-            })
-    };
-    if let Some(position) = events.iter().rposition(|event| {
-        matches!(
-            event,
-            TranscriptRecord::UserInject {
-                message_id: None,
-                text,
-                ..
-            } if matches_legacy_content(text)
-        )
-    }) {
-        truncate_events(events, branch_points, target_step, position);
-        return true;
-    }
-
-    // Compaction intentionally stores canonical messages, not their original
-    // message ids. Content is the only available legacy fallback there.
+    // Compaction keeps the canonical message id as provenance. Truncate the
+    // compacted projection at that exact identity, then discard later events.
     for index in (0..events.len()).rev() {
         if let TranscriptRecord::CompactSummary { compacted, .. } = &mut events[index]
-            && let Some(position) = compacted.iter().rposition(|message| {
-                message.role == CanonicalRole::User
-                    && message.content.iter().any(|part| {
-                        matches!(part, ContentPart::Text(text) if matches_legacy_content(text))
-                    })
-            })
+            && let Some(position) = compacted
+                .iter()
+                .rposition(|message| message.id.as_deref() == Some(target_message_id))
         {
             compacted.truncate(position);
             events.truncate(index + 1);
@@ -162,32 +135,23 @@ mod tests {
             &mut events,
             &mut branch_points,
             1,
-            "msg-target",
-            "same"
+            "msg-target"
         ));
         assert!(events.is_empty());
         assert!(branch_points.is_empty());
     }
 
     #[test]
-    fn legacy_content_fallback_only_matches_idless_injects() {
+    fn missing_message_id_does_not_match_by_content() {
         let mut events = vec![inject(Some("msg-other"), "same"), inject(None, "same")];
         let mut branch_points = HashMap::new();
-        assert!(truncate_at_user_message(
+        assert!(!truncate_at_user_message(
             &mut events,
             &mut branch_points,
             1,
-            "msg-missing",
-            "same"
+            "msg-missing"
         ));
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            &events[0],
-            TranscriptRecord::UserInject {
-                message_id: Some(id),
-                ..
-            } if id == "msg-other"
-        ));
+        assert_eq!(events.len(), 2);
     }
 
     #[test]

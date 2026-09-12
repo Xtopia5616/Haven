@@ -52,7 +52,9 @@ pub(crate) fn estimate_prompt_tokens(messages: &[CanonicalMessage]) -> u64 {
         for part in &m.content {
             match part {
                 ContentPart::Text(t) => total += (t.chars().count() as u64) / 4,
-                ContentPart::Image { .. } | ContentPart::Audio { .. } => total += 1_000,
+                ContentPart::Image { .. }
+                | ContentPart::Audio { .. }
+                | ContentPart::Video { .. } => total += 1_000,
             }
         }
         if let Some(reasoning) = &m.reasoning {

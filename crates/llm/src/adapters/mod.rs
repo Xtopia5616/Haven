@@ -13,9 +13,9 @@ mod web_search;
 
 pub use anthropic::AnthropicAdapter;
 pub use capabilities::{
-    WebSearchMode, api_style_from_provider, is_known_api_style, is_openai_family_wire_style,
-    is_stt_only_style, is_tts_only_style, normalize_api_style, parse_web_search_mode,
-    resolve_web_search_mode, supports_builtin_web_search, xai_search_mode,
+    WebSearchMode, is_known_api_style, is_openai_family_wire_style, is_stt_only_style,
+    is_tts_only_style, normalize_api_style, parse_web_search_mode, resolve_web_search_mode,
+    supports_builtin_web_search, xai_search_mode,
 };
 pub use openai::OpenAiAdapter;
 
@@ -136,8 +136,8 @@ pub(crate) fn apply_wire_inject_prefix(
 }
 
 /// Resolve the wire protocol style for an endpoint. An explicit `api_style`
-/// wins (after [`normalize_api_style`]); otherwise the style is derived from
-/// `provider` via [`api_style_from_provider`].
+/// wins (after [`normalize_api_style`]); an omitted style uses the neutral
+/// OpenAI-compatible protocol. Vendor identity is not a protocol selector.
 pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
     if let Some(style) = &endpoint.api_style
         && !style.is_empty()
@@ -150,7 +150,7 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
         }
         return normalize_api_style(style);
     }
-    api_style_from_provider(&endpoint.provider)
+    "openai-chat"
 }
 
 /// Build the protocol adapter for an endpoint.
@@ -347,22 +347,22 @@ mod tests {
     }
 
     #[test]
-    fn api_style_derived_from_provider() {
+    fn api_style_without_explicit_style_uses_neutral_default() {
         let anthropic = ModelEndpoint {
             provider: "anthropic".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&anthropic), "anthropic");
+        assert_eq!(api_style_for(&anthropic), "openai-chat");
         let google = ModelEndpoint {
             provider: "google".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&google), "gemini");
+        assert_eq!(api_style_for(&google), "openai-chat");
         let gemini = ModelEndpoint {
             provider: "gemini".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&gemini), "gemini");
+        assert_eq!(api_style_for(&gemini), "openai-chat");
         let openai = ModelEndpoint {
             provider: "openai".into(),
             ..Default::default()
@@ -377,38 +377,40 @@ mod tests {
             provider: "llama.cpp".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&llama), "llama.cpp");
+        assert_eq!(api_style_for(&llama), "openai-chat");
         let llama_alias = ModelEndpoint {
             provider: "llama".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&llama_alias), "llama.cpp");
+        assert_eq!(api_style_for(&llama_alias), "openai-chat");
         let llamacpp = ModelEndpoint {
             provider: "llamacpp".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&llamacpp), "llama.cpp");
+        assert_eq!(api_style_for(&llamacpp), "openai-chat");
         let deepgram = ModelEndpoint {
             provider: "deepgram".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&deepgram), "deepgram");
+        assert_eq!(api_style_for(&deepgram), "openai-chat");
         let assemblyai = ModelEndpoint {
             provider: "assemblyai".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&assemblyai), "assemblyai");
+        assert_eq!(api_style_for(&assemblyai), "openai-chat");
     }
 
     #[test]
     fn adapter_for_dispatches_by_style() {
         let anthropic = ModelEndpoint {
             provider: "anthropic".into(),
+            api_style: Some("anthropic".into()),
             ..Default::default()
         };
         assert_eq!(adapter_for(&anthropic).style(), "anthropic");
         let gemini = ModelEndpoint {
             provider: "google".into(),
+            api_style: Some("gemini".into()),
             ..Default::default()
         };
         assert_eq!(adapter_for(&gemini).style(), "gemini");
@@ -430,6 +432,7 @@ mod tests {
         // the same adapter, so its reported style matches openai-chat.
         let llama = ModelEndpoint {
             provider: "llama.cpp".into(),
+            api_style: Some("llama.cpp".into()),
             ..Default::default()
         };
         assert_eq!(adapter_for(&llama).style(), "openai-chat");
@@ -441,17 +444,20 @@ mod tests {
         assert_eq!(adapter_for(&xai).style(), "xai");
         let grok_provider = ModelEndpoint {
             provider: "grok".into(),
+            api_style: Some("xai".into()),
             ..Default::default()
         };
         assert_eq!(api_style_for(&grok_provider), "xai");
         assert_eq!(adapter_for(&grok_provider).style(), "xai");
         let deepgram = ModelEndpoint {
             provider: "deepgram".into(),
+            api_style: Some("deepgram".into()),
             ..Default::default()
         };
         assert_eq!(adapter_for(&deepgram).style(), "deepgram");
         let assemblyai = ModelEndpoint {
             provider: "assemblyai".into(),
+            api_style: Some("assemblyai".into()),
             ..Default::default()
         };
         assert_eq!(adapter_for(&assemblyai).style(), "assemblyai");
@@ -497,6 +503,7 @@ mod tests {
     async fn anthropic_embed_stays_unsupported() {
         let ep = ModelEndpoint {
             provider: "anthropic".into(),
+            api_style: Some("anthropic".into()),
             model_name: "claude".into(),
             ..Default::default()
         };
@@ -514,6 +521,7 @@ mod tests {
         .await;
         let ep = ModelEndpoint {
             provider: "gemini".into(),
+            api_style: Some("gemini".into()),
             base_url: url,
             model_name: "text-embedding-004".into(),
             timeout_secs: 5,

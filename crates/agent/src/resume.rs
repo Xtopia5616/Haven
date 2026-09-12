@@ -54,6 +54,12 @@ pub(crate) struct ConversationMessage {
     content: String,
 }
 
+pub(crate) struct InitialUserInput<'a> {
+    attachments: &'a [haven_common::types::MessageAttachment],
+    media_inputs: &'a [MediaInput],
+    message_id: Option<&'a str>,
+}
+
 impl AgentLayer {
     /// Load the most recent conversation messages for a session as (role,
     /// content) pairs, for the FRESH-run system-prompt path
@@ -164,7 +170,13 @@ impl AgentLayer {
         // be duplicated.
         let db = self.db.clone();
         let sid = session_id.to_string();
-        let (initial_attachments, initial_media_inputs, all_attachments, react_state) = db
+        let (
+            initial_message_id,
+            initial_attachments,
+            initial_media_inputs,
+            all_attachments,
+            react_state,
+        ) = db
             .run_blocking(move |db| {
                 let messages = db.get_session_messages(&sid)?;
                 let all_attachments = messages
@@ -172,6 +184,7 @@ impl AgentLayer {
                     .flat_map(|message| message.attachments.iter().cloned())
                     .collect::<Vec<_>>();
                 let initial_message = messages.iter().find(|m| m.role == "user").cloned();
+                let initial_message_id = initial_message.as_ref().map(|message| message.id.clone());
                 let initial_attachments = initial_message
                     .as_ref()
                     .filter(|m| !m.attachments.is_empty())
@@ -183,6 +196,7 @@ impl AgentLayer {
                     .unwrap_or_default();
                 let react_state = db.get_react_state(&sid)?;
                 Ok((
+                    initial_message_id,
                     initial_attachments,
                     initial_media_inputs,
                     all_attachments,
@@ -405,8 +419,11 @@ impl AgentLayer {
                     &description,
                     &context,
                     &conv_history,
-                    &initial_attachments,
-                    &initial_media_inputs,
+                    InitialUserInput {
+                        attachments: &initial_attachments,
+                        media_inputs: &initial_media_inputs,
+                        message_id: initial_message_id.as_deref(),
+                    },
                 )
                 .await
             }
@@ -475,7 +492,7 @@ impl AgentLayer {
                     .await
             } else {
                 self.executor
-                    .add_supplement_with_attachments(
+                    .add_follow_up_with_attachments(
                         session_id,
                         &message.content,
                         &message.attachments,
@@ -711,17 +728,16 @@ impl AgentLayer {
         description: &str,
         context: &str,
         conversation_history: &[ConversationMessage],
-        initial_attachments: &[haven_common::types::MessageAttachment],
-        initial_media_inputs: &[MediaInput],
+        initial: InitialUserInput<'_>,
     ) -> anyhow::Result<Vec<ReActRound>> {
         self.executor
             .get_tools()
-            .register_managed_assets_for_session(session_id, initial_attachments);
+            .register_managed_assets_for_session(session_id, initial.attachments);
         tracing::debug!(
             "run_session start: session_id={:?} context={:?} attachments={}",
             session_id,
             context,
-            initial_attachments.len()
+            initial.attachments.len()
         );
         // S1: do not restate the *first* user turn (already canonical[1])
         // inside system Additional context. Later turns that happen to equal
@@ -753,22 +769,25 @@ impl AgentLayer {
         // or audio bytes. If only the durable media projection is available
         // (for example after a legacy row without a readable host file), use
         // its metadata-only fallback instead of reviving an inline payload.
-        if initial_attachments
+        if initial
+            .attachments
             .iter()
             .any(|attachment| !attachment.data.is_empty())
         {
-            initial_content.extend(initial_attachments.iter().map(|attachment| {
+            initial_content.extend(initial.attachments.iter().map(|attachment| {
                 crate::react::attachment_to_content_part_with_strategy(attachment, media_strategy)
             }));
         } else {
-            initial_content.extend(initial_media_inputs.iter().map(|input| {
+            initial_content.extend(initial.media_inputs.iter().map(|input| {
                 crate::react::media_input_to_content_part_with_strategy(input, media_strategy)
             }));
         }
 
+        let mut initial_user = CanonicalMessage::user(initial_content);
+        initial_user.id = initial.message_id.map(str::to_owned);
         let mut canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage::system(vec![ContentPart::text(system_prompt)]),
-            CanonicalMessage::user(initial_content),
+            initial_user,
         ];
 
         // Snapshot-less path only (react_state missing): project tool-call /

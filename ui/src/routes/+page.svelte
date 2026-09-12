@@ -513,61 +513,22 @@
 
 	// Merged into existing onMount/onDestroy below
 
-	// Resolve a live-view user message id to its persisted DB id. New submits
-	// rewrite the optimistic bubble to `msg-*` via ProcessResult.message_id;
-	// this path remains as a legacy fallback for bubbles that still carry a
-	// temp id (reload race / older builds). Prefer content + nearest `_ts`.
-	/** @param {string} sessionId @param {string} localMsgId @param {string} clickedContent */
-	async function resolveUserMessageDbId(sessionId, localMsgId, clickedContent) {
-		if (!localMsgId || /^(msg|step)-/.test(localMsgId)) return localMsgId;
-		const localTs = Number.parseInt(String(localMsgId).split('-')[0], 10);
-		try {
-			const result = await invoke('get_session_for_resume', { sessionId });
-			const dbMessages = buildResumeMessages(result);
-			const candidates = dbMessages.filter(
-				(m) => m.role === 'user' && m.content === clickedContent && /^msg-/.test(m.id),
-			);
-			if (candidates.length === 0) return localMsgId;
-			// Nearest `_ts` to the optimistic bubble's creation time; fall back
-			// to the newest match when the local timestamp is unparsable.
-			let best = candidates[candidates.length - 1];
-			if (Number.isFinite(localTs)) {
-				let bestDiff = Number.POSITIVE_INFINITY;
-				for (const m of candidates) {
-					const diff = Math.abs((m._ts || 0) - localTs);
-					if (diff < bestDiff) {
-						bestDiff = diff;
-						best = m;
-					}
-				}
-			}
-			return best.id;
-		} catch (e) {
-			logger.warn('+page', 'resolveUserMessageDbId failed', e);
-			return localMsgId;
-		}
-	}
-
 	async function confirmRollbackAction() {
 		const { stepNumber, role, content, msgId } = rollbackDialog;
 		rollbackLoading = true;
 		try {
 			if (role === 'user') {
+				if (!/^msg-[0-9a-f]{32}$/.test(msgId)) {
+					addNotification('消息仍在保存，请稍后再试', 'info', 2000);
+					return;
+				}
 				// User-message rollback: pause the session and put the message
 				// text back in the input box so the user can edit and re-send.
-				// The backend resolves targetMessageId against persisted session
-				// messages and errors when the id does not match (no more
-				// content-based guessing).
-				const dbMsgId = await resolveUserMessageDbId(
-					/** @type {string} */ (activeSessionId),
-					msgId,
-					content,
-				);
 				await invoke('rollback_session', {
 					sessionId: activeSessionId,
 					targetStep: stepNumber,
 					pause: true,
-					targetMessageId: dbMsgId,
+					targetMessageId: msgId,
 				});
 				clearSeqMap(/** @type {string} */ (activeSessionId));
 				clearStepBlockIds(activeSessionId);
@@ -608,12 +569,9 @@
 			const dbMessages = buildResumeMessages(result);
 			// Rollback rebuilds the timeline from the truncated DB state, so the
 			// pre-rollback live messages in `existing` are STALE: their content
-			// was truncated out of the DB, so mergeLiveStreaming's content-dedup
-			// would keep the old reasoning/thought blocks and append them —
-			// resurrecting old "Thinking…" and pushing the re-run's fresh
-			// thinking to the wrong position. Keep only live messages that are
-			// STILL STREAMING (the re-run's in-flight output); everything
-			// finalized is replaced by the authoritative DB copy.
+			// was truncated out of the DB. Keep only live messages that are
+			// still streaming; finalized items are replaced by the authoritative
+			// DB copy until the in-flight output converges.
 			updateSessionMessages(sessionId, (existing) =>
 				mergeLiveStreaming(
 					dbMessages,
@@ -1548,8 +1506,8 @@
 		};
 	}
 
-	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string, trustSession?: boolean }} payload */
-	async function handleConfirm({ stepId, approved, effect, scope, trustSession }) {
+	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string }} payload */
+	async function handleConfirm({ stepId, approved, effect, scope }) {
 		// Clear the dialog synchronously BEFORE awaiting the IPC round-trip.
 		// If we only cleared it after `await invoke(...)`, a new
 		// `confirm:requested` arriving during that window would find the old
@@ -1572,12 +1530,10 @@
 		showNextConfirm();
 		if (!resolvedStep) return;
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
-		const resolvedScope = scope || (trustSession ? 'session' : 'once');
+		const resolvedScope = scope || 'once';
 		try {
 			await invoke('resolve_confirmation', {
 				stepId: resolvedStep,
-				confirmed: approved,
-				trustSession: resolvedScope === 'session' && resolvedEffect === 'allow',
 				effect: resolvedEffect,
 				scope: resolvedScope,
 			});
