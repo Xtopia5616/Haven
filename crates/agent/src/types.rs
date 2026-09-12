@@ -448,22 +448,7 @@ pub(crate) fn append_media_projection(
             crate::react::media_plan_for_inputs(std::slice::from_ref(input), strategy)
                 .projections
                 .first()
-                .map(|projection| match projection.representation {
-                    haven_common::media::MediaRepresentationKind::Transcript => "transcript",
-                    haven_common::media::MediaRepresentationKind::OcrText => "ocr_text",
-                    haven_common::media::MediaRepresentationKind::ExtractedText => "extracted_text",
-                    haven_common::media::MediaRepresentationKind::ImageDescription => {
-                        "image_description"
-                    }
-                    haven_common::media::MediaRepresentationKind::DocumentPages => "document_pages",
-                    haven_common::media::MediaRepresentationKind::TableData => "table_data",
-                    kind => match kind {
-                        haven_common::media::MediaRepresentationKind::ManagedFileRef => {
-                            "managed_file_ref"
-                        }
-                        _ => "derived",
-                    },
-                })
+                .map(|projection| projection.representation.as_str())
         }
     };
     content.push(projected);

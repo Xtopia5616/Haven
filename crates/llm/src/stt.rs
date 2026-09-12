@@ -14,6 +14,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
 use haven_common::config::{ModelEndpoint, ProviderConfig, SttConfig, provider_config_wire_style};
+use haven_common::media::{
+    MediaAsset, MediaAssetLifecycle, MediaAssetSource, MediaInput, MediaInputStrategy,
+    MediaProvenance, MediaRepresentation, MediaRepresentationKind, MediaRepresentationPayload,
+    build_media_plan,
+};
 use haven_common::prompts::STT_SYSTEM_PROMPT;
 use serde_json::Value;
 use std::sync::Arc;
@@ -24,7 +29,7 @@ use crate::LlmRouter;
 use crate::adapters::adapter_for;
 use crate::client::LlmClient;
 use crate::types::{LlmError, SttResult};
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
+use haven_common::types::{CanonicalMessage, ContentPart};
 
 /// Trait for speech-to-text conversion.
 /// Implementations receive WAV bytes and return the transcript.
@@ -306,24 +311,42 @@ pub(crate) async fn transcribe_via_chat(
     role: crate::EndpointRole,
     wav_data: &[u8],
 ) -> Result<SttResult, LlmError> {
-    let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
+    let input = MediaInput {
+        asset: MediaAsset::new(
+            "audio/wav",
+            wav_data.len() as u64,
+            None,
+            MediaAssetSource::ToolOutput,
+            MediaAssetLifecycle::Request,
+        ),
+        representations: vec![MediaRepresentation::available(
+            MediaRepresentationKind::RawAudio,
+            MediaProvenance::Original,
+            MediaRepresentationPayload::InlineData {
+                media_type: "audio/wav".into(),
+                data: base64::engine::general_purpose::STANDARD.encode(wav_data),
+            },
+        )],
+        preferred_representation: Some(MediaRepresentationKind::RawAudio),
+    };
+    let capabilities = router.capability_profile(role);
+    let plan = build_media_plan(
+        std::slice::from_ref(&input),
+        &capabilities,
+        MediaInputStrategy::RawPreferred,
+    );
+    let parts =
+        crate::media::project_media_plan(&plan, std::slice::from_ref(&input)).map_err(|error| {
+            LlmError::UnsupportedCapability(format!(
+                "audio endpoint cannot accept the planned audio input: {error}"
+            ))
+        })?;
+    let audio_part = parts.into_iter().next().ok_or_else(|| {
+        LlmError::UnsupportedCapability("audio planner produced no audio content".into())
+    })?;
     let messages = vec![
         CanonicalMessage::system(vec![ContentPart::text(STT_SYSTEM_PROMPT)]),
-        CanonicalMessage {
-            role: CanonicalRole::User,
-            content: vec![ContentPart::Audio {
-                content_type: "input_audio".into(),
-                media_type: "audio/wav".into(),
-                data,
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-            source: None,
-            id: None,
-        },
+        CanonicalMessage::user(vec![audio_part]),
     ];
 
     let resp = match router

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use haven_common::media::MediaRepresentationKind;
 use haven_common::prompts::FILE_SUMMARY_SYSTEM_PROMPT;
 use haven_common::types::RiskLevel;
 use haven_common::types::{CanonicalMessage, ContentPart};
@@ -12,55 +13,22 @@ use tokio_util::sync::CancellationToken;
 
 use super::file_outline;
 use super::file_search::FileSearchEngine;
-use super::media::{MediaOperation, MediaParams, MediaTool, classify_media, register_path_asset};
+use super::media::{MediaParams, MediaTool};
 use crate::{
     ManagedAsset, ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, ToolLlmUsage,
     ToolResult,
 };
+use file_classification::classify_by_extension;
+use file_media_handoff::{media_operation_for, register_rich_path_asset};
+
+#[path = "file_classification.rs"]
+mod file_classification;
+#[path = "file_media_handoff.rs"]
+mod file_media_handoff;
 
 const MAX_SUMMARY_FOCUS_CHARS: usize = 2_000;
 const UNTRUSTED_DOCUMENT_START: &str = "【附件派生内容开始";
 const UNTRUSTED_DOCUMENT_END: &str = "【附件派生内容结束】";
-/// Classify a file by its extension into a coarse kind used to route binary
-/// reads. Returns `(kind, mime)` where kind is one of: image, pdf, archive,
-/// office, audio, video, executable, or unknown.
-fn classify_by_extension(path: &str) -> (&'static str, &'static str) {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "png" => ("image", "image/png"),
-        "jpg" | "jpeg" => ("image", "image/jpeg"),
-        "gif" => ("image", "image/gif"),
-        "webp" => ("image", "image/webp"),
-        "bmp" => ("image", "image/bmp"),
-        "pdf" => ("pdf", "application/pdf"),
-        "zip" => ("archive", "application/zip"),
-        "7z" => ("archive", "application/x-7z-compressed"),
-        "tar" | "gz" | "tgz" => ("archive", "application/x-tar"),
-        "rar" => ("archive", "application/vnd.rar"),
-        "docx" => (
-            "office",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ),
-        "xlsx" => (
-            "office",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ),
-        "pptx" => (
-            "office",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ),
-        "doc" => ("office", "application/msword"),
-        "xls" => ("office", "application/vnd.ms-excel"),
-        "mp3" | "wav" | "flac" | "ogg" | "m4a" => ("audio", "audio/*"),
-        "mp4" | "mkv" | "avi" | "mov" | "webm" => ("video", "video/*"),
-        "exe" | "msi" | "dll" => ("executable", "application/octet-stream"),
-        _ => ("unknown", "application/octet-stream"),
-    }
-}
 
 fn sanitize_path(path: &str) -> anyhow::Result<String> {
     let normalized = Path::new(path).components().collect::<std::path::PathBuf>();
@@ -174,46 +142,6 @@ fn redact_managed_file_result(result: &mut ToolResult, asset: &ManagedAsset) {
     }
 }
 
-fn media_operation_for(asset: &ManagedAsset) -> Option<MediaOperation> {
-    match classify_media(asset).0 {
-        haven_common::media::MediaModality::Image => Some(MediaOperation::Describe),
-        haven_common::media::MediaModality::Audio => Some(MediaOperation::Transcribe),
-        haven_common::media::MediaModality::Document => Some(MediaOperation::Extract),
-        _ => None,
-    }
-}
-
-/// Rich filesystem inputs become managed sources before any information is
-/// requested. This preserves the user's explicit path at the host boundary,
-/// while the model only receives the opaque asset id and the media handoff.
-async fn register_rich_path_asset(
-    registry: &ManagedAssetRegistry,
-    session_id: Option<&str>,
-    path: &str,
-) -> anyhow::Result<Option<ManagedAsset>> {
-    let (kind, media_type) = classify_by_extension(path);
-    if !matches!(kind, "image" | "audio" | "pdf" | "office") {
-        return Ok(None);
-    }
-    let canonical = tokio::fs::canonicalize(path).await?;
-    let metadata = tokio::fs::metadata(&canonical).await?;
-    if !metadata.is_file() {
-        return Ok(None);
-    }
-    let filename = canonical
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_owned);
-    Ok(Some(register_path_asset(
-        registry,
-        session_id,
-        &canonical,
-        media_type,
-        filename,
-        metadata.len(),
-    )?))
-}
-
 /// Read a text file in full. Multimodal path inputs are deliberately treated
 /// as binary; managed media must enter through the `media(asset_id)` tool.
 /// Refuses files larger than `max_read_chars` and reads only what the output
@@ -230,7 +158,7 @@ async fn read_full(
     let (kind, _mime) = classify_by_extension(path);
     let meta = tokio::fs::metadata(path).await?;
     let size = meta.len();
-    if matches!(kind, "image" | "audio") {
+    if matches!(kind, "image" | "audio" | "video") {
         return Ok(binary_result(path, size));
     }
     if size > max_read_chars {
@@ -839,7 +767,6 @@ impl FilesTool {
                 .media_tool
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?;
-            let media = media_tool.managed_media_reference(asset);
             let operation_result = media_tool
                 .run(
                     MediaParams {
@@ -860,15 +787,16 @@ impl FilesTool {
                 .await;
             let mut result = match operation_result {
                 Ok(result) => result,
-                Err(error) => ToolResult::failed(
-                    serde_json::json!({
-                        "asset_id": asset.asset_id,
-                        "media": media,
-                        "media_operation": operation,
-                        "available": false,
-                    }),
-                    format!("media operation failed: {error}"),
-                ),
+                Err(error) => {
+                    let mut output = media_tool.media_result_output(
+                        operation,
+                        Some(asset),
+                        Some(MediaRepresentationKind::ManagedFileRef),
+                        None,
+                    );
+                    output["available"] = serde_json::Value::Bool(false);
+                    ToolResult::failed(output, format!("media operation failed: {error}"))
+                }
             };
             result = annotate_file_result(result, op, None, None);
             redact_managed_file_result(&mut result, asset);
@@ -1642,6 +1570,14 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_by_extension_uses_canonical_media_mimes() {
+        assert_eq!(classify_by_extension("voice.aac"), ("audio", "audio/aac"));
+        assert_eq!(classify_by_extension("voice.opus"), ("audio", "audio/opus"));
+        assert_eq!(classify_by_extension("clip.mts"), ("video", "video/mp2t"));
+        assert_eq!(classify_by_extension("photo.heic"), ("image", "image/heic"));
+    }
+
+    #[test]
     fn test_binary_result_carries_file_type() {
         let r = binary_result("report.pdf", 1024);
         let out = &r.output;
@@ -1656,14 +1592,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let image = tmp.path().join("img.png");
         let audio = tmp.path().join("recording.wav");
+        let video = tmp.path().join("clip.mts");
         tokio::fs::write(&image, b"not decoded by files")
             .await
             .unwrap();
         tokio::fs::write(&audio, b"RIFF....WAVE").await.unwrap();
+        tokio::fs::write(&video, b"not decoded by files")
+            .await
+            .unwrap();
 
         let registry = ManagedAssetRegistry::default();
         let tool = files_tool_with_registry(registry);
-        for path in [image, audio] {
+        for path in [image, audio, video] {
             let result = tool
                 .execute(
                     json!({"operation": "read", "path": path.to_string_lossy()}),
@@ -2611,7 +2551,6 @@ mod tests {
         assert!(!result.success);
         assert!(result.output["asset_id"].as_str().is_some());
         assert!(result.output["media"]["asset_id"].as_str().is_some());
-        assert!(result.output["media_operation"].as_str().is_some());
         assert!(result.error.is_some());
     }
 

@@ -2,7 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { imageDataUrl } from '$lib/stores.ts';
+	import { mediaDataUrl } from '$lib/stores.ts';
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { createDragScrollController } from '$lib/dragScroll.ts';
@@ -401,7 +401,7 @@
 						{#if (att.media_type || '').startsWith('image/') && att.data}
 							<img
 								class="attachment-img"
-								src={imageDataUrl(att)}
+								src={mediaDataUrl(att)}
 								alt="用户发送的图片"
 								loading="lazy"
 							/>
@@ -410,11 +410,22 @@
 								class="attachment-audio"
 								controls
 								preload="none"
-								src={imageDataUrl(att)}
+								src={mediaDataUrl(att)}
 								title={att.filename || '语音'}
 							>
 								你的浏览器不支持音频播放
 							</audio>
+						{:else if (att.media_type || '').startsWith('video/') && att.data}
+							<video
+								class="attachment-video"
+								controls
+								preload="metadata"
+								src={mediaDataUrl(att)}
+								title={att.filename || '视频'}
+							>
+								<track kind="captions" />
+								你的浏览器不支持视频播放
+							</video>
 						{:else}
 							<div class="attachment-file" title={att.path || att.filename || '附件'}>
 								<Icon name="file" size={14} />
@@ -674,6 +685,12 @@
 		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
 		object-fit: contain;
 		display: block;
+	.attachment-video {
+		max-width: min(100%, 420px);
+		max-height: 280px;
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container-high);
+	}
 		cursor: zoom-in;
 	}
 	.attachment-img:hover {

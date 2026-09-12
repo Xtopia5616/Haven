@@ -21,7 +21,8 @@
 | `media.rs` | `MediaTool`、`MediaOperation`、`MediaParams`、schema、权限/风险/并发/超时和统一调度 |
 | `media_reference.rs` | 媒体模态分类、模型媒体引用、operation 名称和通用文本/置信度辅助函数 |
 | `media_content.rs` | 图片描述/OCR、音频转写、文档抽取、受限读取和失败/取消结果 |
-| `media_generation.rs` | 图片生成以及生成/路径媒体的受管资产登记 |
+| `media_generation.rs` | 图片生成以及生成资产的受管登记 |
+| `media_asset.rs` | 普通路径媒体的受管资产登记，供 files/window 等 producer 复用 |
 | `media_tests.rs` | `MediaTool` 的契约、资产引用、provider fallback 和取消行为测试 |
 | `media_audio.rs` | 统一 `media` 工具中的音频 operation 分发，以及麦克风、播放、TTS、音量和静音的宿主设备适配；不实现 `Tool` |
 

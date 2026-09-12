@@ -538,33 +538,31 @@ impl MediaTool {
                 Ok(result)
             }
             MediaOperation::Play => {
-                let path = params
+                let _path = params
                     .file_path
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("file_path (.wav) is required for play"))?;
                 self.audio_runtime.play(&params).await?;
-                Ok(ToolResult::ok(json!({
-                    "operation": "play",
-                    "played": path,
-                    "format": "wav",
-                })))
+                let mut output = self.media_result_output(MediaOperation::Play, None, None, None);
+                output["played"] = json!(true);
+                output["format"] = json!("wav");
+                Ok(ToolResult::ok(output))
             }
             MediaOperation::Speak => {
                 let characters = self.audio_runtime.speak(&params, cancel).await?;
-                Ok(ToolResult::ok(json!({
-                    "operation": "speak",
-                    "spoken": true,
-                    "characters": characters,
-                    "format": "wav",
-                    "delivered_to": ["speakers"],
-                })))
+                let mut output = self.media_result_output(MediaOperation::Speak, None, None, None);
+                output["spoken"] = json!(true);
+                output["characters"] = json!(characters);
+                output["format"] = json!("wav");
+                output["delivered_to"] = json!(["speakers"]);
+                Ok(ToolResult::ok(output))
             }
             MediaOperation::VolumeGet => {
                 let volume = self.audio_runtime.volume_get().await?;
-                Ok(ToolResult::ok(json!({
-                    "operation": "volume_get",
-                    "volume": volume,
-                })))
+                let mut output =
+                    self.media_result_output(MediaOperation::VolumeGet, None, None, None);
+                output["volume"] = json!(volume);
+                Ok(ToolResult::ok(output))
             }
             MediaOperation::VolumeSet => {
                 let volume = params
@@ -574,29 +572,29 @@ impl MediaTool {
                     anyhow::bail!("volume must be between 0 and 1");
                 }
                 let volume = self.audio_runtime.volume_set(volume).await?;
-                Ok(ToolResult::ok(json!({
-                    "operation": "volume_set",
-                    "volume": volume,
-                    "set": true,
-                })))
+                let mut output =
+                    self.media_result_output(MediaOperation::VolumeSet, None, None, None);
+                output["volume"] = json!(volume);
+                output["set"] = json!(true);
+                Ok(ToolResult::ok(output))
             }
             MediaOperation::MuteGet => {
                 let muted = self.audio_runtime.mute_get().await?;
-                Ok(ToolResult::ok(json!({
-                    "operation": "mute_get",
-                    "muted": muted,
-                })))
+                let mut output =
+                    self.media_result_output(MediaOperation::MuteGet, None, None, None);
+                output["muted"] = json!(muted);
+                Ok(ToolResult::ok(output))
             }
             MediaOperation::MuteSet => {
                 let muted = params
                     .muted
                     .ok_or_else(|| anyhow::anyhow!("muted is required for mute_set"))?;
                 self.audio_runtime.mute_set(muted).await?;
-                Ok(ToolResult::ok(json!({
-                    "operation": "mute_set",
-                    "muted": muted,
-                    "set": true,
-                })))
+                let mut output =
+                    self.media_result_output(MediaOperation::MuteSet, None, None, None);
+                output["muted"] = json!(muted);
+                output["set"] = json!(true);
+                Ok(ToolResult::ok(output))
             }
             _ => unreachable!("non-audio operation passed to run_audio"),
         }

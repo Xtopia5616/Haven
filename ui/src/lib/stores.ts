@@ -322,12 +322,12 @@ export const NEW_ACTION_INTENT_KEY = 'haven.no_auto_restore';
 export const newSessionIntentStore = writable(false);
 
 /**
- * Build a `data:` URL from a message attachment ({ media_type, data } where
+ * Build a `data:` URL from a media attachment ({ media_type, data } where
  * data is base64 without the prefix). Shared by the input area previews and
  * ChatBubble rendering.
  * @param {{ media_type: string, data: string }} att
  */
-export function imageDataUrl(att: { media_type: string; data: string }) {
+export function mediaDataUrl(att: { media_type: string; data: string }) {
 	return `data:${att.media_type};base64,${att.data}`;
 }
 

@@ -120,7 +120,7 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				: null;
 		case 'media':
 			return typeof data.operation === 'string' &&
-				(['record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) ||
+				(['inspect', 'describe', 'ocr', 'transcribe', 'extract', 'generate', 'record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) ||
 					typeof data.asset_id === 'string' || isObject(data.media))
 				? data
 				: null;

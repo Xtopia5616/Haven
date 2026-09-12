@@ -170,14 +170,16 @@ impl WindowTool {
                     .media_tool
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?;
-                Ok(ToolResult::ok(serde_json::json!({
-                    "operation": "screenshot",
-                    "asset_id": capture.asset.asset_id,
-                    "media": media_tool.managed_media_reference(&capture.asset),
-                    "width": capture.width,
-                    "height": capture.height,
-                    "format": capture.format,
-                })))
+                let mut output = media_tool.media_result_output_named(
+                    "screenshot",
+                    Some(&capture.asset),
+                    Some(haven_common::media::MediaRepresentationKind::ManagedFileRef),
+                    None,
+                );
+                output["width"] = serde_json::json!(capture.width);
+                output["height"] = serde_json::json!(capture.height);
+                output["format"] = serde_json::json!(capture.format);
+                Ok(ToolResult::ok(output))
             }
             WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
             WindowOperation::UiTree => {

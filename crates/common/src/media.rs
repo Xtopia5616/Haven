@@ -6,6 +6,7 @@
 //! safe to expose; a later boundary is responsible for serializing that
 //! representation into a provider wire format.
 
+pub use crate::media_detection::MediaType;
 use crate::types::new_id;
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +15,9 @@ pub const MEDIA_ASSET_ID_PREFIX: &str = "asset";
 
 /// A safe, provider-neutral description of one managed or referenced asset.
 ///
-/// `content_hash` may be empty while a legacy attachment is being adapted;
-/// new host-created assets should fill it with a lowercase SHA-256 hex digest.
+/// `content_hash` may be empty while an attachment is entering the managed
+/// asset pipeline; host-created assets should fill it with a lowercase
+/// SHA-256 hex digest.
 /// Raw bytes and absolute paths intentionally do not belong here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MediaAsset {
@@ -66,7 +68,6 @@ pub enum MediaAssetSource {
     WindowCapture,
     Generated,
     ToolOutput,
-    RestoredLegacy,
 }
 
 /// Retention boundary for an asset. The concrete cleanup owner is introduced
@@ -99,6 +100,39 @@ pub enum MediaRepresentationKind {
 }
 
 impl MediaRepresentationKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RawImage => "raw_image",
+            Self::RawAudio => "raw_audio",
+            Self::RawVideo => "raw_video",
+            Self::ExtractedText => "extracted_text",
+            Self::Transcript => "transcript",
+            Self::OcrText => "ocr_text",
+            Self::ImageDescription => "image_description",
+            Self::DocumentPages => "document_pages",
+            Self::TableData => "table_data",
+            Self::Thumbnail => "thumbnail",
+            Self::ManagedFileRef => "managed_file_ref",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value.trim().to_ascii_lowercase().as_str() {
+            "raw_image" => Self::RawImage,
+            "raw_audio" => Self::RawAudio,
+            "raw_video" => Self::RawVideo,
+            "extracted_text" => Self::ExtractedText,
+            "transcript" => Self::Transcript,
+            "ocr_text" => Self::OcrText,
+            "image_description" => Self::ImageDescription,
+            "document_pages" => Self::DocumentPages,
+            "table_data" => Self::TableData,
+            "thumbnail" => Self::Thumbnail,
+            "managed_file_ref" => Self::ManagedFileRef,
+            _ => return None,
+        })
+    }
+
     pub const fn is_raw(self) -> bool {
         matches!(
             self,
@@ -448,26 +482,21 @@ impl MediaInput {
     }
 }
 
-/// Adapt the legacy message attachment shape into the stage-1 media
-/// contract. This is intentionally metadata-only for ordinary files: the
-/// legacy absolute `path` is never copied into the asset or representation
-/// payload. The trusted files/asset boundary will resolve the opaque id in a
-/// later migration stage.
-pub fn legacy_attachment_to_media_input(
+/// Convert the ingress attachment shape into the canonical media contract.
+/// This is intentionally metadata-only for ordinary files: the absolute
+/// `path` is never copied into the asset or representation payload. The
+/// trusted files/asset boundary resolves the opaque id when needed.
+pub fn message_attachment_to_media_input(
     attachment: &crate::types::MessageAttachment,
 ) -> MediaInput {
     let mut asset = MediaAsset::new(
         attachment.media_type.clone(),
         // A persisted file has no inline bytes here and remains a managed
-        // reference. For raw legacy media, recover the decoded byte count
+        // reference. For raw media, recover the decoded byte count
         // without allocating a second copy of the payload.
         inline_base64_size(attachment.data.as_str()),
         attachment.filename.clone(),
-        if attachment.asset_id.is_some() && attachment.path.is_some() {
-            MediaAssetSource::UserAttachment
-        } else {
-            MediaAssetSource::RestoredLegacy
-        },
+        MediaAssetSource::UserAttachment,
         if attachment.path.is_some() {
             MediaAssetLifecycle::Managed
         } else {
@@ -575,6 +604,63 @@ pub struct MediaPlan {
     pub strategy: MediaInputStrategy,
     pub projections: Vec<MediaProjection>,
     pub notices: Vec<MediaPlanNotice>,
+}
+
+/// Stable model/UI-facing metadata shared by every media-producing result.
+/// Operation-specific fields remain alongside this envelope, but identity and
+/// representation never need to be rediscovered from ad-hoc JSON strings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaReference {
+    pub asset_id: String,
+    pub media_type: String,
+    pub modality: MediaType,
+    pub file_kind: String,
+    pub representation: MediaRepresentationKind,
+    pub available_representations: Vec<MediaRepresentationKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_next: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// Common result envelope for both asset and device branches of `media`.
+/// Device operations intentionally leave the asset fields empty instead of
+/// inventing a fake asset identity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaResult {
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation: Option<MediaRepresentationKind>,
+}
+
+impl MediaResult {
+    pub fn asset(
+        operation: impl Into<String>,
+        reference: MediaReference,
+        representation: Option<MediaRepresentationKind>,
+    ) -> Self {
+        Self {
+            operation: operation.into(),
+            asset_id: Some(reference.asset_id.clone()),
+            media: Some(reference),
+            representation,
+        }
+    }
+
+    pub fn device(operation: impl Into<String>) -> Self {
+        Self {
+            operation: operation.into(),
+            asset_id: None,
+            media: None,
+            representation: None,
+        }
+    }
 }
 
 impl MediaPlan {
@@ -934,11 +1020,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_attachment_adapter_keeps_raw_data_but_drops_path_metadata() {
+    fn attachment_conversion_keeps_raw_data_but_drops_path_metadata() {
         let mut attachment = crate::types::MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.filename = Some("photo.png".into());
         attachment.path = Some(r"C:\Users\olive\uploads\photo.png".into());
-        let input = legacy_attachment_to_media_input(&attachment);
+        let input = message_attachment_to_media_input(&attachment);
 
         assert_eq!(
             input.representations[0].representation,
@@ -954,11 +1040,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_file_adapter_emits_opaque_managed_reference() {
+    fn file_attachment_conversion_emits_opaque_managed_reference() {
         let mut attachment = crate::types::MessageAttachment::new("application/pdf", "");
         attachment.filename = Some("report.pdf".into());
         attachment.path = Some(r"C:\Users\olive\uploads\report.pdf".into());
-        let input = legacy_attachment_to_media_input(&attachment);
+        let input = message_attachment_to_media_input(&attachment);
         let MediaRepresentationPayload::ManagedFileRef { asset_id, filename } =
             &input.representations[0].payload
         else {
@@ -985,6 +1071,42 @@ mod tests {
         assert_eq!(
             profile.supports(&image, &asset),
             CapabilitySupport::Unsupported
+        );
+    }
+
+    #[test]
+    fn representation_names_and_video_planning_are_canonical() {
+        for kind in [
+            MediaRepresentationKind::RawImage,
+            MediaRepresentationKind::RawAudio,
+            MediaRepresentationKind::RawVideo,
+            MediaRepresentationKind::Transcript,
+            MediaRepresentationKind::ManagedFileRef,
+        ] {
+            assert_eq!(MediaRepresentationKind::parse(kind.as_str()), Some(kind));
+        }
+
+        let video = input(
+            asset("video/mp4", 8),
+            vec![raw(MediaRepresentationKind::RawVideo, "video/mp4")],
+        );
+        let unsupported = build_media_plan(
+            std::slice::from_ref(&video),
+            &CapabilityProfile::default(),
+            MediaInputStrategy::RawPreferred,
+        );
+        assert!(unsupported.projections.is_empty());
+
+        let mut supported_profile = CapabilityProfile::default();
+        supported_profile.video = CapabilitySupport::Supported;
+        let supported = build_media_plan(
+            &[video],
+            &supported_profile,
+            MediaInputStrategy::RawPreferred,
+        );
+        assert_eq!(
+            supported.projections[0].representation,
+            MediaRepresentationKind::RawVideo
         );
     }
 

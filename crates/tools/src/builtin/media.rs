@@ -7,6 +7,7 @@
 //! owned by `haven_common::media`.
 
 use async_trait::async_trait;
+use haven_common::media::MediaRepresentationKind;
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
 use serde_json::{Value, json};
@@ -20,6 +21,8 @@ use super::media_audio::AudioRuntime;
 const MAX_FOCUS_CHARS: usize = 2_000;
 const MAX_GENERATION_PROMPT_CHARS: usize = 4_000;
 
+#[path = "media_asset.rs"]
+mod media_asset;
 #[path = "media_content.rs"]
 mod media_content;
 #[path = "media_generation.rs"]
@@ -30,9 +33,9 @@ mod media_reference;
 #[path = "media_tests.rs"]
 mod tests;
 
-pub(crate) use media_generation::{register_generated_asset, register_path_asset};
-pub(crate) use media_reference::{classify_media, model_media_reference_with_capabilities};
-use media_reference::{is_audio_operation, operation_name};
+pub(crate) use media_asset::register_path_asset;
+pub(crate) use media_generation::register_generated_asset;
+pub(crate) use media_reference::classify_media;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,6 +53,91 @@ pub enum MediaOperation {
     VolumeSet,
     MuteGet,
     MuteSet,
+}
+
+/// Internal grouping for operations that consume or produce a managed media
+/// asset. The public `MediaOperation` stays flat because that is the stable
+/// model-facing tool schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaAssetOperation {
+    Inspect,
+    Describe,
+    Ocr,
+    Transcribe,
+    Extract,
+    Generate,
+    Record,
+}
+
+/// Internal grouping for operations that act on the host audio device and do
+/// not represent a managed asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioDeviceOperation {
+    Play,
+    Speak,
+    VolumeGet,
+    VolumeSet,
+    MuteGet,
+    MuteSet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaOperationGroup {
+    Asset(MediaAssetOperation),
+    Device(AudioDeviceOperation),
+}
+
+impl MediaOperation {
+    pub(crate) const fn group(self) -> MediaOperationGroup {
+        match self {
+            Self::Inspect => MediaOperationGroup::Asset(MediaAssetOperation::Inspect),
+            Self::Describe => MediaOperationGroup::Asset(MediaAssetOperation::Describe),
+            Self::Ocr => MediaOperationGroup::Asset(MediaAssetOperation::Ocr),
+            Self::Transcribe => MediaOperationGroup::Asset(MediaAssetOperation::Transcribe),
+            Self::Extract => MediaOperationGroup::Asset(MediaAssetOperation::Extract),
+            Self::Generate => MediaOperationGroup::Asset(MediaAssetOperation::Generate),
+            Self::Record => MediaOperationGroup::Asset(MediaAssetOperation::Record),
+            Self::Play => MediaOperationGroup::Device(AudioDeviceOperation::Play),
+            Self::Speak => MediaOperationGroup::Device(AudioDeviceOperation::Speak),
+            Self::VolumeGet => MediaOperationGroup::Device(AudioDeviceOperation::VolumeGet),
+            Self::VolumeSet => MediaOperationGroup::Device(AudioDeviceOperation::VolumeSet),
+            Self::MuteGet => MediaOperationGroup::Device(AudioDeviceOperation::MuteGet),
+            Self::MuteSet => MediaOperationGroup::Device(AudioDeviceOperation::MuteSet),
+        }
+    }
+
+    pub(crate) const fn is_asset_operation(self) -> bool {
+        matches!(self.group(), MediaOperationGroup::Asset(_))
+    }
+
+    pub(crate) const fn is_device_operation(self) -> bool {
+        matches!(self.group(), MediaOperationGroup::Device(_))
+    }
+
+    /// Recording is an asset operation semantically, but it still reserves
+    /// the host audio device while the asset is being produced.
+    pub(crate) const fn uses_audio_runtime(self) -> bool {
+        self.is_device_operation() || matches!(self, Self::Record)
+    }
+}
+
+fn media_operation_from_name(value: Option<&str>) -> Option<MediaOperation> {
+    Some(match value? {
+        "inspect" => MediaOperation::Inspect,
+        "describe" => MediaOperation::Describe,
+        "ocr" => MediaOperation::Ocr,
+        "transcribe" => MediaOperation::Transcribe,
+        "extract" => MediaOperation::Extract,
+        "generate" => MediaOperation::Generate,
+        "record" => MediaOperation::Record,
+        "play" => MediaOperation::Play,
+        "speak" => MediaOperation::Speak,
+        "volume_get" => MediaOperation::VolumeGet,
+        "volume_set" => MediaOperation::VolumeSet,
+        "mute_get" => MediaOperation::MuteGet,
+        "mute_set" => MediaOperation::MuteSet,
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -200,12 +288,13 @@ impl MediaTool {
         params: MediaParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if is_audio_operation(params.operation) {
+        if params.operation.uses_audio_runtime() {
             return self.run_audio(params, cancel).await;
         }
         if params.operation == MediaOperation::Generate {
             return self.generate(params, cancel).await;
         }
+        debug_assert!(params.operation.is_asset_operation());
         let asset_id = params
             .asset_id
             .as_deref()
@@ -222,22 +311,24 @@ impl MediaTool {
             anyhow::bail!("media asset changed or is no longer inside its managed root");
         }
         if cancel.is_cancelled() {
-            return Ok(self.cancelled_media_result(
-                operation_name(params.operation),
-                &asset,
-                "cancelled",
-            ));
+            return Ok(self.cancelled_media_result(params.operation, &asset, "cancelled"));
         }
 
         let (modality, file_kind) = classify_media(&asset);
         match params.operation {
-            MediaOperation::Inspect => Ok(ToolResult::ok(json!({
-                "operation": "inspect",
-                "asset_id": asset.asset_id,
-                "modality": modality,
-                "file_kind": file_kind,
-                "media": self.model_media_reference(&asset, "managed_file_ref", None),
-            }))),
+            MediaOperation::Inspect => {
+                let mut output = self.media_result_output(
+                    MediaOperation::Inspect,
+                    Some(&asset),
+                    Some(MediaRepresentationKind::ManagedFileRef),
+                    None,
+                );
+                if let Some(object) = output.as_object_mut() {
+                    object.insert("modality".into(), json!(modality));
+                    object.insert("file_kind".into(), json!(file_kind));
+                }
+                Ok(ToolResult::ok(output))
+            }
             MediaOperation::Describe => self.describe(asset, params.focus, cancel).await,
             MediaOperation::Ocr => self.ocr(asset, params.focus, cancel).await,
             MediaOperation::Transcribe => self.transcribe(asset, cancel).await,
@@ -281,16 +372,9 @@ impl Tool for MediaTool {
     }
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
-        if is_audio_operation(match input["operation"].as_str() {
-            Some("record") => MediaOperation::Record,
-            Some("play") => MediaOperation::Play,
-            Some("speak") => MediaOperation::Speak,
-            Some("volume_get") => MediaOperation::VolumeGet,
-            Some("volume_set") => MediaOperation::VolumeSet,
-            Some("mute_get") => MediaOperation::MuteGet,
-            Some("mute_set") => MediaOperation::MuteSet,
-            _ => MediaOperation::Inspect,
-        }) {
+        if media_operation_from_name(input["operation"].as_str())
+            .is_some_and(MediaOperation::uses_audio_runtime)
+        {
             return ToolConcurrency::Resource("media:audio-device".into());
         }
         let resource = input["asset_id"]

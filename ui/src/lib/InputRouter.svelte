@@ -3,7 +3,7 @@
 	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
 	import { invoke } from '$lib/tauri.ts';
-	import { addNotification, recordingOverlay, imageDataUrl } from '$lib/stores.ts';
+	import { addNotification, recordingOverlay, mediaDataUrl } from '$lib/stores.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';
@@ -46,7 +46,7 @@
 
 	// Pending non-image attachments: [{ media_type, data, filename, size }].
 	// Ordinary files are persisted by the backend and handed to the agent as a
-	// path; audio keeps its base64 payload for the multimodal chat path.
+	// managed asset; audio/video keep their base64 payload for multimodal chat.
 	/** @type {any[]} */
 	let pendingFiles = $state([]);
 	// Single hidden picker for both images and files; the picked items are
@@ -501,12 +501,21 @@
 		<div class="file-preview-row">
 			{#each pendingFiles as file, i (file.filename + i)}
 				<div class="file-preview">
-					{#if (file.media_type || '').startsWith('audio/') && file.data}
+					{#if (file.media_type || '').startsWith('video/') && file.data}
+						<video
+							class="file-preview-video"
+							controls
+							preload="metadata"
+							src={mediaDataUrl(file)}
+						>
+							<track kind="captions" />
+						</video>
+					{:else if (file.media_type || '').startsWith('audio/') && file.data}
 						<audio
 							class="file-preview-audio"
 							controls
 							preload="none"
-							src={imageDataUrl(file)}
+							src={mediaDataUrl(file)}
 							title={file.filename || '音频附件'}
 						></audio>
 						<div class="file-preview-info">
@@ -535,7 +544,7 @@
 		<div class="image-preview-row">
 			{#each pendingImages as img, i (img.data + i)}
 				<div class="image-preview">
-					<img src={imageDataUrl(img)} alt="待发送图片" />
+					<img src={mediaDataUrl(img)} alt="待发送图片" />
 					<MaterialIconButton
 						icon="close"
 						className="image-preview-remove"
@@ -711,6 +720,12 @@
 		width: 150px;
 		height: 30px;
 		flex: 0 0 auto;
+	}
+	.file-preview-video {
+		width: min(100%, 240px);
+		max-height: 160px;
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container-high);
 	}
 	.file-preview-name {
 		font-size: var(--md-sys-typescale-label-medium-size);

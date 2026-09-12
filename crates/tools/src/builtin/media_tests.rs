@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
+use super::media_reference::model_media_reference_with_capabilities;
 use crate::{ManagedAssetRegistry, Tool};
+use haven_common::media::MediaRepresentationKind;
 
 struct DedicatedSttClient {
     calls: AtomicUsize,
@@ -16,6 +18,16 @@ struct DedicatedSttClient {
 struct DedicatedOcrClient;
 
 struct FailingSttClient;
+
+#[test]
+fn operation_groups_keep_assets_and_device_effects_distinct() {
+    assert!(MediaOperation::Transcribe.is_asset_operation());
+    assert!(MediaOperation::Record.is_asset_operation());
+    assert!(MediaOperation::Record.uses_audio_runtime());
+    assert!(MediaOperation::Play.is_device_operation());
+    assert!(MediaOperation::MuteSet.is_device_operation());
+    assert!(!MediaOperation::Inspect.uses_audio_runtime());
+}
 
 #[async_trait]
 impl haven_llm::OcrClient for DedicatedOcrClient {
@@ -174,6 +186,24 @@ async fn inspect_returns_compact_media_reference_without_host_path() {
     assert!(!serialized.contains(&root.path().to_string_lossy().to_string()));
 }
 
+#[tokio::test]
+async fn inspect_supports_video_assets_and_uses_typed_representation() {
+    let root = TempDir::new().unwrap();
+    let (registry, asset_id) = registered_asset(root.path(), "clip.mts", "video/mp2t");
+    let tool = MediaTool::new(None, registry, 1024, 10, 2_000);
+    let result = tool
+        .execute(
+            json!({"operation": "inspect", "asset_id": asset_id}),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(result.success);
+    assert_eq!(result.output["modality"], "video");
+    assert_eq!(result.output["representation"], "managed_file_ref");
+    assert!(result.output.get("path").is_none());
+}
+
 #[test]
 fn model_media_reference_has_one_content_slot_and_no_runtime_metadata() {
     let root = TempDir::new().unwrap();
@@ -181,7 +211,7 @@ fn model_media_reference_has_one_content_slot_and_no_runtime_metadata() {
     let asset = registry.resolve(&asset_id).unwrap();
     let output = model_media_reference_with_capabilities(
         &asset,
-        "image_description",
+        MediaRepresentationKind::ImageDescription,
         Some("same text"),
         true,
         true,
@@ -442,7 +472,7 @@ fn generated_asset_is_registered_with_expiry_and_opaque_metadata() {
     assert!(asset.expires_at.is_some());
     let serialized = serde_json::to_string(&model_media_reference_with_capabilities(
         &asset,
-        "managed_file_ref",
+        MediaRepresentationKind::ManagedFileRef,
         None,
         true,
         true,

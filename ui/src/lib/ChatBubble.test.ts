@@ -89,6 +89,22 @@ describe('ChatBubble', () => {
 		expect(container.querySelector('.attachment-file')).toBeNull();
 	});
 
+	it('renders video attachments with a native preview', () => {
+		const { container } = render(
+			ChatBubble,
+			base({
+				role: 'user',
+				content: '看视频',
+				attachments: [{ media_type: 'video/mp4', data: 'bXA0LWJ5dGVz', filename: 'clip.mp4' }],
+			}),
+		);
+		const video = container.querySelector('.attachment-video')!;
+		expect(video).toBeTruthy();
+		expect(video.getAttribute('src')).toBe('data:video/mp4;base64,bXA0LWJ5dGVz');
+		expect(video.querySelector('track[kind="captions"]')).toBeTruthy();
+		expect(container.querySelector('.attachment-file')).toBeNull();
+	});
+
 	it('renders file attachments as name chips, not images', () => {
 		const { container } = render(
 			ChatBubble,

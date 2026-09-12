@@ -1,14 +1,11 @@
 <script>
-	import ExternalRef from '$lib/ExternalRef.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 
 	let { data = {} } = $props();
 	let media = $derived(data.media ?? {});
 	let assetId = $derived(data.asset_id ?? media.asset_id ?? '');
 	let filename = $derived(media.filename ?? '');
-	let representation = $derived(
-		data.representation ?? media.representation ?? media.preferred_representation ?? '',
-	);
+	let representation = $derived(data.representation ?? media.representation ?? '');
 	let availableRepresentations = $derived(
 		Array.isArray(media.available_representations) ? media.available_representations : [],
 	);
@@ -43,7 +40,7 @@
 	{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
 	{#if data.transcript}<pre class="media-text">{data.transcript}</pre>{/if}
 {:else if data.operation === 'play'}
-	<div class="media-action"><span class="media-badge">{operationLabel}</span>{#if data.played}<ExternalRef class="media-path" target={data.played} />{/if}</div>
+	<div class="media-action"><span class="media-badge">{operationLabel}</span>{#if data.played}<span>已发送到扬声器</span>{/if}</div>
 {:else if data.operation === 'speak'}
 	<div class="media-action"><span class="media-badge">{operationLabel}</span><span>{data.characters != null ? `${data.characters} 字` : ''}</span></div>
 {:else if data.operation === 'volume_get' || data.operation === 'volume_set'}
@@ -85,7 +82,6 @@
 	}
 	.media-action { display: flex; align-items: baseline; gap: var(--md-sys-space-xs); min-width: 0; color: var(--md-sys-color-on-surface); }
 	.media-badge { flex: none; padding: 1px 6px; border-radius: var(--md-sys-shape-full); background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); font-size: var(--md-sys-typescale-label-small-size); font-weight: 700; }
-	:global(.media-path) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--md-sys-color-primary); }
 	.media-asset,
 	.media-name {
 		min-width: 0;

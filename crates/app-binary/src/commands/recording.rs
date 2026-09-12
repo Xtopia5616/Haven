@@ -6,12 +6,15 @@ use crate::events::{
     TRANSCRIPTION_STARTED_EVENT, TranscriptionErrorEvent, TranscriptionResultEvent,
     TranscriptionStartedEvent,
 };
-use haven_common::config::ContextLimitsConfig;
 use haven_common::error::sanitize_error_text;
 use haven_input::{RecordingReason, RecordingResult};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
+
+#[path = "attachment_ingress.rs"]
+mod attachment_ingress;
+use attachment_ingress::validate_attachments;
 
 #[derive(Serialize)]
 pub struct RecordingState {
@@ -826,9 +829,8 @@ async fn persist_file_attachments_to_with_limit(
 
     let mut files = Vec::new();
     for mut att in attachments {
-        // `persist_file_attachments_to` is also used by compatibility and
-        // test paths. Clear legacy renderer metadata here as a second
-        // defense, not only in the Tauri validation command.
+        // Clear renderer-only metadata here as a second defense, not only in
+        // the Tauri validation command.
         att.path = None;
         // Asset identity is host-owned; never allow the renderer to alias a
         // previously registered managed asset.
@@ -1005,72 +1007,6 @@ fn path_is_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
     {
         left == right
     }
-}
-
-/// Server-side validation for user attachments, mirroring the frontend
-/// limits (configurable via `[context_limits]`: max images/files, per-item
-/// byte caps, decodable base64, files must carry a name). The webview must
-/// not be the sole enforcement point for persisted payloads.
-fn validate_attachments(
-    mut attachments: Vec<haven_common::types::MessageAttachment>,
-    limits: &ContextLimitsConfig,
-) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
-    let max_images = limits.max_attachment_images;
-    let max_files = limits.max_attachment_files;
-    let max_image_bytes = limits.max_attachment_image_bytes;
-    let max_file_bytes = limits.max_attachment_file_bytes;
-    use base64::Engine as _;
-
-    // Normalize MIME metadata at the host boundary. Browser-provided MIME
-    // values are optional and can be wrong; content signatures win, with the
-    // filename as a controlled fallback for formats such as SVG and AAC.
-    for att in &mut attachments {
-        // The renderer cannot choose an existing managed asset id. The
-        // persistence boundary below mints a fresh id after validation.
-        att.asset_id = None;
-        att.path = None;
-        att.sha256 = None;
-        att.size_bytes = None;
-        att.expires_at = None;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&att.data)
-            .map_err(|_| "附件数据不是有效的 base64".to_string())?;
-        let filename = att.filename.as_deref().unwrap_or_default();
-        let detected = haven_llm::media::detect_media_type_with_filename(&bytes, filename);
-        if detected != "application/octet-stream" {
-            att.media_type = detected.to_string();
-        }
-    }
-
-    let images = attachments.iter().filter(|a| a.is_image()).count();
-    let files = attachments.len().saturating_sub(images);
-    if images > max_images {
-        return Err(format!("最多支持 {max_images} 张图片"));
-    }
-    if files > max_files {
-        return Err(format!("最多支持 {max_files} 个文件"));
-    }
-    for att in &attachments {
-        let (cap, label) = if att.is_image() {
-            (max_image_bytes, "图片")
-        } else {
-            if att.filename.as_deref().unwrap_or("").trim().is_empty() {
-                return Err("文件附件缺少文件名".to_string());
-            }
-            (max_file_bytes, "文件")
-        };
-        let decoded_len = att.data.len().saturating_mul(3) / 4;
-        if decoded_len > cap {
-            return Err(format!("{label}超过 {}MB 上限", cap / 1024 / 1024));
-        }
-        if base64::engine::general_purpose::STANDARD
-            .decode(&att.data)
-            .is_err()
-        {
-            return Err("附件数据不是有效的 base64".to_string());
-        }
-    }
-    Ok(attachments)
 }
 
 #[cfg(test)]

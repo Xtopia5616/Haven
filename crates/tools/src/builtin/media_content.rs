@@ -1,8 +1,9 @@
 //! Provider-backed media interpretation and document extraction.
 
-use haven_common::media::MediaModality;
+use haven_common::media::MediaRepresentationKind;
+use haven_common::media_detection::MediaType;
 use haven_common::prompts::{IMAGE_ANALYSIS_SYSTEM_PROMPT, OCR_SYSTEM_PROMPT};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -11,17 +12,22 @@ use crate::document::{
 };
 use crate::{ManagedAsset, ToolLlmUsage, ToolResult};
 
-use super::media_reference::{bound_text, classify_media, confidence_passes, operation_name};
-use super::{MAX_FOCUS_CHARS, MediaOperation, MediaTool, model_media_reference_with_capabilities};
+use super::media_reference::{
+    bound_text, classify_media, confidence_passes, media_result_envelope,
+    media_result_envelope_named, operation_name,
+};
+use super::{MAX_FOCUS_CHARS, MediaOperation, MediaTool};
 
 impl MediaTool {
-    pub(super) fn model_media_reference(
+    pub(crate) fn media_result_output(
         &self,
-        asset: &ManagedAsset,
-        representation: &str,
+        operation: MediaOperation,
+        asset: Option<&ManagedAsset>,
+        representation: Option<MediaRepresentationKind>,
         content: Option<&str>,
     ) -> Value {
-        model_media_reference_with_capabilities(
+        media_result_envelope(
+            operation,
             asset,
             representation,
             content,
@@ -31,8 +37,24 @@ impl MediaTool {
         )
     }
 
-    pub(crate) fn managed_media_reference(&self, asset: &ManagedAsset) -> Value {
-        self.model_media_reference(asset, "managed_file_ref", None)
+    /// Same typed envelope for producer operations outside the flat media
+    /// operation enum, such as `window.screenshot`.
+    pub(crate) fn media_result_output_named(
+        &self,
+        operation: impl Into<String>,
+        asset: Option<&ManagedAsset>,
+        representation: Option<MediaRepresentationKind>,
+        content: Option<&str>,
+    ) -> Value {
+        media_result_envelope_named(
+            operation,
+            asset,
+            representation,
+            content,
+            self.describe_available,
+            self.ocr_available,
+            self.transcribe_available,
+        )
     }
 
     /// Shared STT consumer for model-facing `media.transcribe` and the
@@ -48,49 +70,75 @@ impl MediaTool {
 
     fn failed_media_result(
         &self,
-        operation: &str,
+        operation: MediaOperation,
         asset: &ManagedAsset,
         error: impl Into<String>,
     ) -> ToolResult {
-        ToolResult::failed(
-            json!({
-                "operation": operation,
-                "asset_id": asset.asset_id,
-                "media": self.model_media_reference(asset, "managed_file_ref", None),
-                "available": false,
-            }),
-            error,
-        )
+        let mut output = self.media_result_output(
+            operation,
+            Some(asset),
+            Some(MediaRepresentationKind::ManagedFileRef),
+            None,
+        );
+        output["available"] = Value::Bool(false);
+        ToolResult::failed(output, error)
     }
 
-    fn timed_out_media_result(&self, operation: &str, asset: &ManagedAsset) -> ToolResult {
+    fn timed_out_media_result(
+        &self,
+        operation: MediaOperation,
+        asset: &ManagedAsset,
+    ) -> ToolResult {
         let mut result = ToolResult::timed_out(
             crate::ToolExecutionOutcome::TimedOutUnknown,
-            format!("{operation} timed out after {}s", self.timeout_secs),
+            format!(
+                "{} timed out after {}s",
+                operation_name(operation),
+                self.timeout_secs
+            ),
         );
-        result.output = json!({
-            "operation": operation,
-            "asset_id": asset.asset_id,
-            "media": self.model_media_reference(asset, "managed_file_ref", None),
-            "available": false,
-        });
+        result.output = self.media_result_output(
+            operation,
+            Some(asset),
+            Some(MediaRepresentationKind::ManagedFileRef),
+            None,
+        );
+        result.output["available"] = Value::Bool(false);
         result
     }
 
     pub(super) fn cancelled_media_result(
         &self,
-        operation: &str,
+        operation: MediaOperation,
         asset: &ManagedAsset,
         error: impl Into<String>,
     ) -> ToolResult {
         let mut result = ToolResult::cancelled(error);
-        result.output = json!({
-            "operation": operation,
-            "asset_id": asset.asset_id,
-            "media": self.model_media_reference(asset, "managed_file_ref", None),
-            "available": false,
-        });
+        result.output = self.media_result_output(
+            operation,
+            Some(asset),
+            Some(MediaRepresentationKind::ManagedFileRef),
+            None,
+        );
+        result.output["available"] = Value::Bool(false);
         result
+    }
+
+    fn unavailable_media_result(
+        &self,
+        operation: MediaOperation,
+        asset: &ManagedAsset,
+        reason: impl Into<String>,
+    ) -> ToolResult {
+        let mut output = self.media_result_output(
+            operation,
+            Some(asset),
+            Some(MediaRepresentationKind::ManagedFileRef),
+            None,
+        );
+        output["available"] = Value::Bool(false);
+        output["reason"] = Value::String(reason.into());
+        ToolResult::ok(output)
     }
 
     pub(crate) fn ocr_available(&self) -> bool {
@@ -130,7 +178,7 @@ impl MediaTool {
             cancel,
             MediaOperation::Describe,
             IMAGE_ANALYSIS_SYSTEM_PROMPT,
-            "image_description",
+            MediaRepresentationKind::ImageDescription,
         )
         .await
     }
@@ -142,30 +190,20 @@ impl MediaTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if !self.ocr_available {
-            return Ok(ToolResult::ok(json!({
-                "operation": "ocr",
-                "asset_id": asset.asset_id,
-                "media": self.model_media_reference(&asset, "managed_file_ref", None),
-                "available": false,
-                "reason": "No OCR or vision-capable LLM provider is configured.",
-            })));
+            return Ok(self.unavailable_media_result(
+                MediaOperation::Ocr,
+                &asset,
+                "No OCR or vision-capable LLM provider is configured.",
+            ));
         }
         if let Some(client) = self.ocr_client.clone() {
             let bytes = match self.read_bounded(&asset, &cancel).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return Ok(if cancel.is_cancelled() {
-                        self.cancelled_media_result("ocr", &asset, "OCR cancelled")
+                        self.cancelled_media_result(MediaOperation::Ocr, &asset, "OCR cancelled")
                     } else {
-                        ToolResult::failed(
-                            json!({
-                                "operation": "ocr",
-                                "asset_id": asset.asset_id,
-                                "media": self.model_media_reference(&asset, "managed_file_ref", None),
-                                "available": false,
-                            }),
-                            error.to_string(),
-                        )
+                        self.failed_media_result(MediaOperation::Ocr, &asset, error.to_string())
                     });
                 }
             };
@@ -180,13 +218,13 @@ impl MediaTool {
             {
                 let (text, text_truncated) =
                     bound_text(response.text.trim(), self.max_output_chars);
-                let output = json!({
-                    "operation": "ocr",
-                    "asset_id": asset.asset_id,
-                    "media": self.model_media_reference(&asset, "ocr_text", Some(&text)),
-                    "representation": "ocr_text",
-                    "untrusted_content": true,
-                });
+                let mut output = self.media_result_output(
+                    MediaOperation::Ocr,
+                    Some(&asset),
+                    Some(MediaRepresentationKind::OcrText),
+                    Some(&text),
+                );
+                output["untrusted_content"] = Value::Bool(true);
                 return Ok(if text_truncated {
                     ToolResult::truncated(output)
                 } else {
@@ -194,13 +232,9 @@ impl MediaTool {
                 });
             }
             if self.router.is_none() {
-                return Ok(ToolResult::failed(
-                    json!({
-                        "operation": "ocr",
-                        "asset_id": asset.asset_id,
-                        "media": self.model_media_reference(&asset, "managed_file_ref", None),
-                        "available": false,
-                    }),
+                return Ok(self.failed_media_result(
+                    MediaOperation::Ocr,
+                    &asset,
                     "OCR provider returned no acceptable result and no LLM fallback is configured",
                 ));
             }
@@ -211,7 +245,7 @@ impl MediaTool {
             cancel,
             MediaOperation::Ocr,
             OCR_SYSTEM_PROMPT,
-            "ocr_text",
+            MediaRepresentationKind::OcrText,
         )
         .await
     }
@@ -223,49 +257,36 @@ impl MediaTool {
         cancel: CancellationToken,
         operation: MediaOperation,
         system_prompt: &str,
-        representation: &str,
+        representation: MediaRepresentationKind,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != MediaModality::Image {
+        if classify_media(&asset).0 != MediaType::Image {
             anyhow::bail!("{} requires an image asset", operation_name(operation));
         }
-        let operation_name = operation_name(operation);
-        let unavailable = self.model_media_reference(&asset, "managed_file_ref", None);
         let available = match operation {
             MediaOperation::Ocr => self.ocr_available,
             _ => self.describe_available,
         };
         if !available {
-            return Ok(ToolResult::ok(json!({
-                "operation": operation_name,
-                "asset_id": asset.asset_id,
-                "media": unavailable,
-                "available": false,
-                "reason": "No vision-capable LLM router is configured.",
-            })));
+            return Ok(self.unavailable_media_result(
+                operation,
+                &asset,
+                "No vision-capable LLM router is configured.",
+            ));
         }
         let Some(router) = self.router.clone() else {
-            return Ok(ToolResult::ok(json!({
-                "operation": operation_name,
-                "asset_id": asset.asset_id,
-                "media": unavailable,
-                "available": false,
-                "reason": "No vision-capable LLM router is configured.",
-            })));
+            return Ok(self.unavailable_media_result(
+                operation,
+                &asset,
+                "No vision-capable LLM router is configured.",
+            ));
         };
         let bytes = match self.read_bounded(&asset, &cancel).await {
             Ok(bytes) => bytes,
             Err(error) => {
                 return Ok(if cancel.is_cancelled() {
-                    self.cancelled_media_result(operation_name, &asset, "vision request cancelled")
+                    self.cancelled_media_result(operation, &asset, "vision request cancelled")
                 } else {
-                    ToolResult::failed(
-                        json!({
-                            "operation": operation_name,
-                            "asset_id": asset.asset_id,
-                            "media": unavailable,
-                        }),
-                        error.to_string(),
-                    )
+                    self.failed_media_result(operation, &asset, error.to_string())
                 });
             }
         };
@@ -279,7 +300,7 @@ impl MediaTool {
         let response = match tokio::select! {
             _ = cancel.cancelled() => {
                 return Ok(self.cancelled_media_result(
-                    operation_name,
+                    operation,
                     &asset,
                     "vision request cancelled",
                 ));
@@ -291,8 +312,9 @@ impl MediaTool {
         } {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
-                return Ok(ToolResult::failed(
-                    json!({"operation": operation_name, "asset_id": asset.asset_id, "media": unavailable, "available": false}),
+                return Ok(self.failed_media_result(
+                    operation,
+                    &asset,
                     format!("vision call failed: {error}"),
                 ));
             }
@@ -301,22 +323,19 @@ impl MediaTool {
                     crate::ToolExecutionOutcome::TimedOutUnknown,
                     format!("vision call timed out after {}s", self.timeout_secs),
                 );
-                result.output = json!({
-                    "operation": operation_name,
-                    "asset_id": asset.asset_id,
-                    "media": unavailable,
-                });
+                result.output = self.media_result_output(
+                    operation,
+                    Some(&asset),
+                    Some(MediaRepresentationKind::ManagedFileRef),
+                    None,
+                );
                 return Ok(result);
             }
         };
         let (text, text_truncated) = bound_text(response.text.trim(), self.max_output_chars);
-        let output = json!({
-            "operation": operation_name,
-            "asset_id": asset.asset_id,
-            "media": self.model_media_reference(&asset, representation, Some(&text)),
-            "representation": representation,
-            "untrusted_content": true,
-        });
+        let mut output =
+            self.media_result_output(operation, Some(&asset), Some(representation), Some(&text));
+        output["untrusted_content"] = Value::Bool(true);
         let mut result = if text_truncated {
             ToolResult::truncated(output)
         } else {
@@ -337,34 +356,34 @@ impl MediaTool {
         asset: ManagedAsset,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != MediaModality::Audio {
+        if classify_media(&asset).0 != MediaType::Audio {
             anyhow::bail!("transcribe requires an audio asset");
         }
         if !self.transcribe_available {
-            return Ok(ToolResult::ok(json!({
-                "operation": "transcribe",
-                "asset_id": asset.asset_id,
-                "media": self.model_media_reference(&asset, "managed_file_ref", None),
-                "available": false,
-                "reason": "No speech-to-text provider is configured.",
-            })));
+            return Ok(self.unavailable_media_result(
+                MediaOperation::Transcribe,
+                &asset,
+                "No speech-to-text provider is configured.",
+            ));
         }
         if self.stt_client.is_none() && self.router.is_none() {
-            return Ok(ToolResult::ok(json!({
-                "operation": "transcribe",
-                "asset_id": asset.asset_id,
-                "media": self.model_media_reference(&asset, "managed_file_ref", None),
-                "available": false,
-                "reason": "No speech-to-text provider is configured.",
-            })));
+            return Ok(self.unavailable_media_result(
+                MediaOperation::Transcribe,
+                &asset,
+                "No speech-to-text provider is configured.",
+            ));
         };
         let bytes = match self.read_bounded(&asset, &cancel).await {
             Ok(bytes) => bytes,
             Err(error) => {
                 return Ok(if cancel.is_cancelled() {
-                    self.cancelled_media_result("transcribe", &asset, "transcription cancelled")
+                    self.cancelled_media_result(
+                        MediaOperation::Transcribe,
+                        &asset,
+                        "transcription cancelled",
+                    )
                 } else {
-                    self.failed_media_result("transcribe", &asset, error.to_string())
+                    self.failed_media_result(MediaOperation::Transcribe, &asset, error.to_string())
                 });
             }
         };
@@ -375,7 +394,7 @@ impl MediaTool {
             let dedicated = tokio::select! {
                 _ = cancel.cancelled() => {
                     return Ok(self.cancelled_media_result(
-                        "transcribe",
+                        MediaOperation::Transcribe,
                         &asset,
                         "transcription cancelled",
                     ));
@@ -395,7 +414,7 @@ impl MediaTool {
                 Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
                     let Some(router) = router else {
                         return Ok(self.failed_media_result(
-                            "transcribe",
+                            MediaOperation::Transcribe,
                             &asset,
                             "STT provider returned no acceptable result and no LLM fallback is configured",
                         ));
@@ -404,7 +423,7 @@ impl MediaTool {
                     let result = match tokio::select! {
                         _ = cancel.cancelled() => {
                             return Ok(self.cancelled_media_result(
-                                "transcribe",
+                                MediaOperation::Transcribe,
                                 &asset,
                                 "transcription cancelled",
                             ));
@@ -417,12 +436,16 @@ impl MediaTool {
                         Ok(Ok(result)) => result,
                         Ok(Err(error)) => {
                             return Ok(self.failed_media_result(
-                                "transcribe",
+                                MediaOperation::Transcribe,
                                 &asset,
                                 format!("STT fallback failed: {error}"),
                             ));
                         }
-                        Err(_) => return Ok(self.timed_out_media_result("transcribe", &asset)),
+                        Err(_) => {
+                            return Ok(
+                                self.timed_out_media_result(MediaOperation::Transcribe, &asset)
+                            );
+                        }
                     };
                     (result, role)
                 }
@@ -435,7 +458,7 @@ impl MediaTool {
             let result = match tokio::select! {
                 _ = cancel.cancelled() => {
                     return Ok(self.cancelled_media_result(
-                        "transcribe",
+                        MediaOperation::Transcribe,
                         &asset,
                         "transcription cancelled",
                     ));
@@ -448,24 +471,26 @@ impl MediaTool {
                 Ok(Ok(result)) => result,
                 Ok(Err(error)) => {
                     return Ok(self.failed_media_result(
-                        "transcribe",
+                        MediaOperation::Transcribe,
                         &asset,
                         format!("STT provider failed: {error}"),
                     ));
                 }
-                Err(_) => return Ok(self.timed_out_media_result("transcribe", &asset)),
+                Err(_) => {
+                    return Ok(self.timed_out_media_result(MediaOperation::Transcribe, &asset));
+                }
             };
             (result, role)
         };
         let (text, text_truncated) = bound_text(result.text.trim(), self.max_output_chars);
-        let output = json!({
-            "operation": "transcribe",
-            "asset_id": asset.asset_id,
-            "media": self.model_media_reference(&asset, "transcript", Some(&text)),
-            "transcript": text,
-            "representation": "transcript",
-            "untrusted_content": true,
-        });
+        let mut output = self.media_result_output(
+            MediaOperation::Transcribe,
+            Some(&asset),
+            Some(MediaRepresentationKind::Transcript),
+            Some(&text),
+        );
+        output["transcript"] = Value::String(text);
+        output["untrusted_content"] = Value::Bool(true);
         let mut tool_result = if text_truncated {
             ToolResult::truncated(output)
         } else {
@@ -493,9 +518,7 @@ impl MediaTool {
         page_index: Option<u64>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if classify_media(&asset).0 != MediaModality::Document
-            || !supports_document_path(&asset.path)
-        {
+        if classify_media(&asset).0 != MediaType::Document || !supports_document_path(&asset.path) {
             anyhow::bail!("extract requires a supported PDF, DOCX, XLSX, or PPTX asset");
         }
         let path = asset.path.clone();
@@ -514,21 +537,22 @@ impl MediaTool {
         })
         .await??;
         let truncated = extracted.truncated;
-        let representation = extracted.representation;
+        let representation = MediaRepresentationKind::parse(extracted.representation)
+            .ok_or_else(|| anyhow::anyhow!("unknown document representation"))?;
         let format = extracted.format;
         let text = extracted.text;
-        let output = json!({
-            "operation": "extract",
-            "asset_id": asset.asset_id,
-            "media": self.model_media_reference(&asset, representation, Some(&text)),
-            "representation": representation,
-            "format": format.as_str(),
-            "page_index": extracted.page_index,
-            "total_pages": extracted.total_pages,
-            "next_page": extracted.next_page,
-            "has_more": extracted.next_page.is_some(),
-            "untrusted_content": true,
-        });
+        let mut output = self.media_result_output(
+            MediaOperation::Extract,
+            Some(&asset),
+            Some(representation),
+            Some(&text),
+        );
+        output["format"] = Value::String(format.as_str().to_owned());
+        output["page_index"] = serde_json::json!(extracted.page_index);
+        output["total_pages"] = serde_json::json!(extracted.total_pages);
+        output["next_page"] = serde_json::json!(extracted.next_page);
+        output["has_more"] = Value::Bool(extracted.next_page.is_some());
+        output["untrusted_content"] = Value::Bool(true);
         Ok(if truncated {
             ToolResult::truncated(output)
         } else {

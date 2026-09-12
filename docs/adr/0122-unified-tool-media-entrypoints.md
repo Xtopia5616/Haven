@@ -1,5 +1,8 @@
 # ADR 0122：工具媒体请求统一入口
 
+> 后续由 [ADR 0136：多模态探测、表示与结果契约统一](0136-canonical-multimodal-contract.md)
+> 扩展；本记录保留当时的 provider-wire 边界决定。
+
 日期：2026-09-10
 状态：已采纳
 
@@ -56,7 +59,7 @@ producer/设备边界，媒体理解统一由共享的 `MediaTool` 承接。这�
 
 ## 文件边界
 
-`files.rs`、`window.rs` 和 `audio.rs` 仍是各自的 producer/设备边界，但不再持有
+`files.rs`、`window.rs` 和 `media_audio.rs` 仍是各自的 producer/设备边界，但不再持有
 provider 编排。媒体编排、媒体结果契约与受管资产导航集中在
 `haven-tools/src/builtin/media.rs`；`haven-llm/src/media/vision.rs` 只保留一次
 provider-wire 请求适配。视频 native wire 等后续能力另行评审。

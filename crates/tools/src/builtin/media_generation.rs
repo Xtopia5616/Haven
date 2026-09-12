@@ -2,12 +2,14 @@
 
 use chrono::{Duration as ChronoDuration, Utc};
 use haven_common::config::{GENERATED_MEDIA_RETENTION_SECS, default_generated_media_dir};
+use haven_common::media_detection::extension_for_media_type;
 use serde_json::json;
 use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::{ManagedAsset, ManagedAssetRegistry, ToolResult};
+use haven_common::media::MediaRepresentationKind;
 
 use super::{MAX_GENERATION_PROMPT_CHARS, MediaParams, MediaTool};
 
@@ -32,11 +34,11 @@ impl MediaTool {
             })
             .ok_or_else(|| anyhow::anyhow!("prompt is required"))?;
         let Some(client) = self.image_gen_client.clone() else {
-            return Ok(ToolResult::ok(json!({
-                "operation": "generate",
-                "available": false,
-                "reason": "No image-generation provider is configured.",
-            })));
+            let mut output =
+                self.media_result_output(super::MediaOperation::Generate, None, None, None);
+            output["available"] = json!(false);
+            output["reason"] = json!("No image-generation provider is configured.");
+            return Ok(ToolResult::ok(output));
         };
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -60,7 +62,7 @@ impl MediaTool {
         }
         let root = default_generated_media_dir();
         tokio::fs::create_dir_all(&root).await?;
-        let extension = haven_llm::media::extension_for_media_type(&image.media_type);
+        let extension = extension_for_media_type(&image.media_type);
         let path = root.join(format!(
             "{}.{}",
             haven_common::types::new_id("file"),
@@ -103,12 +105,13 @@ impl MediaTool {
                 return Err(error);
             }
         };
-        Ok(ToolResult::ok(json!({
-            "operation": "generate",
-            "asset_id": asset.asset_id,
-            "media": self.model_media_reference(&asset, "generated_image", None),
-            "representation": "generated_image",
-        })))
+        let output = self.media_result_output(
+            super::MediaOperation::Generate,
+            Some(&asset),
+            Some(MediaRepresentationKind::RawImage),
+            None,
+        );
+        Ok(ToolResult::ok(output))
     }
 }
 
@@ -156,53 +159,4 @@ pub(crate) fn register_generated_asset(
     registry
         .resolve(&asset_id)
         .ok_or_else(|| anyhow::anyhow!("generated media asset disappeared after registration"))
-}
-
-/// Register a host-selected file as a short-lived media source. This is the
-/// producer half of `files.read` for rich files: the path is accepted only at
-/// the trusted filesystem boundary and the model receives the resulting
-/// opaque id instead.
-pub(crate) fn register_path_asset(
-    registry: &ManagedAssetRegistry,
-    session_id: Option<&str>,
-    path: &Path,
-    media_type: &str,
-    filename: Option<String>,
-    size_bytes: u64,
-) -> anyhow::Result<ManagedAsset> {
-    let root = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("media source has no managed parent"))?;
-    let asset_id = haven_common::types::new_id("asset");
-    let expires_at = Utc::now() + ChronoDuration::seconds(GENERATED_MEDIA_RETENTION_SECS as i64);
-    let registered = if let Some(session_id) = session_id.filter(|id| !id.trim().is_empty()) {
-        registry.register_under_root_for_session_with_metadata(
-            session_id,
-            root,
-            asset_id.clone(),
-            path.to_path_buf(),
-            filename,
-            media_type.to_string(),
-            None,
-            Some(size_bytes),
-            Some(expires_at),
-        )
-    } else {
-        registry.register_under_root_with_metadata(
-            root,
-            asset_id.clone(),
-            path.to_path_buf(),
-            filename,
-            media_type.to_string(),
-            None,
-            Some(size_bytes),
-            Some(expires_at),
-        )
-    };
-    if !registered {
-        anyhow::bail!("failed to register media source");
-    }
-    registry
-        .resolve(&asset_id)
-        .ok_or_else(|| anyhow::anyhow!("media source disappeared after registration"))
 }

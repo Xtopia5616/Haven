@@ -37,6 +37,12 @@ export function getToolResultRenderer(
 	_data: unknown = null,
 ) {
 	const rootToolName = toolRootName(toolName);
+	if (
+		kind === 'custom' &&
+		isMediaOperationResult(_data) &&
+		rootToolName !== 'media'
+	)
+		return ToolMediaResult;
 	if (kind === 'custom' && rootToolName === 'agent') return ToolAgentResult;
 	if (
 		kind === 'custom' &&
@@ -92,4 +98,14 @@ export function getToolResultRenderer(
 	if (kind === 'custom' && rootToolName === 'memory') return ToolMemoryResult;
 	if (kind === 'custom' && rootToolName === 'media') return ToolMediaResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;
+}
+
+function isMediaOperationResult(value: unknown): boolean {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+	const data = value as { operation?: unknown; asset_id?: unknown; media?: unknown };
+	return (
+		typeof data.operation === 'string' &&
+		['inspect', 'describe', 'ocr', 'transcribe', 'extract', 'generate', 'record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) &&
+		(typeof data.asset_id === 'string' || (typeof data.media === 'object' && data.media !== null))
+	);
 }

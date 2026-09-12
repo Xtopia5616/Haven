@@ -129,6 +129,7 @@ fn media_capabilities_for_input(input: &MediaInput) -> CapabilityProfile {
         // guess. The selected adapter still validates the final request.
         image: CapabilitySupport::Supported,
         audio: CapabilitySupport::Supported,
+        video: CapabilitySupport::Supported,
         // A persisted ordinary attachment is addressable through the trusted
         // `files` tool using its opaque asset id. Legacy/in-memory attachments
         // without both host markers stay on the safe fallback path.
@@ -1193,7 +1194,7 @@ impl ReActEngine {
         // The compaction window must match the endpoint the next step will
         // use, mirroring choose_agent_role's role selection.
         let router = self.router();
-        let role = if requirements.image {
+        let role = if requirements.image || requirements.video {
             router.vision_role().await
         } else if requirements.audio {
             router.audio_role().await

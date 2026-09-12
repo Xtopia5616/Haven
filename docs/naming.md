@@ -95,7 +95,7 @@
 - store `update` / `filter` / `map` 的回调单元素参数用单数短名（`m`/`x`/`row`/`card`/`t`），保持单数语义。
 - **文件名 / 结构体名保持一致**：一个文件一个实体时文件名单数；实体本身为集合资源（`Files`/`Actions`）时文件名随结构体用复数：`files.rs` ↔ `FilesTool`、`actions.rs` ↔ `ActionsTool`（启动名 `"files"`/`"actions"`）。不可数域用单数：`memory.rs` ↔ `MemoryTool`（启动名 `"memory"`，覆盖 edges + items；公开 API 仍可用 Fact/episode 名）。
 - 仓库 / 表名按所管理实体的复数命名，与其承载集合一致：`sessions.rs`、`messages.rs`、`facts.rs`、`session_steps`。
-- 不可数名词文件（`usage.rs`、`audio.rs`、`text.rs`、`schema.rs`、`memory.rs`）保持单数。
+- 不可数名词文件（`usage.rs`、`media_audio.rs`、`text.rs`、`schema.rs`、`memory.rs`）保持单数。
 
 > 该漂移已对齐：`scheduled_action.rs`↔`ScheduledActionTool`、`env.rs`↔`EnvTool`（原 `env_var.rs`）、`system.rs`↔`SystemTool`（原 `SystemInfoTool`）。新代码避免再制造 `Xxx` 与文件名不同词的情况。
 
