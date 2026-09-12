@@ -329,7 +329,14 @@ pub(crate) async fn transcribe_via_chat(
         )],
         preferred_representation: Some(MediaRepresentationKind::RawAudio),
     };
-    let capabilities = router.capability_profile(role);
+    let mut capabilities = router.capability_profile(role);
+    // Lightweight/custom clients historically did not publish a capability
+    // profile. Preserve the chat fallback for that case; an explicit
+    // `Unsupported` value must still fail through the planner with a useful
+    // error instead of sending an invalid request.
+    if capabilities.audio == haven_common::media::CapabilitySupport::Unknown {
+        capabilities.audio = haven_common::media::CapabilitySupport::Supported;
+    }
     let plan = build_media_plan(
         std::slice::from_ref(&input),
         &capabilities,
