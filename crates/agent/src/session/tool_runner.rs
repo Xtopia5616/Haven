@@ -679,12 +679,16 @@ impl SessionExecutor {
             .tools
             .get_risk_level(session_id, tool_name, &input)
             .await;
+        let policy_input = self
+            .tools
+            .get_authorization_input(session_id, tool_name, &input)
+            .await;
         let mut confirmed: Option<bool> = None;
         if let Some(receipt) = receipt.as_ref()
             && let Err(reason) = self
                 .tools
                 .authorization
-                .verify_receipt(session_id, tool_name, &input, risk_level, receipt)
+                .verify_receipt(session_id, tool_name, &policy_input, risk_level, receipt)
                 .await
         {
             tracing::warn!(
@@ -701,6 +705,7 @@ impl SessionExecutor {
                         "The confirmation for operation '{}' is no longer valid ({reason}). The operation was not executed.",
                         tool_name
                     )),
+                    error_class: Some(haven_tools::ToolErrorClass::Permission),
                     truncated: false,
                     outcome: haven_tools::ToolExecutionOutcome::Cancelled,
                     attempts: 1,
@@ -714,7 +719,7 @@ impl SessionExecutor {
         match self
             .tools
             .authorization
-            .check(session_id, tool_name, &input, risk_level)
+            .check(session_id, tool_name, &policy_input, risk_level)
             .await
         {
             ConfirmationResult::AutoApproved => {}
@@ -726,6 +731,7 @@ impl SessionExecutor {
                         error: Some(format!(
                             "operation '{tool_name}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach."
                         )),
+                        error_class: Some(haven_tools::ToolErrorClass::Permission),
                         truncated: false,
                         outcome: haven_tools::ToolExecutionOutcome::Failed,
                         attempts: 1,
@@ -758,6 +764,7 @@ impl SessionExecutor {
                                     "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                                     tool_name
                                 )),
+                                error_class: Some(haven_tools::ToolErrorClass::Permission),
                                 truncated: false,
                                 outcome: haven_tools::ToolExecutionOutcome::Cancelled,
                                 attempts: 1,
@@ -948,9 +955,13 @@ impl SessionExecutor {
             .tools
             .get_risk_level(Some(session_id), tool_name, input)
             .await;
+        let policy_input = self
+            .tools
+            .get_authorization_input(Some(session_id), tool_name, input)
+            .await;
         self.tools
             .authorization
-            .check(Some(session_id), tool_name, input, risk_level)
+            .check(Some(session_id), tool_name, &policy_input, risk_level)
             .await
     }
 

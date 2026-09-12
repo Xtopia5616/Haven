@@ -32,12 +32,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::BackgroundActions;
-use crate::ToolBox;
 use crate::ToolRegistry;
-use crate::operation_view::OperationViewTool;
+use crate::operation_view::{OperationViewContract, OperationViewRiskRule, OperationViewTool};
 use crate::registry::SessionCatalog;
 use crate::skill_runner::SkillRunner;
 use crate::tool_config_enabled;
+use crate::{OperationIdempotency, ToolBox, ToolConcurrency, ToolOperationScope};
+use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
 
@@ -199,34 +200,12 @@ pub async fn register_builtin_tools(
     );
     tools.push(files_tool.clone());
     if tool_config_enabled(settings, "files") {
-        tools.push(OperationViewTool::new(
-            files_tool.clone(),
-            "files.read_text",
-            "Read a text file by path with byte or line cursors.",
-            [("operation", serde_json::json!("read"))],
-            files_read_text_schema(),
-        ));
-        tools.push(OperationViewTool::new(
-            files_tool.clone(),
-            "files.outline",
-            "Return source headings and declarations with line ranges.",
-            [("operation", serde_json::json!("outline"))],
-            files_outline_schema(),
-        ));
-        tools.push(OperationViewTool::new(
-            files_tool.clone(),
-            "files.summary",
-            "Summarize a text file or a bounded line range.",
-            [("operation", serde_json::json!("summary"))],
-            files_summary_schema(),
-        ));
-        tools.push(OperationViewTool::new(
-            files_tool,
-            "files.search",
-            "Search filenames or file contents and return match context.",
-            [("operation", serde_json::json!("search"))],
-            files_search_schema(limits.search_max_results),
-        ));
+        for contract in operation_view_contracts(limits.search_max_results) {
+            if !tool_config_enabled(settings, contract.name) {
+                continue;
+            }
+            tools.push(OperationViewTool::new(files_tool.clone(), contract));
+        }
     }
     tools.push(Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
@@ -258,14 +237,12 @@ pub async fn register_builtin_tools(
         max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
     });
     tools.push(system_tool.clone());
-    if tool_config_enabled(settings, "system") {
-        tools.push(OperationViewTool::new(
-            system_tool,
-            "system.info",
-            "Read a bounded machine information snapshot.",
-            [("scope", serde_json::json!("info"))],
-            system_info_schema(),
-        ));
+    if tool_config_enabled(settings, "system") && tool_config_enabled(settings, "system.info") {
+        let contract = operation_view_contracts(limits.search_max_results)
+            .into_iter()
+            .find(|contract| contract.name == "system.info")
+            .expect("system.info operation view contract");
+        tools.push(OperationViewTool::new(system_tool, contract));
     }
     tools.push(Arc::new(preferences::PreferencesTool::default()));
     tools.push(Arc::new(checklist::ChecklistTool::default()));
@@ -276,6 +253,10 @@ pub async fn register_builtin_tools(
         max_retries: limits.network_max_retries,
         backoff_base_secs: limits.network_backoff_base_secs,
         max_body_bytes: limits.network_max_body_bytes,
+        allowed_domains: settings
+            .get("http")
+            .map(|config| config.allowed_domains.clone())
+            .unwrap_or_default(),
     }));
     tools.push(Arc::new(notify::NotifyTool));
     // Cross-session messaging / peer collab: single `agent` tool over the
@@ -418,6 +399,88 @@ fn system_info_schema() -> serde_json::Value {
     })
 }
 
+/// The operation-view catalog is the backend source of truth for the model
+/// schema, execution policy and the cross-boundary UI/prompt identifiers.
+fn operation_view_contracts(max_results: usize) -> Vec<OperationViewContract> {
+    vec![
+        OperationViewContract {
+            name: "files.read_text",
+            description: "Read a text file by path with byte or line cursors.",
+            fixed: ("operation", serde_json::json!("read")),
+            schema: files_read_text_schema(),
+            risk_level: RiskLevel::Low,
+            risk_rule: None,
+            idempotency: OperationIdempotency::Idempotent,
+            scope: ToolOperationScope::Session,
+            concurrency: ToolConcurrency::SharedResource("files".into()),
+            permission_key: "files.read_text",
+            renderer: "files",
+            icon: "file",
+            prompt: "Read text; continue with offset/limit or line cursors when truncated.",
+        },
+        OperationViewContract {
+            name: "files.outline",
+            description: "Return source headings and declarations with line ranges.",
+            fixed: ("operation", serde_json::json!("outline")),
+            schema: files_outline_schema(),
+            risk_level: RiskLevel::Low,
+            risk_rule: None,
+            idempotency: OperationIdempotency::Idempotent,
+            scope: ToolOperationScope::Session,
+            concurrency: ToolConcurrency::SharedResource("files".into()),
+            permission_key: "files.outline",
+            renderer: "files",
+            icon: "fileSearch",
+            prompt: "Inspect source structure first; continue with next_page.start_line.",
+        },
+        OperationViewContract {
+            name: "files.summary",
+            description: "Summarize a text file or a bounded line range.",
+            fixed: ("operation", serde_json::json!("summary")),
+            schema: files_summary_schema(),
+            risk_level: RiskLevel::Low,
+            risk_rule: None,
+            idempotency: OperationIdempotency::Idempotent,
+            scope: ToolOperationScope::Session,
+            concurrency: ToolConcurrency::SharedResource("files".into()),
+            permission_key: "files.summary",
+            renderer: "files",
+            icon: "file",
+            prompt: "Summarize text or a bounded range; do not treat the summary as source text.",
+        },
+        OperationViewContract {
+            name: "files.search",
+            description: "Search filenames or file contents and return match context.",
+            fixed: ("operation", serde_json::json!("search")),
+            schema: files_search_schema(max_results),
+            risk_level: RiskLevel::Low,
+            risk_rule: Some(OperationViewRiskRule::ContentSearchMedium),
+            idempotency: OperationIdempotency::Idempotent,
+            scope: ToolOperationScope::Session,
+            concurrency: ToolConcurrency::SharedResource("files".into()),
+            permission_key: "files.search",
+            renderer: "files.search",
+            icon: "search",
+            prompt: "Use path/line/context metadata; call files.read_text for the surrounding source.",
+        },
+        OperationViewContract {
+            name: "system.info",
+            description: "Read a bounded machine information snapshot.",
+            fixed: ("scope", serde_json::json!("info")),
+            schema: system_info_schema(),
+            risk_level: RiskLevel::Safe,
+            risk_rule: None,
+            idempotency: OperationIdempotency::Idempotent,
+            scope: ToolOperationScope::Global,
+            concurrency: ToolConcurrency::ReadOnly,
+            permission_key: "system.info",
+            renderer: "system",
+            icon: "cpu",
+            prompt: "Read a bounded machine snapshot; use category to narrow the response.",
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,6 +592,45 @@ mod tests {
                 "{} accepted {invalid}",
                 tool.name()
             );
+        }
+    }
+
+    #[test]
+    fn operation_view_contracts_cover_policy_and_security_metadata() {
+        let contracts = operation_view_contracts(64);
+        assert_eq!(
+            contracts
+                .iter()
+                .map(|contract| contract.name)
+                .collect::<Vec<_>>(),
+            vec![
+                "files.read_text",
+                "files.outline",
+                "files.summary",
+                "files.search",
+                "system.info"
+            ]
+        );
+        for contract in contracts {
+            assert!(contract.schema.is_object(), "{} schema", contract.name);
+            assert_eq!(contract.schema["additionalProperties"], json!(false));
+            assert!(!contract.permission_key.is_empty());
+            assert!(!contract.renderer.is_empty());
+            assert!(!contract.icon.is_empty());
+            assert!(!contract.prompt.is_empty());
+
+            let policy_input = json!({ contract.fixed.0: contract.fixed.1 });
+            assert_eq!(
+                haven_common::types::permission_key(contract.name, &policy_input),
+                contract.permission_key,
+                "permission key drift for {}",
+                contract.name
+            );
+            let matrix = crate::security::LOCAL_TOOL_SECURITY_MATRIX
+                .iter()
+                .find(|case| case.tool_name == contract.name && case.operation == contract.name)
+                .unwrap_or_else(|| panic!("security matrix missing {}", contract.name));
+            assert_eq!(matrix.risk_level, contract.risk_level);
         }
     }
 }

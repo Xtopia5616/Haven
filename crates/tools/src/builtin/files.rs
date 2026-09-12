@@ -971,6 +971,7 @@ impl FilesTool {
                             "matches": matches,
                         }),
                         error: None,
+                        error_class: None,
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::Succeeded,
                         attempts: 1,
@@ -1361,6 +1362,7 @@ async fn summarize(
                 success: false,
                 output: serde_json::json!({"summary_error": true, "path": path}),
                 error: Some(format!("summarizer call failed: {}", e)),
+                error_class: Some(crate::ToolErrorClass::Transient),
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::Failed,
                 attempts: 1,
@@ -1376,6 +1378,7 @@ async fn summarize(
                     "summarizer timed out after {}s",
                     summary_timeout_secs
                 )),
+                error_class: Some(crate::ToolErrorClass::UnknownOutcome),
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                 attempts: 1,

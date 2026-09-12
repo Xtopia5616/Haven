@@ -717,6 +717,7 @@ impl AgentTool {
                     error: Some(format!(
                         "agent request timed out after {timeout_secs}s; the request was delivered and may still receive a reply"
                     )),
+                    error_class: Some(crate::ToolErrorClass::UnknownOutcome),
                     truncated: false,
                     outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                     attempts: 1,

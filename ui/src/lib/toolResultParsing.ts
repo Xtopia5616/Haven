@@ -1,3 +1,5 @@
+import { toolRootName } from './operationViewContract.ts';
+
 type ToolResultObject = Record<string, any>;
 
 export type ParsedToolResult = {
@@ -26,12 +28,13 @@ export function canRenderToolResult(toolName: string, content: string): boolean 
  * determines the stable result kind and preserves the decoded data.
  */
 export function parseToolResult(toolName: string, content: string): ParsedToolResult | null {
+	const rootToolName = toolRootName(toolName);
 	// Empty content is still a shell card while streaming / waiting for the
 	// first live-output chunk (or a background action bind).
 	if (!content) {
 		return toolName === 'shell' ? { kind: 'shell', data: null } : null;
 	}
-	if (toolName === 'shell') {
+	if (rootToolName === 'shell') {
 		let data: ToolResultObject | null = null;
 		try {
 			const value: unknown = JSON.parse(content);
@@ -41,7 +44,7 @@ export function parseToolResult(toolName: string, content: string): ParsedToolRe
 		}
 		return { kind: 'shell', data };
 	}
-	if (toolName === 'notify' && content.startsWith('Notification sent:')) {
+	if (rootToolName === 'notify' && content.startsWith('Notification sent:')) {
 		return { kind: 'notify', data: null };
 	}
 
@@ -56,7 +59,7 @@ export function parseToolResult(toolName: string, content: string): ParsedToolRe
 		// JSON arrays / primitives — pretty-printed in the raw card.
 		return { kind: 'raw', data };
 	}
-	return customShape(toolName, data)
+	return customShape(rootToolName, data)
 		? { kind: 'custom', data }
 		: { kind: 'generic', data };
 }

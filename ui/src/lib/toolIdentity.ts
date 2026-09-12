@@ -1,9 +1,16 @@
 /** Shared tool-name → source / label helpers for chat tool cards. */
 
+import { operationViewContract, toolRootName } from './operationViewContract.ts';
+
 export type ToolSource = 'builtin' | 'skill' | 'mcp';
 
 /** @type {Record<string, string>} */
 export const TOOL_LABELS: Record<string, string> = {
+	'files.read_text': '读取文件',
+	'files.outline': '文件大纲',
+	'files.summary': '文件摘要',
+	'files.search': '搜索文件',
+	'system.info': '系统信息',
 	files: '文件与搜索',
 	process: '进程列表',
 	window: '窗口列表',
@@ -27,6 +34,13 @@ export const TOOL_LABELS: Record<string, string> = {
 	web_search: '联网搜索',
 	agent: 'Agent 协作',
 };
+
+export { toolRootName };
+
+/** Return the fixed operation for a model-facing operation view. */
+export function toolOperationName(toolName: string): string | null {
+	return operationViewContract(toolName) ? toolName : null;
+}
 
 /** Strip the provider-safe namespace prefix from a dynamic tool name. */
 function stripToolPrefix(name: string, prefix: string): string | null {

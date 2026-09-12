@@ -61,7 +61,9 @@ P1 还增加了独立的 operation view、文档页游标、原生视频 Content
 
 公共聚合工具继续作为 native/Tauri 入口；模型目录同时注册高频读路径的独立瘦视图：`system.info`、`files.read_text`、`files.outline`、`files.summary` 和 `files.search`。每个 view 固定 operation/scope 并复用同一个执行实现、权限、取消、重试和 session 注册逻辑。
 
-provider tool name、权限矩阵、session catalog 和恢复路径已按独立名称接入；未知 operation 不会通过任务意图猜测。
+provider tool name、权限矩阵、session catalog、历史恢复和旧步骤投影已按独立名称接入；未知 operation 不会通过任务意图猜测。后端 operation-view contract 同时声明 schema、风险、幂等性、并发资源、权限键、renderer、icon 和 prompt 说明，UI 只镜像这些跨边界标识并用一致性测试锁定。
+
+本轮还以 `files.*` / `system.info` 试点了声明式契约：模型 schema 与执行时固定 operation/scope、授权输入、风险矩阵和 UI renderer 使用同一份定义。后续新增 view 应先扩展该契约，再补对应 renderer 和 prompt，不再只增加别名。
 
 ### P1.2 搜索与 outline 的模型视图
 
@@ -100,6 +102,8 @@ provider tool name、权限矩阵、session catalog 和恢复路径已按独立�
 - `retry_safety` 不等于 `risk_level`：可重试的读操作仍可能需要权限；不可重试的写操作仍不能因为失败而自动重放。
 - 结构化 observation 是模型视图，不改变 X12 `ReActSnapshot.events` 权威、不新增数据库迁移。
 - provider/model 的 capability profile 是协议能力与运行时路由的交集；未知能力不写成可用。
+- HTTP 工具默认阻断 localhost、loopback、私网、link-local 和云元数据地址；自动重定向关闭并逐跳复核目标，域名 allowlist 只会进一步收窄范围。
+- agent 的重试诊断消费结构化错误分类；错误文本仅在工具边界作为兼容 fallback，不作为 agent 的主要分支条件。
 
 ## 验证入口
 

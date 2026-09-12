@@ -4,6 +4,7 @@ import ToolResultCard from './ToolResultCard.svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
 import { actionStore, upsertAction } from './stores.ts';
+import { OPERATION_VIEW_CONTRACTS } from './operationViewContract.ts';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
@@ -93,9 +94,35 @@ describe('canRenderToolResult', () => {
 			parseToolResult('haven_tools', JSON.stringify({ name: 'files', enabled: true })),
 		).toMatchObject({ kind: 'custom' });
 	});
+	it('routes independent operation views through their root renderer', () => {
+		expect(
+			parseToolResult(
+				'files.read_text',
+				JSON.stringify({ operation: 'read', path: 'a.rs', content: 'x' }),
+			),
+		).toMatchObject({ kind: 'custom' });
+		expect(parseToolResult('files.search', searchJson([{ path: 'a.rs', line: 2 }]))).toMatchObject({
+			kind: 'custom',
+		});
+		expect(
+			parseToolResult('system.info', JSON.stringify({ scope: 'info', os: { name: 'Windows' } })),
+		).toMatchObject({ kind: 'custom' });
+	});
 	it('rejects empty content', () => {
 		expect(canRenderToolResult('', '')).toBe(false);
 		expect(canRenderToolResult('files', '')).toBe(false);
+	});
+});
+
+describe('operation view UI contract', () => {
+	it('declares renderer, icon and prompt metadata for every view', () => {
+		for (const [name, contract] of Object.entries(OPERATION_VIEW_CONTRACTS)) {
+			expect(contract.renderer).toBeTruthy();
+			expect(contract.icon).toBeTruthy();
+			expect(contract.prompt).toBeTruthy();
+			expect(contract.label).toBeTruthy();
+			expect(name).toMatch(/^(files|system)\./);
+		}
 	});
 });
 

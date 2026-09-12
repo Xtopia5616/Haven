@@ -12,16 +12,16 @@
 |---|---|---|---|---|---|
 | `audio` | `play`, `speak`, `volume_get`, `mute_get` | `record`, `volume_set`, `mute_set` = medium | `audio` 或操作 key | `play.file_path` 与文件工具一样受 `allowed_paths` 约束；`speak.text` 发往已配置 TTS provider；录音设备由 input 管线管理 | 录音取消清理 recording id；TTS 合成支持取消，播放完成当前 WAV |
 | `ask` | 全部 | 无系统副作用 = safe | `ask` | 无本地路径 | 不得静默跳过用户问题 |
-| `files` | `read`, `list`, 普通 `search` | `write`, `edit`, `copy`, `move`, `create_dir` = medium；`delete` = high；内容搜索 = medium | `files`, `files:<operation>` | `path`, `paths`, `source`, `destination`, `file`, `dir`, `directory`；源和目标逐一校验 | 失败不得部分放宽；重试沿用同一 gate |
+| `files` / operation view | `read`, `list`, `files.read_text`, `files.outline`, `files.summary`, `files.search` = low | `write`, `edit`, `copy`, `move`, `create_dir` = medium；`delete` = high；内容搜索 = medium | `files`, `files:<operation>` 或 view 专用 key | view 固定 operation，继承 `allowed_paths`；`path`, `paths`, `source`, `destination`, `file`, `dir`, `directory` 逐一校验 | 失败不得部分放宽；重试沿用同一 gate |
 | `process` | `list` = low | `kill` = high | `process`, `process:<operation>` | 无路径参数；进程启动统一走 `shell.background` | kill 支持 token；取消不得继续执行 |
 | `clipboard` | `read`, `history` = low | `write` = medium | `clipboard`, `clipboard:<operation>` | 无路径；文本长度受限 | 失败不重放写入 |
 | `shell` | 无 | 所有命令 = high | `shell` | `cwd` 必须纳入路径校验；命令不通过 shell 拼接绕过 | 取消终止受管子进程；unsafe 重试默认关闭 |
 | `actions` | 列表/查看 = safe | `cancel` = medium | `actions`, `actions:cancel` | 仅本地任务投影；取消按 session 归属校验 | 任务取消必须幂等 |
 | `input` | `move`, `scroll` = low | `click`, `type`, `key` = medium | `input`, `input:<operation>` | 无路径 | 取消不得继续发送输入事件 |
 | `schedule` | `list`, `cancel` = safe | `set` = low | `schedule`, `schedule:set` | 被调工具在设定时校验风险，触发时再次 gate | 定时任务取消和会话结束都必须阻断后续触发 |
-| `system` | `info`, `display`, `power:status` = safe | env 写操作、registry 写操作 = high；registry 读 = medium；power lock/sleep = high；hibernate = critical | `system:<scope>[:operation]` | env list 只返回名称，credential-like get 脱敏且 set 不回显；注册表、电源、环境变量不接受路径绕过 | 取消只允许在操作未提交前生效 |
+| `system` / `system.info` | `info`, `display`, `power:status`, `system.info` = safe | env 写操作、registry 写操作 = high；registry 读 = medium；power lock/sleep = high；hibernate = critical | `system:<scope>[:operation]` 或 `system.info` | `system.info` 固定 `scope=info`，继承系统安全边界；env list 只返回名称，credential-like get 脱敏且 set 不回显；注册表、电源、环境变量不接受路径绕过 | 取消只允许在操作未提交前生效 |
 | `window` | `list`, `foreground`, `screenshot`, `ui_tree`, `wait` = low | `focus` = medium；`close`, `ocr` = high | `window`, `window:<operation>` | focus/close 可按 title 或 pid 定位；OCR 上传前仍需 high gate；不得泄漏完整屏幕到错误文案 | wait/ocr 支持取消，不得后台继续轮询 |
-| `http` | 无 | 请求 = medium | `http` | URL/headers/body 是网络边界；不把 HTTP 当作本地路径 | timeout/cancel 后不得自动升级重试 |
+| `http` | 无 | 请求 = medium | `http` | 默认阻断 localhost/loopback、私网、link-local、云元数据和解析到受限地址的域名；可用 `allowed_domains` 进一步收窄；每个 redirect hop 重新校验，跨 origin 移除认证/cookie 头 | timeout/cancel 后不得自动升级重试；未知结果不重放 |
 | `notify` | 全部 = safe | 无 | `notify` | UI 文本按纯文本处理 | 重复通知可丢弃/幂等 |
 | `agent` | list/profile/mail/poll = safe | `spawn` = medium | `agent`, `agent:spawn` | peer bus 路径固定在受管 root | request 等待取消必须释放 waiter |
 | `load_skill` | 加载元数据 = safe | 被加载 skill 的工具另行 high gate | `load_skill` | skill root 由 engine 固定 | 失败不留下半注册工具 |
@@ -63,6 +63,11 @@
 | 会话隔离 | session allow 在 `ses-a`，无 session 或 `ses-b` 调用 | 后两者不能自动批准 |
 | policy reset | 修改阈值、重新加载安全配置、clear history | 清除旧 session grants，不残留信任 |
 | disabled op | `disabled_operations` 命中 op/scope/scope:op | `Blocked`，优先于风险确认 |
+| operation view contract | view 的 schema、固定 operation/scope、风险、幂等性、并发、权限 key、renderer、icon、prompt 任一不一致 | catalog、AuthorizationEngine、UI parser/renderer 和 prompt 不得各自接受不同定义 |
+| HTTP destination | `http://localhost`, loopback、RFC1918/ULA、link-local、`169.254.169.254`、metadata hostname | `Blocked`，不能依赖代理或 DNS 结果把本地目标变成可访问目标 |
+| HTTP redirect | 公网 URL 重定向到上述地址，或超过 10 跳 | `Blocked`；自动跟随必须关闭，逐跳解析、allowlist 和地址检查 |
+| HTTP allowlist | 配置 `allowed_domains` 后访问未列出的 host、或 `*.example.com` 访问根域 | `Blocked`；通配符只匹配子域，不扩大到根域或其他后缀 |
+| structured error class | `transient`、`unknown_outcome`、`validation`、`permission`、`side_effect_may_have_happened` | agent 按 class 决定 retry/verify/ask；不得把错误文本作为主要策略条件 |
 | cancellation | gate 后、实际文件/进程/网络提交前取消 | 不调用下游，或下游按 token 停止；不以取消作为授权 |
 | race/TOCTOU | check 后替换路径 component 为 reparse point | 执行入口重新 check；发现不一致即拒绝并记录净化错误 |
 | 输出泄漏 | denial、tool error、日志 tail、MCP env | 不返回 key/token、完整命令输出或原始 provider/MCP secret |

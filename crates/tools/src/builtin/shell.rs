@@ -283,6 +283,7 @@ impl ShellTool {
                 success: false,
                 output,
                 error: Some(format!("exit code {}:\n{}", code_str, err_text)),
+                error_class: Some(crate::ToolErrorClass::Other),
                 truncated,
                 outcome: ToolExecutionOutcome::Failed,
                 attempts: 1,

@@ -22,6 +22,33 @@ pub enum ToolExecutionOutcome {
     TimedOutUnknown,
 }
 
+/// Structured failure class consumed by retry and recovery policy. The human
+/// error string remains a diagnostic, never the policy source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolErrorClass {
+    Transient,
+    UnknownOutcome,
+    Validation,
+    Permission,
+    SideEffectMayHaveHappened,
+    #[default]
+    Other,
+}
+
+impl ToolErrorClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transient => "transient",
+            Self::UnknownOutcome => "unknown_outcome",
+            Self::Validation => "validation",
+            Self::Permission => "permission",
+            Self::SideEffectMayHaveHappened => "side_effect_may_have_happened",
+            Self::Other => "other",
+        }
+    }
+}
+
 impl ToolExecutionOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -65,6 +92,9 @@ pub struct ToolResult {
     pub success: bool,
     pub output: Value,
     pub error: Option<String>,
+    /// Machine-readable failure class. `None` for successful results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<ToolErrorClass>,
     pub truncated: bool,
     #[serde(default)]
     pub outcome: ToolExecutionOutcome,
@@ -241,6 +271,7 @@ impl ToolResult {
             success: true,
             output,
             error: None,
+            error_class: None,
             truncated: false,
             outcome: ToolExecutionOutcome::Succeeded,
             attempts: 1,
@@ -254,6 +285,7 @@ impl ToolResult {
             success: true,
             output,
             error: None,
+            error_class: None,
             truncated: true,
             outcome: ToolExecutionOutcome::Succeeded,
             attempts: 1,
@@ -263,10 +295,19 @@ impl ToolResult {
     }
 
     pub fn failed(output: Value, error: impl Into<String>) -> Self {
+        Self::failed_with_class(output, error, ToolErrorClass::Other)
+    }
+
+    pub fn failed_with_class(
+        output: Value,
+        error: impl Into<String>,
+        error_class: ToolErrorClass,
+    ) -> Self {
         Self {
             success: false,
             output,
             error: Some(error.into()),
+            error_class: Some(error_class),
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -280,6 +321,7 @@ impl ToolResult {
             success: false,
             output: Value::Null,
             error: Some(error.into()),
+            error_class: Some(ToolErrorClass::UnknownOutcome),
             truncated: false,
             outcome: ToolExecutionOutcome::Cancelled,
             attempts: 1,
@@ -297,6 +339,11 @@ impl ToolResult {
             success: false,
             output: Value::Null,
             error: Some(error.into()),
+            error_class: Some(match outcome {
+                ToolExecutionOutcome::TimedOutUnknown => ToolErrorClass::UnknownOutcome,
+                ToolExecutionOutcome::TimedOutAndTerminated => ToolErrorClass::Transient,
+                _ => ToolErrorClass::Other,
+            }),
             truncated: false,
             outcome,
             attempts: 1,
@@ -596,6 +643,13 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> String;
     fn description(&self) -> String;
     fn risk_level(&self, input: &Value) -> RiskLevel;
+
+    /// Canonical input used by the authorization layer. Operation views add
+    /// their fixed discriminator here so disabled-operation and path rules
+    /// see the same operation that execution and risk policy see.
+    fn authorization_input(&self, input: &Value) -> Value {
+        input.clone()
+    }
     /// Retry policy is an operation property, not a safety-risk property.
     /// The default is conservative because an unknown operation may have
     /// performed an external side effect before returning an error.
@@ -955,6 +1009,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn structured_error_classes_are_stable_on_the_wire() {
+        let classes = [
+            ToolErrorClass::Transient,
+            ToolErrorClass::UnknownOutcome,
+            ToolErrorClass::Validation,
+            ToolErrorClass::Permission,
+            ToolErrorClass::SideEffectMayHaveHappened,
+            ToolErrorClass::Other,
+        ];
+        let encoded = serde_json::to_value(classes).unwrap();
+        assert_eq!(
+            encoded,
+            json!([
+                "transient",
+                "unknown_outcome",
+                "validation",
+                "permission",
+                "side_effect_may_have_happened",
+                "other"
+            ])
+        );
+        assert_eq!(ToolErrorClass::Permission.as_str(), "permission");
+    }
+
+    #[test]
+    fn timeout_outcome_and_error_class_cannot_drift() {
+        let unknown = ToolResult::timed_out(
+            ToolExecutionOutcome::TimedOutUnknown,
+            "the request may still be running",
+        );
+        assert_eq!(unknown.error_class, Some(ToolErrorClass::UnknownOutcome));
+        let terminated = ToolResult::timed_out(
+            ToolExecutionOutcome::TimedOutAndTerminated,
+            "the request was terminated",
+        );
+        assert_eq!(terminated.error_class, Some(ToolErrorClass::Transient));
+    }
+
+    #[test]
     fn test_tool_result_summary_text_plain_string_unquoted() {
         // A tool returning a plain string must read as text, not JSON-quoted.
         let result = ToolResult::ok(json!("some plain text"));
@@ -967,6 +1060,7 @@ pub(crate) mod tests {
             success: false,
             output: json!(null),
             error: Some("boom".into()),
+            error_class: Some(ToolErrorClass::Other),
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -982,6 +1076,7 @@ pub(crate) mod tests {
             success: false,
             output: json!(null),
             error: None,
+            error_class: None,
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -1000,6 +1095,7 @@ pub(crate) mod tests {
             success: false,
             output: json!({"output": "some stdout"}),
             error: Some(String::new()),
+            error_class: Some(ToolErrorClass::Other),
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -1015,6 +1111,7 @@ pub(crate) mod tests {
             success: false,
             output: json!(null),
             error: Some("   ".into()),
+            error_class: Some(ToolErrorClass::Other),
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,

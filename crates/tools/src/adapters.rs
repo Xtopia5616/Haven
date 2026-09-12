@@ -75,6 +75,7 @@ impl Tool for McpToolAdapter {
             success: out.success,
             output: out.output,
             error: out.error,
+            error_class: (!out.success).then_some(crate::ToolErrorClass::Other),
             truncated: false,
             outcome: if out.success {
                 crate::ToolExecutionOutcome::Succeeded

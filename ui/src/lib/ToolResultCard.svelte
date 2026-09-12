@@ -19,6 +19,7 @@
 		toolSourceLabel,
 	} from '$lib/toolIdentity.ts';
 	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
+	import { toolIconName, toolRootName } from '$lib/operationViewContract.ts';
 
 	let {
 		type = 'tool',
@@ -158,22 +159,24 @@
 	let toolIcon = $derived.by(() => {
 		if (toolSource === 'mcp') return 'network';
 		if (toolSource === 'skill') return 'sparkles';
+		if (toolIconName(toolName)) return toolIconName(toolName);
 		if (kind === 'shell') return 'terminal';
 		if (kind === 'notify') return 'bell';
 		if (kind === 'generic') return 'tools';
 		if (kind === 'raw') return 'file';
-		if (toolName === 'files' && Array.isArray(data.results)) return 'search';
-		if (toolName === 'system') return 'cpu';
-		if (toolName === 'process') return 'activity';
-		if (toolName === 'window') return 'monitor';
-		if (toolName === 'actions') return 'clock';
-		if (toolName === 'schedule') return 'bell';
-		if (toolName === 'files') return 'file';
-		if (toolName === 'http' || toolName === 'web_search') return 'globe';
-		if (toolName === 'clipboard') return 'clipboard';
-		if (toolName === 'agent') return 'users';
-		if (toolName === 'memory') return 'memory';
-		if (toolName === 'media') return 'image';
+		const rootToolName = toolRootName(toolName);
+		if (rootToolName === 'files' && Array.isArray(data.results)) return 'search';
+		if (rootToolName === 'system') return 'cpu';
+		if (rootToolName === 'process') return 'activity';
+		if (rootToolName === 'window') return 'monitor';
+		if (rootToolName === 'actions') return 'clock';
+		if (rootToolName === 'schedule') return 'bell';
+		if (rootToolName === 'files') return 'file';
+		if (rootToolName === 'http' || rootToolName === 'web_search') return 'globe';
+		if (rootToolName === 'clipboard') return 'clipboard';
+		if (rootToolName === 'agent') return 'users';
+		if (rootToolName === 'memory') return 'memory';
+		if (rootToolName === 'media') return 'image';
 		return 'tools';
 	});
 	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));
@@ -382,7 +385,7 @@
 		<MaterialCollapsible bind:open={cardOpen} lazy>
 			{#snippet header()}
 				<span class="tool-card-icon" aria-hidden="true">
-					<Icon name={toolIcon} size={12} strokeWidth={2.5} />
+					<Icon name={toolIcon ?? undefined} size={12} strokeWidth={2.5} />
 				</span>
 				<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
 				{#if showFallbackIntent}<span class="tool-intent">{TOOL_INTENT_FALLBACK}</span>{/if}

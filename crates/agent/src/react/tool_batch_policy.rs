@@ -7,7 +7,7 @@
 
 use super::*;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_tools::{OperationIdempotency, ToolExecutionOutcome};
+use haven_tools::{OperationIdempotency, ToolErrorClass, ToolExecutionOutcome};
 
 /// Failure classification used to shape the post-failure retry nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,7 +29,7 @@ pub(crate) enum FailureKind {
 pub(super) struct ToolFailureSignal {
     pub(super) tool_name: String,
     pub(super) tool_input: serde_json::Value,
-    pub(super) error: String,
+    pub(super) error_class: ToolErrorClass,
     pub(super) tool_call_id: Option<String>,
 }
 
@@ -48,7 +48,7 @@ impl ToolRetryBudget {
         let key = (
             signal.tool_name.clone(),
             normalize_tool_input(&signal.tool_input),
-            ReActEngine::classify_tool_failure(&signal.tool_name, &signal.error),
+            failure_kind(signal.error_class),
         );
         let attempts = self.attempts.entry(key).or_default();
         if *attempts >= MAX_AGENT_RETRIES_PER_FAILURE {
@@ -83,8 +83,10 @@ pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Valu
 pub(super) fn is_retryable_failure_outcome(
     outcome: ToolExecutionOutcome,
     idempotency: OperationIdempotency,
+    error_class: ToolErrorClass,
 ) -> bool {
     matches!(idempotency, OperationIdempotency::Idempotent)
+        && matches!(error_class, ToolErrorClass::Transient)
         && matches!(
             outcome,
             ToolExecutionOutcome::Failed | ToolExecutionOutcome::TimedOutAndTerminated
@@ -102,18 +104,33 @@ impl ReActEngine {
     ///
     /// The returned text is appended onto the last failed tool observation,
     /// never pushed as a synthetic User message into canonical/DB.
-    pub(super) fn build_failure_nudge(failures: &[(String, String)]) -> String {
+    pub(super) fn build_failure_nudge(failures: &[(String, ToolErrorClass)]) -> String {
         let has_env = failures
             .iter()
-            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Environmental);
+            .any(|(_, class)| failure_kind(*class) == FailureKind::Environmental);
         let has_logic = failures
             .iter()
-            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Logic);
+            .any(|(_, class)| failure_kind(*class) == FailureKind::Logic);
+        let has_permission = failures
+            .iter()
+            .any(|(_, class)| *class == ToolErrorClass::Permission);
+        let has_unknown = failures.iter().any(|(_, class)| {
+            matches!(
+                class,
+                ToolErrorClass::UnknownOutcome | ToolErrorClass::SideEffectMayHaveHappened
+            )
+        });
         if has_env {
             "The tool failures look ENVIRONMENTAL (missing command / wrong shell syntax / network / path), not logic errors. Do NOT abandon your approach. Diagnose the environment first: verify the command exists in the shell you chose (cmd vs PowerShell syntax differs; `&&` only works in cmd), check network/proxy/endpoints, fix paths and prerequisites. Switching tools (e.g. curl -> aria2) or shells is an environment fix, not a change of approach — keep the same approach and retry."
                 .into()
         } else if has_logic {
             "The previous approach failed with logic errors. Analyze the exact error, fix the specific mistake, and retry. Only consider a completely different approach if the same method fails again after you fixed it."
+                .into()
+        } else if has_permission {
+            "The tool call was blocked by a permission or safety policy. Do not retry it blindly; ask the user for authorization or choose a permitted read-only path."
+                .into()
+        } else if has_unknown {
+            "The previous operation has an unknown outcome and may still have produced a side effect. Do not replay it automatically; verify the current state or ask the user."
                 .into()
         } else {
             format!(
@@ -150,99 +167,50 @@ impl ReActEngine {
             msg.content.push(ContentPart::text(nudge));
         }
     }
+}
 
-    /// Heuristic classification of a tool failure: environment problems vs
-    /// logic problems. The result only shapes the next provider request.
-    pub(super) fn classify_tool_failure(tool_name: &str, err: &str) -> FailureKind {
-        if tool_name == "files"
-            && (err.contains("MISSING REQUIRED FIELD")
-                || err.contains("old_string")
-                || err.contains("not found in file"))
-        {
-            return FailureKind::Logic;
-        }
-        let e = err.to_lowercase();
-        const ENV_MARKERS: &[&str] = &[
-            "not recognized",
-            "not recognized as an internal or external command",
-            "不是内部或外部命令",
-            "command not found",
-            "无法识别",
-            "not found",
-            "cannot be found",
-            "cannot find",
-            "找不到",
-            "no such file",
-            "no such directory",
-            "spawn",
-            "program not found",
-            "connection",
-            "timed out",
-            "timeout",
-            "refused",
-            "reset",
-            "proxy",
-            "unreachable",
-            "resolve",
-            "dns",
-            "ssl",
-            "tls",
-            "certificate",
-            "failed to connect",
-            "tunnel",
-            "network",
-            "path does not exist",
-            "路径不存在",
-            "access denied",
-            "拒绝访问",
-            "无法将",
-            "不是有效的",
-        ];
-        if ENV_MARKERS.iter().any(|m| e.contains(m)) {
-            return FailureKind::Environmental;
-        }
-        const LOGIC_MARKERS: &[&str] = &[
-            "validation failed",
-            "missing required",
-            "parse error",
-            "syntax error",
-            "unterminated",
-            "invalid json",
-            "is required for",
-        ];
-        if LOGIC_MARKERS.iter().any(|m| e.contains(m)) {
-            return FailureKind::Logic;
-        }
-        FailureKind::Unknown
+pub(super) fn failure_kind(error_class: ToolErrorClass) -> FailureKind {
+    match error_class {
+        ToolErrorClass::Transient => FailureKind::Environmental,
+        ToolErrorClass::Validation => FailureKind::Logic,
+        ToolErrorClass::Permission
+        | ToolErrorClass::UnknownOutcome
+        | ToolErrorClass::SideEffectMayHaveHappened
+        | ToolErrorClass::Other => FailureKind::Unknown,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::is_retryable_failure_outcome;
-    use haven_tools::{OperationIdempotency, ToolExecutionOutcome};
+    use haven_tools::{OperationIdempotency, ToolErrorClass, ToolExecutionOutcome};
 
     #[test]
     fn unknown_and_cancelled_outcomes_never_request_retry() {
         assert!(!is_retryable_failure_outcome(
             ToolExecutionOutcome::Cancelled,
             OperationIdempotency::Idempotent,
+            ToolErrorClass::UnknownOutcome,
         ));
         assert!(!is_retryable_failure_outcome(
             ToolExecutionOutcome::TimedOutUnknown,
             OperationIdempotency::Idempotent,
+            ToolErrorClass::UnknownOutcome,
         ));
         assert!(is_retryable_failure_outcome(
             ToolExecutionOutcome::Failed,
             OperationIdempotency::Idempotent,
+            ToolErrorClass::Transient,
         ));
         assert!(is_retryable_failure_outcome(
             ToolExecutionOutcome::TimedOutAndTerminated,
             OperationIdempotency::Idempotent,
+            ToolErrorClass::Transient,
         ));
         assert!(!is_retryable_failure_outcome(
             ToolExecutionOutcome::Failed,
             OperationIdempotency::NonIdempotent,
+            ToolErrorClass::Transient,
         ));
     }
 
@@ -252,7 +220,7 @@ mod tests {
         let signal = super::ToolFailureSignal {
             tool_name: "files".into(),
             tool_input: serde_json::json!({"path":"a.txt", "operation":"read"}),
-            error: "not found in file".into(),
+            error_class: ToolErrorClass::Validation,
             tool_call_id: Some("call-1".into()),
         };
         assert!(budget.admit(&signal));

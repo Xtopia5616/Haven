@@ -43,6 +43,12 @@ describe('toolSourceLabel / toolDisplayName', () => {
 		expect(toolDisplayName('skill_weather')).toBe('skill_weather');
 		expect(toolDisplayName('mcp::fs::read')).toBe('mcp::fs::read');
 	});
+
+	it('uses stable labels for operation views', () => {
+		expect(toolDisplayName('files.read_text')).toBe('读取文件');
+		expect(toolDisplayName('files.search')).toBe('搜索文件');
+		expect(toolDisplayName('system.info')).toBe('系统信息');
+	});
 });
 
 describe('parseToolArgs', () => {

@@ -169,7 +169,11 @@ pub fn is_safe_local_path(path: &Path) -> bool {
 /// contents, or MCP/skill secrets and must never be sent to the renderer.
 pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
     let operation = registered_operation_label(tool_name, params);
-    let family = tool_name.split(':').next().unwrap_or(tool_name);
+    let family = tool_name
+        .split(':')
+        .next()
+        .and_then(|name| name.split('.').next())
+        .unwrap_or(tool_name);
     match family {
         "files" => format!("文件操作：{operation}（目标详情已隐藏）"),
         "shell" => "将执行一条受保护的本机命令（命令内容不会显示在弹窗中）".into(),
@@ -202,6 +206,15 @@ fn registered_operation_label(tool_name: &str, params: &Value) -> String {
             .any(|case| case.tool_name == tool_name && case.operation == candidate)
     {
         return candidate;
+    }
+    // Operation views use their public name as the permission-matrix
+    // operation while their canonical execution input carries the grouped
+    // tool's discriminator (for example `read`).
+    if LOCAL_TOOL_SECURITY_MATRIX
+        .iter()
+        .any(|case| case.tool_name == tool_name && case.operation == tool_name)
+    {
+        return tool_name.to_string();
     }
     if operation.is_some_and(|operation| {
         LOCAL_TOOL_SECURITY_MATRIX
@@ -584,15 +597,24 @@ impl Default for AuthorizationEngine {
 }
 
 fn effective_risk_from(cfg: &SafetyConfig, tool_name: &str, reported: RiskLevel) -> RiskLevel {
-    let configured = cfg
-        .tool_settings
-        .get(tool_name)
-        .and_then(|t| t.risk_override.as_deref())
-        .and_then(parse_risk_override);
-    match configured {
-        Some(override_risk) if override_risk > reported => override_risk,
-        _ => reported,
-    }
+    tool_setting_names(tool_name)
+        .filter_map(|name| {
+            cfg.tool_settings
+                .get(name)
+                .and_then(|tool| tool.risk_override.as_deref())
+                .and_then(parse_risk_override)
+        })
+        .fold(reported, |effective, configured| {
+            if configured > effective {
+                configured
+            } else {
+                effective
+            }
+        })
+}
+
+fn tool_setting_names(tool_name: &str) -> impl Iterator<Item = &str> {
+    std::iter::once(tool_name).chain(tool_name.split_once('.').map(|(root, _)| root))
 }
 
 fn bump_policy_revision(cfg: &mut SafetyConfig) {
@@ -671,24 +693,29 @@ fn disabled_operation_block(
     tool_name: &str,
     params: &Value,
 ) -> Option<String> {
-    let cfg = settings.get(tool_name)?;
-    if cfg.disabled_operations.is_empty() {
-        return None;
-    }
     let op = params
         .get("operation")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let scope = params.get("scope").and_then(|v| v.as_str()).unwrap_or("");
-    for disabled in &cfg.disabled_operations {
-        let d = disabled.trim();
-        if d.is_empty() {
+    for name in tool_setting_names(tool_name) {
+        let Some(cfg) = settings.get(name) else {
             continue;
-        }
-        if d == op || d == scope || (!scope.is_empty() && d == format!("{scope}:{op}")) {
-            return Some(format!(
-                "operation '{disabled}' is disabled for tool '{tool_name}'"
-            ));
+        };
+        for disabled in &cfg.disabled_operations {
+            let d = disabled.trim();
+            if d.is_empty() {
+                continue;
+            }
+            if d == tool_name
+                || d == op
+                || d == scope
+                || (!scope.is_empty() && d == format!("{scope}:{op}"))
+            {
+                return Some(format!(
+                    "operation '{disabled}' is disabled for tool '{tool_name}'"
+                ));
+            }
         }
     }
     None
@@ -699,22 +726,26 @@ fn path_sandbox_block(
     tool_name: &str,
     params: &Value,
 ) -> Option<String> {
-    let cfg = settings.get(tool_name)?;
-    if cfg.allowed_paths.is_empty() {
-        return None;
-    }
-    let allowed: Vec<PathBuf> = cfg.allowed_paths.iter().map(PathBuf::from).collect();
     let paths = collect_path_params(params);
     if paths.is_empty() {
         return None;
     }
-    for path in paths {
-        let path = resolve_relative_sandbox_path(path);
-        if !path_is_allowed(&path, &allowed) {
-            return Some(format!(
-                "path '{}' is outside allowed_paths for tool '{tool_name}'",
-                path.display()
-            ));
+    for name in tool_setting_names(tool_name) {
+        let Some(cfg) = settings.get(name) else {
+            continue;
+        };
+        if cfg.allowed_paths.is_empty() {
+            continue;
+        }
+        let allowed: Vec<PathBuf> = cfg.allowed_paths.iter().map(PathBuf::from).collect();
+        for path in &paths {
+            let path = resolve_relative_sandbox_path(path.clone());
+            if !path_is_allowed(&path, &allowed) {
+                return Some(format!(
+                    "path '{}' is outside allowed_paths for tool '{tool_name}'",
+                    path.display()
+                ));
+            }
         }
     }
     None
@@ -925,6 +956,17 @@ mod tests {
         );
         assert!(summary.contains("受保护操作"));
         assert!(!summary.contains("custom-secret-operation"));
+        assert!(!summary.contains("private.txt"));
+    }
+
+    #[test]
+    fn permission_prompt_summary_routes_operation_views_to_their_family() {
+        let summary = permission_prompt_summary(
+            "files.read_text",
+            &json!({"operation": "read", "path": "private.txt"}),
+        );
+        assert!(summary.starts_with("文件操作："));
+        assert!(summary.contains("files.read_text"));
         assert!(!summary.contains("private.txt"));
     }
 
@@ -1258,6 +1300,29 @@ mod tests {
                 None,
                 "files",
                 &json!({"operation": "delete"}),
+                RiskLevel::Low,
+            )
+            .await;
+        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn operation_view_inherits_grouped_tool_safety_settings() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let mut settings = HashMap::new();
+        settings.insert(
+            "files".into(),
+            ToolConfig {
+                disabled_operations: vec!["read".into()],
+                ..ToolConfig::default()
+            },
+        );
+        gw.set_tool_settings(settings).await;
+        let result = gw
+            .check(
+                None,
+                "files.read_text",
+                &json!({"operation": "read", "path": "notes.md"}),
                 RiskLevel::Low,
             )
             .await;

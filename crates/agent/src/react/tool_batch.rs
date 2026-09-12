@@ -6,7 +6,7 @@
 
 use super::snapshot_io::PauseTurnInput;
 #[cfg(test)]
-use super::tool_batch_policy::FailureKind;
+use super::tool_batch_policy::{FailureKind, failure_kind};
 use super::tool_batch_policy::{
     ToolFailureSignal, empty_inbox_output, is_agent_inbox_call, is_retryable_failure_outcome,
 };
@@ -16,8 +16,8 @@ use crate::types::Action;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{
-    OperationIdempotency, ToolConcurrency, ToolExecutionOutcome, ToolLlmUsage, ToolOperationScope,
-    is_silent_action,
+    OperationIdempotency, ToolConcurrency, ToolErrorClass, ToolExecutionOutcome, ToolLlmUsage,
+    ToolOperationScope, is_silent_action,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -70,6 +70,7 @@ impl ToolBatchState {
             is_error,
             outcome,
             idempotency,
+            error_class,
             operation_scope,
             llm_usage,
             ask_question,
@@ -90,12 +91,9 @@ impl ToolBatchState {
             .await;
 
         if is_error
-            && !matches!(idempotency, OperationIdempotency::Idempotent)
             && matches!(
-                outcome,
-                ToolExecutionOutcome::Failed
-                    | ToolExecutionOutcome::TimedOutAndTerminated
-                    | ToolExecutionOutcome::TimedOutUnknown
+                error_class,
+                ToolErrorClass::UnknownOutcome | ToolErrorClass::SideEffectMayHaveHappened
             )
         {
             let scope = match operation_scope {
@@ -103,19 +101,18 @@ impl ToolBatchState {
                 ToolOperationScope::Session => "session",
             };
             step_result.push_str(&format!(
-                "\n\n[needs_user_decision] This {scope}-scoped operation is not proven safe to replay (idempotency={idempotency:?}). Do not retry it automatically; ask the user whether to verify or perform it again."
+                "\n\n[needs_user_decision] This {scope}-scoped operation is not proven safe to replay (idempotency={idempotency:?}, error_class={error_class:?}). Do not retry it automatically; ask the user whether to verify or perform it again."
             ));
         }
 
-        if is_error && is_retryable_failure_outcome(outcome, idempotency) {
+        if is_error && is_retryable_failure_outcome(outcome, idempotency, error_class) {
             self.retryable_failure = true;
             self.last_retryable_failed_tool_call_id = action.tool_call_id.clone();
             if self.failure_signals.len() < 3 {
-                let cap: String = step_result.chars().take(600).collect();
                 self.failure_signals.push(ToolFailureSignal {
                     tool_name: tool_name.clone(),
                     tool_input: action.tool_input.clone(),
-                    error: cap,
+                    error_class,
                     tool_call_id: action.tool_call_id.clone(),
                 });
             }
@@ -245,6 +242,7 @@ pub(super) struct CompletedTool {
     is_error: bool,
     pub(super) outcome: ToolExecutionOutcome,
     pub(super) idempotency: OperationIdempotency,
+    pub(super) error_class: ToolErrorClass,
     pub(super) operation_scope: ToolOperationScope,
     llm_usage: Vec<ToolLlmUsage>,
     ask_question: Option<String>,
@@ -270,6 +268,7 @@ impl CompletedTool {
             is_error: !matches!(outcome, ToolExecutionOutcome::Succeeded),
             outcome,
             idempotency: OperationIdempotency::Unknown,
+            error_class: ToolErrorClass::Other,
             operation_scope: ToolOperationScope::Session,
             llm_usage: Vec::new(),
             ask_question: None,
@@ -347,6 +346,7 @@ pub(super) async fn execute_tool_action(
         step_result,
         is_error,
         outcome,
+        error_class,
         llm_usage,
         ask_question,
         ask_options,
@@ -375,6 +375,7 @@ pub(super) async fn execute_tool_action(
                 step_result,
                 !result.success,
                 result.outcome,
+                result.error_class.unwrap_or(ToolErrorClass::Other),
                 result.llm_usage,
                 result.signals.ask_question,
                 result.signals.ask_options,
@@ -396,6 +397,11 @@ pub(super) async fn execute_tool_action(
                     ToolExecutionOutcome::TimedOutUnknown
                 } else {
                     ToolExecutionOutcome::Failed
+                },
+                if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
+                    ToolErrorClass::UnknownOutcome
+                } else {
+                    ToolErrorClass::Other
                 },
                 Vec::new(),
                 None,
@@ -420,6 +426,7 @@ pub(super) async fn execute_tool_action(
         is_error,
         outcome,
         idempotency,
+        error_class,
         operation_scope,
         llm_usage,
         ask_question,
@@ -547,23 +554,14 @@ mod tests {
     }
 
     #[test]
-    fn classify_environmental_vs_logic() {
+    fn structured_error_classes_map_to_retry_nudge_kinds() {
         assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "shell",
-                "'Get-FileHash' is not recognized as the name of a cmdlet"
-            ),
+            failure_kind(ToolErrorClass::Transient),
             FailureKind::Environmental
         );
+        assert_eq!(failure_kind(ToolErrorClass::Validation), FailureKind::Logic);
         assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "files",
-                "input validation failed for 'files': MISSING REQUIRED FIELD(S): operation"
-            ),
-            FailureKind::Logic
-        );
-        assert_eq!(
-            ReActEngine::classify_tool_failure("shell", "something odd happened"),
+            failure_kind(ToolErrorClass::Permission),
             FailureKind::Unknown
         );
     }

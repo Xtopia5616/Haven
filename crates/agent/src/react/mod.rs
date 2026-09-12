@@ -1379,87 +1379,20 @@ mod tests {
         LlmRouter::new_with_clients(small, default, image, audio)
     }
 
-    // ── failure classification & retry nudge (G5: nudge text only; attach
-    // onto tool observations is covered in tool_batch::tests) ──────────────
+    // ── structured failure classes & retry nudge ──────────────────────────
 
     #[test]
-    fn classify_environmental_command_missing() {
+    fn structured_failure_classes_shape_the_nudge_without_text_scanning() {
         assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "shell",
-                "'Get-FileHash' is not recognized as the name of a cmdlet, function, script file, or operable program"
-            ),
+            tool_batch_policy::failure_kind(haven_tools::ToolErrorClass::Transient),
             FailureKind::Environmental
         );
         assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "shell",
-                "'curl' 不是内部或外部命令，也不是可运行的程序或批处理文件"
-            ),
-            FailureKind::Environmental
-        );
-    }
-
-    #[test]
-    fn classify_environmental_network() {
-        assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "http",
-                "tcp connect error: A connection attempt failed because the connected party did not properly respond"
-            ),
-            FailureKind::Environmental
-        );
-        assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "shell",
-                "curl: (7) Failed to connect to host port 443: Connection refused"
-            ),
-            FailureKind::Environmental
-        );
-        assert_eq!(
-            ReActEngine::classify_tool_failure("shell", "download timed out after 60s"),
-            FailureKind::Environmental
-        );
-    }
-
-    #[test]
-    fn classify_environmental_paths() {
-        assert_eq!(
-            ReActEngine::classify_tool_failure("shell", "7z: cannot find archive path"),
-            FailureKind::Environmental
-        );
-    }
-
-    #[test]
-    fn classify_logic_usage_errors() {
-        assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "files",
-                "input validation failed for 'files': MISSING REQUIRED FIELD(S): operation"
-            ),
+            tool_batch_policy::failure_kind(haven_tools::ToolErrorClass::Validation),
             FailureKind::Logic
         );
         assert_eq!(
-            ReActEngine::classify_tool_failure(
-                "files",
-                "'old_string' is required for edit operation"
-            ),
-            FailureKind::Logic
-        );
-        assert_eq!(
-            ReActEngine::classify_tool_failure("files", "old_string not found in file"),
-            FailureKind::Logic
-        );
-        assert_eq!(
-            ReActEngine::classify_tool_failure("shell", "invalid json in script"),
-            FailureKind::Logic
-        );
-    }
-
-    #[test]
-    fn classify_unknown_falls_back() {
-        assert_eq!(
-            ReActEngine::classify_tool_failure("shell", "something odd happened"),
+            tool_batch_policy::failure_kind(haven_tools::ToolErrorClass::Other),
             FailureKind::Unknown
         );
     }
@@ -1468,7 +1401,7 @@ mod tests {
     fn failure_nudge_environmental_keeps_approach() {
         let nudge = ReActEngine::build_failure_nudge(&[(
             "shell".into(),
-            "curl: (7) Failed to connect: Connection refused".into(),
+            haven_tools::ToolErrorClass::Transient,
         )]);
         assert!(
             !nudge.contains("completely different approach"),
@@ -1485,7 +1418,7 @@ mod tests {
     fn failure_nudge_logic_allows_method_switch_after_fix() {
         let nudge = ReActEngine::build_failure_nudge(&[(
             "files".into(),
-            "'old_string' is required for edit operation".into(),
+            haven_tools::ToolErrorClass::Validation,
         )]);
         assert!(nudge.contains("logic errors"), "got: {nudge}");
         assert!(

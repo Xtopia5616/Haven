@@ -469,6 +469,10 @@ pub struct ToolConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_backoff_secs: Option<u64>,
     pub allowed_paths: Vec<String>,
+    /// Optional host allowlist for network-capable tools. An empty list keeps
+    /// public Internet hosts available while the HTTP SSRF policy still
+    /// rejects local/private/link-local destinations.
+    pub allowed_domains: Vec<String>,
     pub disabled_operations: Vec<String>,
     pub risk_override: Option<String>,
 }
@@ -486,6 +490,7 @@ impl Default for ToolConfig {
             max_retries: None,
             retry_backoff_secs: None,
             allowed_paths: Vec::new(),
+            allowed_domains: Vec::new(),
             disabled_operations: Vec::new(),
             risk_override: None,
         }

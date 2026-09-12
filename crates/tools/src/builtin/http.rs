@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +15,17 @@ pub struct HttpTool {
     pub backoff_base_secs: u64,
     /// Cap on how much of the response body is read (and thus buffered).
     pub max_body_bytes: usize,
+    /// Optional host allowlist. Empty means public hosts are allowed after
+    /// the SSRF network policy has rejected local/private destinations.
+    pub allowed_domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NetworkPolicy {
+    allowed_domains: Vec<String>,
+    /// Only enabled by unit tests so the canned loopback HTTP servers can be
+    /// exercised without weakening production policy.
+    allow_loopback: bool,
 }
 
 /// HTTP method.
@@ -95,6 +107,7 @@ impl HttpTool {
             as_html,
             timeout_secs,
             self.max_body_bytes,
+            &self.allowed_domains,
         )
         .await
     }
@@ -106,6 +119,7 @@ impl Default for HttpTool {
             max_retries: 2,
             backoff_base_secs: 1,
             max_body_bytes: 1024 * 1024,
+            allowed_domains: Vec::new(),
         }
     }
 }
@@ -202,6 +216,7 @@ impl Tool for HttpTool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_once(
     url: &str,
     method: &str,
@@ -210,9 +225,15 @@ async fn execute_once(
     as_html: bool,
     timeout_secs: u64,
     max_body_bytes: usize,
+    allowed_domains: &[String],
 ) -> anyhow::Result<ToolResult> {
+    let policy = NetworkPolicy {
+        allowed_domains: allowed_domains.to_vec(),
+        allow_loopback: cfg!(test),
+    };
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent("Haven/1.0");
     // Route through a locally detected proxy so international requests work
     // when the user runs one (e.g. 127.0.0.1:10808) — same detection as the
@@ -227,13 +248,24 @@ async fn execute_once(
     }
     let client = builder.build()?;
 
-    execute_once_with(&client, url, method, headers, body, as_html, max_body_bytes).await
+    execute_once_with(
+        &client,
+        url,
+        method,
+        headers,
+        body,
+        as_html,
+        max_body_bytes,
+        &policy,
+    )
+    .await
 }
 
 /// Send one request with a caller-supplied client. Split out so tests can
 /// exercise the connection-error path with a proxy-free client: a system or
 /// environment proxy can answer loopback requests with its own error page
 /// (e.g. 502) instead of relaying the peer's reset, masking the failure.
+#[allow(clippy::too_many_arguments)]
 async fn execute_once_with(
     client: &reqwest::Client,
     url: &str,
@@ -242,18 +274,60 @@ async fn execute_once_with(
     body: Option<&str>,
     as_html: bool,
     max_body_bytes: usize,
+    policy: &NetworkPolicy,
 ) -> anyhow::Result<ToolResult> {
-    let mut req = match method {
-        "GET" => client.get(url),
-        "POST" => client.post(url).body(body.unwrap_or("").to_string()),
-        _ => anyhow::bail!("unsupported method: {}", method),
+    let mut current_url = validate_network_url(url, policy).await?;
+    let mut current_method = method.to_string();
+    let mut current_body = body.map(str::to_owned);
+    let mut current_headers = headers.to_vec();
+    let mut redirect_hops = 0usize;
+    let response = loop {
+        let mut req = match current_method.as_str() {
+            "GET" => client.get(current_url.clone()),
+            "POST" => client
+                .post(current_url.clone())
+                .body(current_body.clone().unwrap_or_default()),
+            _ => anyhow::bail!("unsupported method: {}", current_method),
+        };
+
+        for (key, val) in &current_headers {
+            req = req.header(key.as_str(), val.as_str());
+        }
+
+        let response = req.send().await.map_err(map_reqwest_error)?;
+        let Some(location) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .filter(|_| response.status().is_redirection())
+        else {
+            break response;
+        };
+
+        // Validate every redirect target before issuing the next request.
+        // reqwest's automatic redirect policy is disabled so a redirect can
+        // never bypass the SSRF check or the host allowlist.
+        redirect_hops += 1;
+        if redirect_hops > MAX_REDIRECT_HOPS {
+            anyhow::bail!("HTTP redirect limit exceeded");
+        }
+        let next_url = current_url.join(&location)?;
+        let next_url = validate_network_url(next_url.as_str(), policy).await?;
+        if response.status() == reqwest::StatusCode::SEE_OTHER
+            || (matches!(
+                response.status(),
+                reqwest::StatusCode::MOVED_PERMANENTLY | reqwest::StatusCode::FOUND
+            ) && current_method == "POST")
+        {
+            current_method = "GET".to_string();
+            current_body = None;
+        }
+        if !same_origin(&current_url, &next_url) {
+            current_headers.retain(|(key, _)| !is_sensitive_request_header(key));
+        }
+        current_url = next_url;
     };
-
-    for (key, val) in headers {
-        req = req.header(key.as_str(), val.as_str());
-    }
-
-    let response = req.send().await.map_err(map_reqwest_error)?;
 
     let status = response.status().as_u16();
     let resp_headers: Vec<Value> = response
@@ -309,6 +383,134 @@ async fn execute_once_with(
         }),
         truncated,
     ))
+}
+
+const MAX_REDIRECT_HOPS: usize = 10;
+
+async fn validate_network_url(
+    raw_url: &str,
+    policy: &NetworkPolicy,
+) -> anyhow::Result<reqwest::Url> {
+    let url = reqwest::Url::parse(raw_url)
+        .map_err(|error| anyhow::anyhow!("invalid HTTP URL: {}", error))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("HTTP tool only supports http and https URLs");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("HTTP URL userinfo is not allowed");
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("HTTP URL must include a host"))?;
+    let normalized_host = normalize_host(host);
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("HTTP URL has no supported port"))?;
+
+    if is_blocked_metadata_host(&normalized_host)
+        && !(policy.allow_loopback && normalized_host == "localhost")
+    {
+        anyhow::bail!("HTTP destination is a blocked metadata host");
+    }
+    if !domain_allowed(&normalized_host, &policy.allowed_domains) {
+        anyhow::bail!("HTTP destination is not in the configured domain allowlist");
+    }
+
+    if let Ok(ip) = normalized_host.parse::<IpAddr>() {
+        if is_blocked_ip(ip, policy.allow_loopback) {
+            anyhow::bail!("HTTP destination resolves to a blocked local or private address");
+        }
+        return Ok(url);
+    }
+
+    let addresses = tokio::net::lookup_host((normalized_host.as_str(), port))
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to resolve HTTP host: {}", error))?;
+    let mut saw_address = false;
+    for address in addresses {
+        saw_address = true;
+        if is_blocked_ip(address.ip(), policy.allow_loopback) {
+            anyhow::bail!("HTTP host resolves to a blocked local or private address");
+        }
+    }
+    if !saw_address {
+        anyhow::bail!("HTTP host did not resolve to an address");
+    }
+    Ok(url)
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn domain_allowed(host: &str, allowed_domains: &[String]) -> bool {
+    if allowed_domains.is_empty() {
+        return true;
+    }
+    allowed_domains.iter().any(|entry| {
+        let entry = normalize_host(entry.trim());
+        if let Some(suffix) = entry.strip_prefix("*.") {
+            host.ends_with(&format!(".{suffix}")) && host != suffix
+        } else {
+            host == entry
+        }
+    })
+}
+
+fn is_blocked_metadata_host(host: &str) -> bool {
+    matches!(
+        host,
+        "localhost"
+            | "metadata"
+            | "metadata.google.internal"
+            | "metadata.azure.internal"
+            | "metadata.internal"
+            | "instance-data"
+            | "instance-data.ec2.internal"
+    )
+}
+
+fn is_blocked_ip(ip: IpAddr, allow_loopback: bool) -> bool {
+    if allow_loopback && ip.is_loopback() {
+        return false;
+    }
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_link_local()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ip.octets() == [169, 254, 169, 254]
+                || ip.octets() == [100, 100, 100, 200]
+        }
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_blocked_ip(IpAddr::V4(mapped), allow_loopback);
+            }
+            let first = ip.octets()[0];
+            let second = ip.octets()[1];
+            ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (first & 0xfe) == 0xfc
+                || (first == 0xfe && (second & 0xc0) == 0x80)
+        }
+    }
+}
+
+fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str().map(normalize_host) == right.host_str().map(normalize_host)
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn is_sensitive_request_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization" | "cookie" | "proxy-authorization"
+    )
 }
 
 /// Read at most `byte_cap` bytes (bounded by `max_body_bytes`) of the response
@@ -594,6 +796,7 @@ mod tests {
             max_retries: 0,
             backoff_base_secs: 0,
             max_body_bytes: 5,
+            allowed_domains: Vec::new(),
         };
         let result = tool
             .execute(
@@ -745,6 +948,10 @@ mod tests {
             Some("payload"),
             false,
             1024 * 1024,
+            &NetworkPolicy {
+                allowed_domains: Vec::new(),
+                allow_loopback: true,
+            },
         )
         .await;
         assert!(
@@ -795,6 +1002,82 @@ mod tests {
             )
             .await;
         assert_eq!(result.unwrap().outcome, ToolExecutionOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn network_policy_blocks_local_private_and_metadata_destinations() {
+        let policy = NetworkPolicy::default();
+        for url in [
+            "http://localhost/",
+            "http://127.0.0.1/",
+            "http://10.0.0.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://metadata.google.internal/",
+            "http://[::1]/",
+            "http://[fd00::1]/",
+        ] {
+            assert!(
+                validate_network_url(url, &policy).await.is_err(),
+                "destination must be blocked: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_policy_domain_allowlist_supports_exact_and_subdomain_entries() {
+        assert!(domain_allowed("example.com", &[]));
+        assert!(domain_allowed(
+            "api.example.com",
+            &["*.example.com".to_string()]
+        ));
+        assert!(!domain_allowed(
+            "example.com",
+            &["*.example.com".to_string()]
+        ));
+        assert!(domain_allowed("example.com", &["EXAMPLE.COM.".to_string()]));
+        assert!(!domain_allowed(
+            "other.example.net",
+            &["example.com".to_string()]
+        ));
+    }
+
+    #[tokio::test]
+    async fn network_policy_allows_loopback_only_for_explicit_test_policy() {
+        let policy = NetworkPolicy {
+            allowed_domains: Vec::new(),
+            allow_loopback: true,
+        };
+        assert!(
+            validate_network_url("http://127.0.0.1:1/", &policy)
+                .await
+                .is_ok()
+        );
+        assert!(
+            validate_network_url("http://localhost:1/", &policy)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_target_is_rechecked_before_following() {
+        let initial = reqwest::Url::parse("https://public.example/start").unwrap();
+        let target = initial.join("http://127.0.0.1:8080/").unwrap();
+        assert!(
+            validate_network_url(target.as_str(), &NetworkPolicy::default())
+                .await
+                .is_err()
+        );
+
+        let allowlist = NetworkPolicy {
+            allowed_domains: vec!["example.com".into()],
+            allow_loopback: false,
+        };
+        assert!(
+            validate_network_url("https://other.example.com/", &allowlist)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

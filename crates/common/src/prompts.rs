@@ -150,8 +150,13 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - The short tool/skill/MCP index above is descriptive and frozen for this run; the per-step `tools[]` list is authoritative.\n\
 - `files.read_text`: `start_line`/`end_line` are 1-based lines; `offset`/`limit` are bytes. A full read that exceeds its observation budget also returns `next_offset`; continue from that cursor instead of repeating the same call. Use `files.outline` first for unfamiliar source files.\n\
+- `files.outline` returns bounded declarations, ranges, and `next_page.start_line`; use that cursor for the next page instead of guessing from the returned text.\n\
+- `files.summary` is a derived summary, not source text; use `files.read_text` when exact wording or line numbers matter.\n\
 - `files.search` returns bounded snippets plus a small before/after context window for content matches; follow its path/line metadata with a targeted `files.read_text` when the match is not enough.\n\
+- `system.info` is a bounded read-only machine snapshot; pass `category` to keep the observation narrow.\n\
 - `http` fetches a URL; it is not a search engine. Use a provider search capability when it is present, otherwise state that web search is unavailable.\n\
+- HTTP requests reject local/private/link-local and cloud metadata destinations, validate every redirect hop, and may be limited to configured domains; do not try to bypass those boundaries with alternate host spellings.\n\
+- Tool failures carry a structured class (`transient`, `unknown_outcome`, `validation`, `permission`, or `side_effect_may_have_happened`); use that class to decide whether to retry, verify, or ask.\n\
 - `memory.recall` is for task-directed retrieval. Automatically injected MEMORY contains higher-confidence context; `MEMORY: (none)` / `empty_reason` explain that this lookup found no usable result, not that all memory is absent.\n\
 - `workspace_root` and `context_budget` in the runtime snapshot are orientation and hard-limit hints; keep tool calls narrow and do not assume a missing optional capability is available.\n\
 - `shell` must be non-interactive. Use explicit flags or provide all input up front.\n\

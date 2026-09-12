@@ -87,7 +87,7 @@ pub use shell_runtime::{
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
     OperationIdempotency, Tool, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef,
-    ToolExecutionOutcome, ToolLlmUsage, ToolOperationMetadata, ToolOperationScope,
+    ToolErrorClass, ToolExecutionOutcome, ToolLlmUsage, ToolOperationMetadata, ToolOperationScope,
     ToolRegistration, ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation,
     extract_ask_signal, extract_notify_signal, is_silent_action, parse_tool_input,
 };
@@ -1139,7 +1139,13 @@ impl ToolsManager {
             obj.remove("_step_id");
             obj.remove("_idempotency_key");
         }
-        tool.validate_input(&exec_input)?;
+        if let Err(error) = tool.validate_input(&exec_input) {
+            return Ok(ToolResult::failed_with_class(
+                Value::Null,
+                error.to_string(),
+                ToolErrorClass::Validation,
+            ));
+        }
         if let Some(obj) = exec_input.as_object_mut() {
             let want_session =
                 tool.requires_session_id() || (tool.supports_live_output() && step_id.is_some());
@@ -1214,7 +1220,11 @@ impl ToolsManager {
                     } else if lower.contains("timeout") || lower.contains("timed out") {
                         ToolResult::timed_out(tool.timeout_outcome(), message)
                     } else {
-                        ToolResult::failed(Value::Null, message)
+                        ToolResult::failed_with_class(
+                            Value::Null,
+                            message.clone(),
+                            classify_tool_error(&message),
+                        )
                     }
                 }
             };
@@ -1271,6 +1281,21 @@ impl ToolsManager {
             .map(|t| t.risk_level(input))
             .unwrap_or(RiskLevel::Safe);
         self.authorization.effective_risk(tool_name, reported).await
+    }
+
+    /// Return the canonical policy input used by a tool, including fixed
+    /// operation-view discriminators. This keeps authorization, validation,
+    /// execution and history attached to one operation identity.
+    pub async fn get_authorization_input(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> Value {
+        self.get_tool_for_session(session_id, tool_name)
+            .await
+            .map(|tool| tool.authorization_input(input))
+            .unwrap_or_else(|| input.clone())
     }
 
     /// Return the tool's batch scheduling contract. Keeping this lookup in
@@ -1355,6 +1380,12 @@ fn annotate_retry_safety(result: &mut ToolResult, idempotency: OperationIdempote
     match &mut result.output {
         Value::Object(object) => {
             object.insert("retry_safety".into(), retry_safety);
+            if let Some(error_class) = result.error_class {
+                object.insert(
+                    "error_class".into(),
+                    Value::String(error_class.as_str().into()),
+                );
+            }
         }
         output => {
             let previous = std::mem::replace(output, Value::Null);
@@ -1394,30 +1425,57 @@ fn retryable_result(result: &ToolResult) -> bool {
     ) {
         return false;
     }
-    result
-        .error
-        .as_deref()
-        .map(|error| {
-            let msg = error.to_ascii_lowercase();
-            msg.contains("timed out")
-                || msg.contains("timeout")
-                || msg.contains("connection refused")
-                || msg.contains("connection reset")
-                || msg.contains("connection aborted")
-                || msg.contains("connection closed")
-                || msg.contains("network is unreachable")
-                || msg.contains("temporary failure")
-                || msg.contains("temporarily unavailable")
-                || msg.contains("service unavailable")
-                || msg.contains("too many requests")
-                || msg.contains("rate limit")
-                || msg.contains("status 429")
-                || msg.contains("status 502")
-                || msg.contains("status 503")
-                || msg.contains("status 504")
-                || msg.contains("eof")
-        })
-        .unwrap_or(false)
+    result.error_class == Some(ToolErrorClass::Transient)
+}
+
+/// Classify adapter/typed-tool errors once at the tools boundary. The agent
+/// consumes the resulting enum and never needs to infer policy from prose.
+fn classify_tool_error(error: &str) -> ToolErrorClass {
+    let lower = error.to_ascii_lowercase();
+    if [
+        "input validation failed",
+        "missing required",
+        "invalid tool input",
+        "unknown variant",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return ToolErrorClass::Validation;
+    }
+    if [
+        "permission",
+        "blocked",
+        "denied",
+        "disabled",
+        "not authorized",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return ToolErrorClass::Permission;
+    }
+    if [
+        "connection",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+        "too many requests",
+        "rate limit",
+        "status 429",
+        "status 502",
+        "status 503",
+        "status 504",
+        "network is unreachable",
+        "eof",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return ToolErrorClass::Transient;
+    }
+    ToolErrorClass::Other
 }
 
 #[cfg(test)]
@@ -1621,6 +1679,30 @@ mod tests {
                 "operation discriminator stays fixed in {name}"
             );
         }
+        let read_view = mgr.get_tool("files.read_text").await.unwrap();
+        assert!(
+            read_view
+                .validate_input(&json!({"path": "notes.md"}))
+                .is_ok()
+        );
+        assert!(
+            read_view
+                .validate_input(&json!({"path": "notes.md", "operation": "write"}))
+                .is_err()
+        );
+        assert_eq!(
+            read_view.authorization_input(&json!({"operation": "delete", "path": "notes.md"}))["operation"],
+            "read"
+        );
+        let search_view = mgr.get_tool("files.search").await.unwrap();
+        assert_eq!(
+            search_view.risk_level(&json!({"mode": "filename"})),
+            haven_common::types::RiskLevel::Low
+        );
+        assert_eq!(
+            search_view.risk_level(&json!({"mode": "content"})),
+            haven_common::types::RiskLevel::Medium
+        );
 
         let process_tool = mgr.get_tool("process").await;
         assert!(process_tool.is_some());
@@ -1947,9 +2029,14 @@ mod tests {
 
     #[test]
     fn retryable_tool_results_require_known_transient_failure() {
-        assert!(retryable_result(&ToolResult::failed(
+        assert!(retryable_result(&ToolResult::failed_with_class(
             Value::Null,
-            "status 503"
+            "status 503",
+            ToolErrorClass::Transient,
+        )));
+        assert!(!retryable_result(&ToolResult::failed(
+            Value::Null,
+            "connection refused",
         )));
         assert!(!retryable_result(&ToolResult::cancelled(
             "cancelled while waiting"

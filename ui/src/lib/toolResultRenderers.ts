@@ -17,6 +17,7 @@ import ToolScheduleResult from './ToolScheduleResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolWebSearchResult from './ToolWebSearchResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
+import { toolRootName } from './operationViewContract.ts';
 
 const renderers = {
 	shell: ToolShellResult,
@@ -36,10 +37,11 @@ export function getToolResultRenderer(
 	toolName = '',
 	_data: unknown = null,
 ) {
-	if (kind === 'custom' && toolName === 'agent') return ToolAgentResult;
+	const rootToolName = toolRootName(toolName);
+	if (kind === 'custom' && rootToolName === 'agent') return ToolAgentResult;
 	if (
 		kind === 'custom' &&
-		toolName === 'files' &&
+		rootToolName === 'files' &&
 		typeof _data === 'object' &&
 		_data !== null &&
 		'media' in _data
@@ -47,7 +49,7 @@ export function getToolResultRenderer(
 		return ToolMediaResult;
 	if (
 		kind === 'custom' &&
-		toolName === 'files' &&
+		rootToolName === 'files' &&
 		typeof _data === 'object' &&
 		_data !== null &&
 		!('results' in _data)
@@ -55,28 +57,28 @@ export function getToolResultRenderer(
 		return ToolFileResult;
 	if (
 		kind === 'custom' &&
-		toolName === 'files' &&
+		rootToolName === 'files' &&
 		typeof _data === 'object' &&
 		_data !== null &&
 		'results' in _data &&
 		Array.isArray(_data.results)
 	)
 		return ToolFileSearchResult;
-	if (kind === 'custom' && toolName === 'system') return ToolSystemResult;
-	if (kind === 'custom' && toolName === 'process') return ToolProcessResult;
-	if (kind === 'custom' && toolName === 'window') return ToolWindowResult;
-	if (kind === 'custom' && toolName === 'actions') return ToolActionResult;
-	if (kind === 'custom' && toolName === 'schedule') return ToolScheduleResult;
-	if (kind === 'custom' && toolName === 'http') return ToolHttpResult;
-	if (kind === 'custom' && toolName === 'clipboard') return ToolClipboardResult;
-	if (kind === 'custom' && toolName === 'web_search') return ToolWebSearchResult;
-	if (kind === 'custom' && toolName === 'memory') return ToolMemoryResult;
-	if (kind === 'custom' && toolName === 'input') return ToolInputResult;
-	if (kind === 'custom' && toolName === 'audio') return ToolAudioResult;
-	if (kind === 'custom' && toolName === 'media') return ToolMediaResult;
+	if (kind === 'custom' && rootToolName === 'system') return ToolSystemResult;
+	if (kind === 'custom' && rootToolName === 'process') return ToolProcessResult;
+	if (kind === 'custom' && rootToolName === 'window') return ToolWindowResult;
+	if (kind === 'custom' && rootToolName === 'actions') return ToolActionResult;
+	if (kind === 'custom' && rootToolName === 'schedule') return ToolScheduleResult;
+	if (kind === 'custom' && rootToolName === 'http') return ToolHttpResult;
+	if (kind === 'custom' && rootToolName === 'clipboard') return ToolClipboardResult;
+	if (kind === 'custom' && rootToolName === 'web_search') return ToolWebSearchResult;
+	if (kind === 'custom' && rootToolName === 'memory') return ToolMemoryResult;
+	if (kind === 'custom' && rootToolName === 'input') return ToolInputResult;
+	if (kind === 'custom' && rootToolName === 'audio') return ToolAudioResult;
+	if (kind === 'custom' && rootToolName === 'media') return ToolMediaResult;
 	if (
 		kind === 'custom' &&
-		['haven_config', 'haven_diagnostics', 'haven_mcp', 'haven_skills', 'haven_tools'].includes(toolName)
+		['haven_config', 'haven_diagnostics', 'haven_mcp', 'haven_skills', 'haven_tools'].includes(rootToolName)
 	)
 		return ToolAdminResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;

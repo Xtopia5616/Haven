@@ -530,7 +530,7 @@ impl ReActEngine {
         {
             let failures: Vec<_> = admitted_failures
                 .iter()
-                .map(|signal| (signal.tool_name.clone(), signal.error.clone()))
+                .map(|signal| (signal.tool_name.clone(), signal.error_class))
                 .collect();
             let nudge = Self::build_failure_nudge(&failures);
             if let Some(tool_call_id) = admitted_failures

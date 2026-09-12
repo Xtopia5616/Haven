@@ -83,6 +83,7 @@ impl EnvTool {
                         success: true,
                         output: serde_json::json!({"name": name, "value": null, "masked": false}),
                         error: None,
+                        error_class: None,
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::Succeeded,
                         attempts: 1,
