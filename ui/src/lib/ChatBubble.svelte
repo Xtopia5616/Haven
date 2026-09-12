@@ -534,6 +534,7 @@
 	 * nested border entirely rather than stacking two competing surfaces. */
 	.bubble.compact.tool.assistant {
 		border: none;
+		box-shadow: none;
 	}
 	.bubble.assistant.thinking {
 		background: transparent;
