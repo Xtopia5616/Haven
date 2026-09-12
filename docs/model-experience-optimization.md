@@ -21,9 +21,9 @@ P1 还增加了独立的 operation view、文档页游标、原生视频 Content
 ### P0.1 能力裁剪与真实能力快照
 
 - `media.describe` / `media.transcribe` 按实际路由角色和 provider capability profile 裁剪；不再因为 `router` 存在就默认可用。
-- `audio.record` 只有在共享录音管线确实存在时才进入 schema；录音本身可先生成受管音频资产，转写能力另由 `stt` 状态表达。
+- `media(operation="record")` 只有在共享录音管线确实存在时才进入 schema；录音本身可先生成受管音频资产，转写能力另由 `stt` 状态表达。
 - 录音先保存 WAV 并返回 `asset_id`；STT 失败时仍保留该资产，后续可调用 `media.transcribe`。
-- `audio.record`、`media.transcribe` 以及 `files.read_text` / `files.summary` 的富媒体转发共享同一专用 STT 客户端；只有未配置专用客户端时才回退到 LLM STT 路径。
+- `media(operation="record")`、`media(operation="transcribe")` 以及 `files.read_text` / `files.summary` 的富媒体转发共享同一专用 STT 客户端；只有未配置专用客户端时才回退到 LLM STT 路径。
 - runtime snapshot 新增 `runtime_capabilities`，明确输出 `web_search`、`vision`、`stt`、`audio_recording` 和 `tts` 的实际状态。
 - 无 provider 内置搜索且没有可识别 MCP 搜索服务时，直接说明：`web_search: unavailable (no provider builtin search; no MCP search server)`。
 
@@ -49,7 +49,9 @@ P1 还增加了独立的 operation view、文档页游标、原生视频 Content
 
 ## P0 验收标准
 
-- schema 中不存在当前未配置的 `audio.record`、`audio.speak`、`media.describe` 或 `media.transcribe` 分支；能力热更新后 catalog 与 snapshot 一起刷新。
+- schema 中不存在当前未配置的 `media(operation="record")`、`media(operation="speak")`、
+  `media(operation="describe")` 或 `media(operation="transcribe")` 分支；能力热更新后 catalog
+  与 snapshot 一起刷新。
 - 在 observation 上限内，`files.read_text` 的 `next_offset` / `next_start_line`、路径和 hint 不被正文吞掉；失败 summary 同时保留错误与路径。
 - 在仓库子目录执行省略 `cwd` 的 shell 命令，工作目录为 workspace root；没有仓库时仍回退到 Temp。
 - 只读失败不会因为 `idempotency=unknown` 被迫升级为用户确认；非幂等和未知终止仍不可自动重试。

@@ -203,13 +203,13 @@ pub struct ToolsManager {
     /// Shared clipboard history for the `clipboard` tool. Lives on the
     /// manager (not the tool) so it survives catalog rebuilds.
     pub clipboard_history: Arc<builtin::clipboard::ClipboardHistory>,
-    /// Shared input pipeline for the `audio` tool's `record` operation.
+    /// Shared input pipeline for the `media` tool's `record` operation.
     /// Wired in by the desktop shell; `None` in headless tests so the tool
     /// reports recording as unavailable.
     audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
-    /// Shared TTS client for the `audio` tool's `speak` operation.
+    /// Shared TTS client for the `media` tool's `speak` operation.
     tts_client: RwLock<Option<Arc<dyn haven_llm::TtsClient>>>,
-    /// Dedicated STT client shared by `audio.record` and `media.transcribe`.
+    /// Dedicated STT client shared by `media.record` and `media.transcribe`.
     /// The LLM router remains the alternate STT path for `provider = "llm"`.
     stt_client: RwLock<Option<Arc<dyn haven_llm::SttClient>>>,
     /// Dedicated media providers consumed by the single model-facing media
@@ -573,8 +573,8 @@ impl ToolsManager {
         self.context_limits.read().await.clone()
     }
 
-    /// Whether the model-facing `audio.speak` operation has a live TTS
-    /// backend. This is intentionally separate from the audio tool's schema
+    /// Whether the model-facing `media.speak` operation has a live TTS
+    /// backend. This is intentionally separate from the media tool's schema
     /// so prompt assembly can report the same capability state.
     pub async fn tts_configured(&self) -> bool {
         self.tts_client.read().await.is_some()
@@ -628,7 +628,7 @@ impl ToolsManager {
         }
     }
 
-    /// Replace the TTS client used by the `audio` tool after a live settings
+    /// Replace the TTS client used by the `media` tool after a live settings
     /// update. A disabled or failed client is represented by `None`.
     pub async fn set_tts_client(&self, client: Option<Arc<dyn haven_llm::TtsClient>>) {
         *self.tts_client.write().await = client;
@@ -1675,6 +1675,8 @@ mod tests {
 
         let file_tool = mgr.get_tool("files").await;
         assert!(file_tool.is_some());
+        assert!(mgr.get_tool("media").await.is_some());
+        assert!(mgr.get_tool("audio").await.is_none());
         for name in [
             "files.read_text",
             "files.outline",

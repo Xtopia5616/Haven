@@ -71,8 +71,9 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 不执行脚本、不解析外部实体、不向模型暴露宿主路径。抽取失败显式返回不可用结果，不能
 把空文本当成成功；`files` 只负责文件系统边界并把 rich path 交给 `media`（ADR 0114、0129）。
 
-`builtin/media.rs` 是 Agent 原生的媒体工具边界：模型只传 `asset_id`，由 `inspect`、
-`describe`、`ocr`、`transcribe`、`extract` 选择统一的图片、音频或文档派生表示；结果通过
+`builtin/media.rs` 是 Agent 原生的媒体工具边界：模型通过显式 operation 选择统一的图片、
+音频或文档能力。`inspect`、`describe`、`ocr`、`transcribe`、`extract` 使用 `asset_id`；
+`record` 先产生受管音频资产，`play`、`speak`、`volume_*` 和 `mute_*` 访问本机音频设备；结果通过
 compact `media` reference 回到工具 observation，后续调用可以复用同一个 asset id；持久化
 附件仍使用 common 层的 `MediaInput`。窗口截图和录音
 进入生成媒体根目录并登记 session lease，`files.read/summary` 对 rich path 也转交到该入口；
@@ -155,7 +156,8 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   vision adapter。媒体理解、OCR/STT fallback、文档抽取和文生图由 `haven-tools` 的
   `builtin::media` 工具统一编排；图片/音频以内联 `ContentPart` 进入模型，普通文件落盘后
   以受管 `asset_id` 交给 `media`，视频暂不盲发到 provider。TTS 由
-  `audio(operation="speak")` 工具显式触发并在本机播放。
+  `media(operation="speak")` 显式触发并在本机播放；Windows 设备适配仍隔离在
+  `builtin/audio.rs::AudioRuntime`。
 - `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体工具的
   自动处理分支，因此用户文本不会因为关键词被隐式朗读。
 - `registry.rs` / `stream_rules.rs`：模型注册表、流式规则（生产 router 默认启用 `code_block_abort`）。
@@ -400,7 +402,8 @@ fallback。`media` 的音频同样由 `MediaTool` 统一处理专用 STT、超�
 | 日期 | 内容 |
 |---|---|
 | 2026-09-12 | §2.5 Tools / Agent / App：删除 `MediaGateway`、coverage、intent 与 ingress eager preprocessing；由单一共享 `MediaTool` 统一 OCR、STT fallback、文档抽取和显式媒体生成，并同步 UI 媒体结果契约（ADR 0130） |
-| 2026-09-12 | §2.5 Agent / Tools / LLM：统一 producer→asset_id→media consumer；files rich path、window OCR、audio record 均收敛到同一资产链，并在模型请求中说明 MediaPlan 表示（ADR 0129） |
+| 2026-09-12 | §2.5 Tools / UI / Security：删除独立 `audio` 模型工具，将录音、播放、TTS、音量和静音纳入 `media` operation 分支；旧 audio 配置/权限按测试版策略重置（ADR 0133） |
+| 2026-09-12 | §2.5 Agent / Tools / LLM：统一 producer→asset_id→media consumer；files rich path、window OCR、录音均收敛到同一资产链，并在模型请求中说明 MediaPlan 表示（ADR 0129） |
 | 2026-09-12 | §2.5 Tools / Agent / Common：按实时路由能力裁剪媒体与录音 operation；structured-first observation 保留恢复字段；仓库会话默认工作区路径；区分只读重试安全性并补充 runtime capability snapshot（ADR 0128） |
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |
 | 2026-09-12 | §2.5 Tools / LLM / Agent / UI：完成 P1 operation view、搜索/outline 结构化模型视图、文档页游标、原生视频 ContentPart、session-scoped 偏好/清单和 memory 空结果诊断；按测试版 reset 边界删除 FollowUp/confirmation/ask/rollback/provider-style 内部兼容层（ADR 0131） |

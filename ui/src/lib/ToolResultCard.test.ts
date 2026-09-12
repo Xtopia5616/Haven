@@ -54,15 +54,15 @@ describe('canRenderToolResult', () => {
 				JSON.stringify({ server_name: 'fs', status: 'loaded' }),
 			),
 		).toBe(true);
-		expect(canRenderToolResult('audio', JSON.stringify({ played: true }))).toBe(true);
-		expect(canRenderToolResult('audio', JSON.stringify({ operation: 'volume_get', volume: 0.5 }))).toBe(true);
+		expect(canRenderToolResult('media', JSON.stringify({ operation: 'play', played: true }))).toBe(true);
+		expect(canRenderToolResult('media', JSON.stringify({ operation: 'volume_get', volume: 0.5 }))).toBe(true);
 		expect(canRenderToolResult('media', JSON.stringify({ operation: 'inspect', asset_id: 'asset-1', media: {} }))).toBe(true);
 		expect(canRenderToolResult('input', JSON.stringify({ operation: 'click', clicked: [10, 20] }))).toBe(true);
 		expect(canRenderToolResult('files', JSON.stringify({ nope: 1 }))).toBe(true);
 	});
 	it('accepts any non-empty text as a raw card', () => {
 		expect(canRenderToolResult('files', '{not json[... truncated')).toBe(true);
-		expect(canRenderToolResult('audio', 'plain text')).toBe(true);
+		expect(canRenderToolResult('media', 'plain text')).toBe(true);
 		expect(canRenderToolResult('notify', 'Some other text')).toBe(true);
 	});
 	it('keeps operation-scoped builtin results on their dedicated renderer path', () => {
@@ -386,11 +386,11 @@ afterEach(() => {
 describe('ToolResultCard raw', () => {
 	it('renders plain text output in a raw card with the tool label', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'audio',
+			toolName: 'media',
 			content: 'some plain text',
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('音频')).toBeTruthy();
+		expect(screen.getByText('媒体')).toBeTruthy();
 		expect(container.querySelector('.content-preview')!.textContent).toContain(
 			'some plain text',
 		);
@@ -1016,10 +1016,10 @@ describe('ToolResultCard admin capabilities', () => {
 	});
 });
 
-describe('ToolResultCard audio and input', () => {
+describe('ToolResultCard media audio operations and input', () => {
 	it('renders volume results with a human-readable percentage', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'audio',
+			toolName: 'media',
 			content: JSON.stringify({ operation: 'volume_get', volume: 0.5 }),
 		});
 		await expandToolCard(container);
@@ -1029,7 +1029,7 @@ describe('ToolResultCard audio and input', () => {
 
 	it('renders a speak result without exposing the synthesized text', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'audio',
+			toolName: 'media',
 			content: JSON.stringify({ operation: 'speak', spoken: true, characters: 12 }),
 		});
 		await expandToolCard(container);
@@ -1039,7 +1039,7 @@ describe('ToolResultCard audio and input', () => {
 
 	it('renders recorded media identity and next representation', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'audio',
+			toolName: 'media',
 			content: JSON.stringify({
 				operation: 'record',
 				asset_id: 'asset-0123456789abcdef0123456789abcdef',

@@ -9,13 +9,16 @@
 说明：本 ADR 的请求入口决定仍然有效；模型工具契约与跨工具资产引用由后续 ADR 0123
 进一步收敛。
 
+> 当前公共工具入口由 ADR 0133 进一步统一为 `media`；这里的历史 `audio.record` 指
+> `media(operation="record")`。
+
 关联：[ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)、
 [ADR 0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)
 
 ## 背景
 
 媒体资产已经有 `MediaInput → MediaPlan → ContentPart` 的规划链路；历史上的
-`MediaGateway` 已由 ADR 0130 删除，当前 `files`、`window` 和 `audio` 只负责
+`MediaGateway` 已由 ADR 0130 删除，当前 `files`、`window` 和 `media` 的录音分支只负责
 producer/设备边界，媒体理解统一由共享的 `MediaTool` 承接。这样能力校验、
 提示词边界、fallback 和 provider 适配不会在入口之间漂移。
 
@@ -25,7 +28,7 @@ producer/设备边界，媒体理解统一由共享的 `MediaTool` 承接。这�
    已读 bytes 并序列化一次 vision 请求，负责 router 的 provider 重试/限流/适配器
    校验；它不负责 asset lookup、工具权限、生命周期、跨 provider fallback 或
    模型可见的媒体编排。
-2. `files`、`window.ocr` 和 `audio.record` 共享一个 `Arc<MediaTool>`；它们只负责
+2. `files`、`window.ocr` 和 `media(operation="record")` 共享一个 `Arc<MediaTool>`；它们只负责
    路径/设备边界、大小限制、取消和 producer 结果。OCR、STT、confidence、timeout、
    fallback 以及失败时的完整 `media` 引用均由 `MediaTool` 统一生成。
 3. `files.read` 对按扩展名识别的音频交给同一 `media.transcribe` 策略，不再给出

@@ -10,7 +10,6 @@ import ToolClipboardResult from './ToolClipboardResult.svelte';
 import ToolHttpResult from './ToolHttpResult.svelte';
 import ToolInputResult from './ToolInputResult.svelte';
 import ToolAdminResult from './ToolAdminResult.svelte';
-import ToolAudioResult from './ToolAudioResult.svelte';
 import ToolMemoryResult from './ToolMemoryResult.svelte';
 import ToolMediaResult from './ToolMediaResult.svelte';
 import ToolScheduleResult from './ToolScheduleResult.svelte';
@@ -74,7 +73,6 @@ export function getToolResultRenderer(
 	if (kind === 'custom' && rootToolName === 'web_search') return ToolWebSearchResult;
 	if (kind === 'custom' && rootToolName === 'memory') return ToolMemoryResult;
 	if (kind === 'custom' && rootToolName === 'input') return ToolInputResult;
-	if (kind === 'custom' && rootToolName === 'audio') return ToolAudioResult;
 	if (kind === 'custom' && rootToolName === 'media') return ToolMediaResult;
 	if (
 		kind === 'custom' &&

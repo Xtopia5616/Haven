@@ -108,7 +108,7 @@ fn binary_result(path: &str, size: u64) -> ToolResult {
         }
         "office" => "Office document. Its binary format cannot be read as text.",
         "audio" => {
-            "Audio file. Read it to request a bounded transcript, or use the audio tool to play it."
+            "Audio file. Read it to request a bounded transcript, or use media(operation=\"play\") to play it."
         }
         "video" => "Video file. It cannot be read as text.",
         "executable" => "Executable/binary file. It cannot be read as text.",
@@ -814,7 +814,7 @@ impl FilesTool {
 
         // A rich path is a producer boundary: register it once, then send the
         // model through the same media consumer used by attachments and
-        // window/audio producers. This also makes `files.summary` obey the
+        // window/record producers. This also makes `files.summary` obey the
         // same rule instead of secretly extracting a document itself.
         if managed_asset.is_none()
             && matches!(op, FilesOperation::Read | FilesOperation::Summary)
@@ -848,6 +848,11 @@ impl FilesTool {
                         focus: params.focus.clone(),
                         prompt: None,
                         page_index: None,
+                        file_path: None,
+                        text: None,
+                        duration: None,
+                        volume: None,
+                        muted: None,
                         session_id: params.session_id.clone(),
                     },
                     cancel,

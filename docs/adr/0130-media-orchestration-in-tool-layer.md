@@ -3,6 +3,9 @@
 日期：2026-09-12
 状态：已采纳
 
+> 补充：本 ADR 关于独立 `audio` 公共入口的决定已由 ADR 0133 supersede；当前仍保留其
+> “设备实现与媒体编排分离”的边界，但模型只看到 `media`。
+
 关联：[ADR 0129：资产优先的模型媒体入口统一](0129-asset-first-model-media-entrypoints.md)、
 [ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)
 
@@ -20,8 +23,8 @@
    OCR、STT fallback、文档抽取和显式 `generate`。每次调用都经过同一套工具 schema、权限、取消、
    超时、受管资产和 tool LLM usage 链路。
 3. `files` 和 `window` 仍可作为 producer/便利入口，但共享同一个已装配的 `Arc<MediaTool>`；它们
-   不再各自实例化媒体处理器。`audio` 保留本机录音、播放、TTS、音量和静音，因为这些是设备副作用，
-   不是媒体内容理解。
+   不再各自实例化媒体处理器。音频设备的录音、播放、TTS、音量和静音仍由独立宿主运行时承载，
+   但公共模型入口由 ADR 0133 统一为 `media`。
 4. 文生图必须由模型显式调用 `media(operation="generate", prompt=...)`；生成文件先登记为受管
    `asset_id`，再作为工具结果返回，不再被伪装成用户消息附件。
 

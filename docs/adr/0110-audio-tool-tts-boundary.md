@@ -1,5 +1,8 @@
 # ADR 0110：模型工具驱动的 TTS 与通知边界
 
+> 历史说明：独立 `audio` 模型工具已由 ADR 0133 删除；本 ADR 保留 TTS 与通知的语义边界，
+> 当前入口为 `media(operation="speak")`。
+
 ## 背景
 
 Haven 已有 TTS provider 配置和客户端，但原先 `audio` 工具只能录音、播放 WAV、控制音量，

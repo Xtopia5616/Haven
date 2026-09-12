@@ -417,7 +417,7 @@ describe('ChatBubble', () => {
 				role: 'assistant',
 				content: 'some plain error text',
 				type: 'tool',
-				toolName: 'audio',
+				toolName: 'media',
 			}),
 		);
 		await expandToolCard(container);

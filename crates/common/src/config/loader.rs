@@ -169,6 +169,7 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         "message_request",
         "agent_profile",
         "agent_spawn",
+        "audio",
     ];
     if let Some(settings) = value.get("tool_settings").and_then(toml::Value::as_table)
         && let Some(name) = REMOVED_TOOL_SETTINGS
@@ -191,6 +192,7 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
     let legacy_roots = [
         "file",
         "file_search",
+        "audio",
         "scheduled_action",
         "haven_session_diagnostics",
     ];
@@ -1063,6 +1065,28 @@ vad_threshold = 0.25
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(&path, "[tool_settings.power]\ntimeout_secs = 60\n").unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_removed_audio_tool_settings() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[tool_settings.audio]\nenabled = true\n").unwrap();
 
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config(), &AppConfig::default());

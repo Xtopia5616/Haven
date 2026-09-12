@@ -27,6 +27,8 @@ use crate::{
     ToolResult,
 };
 
+use super::audio::AudioRuntime;
+
 const MAX_FOCUS_CHARS: usize = 2_000;
 const MAX_GENERATION_PROMPT_CHARS: usize = 4_000;
 const MAX_GENERATED_MEDIA_BYTES: usize = 16 * 1024 * 1024;
@@ -151,6 +153,13 @@ pub enum MediaOperation {
     Transcribe,
     Extract,
     Generate,
+    Record,
+    Play,
+    Speak,
+    VolumeGet,
+    VolumeSet,
+    MuteGet,
+    MuteSet,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -165,6 +174,21 @@ pub struct MediaParams {
     /// Zero-based document page/section cursor for `extract`.
     #[serde(default)]
     pub page_index: Option<u64>,
+    /// Trusted host path accepted only for local audio playback.
+    #[serde(default)]
+    pub file_path: Option<String>,
+    /// Text accepted only for local TTS playback.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Recording duration in seconds.
+    #[serde(default)]
+    pub duration: Option<f64>,
+    /// Master output volume in the inclusive range 0..=1.
+    #[serde(default)]
+    pub volume: Option<f64>,
+    /// Master output mute state.
+    #[serde(default)]
+    pub muted: Option<bool>,
     #[serde(rename = "_session_id", default, skip_serializing)]
     pub(crate) session_id: Option<String>,
 }
@@ -178,6 +202,9 @@ pub struct MediaTool {
     ocr_available: bool,
     transcribe_available: bool,
     generate_available: bool,
+    record_available: bool,
+    tts_available: bool,
+    audio_runtime: Arc<AudioRuntime>,
     ocr_min_confidence: f32,
     stt_min_confidence: f32,
     managed_assets: ManagedAssetRegistry,
@@ -204,6 +231,9 @@ impl MediaTool {
             ocr_available: has_router,
             transcribe_available: has_router,
             generate_available: false,
+            record_available: false,
+            tts_available: false,
+            audio_runtime: Arc::new(AudioRuntime::with_tts(None, None)),
             ocr_min_confidence: 0.0,
             stt_min_confidence: 0.0,
             managed_assets,
@@ -258,6 +288,13 @@ impl MediaTool {
         self
     }
 
+    pub(crate) fn with_audio_runtime(mut self, audio_runtime: Arc<AudioRuntime>) -> Self {
+        self.record_available = audio_runtime.record_available();
+        self.tts_available = audio_runtime.tts_available();
+        self.audio_runtime = audio_runtime;
+        self
+    }
+
     pub(crate) fn with_confidence_thresholds(
         mut self,
         ocr_min_confidence: f32,
@@ -273,6 +310,9 @@ impl MediaTool {
         params: MediaParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        if is_audio_operation(params.operation) {
+            return self.run_audio(params, cancel).await;
+        }
         if params.operation == MediaOperation::Generate {
             return self.generate(params, cancel).await;
         }
@@ -313,6 +353,91 @@ impl MediaTool {
             MediaOperation::Transcribe => self.transcribe(asset, cancel).await,
             MediaOperation::Extract => self.extract(asset, params.page_index, cancel).await,
             MediaOperation::Generate => unreachable!("generate handled before asset resolution"),
+            _ => unreachable!("audio operation handled before asset resolution"),
+        }
+    }
+
+    async fn run_audio(
+        &self,
+        params: MediaParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        match params.operation {
+            MediaOperation::Record => {
+                let recorded = self
+                    .audio_runtime
+                    .record_asset(&params, cancel.clone())
+                    .await?;
+                let mut result = self.transcribe_asset(recorded.asset, cancel).await?;
+                result.output["operation"] = json!("record");
+                result.output["duration_ms"] = json!(recorded.duration_ms);
+                Ok(result)
+            }
+            MediaOperation::Play => {
+                let path = params
+                    .file_path
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("file_path (.wav) is required for play"))?;
+                self.audio_runtime.play(&params).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "play",
+                    "played": path,
+                    "format": "wav",
+                })))
+            }
+            MediaOperation::Speak => {
+                let characters = self.audio_runtime.speak(&params, cancel).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "speak",
+                    "spoken": true,
+                    "characters": characters,
+                    "format": "wav",
+                    "delivered_to": ["speakers"],
+                })))
+            }
+            MediaOperation::VolumeGet => {
+                let volume = self.audio_runtime.volume_get().await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "volume_get",
+                    "volume": volume,
+                })))
+            }
+            MediaOperation::VolumeSet => {
+                let volume = params
+                    .volume
+                    .ok_or_else(|| anyhow::anyhow!("volume is required for volume_set"))?;
+                if !(0.0..=1.0).contains(&volume) {
+                    anyhow::bail!("volume must be between 0 and 1");
+                }
+                let volume = self.audio_runtime.volume_set(volume).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "volume_set",
+                    "volume": volume,
+                    "set": true,
+                })))
+            }
+            MediaOperation::MuteGet => {
+                let muted = self.audio_runtime.mute_get().await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "mute_get",
+                    "muted": muted,
+                })))
+            }
+            MediaOperation::MuteSet => {
+                let muted = params
+                    .muted
+                    .ok_or_else(|| anyhow::anyhow!("muted is required for mute_set"))?;
+                self.audio_runtime.mute_set(muted).await?;
+                Ok(ToolResult::ok(json!({
+                    "operation": "mute_set",
+                    "muted": muted,
+                    "set": true,
+                })))
+            }
+            _ => unreachable!("non-audio operation passed to run_audio"),
         }
     }
 
@@ -336,8 +461,8 @@ impl MediaTool {
         self.model_media_reference(asset, "managed_file_ref", None)
     }
 
-    /// Shared STT consumer for model-facing `media.transcribe` and native
-    /// `audio.record`. The latter owns capture, but it must not own a second
+    /// Shared STT consumer for model-facing `media.transcribe` and the
+    /// capture half of `media.record`. The latter owns capture, but it must not own a second
     /// timeout/fallback/confidence policy.
     pub(crate) async fn transcribe_asset(
         &self,
@@ -946,7 +1071,27 @@ fn operation_name(operation: MediaOperation) -> &'static str {
         MediaOperation::Transcribe => "transcribe",
         MediaOperation::Extract => "extract",
         MediaOperation::Generate => "generate",
+        MediaOperation::Record => "record",
+        MediaOperation::Play => "play",
+        MediaOperation::Speak => "speak",
+        MediaOperation::VolumeGet => "volume_get",
+        MediaOperation::VolumeSet => "volume_set",
+        MediaOperation::MuteGet => "mute_get",
+        MediaOperation::MuteSet => "mute_set",
     }
+}
+
+fn is_audio_operation(operation: MediaOperation) -> bool {
+    matches!(
+        operation,
+        MediaOperation::Record
+            | MediaOperation::Play
+            | MediaOperation::Speak
+            | MediaOperation::VolumeGet
+            | MediaOperation::VolumeSet
+            | MediaOperation::MuteGet
+            | MediaOperation::MuteSet
+    )
 }
 
 fn confidence_passes(reported: Option<f32>, threshold: f32) -> bool {
@@ -962,7 +1107,7 @@ impl Tool for MediaTool {
     }
 
     fn description(&self) -> String {
-        "Operate on managed multimodal assets by asset_id: inspect metadata, describe or OCR images, transcribe audio, or extract text/tables from documents; generate images with an explicit prompt. Use asset_id from attachments or other media-producing tools; host paths and base64 are never accepted.".into()
+        "Operate on media through explicit operation branches: inspect, describe or OCR images, transcribe audio, extract document content, generate images, record/play/speak audio, or read/change the default output volume and mute state. Managed media operations use asset_id; local audio playback accepts a trusted .wav path and TTS accepts text.".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -971,6 +1116,8 @@ impl Tool for MediaTool {
             Some("describe") | Some("transcribe") => RiskLevel::Medium,
             Some("extract") | Some("inspect") => RiskLevel::Low,
             Some("generate") => RiskLevel::Medium,
+            Some("record") | Some("volume_set") | Some("mute_set") => RiskLevel::Medium,
+            Some("play") | Some("speak") | Some("volume_get") | Some("mute_get") => RiskLevel::Low,
             _ => RiskLevel::Low,
         }
     }
@@ -979,12 +1126,26 @@ impl Tool for MediaTool {
         match input["operation"].as_str() {
             Some("inspect") | Some("describe") | Some("ocr") | Some("transcribe")
             | Some("extract") => OperationIdempotency::Idempotent,
-            Some("generate") => OperationIdempotency::NonIdempotent,
+            Some("generate") | Some("record") | Some("play") | Some("speak")
+            | Some("volume_set") | Some("mute_set") => OperationIdempotency::NonIdempotent,
+            Some("volume_get") | Some("mute_get") => OperationIdempotency::Idempotent,
             _ => OperationIdempotency::Unknown,
         }
     }
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        if is_audio_operation(match input["operation"].as_str() {
+            Some("record") => MediaOperation::Record,
+            Some("play") => MediaOperation::Play,
+            Some("speak") => MediaOperation::Speak,
+            Some("volume_get") => MediaOperation::VolumeGet,
+            Some("volume_set") => MediaOperation::VolumeSet,
+            Some("mute_get") => MediaOperation::MuteGet,
+            Some("mute_set") => MediaOperation::MuteSet,
+            _ => MediaOperation::Inspect,
+        }) {
+            return ToolConcurrency::Resource("media:audio-device".into());
+        }
         let resource = input["asset_id"]
             .as_str()
             .or_else(|| input["prompt"].as_str())
@@ -996,16 +1157,33 @@ impl Tool for MediaTool {
         self.timeout_secs.max(30)
     }
 
+    fn timeout_secs_for(&self, input: &Value) -> u64 {
+        if input["operation"].as_str() == Some("record") {
+            let duration = input["duration"].as_f64().unwrap_or(10.0).clamp(1.0, 60.0);
+            return self.timeout_secs.max(duration.ceil() as u64 + 30).max(30);
+        }
+        self.default_timeout_secs()
+    }
+
+    fn requires_session_id(&self) -> bool {
+        true
+    }
+
     fn input_schema(&self) -> Value {
         let mut schema = json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "generate"]},
+                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "generate", "record", "play", "speak", "volume_get", "volume_set", "mute_get", "mute_set"]},
                 "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"},
                 "page_index": {"type": "integer", "minimum": 0, "description": "Zero-based document page/section cursor; extract returns next_page when available"},
                 "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS},
-                "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}
+                "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS},
+                "file_path": {"type": "string", "minLength": 1, "description": "Trusted local .wav path; only accepted by play"},
+                "text": {"type": "string", "minLength": 1, "maxLength": 4000, "description": "Text for local TTS; only accepted by speak"},
+                "duration": {"type": "number", "minimum": 1, "maximum": 60, "description": "Recording duration in seconds"},
+                "volume": {"type": "number", "minimum": 0, "maximum": 1, "description": "Default output volume from 0 to 1"},
+                "muted": {"type": "boolean", "description": "Default output mute state"}
             },
             "required": ["operation"],
             "oneOf": [
@@ -1014,7 +1192,14 @@ impl Tool for MediaTool {
                 {"additionalProperties": false, "properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "page_index": {"type": "integer", "minimum": 0}}, "required": ["operation", "asset_id"]},
-                {"additionalProperties": false, "properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"]}
+                {"additionalProperties": false, "properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "record"}, "duration": {"type": "number", "minimum": 1, "maximum": 60}}, "required": ["operation"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "play"}, "file_path": {"type": "string", "minLength": 1}}, "required": ["operation", "file_path"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "speak"}, "text": {"type": "string", "minLength": 1, "maxLength": 4000}}, "required": ["operation", "text"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "volume_get"}}, "required": ["operation"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "volume_set"}, "volume": {"type": "number", "minimum": 0, "maximum": 1}}, "required": ["operation", "volume"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "mute_get"}}, "required": ["operation"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "mute_set"}, "muted": {"type": "boolean"}}, "required": ["operation", "muted"]}
             ]
         });
         let unavailable = [
@@ -1022,6 +1207,8 @@ impl Tool for MediaTool {
             ("ocr", self.ocr_available),
             ("transcribe", self.transcribe_available),
             ("generate", self.generate_available),
+            ("record", self.record_available),
+            ("speak", self.tts_available),
         ];
         if let Some(operations) = schema["properties"]["operation"]
             .get_mut("enum")
@@ -1226,7 +1413,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_is_asset_only_and_operation_specific() {
+    fn schema_is_operation_specific_and_capability_pruned() {
         let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000);
         assert!(
             tool.validate_input(&json!({
@@ -1250,6 +1437,29 @@ mod tests {
             }))
             .is_err()
         );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "play",
+                "file_path": "C:\\audio\\sample.wav"
+            }))
+            .is_ok()
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "operation": "play",
+                "file_path": "C:\\audio\\sample.wav",
+                "asset_id": "asset-0123456789abcdef0123456789abcdef"
+            }))
+            .is_err()
+        );
+        let schema = tool.input_schema();
+        let operations = schema["properties"]["operation"]
+            .as_object()
+            .and_then(|operation| operation.get("enum"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(!operations.iter().any(|operation| operation == "record"));
+        assert!(!operations.iter().any(|operation| operation == "speak"));
     }
 
     #[test]
@@ -1332,6 +1542,11 @@ mod tests {
                     focus: None,
                     prompt: None,
                     page_index: None,
+                    file_path: None,
+                    text: None,
+                    duration: None,
+                    volume: None,
+                    muted: None,
                     session_id: None,
                 },
                 CancellationToken::new(),
@@ -1374,6 +1589,11 @@ mod tests {
                     focus: None,
                     prompt: None,
                     page_index: None,
+                    file_path: None,
+                    text: None,
+                    duration: None,
+                    volume: None,
+                    muted: None,
                     session_id: None,
                 },
                 CancellationToken::new(),
@@ -1403,6 +1623,11 @@ mod tests {
                     focus: None,
                     prompt: None,
                     page_index: None,
+                    file_path: None,
+                    text: None,
+                    duration: None,
+                    volume: None,
+                    muted: None,
                     session_id: None,
                 },
                 CancellationToken::new(),
@@ -1436,6 +1661,11 @@ mod tests {
                     focus: None,
                     prompt: None,
                     page_index: None,
+                    file_path: None,
+                    text: None,
+                    duration: None,
+                    volume: None,
+                    muted: None,
                     session_id: None,
                 },
                 cancel,
@@ -1462,6 +1692,11 @@ mod tests {
                     focus: None,
                     prompt: None,
                     page_index: None,
+                    file_path: None,
+                    text: None,
+                    duration: None,
+                    volume: None,
+                    muted: None,
                     session_id: None,
                 },
                 CancellationToken::new(),

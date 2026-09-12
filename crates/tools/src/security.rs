@@ -32,13 +32,6 @@ macro_rules! security_case {
 }
 
 pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
-    security_case!("audio", "play", Low),
-    security_case!("audio", "speak", Low),
-    security_case!("audio", "record", Medium),
-    security_case!("audio", "volume_get", Low),
-    security_case!("audio", "volume_set", Medium),
-    security_case!("audio", "mute_get", Low),
-    security_case!("audio", "mute_set", Medium),
     security_case!("ask", "ask", Safe),
     security_case!("files", "read", Low),
     security_case!("files", "write", Medium),
@@ -113,6 +106,13 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("media", "transcribe", Medium),
     security_case!("media", "extract", Low),
     security_case!("media", "generate", Medium),
+    security_case!("media", "record", Medium),
+    security_case!("media", "play", Low),
+    security_case!("media", "speak", Low),
+    security_case!("media", "volume_get", Low),
+    security_case!("media", "volume_set", Medium),
+    security_case!("media", "mute_get", Low),
+    security_case!("media", "mute_set", Medium),
     security_case!("http", "request", Medium),
     security_case!("notify", "notify", Safe),
     security_case!("agent", "list", Safe),
@@ -179,6 +179,7 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
         "shell" => "将执行一条受保护的本机命令（命令内容不会显示在弹窗中）".into(),
         "http" => "将向外部网络发起请求（请求内容已隐藏）".into(),
         "process" => format!("进程操作：{operation}（目标详情已隐藏）"),
+        "media" => format!("媒体操作：{operation}（参数详情已隐藏）"),
         "system" => format!("系统操作：{operation}（参数详情已隐藏）"),
         "window" => format!("窗口操作：{operation}（目标详情已隐藏）"),
         "mcp" | "skill" => format!("扩展能力将执行：{tool_name}（参数已隐藏）"),
@@ -970,6 +971,16 @@ mod tests {
         assert!(!summary.contains("private.txt"));
     }
 
+    #[test]
+    fn permission_prompt_summary_routes_media_operations_without_arguments() {
+        let summary = permission_prompt_summary(
+            "media",
+            &json!({"operation": "speak", "text": "secret spoken content"}),
+        );
+        assert!(summary.starts_with("媒体操作：speak"));
+        assert!(!summary.contains("secret spoken content"));
+    }
+
     #[tokio::test]
     async fn permission_modes_have_predictable_prompt_boundaries() {
         let gw = AuthorizationEngine::new();
@@ -1737,12 +1748,12 @@ mod tests {
         }
 
         let optional_routes = [
-            ("audio", "speak"),
-            ("audio", "record"),
             ("media", "describe"),
             ("media", "ocr"),
             ("media", "transcribe"),
             ("media", "generate"),
+            ("media", "record"),
+            ("media", "speak"),
             ("window", "ocr"),
             ("load_skill", "load"),
             ("load_mcp", "load"),
@@ -1803,7 +1814,7 @@ mod tests {
             .map(|case| case.tool_name)
             .collect();
         for expected in [
-            "audio",
+            "media",
             "ask",
             "files",
             "process",
@@ -1899,12 +1910,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_path_sandbox_checks_audio_file_path() {
+    async fn test_path_sandbox_checks_media_audio_file_path() {
         let allowed = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let mut settings = HashMap::new();
         settings.insert(
-            "audio".into(),
+            "media".into(),
             ToolConfig {
                 allowed_paths: vec![allowed.path().to_string_lossy().into_owned()],
                 ..ToolConfig::default()
@@ -1916,7 +1927,7 @@ mod tests {
         let result = gw
             .check(
                 None,
-                "audio",
+                "media",
                 &json!({
                     "operation": "play",
                     "file_path": outside.path().join("outside.wav"),

@@ -126,3 +126,4 @@
 - [0128：模型体验与实时工具契约优化](0128-model-experience-optimization.md)
 - [0129：资产优先的模型媒体入口统一](0129-asset-first-model-media-entrypoints.md)
 - [0131：内置工具结果与边界契约加固](0131-builtin-tool-contract-hardening.md)
+- [0133：统一媒体与音频的模型工具契约](0133-unified-media-audio-tool-contract.md)

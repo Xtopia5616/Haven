@@ -208,7 +208,7 @@ const ROUTING_PARAM_TOOLS: &[&str] = &[
     "system",
     "clipboard",
     "input",
-    "audio",
+    "media",
     "memory",
     "agent",
     "schedule",
@@ -1333,6 +1333,10 @@ mod tests {
         assert_eq!(
             permission_key("files", &serde_json::json!({"operation": "delete"})),
             "files:delete"
+        );
+        assert_eq!(
+            permission_key("media", &serde_json::json!({"operation": "speak"})),
+            "media:speak"
         );
         assert_eq!(
             permission_key("schedule", &serde_json::json!({"operation": "set"})),

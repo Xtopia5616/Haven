@@ -5,6 +5,7 @@
 
 > 说明：ADR 0130 取代本 ADR 中关于 gateway/legacy adapter 的运行时实现与兼容承诺；当前版本以破坏性
 > 的工具层统一为准。
+> 独立 `audio` 模型工具随后由 ADR 0133 删除；本文的录音入口均指 `media(operation="record")`。
 
 关联：[ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)、
 [ADR 0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)、
@@ -15,7 +16,7 @@
 ## 背景
 
 内部媒体骨架已经是 `MediaAsset → MediaRepresentation → MediaPlan`，但模型仍可能从
-附件直投、`media`、`window`、`audio` 和 `files` 五个相似入口获取信息：文件可能自己抽取，
+附件直投、`media`、`window` 和 `files` 四个相似入口获取信息：文件可能自己抽取，
 OCR 可能绕过资产，录音可能只返回文本；能力 snapshot 与工具 schema 也可能只反映“配置了
 某个模型槽位”，而不是当前路由真的能执行。
 
@@ -34,7 +35,7 @@ OCR 可能绕过资产，录音可能只返回文本；能力 snapshot 与工具
 3. `window.screenshot` 只采集并返回资产；`window.ocr` 是薄的
    `screenshot → media.ocr` 便利封装。即使 vision 不可用，采集成功后也返回资产句柄，
    不把“没有 OCR”变成“没有截图”。
-4. `audio.record` 先保存 WAV 并登记资产，再尝试默认 STT；输出始终包含资产句柄，
+4. `media(operation="record")` 先保存 WAV 并登记资产，再尝试默认 STT；输出始终包含资产句柄，
    transcript 是可选的默认表示，失败时不丢弃录音。后续重新转写统一调用
    `media.transcribe`。
 5. 工具装配根据实际路由角色、provider capability profile 和录音管线计算能力；schema
@@ -61,7 +62,7 @@ OCR 可能绕过资产，录音可能只返回文本；能力 snapshot 与工具
 ## 破坏性影响与重置
 
 这是模型工具契约的破坏性收缩：rich `files` 读取从本地理解改为 `media` handoff，
-`audio.record` 的返回 shape 增加 `asset_id/media`，`window.ocr` 的无 vision 行为改为
+`media(operation="record")` 的返回 shape 增加 `asset_id/media`，`window.ocr` 的无 vision 行为改为
 先保留截图句柄。未完成的旧 tool call 可能期待 `files` 的旧文档正文；升级后应按当前 schema
 重新执行该调用，若旧 snapshot 无法恢复则按发布重置说明清理会话和媒体缓存。数据库 schema、
 实体 ID 格式和 X12 事件权威不变。

@@ -2,7 +2,7 @@ pub mod actions;
 pub mod admin;
 mod admin_support;
 pub mod ask;
-pub mod audio;
+mod audio;
 pub mod checklist;
 pub mod clipboard;
 mod env;
@@ -142,6 +142,11 @@ pub async fn register_builtin_tools(
     } else {
         false
     };
+    let audio_runtime = Arc::new(
+        audio::AudioRuntime::with_tts(audio_pipeline, tts_client)
+            .with_managed_assets(managed_assets.clone())
+            .with_capabilities(record_available),
+    );
     let has_enabled_skills = skills_engine.list().await.iter().any(|skill| skill.enabled);
     let has_enabled_mcp = server_configs
         .read()
@@ -168,15 +173,10 @@ pub async fn register_builtin_tools(
             media_config.ocr.min_confidence,
             media_config.stt.min_confidence,
         )
-        .with_capabilities(vision_available, transcribe_available),
+        .with_capabilities(vision_available, transcribe_available)
+        .with_audio_runtime(audio_runtime),
     );
     tools.push(media_tool.clone());
-    tools.push(Arc::new(
-        audio::AudioTool::with_tts(audio_pipeline, tts_client)
-            .with_managed_assets(managed_assets.clone())
-            .with_capabilities(record_available, transcribe_available)
-            .with_media_tool(media_tool.clone()),
-    ));
     let files_tool: ToolBox = Arc::new(
         files::FilesTool::new(
             router.clone(),
@@ -532,7 +532,13 @@ mod tests {
             8,
             500,
         );
-        let audio = audio::AudioTool::new(None);
+        let media = media::MediaTool::new(
+            None,
+            crate::ManagedAssetRegistry::default(),
+            1024,
+            10,
+            2_000,
+        );
         let process = process::ProcessTool::default();
         let http = http::HttpTool::default();
         let input = input::InputTool;
@@ -544,7 +550,7 @@ mod tests {
         };
         let cases: Vec<(&dyn Tool, serde_json::Value, serde_json::Value)> = vec![
             (
-                &audio,
+                &media,
                 json!({"operation": "volume_set", "volume": 0.5}),
                 json!({"operation": "volume_set"}),
             ),

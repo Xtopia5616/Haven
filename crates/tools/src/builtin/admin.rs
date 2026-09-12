@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 /// or any admin capability. Keeping this an explicit allowlist means a newly
 /// added management/security surface is protected until it is reviewed here.
 const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
-    "audio",
+    "media",
     "ask",
     "files",
     "process",

@@ -225,7 +225,7 @@ impl AppState {
             pipeline.set_stt_router(None).await;
         }
 
-        // Build the TTS client once for the model-facing `audio.speak` tool
+        // Build the TTS client once for the model-facing `media.speak` operation
         // while startup wiring is assembled below. A failed optional
         // capability degrades only that capability and remains observable in
         // the log.

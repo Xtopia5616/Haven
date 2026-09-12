@@ -146,11 +146,10 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				: null;
 		case 'input':
 			return typeof data.operation === 'string' ? data : null;
-		case 'audio':
-			return typeof data.operation === 'string' ? data : null;
 		case 'media':
 			return typeof data.operation === 'string' &&
-				(typeof data.asset_id === 'string' || isObject(data.media))
+				(['record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) ||
+					typeof data.asset_id === 'string' || isObject(data.media))
 				? data
 				: null;
 		case 'haven_config':

@@ -395,7 +395,7 @@
 					<div class="capability-block">
 						<h4>输出 · 语音合成（TTS）</h4>
 						<p class="model-hint">
-							模型会在需要用户听到内容时调用 audio 的 speak 操作；选「模型」页已添加的
+			模型会在需要用户听到内容时调用 media 的 speak 操作；选「模型」页已添加的
 							Provider。TTS 只产生扬声器输出，不会自动触发通知。
 						</p>
 						<div class="stt-grid">
