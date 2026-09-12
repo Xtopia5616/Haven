@@ -141,7 +141,7 @@ End of stable instructions.\n\
 /// prompt (guideline 13, injected via the `{failure_diagnosis}` placeholder)
 /// and the per-step retry nudge in the ReAct loop, so the model-visible
 /// advice cannot drift between the two.
-pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose the cause: is it an environment problem (missing command, wrong shell syntax, network/proxy, wrong path) or a logic problem? Fix the cause and retry the same approach, switching tools (e.g. curl -> aria2) if the environment requires it. Only switch to a completely different approach when the method itself is wrong.";
+pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose the cause: is it an environment problem (missing command, wrong shell syntax, network/proxy, wrong path) or a logic problem? Retry only when the result is explicitly safe to retry or the failed call is a read-only idempotent operation and the cause is transient. Never blindly repeat a state-changing call, or a call whose timeout outcome is unknown; verify the state or ask before replaying it. Switch tools (e.g. curl -> aria2) when the environment requires it, and switch approach when the method itself is wrong.";
 
 /// Per-tool supplementary usage guidance, rendered as a dedicated block of the
 /// main system prompt (via the `{tool_notes}` placeholder). Kept separate from
@@ -155,6 +155,9 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - `memory.recall` is for task-directed retrieval. Automatically injected MEMORY contains higher-confidence context; `MEMORY: (none)` / `empty_reason` explain that this lookup found no usable result, not that all memory is absent.\n\
 - `workspace_root` and `context_budget` in the runtime snapshot are orientation and hard-limit hints; keep tool calls narrow and do not assume a missing optional capability is available.\n\
 - `shell` must be non-interactive. Use explicit flags or provide all input up front.\n\
+- `shell.silent` is only for a user-requested quiet tool card; never use it to conceal a side effect or skip the required preamble/confirmation.\n\
+- For desktop UI work, observe the current window/UI state before acting, use the narrowest title/PID target, and re-observe after a side effect when the result matters.\n\
+- For `schedule`, use the target tool's exact schema and treat the fire-time call as a future separate execution; scheduling a mutation does not mean that mutation has already happened.\n\
 - Background actions finish asynchronously and wake the session; never turn `actions` into a polling loop.";
 
 /// Conversation title generator (small_model).

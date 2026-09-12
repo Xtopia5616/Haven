@@ -125,3 +125,4 @@
 - [0126：Agent 运行时契约与提示词对齐](0126-agent-runtime-contract-alignment.md)
 - [0128：模型体验与实时工具契约优化](0128-model-experience-optimization.md)
 - [0129：资产优先的模型媒体入口统一](0129-asset-first-model-media-entrypoints.md)
+- [0131：内置工具结果与边界契约加固](0131-builtin-tool-contract-hardening.md)

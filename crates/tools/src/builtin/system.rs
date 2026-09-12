@@ -141,7 +141,8 @@ impl SystemTool {
 
         let info = tokio::task::spawn_blocking(move || collect_info(&category, max_chars)).await?;
 
-        Ok(ToolResult::ok(info))
+        let truncated = info["truncated"].as_bool().unwrap_or(false);
+        Ok(ToolResult::from_output(info, truncated))
     }
 }
 

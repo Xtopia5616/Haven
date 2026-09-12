@@ -363,11 +363,13 @@ impl Tool for LoadMcpTool {
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
-                "server_name": { "type": "string", "minLength": 1, "description": "The name of the MCP server to load" },
+                "server_name": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The name of the MCP server to load" },
                 "tool_names": {
                     "type": "array",
-                    "items": { "type": "string", "minLength": 1 },
+                    "maxItems": 128,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 200 },
                     "minItems": 1,
                     "uniqueItems": true,
                     "description": "Optional subset of tool names from that server. Omit (or null) to load all when they fit the budget; never pass an empty array. If the server is too large, the first call returns a catalog and you must call again with tool_names."

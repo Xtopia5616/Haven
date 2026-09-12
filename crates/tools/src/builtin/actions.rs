@@ -89,7 +89,8 @@ impl ActionsTool {
             if let Some(object) = output.as_object_mut() {
                 object.insert("operation".into(), serde_json::json!("inspect"));
             }
-            return Ok(ToolResult::ok(output));
+            let truncated = output["truncated"].as_bool().unwrap_or(false);
+            return Ok(ToolResult::from_output(output, truncated));
         }
 
         let filter = params.status;

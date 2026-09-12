@@ -5,6 +5,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
+const MAX_TITLE_CHARS: usize = 120;
+const MAX_BODY_CHARS: usize = 4_000;
+
 /// Let the agent notify the user via the in-app toast AND a Windows desktop
 /// notification, delivered together. This is an alert channel, not speech;
 /// use `audio` with `operation="speak"` when the user needs audible content.
@@ -41,11 +44,17 @@ impl NotifyTool {
         if body.is_empty() {
             anyhow::bail!("body must not be empty");
         }
+        if body.chars().count() > MAX_BODY_CHARS {
+            anyhow::bail!("body must be at most {MAX_BODY_CHARS} characters");
+        }
         let title = params
             .title
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Haven".to_string());
+        if title.chars().count() > MAX_TITLE_CHARS {
+            anyhow::bail!("title must be at most {MAX_TITLE_CHARS} characters");
+        }
 
         // The `notify` flag is the signal the ReAct loop keys on to emit the
         // Notification event (in-app toast + Windows notification).
@@ -76,13 +85,17 @@ impl Tool for NotifyTool {
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "title": {
                     "type": "string",
+                    "maxLength": 120,
                     "description": "Short notification title. Defaults to 'Haven'."
                 },
                 "body": {
                     "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000,
                     "description": "The notification message body shown to the user. Keep it concise."
                 }
             },
@@ -133,6 +146,8 @@ mod tests {
         let schema = NotifyTool.input_schema();
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "body"));
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"]["body"]["maxLength"], 4000);
     }
 
     #[tokio::test]
@@ -174,6 +189,20 @@ mod tests {
     async fn test_notify_rejects_empty_body() {
         let result = NotifyTool
             .execute(json!({"body": "   "}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_notify_rejects_oversized_body() {
+        let result = NotifyTool
+            .run(
+                NotifyParams {
+                    title: None,
+                    body: "x".repeat(MAX_BODY_CHARS + 1),
+                },
+                CancellationToken::new(),
+            )
             .await;
         assert!(result.is_err());
     }

@@ -215,6 +215,27 @@ pub enum ToolRegistration {
 }
 
 impl ToolResult {
+    /// Build a successful result while keeping the transport-level truncation
+    /// bit in sync with the structured output.  Builtin tools often include a
+    /// `truncated` field in their JSON so the model can see it; callers must
+    /// also set the top-level bit because the executor and UI use that field
+    /// for observation compaction and follow-up decisions.
+    pub fn from_output(mut output: Value, truncated: bool) -> Self {
+        let truncated = truncated
+            || output
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        if truncated {
+            if let Some(object) = output.as_object_mut() {
+                object.insert("truncated".into(), Value::Bool(true));
+            }
+            Self::truncated(output)
+        } else {
+            Self::ok(output)
+        }
+    }
+
     pub fn ok(output: Value) -> Self {
         Self {
             success: true,
@@ -908,6 +929,23 @@ pub(crate) mod tests {
         assert!(result.truncated);
         assert_eq!(result.output, json!({"content": "partial"}));
         assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_tool_result_from_output_keeps_transport_flag_in_sync() {
+        let truncated = ToolResult::from_output(json!({"truncated": true}), true);
+        assert!(truncated.success);
+        assert!(truncated.truncated);
+
+        let inferred = ToolResult::from_output(json!({"truncated": true}), false);
+        assert!(inferred.truncated);
+
+        let annotated = ToolResult::from_output(json!({"status": "partial"}), true);
+        assert_eq!(annotated.output["truncated"], true);
+
+        let complete = ToolResult::from_output(json!({"truncated": false}), false);
+        assert!(complete.success);
+        assert!(!complete.truncated);
     }
 
     #[test]

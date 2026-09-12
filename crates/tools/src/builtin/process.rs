@@ -84,7 +84,7 @@ impl ProcessTool {
                         "Output truncated to the max chars budget. Narrow by filtering processes, or reduce the returned fields."
                     );
                 }
-                Ok(ToolResult::ok(output))
+                Ok(ToolResult::from_output(output, truncated))
             }
             ProcessOperation::Kill => {
                 let raw_pid = params.pid.unwrap_or(0);

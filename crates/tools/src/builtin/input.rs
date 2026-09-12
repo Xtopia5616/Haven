@@ -5,6 +5,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
+const MAX_TYPED_CHARS: usize = 20_000;
+const MAX_KEY_CHARS: usize = 128;
+
 /// Simulate keyboard and mouse input on the local desktop: type text
 /// (Unicode-safe), press named keys or chords (ctrl+c), click/move/scroll the
 /// mouse. Everything goes through SendInput, which behaves like real input
@@ -94,8 +97,18 @@ impl InputTool {
                     .filter(|t| !t.trim().is_empty())
                     .ok_or_else(|| anyhow::anyhow!("text is required for type"))?;
                 let chars = text.chars().count();
+                if chars > MAX_TYPED_CHARS {
+                    anyhow::bail!("text must be at most {MAX_TYPED_CHARS} characters");
+                }
                 crate::simulate::type_text(text)?;
-                serde_json::json!({ "typed": text, "chars": chars })
+                // Never echo typed content into the tool result: it is
+                // persisted in the step observation and may contain a
+                // password, token, or other sensitive value.
+                serde_json::json!({
+                    "typed": "[content redacted]",
+                    "content_redacted": true,
+                    "chars": chars
+                })
             }
             InputOperation::Key => {
                 let key = params
@@ -103,6 +116,9 @@ impl InputTool {
                     .as_deref()
                     .filter(|k| !k.trim().is_empty())
                     .ok_or_else(|| anyhow::anyhow!("key is required for key"))?;
+                if key.chars().count() > MAX_KEY_CHARS {
+                    anyhow::bail!("key must be at most {MAX_KEY_CHARS} characters");
+                }
                 crate::simulate::press_key(key)?;
                 serde_json::json!({ "pressed": key })
             }
@@ -177,8 +193,8 @@ impl Tool for InputTool {
             },
             "required": ["operation"],
             "oneOf": [
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "type" }, "text": { "type": "string", "minLength": 1 } }, "required": ["operation", "text"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "key" }, "key": { "type": "string", "minLength": 1 } }, "required": ["operation", "key"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "type" }, "text": { "type": "string", "minLength": 1, "maxLength": 20000 } }, "required": ["operation", "text"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "key" }, "key": { "type": "string", "minLength": 1, "maxLength": 128 } }, "required": ["operation", "key"] },
                 {
                     "type": "object",
                     "additionalProperties": false,

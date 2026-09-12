@@ -239,7 +239,7 @@ impl ShellTool {
             output["truncated"] = serde_json::Value::Bool(true);
         }
         if status.success() {
-            Ok(ToolResult::ok(output))
+            Ok(ToolResult::from_output(output, truncated))
         } else {
             // Non-zero exit: report the failure. Prefer sanitized stderr; if
             // Progress-only CLIXML sanitized to empty, fall back to combined
@@ -323,10 +323,11 @@ impl Tool for ShellTool {
         let shells = ["sh", "bash"];
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "command": { "type": "string", "minLength": 1, "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
-                "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
+                "silent": { "type": "boolean", "description": "Only use when the user explicitly requests a quiet tool card; never use it to conceal a side effect (the agent still receives the output)", "default": false },
                 "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. Prefer true for long-running work when later steps depend on the result. After launch, if nothing else useful can run in parallel, end your turn — the result is auto-pushed when the action finishes (do not poll).", "default": false },
                 "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the detected workspace root when this process is inside a repository; otherwise the shared Temp sandbox." }
             },
@@ -491,6 +492,10 @@ mod tests {
         assert!(
             result.output["truncated"].as_bool().unwrap_or(false),
             "capped output must carry the truncated flag"
+        );
+        assert!(
+            result.truncated,
+            "transport result must carry the same flag"
         );
     }
 

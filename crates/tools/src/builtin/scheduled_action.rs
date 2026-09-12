@@ -931,6 +931,19 @@ impl ScheduledActionTool {
                 }
                 let tool_name = params.tool_name;
                 let tool_args = params.tool_args.filter(|v| !v.is_null());
+                if let Some(delay) = delay
+                    && !(1..=86_400).contains(&delay)
+                {
+                    anyhow::bail!("delay_secs must be between 1 and 86400");
+                }
+                if let Some(args) = &tool_args
+                    && !args.is_object()
+                {
+                    anyhow::bail!("tool_args must be a JSON object");
+                }
+                if mode != ScheduleMode::Tool && (tool_name.is_some() || tool_args.is_some()) {
+                    anyhow::bail!("tool_name and tool_args require mode 'tool'");
+                }
                 // Eager existence check at schedule time: a typo'd tool name
                 // would otherwise fail only at fire time (in a detached timer,
                 // hours later, with no LLM to recover). Per-session skill/MCP
@@ -949,7 +962,16 @@ impl ScheduledActionTool {
                                     tool_name
                                 );
                             };
-                            Some(tool.risk_level(tool_args.as_ref().unwrap_or(&Value::Null)))
+                            let empty_args = Value::Object(serde_json::Map::new());
+                            let args = tool_args.as_ref().unwrap_or(&empty_args);
+                            tool.validate_input(args).map_err(|error| {
+                                anyhow::anyhow!(
+                                    "invalid arguments for scheduled tool '{}': {}",
+                                    tool_name,
+                                    error
+                                )
+                            })?;
+                            Some(tool.risk_level(args))
                         }
                         None => None,
                     }
@@ -1084,7 +1106,7 @@ impl Tool for ScheduledActionTool {
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": ["set", "list", "cancel"] },
-                "delay_secs": { "type": "integer", "minimum": 1 },
+                "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400 },
                 "due_at": { "type": "string", "minLength": 1 },
                 "watch_action_id": { "type": "string", "minLength": 1 },
                 "mode": { "type": "string", "enum": ["tool", "continue"] },
@@ -1114,7 +1136,7 @@ impl Tool for ScheduledActionTool {
                     "additionalProperties": false,
                     "properties": {
                         "operation": { "const": "set" },
-                        "delay_secs": { "type": "integer", "minimum": 1 },
+                        "delay_secs": { "type": "integer", "minimum": 1, "maximum": 86400 },
                         "due_at": { "type": "string", "minLength": 1 },
                         "mode": { "type": "string", "enum": ["tool", "continue"] },
                         "title": { "type": "string", "minLength": 1 },
@@ -1271,6 +1293,31 @@ mod tests {
             )
             .await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_native_set_rejects_negative_delay_before_cast() {
+        let err = make_tool()
+            .run(
+                ScheduledActionParams {
+                    operation: ScheduleOperation::Set,
+                    delay_secs: Some(-1),
+                    due_at: None,
+                    watch_action_id: None,
+                    mode: None,
+                    title: Some("Test".into()),
+                    body: Some("body".into()),
+                    tool_name: None,
+                    tool_args: None,
+                    prompt: None,
+                    action_id: None,
+                    session_id: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("negative native delay must be rejected");
+        assert!(err.to_string().contains("between 1 and 86400"));
     }
 
     #[tokio::test]

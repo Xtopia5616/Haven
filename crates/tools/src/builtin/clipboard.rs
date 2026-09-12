@@ -226,7 +226,7 @@ impl ClipboardTool {
                 if truncated {
                     result["truncated"] = serde_json::Value::Bool(true);
                 }
-                Ok(ToolResult::ok(result))
+                Ok(ToolResult::from_output(result, truncated))
             }
             ClipboardOperation::Write => {
                 let content = params

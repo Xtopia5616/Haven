@@ -159,8 +159,9 @@ impl Tool for LoadSkillTool {
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
-                "skill_name": { "type": "string", "minLength": 1, "description": "The name of the skill to load" }
+                "skill_name": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The name of the skill to load" }
             },
             "required": ["skill_name"]
         })

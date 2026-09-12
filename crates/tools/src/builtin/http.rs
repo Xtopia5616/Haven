@@ -259,6 +259,7 @@ async fn execute_once_with(
     let resp_headers: Vec<Value> = response
         .headers()
         .iter()
+        .filter(|(name, _)| !is_sensitive_response_header(name.as_str()))
         .map(|(k, v)| serde_json::json!({"name": k.as_str(), "value": v.to_str().unwrap_or("")}))
         .collect();
 
@@ -280,12 +281,13 @@ async fn execute_once_with(
     } else {
         max_chars * 4
     };
-    let response_bytes = read_body_capped(response, byte_cap, max_body_bytes).await?;
+    let (response_bytes, byte_cap_truncated) =
+        read_body_capped(response, byte_cap, max_body_bytes).await?;
     let response_body = haven_common::encoding::decode_lossy(&response_bytes);
 
     let is_html = html_by_header || looks_like_html(&response_body);
 
-    let (body_truncated, truncated, format) = if is_html && !as_html {
+    let (body_truncated, body_truncated_by_text, format) = if is_html && !as_html {
         let (t, tr) =
             haven_common::encoding::truncate_output(&html_to_text(&response_body), max_chars);
         (t, tr, "text")
@@ -294,15 +296,19 @@ async fn execute_once_with(
         (t, tr, if is_html { "html" } else { "raw" })
     };
 
-    Ok(ToolResult::ok(serde_json::json!({
-        "operation": "request",
-        "method": method,
-        "status": status,
-        "headers": resp_headers,
-        "body": body_truncated,
-        "truncated": truncated,
-        "format": format,
-    })))
+    let truncated = byte_cap_truncated || body_truncated_by_text;
+    Ok(ToolResult::from_output(
+        serde_json::json!({
+            "operation": "request",
+            "method": method,
+            "status": status,
+            "headers": resp_headers,
+            "body": body_truncated,
+            "truncated": truncated,
+            "format": format,
+        }),
+        truncated,
+    ))
 }
 
 /// Read at most `byte_cap` bytes (bounded by `max_body_bytes`) of the response
@@ -312,24 +318,45 @@ async fn read_body_capped(
     response: reqwest::Response,
     byte_cap: usize,
     max_body_bytes: usize,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<(Vec<u8>, bool)> {
     use futures_util::StreamExt;
     let cap = byte_cap.min(max_body_bytes);
     let mut stream = response.bytes_stream();
     let mut out = Vec::new();
+    let mut truncated = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(map_reqwest_error)?;
         let room = cap.saturating_sub(out.len());
         if room == 0 {
+            truncated = true;
             break;
         }
         let take = chunk.len().min(room);
         out.extend_from_slice(&chunk[..take]);
         if take < chunk.len() {
+            truncated = true;
             break;
         }
     }
-    Ok(out)
+    Ok((out, truncated))
+}
+
+/// Response headers can contain bearer tokens or browser session material
+/// even when the response body is public. Keep those values out of the model
+/// observation while preserving useful transport metadata such as
+/// `content-type` and `etag`.
+fn is_sensitive_response_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "cookie"
+            | "proxy-authorization"
+            | "proxy-authenticate"
+            | "set-cookie"
+            | "set-cookie2"
+            | "www-authenticate"
+            | "x-api-key"
+    )
 }
 
 /// Cheap sniff for an HTML document when the server omitted (or mislabeled)
@@ -555,8 +582,38 @@ mod tests {
         assert_eq!(result.output["status"], 200);
         assert_eq!(result.output["body"], "hello from mock server");
         assert_eq!(result.output["truncated"], false);
+        assert!(!result.truncated);
         let headers = result.output["headers"].as_array().unwrap();
         assert!(headers.iter().any(|h| h["name"] == "content-type"));
+    }
+
+    #[tokio::test]
+    async fn test_network_body_cap_reports_truncation_at_both_layers() {
+        let url = serve_once("200 OK", "text/plain", "hello from mock server").await;
+        let tool = HttpTool {
+            max_retries: 0,
+            backoff_base_secs: 0,
+            max_body_bytes: 5,
+        };
+        let result = tool
+            .execute(
+                json!({"method": "GET", "url": url, "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["body"], "hello");
+        assert_eq!(result.output["truncated"], true);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn sensitive_response_headers_are_not_exposed() {
+        assert!(is_sensitive_response_header("Set-Cookie"));
+        assert!(is_sensitive_response_header("www-authenticate"));
+        assert!(!is_sensitive_response_header("Content-Type"));
+        assert!(!is_sensitive_response_header("ETag"));
     }
 
     #[test]

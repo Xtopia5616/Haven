@@ -5,6 +5,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
+const MAX_QUESTION_CHARS: usize = 2_000;
+const MAX_CONTEXT_CHARS: usize = 4_000;
+const MAX_OPTIONS: usize = 8;
+const MAX_OPTION_CHARS: usize = 120;
+
 /// Let the agent ask the human a question when it is unsure how to proceed.
 ///
 /// When this tool runs, the ReAct loop pauses the session and surfaces the
@@ -43,13 +48,31 @@ impl AskTool {
         if question.is_empty() {
             anyhow::bail!("question must not be empty");
         }
+        if question.chars().count() > MAX_QUESTION_CHARS {
+            anyhow::bail!("question must be at most {MAX_QUESTION_CHARS} characters");
+        }
         let context = params.context;
+        if context
+            .as_deref()
+            .is_some_and(|value| value.chars().count() > MAX_CONTEXT_CHARS)
+        {
+            anyhow::bail!("context must be at most {MAX_CONTEXT_CHARS} characters");
+        }
         let options: Vec<String> = params
             .options
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        if options.len() > MAX_OPTIONS {
+            anyhow::bail!("options must contain at most {MAX_OPTIONS} items");
+        }
+        if options
+            .iter()
+            .any(|option| option.chars().count() > MAX_OPTION_CHARS)
+        {
+            anyhow::bail!("each option must be at most {MAX_OPTION_CHARS} characters");
+        }
 
         // The `ask` flag is the signal the ReAct loop keys on to pause the
         // session and wait for the user's reply (delivered as a supplement).
@@ -82,18 +105,23 @@ impl Tool for AskTool {
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "question": {
                     "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000,
                     "description": "A single question for the human. Be specific and concise. Never put two questions in one string — call ask again for the next question."
                 },
                 "options": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "maxItems": 8,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 120 },
                     "description": "Optional short suggested answers for THIS question only. Each becomes a selectable chip; keep them terse (a few words). Do not mix answers that belong to a different question."
                 },
                 "context": {
                     "type": "string",
+                    "maxLength": 4000,
                     "description": "Optional context: why you are asking and what you have considered so far."
                 }
             },
@@ -144,6 +172,9 @@ mod tests {
         let schema = AskTool.input_schema();
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "question"));
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"]["question"]["maxLength"], 2000);
+        assert_eq!(schema["properties"]["options"]["maxItems"], 8);
     }
 
     #[tokio::test]
@@ -187,6 +218,21 @@ mod tests {
     async fn test_ask_rejects_empty_question() {
         let result = AskTool
             .execute(json!({"question": "   "}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ask_rejects_oversized_question() {
+        let result = AskTool
+            .run(
+                AskParams {
+                    question: "x".repeat(MAX_QUESTION_CHARS + 1),
+                    options: Vec::new(),
+                    context: None,
+                },
+                CancellationToken::new(),
+            )
             .await;
         assert!(result.is_err());
     }

@@ -153,7 +153,7 @@ impl EnvTool {
                         "Environment listing truncated to the max chars budget. Use get with a specific variable name, or list with name as a prefix filter."
                     );
                 }
-                Ok(ToolResult::ok(result))
+                Ok(ToolResult::from_output(result, truncated))
             }
         }
     }

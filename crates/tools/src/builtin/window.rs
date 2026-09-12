@@ -131,7 +131,10 @@ impl WindowTool {
                         max, max
                     ));
                 }
-                Ok(with_operation(ToolResult::ok(result), "list"))
+                Ok(with_operation(
+                    ToolResult::from_output(result, truncated),
+                    "list",
+                ))
             }
             WindowOperation::Foreground => {
                 let fg = imp::get_foreground_window_info()?;
@@ -179,12 +182,15 @@ impl WindowTool {
                 .await??;
                 let count = elements.len();
                 let truncated = count >= UI_TREE_CAP;
-                Ok(ToolResult::ok(serde_json::json!({
-                    "operation": "ui_tree",
-                    "elements": elements,
-                    "count": count,
-                    "truncated": truncated,
-                })))
+                Ok(ToolResult::from_output(
+                    serde_json::json!({
+                        "operation": "ui_tree",
+                        "elements": elements,
+                        "count": count,
+                        "truncated": truncated,
+                    }),
+                    truncated,
+                ))
             }
             WindowOperation::Wait => self.wait(params, cancel).await,
         }
@@ -453,6 +459,12 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
+                    "properties": { "operation": { "const": "focus" }, "title": { "type": "string", "minLength": 1 }, "pid": { "type": "integer", "minimum": 1 } },
+                    "required": ["operation", "title", "pid"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
                     "properties": { "operation": { "const": "focus" }, "pid": { "type": "integer", "minimum": 1 } },
                     "required": ["operation", "pid"]
                 },
@@ -461,6 +473,12 @@ impl Tool for WindowTool {
                     "additionalProperties": false,
                     "properties": { "operation": { "const": "close" }, "title": { "type": "string", "minLength": 1 } },
                     "required": ["operation", "title"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "close" }, "title": { "type": "string", "minLength": 1 }, "pid": { "type": "integer", "minimum": 1 } },
+                    "required": ["operation", "title", "pid"]
                 },
                 {
                     "type": "object",
@@ -1172,6 +1190,24 @@ mod tests {
         assert!(
             tool()
                 .validate_input(&json!({"operation": "close", "pid": 1}))
+                .is_ok()
+        );
+        assert!(
+            tool()
+                .validate_input(&json!({
+                    "operation": "focus",
+                    "title": "Editor",
+                    "pid": 1
+                }))
+                .is_ok()
+        );
+        assert!(
+            tool()
+                .validate_input(&json!({
+                    "operation": "close",
+                    "title": "Editor",
+                    "pid": 1
+                }))
                 .is_ok()
         );
         assert!(
