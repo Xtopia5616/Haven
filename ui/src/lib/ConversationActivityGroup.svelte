@@ -65,7 +65,7 @@
 <section
 	class="activity-group"
 	class:is-streaming={streaming}
-	data-surface="flat"
+	data-surface="outlined"
 	aria-label="Agent 工作过程"
 >
 	<MaterialCollapsible bind:open lazy>
@@ -132,15 +132,24 @@
 		max-width: var(--md-sys-chat-agent-max-width);
 		margin-right: auto;
 		box-sizing: border-box;
-		/* This group is structural; its child tool cards already sit in the
-		 * conversation rail, so a second surface here creates the outer frame
-		 * the compact layout is explicitly meant to avoid. */
-		padding: var(--md-sys-space-xs) 0;
-		border: 0;
-		border-radius: 0;
-		background: transparent;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-outline-variant));
+		border-radius: var(--md-sys-shape-large);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary-container) 18%,
+			var(--md-sys-color-surface-container-low)
+		);
 		color: var(--md-sys-color-on-surface);
-		box-shadow: none;
+		box-shadow: var(--md-sys-elevation-1);
+	}
+	.activity-group.is-streaming {
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-primary) 30%,
+			var(--md-sys-color-outline-variant)
+		);
 	}
 	/* The message list uses intrinsic-size virtualization for long sessions.
 	 * An open group is actively being measured by stableReveal, so its
@@ -216,7 +225,7 @@
 		.activity-group {
 			width: 100%;
 			max-width: 100%;
-			padding-inline: 0;
+			padding-inline: var(--md-sys-space-2xs);
 		}
 		.activity-meta {
 			display: none;

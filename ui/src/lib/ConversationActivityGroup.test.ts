@@ -42,7 +42,7 @@ describe('ConversationActivityGroup', () => {
 		expect(container.textContent).toContain('已检查完成');
 	});
 
-	it('does not add a frame around the nested work entries', () => {
+	it('keeps the collapsible work surface outlined around nested work entries', () => {
 		const toolMessage = {
 			...entry(false).message,
 			type: 'tool',
@@ -57,6 +57,6 @@ describe('ConversationActivityGroup', () => {
 		});
 		const group = container.querySelector('.activity-group') as HTMLElement;
 
-		expect(group.getAttribute('data-surface')).toBe('flat');
+		expect(group.getAttribute('data-surface')).toBe('outlined');
 	});
 });
