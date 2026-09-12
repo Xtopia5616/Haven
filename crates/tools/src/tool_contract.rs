@@ -1,5 +1,5 @@
 use haven_common::types::RiskLevel;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -48,6 +48,14 @@ impl OperationIdempotency {
             Self::Idempotent => "idempotent",
             Self::NonIdempotent => "non_idempotent",
             Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn tool_retry_safety(self) -> haven_common::tools::ToolRetrySafety {
+        match self {
+            Self::Idempotent => haven_common::tools::ToolRetrySafety::SafeToRetry,
+            Self::NonIdempotent => haven_common::tools::ToolRetrySafety::UnsafeToRetry,
+            Self::Unknown => haven_common::tools::ToolRetrySafety::Unknown,
         }
     }
 }
@@ -309,7 +317,10 @@ impl ToolResult {
     /// projections. The signal fields are intentionally not derived from this
     /// string; callers must read `signals` before applying the cap.
     pub fn observation_text(&self, max_chars: usize) -> String {
-        let text = self.summary_text();
+        let text = self
+            .structured_observation()
+            .map(|value| bounded_json_object(value, max_chars))
+            .unwrap_or_else(|| self.summary_text());
         let char_count = text.chars().count();
         if char_count <= max_chars {
             return text;
@@ -338,6 +349,167 @@ impl ToolResult {
         let prefix: String = text.chars().take(prefix_chars).collect();
         format!("{prefix}{marker}")
     }
+
+    /// Keep structured recovery data together when an observation is capped.
+    /// The previous string-prefix truncation could cut away `next_offset`,
+    /// `next_start_line`, `path`, or `hint` while retaining a large body.
+    fn structured_observation(&self) -> Option<Value> {
+        let output = self.output.as_object()?;
+        let mut object = Map::new();
+
+        if !self.success
+            && let Some(error) = self.error.as_deref().filter(|error| !error.is_empty())
+        {
+            object.insert("error".into(), Value::String(error.into()));
+        }
+        if !self.success && self.outcome != ToolExecutionOutcome::Failed {
+            object.insert(
+                "outcome".into(),
+                Value::String(self.outcome.as_str().into()),
+            );
+        }
+
+        // Recovery and routing fields are emitted first. JSON object order is
+        // not semantic, but it matters to a bounded model observation because
+        // the tail is the part most likely to be dropped.
+        const PRIORITY_KEYS: &[&str] = &[
+            "success",
+            "error",
+            "outcome",
+            "path",
+            "root",
+            "next_offset",
+            "next_start_line",
+            "hint",
+            "retry_safety",
+            "truncated",
+            "asset_id",
+            "action_id",
+            "operation",
+            "status",
+            "available",
+        ];
+        for key in PRIORITY_KEYS {
+            if let Some(value) = output.get(*key) {
+                object.entry(*key).or_insert_with(|| value.clone());
+            }
+        }
+        for (key, value) in output {
+            object.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+
+        Some(Value::Object(object))
+    }
+}
+
+const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
+    "success",
+    "error",
+    "outcome",
+    "path",
+    "root",
+    "next_offset",
+    "next_start_line",
+    "hint",
+    "retry_safety",
+    "truncated",
+    "asset_id",
+    "action_id",
+    "operation",
+    "status",
+    "available",
+];
+
+fn bounded_json_object(value: Value, max_chars: usize) -> String {
+    let Value::Object(mut object) = value else {
+        return serde_json::to_string(&value).unwrap_or_default();
+    };
+    let full = serde_json::to_string(&object).unwrap_or_default();
+    if full.chars().count() <= max_chars {
+        return full;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    // Drop large body collections before touching recovery metadata. This is
+    // deterministic and turns the cap into a useful model view rather than a
+    // byte slice through an arbitrary JSON token.
+    let keys: Vec<String> = object.keys().cloned().collect();
+    for key in keys.iter().rev() {
+        if !STRUCTURED_PRIORITY_KEYS.contains(&key.as_str())
+            && !object.get(key).is_some_and(Value::is_string)
+            && serde_json::to_string(&object)
+                .map(|s| s.chars().count())
+                .unwrap_or(0)
+                > max_chars
+        {
+            object.remove(key);
+        }
+    }
+
+    // Shrink string payloads (usually content/stdout/stderr/summary) while
+    // retaining every priority key. A bounded marker makes the loss explicit.
+    let string_keys: Vec<String> = object
+        .iter()
+        .filter_map(|(key, value)| {
+            (value.is_string() && !STRUCTURED_PRIORITY_KEYS.contains(&key.as_str()))
+                .then_some(key.clone())
+        })
+        .collect();
+    for key in string_keys.iter().rev() {
+        let Some(Value::String(original)) = object.get(key).cloned() else {
+            continue;
+        };
+        if serde_json::to_string(&object)
+            .map(|s| s.chars().count())
+            .unwrap_or(0)
+            <= max_chars
+        {
+            break;
+        }
+        let mut low = 0usize;
+        let mut high = original.chars().count();
+        let mut best = String::new();
+        while low <= high {
+            let mid = low + (high - low) / 2;
+            let candidate = bounded_string(&original, mid);
+            object.insert(key.clone(), Value::String(candidate.clone()));
+            let fits = serde_json::to_string(&object)
+                .map(|s| s.chars().count() <= max_chars)
+                .unwrap_or(false);
+            if fits {
+                best = candidate;
+                low = mid.saturating_add(1);
+            } else {
+                if mid == 0 {
+                    break;
+                }
+                high = mid - 1;
+            }
+        }
+        object.insert(key.clone(), Value::String(best));
+    }
+
+    let rendered = serde_json::to_string(&object).unwrap_or_default();
+    if rendered.chars().count() <= max_chars {
+        return rendered;
+    }
+    // Extremely small budgets cannot hold all field names and values. Keep a
+    // bounded fallback; normal observation budgets preserve recovery keys.
+    rendered.chars().take(max_chars).collect()
+}
+
+fn bounded_string(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".chars().take(max_chars).collect();
+    }
+    let mut output: String = value.chars().take(max_chars - 1).collect();
+    output.push('…');
+    output
 }
 
 fn default_attempts() -> u32 {
@@ -453,6 +625,10 @@ pub trait Tool: Send + Sync {
             self.description(),
             self.input_schema(),
             self.risk_level(&Value::Object(Default::default())),
+        )
+        .with_retry_safety(
+            self.idempotency(&Value::Object(Default::default()))
+                .tool_retry_safety(),
         )
     }
 
@@ -679,6 +855,7 @@ where
             self.input_schema(),
             metadata.risk_level,
         )
+        .with_retry_safety(metadata.idempotency.tool_retry_safety())
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -815,6 +992,38 @@ pub(crate) mod tests {
         let observation = result.observation_text(3);
         assert_eq!(observation.chars().count(), 3);
         assert!(observation.is_char_boundary(observation.len()));
+    }
+
+    #[test]
+    fn structured_observation_keeps_recovery_fields_before_body() {
+        let result = ToolResult::ok(json!({
+            "content": "x".repeat(2_000),
+            "path": "D:/workspace/Haven/docs/architecture.md",
+            "next_offset": 4096,
+            "hint": "continue with the returned cursor",
+        }));
+
+        let observation = result.observation_text(220);
+        assert!(observation.chars().count() <= 220);
+        let parsed: Value = serde_json::from_str(&observation).expect("bounded JSON object");
+        assert_eq!(parsed["path"], "D:/workspace/Haven/docs/architecture.md");
+        assert_eq!(parsed["next_offset"], 4096);
+        assert_eq!(parsed["hint"], "continue with the returned cursor");
+        assert!(parsed["content"].as_str().unwrap().ends_with('…'));
+    }
+
+    #[test]
+    fn structured_failure_keeps_error_next_to_output_metadata() {
+        let result = ToolResult::failed(
+            json!({"summary_error": true, "path": "notes.md"}),
+            "summarizer call failed",
+        );
+
+        let observation = result.observation_text(200);
+        let parsed: Value = serde_json::from_str(&observation).expect("bounded JSON object");
+        assert_eq!(parsed["error"], "summarizer call failed");
+        assert_eq!(parsed["path"], "notes.md");
+        assert_eq!(parsed["summary_error"], true);
     }
 
     #[test]

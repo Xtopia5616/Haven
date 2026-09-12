@@ -54,7 +54,8 @@ pub struct ShellParams {
     /// Run the command in the background and return an action_id immediately.
     #[serde(default)]
     pub background: Option<bool>,
-    /// Working directory to run the command in (default: shared Temp dir).
+    /// Working directory to run the command in (default: detected workspace,
+    /// otherwise the shared Temp dir).
     #[serde(default)]
     pub cwd: Option<String>,
     /// Private: pre-minted `step-*` id for live `agent:tool_output` events.
@@ -78,7 +79,14 @@ impl ShellTool {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| self.default_shell.clone());
-        let cwd = cwd_arg.filter(|s| !s.is_empty()).map(PathBuf::from);
+        let cwd = cwd_arg
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|current| haven_common::discover_workspace_root(&current))
+            });
         (shell, cwd)
     }
 
@@ -96,6 +104,7 @@ impl ShellTool {
         let silent = params.silent.unwrap_or(false);
         let (shell, cwd) =
             self.resolve_shell_and_cwd(params.shell.as_deref(), params.cwd.as_deref());
+        validate_shell_command(&shell, &cmd)?;
         let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
@@ -319,9 +328,10 @@ impl Tool for ShellTool {
                 "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
                 "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. Prefer true for long-running work when later steps depend on the result. After launch, if nothing else useful can run in parallel, end your turn — the result is auto-pushed when the action finishes (do not poll).", "default": false },
-                "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the shared Temp working directory." }
+                "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the detected workspace root when this process is inside a repository; otherwise the shared Temp sandbox." }
             },
-            "required": ["command"]
+            "required": ["command"],
+            "description": "Shell syntax is selected per call. Windows PowerShell 5.1: do not use && or ||; use ; or separate tool calls. cmd supports &&. pwsh (PowerShell 7) supports &&/||. Long commands may use background=true; do not poll actions/status."
         })
     }
 
@@ -354,6 +364,40 @@ impl Tool for ShellTool {
             })
             .unwrap_or_default()
     }
+}
+
+fn validate_shell_command(shell: &str, command: &str) -> anyhow::Result<()> {
+    if shell.eq_ignore_ascii_case("powershell")
+        && (contains_unquoted_operator(command, "&&") || contains_unquoted_operator(command, "||"))
+    {
+        anyhow::bail!(
+            "shell syntax error before execution: Windows PowerShell does not support && or ||; use ';' or select cmd/pwsh"
+        );
+    }
+    Ok(())
+}
+
+fn contains_unquoted_operator(command: &str, operator: &str) -> bool {
+    let mut quote = None;
+    let chars: Vec<char> = command.chars().collect();
+    for index in 0..chars.len() {
+        let ch = chars[index];
+        if let Some(active) = quote {
+            if ch == active && (index == 0 || chars[index - 1] != '\\') {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            continue;
+        }
+        let end = index + operator.chars().count();
+        if end <= chars.len() && chars[index..end].iter().collect::<String>() == operator {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -406,6 +450,15 @@ mod tests {
             assert!(shells.contains(&"sh"));
             assert!(shells.contains(&"bash"));
         }
+    }
+
+    #[test]
+    fn powershell_validation_rejects_unquoted_chain_operators() {
+        let error = validate_shell_command("powershell", "Write-Output one && Write-Output two")
+            .expect_err("Windows PowerShell 5.1 cannot parse &&");
+        assert!(error.to_string().contains("does not support &&"));
+        assert!(validate_shell_command("powershell", "Write-Output 'a && b'").is_ok());
+        assert!(validate_shell_command("pwsh", "Write-Output one && Write-Output two").is_ok());
     }
 
     #[cfg(windows)]

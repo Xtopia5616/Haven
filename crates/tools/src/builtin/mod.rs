@@ -37,6 +37,35 @@ use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
 
+/// Resolve capability truth for the model-backed media operations. A
+/// configured role is not enough: routing may fall back to another role and
+/// the selected adapter may explicitly reject the representation.
+pub(crate) async fn resolve_media_capabilities(
+    router: Option<&Arc<haven_llm::LlmRouter>>,
+) -> (bool, bool) {
+    let Some(router) = router else {
+        return (false, false);
+    };
+
+    let vision_role = router.vision_role().await;
+    let vision_available = router.is_role_configured(vision_role).await
+        && router.capability_profile(vision_role).image.is_supported();
+
+    let transcribe_available = if let Some(role) = router.stt_role().await {
+        let configured = router.is_role_configured(role).await;
+        let profile = router.capability_profile(role);
+        let style = {
+            let config = router.config().await;
+            haven_llm::adapters::api_style_for(config.endpoint(role))
+        };
+        configured && (profile.audio.is_supported() || haven_llm::is_stt_only_style(style))
+    } else {
+        false
+    };
+
+    (vision_available, transcribe_available)
+}
+
 pub use admin::{
     AdminCapability, AdminCapabilityTool, AdminOperationMetadata, ConfigAdminContext,
     ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs, ConfigOperationError,
@@ -93,17 +122,13 @@ pub async fn register_builtin_tools(
     managed_assets: crate::ManagedAssetRegistry,
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
-    let (vision_available, transcribe_available) = if let Some(router) = router.as_ref() {
-        (
-            router
-                .is_role_configured(haven_llm::EndpointRole::ImageModel)
-                .await,
-            router
-                .is_role_configured(haven_llm::EndpointRole::AudioModel)
-                .await,
-        )
+    let (vision_available, transcribe_available) =
+        resolve_media_capabilities(router.as_ref()).await;
+    let record_available = audio_pipeline.is_some();
+    let audio_transcribe_available = if let Some(pipeline) = audio_pipeline.as_ref() {
+        pipeline.recording_configured().await
     } else {
-        (false, false)
+        false
     };
     let has_enabled_skills = skills_engine.list().await.iter().any(|skill| skill.enabled);
     let has_enabled_mcp = server_configs
@@ -111,10 +136,11 @@ pub async fn register_builtin_tools(
         .await
         .values()
         .any(|server| server.enabled);
-    tools.push(Arc::new(audio::AudioTool::with_tts(
-        audio_pipeline,
-        tts_client,
-    )));
+    tools.push(Arc::new(
+        audio::AudioTool::with_tts(audio_pipeline, tts_client)
+            .with_managed_assets(managed_assets.clone())
+            .with_capabilities(record_available, audio_transcribe_available),
+    ));
     tools.push(Arc::new(ask::AskTool));
     // Media, files, and window share the same router boundary. Media owns the
     // agent-facing asset operations; files remains the text/filesystem tool.
@@ -132,25 +158,28 @@ pub async fn register_builtin_tools(
         )
         .with_capabilities(vision_available, transcribe_available),
     ));
-    tools.push(Arc::new(files::FilesTool::new(
-        router,
-        tool_output_cap(settings, "files", limits.max_observation_chars),
-        limits.file_read_max_chars,
-        limits.file_line_span,
-        limits.file_max_line_chars,
-        limits.file_summary_input_chars,
-        limits.file_max_list_entries,
-        limits.file_max_byte_read,
-        limits.file_vision_max_bytes,
-        limits.file_summary_timeout_secs,
-        file_search::FileSearchEngine::new(
-            limits.search_snippet_chars,
-            limits.search_max_results,
-            limits.search_max_file_size_bytes,
-            limits.search_window_bytes,
-        ),
-        managed_assets,
-    )));
+    tools.push(Arc::new(
+        files::FilesTool::new(
+            router,
+            tool_output_cap(settings, "files", limits.max_observation_chars),
+            limits.file_read_max_chars,
+            limits.file_line_span,
+            limits.file_max_line_chars,
+            limits.file_summary_input_chars,
+            limits.file_max_list_entries,
+            limits.file_max_byte_read,
+            limits.file_vision_max_bytes,
+            limits.file_summary_timeout_secs,
+            file_search::FileSearchEngine::new(
+                limits.search_snippet_chars,
+                limits.search_max_results,
+                limits.search_max_file_size_bytes,
+                limits.search_window_bytes,
+            ),
+            managed_assets.clone(),
+        )
+        .with_media_capabilities(vision_available, transcribe_available),
+    ));
     tools.push(Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
     }));
@@ -180,10 +209,10 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(system::SystemTool {
         max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
     }));
-    tools.push(Arc::new(window::WindowTool::new(
-        window_router,
-        window_assets,
-    )));
+    tools.push(Arc::new(
+        window::WindowTool::new(window_router, window_assets)
+            .with_vision_available(vision_available),
+    ));
     tools.push(Arc::new(http::HttpTool {
         max_retries: limits.network_max_retries,
         backoff_base_secs: limits.network_backoff_base_secs,

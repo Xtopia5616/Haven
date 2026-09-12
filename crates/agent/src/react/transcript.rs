@@ -413,9 +413,10 @@ impl ReActEngine {
                 state.events.push(record);
                 let strategy = self.media_strategy();
                 let mut content = vec![ContentPart::text(text)];
-                content.extend(attachments.iter().map(|attachment| {
-                    attachment_to_content_part_with_strategy(attachment, strategy)
-                }));
+                for attachment in &attachments {
+                    let input = haven_common::media::legacy_attachment_to_media_input(attachment);
+                    crate::types::append_media_projection(&mut content, &input, strategy);
+                }
                 state
                     .canonical
                     .push(CanonicalMessage::user_with_source(content, source));

@@ -692,6 +692,7 @@ fn path_sandbox_block(
         return None;
     }
     for path in paths {
+        let path = resolve_relative_sandbox_path(path);
         if !path_is_allowed(&path, &allowed) {
             return Some(format!(
                 "path '{}' is outside allowed_paths for tool '{tool_name}'",
@@ -700,6 +701,19 @@ fn path_sandbox_block(
         }
     }
     None
+}
+
+fn resolve_relative_sandbox_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() || is_unc_or_device_path(&path) {
+        return path;
+    }
+    let Some(root) = std::env::current_dir()
+        .ok()
+        .and_then(|current| haven_common::discover_workspace_root(&current))
+    else {
+        return path;
+    };
+    root.join(path)
 }
 
 fn collect_path_params(params: &Value) -> Vec<PathBuf> {
@@ -1639,8 +1653,10 @@ mod tests {
 
         let optional_routes = [
             ("audio", "speak"),
+            ("audio", "record"),
             ("media", "describe"),
             ("media", "transcribe"),
+            ("window", "ocr"),
             ("load_skill", "load"),
             ("load_mcp", "load"),
         ];
@@ -1845,5 +1861,31 @@ mod tests {
             )
             .await;
         assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_path_sandbox_resolves_relative_workspace_paths() {
+        let root = haven_common::discover_workspace_root(&std::env::current_dir().unwrap())
+            .expect("tests run inside the Haven workspace");
+        let mut settings = HashMap::new();
+        settings.insert(
+            "files".into(),
+            ToolConfig {
+                allowed_paths: vec![root.to_string_lossy().into_owned()],
+                ..ToolConfig::default()
+            },
+        );
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.set_tool_settings(settings).await;
+
+        let result = gw
+            .check(
+                None,
+                "files",
+                &json!({"operation": "read", "path": "docs/architecture.md"}),
+                RiskLevel::Low,
+            )
+            .await;
+        assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 }

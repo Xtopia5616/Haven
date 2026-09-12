@@ -65,26 +65,30 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 `lib.rs` 只从这些模块重新导出 crate 公共 API，builtin 直接依赖对应模块。安全矩阵只有
 `security.rs` 一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。
 
-`document.rs` 是受管附件的本地派生边界：由 `media.extract`（以及文件摘要所需的内部
-文本源）对 PDF/DOCX/XLSX/PPTX 执行有资源上限的文本/表格抽取，输出带
+`document.rs` 是受管附件的本地派生边界：由 `media.extract` 对 PDF/DOCX/XLSX/PPTX
+执行有资源上限的文本/表格抽取，输出带
 `document_extract` provenance 的不可信内容；
 不执行脚本、不解析外部实体、不向模型暴露宿主路径。抽取失败显式返回不可用结果，不能
-把空文本当成成功（ADR 0114）。
+把空文本当成成功；`files` 只负责文件系统边界并把 rich path 交给 `media`（ADR 0114、0129）。
 
 `builtin/media.rs` 是 Agent 原生的媒体工具边界：模型只传 `asset_id`，由 `inspect`、
-`describe`、`transcribe`、`extract` 选择统一的图片、音频或文档派生表示；结果通过
+`describe`、`ocr`、`transcribe`、`extract` 选择统一的图片、音频或文档派生表示；结果通过
 compact `media` reference 回到工具 observation，后续调用可以复用同一个 asset id；持久化
-附件仍使用 common 层的 `MediaInput`。窗口截图
-进入生成媒体根目录并登记 session lease，`files.read` 对 managed 图片/音频转交到该入口；
+附件仍使用 common 层的 `MediaInput`。窗口截图和录音
+进入生成媒体根目录并登记 session lease，`files.read/summary` 对 rich path 也转交到该入口；
 宿主路径和 base64 不进入模型工具契约（ADR 0123）。媒体派生调用的 usage 作为
 `llm_usage.call_kind=media` 与 `call_kind=tool` 单独保留，不污染 Agent 主循环的累计
-cache rate（ADR 0124）。
+cache rate（ADR 0124）。原始附件的 MediaPlan 投影同时留下短的 asset→representation
+notice，避免模型重复派生或猜测资产是否已经进入上下文（ADR 0129）。
 
 Builtin 的模型目录保持聚合边界：`system` 内的 `env`、`power`、`registry` 是私有实现模块，
 不作为独立模型工具注册。后台任务取消、目录创建和窗口 PID 目标属于既有聚合工具的
 operation，不新增顶层入口；环境变量读取只暴露名称或脱敏值。`files` 保持聚合入口，
 但提供受限的 `outline` 结构读取；provider-facing 的 grouped schema 会在兼容约束下压平
 根级 union，并按 live capability 过滤不可用 operation / extension loader（ADR 0127）。
+模型可见 observation 对结构化结果优先保留错误、路径、hint 与续读游标；工具定义和失败结果
+分别暴露静态/具体 retry safety，仓库会话的 shell/files 相对路径默认对齐 workspace root，
+同时保留 Temp sandbox fallback（ADR 0128）。
 
 CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖方向检查；新增或调整
 跨 crate 依赖时，必须先更新本表与该检查，并记录 ADR。
@@ -392,6 +396,8 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-12 | §2.5 Agent / Tools / LLM：统一 producer→asset_id→media consumer；files rich path、window OCR、audio record 均收敛到同一资产链，并在模型请求中说明 MediaPlan 表示（ADR 0129） |
+| 2026-09-12 | §2.5 Tools / Agent / Common：按实时路由能力裁剪媒体与录音 operation；structured-first observation 保留恢复字段；仓库会话默认工作区路径；区分只读重试安全性并补充 runtime capability snapshot（ADR 0128） |
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |

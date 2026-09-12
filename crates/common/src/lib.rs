@@ -7,12 +7,14 @@ pub mod prompts;
 pub mod text;
 pub mod tools;
 pub mod types;
+pub mod workspace;
 
 pub use config::{
     AppConfig, ConfigLoader, LogConfig, LogLevel, McpDiscoveryConfig, McpServerConfig, Settings,
     SkillsExecConfig, default_work_dir,
 };
 pub use types::McpTransportType;
+pub use workspace::discover_workspace_root;
 
 pub use media::{
     CapabilityProfile, CapabilitySupport, MediaAsset, MediaAssetLifecycle, MediaAssetSource,
@@ -23,7 +25,7 @@ pub use media::{
     legacy_attachment_to_media_input,
 };
 
-pub use tools::ToolDef;
+pub use tools::{ToolDef, ToolRetrySafety};
 
 pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,

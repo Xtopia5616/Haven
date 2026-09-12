@@ -1491,6 +1491,35 @@ mod tests {
     }
 
     #[test]
+    fn raw_managed_attachment_exposes_media_plan_handle() {
+        let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
+        attachment.path = Some(r"C:\Users\olive\uploads\photo.png".into());
+        let (canonical, _) = crate::types::project_transcript_with_strategy(
+            &[TranscriptRecord::UserInject {
+                step_number: 1,
+                source: haven_common::types::InjectSource::FollowUp,
+                text: "看这张图".into(),
+                media_inputs: Vec::new(),
+                attachments: vec![attachment],
+                message_id: None,
+            }],
+            MediaInputStrategy::Auto,
+        );
+        let text = canonical[0]
+            .content
+            .iter()
+            .find_map(|part| match part {
+                ContentPart::Text(text) if text.contains("media_plan:") => Some(text),
+                _ => None,
+            })
+            .expect("raw managed media should leave a plan notice");
+        assert!(text.contains("asset-0123456789abcdef0123456789abcdef"));
+        assert!(text.contains("raw_image"));
+        assert!(!text.contains(r"C:\Users\olive"));
+    }
+
+    #[test]
     fn managed_file_attachment_projects_to_opaque_reference() {
         let mut attachment = MessageAttachment::new("application/pdf", "");
         attachment.asset_id = Some("asset-report".into());

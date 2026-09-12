@@ -18,6 +18,18 @@ use serde_json::Value;
 pub const BACKGROUND_WAIT_NEXT_STEP_KEY: &str = "next_step";
 pub const BACKGROUND_WAIT_NEXT_STEP: &str = "end_turn";
 
+/// Static retry metadata exposed beside a tool definition. Grouped tools may
+/// still refine this policy per operation at execution time; `unknown` is the
+/// honest value when the default input does not identify one operation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRetrySafety {
+    SafeToRetry,
+    UnsafeToRetry,
+    #[default]
+    Unknown,
+}
+
 /// Start a background-wait observation object with `next_step` first, then
 /// `hint`. Callers insert the rest (`background` / `action_id` / `actions`…).
 /// Centralized so producers cannot forget the wait marker the ReAct policy
@@ -44,6 +56,10 @@ pub struct ToolDef {
     /// Default risk level, computed without concrete input. The runtime
     /// safety gateway may refine per-call risk via the tool's `risk_level`.
     pub risk_level: RiskLevel,
+    /// Whether replaying the default/concrete operation is safe after a
+    /// transient failure. The execution result carries the per-call value.
+    #[serde(default)]
+    pub retry_safety: ToolRetrySafety,
 }
 
 impl ToolDef {
@@ -58,17 +74,24 @@ impl ToolDef {
             description: description.into(),
             input_schema,
             risk_level,
+            retry_safety: ToolRetrySafety::Unknown,
         }
     }
 
+    pub fn with_retry_safety(mut self, retry_safety: ToolRetrySafety) -> Self {
+        self.retry_safety = retry_safety;
+        self
+    }
+
     /// Wire shape shared by the session schema listing and the UI tool list:
-    /// `{name, description, risk_level, input_schema}`. Callers that need
+    /// `{name, description, risk_level, retry_safety, input_schema}`. Callers that need
     /// extra keys (e.g. `enabled`) merge them on top of the returned object.
     pub fn json(&self) -> Value {
         serde_json::json!({
             "name": self.name,
             "description": self.description,
             "risk_level": self.risk_level,
+            "retry_safety": self.retry_safety,
             "input_schema": self.input_schema,
         })
     }
@@ -90,6 +113,7 @@ mod tests {
         assert_eq!(json["name"], "files");
         assert_eq!(json["description"], "Read and write files");
         assert_eq!(json["risk_level"], "low");
+        assert_eq!(json["retry_safety"], "unknown");
         assert!(json["input_schema"].is_object());
     }
 

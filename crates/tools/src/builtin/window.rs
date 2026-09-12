@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use haven_common::config::default_generated_media_dir;
-use haven_common::prompts::OCR_SYSTEM_PROMPT;
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
 use serde_json::Value;
@@ -9,8 +8,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::media::{model_media_reference, register_generated_asset};
-use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolLlmUsage, ToolResult};
+use super::media::{
+    MediaOperation, MediaParams, MediaTool, model_media_reference_with_capabilities,
+    register_generated_asset,
+};
+use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
 /// Default vision byte / timeout limits (aligned with FilesTool defaults).
 const DEFAULT_VISION_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -31,6 +33,7 @@ pub struct WindowTool {
     capture_root: PathBuf,
     vision_max_bytes: u64,
     vision_timeout_secs: u64,
+    vision_available: bool,
 }
 
 /// Window operation.
@@ -86,13 +89,20 @@ pub struct WindowParams {
 
 impl WindowTool {
     pub fn new(router: Option<Arc<LlmRouter>>, managed_assets: ManagedAssetRegistry) -> Self {
+        let vision_available = router.is_some();
         Self {
             router,
             managed_assets,
             capture_root: default_generated_media_dir(),
             vision_max_bytes: DEFAULT_VISION_MAX_BYTES,
             vision_timeout_secs: DEFAULT_VISION_TIMEOUT_SECS,
+            vision_available,
         }
+    }
+
+    pub(crate) fn with_vision_available(mut self, available: bool) -> Self {
+        self.vision_available = available;
+        self
     }
 
     /// Entry ①: structured native interface (internal code calls — zero
@@ -161,7 +171,13 @@ impl WindowTool {
                 Ok(ToolResult::ok(serde_json::json!({
                     "operation": "screenshot",
                     "asset_id": capture.asset.asset_id,
-                    "media": model_media_reference(&capture.asset, "managed_file_ref", None),
+                    "media": model_media_reference_with_capabilities(
+                        &capture.asset,
+                        "managed_file_ref",
+                        None,
+                        self.vision_available,
+                        false,
+                    ),
                 })))
             }
             WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
@@ -250,76 +266,43 @@ impl WindowTool {
         session_id: Option<&str>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        // Capturing the desktop is a high-risk operation in its own right.
-        // When OCR cannot run because no vision router is configured, do not
-        // capture a screenshot only to discard it. This also keeps the
-        // unavailable-capability path independent of an interactive desktop.
-        let Some(client) = &self.router else {
-            return Ok(ToolResult::ok(serde_json::json!({
-                "operation": "ocr",
-                "ocr_unavailable": true,
-                "reason": "No LLM router installed, so OCR cannot run."
-            })));
-        };
+        // OCR is a thin producer + consumer convenience operation. The
+        // screenshot is registered first, then all bytes/capability handling
+        // is delegated to the canonical media tool.
         let capture = self.capture_screen(session_id, cancel.clone()).await?;
-        let size = capture.asset.size_bytes.unwrap_or_default();
-        if size > self.vision_max_bytes {
+        if !self.vision_available {
             return Ok(ToolResult::ok(serde_json::json!({
                 "operation": "ocr",
                 "asset_id": capture.asset.asset_id,
-                "media": model_media_reference(&capture.asset, "managed_file_ref", None),
-                "too_large": true,
-                "reason": "Screenshot exceeds the configured vision input limit.",
+                "media": model_media_reference_with_capabilities(
+                    &capture.asset,
+                    "managed_file_ref",
+                    None,
+                    false,
+                    false,
+                ),
+                "available": false,
+                "ocr_unavailable": true,
+                "reason": "No vision-capable LLM router is configured."
             })));
         }
-
-        let bytes = tokio::fs::read(&capture.asset.path).await?;
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let timeout = self.vision_timeout_secs;
-        let role = client.vision_role().await;
-        let started = Instant::now();
-        let response = match tokio::time::timeout(
-            Duration::from_secs(timeout),
-            client.analyze_image(&bytes, "image/png", OCR_SYSTEM_PROMPT, None),
+        MediaTool::new(
+            self.router.clone(),
+            self.managed_assets.clone(),
+            self.vision_max_bytes,
+            self.vision_timeout_secs,
+            32_000,
+        )
+        .with_capabilities(true, false)
+        .run(
+            MediaParams {
+                operation: MediaOperation::Ocr,
+                asset_id: capture.asset.asset_id,
+                focus: None,
+            },
+            cancel,
         )
         .await
-        {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(e)) => {
-                return Ok(ToolResult::failed(
-                    serde_json::json!({
-                        "operation": "ocr",
-                        "asset_id": capture.asset.asset_id,
-                        "ocr_error": true,
-                    }),
-                    format!("OCR vision call failed: {e}"),
-                ));
-            }
-            Err(_) => {
-                return Ok(ToolResult::timed_out(
-                    crate::ToolExecutionOutcome::TimedOutUnknown,
-                    format!("OCR vision call timed out after {timeout}s"),
-                ));
-            }
-        };
-
-        let text = response.text.trim().to_string();
-        let mut result = ToolResult::ok(serde_json::json!({
-            "operation": "ocr",
-            "asset_id": capture.asset.asset_id,
-            "media": model_media_reference(&capture.asset, "ocr_text", Some(&text)),
-            "untrusted_content": true,
-        }));
-        result.llm_usage.push(ToolLlmUsage {
-            call_kind: "media",
-            role,
-            usage: response.usage,
-            model: response.model,
-            duration_ms: Some(started.elapsed().as_millis() as u64),
-        });
-        Ok(result)
     }
 
     async fn wait(
@@ -452,7 +435,7 @@ impl Tool for WindowTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
+        let mut schema = serde_json::json!({
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close", "screenshot", "ocr", "ui_tree", "wait"] },
@@ -534,7 +517,21 @@ impl Tool for WindowTool {
                     "required": ["operation", "condition", "text"]
                 }
             ]
-        })
+        });
+        if !self.vision_available {
+            if let Some(operations) = schema["properties"]["operation"]
+                .get_mut("enum")
+                .and_then(Value::as_array_mut)
+            {
+                operations.retain(|operation| operation.as_str() != Some("ocr"));
+            }
+            if let Some(branches) = schema.get_mut("oneOf").and_then(Value::as_array_mut) {
+                branches.retain(|branch| {
+                    branch["properties"]["operation"]["const"].as_str() != Some("ocr")
+                });
+            }
+        }
+        schema
     }
 
     /// Entry ②: LLM JSON entry — convert/validate into `WindowParams`, then
@@ -1127,7 +1124,7 @@ mod tests {
     use serde_json::json;
 
     fn tool() -> WindowTool {
-        WindowTool::new(None, ManagedAssetRegistry::default())
+        WindowTool::new(None, ManagedAssetRegistry::default()).with_vision_available(true)
     }
 
     #[test]
@@ -1321,7 +1318,9 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["ocr_unavailable"], true);
+        assert_eq!(result.output["available"], false);
+        assert!(result.output["asset_id"].as_str().is_some());
+        assert!(result.output["media"]["asset_id"].as_str().is_some());
         assert!(result.output.get("path").is_none());
     }
 

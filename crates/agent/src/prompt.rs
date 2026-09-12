@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -282,22 +282,6 @@ fn runtime_value(value: impl Into<String>) -> String {
     haven_common::text::sanitize_prompt_field(&value.into(), 320)
 }
 
-fn discover_workspace_root(start: &Path) -> Option<PathBuf> {
-    let mut cargo_candidate = None;
-    for ancestor in start.ancestors() {
-        if ancestor.join("AGENTS.md").is_file() || ancestor.join(".git").exists() {
-            return Some(ancestor.to_path_buf());
-        }
-        if cargo_candidate.is_none()
-            && ancestor.join("Cargo.toml").is_file()
-            && ancestor.join("ui").is_dir()
-        {
-            cargo_candidate = Some(ancestor.to_path_buf());
-        }
-    }
-    cargo_candidate
-}
-
 fn environment_value(names: &[&str]) -> String {
     names
         .iter()
@@ -482,15 +466,20 @@ impl SystemPromptBuilder {
         let process_cwd = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "unknown".into());
-        let workspace_root = discover_workspace_root(Path::new(&process_cwd))
+        let workspace_root = haven_common::discover_workspace_root(Path::new(&process_cwd))
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unknown".into());
-        let tool_cwd = haven_common::default_work_dir()
+        let sandbox_cwd = haven_common::default_work_dir()
             .to_string_lossy()
             .into_owned();
+        let tool_cwd = if workspace_root == "unknown" {
+            sandbox_cwd.clone()
+        } else {
+            workspace_root.clone()
+        };
         let limits = self.tools.context_limits().await;
         let shell = self.tools.default_shell_name().await;
-        let tts = self.tools.tts_configured().await;
+        let runtime_capabilities = self.tools.runtime_capabilities().await;
         let permissions = self.tools.authorization.prompt_summary().await;
         let mcp_count = self
             .tools
@@ -517,15 +506,32 @@ impl SystemPromptBuilder {
                 states.push(format!("{}={state}", role.as_str()));
             }
             states.push(format!(
+                "vision={}",
+                if runtime_capabilities.vision {
+                    "available"
+                } else {
+                    "unavailable"
+                }
+            ));
+            states.push(format!(
+                "stt={}",
+                if runtime_capabilities.transcription {
+                    "available"
+                } else {
+                    "unavailable"
+                }
+            ));
+            states.push(format!(
                 "tts={}",
-                if tts { "configured" } else { "unavailable" }
+                if runtime_capabilities.tts {
+                    "available"
+                } else {
+                    "unavailable"
+                }
             ));
             states.join(", ")
         } else {
-            format!(
-                "router=unavailable, tts={}",
-                if tts { "configured" } else { "unavailable" }
-            )
+            "router=unavailable".into()
         };
         let context_window = if let Some(router) = &self.router {
             router
@@ -545,8 +551,10 @@ impl SystemPromptBuilder {
 - process_cwd: {}\n\
 - workspace_root: {}\n\
 - tool_default_cwd: {}\n\
+- tool_sandbox_cwd: {}\n\
 - default_shell: {}\n\
 - model_capabilities: {}\n\
+- runtime_capabilities: web_search={}, vision={}, stt={}, audio_recording={}, tts={}\n\
 - context_budget: window_tokens={}, max_observation_chars={}, max_tools_per_request={}\n\
 - enabled_mcp_servers: {}\n\
 - discovered_skills: {}\n\
@@ -561,8 +569,30 @@ impl SystemPromptBuilder {
             runtime_value(process_cwd),
             runtime_value(workspace_root),
             runtime_value(tool_cwd),
+            runtime_value(sandbox_cwd),
             runtime_value(shell),
             model_capabilities,
+            runtime_capabilities.web_search,
+            if runtime_capabilities.vision {
+                "available"
+            } else {
+                "unavailable"
+            },
+            if runtime_capabilities.transcription {
+                "available"
+            } else {
+                "unavailable"
+            },
+            if runtime_capabilities.recording {
+                "available"
+            } else {
+                "unavailable"
+            },
+            if runtime_capabilities.tts {
+                "available"
+            } else {
+                "unavailable"
+            },
             context_window,
             limits.max_observation_chars,
             limits.max_tools_per_request.max(1),
@@ -1549,8 +1579,10 @@ mod tests {
         assert!(prompt.contains("[assistant] prior reply"));
         assert!(prompt.contains("Runtime snapshot:"));
         assert!(prompt.contains("tool_default_cwd:"));
+        assert!(prompt.contains("tool_sandbox_cwd:"));
         assert!(prompt.contains("workspace_root:"));
         assert!(prompt.contains("model_capabilities:"));
+        assert!(prompt.contains("runtime_capabilities:"));
         assert!(prompt.contains("context_budget:"));
         assert!(prompt.contains("permissions:"));
         let closer = prompt.find("End of stable instructions.").unwrap();

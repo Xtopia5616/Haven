@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
 use haven_common::config::GENERATED_MEDIA_RETENTION_SECS;
 use haven_common::media::MediaModality;
-use haven_common::prompts::IMAGE_ANALYSIS_SYSTEM_PROMPT;
+use haven_common::prompts::{IMAGE_ANALYSIS_SYSTEM_PROMPT, OCR_SYSTEM_PROMPT};
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
 use serde_json::{Value, json};
@@ -20,7 +20,10 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::document::{MAX_DOCUMENT_BYTES, extract_document_with_cancel, supports_document_path};
-use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolLlmUsage, ToolResult};
+use crate::{
+    ManagedAsset, ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, ToolLlmUsage,
+    ToolResult,
+};
 
 const MAX_FOCUS_CHARS: usize = 2_000;
 
@@ -51,10 +54,17 @@ pub(crate) fn classify_media(asset: &ManagedAsset) -> (MediaModality, &'static s
         return (MediaModality::Audio, "audio");
     }
     if media_type == "application/pdf"
-        || matches!(extension.as_str(), "pdf" | "docx" | "xlsx" | "pptx")
+        || matches!(
+            extension.as_str(),
+            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx"
+        )
         || media_type.contains("wordprocessingml")
         || media_type.contains("spreadsheetml")
         || media_type.contains("presentationml")
+        || matches!(
+            media_type.as_str(),
+            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint"
+        )
     {
         return (MediaModality::Document, "document");
     }
@@ -66,17 +76,51 @@ pub(crate) fn classify_media(asset: &ManagedAsset) -> (MediaModality, &'static s
 
 /// Compact model-facing media reference. Runtime-only lifecycle data (hash,
 /// expiry, source, size and provider provenance) stays in the host and is not
-/// repeated in every tool observation. Derived text has exactly one home: the
-/// selected representation content field.
-pub(crate) fn model_media_reference(
+/// repeated in every tool observation. Every media-producing observation has
+/// the same discovery fields, so the model can choose its next operation
+/// without knowing which producer created the asset.
+pub(crate) fn model_media_reference_with_capabilities(
     asset: &ManagedAsset,
     representation: &str,
     content: Option<&str>,
+    describe_available: bool,
+    transcribe_available: bool,
 ) -> Value {
+    let (modality, file_kind) = classify_media(asset);
+    let mut available_representations = vec!["managed_file_ref"];
+    match modality {
+        MediaModality::Image if describe_available => {
+            available_representations.extend(["image_description", "ocr_text"]);
+        }
+        MediaModality::Audio if transcribe_available => {
+            available_representations.push("transcript");
+        }
+        MediaModality::Document if supports_document_path(&asset.path) => {
+            available_representations.push("document_pages");
+        }
+        _ => {}
+    }
+    if !available_representations.contains(&representation) {
+        available_representations.push(representation);
+    }
+    let recommended_next = match (representation, modality) {
+        ("managed_file_ref", MediaModality::Image) if describe_available => Some("media.describe"),
+        ("managed_file_ref", MediaModality::Audio) if transcribe_available => {
+            Some("media.transcribe")
+        }
+        ("managed_file_ref", MediaModality::Document) if supports_document_path(&asset.path) => {
+            Some("media.extract")
+        }
+        _ => None,
+    };
     let mut media = json!({
         "asset_id": asset.asset_id.clone(),
         "media_type": asset.media_type.clone(),
+        "modality": modality,
+        "file_kind": file_kind,
         "representation": representation,
+        "available_representations": available_representations,
+        "recommended_next": recommended_next,
     });
     if let Some(filename) = asset.filename.as_deref() {
         media["filename"] = json!(filename);
@@ -92,6 +136,7 @@ pub(crate) fn model_media_reference(
 pub enum MediaOperation {
     Inspect,
     Describe,
+    Ocr,
     Transcribe,
     Extract,
 }
@@ -171,12 +216,28 @@ impl MediaTool {
                 "asset_id": asset.asset_id,
                 "modality": modality,
                 "file_kind": file_kind,
-                "media": model_media_reference(&asset, "managed_file_ref", None),
+                "media": self.model_media_reference(&asset, "managed_file_ref", None),
             }))),
             MediaOperation::Describe => self.describe(asset, params.focus, cancel).await,
+            MediaOperation::Ocr => self.ocr(asset, params.focus, cancel).await,
             MediaOperation::Transcribe => self.transcribe(asset, cancel).await,
             MediaOperation::Extract => self.extract(asset, cancel).await,
         }
+    }
+
+    fn model_media_reference(
+        &self,
+        asset: &ManagedAsset,
+        representation: &str,
+        content: Option<&str>,
+    ) -> Value {
+        model_media_reference_with_capabilities(
+            asset,
+            representation,
+            content,
+            self.describe_available,
+            self.transcribe_available,
+        )
     }
 
     async fn read_bounded(
@@ -206,23 +267,62 @@ impl MediaTool {
         focus: Option<String>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.derive_image(
+            asset,
+            focus,
+            cancel,
+            MediaOperation::Describe,
+            IMAGE_ANALYSIS_SYSTEM_PROMPT,
+            "image_description",
+        )
+        .await
+    }
+
+    async fn ocr(
+        &self,
+        asset: ManagedAsset,
+        focus: Option<String>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.derive_image(
+            asset,
+            focus,
+            cancel,
+            MediaOperation::Ocr,
+            OCR_SYSTEM_PROMPT,
+            "ocr_text",
+        )
+        .await
+    }
+
+    async fn derive_image(
+        &self,
+        asset: ManagedAsset,
+        focus: Option<String>,
+        cancel: CancellationToken,
+        operation: MediaOperation,
+        system_prompt: &str,
+        representation: &str,
+    ) -> anyhow::Result<ToolResult> {
         if classify_media(&asset).0 != MediaModality::Image {
-            anyhow::bail!("describe requires an image asset");
+            anyhow::bail!("{} requires an image asset", operation_name(operation));
         }
+        let operation_name = operation_name(operation);
+        let unavailable = self.model_media_reference(&asset, "managed_file_ref", None);
         if !self.describe_available {
             return Ok(ToolResult::ok(json!({
-                "operation": "describe",
+                "operation": operation_name,
                 "asset_id": asset.asset_id,
-                "media": model_media_reference(&asset, "managed_file_ref", None),
+                "media": unavailable,
                 "available": false,
                 "reason": "No vision-capable LLM router is configured.",
             })));
         }
         let Some(router) = self.router.clone() else {
             return Ok(ToolResult::ok(json!({
-                "operation": "describe",
+                "operation": operation_name,
                 "asset_id": asset.asset_id,
-                "media": model_media_reference(&asset, "managed_file_ref", None),
+                "media": unavailable,
                 "available": false,
                 "reason": "No vision-capable LLM router is configured.",
             })));
@@ -231,7 +331,7 @@ impl MediaTool {
             Ok(bytes) => bytes,
             Err(error) => {
                 return Ok(ToolResult::failed(
-                    json!({"operation": "describe", "asset_id": asset.asset_id, "media": model_media_reference(&asset, "managed_file_ref", None)}),
+                    json!({"operation": operation_name, "asset_id": asset.asset_id, "media": unavailable}),
                     error.to_string(),
                 ));
             }
@@ -245,35 +345,36 @@ impl MediaTool {
         let started = std::time::Instant::now();
         let response = match tokio::time::timeout(
             Duration::from_secs(self.timeout_secs),
-            router.analyze_image(
-                &bytes,
-                &asset.media_type,
-                IMAGE_ANALYSIS_SYSTEM_PROMPT,
-                focus.as_deref(),
-            ),
+            router.analyze_image(&bytes, &asset.media_type, system_prompt, focus.as_deref()),
         )
         .await
         {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 return Ok(ToolResult::failed(
-                    json!({"operation": "describe", "asset_id": asset.asset_id, "media": model_media_reference(&asset, "managed_file_ref", None), "available": false}),
+                    json!({"operation": operation_name, "asset_id": asset.asset_id, "media": unavailable, "available": false}),
                     format!("vision call failed: {error}"),
                 ));
             }
             Err(_) => {
-                return Ok(ToolResult::timed_out(
+                let mut result = ToolResult::timed_out(
                     crate::ToolExecutionOutcome::TimedOutUnknown,
                     format!("vision call timed out after {}s", self.timeout_secs),
-                ));
+                );
+                result.output = json!({
+                    "operation": operation_name,
+                    "asset_id": asset.asset_id,
+                    "media": unavailable,
+                });
+                return Ok(result);
             }
         };
         let (text, text_truncated) = bound_text(response.text.trim(), self.max_output_chars);
         let output = json!({
-            "operation": "describe",
+            "operation": operation_name,
             "asset_id": asset.asset_id,
-            "media": model_media_reference(&asset, "image_description", Some(&text)),
-            "representation": "image_description",
+            "media": self.model_media_reference(&asset, representation, Some(&text)),
+            "representation": representation,
             "untrusted_content": true,
         });
         let mut result = if text_truncated {
@@ -303,7 +404,7 @@ impl MediaTool {
             return Ok(ToolResult::ok(json!({
                 "operation": "transcribe",
                 "asset_id": asset.asset_id,
-                "media": model_media_reference(&asset, "managed_file_ref", None),
+                "media": self.model_media_reference(&asset, "managed_file_ref", None),
                 "available": false,
                 "reason": "No speech-to-text LLM router is configured.",
             })));
@@ -312,7 +413,7 @@ impl MediaTool {
             return Ok(ToolResult::ok(json!({
                 "operation": "transcribe",
                 "asset_id": asset.asset_id,
-                "media": model_media_reference(&asset, "managed_file_ref", None),
+                "media": self.model_media_reference(&asset, "managed_file_ref", None),
                 "available": false,
                 "reason": "No speech-to-text LLM router is configured.",
             })));
@@ -329,22 +430,28 @@ impl MediaTool {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
                 return Ok(ToolResult::failed(
-                    json!({"operation": "transcribe", "asset_id": asset.asset_id, "media": model_media_reference(&asset, "managed_file_ref", None), "available": false}),
+                    json!({"operation": "transcribe", "asset_id": asset.asset_id, "media": self.model_media_reference(&asset, "managed_file_ref", None), "available": false}),
                     format!("transcription failed: {error}"),
                 ));
             }
             Err(_) => {
-                return Ok(ToolResult::timed_out(
+                let mut tool_result = ToolResult::timed_out(
                     crate::ToolExecutionOutcome::TimedOutUnknown,
                     format!("transcription timed out after {}s", self.timeout_secs),
-                ));
+                );
+                tool_result.output = json!({
+                    "operation": "transcribe",
+                    "asset_id": asset.asset_id,
+                    "media": self.model_media_reference(&asset, "managed_file_ref", None),
+                });
+                return Ok(tool_result);
             }
         };
         let (text, text_truncated) = bound_text(result.text.trim(), self.max_output_chars);
         let output = json!({
             "operation": "transcribe",
             "asset_id": asset.asset_id,
-            "media": model_media_reference(&asset, "transcript", Some(&text)),
+            "media": self.model_media_reference(&asset, "transcript", Some(&text)),
             "representation": "transcript",
             "untrusted_content": true,
         });
@@ -390,7 +497,7 @@ impl MediaTool {
         let output = json!({
             "operation": "extract",
             "asset_id": asset.asset_id,
-            "media": model_media_reference(&asset, representation, Some(&text)),
+            "media": self.model_media_reference(&asset, representation, Some(&text)),
             "representation": representation,
             "format": format.as_str(),
             "untrusted_content": true,
@@ -408,6 +515,16 @@ fn bound_text(text: &str, max_chars: usize) -> (String, bool) {
     (bounded, text.chars().count() > max_chars)
 }
 
+fn operation_name(operation: MediaOperation) -> &'static str {
+    match operation {
+        MediaOperation::Inspect => "inspect",
+        MediaOperation::Describe => "describe",
+        MediaOperation::Ocr => "ocr",
+        MediaOperation::Transcribe => "transcribe",
+        MediaOperation::Extract => "extract",
+    }
+}
+
 #[async_trait]
 impl Tool for MediaTool {
     fn name(&self) -> String {
@@ -415,14 +532,23 @@ impl Tool for MediaTool {
     }
 
     fn description(&self) -> String {
-        "Operate on managed multimodal assets by asset_id: inspect metadata, describe images with vision, transcribe audio, or extract text/tables from supported documents. Use the asset_id returned by attachments or other media-producing tools; host paths and base64 are never accepted.".into()
+        "Operate on managed multimodal assets by asset_id: inspect metadata, describe or OCR images with vision, transcribe audio, or extract text/tables from supported documents. Use the asset_id returned by attachments or other media-producing tools; host paths and base64 are never accepted.".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
+            Some("ocr") => RiskLevel::High,
             Some("describe") | Some("transcribe") => RiskLevel::Medium,
             Some("extract") | Some("inspect") => RiskLevel::Low,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn idempotency(&self, input: &Value) -> OperationIdempotency {
+        match input["operation"].as_str() {
+            Some("inspect") | Some("describe") | Some("ocr") | Some("transcribe")
+            | Some("extract") => OperationIdempotency::Idempotent,
+            _ => OperationIdempotency::Unknown,
         }
     }
 
@@ -440,7 +566,7 @@ impl Tool for MediaTool {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "operation": {"type": "string", "enum": ["inspect", "describe", "transcribe", "extract"]},
+                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract"]},
                 "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"},
                 "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}
             },
@@ -448,12 +574,14 @@ impl Tool for MediaTool {
             "oneOf": [
                 {"properties": {"operation": {"const": "inspect"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
                 {"properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
+                {"properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
                 {"properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
                 {"properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]}
             ]
         });
         let unavailable = [
             ("describe", self.describe_available),
+            ("ocr", self.describe_available),
             ("transcribe", self.transcribe_available),
         ];
         if let Some(operations) = schema["properties"]["operation"]
@@ -526,6 +654,55 @@ pub(crate) fn register_generated_asset(
     registry
         .resolve(&asset_id)
         .ok_or_else(|| anyhow::anyhow!("generated media asset disappeared after registration"))
+}
+
+/// Register a host-selected file as a short-lived media source. This is the
+/// producer half of `files.read` for rich files: the path is accepted only at
+/// the trusted filesystem boundary and the model receives the resulting
+/// opaque id instead.
+pub(crate) fn register_path_asset(
+    registry: &ManagedAssetRegistry,
+    session_id: Option<&str>,
+    path: &Path,
+    media_type: &str,
+    filename: Option<String>,
+    size_bytes: u64,
+) -> anyhow::Result<ManagedAsset> {
+    let root = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("media source has no managed parent"))?;
+    let asset_id = haven_common::types::new_id("asset");
+    let expires_at = Utc::now() + ChronoDuration::seconds(GENERATED_MEDIA_RETENTION_SECS as i64);
+    let registered = if let Some(session_id) = session_id.filter(|id| !id.trim().is_empty()) {
+        registry.register_under_root_for_session_with_metadata(
+            session_id,
+            root,
+            asset_id.clone(),
+            path.to_path_buf(),
+            filename,
+            media_type.to_string(),
+            None,
+            Some(size_bytes),
+            Some(expires_at),
+        )
+    } else {
+        registry.register_under_root_with_metadata(
+            root,
+            asset_id.clone(),
+            path.to_path_buf(),
+            filename,
+            media_type.to_string(),
+            None,
+            Some(size_bytes),
+            Some(expires_at),
+        )
+    };
+    if !registered {
+        anyhow::bail!("failed to register media source");
+    }
+    registry
+        .resolve(&asset_id)
+        .ok_or_else(|| anyhow::anyhow!("media source disappeared after registration"))
 }
 
 #[cfg(test)]
@@ -602,7 +779,13 @@ mod tests {
         let root = TempDir::new().unwrap();
         let (registry, asset_id) = registered_asset(root.path(), "photo.png", "image/png");
         let asset = registry.resolve(&asset_id).unwrap();
-        let output = model_media_reference(&asset, "image_description", Some("same text"));
+        let output = model_media_reference_with_capabilities(
+            &asset,
+            "image_description",
+            Some("same text"),
+            true,
+            true,
+        );
         let serialized = serde_json::to_string(&output).unwrap();
         assert_eq!(serialized.matches("same text").count(), 1);
         assert!(!serialized.contains("content_hash"));
@@ -657,9 +840,14 @@ mod tests {
         .unwrap();
         assert!(asset.asset_id.starts_with("asset-"));
         assert!(asset.expires_at.is_some());
-        let serialized =
-            serde_json::to_string(&model_media_reference(&asset, "managed_file_ref", None))
-                .unwrap();
+        let serialized = serde_json::to_string(&model_media_reference_with_capabilities(
+            &asset,
+            "managed_file_ref",
+            None,
+            true,
+            true,
+        ))
+        .unwrap();
         assert!(!serialized.contains(&path.to_string_lossy().to_string()));
         assert!(serialized.contains("screenshot.png"));
     }

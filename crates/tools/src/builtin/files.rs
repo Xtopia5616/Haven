@@ -12,16 +12,18 @@ use tokio_util::sync::CancellationToken;
 
 use super::file_outline;
 use super::file_search::FileSearchEngine;
-use super::media::{MediaOperation, MediaParams, MediaTool, classify_media};
-use crate::document::{
-    DocumentExtraction, MAX_DOCUMENT_BYTES, extract_document_with_cancel, supports_document_path,
+use super::media::{
+    MediaOperation, MediaParams, MediaTool, classify_media,
+    model_media_reference_with_capabilities, register_path_asset,
 };
-use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolLlmUsage, ToolResult};
+use crate::{
+    ManagedAsset, ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, ToolLlmUsage,
+    ToolResult,
+};
 
 const MAX_SUMMARY_FOCUS_CHARS: usize = 2_000;
 const UNTRUSTED_DOCUMENT_START: &str = "【附件派生内容开始";
 const UNTRUSTED_DOCUMENT_END: &str = "【附件派生内容结束】";
-
 /// Classify a file by its extension into a coarse kind used to route binary
 /// reads. Returns `(kind, mime)` where kind is one of: image, pdf, archive,
 /// office, audio, video, executable, or unknown.
@@ -72,6 +74,26 @@ fn sanitize_path(path: &str) -> anyhow::Result<String> {
         anyhow::bail!("path traversal detected: '{}'", path);
     }
     Ok(normalized.to_string_lossy().to_string())
+}
+
+/// Resolve a relative model path against the detected repository root. The
+/// shell/files tools still use the shared Temp directory as their fallback;
+/// explicit absolute paths and managed asset paths are never rewritten.
+fn resolve_workspace_path(path: &str) -> anyhow::Result<String> {
+    let sanitized = sanitize_path(path)?;
+    if sanitized.trim().is_empty() {
+        anyhow::bail!("path is required");
+    }
+    let path = Path::new(&sanitized);
+    if path.is_absolute() {
+        return Ok(sanitized);
+    }
+    let current = std::env::current_dir().unwrap_or_default();
+    Ok(haven_common::discover_workspace_root(&current)
+        .map(|root| root.join(path))
+        .unwrap_or_else(|| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// NUL byte in the first sample bytes is a strong binary indicator.
@@ -155,6 +177,46 @@ fn redact_managed_file_result(result: &mut ToolResult, asset: &ManagedAsset) {
     }
 }
 
+fn media_operation_for(asset: &ManagedAsset) -> Option<MediaOperation> {
+    match classify_media(asset).0 {
+        haven_common::media::MediaModality::Image => Some(MediaOperation::Describe),
+        haven_common::media::MediaModality::Audio => Some(MediaOperation::Transcribe),
+        haven_common::media::MediaModality::Document => Some(MediaOperation::Extract),
+        _ => None,
+    }
+}
+
+/// Rich filesystem inputs become managed sources before any information is
+/// requested. This preserves the user's explicit path at the host boundary,
+/// while the model only receives the opaque asset id and the media handoff.
+async fn register_rich_path_asset(
+    registry: &ManagedAssetRegistry,
+    session_id: Option<&str>,
+    path: &str,
+) -> anyhow::Result<Option<ManagedAsset>> {
+    let (kind, media_type) = classify_by_extension(path);
+    if !matches!(kind, "image" | "audio" | "pdf" | "office") {
+        return Ok(None);
+    }
+    let canonical = tokio::fs::canonicalize(path).await?;
+    let metadata = tokio::fs::metadata(&canonical).await?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let filename = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
+    Ok(Some(register_path_asset(
+        registry,
+        session_id,
+        &canonical,
+        media_type,
+        filename,
+        metadata.len(),
+    )?))
+}
+
 /// Read a text file in full. Multimodal path inputs are deliberately treated
 /// as binary; managed media must enter through the `media(asset_id)` tool.
 /// Refuses files larger than `max_read_chars` and reads only what the output
@@ -165,10 +227,10 @@ async fn read_full(
     max_read_chars: u64,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    let (kind, _mime) = classify_by_extension(path);
-    if matches!(kind, "pdf" | "office") {
-        return extract_document_result(path, max_chars, cancel).await;
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
     }
+    let (kind, _mime) = classify_by_extension(path);
     let meta = tokio::fs::metadata(path).await?;
     let size = meta.len();
     if matches!(kind, "image" | "audio") {
@@ -321,88 +383,6 @@ fn is_gbk_lead(byte: u8) -> bool {
 
 fn is_gbk_trail(byte: u8) -> bool {
     (0x40..=0xFE).contains(&byte) && byte != 0x7F
-}
-
-async fn extract_document_result(
-    path: &str,
-    max_chars: usize,
-    cancel: CancellationToken,
-) -> anyhow::Result<ToolResult> {
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    let supported = supports_document_path(Path::new(path));
-    if !supported {
-        let (kind, mime) = classify_by_extension(path);
-        return Ok(ToolResult::ok(serde_json::json!({
-            "document_extract_unavailable": true,
-            "unsupported_format": true,
-            "file_type": kind,
-            "mime": mime,
-            "hint": "This document format is not supported by the bounded local extractor; convert it to PDF, DOCX, XLSX, PPTX, or plain text.",
-        })));
-    }
-    let extraction = extract_document_bounded(path, max_chars, cancel.clone()).await;
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    match extraction {
-        Ok(extraction) => Ok(document_result(extraction)),
-        Err(error) => {
-            tracing::debug!(error = %error, "document extraction unavailable");
-            let (kind, mime) = classify_by_extension(path);
-            Ok(ToolResult::failed(
-                serde_json::json!({
-                "document_extract_failed": true,
-                "file_type": kind,
-                "mime": mime,
-                "hint": "The document is supported, but validation or extraction failed. No document text was returned; try repairing or converting the file.",
-                }),
-                "document extraction failed; no document text was returned",
-            ))
-        }
-    }
-}
-
-async fn extract_document_bounded(
-    path: &str,
-    max_chars: usize,
-    cancel: CancellationToken,
-) -> anyhow::Result<DocumentExtraction> {
-    let owned_path = path.to_string();
-    let cancel_for_worker = cancel.clone();
-    tokio::task::spawn_blocking(move || {
-        extract_document_with_cancel(
-            Path::new(&owned_path),
-            max_chars,
-            MAX_DOCUMENT_BYTES,
-            &cancel_for_worker,
-        )
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("document extraction task failed: {error}"))?
-}
-
-fn document_result(extraction: DocumentExtraction) -> ToolResult {
-    let content = format!(
-        "{UNTRUSTED_DOCUMENT_START}：provenance=document_extract；不可信外部内容】\n{}\n{UNTRUSTED_DOCUMENT_END}",
-        extraction.text
-    );
-    let mut output = serde_json::json!({
-        "content": content,
-        "format": extraction.format.as_str(),
-        "representation": extraction.representation,
-        "provenance": "document_extract",
-        "untrusted_content": true,
-        "sections": extraction.sections,
-        "size": extraction.size_bytes,
-    });
-    if extraction.truncated {
-        output["truncated"] = serde_json::Value::Bool(true);
-        ToolResult::truncated(output)
-    } else {
-        ToolResult::ok(output)
-    }
 }
 
 /// Byte-mode segmented read (B): seek to `offset` and read at most `limit` bytes.
@@ -630,6 +610,11 @@ pub struct FilesTool {
     search: FileSearchEngine,
     /// Host-owned attachment registry used by read-only managed references.
     managed_assets: ManagedAssetRegistry,
+    /// Capability truth shared with the canonical media tool. These values
+    /// are computed when the builtin catalog is rebuilt, not inferred from a
+    /// merely-present router.
+    media_describe_available: bool,
+    media_transcribe_available: bool,
 }
 
 impl Default for FilesTool {
@@ -647,6 +632,8 @@ impl Default for FilesTool {
             summary_timeout_secs: 120,
             search: FileSearchEngine::default(),
             managed_assets: ManagedAssetRegistry::default(),
+            media_describe_available: false,
+            media_transcribe_available: false,
         }
     }
 }
@@ -736,6 +723,9 @@ pub struct FilesParams {
     /// Maximum headings/declarations returned by the outline operation.
     #[serde(default)]
     pub max_symbols: Option<u64>,
+    /// Private current-session context injected by `ToolsManager`.
+    #[serde(rename = "_session_id", default, skip_serializing)]
+    pub(crate) session_id: Option<String>,
 }
 
 impl FilesTool {
@@ -767,7 +757,19 @@ impl FilesTool {
             summary_timeout_secs,
             search,
             managed_assets,
+            media_describe_available: false,
+            media_transcribe_available: false,
         }
+    }
+
+    pub(crate) fn with_media_capabilities(
+        mut self,
+        describe_available: bool,
+        transcribe_available: bool,
+    ) -> Self {
+        self.media_describe_available = describe_available;
+        self.media_transcribe_available = transcribe_available;
+        self
     }
 
     /// Entry ①: structured native interface (internal code calls — zero
@@ -778,8 +780,17 @@ impl FilesTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let op = params.operation.unwrap_or(FilesOperation::Read);
-        let search_root = params.root.clone();
-        let managed_asset = if let Some(asset_id) = params.asset_id.as_deref() {
+        let search_root = params
+            .root
+            .as_deref()
+            .map(resolve_workspace_path)
+            .transpose()?;
+        let requested_path = params
+            .path
+            .as_deref()
+            .map(resolve_workspace_path)
+            .transpose()?;
+        let mut managed_asset = if let Some(asset_id) = params.asset_id.as_deref() {
             if params.path.is_some() {
                 anyhow::bail!("provide either asset_id or path, not both");
             }
@@ -794,11 +805,19 @@ impl FilesTool {
         } else {
             None
         };
-        let path = managed_asset
+        let mut path = managed_asset
             .as_ref()
             .map(|asset| asset.path.to_string_lossy().into_owned())
             .map(Ok)
-            .unwrap_or_else(|| sanitize_path(params.path.as_deref().unwrap_or_default()))?;
+            .unwrap_or_else(|| {
+                if op == FilesOperation::Search {
+                    Ok(String::new())
+                } else {
+                    requested_path
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("path is required"))
+                }
+            })?;
         let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
@@ -810,32 +829,46 @@ impl FilesTool {
             anyhow::bail!("managed asset changed or is no longer inside its managed root");
         }
 
-        // Managed binary media has one canonical agent-facing entry point.
-        // Keep filesystem reads focused on text; the media tool owns the
-        // representation derivation and returns a compact media reference.
-        if op == FilesOperation::Read
-            && params.start_line.is_none()
-            && params.end_line.is_none()
-            && params.offset.is_none()
-            && params.limit.is_none()
-            && let Some(asset) = managed_asset.as_ref()
-            && matches!(
-                classify_media(asset),
-                (haven_common::media::MediaModality::Image, _)
-                    | (haven_common::media::MediaModality::Audio, _)
-            )
+        // A rich path is a producer boundary: register it once, then send the
+        // model through the same media consumer used by attachments and
+        // window/audio producers. This also makes `files.summary` obey the
+        // same rule instead of secretly extracting a document itself.
+        if managed_asset.is_none()
+            && matches!(op, FilesOperation::Read | FilesOperation::Summary)
+            && let Some(requested_path) = requested_path.as_deref()
         {
-            let operation = match classify_media(asset).0 {
-                haven_common::media::MediaModality::Image => MediaOperation::Describe,
-                haven_common::media::MediaModality::Audio => MediaOperation::Transcribe,
-                _ => unreachable!("media dispatch was guarded by modality"),
-            };
-            let result = MediaTool::new(
+            managed_asset = register_rich_path_asset(
+                &self.managed_assets,
+                params.session_id.as_deref(),
+                requested_path,
+            )
+            .await?;
+            if let Some(asset) = managed_asset.as_ref() {
+                path = asset.path.to_string_lossy().into_owned();
+            }
+        }
+
+        if matches!(op, FilesOperation::Read | FilesOperation::Summary)
+            && let Some(asset) = managed_asset.as_ref()
+            && let Some(operation) = media_operation_for(asset)
+        {
+            let media = model_media_reference_with_capabilities(
+                asset,
+                "managed_file_ref",
+                None,
+                self.media_describe_available,
+                self.media_transcribe_available,
+            );
+            let operation_result = MediaTool::new(
                 self.summarizer.clone(),
                 self.managed_assets.clone(),
                 self.vision_max_bytes,
                 self.summary_timeout_secs,
                 self.max_output_chars,
+            )
+            .with_capabilities(
+                self.media_describe_available,
+                self.media_transcribe_available,
             )
             .run(
                 MediaParams {
@@ -845,13 +878,22 @@ impl FilesTool {
                 },
                 cancel,
             )
-            .await?;
-            return Ok(annotate_file_result(
-                result,
-                FilesOperation::Read,
-                None,
-                None,
-            ));
+            .await;
+            let mut result = match operation_result {
+                Ok(result) => result,
+                Err(error) => ToolResult::failed(
+                    serde_json::json!({
+                        "asset_id": asset.asset_id,
+                        "media": media,
+                        "media_operation": operation,
+                        "available": false,
+                    }),
+                    format!("media operation failed: {error}"),
+                ),
+            };
+            result = annotate_file_result(result, op, None, None);
+            redact_managed_file_result(&mut result, asset);
+            return Ok(result);
         }
 
         let operation_result: anyhow::Result<ToolResult> = match op {
@@ -970,7 +1012,7 @@ impl FilesTool {
                 ))
             }
             FilesOperation::Copy => {
-                let dest = sanitize_path(&params.destination.unwrap_or_default())?;
+                let dest = resolve_workspace_path(&params.destination.unwrap_or_default())?;
                 tokio::fs::copy(&path, &dest).await?;
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
@@ -980,7 +1022,7 @@ impl FilesTool {
                 ))
             }
             FilesOperation::Move => {
-                let dest = sanitize_path(&params.destination.unwrap_or_default())?;
+                let dest = resolve_workspace_path(&params.destination.unwrap_or_default())?;
                 match tokio::fs::rename(&path, &dest).await {
                     Ok(()) => {}
                     // Cross-device rename (e.g. C: → D:) fails with EXDEV;
@@ -1063,7 +1105,10 @@ impl FilesTool {
             FilesOperation::Search => {
                 // The search engine keeps its own (Value-based) input contract;
                 // rebuild it from the typed params so it reads the same fields.
-                let search_input = serde_json::to_value(params.clone())?;
+                let mut search_input = serde_json::to_value(params.clone())?;
+                if let Some(root) = search_root.as_deref() {
+                    search_input["root"] = Value::String(root.into());
+                }
                 self.search.search(search_input, cancel).await
             }
         };
@@ -1095,7 +1140,11 @@ impl Tool for FilesTool {
         "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, create directories, edit, copy, move, delete, list, outline, summarize, or search files. Managed images and audio are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
+        "Read, write, create directories, edit, copy, move, delete, list, outline, summarize, or search files. Managed images, audio, PDFs, and Office documents are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
+    }
+
+    fn requires_session_id(&self) -> bool {
+        true
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -1106,6 +1155,17 @@ impl Tool for FilesTool {
             }
             Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn idempotency(&self, input: &Value) -> OperationIdempotency {
+        match input["operation"].as_str() {
+            Some("read") | Some("list") | Some("outline") | Some("summary") | Some("search") => {
+                OperationIdempotency::Idempotent
+            }
+            Some("write") | Some("create_dir") | Some("edit") | Some("copy") | Some("move")
+            | Some("delete") => OperationIdempotency::NonIdempotent,
+            _ => OperationIdempotency::Unknown,
         }
     }
 
@@ -1250,10 +1310,9 @@ impl Tool for FilesTool {
     }
 }
 
-/// Summarize a file (or a `start_line`..=`end_line` range) using the
-/// `small_model` endpoint. Plain text is read line-streamed; supported rich
-/// documents go through the bounded document extractor. In both cases the
-/// resulting content is treated as untrusted data before the LLM call.
+/// Summarize a plain-text file (or a `start_line`..=`end_line` range) using the
+/// `small_model` endpoint. Rich sources have already been handed to
+/// `media.*` by `FilesTool::run`; this function only handles text.
 #[allow(clippy::too_many_arguments)]
 async fn summarize(
     path: &str,
@@ -1285,20 +1344,7 @@ async fn summarize(
         anyhow::bail!("cancelled");
     }
 
-    let (kind, mime) = classify_by_extension(path);
-    let is_rich_document = matches!(kind, "pdf" | "office");
-    if is_rich_document && !supports_document_path(Path::new(path)) {
-        return Ok(ToolResult::ok(serde_json::json!({
-            "summary_unavailable": true,
-            "unsupported_format": true,
-            "path": path,
-            "file_type": kind,
-            "mime": mime,
-            "reason": "This document format is not supported by the bounded local extractor.",
-        })));
-    }
-
-    let source = match read_summary_source(
+    let source = read_summary_source(
         path,
         start_line,
         end_line,
@@ -1306,27 +1352,7 @@ async fn summarize(
         max_line_chars,
         cancel.clone(),
     )
-    .await
-    {
-        Ok(source) => source,
-        Err(error) if is_rich_document => {
-            if cancel.is_cancelled() {
-                anyhow::bail!("cancelled");
-            }
-            tracing::debug!(error = %error, "document extraction unavailable for summary");
-            return Ok(ToolResult::failed(
-                serde_json::json!({
-                    "document_extract_failed": true,
-                    "path": path,
-                    "file_type": kind,
-                    "mime": mime,
-                    "reason": "The document is supported, but validation or extraction failed. No document text was sent to the summarizer.",
-                }),
-                "document extraction failed; no document text was sent to the summarizer",
-            ));
-        }
-        Err(error) => return Err(error),
-    };
+    .await?;
 
     if source.content.is_empty() {
         return Ok(ToolResult::ok(serde_json::json!({
@@ -1429,21 +1455,9 @@ async fn read_summary_source(
     max_line_chars: usize,
     cancel: CancellationToken,
 ) -> anyhow::Result<SummaryInput> {
-    let (kind, _) = classify_by_extension(path);
-    if matches!(kind, "pdf" | "office") {
-        let extraction = extract_document_bounded(path, input_budget, cancel).await?;
-        let (content, actual_start, actual_end, line_truncated) =
-            select_summary_lines(&extraction.text, start_line, end_line, input_budget);
-        return Ok(SummaryInput {
-            content,
-            actual_start,
-            actual_end,
-            size: extraction.size_bytes,
-            truncated: extraction.truncated || line_truncated,
-            provenance: "document_extract",
-        });
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
     }
-
     let (content, actual_start, actual_end, size, truncated) =
         read_for_summary(path, start_line, end_line, input_budget, max_line_chars).await?;
     Ok(SummaryInput {
@@ -1454,48 +1468,6 @@ async fn read_summary_source(
         truncated,
         provenance: "file_read",
     })
-}
-
-/// Select a line range from already-decoded document text using the same
-/// character budget as plain-text summary input. This is intentionally separate
-/// from `truncate_output`, whose legacy contract is byte-based.
-fn select_summary_lines(
-    text: &str,
-    start_line: u64,
-    end_line: u64,
-    max_chars: usize,
-) -> (String, u64, u64, bool) {
-    let mut output = String::new();
-    let mut current = 1u64;
-    let mut last_line = 0u64;
-    let mut used_chars = 0usize;
-    let mut truncated = false;
-
-    for line in text.split_inclusive('\n') {
-        if current < start_line {
-            current += 1;
-            continue;
-        }
-        if end_line > 0 && current > end_line {
-            break;
-        }
-        let line_chars = line.chars().count();
-        if used_chars.saturating_add(line_chars) > max_chars {
-            truncated = true;
-            break;
-        }
-        output.push_str(line);
-        used_chars += line_chars;
-        last_line = current;
-        current += 1;
-    }
-
-    (
-        output,
-        start_line,
-        if last_line > 0 { last_line } else { start_line },
-        truncated,
-    )
 }
 
 fn cap_chars(text: &str, max_chars: usize) -> (String, bool) {
@@ -1626,6 +1598,32 @@ mod tests {
     }
 
     #[test]
+    fn files_retry_safety_separates_reads_from_mutations() {
+        let tool = FilesTool::default();
+        assert_eq!(
+            tool.idempotency(&json!({"operation": "summary"})),
+            OperationIdempotency::Idempotent
+        );
+        assert_eq!(
+            tool.idempotency(&json!({"operation": "search"})),
+            OperationIdempotency::Idempotent
+        );
+        assert_eq!(
+            tool.idempotency(&json!({"operation": "write"})),
+            OperationIdempotency::NonIdempotent
+        );
+        assert_eq!(tool.idempotency(&json!({})), OperationIdempotency::Unknown);
+    }
+
+    #[test]
+    fn relative_file_paths_use_workspace_root_when_available() {
+        let resolved = resolve_workspace_path("docs/architecture.md").unwrap();
+        let current = std::env::current_dir().unwrap();
+        let root = haven_common::discover_workspace_root(&current).unwrap();
+        assert_eq!(Path::new(&resolved), root.join("docs/architecture.md"));
+    }
+
+    #[test]
     fn test_classify_by_extension_image() {
         let (kind, mime) = classify_by_extension("photo.PNG");
         assert_eq!(kind, "image");
@@ -1658,7 +1656,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_path_media_read_stays_binary_without_llm_dispatch() {
+    async fn test_path_media_read_hands_off_to_media_without_host_path() {
         let tmp = TempDir::new().unwrap();
         let image = tmp.path().join("img.png");
         let audio = tmp.path().join("recording.wav");
@@ -1675,7 +1673,15 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(result.output["binary"], serde_json::json!(true));
+            assert!(result.success);
+            assert!(result.output["asset_id"].as_str().is_some());
+            assert!(result.output["media"]["asset_id"].as_str().is_some());
+            assert!(result.output["media"]["available_representations"].is_array());
+            assert!(
+                !serde_json::to_string(&result.output)
+                    .unwrap()
+                    .contains(&tmp.path().to_string_lossy().to_string())
+            );
             assert!(result.llm_usage.is_empty());
         }
     }
@@ -2552,7 +2558,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_managed_pdf_read_returns_fenced_derived_text() {
+    async fn test_managed_pdf_read_uses_media_extract_and_redacts_host_path() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("report.pdf");
         let body = b"BT\n(Quarterly report) Tj\nET\n";
@@ -2579,9 +2585,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let content = result.output["content"].as_str().unwrap();
+        let content = result.output["media"]["content"].as_str().unwrap();
         assert!(content.contains("Quarterly report"));
-        assert!(content.contains("provenance=document_extract"));
+        assert!(content.contains("Quarterly report"));
         assert_eq!(result.output["representation"], "document_pages");
         assert_eq!(result.output["untrusted_content"], true);
         assert!(
@@ -2608,7 +2614,9 @@ mod tests {
             .unwrap();
 
         assert!(!result.success);
-        assert_eq!(result.output["document_extract_failed"], true);
+        assert!(result.output["asset_id"].as_str().is_some());
+        assert!(result.output["media"]["asset_id"].as_str().is_some());
+        assert!(result.output["media_operation"].as_str().is_some());
         assert!(result.error.is_some());
     }
 
@@ -2628,14 +2636,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.success);
-        assert_eq!(result.output["document_extract_unavailable"], true);
-        assert_eq!(result.output["unsupported_format"], true);
-        assert!(result.output.get("document_extract_failed").is_none());
+        assert!(!result.success);
+        assert!(result.output["asset_id"].as_str().is_some());
+        assert!(result.output["media"]["asset_id"].as_str().is_some());
+        assert!(result.error.is_some());
     }
 
     #[tokio::test]
-    async fn test_summary_uses_bounded_document_extraction() {
+    async fn test_summary_rich_path_hands_off_to_media() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("report.pdf");
         let body = b"BT\n(Extracted summary source) Tj\nET\n";
@@ -2645,18 +2653,23 @@ mod tests {
         bytes.extend_from_slice(b"endstream\nendobj\n");
         tokio::fs::write(&file, bytes).await.unwrap();
 
-        let source = read_summary_source(
-            &file.to_string_lossy(),
-            1,
-            0,
-            1_000,
-            128_000,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(source.provenance, "document_extract");
-        assert!(source.content.contains("Extracted summary source"));
+        let result = FilesTool::default()
+            .execute(
+                json!({"operation": "summary", "path": file.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["operation"], "summary");
+        assert!(result.output["asset_id"].as_str().is_some());
+        assert_eq!(result.output["media"]["representation"], "document_pages");
+        assert!(
+            result.output["media"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Extracted summary source")
+        );
     }
 
     #[tokio::test]
@@ -2707,6 +2720,7 @@ mod tests {
                     ignore_hidden: None,
                     max_file_size: None,
                     max_symbols: None,
+                    session_id: None,
                 },
                 CancellationToken::new(),
             )

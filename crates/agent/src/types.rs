@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use haven_common::media::{MediaInput, MediaInputStrategy, legacy_attachment_to_media_input};
+use haven_common::media::{
+    MediaAssetSource, MediaInput, MediaInputStrategy, legacy_attachment_to_media_input,
+};
+use haven_common::text::sanitize_prompt_field;
 use haven_common::types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
     MessageAttachment,
@@ -390,15 +393,14 @@ pub fn project_transcript_with_strategy(
             } => {
                 let mut content = vec![ContentPart::text(text.clone())];
                 if media_inputs.is_empty() {
-                    content.extend(
-                        attachments
-                            .iter()
-                            .map(|attachment| attachment_to_content_part(attachment, strategy)),
-                    );
+                    for attachment in attachments {
+                        let input = legacy_attachment_to_media_input(attachment);
+                        append_media_projection(&mut content, &input, strategy);
+                    }
                 } else {
-                    content.extend(media_inputs.iter().map(|input| {
-                        crate::react::media_input_to_content_part_with_strategy(input, strategy)
-                    }));
+                    for input in media_inputs {
+                        append_media_projection(&mut content, input, strategy);
+                    }
                 }
                 canonical.push(CanonicalMessage::user_with_source(content, *source));
             }
@@ -411,12 +413,36 @@ pub fn project_transcript_with_strategy(
     (canonical, rounds)
 }
 
-fn attachment_to_content_part(
-    att: &MessageAttachment,
+pub(crate) fn append_media_projection(
+    content: &mut Vec<ContentPart>,
+    input: &MediaInput,
     strategy: MediaInputStrategy,
-) -> ContentPart {
-    // Single helper shared with the live ReAct path.
-    crate::react::attachment_to_content_part_with_strategy(att, strategy)
+) {
+    let projected = crate::react::media_input_to_content_part_with_strategy(input, strategy);
+    let representation = match projected {
+        ContentPart::Image { .. } => Some("raw_image"),
+        ContentPart::Audio { .. } => Some("raw_audio"),
+        ContentPart::Text(_) => None,
+    };
+    content.push(projected);
+
+    // Raw provider parts intentionally do not carry host metadata. Keep the
+    // stable asset handle visible in the same user request as a compact,
+    // app-generated notice so a later derivation can use media(asset_id=...)
+    // without guessing whether the image/audio was already projected.
+    if let Some(representation) = representation
+        && matches!(
+            input.asset.source,
+            MediaAssetSource::UserAttachment
+                | MediaAssetSource::Generated
+                | MediaAssetSource::ToolOutput
+        )
+    {
+        let asset_id = sanitize_prompt_field(&input.asset.asset_id, 96);
+        content.push(ContentPart::text(format!(
+            "[media_plan: {asset_id} -> {representation}; this representation is already in the request; use media(asset_id={asset_id}) for another representation]"
+        )));
+    }
 }
 
 /// Remove inline media bytes from a canonical compaction root before it is
@@ -431,14 +457,15 @@ pub(crate) fn canonical_for_snapshot(messages: &[CanonicalMessage]) -> Vec<Canon
             message.content = message
                 .content
                 .into_iter()
-                .map(|part| match part {
-                    ContentPart::Text(text) => ContentPart::Text(text),
-                    ContentPart::Image { media_type, .. } => ContentPart::text(format!(
+                .filter_map(|part| match part {
+                    ContentPart::Text(text) if text.starts_with("[media_plan: ") => None,
+                    ContentPart::Text(text) => Some(ContentPart::Text(text)),
+                    ContentPart::Image { media_type, .. } => Some(ContentPart::text(format!(
                         "[managed image omitted from snapshot; media_type={media_type}]"
-                    )),
-                    ContentPart::Audio { media_type, .. } => ContentPart::text(format!(
+                    ))),
+                    ContentPart::Audio { media_type, .. } => Some(ContentPart::text(format!(
                         "[managed audio omitted from snapshot; media_type={media_type}]"
-                    )),
+                    ))),
                 })
                 .collect();
             message

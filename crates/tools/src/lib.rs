@@ -20,7 +20,7 @@ pub mod util;
 use chrono::{DateTime, Utc};
 use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
 use haven_common::types::{MessageAttachment, PermissionMode, RiskLevel, ShellChoice};
-use haven_llm::LlmRouter;
+use haven_llm::{EndpointRole, LlmRouter};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -35,6 +35,20 @@ use tokio_util::sync::CancellationToken;
 /// cannot drift apart.
 fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bool {
     settings.get(name).map(|c| c.enabled).unwrap_or(true)
+}
+
+/// Live capabilities that affect both the model-facing operation schemas and
+/// the runtime snapshot. These values describe usable routes, not merely
+/// configured model slots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeCapabilities {
+    pub vision: bool,
+    pub transcription: bool,
+    pub recording: bool,
+    pub tts: bool,
+    /// `provider` when built-in provider search is enabled; otherwise a
+    /// user-facing unavailable explanation that names the missing paths.
+    pub web_search: String,
 }
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
@@ -530,6 +544,52 @@ impl ToolsManager {
     /// so prompt assembly can report the same capability state.
     pub async fn tts_configured(&self) -> bool {
         self.tts_client.read().await.is_some()
+    }
+
+    /// Return the same live capability decisions used while rebuilding the
+    /// builtin catalog. Keeping this at the manager boundary prevents the
+    /// prompt snapshot from advertising a role that the tool schema removed.
+    pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
+        let router = self.router.read().await.clone();
+        let (vision, transcription) = builtin::resolve_media_capabilities(router.as_ref()).await;
+        let audio_pipeline = self.audio_pipeline.read().await.clone();
+        // Capturing and transcribing are separate capabilities: a recording
+        // must remain available even when STT is temporarily unconfigured so
+        // it can still produce an asset for a later `media.transcribe` call.
+        let recording = audio_pipeline.is_some();
+        let tts = self.tts_client.read().await.is_some();
+        let mcp_search_available = self
+            .build_mcp_index()
+            .await
+            .iter()
+            .any(mcp_index_entry_has_search_tool);
+        let web_search = match router.as_ref() {
+            Some(router) => {
+                let config = router.config().await;
+                let endpoint = config.endpoint(EndpointRole::DefaultModel);
+                let style = haven_llm::adapters::api_style_for(endpoint);
+                let mode = haven_llm::adapters::resolve_web_search_mode(endpoint);
+                if config.is_configured(EndpointRole::DefaultModel)
+                    && !matches!(mode, haven_llm::WebSearchMode::Off)
+                    && haven_llm::supports_builtin_web_search(style)
+                {
+                    "provider".into()
+                } else if mcp_search_available {
+                    "mcp".into()
+                } else {
+                    "unavailable (no provider builtin search; no MCP search server)".into()
+                }
+            }
+            None if mcp_search_available => "mcp".into(),
+            None => "unavailable (no provider builtin search; no MCP search server)".into(),
+        };
+        RuntimeCapabilities {
+            vision,
+            transcription,
+            recording,
+            tts,
+            web_search,
+        }
     }
 
     /// Replace the TTS client used by the `audio` tool after a live settings
@@ -1137,6 +1197,7 @@ impl ToolsManager {
                 continue;
             }
             self.tool_circuits.record_failure(tool_name);
+            annotate_retry_safety(&mut result, idempotency);
             return Ok(result);
         }
         self.tool_circuits.record_failure(tool_name);
@@ -1225,6 +1286,42 @@ impl ToolsManager {
     }
 }
 
+fn mcp_index_entry_has_search_tool(entry: &Value) -> bool {
+    let Some(description) = entry["description"].as_str() else {
+        return false;
+    };
+    description
+        .split_once("; tools:")
+        .is_some_and(|(_, tools)| {
+            tools
+                .split(',')
+                .any(|tool| tool.trim().to_ascii_lowercase().contains("search"))
+        })
+}
+
+/// Put the concrete retry policy beside a terminal failure so the model can
+/// choose an equivalent read-only path without escalating to a user-facing
+/// confirmation. This is result metadata, not authorization: unsafe and
+/// unknown operations remain non-replayable by the executor.
+fn annotate_retry_safety(result: &mut ToolResult, idempotency: OperationIdempotency) {
+    if result.success {
+        return;
+    }
+    let retry_safety = Value::String(idempotency.as_str().into());
+    match &mut result.output {
+        Value::Object(object) => {
+            object.insert("retry_safety".into(), retry_safety);
+        }
+        output => {
+            let previous = std::mem::replace(output, Value::Null);
+            *output = serde_json::json!({
+                "retry_safety": retry_safety,
+                "output": previous,
+            });
+        }
+    }
+}
+
 const MAX_TOOL_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// Exponential delay with a small deterministic jitter and a hard ceiling.
@@ -1304,6 +1401,20 @@ mod tests {
         let mgr = ToolsManager::new();
         let tools = mgr.registry.list().await;
         assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn runtime_capabilities_report_unavailable_backends_explicitly() {
+        let mgr = ToolsManager::new();
+        let capabilities = mgr.runtime_capabilities().await;
+        assert!(!capabilities.vision);
+        assert!(!capabilities.transcription);
+        assert!(!capabilities.recording);
+        assert!(!capabilities.tts);
+        assert_eq!(
+            capabilities.web_search,
+            "unavailable (no provider builtin search; no MCP search server)"
+        );
     }
 
     #[tokio::test]
@@ -1893,6 +2004,18 @@ mod tests {
         let names: Vec<&str> = index.iter().filter_map(|e| e["name"].as_str()).collect();
         assert!(names.contains(&"on"));
         assert!(!names.contains(&"off"), "disabled server should not appear");
+    }
+
+    #[test]
+    fn mcp_search_detection_only_uses_cached_tool_names() {
+        assert!(mcp_index_entry_has_search_tool(&serde_json::json!({
+            "name": "research",
+            "description": "MCP server 'research'; tools: fetch, web_search",
+        })));
+        assert!(!mcp_index_entry_has_search_tool(&serde_json::json!({
+            "name": "search-like-server",
+            "description": "MCP server 'search-like-server'",
+        })));
     }
 
     #[tokio::test]

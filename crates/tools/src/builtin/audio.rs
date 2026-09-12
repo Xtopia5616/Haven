@@ -1,13 +1,16 @@
 use async_trait::async_trait;
+use haven_common::config::default_generated_media_dir;
 use haven_common::types::RiskLevel;
 use haven_input::InputPipeline;
 use haven_llm::TtsClient;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use super::media::{model_media_reference_with_capabilities, register_generated_asset};
+use crate::{ManagedAssetRegistry, Tool, ToolLlmUsage, ToolResult};
 
 /// Default capture window when the LLM omits `duration`.
 const DEFAULT_RECORD_SECS: f64 = 10.0;
@@ -33,6 +36,14 @@ pub struct AudioTool {
     tts: Option<Arc<dyn TtsClient>>,
     /// Injectable playback boundary keeps the tool testable without a speaker.
     playback: Arc<dyn AudioPlayback>,
+    /// Host-owned registry used by `record` to return a reusable asset.
+    managed_assets: ManagedAssetRegistry,
+    /// Dedicated generated-media root for recordings.
+    capture_root: PathBuf,
+    /// Whether microphone capture is wired in this runtime.
+    record_available: bool,
+    /// Whether a later `media.transcribe` operation can use STT.
+    transcribe_available: bool,
 }
 
 /// Blocking speaker boundary used by the `speak` operation.
@@ -82,6 +93,9 @@ pub struct AudioParams {
     /// Mute state for `mute_set`.
     #[serde(default)]
     pub muted: Option<bool>,
+    /// Private current-session context injected by `ToolsManager`.
+    #[serde(rename = "_session_id", default, skip_serializing)]
+    pub(crate) session_id: Option<String>,
 }
 
 impl AudioTool {
@@ -90,11 +104,31 @@ impl AudioTool {
     }
 
     pub fn with_tts(pipeline: Option<Arc<InputPipeline>>, tts: Option<Arc<dyn TtsClient>>) -> Self {
+        let record_available = pipeline.is_some();
         Self {
             pipeline,
             tts,
             playback: Arc::new(SystemAudioPlayback),
+            managed_assets: ManagedAssetRegistry::default(),
+            capture_root: default_generated_media_dir(),
+            record_available,
+            transcribe_available: record_available,
         }
+    }
+
+    pub(crate) fn with_managed_assets(mut self, managed_assets: ManagedAssetRegistry) -> Self {
+        self.managed_assets = managed_assets;
+        self
+    }
+
+    pub(crate) fn with_capabilities(
+        mut self,
+        record_available: bool,
+        transcribe_available: bool,
+    ) -> Self {
+        self.record_available = record_available;
+        self.transcribe_available = transcribe_available;
+        self
     }
 
     #[cfg(test)]
@@ -198,6 +232,15 @@ impl Tool for AudioTool {
         }
     }
 
+    fn idempotency(&self, input: &Value) -> crate::OperationIdempotency {
+        match input["operation"].as_str() {
+            Some("volume_get") | Some("mute_get") => crate::OperationIdempotency::Idempotent,
+            Some("play") | Some("speak") | Some("record") | Some("volume_set")
+            | Some("mute_set") => crate::OperationIdempotency::NonIdempotent,
+            _ => crate::OperationIdempotency::Unknown,
+        }
+    }
+
     fn input_schema(&self) -> Value {
         let mut schema = serde_json::json!({
             "type": "object",
@@ -283,6 +326,19 @@ impl Tool for AudioTool {
                 });
             }
         }
+        if !self.record_available {
+            if let Some(operations) = schema["properties"]["operation"]
+                .get_mut("enum")
+                .and_then(Value::as_array_mut)
+            {
+                operations.retain(|operation| operation.as_str() != Some("record"));
+            }
+            if let Some(branches) = schema.get_mut("oneOf").and_then(Value::as_array_mut) {
+                branches.retain(|branch| {
+                    branch["properties"]["operation"]["const"].as_str() != Some("record")
+                });
+            }
+        }
         schema
     }
 
@@ -291,6 +347,10 @@ impl Tool for AudioTool {
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params = crate::tool_contract::parse_tool_input::<AudioParams>(&self.name(), input)?;
         self.run(params, cancel).await
+    }
+
+    fn requires_session_id(&self) -> bool {
+        true
     }
 }
 
@@ -309,9 +369,9 @@ impl AudioTool {
                 "audio tool: recording is unavailable in this context"
             ));
         };
-        if !pipeline.recording_configured().await {
+        if !self.record_available {
             return Err(anyhow::anyhow!(
-                "audio tool: STT is not configured; enable an STT provider to record audio"
+                "audio tool: recording is unavailable in this context"
             ));
         }
         let duration = params
@@ -343,18 +403,75 @@ impl AudioTool {
                 return Err(anyhow::anyhow!("audio tool: recording cancelled"));
             }
         };
-        let _ = pipeline.transcribe(&mut result).await;
-
-        if let Some(text) = result.transcript.filter(|t| !t.trim().is_empty()) {
-            return Ok(ToolResult::ok(serde_json::json!({
-                "transcript": text,
-                "duration_ms": result.duration_ms,
-            })));
+        // Recording is a producer. Persist the captured WAV before attempting
+        // STT so a failed or unconfigured transcription still leaves a
+        // reusable asset for a later `media.transcribe` call.
+        let wav = pipeline.encode_wav(&result.pcm).await?;
+        tokio::fs::create_dir_all(&self.capture_root).await?;
+        let path = self
+            .capture_root
+            .join(format!("{}.wav", haven_common::types::new_id("file")));
+        if let Err(error) = tokio::fs::write(&path, &wav).await {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(error.into());
         }
-        let detail = result
-            .transcript_error
-            .unwrap_or_else(|| "no speech detected in the recording".into());
-        Err(anyhow::anyhow!("audio tool: {detail}"))
+        let asset = match register_generated_asset(
+            &self.managed_assets,
+            params.session_id.as_deref(),
+            &self.capture_root,
+            path.clone(),
+            Some("recording.wav".into()),
+            "audio/wav",
+            wav.len() as u64,
+        ) {
+            Ok(asset) => asset,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(error);
+            }
+        };
+
+        let usages = pipeline.transcribe(&mut result).await;
+        let mut output = serde_json::json!({
+            "operation": "record",
+            "asset_id": asset.asset_id,
+            "media": model_media_reference_with_capabilities(
+                &asset,
+                "managed_file_ref",
+                None,
+                false,
+                self.transcribe_available,
+            ),
+            "duration_ms": result.duration_ms,
+        });
+        if let Some(text) = result.transcript.filter(|t| !t.trim().is_empty()) {
+            output["transcript"] = serde_json::json!(text);
+            output["media"] = model_media_reference_with_capabilities(
+                &asset,
+                "transcript",
+                Some(&text),
+                false,
+                self.transcribe_available,
+            );
+        }
+        let mut tool_result = if output.get("transcript").is_some() {
+            ToolResult::ok(output)
+        } else {
+            let detail = result
+                .transcript_error
+                .unwrap_or_else(|| "no speech detected in the recording".into());
+            ToolResult::failed(output, format!("audio tool: {detail}"))
+        };
+        tool_result
+            .llm_usage
+            .extend(usages.into_iter().map(|usage| ToolLlmUsage {
+                call_kind: "media",
+                role: usage.role,
+                usage: usage.usage,
+                model: usage.model,
+                duration_ms: usage.duration_ms,
+            }));
+        Ok(tool_result)
     }
 
     async fn play(&self, params: &AudioParams) -> anyhow::Result<ToolResult> {
@@ -596,17 +713,11 @@ mod tests {
             .as_array()
             .unwrap();
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
-        for expected in [
-            "play",
-            "record",
-            "volume_get",
-            "volume_set",
-            "mute_get",
-            "mute_set",
-        ] {
+        for expected in ["play", "volume_get", "volume_set", "mute_get", "mute_set"] {
             assert!(ops.contains(&expected), "missing op {expected}");
         }
         assert!(!ops.contains(&"speak"));
+        assert!(!ops.contains(&"record"));
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(req.contains(&"operation"));
@@ -615,7 +726,7 @@ mod tests {
         assert!(schema["properties"]["duration"]["type"].as_str().is_some());
         assert!(schema["properties"]["volume"]["type"].as_str().is_some());
         assert!(schema["properties"]["muted"]["type"].as_str().is_some());
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 6);
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 5);
     }
 
     #[tokio::test]
@@ -681,6 +792,7 @@ mod tests {
                     duration: None,
                     volume: None,
                     muted: None,
+                    session_id: None,
                 },
                 CancellationToken::new(),
             )
