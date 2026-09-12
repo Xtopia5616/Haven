@@ -522,6 +522,12 @@
 	.bubble.tool.assistant {
 		border-left: 3px solid color-mix(in srgb, var(--md-sys-color-secondary) 65%, transparent);
 	}
+	/* Embedded tool calls sit inside the Agent work surface. The outer
+	 * activity group already provides the conversation edge, so remove the
+	 * nested accent rather than stacking two competing borders. */
+	.bubble.compact.tool.assistant {
+		border-left: none;
+	}
 	.bubble.assistant.thinking {
 		background: transparent;
 		border-color: transparent;
