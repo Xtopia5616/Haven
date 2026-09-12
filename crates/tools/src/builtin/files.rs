@@ -12,10 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::file_outline;
 use super::file_search::FileSearchEngine;
-use super::media::{
-    MediaOperation, MediaParams, MediaTool, classify_media,
-    model_media_reference_with_capabilities, register_path_asset,
-};
+use super::media::{MediaOperation, MediaParams, MediaTool, classify_media, register_path_asset};
 use crate::{
     ManagedAsset, ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, ToolLlmUsage,
     ToolResult,
@@ -586,9 +583,6 @@ pub struct FilesTool {
     /// role, and text summarization uses small_model. The router handles
     /// capability validation and retries for each selected endpoint.
     summarizer: Option<Arc<LlmRouter>>,
-    /// Dedicated STT client shared with the canonical media tool. Rich audio
-    /// reads must preserve the same provider choice as `media.transcribe`.
-    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     /// Output cap (chars) for file reads.
     max_output_chars: usize,
     /// Full-read cap (chars): larger files need `offset`/`limit` or
@@ -604,27 +598,22 @@ pub struct FilesTool {
     max_list_entries: usize,
     /// Absolute safety cap for byte-mode reads, regardless of caller `limit`.
     max_byte_read: u64,
-    /// Cap on image bytes sent to the vision model. Larger images are
-    /// rejected rather than shipped as a giant base64 payload.
-    vision_max_bytes: u64,
     /// Outer timeout (secs) for summarization / vision LLM calls.
     summary_timeout_secs: u64,
     /// Search engine for the `search` operation (filename / content modes).
     search: FileSearchEngine,
     /// Host-owned attachment registry used by read-only managed references.
     managed_assets: ManagedAssetRegistry,
-    /// Capability truth shared with the canonical media tool. These values
-    /// are computed when the builtin catalog is rebuilt, not inferred from a
-    /// merely-present router.
-    media_describe_available: bool,
-    media_transcribe_available: bool,
+    /// The single media runtime installed by `ToolsManager`. Rich file reads
+    /// are producers here; all interpretation is delegated to this shared
+    /// instance instead of constructing a second media implementation.
+    media_tool: Option<Arc<MediaTool>>,
 }
 
 impl Default for FilesTool {
     fn default() -> Self {
         Self {
             summarizer: None,
-            stt_client: None,
             max_output_chars: 20_000,
             max_read_chars: 128_000,
             line_span: 100,
@@ -632,12 +621,10 @@ impl Default for FilesTool {
             summary_input_chars: 60_000,
             max_list_entries: 1_000,
             max_byte_read: 16 * 1024 * 1024,
-            vision_max_bytes: 8 * 1024 * 1024,
             summary_timeout_secs: 120,
             search: FileSearchEngine::default(),
             managed_assets: ManagedAssetRegistry::default(),
-            media_describe_available: false,
-            media_transcribe_available: false,
+            media_tool: None,
         }
     }
 }
@@ -743,14 +730,12 @@ impl FilesTool {
         summary_input_chars: usize,
         max_list_entries: usize,
         max_byte_read: u64,
-        vision_max_bytes: u64,
         summary_timeout_secs: u64,
         search: FileSearchEngine,
         managed_assets: ManagedAssetRegistry,
     ) -> Self {
         Self {
             summarizer,
-            stt_client: None,
             max_output_chars,
             max_read_chars,
             line_span,
@@ -758,30 +743,15 @@ impl FilesTool {
             summary_input_chars,
             max_list_entries,
             max_byte_read,
-            vision_max_bytes,
             summary_timeout_secs,
             search,
             managed_assets,
-            media_describe_available: false,
-            media_transcribe_available: false,
+            media_tool: None,
         }
     }
 
-    pub(crate) fn with_media_capabilities(
-        mut self,
-        describe_available: bool,
-        transcribe_available: bool,
-    ) -> Self {
-        self.media_describe_available = describe_available;
-        self.media_transcribe_available = transcribe_available;
-        self
-    }
-
-    pub(crate) fn with_stt_client(
-        mut self,
-        stt_client: Option<Arc<dyn haven_llm::SttClient>>,
-    ) -> Self {
-        self.stt_client = stt_client;
+    pub(crate) fn with_media_tool(mut self, media_tool: Arc<MediaTool>) -> Self {
+        self.media_tool = Some(media_tool);
         self
     }
 
@@ -865,34 +835,23 @@ impl FilesTool {
             && let Some(asset) = managed_asset.as_ref()
             && let Some(operation) = media_operation_for(asset)
         {
-            let media = model_media_reference_with_capabilities(
-                asset,
-                "managed_file_ref",
-                None,
-                self.media_describe_available,
-                self.media_transcribe_available,
-            );
-            let operation_result = MediaTool::new(
-                self.summarizer.clone(),
-                self.managed_assets.clone(),
-                self.vision_max_bytes,
-                self.summary_timeout_secs,
-                self.max_output_chars,
-            )
-            .with_stt_client(self.stt_client.clone())
-            .with_capabilities(
-                self.media_describe_available,
-                self.media_transcribe_available,
-            )
-            .run(
-                MediaParams {
-                    operation,
-                    asset_id: asset.asset_id.clone(),
-                    focus: params.focus.clone(),
-                },
-                cancel,
-            )
-            .await;
+            let media_tool = self
+                .media_tool
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?;
+            let media = media_tool.managed_media_reference(asset);
+            let operation_result = media_tool
+                .run(
+                    MediaParams {
+                        operation,
+                        asset_id: Some(asset.asset_id.clone()),
+                        focus: params.focus.clone(),
+                        prompt: None,
+                        session_id: params.session_id.clone(),
+                    },
+                    cancel,
+                )
+                .await;
             let mut result = match operation_result {
                 Ok(result) => result,
                 Err(error) => ToolResult::failed(
@@ -1588,6 +1547,20 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    fn files_tool_with_registry(registry: ManagedAssetRegistry) -> FilesTool {
+        let mut tool = FilesTool::default();
+        let max_output_chars = tool.max_output_chars;
+        tool.managed_assets = registry.clone();
+        tool.media_tool = Some(Arc::new(MediaTool::new(
+            None,
+            registry,
+            8 * 1024 * 1024,
+            120,
+            max_output_chars,
+        )));
+        tool
+    }
+
     #[test]
     fn test_sanitize_path_normal() {
         let result = sanitize_path("file.txt");
@@ -1679,8 +1652,10 @@ mod tests {
             .unwrap();
         tokio::fs::write(&audio, b"RIFF....WAVE").await.unwrap();
 
+        let registry = ManagedAssetRegistry::default();
+        let tool = files_tool_with_registry(registry);
         for path in [image, audio] {
-            let result = FilesTool::default()
+            let result = tool
                 .execute(
                     json!({"operation": "read", "path": path.to_string_lossy()}),
                     CancellationToken::new(),
@@ -2510,8 +2485,7 @@ mod tests {
         let path_str = file.to_string_lossy().to_string();
         let registry = ManagedAssetRegistry::default();
         registry.register_for_test("asset-test", file, Some("report.txt".into()), "text/plain");
-        let mut tool = FilesTool::default();
-        tool.managed_assets = registry;
+        let tool = files_tool_with_registry(registry);
 
         let result = tool
             .execute(
@@ -2553,8 +2527,7 @@ mod tests {
             "text/plain",
         ));
         tokio::fs::remove_file(&file).await.unwrap();
-        let mut tool = FilesTool::default();
-        tool.managed_assets = registry;
+        let tool = files_tool_with_registry(registry);
 
         let result = tool
             .execute(
@@ -2589,8 +2562,7 @@ mod tests {
             Some("report.pdf".into()),
             "application/pdf",
         );
-        let mut tool = FilesTool::default();
-        tool.managed_assets = registry;
+        let tool = files_tool_with_registry(registry);
 
         let result = tool
             .execute(
@@ -2619,7 +2591,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FilesTool::default()
+        let result = files_tool_with_registry(ManagedAssetRegistry::default())
             .execute(
                 json!({"operation": "read", "path": file.to_string_lossy()}),
                 CancellationToken::new(),
@@ -2642,7 +2614,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FilesTool::default()
+        let result = files_tool_with_registry(ManagedAssetRegistry::default())
             .execute(
                 json!({"operation": "read", "path": file.to_string_lossy()}),
                 CancellationToken::new(),
@@ -2667,7 +2639,7 @@ mod tests {
         bytes.extend_from_slice(b"endstream\nendobj\n");
         tokio::fs::write(&file, bytes).await.unwrap();
 
-        let result = FilesTool::default()
+        let result = files_tool_with_registry(ManagedAssetRegistry::default())
             .execute(
                 json!({"operation": "summary", "path": file.to_string_lossy()}),
                 CancellationToken::new(),

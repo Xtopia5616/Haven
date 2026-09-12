@@ -241,8 +241,8 @@ Do not invent information. If a section has no reliable content, write - none.\n
 pub const COMPACTED_SUMMARY_PREFIX: &str = "[Compacted summary of previous messages]:";
 
 /// LLM speech-to-text transcription (audio_model). Shared by the dedicated
-/// STT client (`haven-llm`) and the media gateway's main-model fallback, so
-/// the transcript prompt cannot drift between the two.
+/// STT client (`haven-llm`) and the media tool's model fallback, so the
+/// transcript prompt cannot drift between the two.
 pub const STT_SYSTEM_PROMPT: &str = "You are a speech-to-text engine. Transcribe the audio verbatim in the speaker's language. Output only the transcription text, no commentary.";
 pub const OCR_SYSTEM_PROMPT: &str = "You are an OCR engine. Extract all visible text from the image verbatim, preserving line breaks. Output only the extracted text, no commentary.";
 

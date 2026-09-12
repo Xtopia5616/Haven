@@ -1,12 +1,11 @@
 //! Input pipeline: recording orchestration, VAD, transcription and the
-//! multi-modal media gateway (modality detection → intent → routing).
+//! Audio capture and microphone recording lifecycle.
 //!
 //! The pipeline owns the high-level recording state machine; the actual
 //! audio capture lives in [`capture`] (the capture engine thread + CPAL
-//! backend). The media gateway (formerly the `haven-gateway` crate) routes
-//! binary attachments through dedicated providers (OCR / ASR) with
-//! confidence gating and main-model fallback, and handles generate requests
-//! (TTS / text-to-image).
+//! backend). Media interpretation and provider fallback live in the
+//! model-facing `haven-tools::builtin::media` runtime; this crate only owns
+//! capture, VAD, recording lifecycle, and the injected STT route.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -124,8 +123,8 @@ pub struct InputPipeline {
     /// Dedicated STT providers (cloud / MCP). Cleared when provider is `llm`
     /// or `none`.
     stt_client: Arc<Mutex<Option<Arc<dyn SttClient>>>>,
-    /// Shared LLM path (`media.stt.provider == "llm"`): same
-    /// [`haven_llm::LlmRouter::transcribe_audio`] the media gateway uses.
+    /// Shared LLM path (`media.stt.provider == "llm"`): the same
+    /// [`haven_llm::LlmRouter::transcribe_audio`] used by `media.transcribe`.
     stt_router: Arc<Mutex<Option<Arc<haven_llm::LlmRouter>>>>,
 }
 

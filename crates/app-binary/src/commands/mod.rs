@@ -216,9 +216,9 @@ pub(crate) async fn hot_swap_router(
         }
     };
 
-    // Rebuild the media gateway with the new router so fallback extraction
-    // calls (low confidence / failed dedicated provider) keep routing to the
-    // freshly-switched model endpoints.
+    // Rebuild the canonical media runtime with the new router so fallback
+    // extraction calls (low confidence / failed dedicated provider) and image
+    // generation keep using one freshly-switched tool boundary.
     let media = config.media;
     let ocr: Option<Arc<dyn haven_llm::OcrClient>> = haven_llm::build_ocr_client(&media.ocr)
         .map_err(|e| log_err("hot_swap_router OCR", e))?
@@ -234,11 +234,18 @@ pub(crate) async fn hot_swap_router(
 
     // All dependent clients are valid before swapping any shared runtime
     // pointer. This keeps a failed rebuild from leaving a mixed-generation
-    // router/pipeline/gateway state.
+    // router/pipeline/media-tool state.
     state.agent.replace_router(new_router.clone());
     state
         .tools
-        .set_router_and_media_clients(new_router.clone(), stt_client.clone(), tts.clone())
+        .set_router_and_media_clients(
+            new_router.clone(),
+            stt_client.clone(),
+            ocr.clone(),
+            image_gen.clone(),
+            tts.clone(),
+            media.clone(),
+        )
         .await;
     state.pipeline.set_stt_client(stt_client.clone()).await;
     if stt_config.provider == "llm" {
@@ -249,10 +256,6 @@ pub(crate) async fn hot_swap_router(
     } else {
         state.pipeline.set_stt_router(None).await;
     }
-    let gateway = Arc::new(haven_llm::media::MediaGateway::new(
-        new_router, stt_client, ocr, image_gen, media,
-    ));
-    state.agent.set_gateway(Some(gateway)).await;
     Ok(())
 }
 

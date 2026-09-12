@@ -440,6 +440,7 @@ impl AudioTool {
                 "managed_file_ref",
                 None,
                 false,
+                false,
                 self.transcribe_available,
             ),
             "duration_ms": result.duration_ms,
@@ -450,6 +451,7 @@ impl AudioTool {
                 &asset,
                 "transcript",
                 Some(&text),
+                false,
                 false,
                 self.transcribe_available,
             );

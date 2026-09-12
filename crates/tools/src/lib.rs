@@ -101,8 +101,11 @@ pub struct StartupWiring {
     pub permission_mode: PermissionMode,
     pub security_permissions: Vec<haven_common::config::StoredPermission>,
     pub router: Arc<LlmRouter>,
+    pub media_config: haven_common::config::MediaConfig,
     pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
     pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    pub ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
+    pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     pub admin_context: builtin::SelfToolContext,
 }
@@ -208,6 +211,12 @@ pub struct ToolsManager {
     /// Dedicated STT client shared by `audio.record` and `media.transcribe`.
     /// The LLM router remains the alternate STT path for `provider = "llm"`.
     stt_client: RwLock<Option<Arc<dyn haven_llm::SttClient>>>,
+    /// Dedicated media providers consumed by the single model-facing media
+    /// runtime. They are kept here so catalog rebuilds cannot create a mixed
+    /// generation of router and specialized clients.
+    ocr_client: RwLock<Option<Arc<dyn haven_llm::OcrClient>>>,
+    image_gen_client: RwLock<Option<Arc<dyn haven_llm::ImageGenClient>>>,
+    media_config: RwLock<haven_common::config::MediaConfig>,
     /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
     agent_spawner: builtin::AgentSpawnerSlot,
     /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
@@ -254,6 +263,9 @@ impl ToolsManager {
             audio_pipeline: RwLock::new(None),
             tts_client: RwLock::new(None),
             stt_client: RwLock::new(None),
+            ocr_client: RwLock::new(None),
+            image_gen_client: RwLock::new(None),
+            media_config: RwLock::new(haven_common::config::MediaConfig::default()),
             agent_spawner: builtin::new_agent_spawner_slot(),
             memory_recall: builtin::new_memory_recall_slot(),
         }
@@ -427,11 +439,17 @@ impl ToolsManager {
         &self,
         router: Arc<LlmRouter>,
         stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+        ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
+        image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
         tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
+        media_config: haven_common::config::MediaConfig,
     ) {
         *self.router.write().await = Some(router);
         *self.stt_client.write().await = stt_client;
+        *self.ocr_client.write().await = ocr_client;
+        *self.image_gen_client.write().await = image_gen_client;
         *self.tts_client.write().await = tts_client;
+        *self.media_config.write().await = media_config;
         self.rebuild_catalog().await;
     }
 
@@ -447,8 +465,11 @@ impl ToolsManager {
             permission_mode,
             security_permissions,
             router,
+            media_config,
             audio_pipeline,
             stt_client,
+            ocr_client,
+            image_gen_client,
             tts_client,
             admin_context,
         } = wiring;
@@ -465,8 +486,11 @@ impl ToolsManager {
             .await;
         self.authorization.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
+        *self.media_config.write().await = media_config;
         *self.audio_pipeline.write().await = audio_pipeline;
         *self.stt_client.write().await = stt_client;
+        *self.ocr_client.write().await = ocr_client;
+        *self.image_gen_client.write().await = image_gen_client;
         *self.tts_client.write().await = tts_client;
         self.scheduled_actions
             .set_db(admin_context.db.clone())
@@ -661,6 +685,9 @@ impl ToolsManager {
         let limits = self.context_limits.read().await.clone();
         let audio_pipeline = self.audio_pipeline.read().await.clone();
         let stt_client = self.stt_client.read().await.clone();
+        let ocr_client = self.ocr_client.read().await.clone();
+        let image_gen_client = self.image_gen_client.read().await.clone();
+        let media_config = self.media_config.read().await.clone();
         let tts_client = self.tts_client.read().await.clone();
         let self_tool_arc = builtin::register_builtin_tools(
             &mut all_tools,
@@ -680,7 +707,10 @@ impl ToolsManager {
             *self.default_shell.read().await,
             audio_pipeline,
             stt_client,
+            ocr_client,
+            image_gen_client,
             tts_client,
+            media_config,
             self.session_catalog.clone(),
             self.agent_spawner.clone(),
             self.memory_recall.clone(),

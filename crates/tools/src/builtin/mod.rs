@@ -120,7 +120,10 @@ pub async fn register_builtin_tools(
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
     stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
+    image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
+    media_config: haven_common::config::MediaConfig,
     session_catalog: SessionCatalog,
     agent_spawner: messaging::AgentSpawnerSlot,
     memory_recall: memory::MemoryRecallSlot,
@@ -147,26 +150,31 @@ pub async fn register_builtin_tools(
             .with_capabilities(record_available, audio_transcribe_available),
     ));
     tools.push(Arc::new(ask::AskTool));
-    // Media, files, and window share the same router boundary. Media owns the
-    // agent-facing asset operations; files remains the text/filesystem tool.
-    let media_router = router.clone();
-    let window_router = router.clone();
-    let media_assets = managed_assets.clone();
-    let window_assets = managed_assets.clone();
-    tools.push(Arc::new(
+    // One media runtime serves every producer/consumer boundary. `files` and
+    // `window` only create assets; interpretation and generation always land
+    // in this same instance and therefore share provider routing, limits,
+    // capability pruning, and managed-asset lifecycle.
+    let media_tool = Arc::new(
         media::MediaTool::new(
-            media_router,
-            media_assets,
+            router.clone(),
+            managed_assets.clone(),
             limits.file_vision_max_bytes,
             limits.file_summary_timeout_secs,
             tool_output_cap(settings, "media", limits.max_observation_chars),
         )
         .with_stt_client(stt_client.clone())
+        .with_ocr_client(ocr_client)
+        .with_image_gen_client(image_gen_client)
+        .with_confidence_thresholds(
+            media_config.ocr.min_confidence,
+            media_config.stt.min_confidence,
+        )
         .with_capabilities(vision_available, transcribe_available),
-    ));
+    );
+    tools.push(media_tool.clone());
     tools.push(Arc::new(
         files::FilesTool::new(
-            router,
+            router.clone(),
             tool_output_cap(settings, "files", limits.max_observation_chars),
             limits.file_read_max_chars,
             limits.file_line_span,
@@ -174,7 +182,6 @@ pub async fn register_builtin_tools(
             limits.file_summary_input_chars,
             limits.file_max_list_entries,
             limits.file_max_byte_read,
-            limits.file_vision_max_bytes,
             limits.file_summary_timeout_secs,
             file_search::FileSearchEngine::new(
                 limits.search_snippet_chars,
@@ -184,8 +191,7 @@ pub async fn register_builtin_tools(
             ),
             managed_assets.clone(),
         )
-        .with_stt_client(stt_client.clone())
-        .with_media_capabilities(vision_available, transcribe_available),
+        .with_media_tool(media_tool.clone()),
     ));
     tools.push(Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
@@ -217,8 +223,7 @@ pub async fn register_builtin_tools(
         max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
     }));
     tools.push(Arc::new(
-        window::WindowTool::new(window_router, window_assets)
-            .with_vision_available(vision_available),
+        window::WindowTool::new(managed_assets).with_media_tool(media_tool),
     ));
     tools.push(Arc::new(http::HttpTool {
         max_retries: limits.network_max_retries,
@@ -344,7 +349,7 @@ mod tests {
         let http = http::HttpTool::default();
         let input = input::InputTool;
         let system = system::SystemTool::default();
-        let window = window::WindowTool::new(None, crate::ManagedAssetRegistry::default());
+        let window = window::WindowTool::new(crate::ManagedAssetRegistry::default());
         let schedule = scheduled_action::ScheduledActionTool {
             center: Arc::new(scheduled_action::ScheduledActionCenter::new()),
             registry: None,

@@ -218,7 +218,7 @@ impl AppState {
         };
         pipeline.set_stt_client(stt_client.clone()).await;
         // `provider == "llm"`: hotkey transcription uses the same
-        // `LlmRouter::transcribe_audio` path as MediaGateway (no LlmSttAdapter).
+        // `LlmRouter::transcribe_audio` path as the model-facing media tool.
         if stt_config.provider == "llm" {
             pipeline.set_stt_router(Some(router.clone())).await;
         } else {
@@ -238,41 +238,27 @@ impl AppState {
                 }
             };
 
-        // Media gateway: dedicated OCR / image-generation clients plus
-        // the shared STT client. The gateway pre-processes attachments
-        // (extract → OCR/ASR with main-model fallback) and handles pure-text
-        // image-generation requests before they reach the ReAct loop. TTS is
-        // exposed only through the model-facing audio tool. A capability
-        // build error disables only that capability
-        // (fail-open: the main model still handles the media).
-        let gateway = {
-            let ocr: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
-                match haven_llm::build_ocr_client(&cfg.media.ocr) {
-                    Ok(c) => c.map(std::sync::Arc::from),
-                    Err(e) => {
-                        tracing::warn!("OCR client build failed, OCR disabled: {e}");
-                        None
-                    }
-                };
-            let image_gen: Option<std::sync::Arc<dyn haven_llm::ImageGenClient>> =
-                match haven_llm::build_image_gen_client(&cfg.media.image_gen, &cfg.llm.providers) {
-                    Ok(c) => c.map(std::sync::Arc::from),
-                    Err(e) => {
-                        tracing::warn!(
-                            "image generation client build failed, image generation disabled: {e}"
-                        );
-                        None
-                    }
-                };
-            std::sync::Arc::new(haven_llm::media::MediaGateway::new(
-                router.clone(),
-                stt_client.clone(),
-                ocr,
-                image_gen,
-                cfg.media.clone(),
-            ))
-        };
-        agent.set_gateway(Some(gateway)).await;
+        // Dedicated media providers are wired directly into the canonical
+        // model-facing `media` tool. Attachments remain raw managed assets;
+        // no hidden ingress extraction or generation runs before ReAct.
+        let ocr_client: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
+            match haven_llm::build_ocr_client(&cfg.media.ocr) {
+                Ok(c) => c.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!("OCR client build failed, OCR disabled: {e}");
+                    None
+                }
+            };
+        let image_gen_client: Option<std::sync::Arc<dyn haven_llm::ImageGenClient>> =
+            match haven_llm::build_image_gen_client(&cfg.media.image_gen, &cfg.llm.providers) {
+                Ok(c) => c.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!(
+                        "image generation client build failed, image generation disabled: {e}"
+                    );
+                    None
+                }
+            };
 
         let shell = Arc::new(DesktopShell::new());
 
@@ -521,8 +507,11 @@ impl AppState {
                 permission_mode: cfg.security.permission_mode,
                 security_permissions: cfg.security.permissions.clone(),
                 router: router.clone(),
+                media_config: cfg.media.clone(),
                 audio_pipeline: Some(pipeline.clone()),
                 stt_client: stt_client.clone(),
+                ocr_client,
+                image_gen_client,
                 tts_client: tts,
                 admin_context,
             })

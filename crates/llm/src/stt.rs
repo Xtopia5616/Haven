@@ -5,8 +5,8 @@
 //! consumer-facing factory (the STT counterpart of `adapters::adapter_for`):
 //! - `none`: no client
 //! - `mcp`: route through an MCP server exposing `stt.transcribe`
-//! - `llm`: no dedicated client — InputPipeline and MediaGateway both call
-//!   [`LlmRouter::transcribe_audio`] (same single-shot path as OCR `llm`)
+//! - `llm`: no dedicated client — InputPipeline and the model-facing media
+//!   tool call [`LlmRouter::transcribe_audio`] (same single-shot path as OCR `llm`)
 //! - a name from `llm.providers`: credentials + backend (openai/groq/gemini/
 //!   deepgram/assemblyai) are taken from that provider
 //!
@@ -149,7 +149,7 @@ pub fn build_stt_client(
     providers: &[ProviderConfig],
 ) -> Result<Option<Box<dyn SttClient>>> {
     // `_router` is unused: `provider == "llm"` is wired through
-    // InputPipeline::set_stt_router / MediaGateway::extract_via_llm instead.
+    // InputPipeline::set_stt_router / the media tool instead.
     let resolved = resolve_stt_config(cfg, providers)?;
     let client: Box<dyn SttClient> = match resolved.provider.as_str() {
         "none" | "llm" => return Ok(None),
@@ -231,7 +231,7 @@ pub fn endpoint_from_resolved_stt_config(cfg: &ResolvedSttConfig) -> ModelEndpoi
 }
 
 /// Thin bridge: dedicated STT providers built via [`adapter_for`] still expose
-/// the consumer-facing [`SttClient`] trait used by input / MediaGateway.
+/// the consumer-facing [`SttClient`] trait used by input / the media tool.
 struct LlmClientSttBridge {
     client: Box<dyn LlmClient>,
 }

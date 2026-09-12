@@ -918,7 +918,8 @@ async fn persist_file_attachments_to_with_limit(
             .map_err(|e| format!("保存附件失败: {e}"))?;
         att.path = Some(batch_dir.join(&name).to_string_lossy().into_owned());
         // Keep the decoded transport data in the returned in-memory value so
-        // the media gateway can still perform OCR/STT before persistence.
+        // the ReAct media projection can still reference the just-persisted
+        // asset while the model-facing media tool performs OCR/STT.
         // `messages.attachments` strips it at the DB boundary and snapshots
         // use `MediaInput::for_snapshot`, so this is not a second durable
         // authority.

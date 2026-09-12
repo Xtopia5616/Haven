@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
-use haven_common::config::GENERATED_MEDIA_RETENTION_SECS;
+use haven_common::config::{GENERATED_MEDIA_RETENTION_SECS, default_generated_media_dir};
 use haven_common::media::MediaModality;
 use haven_common::prompts::{IMAGE_ANALYSIS_SYSTEM_PROMPT, OCR_SYSTEM_PROMPT};
 use haven_common::types::RiskLevel;
@@ -26,6 +26,8 @@ use crate::{
 };
 
 const MAX_FOCUS_CHARS: usize = 2_000;
+const MAX_GENERATION_PROMPT_CHARS: usize = 4_000;
+const MAX_GENERATED_MEDIA_BYTES: usize = 16 * 1024 * 1024;
 
 /// Coarse media classification shared by the media tool and window output
 /// projection. MIME is authoritative when it is specific; the filename is a
@@ -84,13 +86,19 @@ pub(crate) fn model_media_reference_with_capabilities(
     representation: &str,
     content: Option<&str>,
     describe_available: bool,
+    ocr_available: bool,
     transcribe_available: bool,
 ) -> Value {
     let (modality, file_kind) = classify_media(asset);
     let mut available_representations = vec!["managed_file_ref"];
     match modality {
-        MediaModality::Image if describe_available => {
-            available_representations.extend(["image_description", "ocr_text"]);
+        MediaModality::Image => {
+            if describe_available {
+                available_representations.push("image_description");
+            }
+            if ocr_available {
+                available_representations.push("ocr_text");
+            }
         }
         MediaModality::Audio if transcribe_available => {
             available_representations.push("transcript");
@@ -105,6 +113,7 @@ pub(crate) fn model_media_reference_with_capabilities(
     }
     let recommended_next = match (representation, modality) {
         ("managed_file_ref", MediaModality::Image) if describe_available => Some("media.describe"),
+        ("managed_file_ref", MediaModality::Image) if ocr_available => Some("media.ocr"),
         ("managed_file_ref", MediaModality::Audio) if transcribe_available => {
             Some("media.transcribe")
         }
@@ -139,21 +148,33 @@ pub enum MediaOperation {
     Ocr,
     Transcribe,
     Extract,
+    Generate,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct MediaParams {
     pub operation: MediaOperation,
-    pub asset_id: String,
+    #[serde(default)]
+    pub asset_id: Option<String>,
     #[serde(default)]
     pub focus: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(rename = "_session_id", default, skip_serializing)]
+    pub(crate) session_id: Option<String>,
 }
 
 pub struct MediaTool {
     router: Option<Arc<LlmRouter>>,
     stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
+    image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     describe_available: bool,
+    ocr_available: bool,
     transcribe_available: bool,
+    generate_available: bool,
+    ocr_min_confidence: f32,
+    stt_min_confidence: f32,
     managed_assets: ManagedAssetRegistry,
     max_bytes: u64,
     timeout_secs: u64,
@@ -172,8 +193,14 @@ impl MediaTool {
         Self {
             router,
             stt_client: None,
+            ocr_client: None,
+            image_gen_client: None,
             describe_available: has_router,
+            ocr_available: has_router,
             transcribe_available: has_router,
+            generate_available: false,
+            ocr_min_confidence: 0.0,
+            stt_min_confidence: 0.0,
             managed_assets,
             max_bytes,
             timeout_secs,
@@ -187,6 +214,7 @@ impl MediaTool {
         transcribe_available: bool,
     ) -> Self {
         self.describe_available = describe_available;
+        self.ocr_available = self.ocr_available || describe_available;
         // Keep the schema truthful even when callers apply capability
         // overrides after installing the dedicated STT client. The client is
         // the authoritative live route for audio transcription.
@@ -205,12 +233,49 @@ impl MediaTool {
         self
     }
 
+    pub(crate) fn with_ocr_client(
+        mut self,
+        ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
+    ) -> Self {
+        if ocr_client.is_some() {
+            self.ocr_available = true;
+        }
+        self.ocr_client = ocr_client;
+        self
+    }
+
+    pub(crate) fn with_image_gen_client(
+        mut self,
+        image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
+    ) -> Self {
+        self.generate_available = image_gen_client.is_some();
+        self.image_gen_client = image_gen_client;
+        self
+    }
+
+    pub(crate) fn with_confidence_thresholds(
+        mut self,
+        ocr_min_confidence: f32,
+        stt_min_confidence: f32,
+    ) -> Self {
+        self.ocr_min_confidence = ocr_min_confidence;
+        self.stt_min_confidence = stt_min_confidence;
+        self
+    }
+
     pub async fn run(
         &self,
         params: MediaParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let asset_id = params.asset_id.trim();
+        if params.operation == MediaOperation::Generate {
+            return self.generate(params, cancel).await;
+        }
+        let asset_id = params
+            .asset_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
         if asset_id.is_empty() {
             anyhow::bail!("asset_id is required");
         }
@@ -238,6 +303,7 @@ impl MediaTool {
             MediaOperation::Ocr => self.ocr(asset, params.focus, cancel).await,
             MediaOperation::Transcribe => self.transcribe(asset, cancel).await,
             MediaOperation::Extract => self.extract(asset, cancel).await,
+            MediaOperation::Generate => unreachable!("generate handled before asset resolution"),
         }
     }
 
@@ -252,8 +318,17 @@ impl MediaTool {
             representation,
             content,
             self.describe_available,
+            self.ocr_available,
             self.transcribe_available,
         )
+    }
+
+    pub(crate) fn managed_media_reference(&self, asset: &ManagedAsset) -> Value {
+        self.model_media_reference(asset, "managed_file_ref", None)
+    }
+
+    pub(crate) fn ocr_available(&self) -> bool {
+        self.ocr_available
     }
 
     async fn read_bounded(
@@ -300,6 +375,56 @@ impl MediaTool {
         focus: Option<String>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        if !self.ocr_available {
+            return Ok(ToolResult::ok(json!({
+                "operation": "ocr",
+                "asset_id": asset.asset_id,
+                "media": self.model_media_reference(&asset, "managed_file_ref", None),
+                "available": false,
+                "reason": "No OCR or vision-capable LLM provider is configured.",
+            })));
+        }
+        if let Some(client) = self.ocr_client.clone() {
+            let bytes = match self.read_bounded(&asset, &cancel).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return Ok(ToolResult::failed(
+                        json!({"operation": "ocr", "asset_id": asset.asset_id}),
+                        error.to_string(),
+                    ));
+                }
+            };
+            let dedicated = tokio::time::timeout(
+                Duration::from_secs(self.timeout_secs),
+                client.recognize(&bytes, &asset.media_type),
+            )
+            .await;
+            if let Ok(Ok(response)) = dedicated
+                && !response.text.trim().is_empty()
+                && confidence_passes(response.confidence, self.ocr_min_confidence)
+            {
+                let (text, text_truncated) =
+                    bound_text(response.text.trim(), self.max_output_chars);
+                let output = json!({
+                    "operation": "ocr",
+                    "asset_id": asset.asset_id,
+                    "media": self.model_media_reference(&asset, "ocr_text", Some(&text)),
+                    "representation": "ocr_text",
+                    "untrusted_content": true,
+                });
+                return Ok(if text_truncated {
+                    ToolResult::truncated(output)
+                } else {
+                    ToolResult::ok(output)
+                });
+            }
+            if self.router.is_none() {
+                return Ok(ToolResult::failed(
+                    json!({"operation": "ocr", "asset_id": asset.asset_id}),
+                    "OCR provider returned no acceptable result and no LLM fallback is configured",
+                ));
+            }
+        }
         self.derive_image(
             asset,
             focus,
@@ -325,7 +450,11 @@ impl MediaTool {
         }
         let operation_name = operation_name(operation);
         let unavailable = self.model_media_reference(&asset, "managed_file_ref", None);
-        if !self.describe_available {
+        let available = match operation {
+            MediaOperation::Ocr => self.ocr_available,
+            _ => self.describe_available,
+        };
+        if !available {
             return Ok(ToolResult::ok(json!({
                 "operation": operation_name,
                 "asset_id": asset.asset_id,
@@ -425,12 +554,7 @@ impl MediaTool {
                 "reason": "No speech-to-text provider is configured.",
             })));
         }
-        let Some(router_or_client) = self
-            .stt_client
-            .clone()
-            .map(TranscriptionRoute::Dedicated)
-            .or_else(|| self.router.clone().map(TranscriptionRoute::Router))
-        else {
+        if self.stt_client.is_none() && self.router.is_none() {
             return Ok(ToolResult::ok(json!({
                 "operation": "transcribe",
                 "asset_id": asset.asset_id,
@@ -440,36 +564,61 @@ impl MediaTool {
             })));
         };
         let bytes = self.read_bounded(&asset, &cancel).await?;
-        let role = match &router_or_client {
-            TranscriptionRoute::Dedicated(_) => None,
-            TranscriptionRoute::Router(router) => router.stt_role().await,
-        };
+        let dedicated = self.stt_client.clone();
+        let router = self.router.clone();
         let started = std::time::Instant::now();
-        let result = match tokio::time::timeout(
-            Duration::from_secs(self.timeout_secs),
-            transcribe_with_route(router_or_client, bytes),
-        )
-        .await
-        {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => {
-                return Ok(ToolResult::failed(
-                    json!({"operation": "transcribe", "asset_id": asset.asset_id, "media": self.model_media_reference(&asset, "managed_file_ref", None), "available": false}),
-                    format!("transcription failed: {error}"),
-                ));
+        let (result, role) = if let Some(client) = dedicated {
+            match tokio::time::timeout(
+                Duration::from_secs(self.timeout_secs),
+                client.transcribe(&bytes),
+            )
+            .await
+            {
+                Ok(Ok(result))
+                    if !result.text.trim().is_empty()
+                        && confidence_passes(result.confidence, self.stt_min_confidence) =>
+                {
+                    (result, None)
+                }
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                    let Some(router) = router else {
+                        return Ok(ToolResult::failed(
+                            json!({"operation": "transcribe", "asset_id": asset.asset_id}),
+                            "STT provider returned no acceptable result and no LLM fallback is configured",
+                        ));
+                    };
+                    let role = router.stt_role().await;
+                    let result = match tokio::time::timeout(
+                        Duration::from_secs(self.timeout_secs),
+                        router.transcribe_audio(&bytes),
+                    )
+                    .await
+                    {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(error)) => return Err(anyhow::anyhow!(error)),
+                        Err(_) => {
+                            anyhow::bail!("transcription timed out after {}s", self.timeout_secs)
+                        }
+                    };
+                    (result, role)
+                }
             }
-            Err(_) => {
-                let mut tool_result = ToolResult::timed_out(
-                    crate::ToolExecutionOutcome::TimedOutUnknown,
-                    format!("transcription timed out after {}s", self.timeout_secs),
-                );
-                tool_result.output = json!({
-                    "operation": "transcribe",
-                    "asset_id": asset.asset_id,
-                    "media": self.model_media_reference(&asset, "managed_file_ref", None),
-                });
-                return Ok(tool_result);
-            }
+        } else {
+            let Some(router) = router else {
+                unreachable!("availability checked above")
+            };
+            let role = router.stt_role().await;
+            let result = match tokio::time::timeout(
+                Duration::from_secs(self.timeout_secs),
+                router.transcribe_audio(&bytes),
+            )
+            .await
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => return Err(anyhow::anyhow!(error)),
+                Err(_) => anyhow::bail!("transcription timed out after {}s", self.timeout_secs),
+            };
+            (result, role)
         };
         let (text, text_truncated) = bound_text(result.text.trim(), self.max_output_chars);
         let output = json!({
@@ -496,6 +645,103 @@ impl MediaTool {
             });
         }
         Ok(tool_result)
+    }
+
+    async fn generate(
+        &self,
+        params: MediaParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let prompt = params
+            .prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .map(|prompt| {
+                prompt
+                    .chars()
+                    .take(MAX_GENERATION_PROMPT_CHARS)
+                    .collect::<String>()
+            })
+            .ok_or_else(|| anyhow::anyhow!("prompt is required"))?;
+        let Some(client) = self.image_gen_client.clone() else {
+            return Ok(ToolResult::ok(json!({
+                "operation": "generate",
+                "available": false,
+                "reason": "No image-generation provider is configured.",
+            })));
+        };
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let image = tokio::time::timeout(
+            Duration::from_secs(self.timeout_secs),
+            client.generate(&prompt),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("image generation timed out after {}s", self.timeout_secs)
+        })??;
+        if image.data.is_empty() {
+            anyhow::bail!("image generation returned empty media");
+        }
+        if image.data.len() > MAX_GENERATED_MEDIA_BYTES {
+            anyhow::bail!("image generation output exceeds the media size limit");
+        }
+        if !image.media_type.starts_with("image/") {
+            anyhow::bail!("image generation returned a non-image media type");
+        }
+        let root = default_generated_media_dir();
+        tokio::fs::create_dir_all(&root).await?;
+        let extension = haven_llm::media::extension_for_media_type(&image.media_type);
+        let path = root.join(format!(
+            "{}.{}",
+            haven_common::types::new_id("file"),
+            extension
+        ));
+        let write_path = path.clone();
+        let bytes = image.data;
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&write_path)?;
+            if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+                drop(file);
+                let _ = std::fs::remove_file(&write_path);
+                return Err(error.into());
+            }
+            Ok(())
+        })
+        .await??;
+        let size = tokio::fs::metadata(&path).await?.len();
+        let asset = match register_generated_asset(
+            &self.managed_assets,
+            params.session_id.as_deref(),
+            &root,
+            path.clone(),
+            Some(
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            &image.media_type,
+            size,
+        ) {
+            Ok(asset) => asset,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(error);
+            }
+        };
+        Ok(ToolResult::ok(json!({
+            "operation": "generate",
+            "asset_id": asset.asset_id,
+            "media": self.model_media_reference(&asset, "generated_image", None),
+            "representation": "generated_image",
+        })))
     }
 
     async fn extract(
@@ -534,24 +780,6 @@ impl MediaTool {
     }
 }
 
-enum TranscriptionRoute {
-    Dedicated(Arc<dyn haven_llm::SttClient>),
-    Router(Arc<LlmRouter>),
-}
-
-async fn transcribe_with_route(
-    route: TranscriptionRoute,
-    bytes: Vec<u8>,
-) -> anyhow::Result<haven_llm::SttResult> {
-    match route {
-        TranscriptionRoute::Dedicated(client) => client.transcribe(&bytes).await,
-        TranscriptionRoute::Router(router) => router
-            .transcribe_audio(&bytes)
-            .await
-            .map_err(|error| anyhow::anyhow!(error)),
-    }
-}
-
 fn bound_text(text: &str, max_chars: usize) -> (String, bool) {
     let bounded: String = text.chars().take(max_chars).collect();
     (bounded, text.chars().count() > max_chars)
@@ -564,7 +792,14 @@ fn operation_name(operation: MediaOperation) -> &'static str {
         MediaOperation::Ocr => "ocr",
         MediaOperation::Transcribe => "transcribe",
         MediaOperation::Extract => "extract",
+        MediaOperation::Generate => "generate",
     }
+}
+
+fn confidence_passes(reported: Option<f32>, threshold: f32) -> bool {
+    reported
+        .map(|confidence| confidence >= threshold)
+        .unwrap_or(true)
 }
 
 #[async_trait]
@@ -574,7 +809,7 @@ impl Tool for MediaTool {
     }
 
     fn description(&self) -> String {
-        "Operate on managed multimodal assets by asset_id: inspect metadata, describe or OCR images with vision, transcribe audio, or extract text/tables from supported documents. Use the asset_id returned by attachments or other media-producing tools; host paths and base64 are never accepted.".into()
+        "Operate on managed multimodal assets by asset_id: inspect metadata, describe or OCR images, transcribe audio, or extract text/tables from documents; generate images with an explicit prompt. Use asset_id from attachments or other media-producing tools; host paths and base64 are never accepted.".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -582,6 +817,7 @@ impl Tool for MediaTool {
             Some("ocr") => RiskLevel::High,
             Some("describe") | Some("transcribe") => RiskLevel::Medium,
             Some("extract") | Some("inspect") => RiskLevel::Low,
+            Some("generate") => RiskLevel::Medium,
             _ => RiskLevel::Low,
         }
     }
@@ -590,13 +826,17 @@ impl Tool for MediaTool {
         match input["operation"].as_str() {
             Some("inspect") | Some("describe") | Some("ocr") | Some("transcribe")
             | Some("extract") => OperationIdempotency::Idempotent,
+            Some("generate") => OperationIdempotency::NonIdempotent,
             _ => OperationIdempotency::Unknown,
         }
     }
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
-        let asset_id = input["asset_id"].as_str().unwrap_or("unknown");
-        ToolConcurrency::Resource(format!("media:{asset_id}"))
+        let resource = input["asset_id"]
+            .as_str()
+            .or_else(|| input["prompt"].as_str())
+            .unwrap_or("unknown");
+        ToolConcurrency::Resource(format!("media:{resource}"))
     }
 
     fn default_timeout_secs(&self) -> u64 {
@@ -608,23 +848,26 @@ impl Tool for MediaTool {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract"]},
+                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "generate"]},
                 "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"},
-                "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}
+                "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS},
+                "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}
             },
-            "required": ["operation", "asset_id"],
+            "required": ["operation"],
             "oneOf": [
-                {"properties": {"operation": {"const": "inspect"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
-                {"properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
-                {"properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
-                {"properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
-                {"properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]}
+                {"properties": {"operation": {"const": "inspect"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
+                {"properties": {"operation": {"const": "describe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
+                {"properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
+                {"properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
+                {"properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"], "not": {"required": ["prompt"]}},
+                {"properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"], "not": {"required": ["asset_id"]}}
             ]
         });
         let unavailable = [
             ("describe", self.describe_available),
-            ("ocr", self.describe_available),
+            ("ocr", self.ocr_available),
             ("transcribe", self.transcribe_available),
+            ("generate", self.generate_available),
         ];
         if let Some(operations) = schema["properties"]["operation"]
             .get_mut("enum")
@@ -759,6 +1002,34 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct DedicatedOcrClient;
+
+    #[async_trait]
+    impl haven_llm::OcrClient for DedicatedOcrClient {
+        async fn recognize(
+            &self,
+            _image_bytes: &[u8],
+            _media_type: &str,
+        ) -> anyhow::Result<haven_llm::OcrResult> {
+            Ok(haven_llm::OcrResult {
+                text: "dedicated OCR".into(),
+                confidence: Some(0.99),
+            })
+        }
+    }
+
+    struct DummyImageGenClient;
+
+    #[async_trait]
+    impl haven_llm::ImageGenClient for DummyImageGenClient {
+        async fn generate(&self, _prompt: &str) -> anyhow::Result<haven_llm::GeneratedImage> {
+            Ok(haven_llm::GeneratedImage {
+                media_type: "image/png".into(),
+                data: b"png".to_vec(),
+            })
+        }
+    }
+
     #[async_trait]
     impl haven_llm::SttClient for DedicatedSttClient {
         async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
@@ -847,6 +1118,7 @@ mod tests {
             Some("same text"),
             true,
             true,
+            true,
         );
         let serialized = serde_json::to_string(&output).unwrap();
         assert_eq!(serialized.matches("same text").count(), 1);
@@ -865,8 +1137,10 @@ mod tests {
             .run(
                 MediaParams {
                     operation: MediaOperation::Describe,
-                    asset_id,
+                    asset_id: Some(asset_id),
                     focus: None,
+                    prompt: None,
+                    session_id: None,
                 },
                 CancellationToken::new(),
             )
@@ -904,8 +1178,10 @@ mod tests {
             .run(
                 MediaParams {
                     operation: MediaOperation::Transcribe,
-                    asset_id,
+                    asset_id: Some(asset_id),
                     focus: None,
+                    prompt: None,
+                    session_id: None,
                 },
                 CancellationToken::new(),
             )
@@ -916,6 +1192,77 @@ mod tests {
         assert_eq!(result.output["media"]["content"], "dedicated transcript");
         assert_eq!(client.calls.load(Ordering::SeqCst), 1);
         assert!(result.llm_usage.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ocr_prefers_dedicated_provider_without_router() {
+        let root = TempDir::new().unwrap();
+        let (registry, asset_id) = registered_asset(root.path(), "photo.png", "image/png");
+        let tool = MediaTool::new(None, registry, 1024, 10, 2_000)
+            .with_ocr_client(Some(Arc::new(DedicatedOcrClient)))
+            .with_capabilities(false, false);
+        let result = tool
+            .run(
+                MediaParams {
+                    operation: MediaOperation::Ocr,
+                    asset_id: Some(asset_id),
+                    focus: None,
+                    prompt: None,
+                    session_id: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["media"]["content"], "dedicated OCR");
+        assert!(result.llm_usage.is_empty());
+    }
+
+    #[test]
+    fn generation_is_explicit_and_capability_pruned() {
+        let unavailable = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000);
+        assert!(
+            !unavailable.input_schema()["properties"]["operation"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|operation| operation == "generate")
+        );
+
+        let available = unavailable.with_image_gen_client(Some(Arc::new(DummyImageGenClient)));
+        assert!(
+            available
+                .validate_input(&json!({
+                    "operation": "generate",
+                    "prompt": "a red fox in watercolor"
+                }))
+                .is_ok()
+        );
+        assert!(
+            available
+                .validate_input(&json!({
+                    "operation": "generate",
+                    "prompt": "a red fox in watercolor",
+                    "asset_id": "asset-0123456789abcdef0123456789abcdef"
+                }))
+                .is_err()
+        );
+        assert!(
+            available
+                .validate_input(&json!({
+                    "operation": "inspect",
+                    "asset_id": "asset-0123456789abcdef0123456789abcdef",
+                    "prompt": "unexpected"
+                }))
+                .is_err()
+        );
+        assert!(
+            available
+                .validate_input(&json!({"operation": "generate"}))
+                .is_err()
+        );
     }
 
     #[test]
@@ -942,6 +1289,7 @@ mod tests {
             &asset,
             "managed_file_ref",
             None,
+            true,
             true,
             true,
         ))

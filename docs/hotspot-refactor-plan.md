@@ -326,8 +326,8 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
    - 必须保留：deny-first、永久/会话授权、路径和进程安全检查、TOCTOU 防护、scheduled/MCP/skill/Tauri 统一过闸。
    - 完成标志：所有副作用入口只有一个授权决策入口，前端不能通过 `confirmed` 或旧字段绕过它。
 
-2. **输入与媒体：`InputPipeline` / `MediaGateway`**
-   - 目标：将硬件采集、录音生命周期、转写、OCR/ASR、附件分析和媒体生成重划分为明确的 `MediaService` / capability job；输入层只拥有采集，provider 选择和 fallback 由媒体服务统一处理。
+2. **输入与媒体：`InputPipeline` / `MediaTool`**
+   - 目标：将硬件采集、录音生命周期与媒体内容理解重划分为明确边界；输入层只拥有采集，provider 选择和 fallback 由 `haven-tools::builtin::media` 统一处理。
    - 可以删除：`provider == "llm"` 的双路径特判、重复 STT 路由、隐式 eager preprocessing 和不透明的媒体 fallback 组合。
    - 必须保留：录音取消/VAD 语义、原始附件可用性、低置信度降级、能力不可用时的可观察错误和 headless 测试能力。
 

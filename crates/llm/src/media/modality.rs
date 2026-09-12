@@ -4,10 +4,9 @@
 //! filename extension fallback → text-decoding fallback (UTF-8 then GBK,
 //! which covers Chinese text files on Windows) → `Unknown`.
 //!
-//! The detected [`Modality`] maps directly to the media gateway's routing
-//! key (see [`crate::media::gateway`] / [`crate::media::coverage`]).
+//! The detected [`Modality`] is consumed by the model-facing media tool.
 
-/// Detected input modality. Maps directly to the gateway's routing key.
+/// Detected input modality used by the media tool and provider projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Modality {
     Text,

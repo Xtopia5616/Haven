@@ -51,9 +51,9 @@ pub struct SttConfig {
     pub model: String,
     /// Transcription timeout in seconds.
     pub timeout_secs: u64,
-    /// Minimum transcription confidence (0.0-1.0) for the gateway's
+    /// Minimum transcription confidence (0.0-1.0) for the media tool's
     /// confidence gate: when the provider reports a lower confidence the
-    /// gateway falls back to the main model. Providers without confidence
+    /// tool falls back to the main model. Providers without confidence
     /// reporting (e.g. OpenAI Whisper) ignore this and fall back on error /
     /// empty result instead.
     pub min_confidence: f32,
@@ -91,9 +91,9 @@ pub struct OcrConfig {
     pub base_url: String,
     /// OCR timeout in seconds.
     pub timeout_secs: u64,
-    /// Minimum recognition confidence (0.0-1.0) for the gateway's
+    /// Minimum recognition confidence (0.0-1.0) for the media tool's
     /// confidence gate: when the provider reports a lower average
-    /// confidence the gateway falls back to the main model. Providers
+    /// confidence the tool falls back to the main model. Providers
     /// without confidence reporting ignore this and fall back on error /
     /// empty result instead.
     pub min_confidence: f32,

@@ -1,22 +1,15 @@
 use async_trait::async_trait;
 use haven_common::config::default_generated_media_dir;
 use haven_common::types::RiskLevel;
-use haven_llm::LlmRouter;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::media::{
-    MediaOperation, MediaParams, MediaTool, model_media_reference_with_capabilities,
-    register_generated_asset,
-};
+use super::media::{MediaOperation, MediaParams, MediaTool, register_generated_asset};
 use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
-/// Default vision byte / timeout limits (aligned with FilesTool defaults).
-const DEFAULT_VISION_MAX_BYTES: u64 = 8 * 1024 * 1024;
-const DEFAULT_VISION_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_WAIT_SECS: u64 = 10;
 const MAX_WAIT_SECS: u64 = 120;
 const UI_TREE_CAP: usize = 100;
@@ -28,12 +21,9 @@ struct ManagedCapture {
 }
 
 pub struct WindowTool {
-    router: Option<Arc<LlmRouter>>,
     managed_assets: ManagedAssetRegistry,
+    media_tool: Option<Arc<MediaTool>>,
     capture_root: PathBuf,
-    vision_max_bytes: u64,
-    vision_timeout_secs: u64,
-    vision_available: bool,
 }
 
 /// Window operation.
@@ -88,20 +78,16 @@ pub struct WindowParams {
 }
 
 impl WindowTool {
-    pub fn new(router: Option<Arc<LlmRouter>>, managed_assets: ManagedAssetRegistry) -> Self {
-        let vision_available = router.is_some();
+    pub fn new(managed_assets: ManagedAssetRegistry) -> Self {
         Self {
-            router,
             managed_assets,
+            media_tool: None,
             capture_root: default_generated_media_dir(),
-            vision_max_bytes: DEFAULT_VISION_MAX_BYTES,
-            vision_timeout_secs: DEFAULT_VISION_TIMEOUT_SECS,
-            vision_available,
         }
     }
 
-    pub(crate) fn with_vision_available(mut self, available: bool) -> Self {
-        self.vision_available = available;
+    pub(crate) fn with_media_tool(mut self, media_tool: Arc<MediaTool>) -> Self {
+        self.media_tool = Some(media_tool);
         self
     }
 
@@ -168,16 +154,14 @@ impl WindowTool {
                 let capture = self
                     .capture_screen(params.session_id.as_deref(), cancel)
                     .await?;
+                let media_tool = self
+                    .media_tool
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?;
                 Ok(ToolResult::ok(serde_json::json!({
                     "operation": "screenshot",
                     "asset_id": capture.asset.asset_id,
-                    "media": model_media_reference_with_capabilities(
-                        &capture.asset,
-                        "managed_file_ref",
-                        None,
-                        self.vision_available,
-                        false,
-                    ),
+                    "media": media_tool.managed_media_reference(&capture.asset),
                 })))
             }
             WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
@@ -270,39 +254,20 @@ impl WindowTool {
         // screenshot is registered first, then all bytes/capability handling
         // is delegated to the canonical media tool.
         let capture = self.capture_screen(session_id, cancel.clone()).await?;
-        if !self.vision_available {
-            return Ok(ToolResult::ok(serde_json::json!({
-                "operation": "ocr",
-                "asset_id": capture.asset.asset_id,
-                "media": model_media_reference_with_capabilities(
-                    &capture.asset,
-                    "managed_file_ref",
-                    None,
-                    false,
-                    false,
-                ),
-                "available": false,
-                "ocr_unavailable": true,
-                "reason": "No vision-capable LLM router is configured."
-            })));
-        }
-        MediaTool::new(
-            self.router.clone(),
-            self.managed_assets.clone(),
-            self.vision_max_bytes,
-            self.vision_timeout_secs,
-            32_000,
-        )
-        .with_capabilities(true, false)
-        .run(
-            MediaParams {
-                operation: MediaOperation::Ocr,
-                asset_id: capture.asset.asset_id,
-                focus: None,
-            },
-            cancel,
-        )
-        .await
+        self.media_tool
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?
+            .run(
+                MediaParams {
+                    operation: MediaOperation::Ocr,
+                    asset_id: Some(capture.asset.asset_id),
+                    focus: None,
+                    prompt: None,
+                    session_id: session_id.map(str::to_owned),
+                },
+                cancel,
+            )
+            .await
     }
 
     async fn wait(
@@ -518,7 +483,11 @@ impl Tool for WindowTool {
                 }
             ]
         });
-        if !self.vision_available {
+        let ocr_available = self
+            .media_tool
+            .as_ref()
+            .is_some_and(|media_tool| media_tool.ocr_available());
+        if !ocr_available {
             if let Some(operations) = schema["properties"]["operation"]
                 .get_mut("enum")
                 .and_then(Value::as_array_mut)
@@ -1124,7 +1093,9 @@ mod tests {
     use serde_json::json;
 
     fn tool() -> WindowTool {
-        WindowTool::new(None, ManagedAssetRegistry::default()).with_vision_available(true)
+        let registry = ManagedAssetRegistry::default();
+        let media = MediaTool::new(None, registry.clone(), 8 * 1024 * 1024, 60, 32_000);
+        WindowTool::new(registry).with_media_tool(Arc::new(media.with_capabilities(true, false)))
     }
 
     #[test]

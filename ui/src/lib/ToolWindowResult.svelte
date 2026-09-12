@@ -2,6 +2,9 @@
 	import JsonView from '$lib/JsonView.svelte';
 
 	let { data = {} } = $props();
+	let media = $derived(data.media ?? {});
+	let mediaAssetId = $derived(data.asset_id ?? media.asset_id ?? '');
+	let mediaText = $derived(typeof media.content === 'string' ? media.content : '');
 </script>
 
 {#if Array.isArray(data.windows)}
@@ -39,8 +42,8 @@
 	</div>
 	{#if data.width != null && data.height != null}<div class="tool-card-meta">{data.width}×{data.height}{data.format ? ` · ${data.format.toUpperCase()}` : ''}</div>{/if}
 {:else if data.operation === 'ocr'}
-	<div class="window-detail"><span class="window-op">{data.ocr_error ? 'OCR 失败' : data.ocr_unavailable ? 'OCR 不可用' : data.too_large ? '截图过大' : 'OCR 完成'}</span>{#if data.asset_id}<span class="window-asset">{data.asset_id}</span>{/if}</div>
-	{#if data.text}<pre class="content-preview">{data.text}</pre>{:else if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
+	<div class="window-detail"><span class="window-op">{data.available === false ? 'OCR 不可用' : data.success === false ? 'OCR 失败' : 'OCR 完成'}</span>{#if mediaAssetId}<span class="window-asset">{mediaAssetId}</span>{/if}</div>
+	{#if mediaText}<pre class="content-preview">{mediaText}</pre>{:else if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
 {:else if data.operation === 'wait'}
 	<div class="window-detail">
 		<span class="window-op">{data.matched ? '已匹配' : data.timed_out ? '等待超时' : '等待结束'}</span>

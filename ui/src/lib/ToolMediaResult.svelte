@@ -3,17 +3,30 @@
 
 	let { data = {} } = $props();
 	let media = $derived(data.media ?? {});
-	let asset = $derived(media.asset ?? {});
-	let representation = $derived(data.representation ?? media.preferred_representation ?? '');
-	let text = $derived(typeof data.text === 'string' ? data.text : '');
+	let assetId = $derived(data.asset_id ?? media.asset_id ?? '');
+	let filename = $derived(media.filename ?? '');
+	let representation = $derived(
+		data.representation ?? media.representation ?? media.preferred_representation ?? '',
+	);
+	let availableRepresentations = $derived(
+		Array.isArray(media.available_representations) ? media.available_representations : [],
+	);
+	let recommendedNext = $derived(
+		typeof media.recommended_next === 'string' ? media.recommended_next : '',
+	);
+	let text = $derived(typeof media.content === 'string' ? media.content : '');
 </script>
 
 <div class="media-detail">
 		<span class="media-op">{data.operation || '媒体操作'}</span>
-		{#if data.asset_id}<span class="media-asset">{data.asset_id}</span>{/if}
-		{#if asset.filename}<span class="media-name">{asset.filename}</span>{/if}
+		{#if assetId}<span class="media-asset">{assetId}</span>{/if}
+		{#if filename}<span class="media-name">{filename}</span>{/if}
 </div>
 {#if representation}<div class="tool-card-meta">表示：{representation}</div>{/if}
+{#if availableRepresentations.length}
+	<div class="tool-card-meta">可用表示：{availableRepresentations.join('、')}</div>
+{/if}
+{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
 {#if data.available === false}
 	<p class="tool-card-empty">{data.reason || '此媒体能力当前不可用'}</p>
 {:else if text}

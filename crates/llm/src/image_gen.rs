@@ -17,7 +17,7 @@ use haven_common::config::{ImageGenConfig, ProviderConfig, provider_config_wire_
 use std::time::Duration;
 
 /// Bound the provider response before JSON parsing or base64 decoding. The
-/// decoded generated-media cap is enforced separately by the gateway.
+/// decoded generated-media cap is enforced separately by the media tool.
 pub const MAX_IMAGE_GEN_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// A generated image: raw bytes plus the media type the provider returned.

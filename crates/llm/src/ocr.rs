@@ -4,17 +4,16 @@
 //! provider id to a concrete client (the OCR counterpart of `stt.rs`).
 //! Providers:
 //! - `none`: no client (extract intent passes the image through)
-//! - `llm`: no dedicated client — [`crate::media::MediaGateway`] runs a
-//!   single vision/`image_model` extraction (avoids duplicating the
-//!   fallback path)
+//! - `llm`: no dedicated client — the model-facing media tool runs a single
+//!   vision/`image_model` extraction
 //! - `baidu`: Baidu 通用文字识别（标准版）
 //! - `azure`: Azure AI Vision (Computer Vision 3.2 OCR)
 //! - `tencent`: Tencent Cloud 通用印刷体识别
 //!
 //! Every client takes raw image bytes (base64/raw body per provider wire
 //! format) and returns [`OcrResult`]; providers that report per-word
-//! confidence (Baidu, Tencent) fill `confidence` so the gateway's confidence
-//! gate can fall back to the main model, providers that do not (Azure)
+//! confidence (Baidu, Tencent) fill `confidence` so the media tool's
+//! confidence gate can fall back to the main model, providers that do not (Azure)
 //! leave it `None` and fall back on error / empty text instead.
 
 use anyhow::Result;
@@ -44,7 +43,7 @@ pub trait OcrClient: Send + Sync {
 
 /// Build the OCR client for a given config. Returns `None` when the
 /// configured provider is `none` or `llm` (`llm` is handled once by the
-/// media gateway's vision path). Errors for an unknown provider id.
+/// media tool's vision path). Errors for an unknown provider id.
 pub fn build_ocr_client(cfg: &OcrConfig) -> Result<Option<Box<dyn OcrClient>>> {
     let timeout = Duration::from_secs(cfg.timeout_secs);
     let client: Box<dyn OcrClient> = match cfg.provider.as_str() {

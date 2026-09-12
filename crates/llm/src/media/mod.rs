@@ -1,35 +1,14 @@
-//! Multimodal media gateway (merged from `haven-gateway`, formerly owned by
-//! the input crate).
+//! Provider-neutral media primitives.
 //!
-//! Owns the routing pipeline over the [`crate::LlmRouter`] and the dedicated
-//! media clients (STT / OCR / image generation). TTS is intentionally exposed
-//! only through the model-facing `audio.speak` tool.
-//!
-//! - [gateway::MediaGateway::process_attachment] — for a binary attachment:
-//!   detect modality, classify intent, run the coverage action. Extraction
-//!   actions run through the dedicated provider with a confidence gate; a
-//!   result below `min_confidence` (or an error / empty result) falls back to
-//!   the main model, which is called directly with the media as a content part.
-//! - [gateway::MediaGateway::process_generate] — pure-text image-generation
-//!   requests, saving the generated file under the dedicated generated-media
-//!   directory.
-//!
-//! Everything is in-process: there is no separate HTTP service, the agent
-//! calls these methods while building the user message.
+//! Model-facing media orchestration belongs to `haven-tools::builtin::media`.
+//! This crate only owns modality detection, provider content parts, the media
+//! projection, and the shared vision adapter.
 
-pub mod coverage;
-pub mod gateway;
-pub mod intent;
 pub mod modality;
 pub mod multimodal;
 pub mod projection;
 pub mod vision;
 
-pub use coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
-pub use gateway::{
-    AttachmentOutcome, GenerateOutcome, GeneratedMedia, MAX_GENERATED_MEDIA_BYTES, MediaGateway,
-};
-pub use intent::{GenerateKind, Intent, detect_intent};
 pub use modality::{
     Modality, detect_media_type, detect_media_type_with_filename, detect_modality,
     extension_for_media_type,

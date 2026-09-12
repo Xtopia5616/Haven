@@ -151,12 +151,12 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   （ADR 0028）。
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
-- `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
-  附件 → 模态/意图判定 → 专用 provider + 置信度门槛 + 主模型兜底；图片/音频以内联
-  `ContentPart` 进入模型，普通文件落盘后以路径交给 `files`，视频暂不盲发到 provider。
-  MIME 归一化由 host 边界复用统一检测函数。只处理文生图等 ingress generate 请求；TTS
-  由 `audio(operation="speak")` 工具显式触发并在本机播放。
-- `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体网关的
+- `media/`：provider-neutral 媒体原语——模态检测、provider content parts、MediaPlan 投影和
+  vision adapter。媒体理解、OCR/STT fallback、文档抽取和文生图由 `haven-tools` 的
+  `builtin::media` 工具统一编排；图片/音频以内联 `ContentPart` 进入模型，普通文件落盘后
+  以受管 `asset_id` 交给 `media`，视频暂不盲发到 provider。TTS 由
+  `audio(operation="speak")` 工具显式触发并在本机播放。
+- `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体工具的
   自动处理分支，因此用户文本不会因为关键词被隐式朗读。
 - `registry.rs` / `stream_rules.rs`：模型注册表、流式规则（生产 router 默认启用 `code_block_abort`）。
 
@@ -215,7 +215,7 @@ provider（STT 客户端来自 `haven-llm`）。
 - `inference.rs` / `memory_index.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_index` 只适配 embedding provider 与索引生命周期，`prompt` 通过 typed memory recall 组装 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
 - `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签/谓词规范化、prompt
   字段清洗和 JSON array 提取；`InferenceEngine` 负责调度与持久化（ADR 0029）。
-- 调用 `LlmRouter` 与 `MediaGateway`、执行 `haven-tools` 工具、写 `haven-memory`、
+- 调用 `LlmRouter`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
 
 **步数预算（Phase 7/8 / J1）**：`session.max_steps` 是**单次 run**上限。pause / ask / confirm 后再次
@@ -317,7 +317,7 @@ Tauri command 的迁移期 structured surface，未注册进模型目录；后�
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
 - `app_state.rs`：装配 `AppState`（db / router / tools / executor / agent / pipeline / shell /
-  `config_service` / gateway / stt_client）。
+  `config_service` / media clients / stt_client）。
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
   `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
 - `commands/recording.rs`：host 校验并落盘上传附件、分配 `asset_id`，并由 app-binary
@@ -346,20 +346,22 @@ Tauri command 的迁移期 structured surface，未注册进模型目录；后�
 | | `haven-input` | `haven-llm` |
 |---|---|---|
 | 角色 | **消费方**：录音 → VAD → WAV → 调 `SttClient` | **实现方**：`LlmClient::transcribe` + `build_stt_client` / `adapter_for` |
-| 复用点 | `InputPipeline::transcribe`（用户麦克风录音） | `MediaGateway::process_attachment`（agent 的附件；音频理解进入 `ContentPart::Audio`，抽取仍走 STT） |
+| 复用点 | `InputPipeline::transcribe`（用户麦克风录音） | `haven-tools::builtin::media`（agent 的受管资产；工具内统一走 STT / 多模态 fallback） |
 
 同一个 `SttClient` 被两处复用是**有意的共享**，不是职责重复：input 走「用户录音」路径，
-llm 的 `media/` 走「agent 附件」路径。云端 STT（Whisper / Groq / Gemini / Deepgram /
+工具层的 `media` 走「agent 资产」路径。云端 STT（Whisper / Groq / Gemini / Deepgram /
 AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider = "llm"` 走
 `LlmRouter::transcribe_audio`（原生 `transcribe`，否则 multimodal chat 回退）。
 MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
-### 3.2 媒体网关的历史归属
+### 3.2 媒体编排归属
 
-`haven-llm::media` 来源是原 `haven-gateway` crate（早期挂在 input 下）。实现已在
-`llm/src/media/`，读代码时以 `llm/media/mod.rs` 的模块注释为准；input 只负责采集与转写。
+媒体理解与生成统一位于 `haven-tools::builtin::media`，通过 `asset_id`、工具 schema、权限和
+tool usage 进入 ReAct。`haven-llm::media` 只保留 modality、provider content parts、
+MediaPlan 投影和 vision 等 provider-neutral 原语；`haven-agent` ingress 只负责持久化原始输入。
+本次破坏性收敛删除旧的 `MediaGateway` 与隐式 eager preprocessing，详见 ADR 0130。
 
-工具和 gateway 的一次性图片理解统一调用 `LlmRouter::analyze_image`；该入口在
+工具的一次性图片理解统一调用 `LlmRouter::analyze_image`；该入口在
 `haven-llm` 内完成 capability planning、base64 与 canonical image part 构造。工具层
 不再各自拼装 provider-facing 图片消息。`media` 的音频也通过
 `LlmRouter::transcribe_audio` 提供转写；媒体派生结果携带 canonical `MediaInput`，不再
@@ -396,6 +398,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-12 | §2.5 Tools / Agent / App：删除 `MediaGateway`、coverage、intent 与 ingress eager preprocessing；由单一共享 `MediaTool` 统一 OCR、STT fallback、文档抽取和显式媒体生成，并同步 UI 媒体结果契约（ADR 0130） |
 | 2026-09-12 | §2.5 Agent / Tools / LLM：统一 producer→asset_id→media consumer；files rich path、window OCR、audio record 均收敛到同一资产链，并在模型请求中说明 MediaPlan 表示（ADR 0129） |
 | 2026-09-12 | §2.5 Tools / Agent / Common：按实时路由能力裁剪媒体与录音 operation；structured-first observation 保留恢复字段；仓库会话默认工作区路径；区分只读重试安全性并补充 runtime capability snapshot（ADR 0128） |
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |

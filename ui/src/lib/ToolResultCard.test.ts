@@ -820,6 +820,26 @@ describe('ToolResultCard window', () => {
 		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
 		expect(screen.getByText('1920×1080 · PNG')).toBeTruthy();
 	});
+
+	it('renders OCR through the canonical media result shape', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'window',
+			content: JSON.stringify({
+				operation: 'ocr',
+				asset_id: 'asset-0123456789abcdef0123456789abcdef',
+				media: {
+					asset_id: 'asset-0123456789abcdef0123456789abcdef',
+					representation: 'ocr_text',
+					content: '窗口中的文字',
+				},
+				representation: 'ocr_text',
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('OCR 完成')).toBeTruthy();
+		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
+		expect(screen.getByText('窗口中的文字')).toBeTruthy();
+	});
 });
 
 describe('ToolResultCard files', () => {
@@ -830,9 +850,12 @@ describe('ToolResultCard files', () => {
 				operation: 'read',
 				asset_id: 'asset-0123456789abcdef0123456789abcdef',
 				media: {
-					asset: { asset_id: 'asset-0123456789abcdef0123456789abcdef', filename: 'diagram.png' },
+					asset_id: 'asset-0123456789abcdef0123456789abcdef',
+					filename: 'diagram.png',
+					content: 'A flow diagram with three nodes.',
+					available_representations: ['managed_file_ref', 'image_description'],
+					recommended_next: 'media.describe',
 				},
-				text: 'A flow diagram with three nodes.',
 				representation: 'image_description',
 			}),
 		});
@@ -840,6 +863,8 @@ describe('ToolResultCard files', () => {
 		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
 		expect(screen.getByText('diagram.png')).toBeTruthy();
 		expect(screen.getByText('A flow diagram with three nodes.')).toBeTruthy();
+		expect(screen.getByText('可用表示：managed_file_ref、image_description')).toBeTruthy();
+		expect(screen.getByText('建议下一步：media.describe')).toBeTruthy();
 	});
 
 	it('renders image analysis results instead of a blank read state', async () => {

@@ -3,6 +3,9 @@
 日期：2026-09-10
 状态：已采纳
 
+补充：媒体编排归属与 gateway 删除由 ADR 0130 取代；本 ADR 仅保留
+`LlmRouter::analyze_image` 作为 provider-facing vision 原语的历史决策。
+
 说明：本 ADR 的请求入口决定仍然有效；模型工具契约与跨工具资产引用由后续 ADR 0123
 进一步收敛。
 

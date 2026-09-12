@@ -2,7 +2,7 @@
 //!
 //! Callers provide bytes and a prompt; this module owns capability planning,
 //! base64 encoding and canonical content-part construction. Keeping those
-//! details here prevents tools and the ingress gateway from drifting into
+//! details here prevents tools and the ingress path from drifting into
 //! separate provider-facing implementations.
 
 use base64::Engine;

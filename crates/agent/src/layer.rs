@@ -17,11 +17,6 @@ pub struct AgentLayer {
     pub(crate) inference: Arc<InferenceEngine>,
     pub(crate) title: Option<TitleGenerator>,
     pub(crate) title_in_flight: Arc<Mutex<HashSet<String>>>,
-    /// Multi-modal media gateway (modality detection → intent → routing).
-    /// `None` in headless/test contexts: attachment pre-processing and
-    /// media generation are skipped and the agent handles media inline.
-    /// RwLock so provider switches can hot-swap it (like the router).
-    pub(crate) gateway: tokio::sync::RwLock<Option<Arc<haven_llm::media::MediaGateway>>>,
 }
 
 impl AgentLayer {
@@ -92,15 +87,7 @@ impl AgentLayer {
             inference,
             title,
             title_in_flight: Arc::new(Mutex::new(HashSet::new())),
-            gateway: tokio::sync::RwLock::new(None),
         }
-    }
-
-    /// Install (or clear) the media gateway. Set at app startup and on
-    /// provider hot-swaps; tests leave it `None` so the agent behaves
-    /// exactly as before.
-    pub async fn set_gateway(&self, gateway: Option<Arc<haven_llm::media::MediaGateway>>) {
-        *self.gateway.write().await = gateway;
     }
 
     /// Persist usage from media work performed before a ReAct step exists.

@@ -3,6 +3,9 @@
 日期：2026-09-12
 状态：已采纳
 
+> 说明：ADR 0130 取代本 ADR 中关于 gateway/legacy adapter 的运行时实现与兼容承诺；当前版本以破坏性
+> 的工具层统一为准。
+
 关联：[ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)、
 [ADR 0121：多模态表示持久化与快照边界](0121-media-persistence-and-snapshot-boundary.md)、
 [ADR 0122：工具媒体请求统一入口](0122-unified-tool-media-entrypoints.md)、
@@ -52,7 +55,8 @@ OCR 可能绕过资产，录音可能只返回文本；能力 snapshot 与工具
 - `window.ocr`、`media.ocr` 的风险与确认门禁不因入口合并而降低；能力不可用只裁剪 schema
   或返回结构化不可用，不绕过授权。
 - provider wire shape 不变；notice 只是 ReAct 请求副本中的文本 part，不写入 X12 事件、
-  `messages` 或 `session_steps`。已有旧资产继续由 legacy adapter 兼容，没有数据库迁移。
+  `messages` 或 `session_steps`。旧的 gateway 运行时不再由 legacy adapter 兼容；升级后的运行态按
+  ADR 0130 的当前工具契约处理。
 
 ## 破坏性影响与重置
 
