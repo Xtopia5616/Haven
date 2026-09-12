@@ -15,8 +15,17 @@ export type IconDefinition = {
 	opticalScale?: number;
 };
 
+/**
+ * Keep SVG fragments stable across SSR and browser hydration. Browsers
+ * serialize SVG void-looking tags such as `<path />` as `<path></path>`;
+ * using explicit end tags keeps the `{@html ...}` value identical on both
+ * sides of the hydration boundary.
+ */
+const normalizeSvgBody = (body: string): string =>
+	body.replace(/<([a-z]+)([^>]*?)\s*\/>/g, '<$1$2></$1>');
+
 const outline = (body: string, strokeWidth = 2, opticalScale = 1): IconDefinition => ({
-	body,
+	body: normalizeSvgBody(body),
 	fill: 'none',
 	stroke: 'currentColor',
 	strokeWidth,
@@ -24,7 +33,7 @@ const outline = (body: string, strokeWidth = 2, opticalScale = 1): IconDefinitio
 });
 
 const filled = (body: string): IconDefinition => ({
-	body,
+	body: normalizeSvgBody(body),
 	fill: 'currentColor',
 	stroke: 'none',
 	strokeWidth: 0,

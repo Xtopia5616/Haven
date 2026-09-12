@@ -28,6 +28,12 @@ describe('Icon', () => {
 		}
 	});
 
+	it('uses explicit SVG end tags for stable SSR hydration', () => {
+		for (const definition of Object.values(ICONS)) {
+			expect(definition.body).not.toMatch(/<\w+[^>]*\/>/);
+		}
+	});
+
 	it('keeps optical workspace icon line weights intentional', () => {
 		expect(ICONS.briefcase.strokeWidth).toBe(1.9);
 		expect(ICONS.settings.strokeWidth).toBe(2.2);
