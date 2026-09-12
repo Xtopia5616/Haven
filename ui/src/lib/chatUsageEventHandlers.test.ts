@@ -2,11 +2,14 @@ import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createChatUsageEventHandlers } from './chatUsageEventHandlers.ts';
 import { sessionLlmUsageStore, sessionTokenStatsStore } from './sessionUsage.ts';
+import { mediaPlanStore, notificationStore } from './stores.ts';
 
 describe('createChatUsageEventHandlers', () => {
 	beforeEach(() => {
 		sessionLlmUsageStore.set({});
 		sessionTokenStatsStore.set({});
+		mediaPlanStore.set({});
+		notificationStore.set([]);
 	});
 
 	it('keeps ingress media and other tool usage out of Agent totals', () => {
@@ -51,5 +54,35 @@ describe('createChatUsageEventHandlers', () => {
 			expect.objectContaining({ call_kind: 'media', step_number: null }),
 			expect.objectContaining({ call_kind: 'tool', step_number: null }),
 		]);
+	});
+
+	it('keeps the selected representation and reason visible for downgraded media', () => {
+		const handle = createChatUsageEventHandlers()['agent:media_plan'];
+		handle({
+			event: 'agent:media_plan',
+			id: 3,
+			payload: {
+				sessionId: 'ses-media',
+				stepNumber: 4,
+				runId: 8,
+				role: 'audio_model',
+				strategy: 'auto',
+				projections: [
+					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },
+				],
+				notices: [{ assetId: 'asset-1', code: 'raw_capability_unknown' }],
+			},
+		});
+
+		expect(get(mediaPlanStore)['ses-media']).toEqual([
+			expect.objectContaining({
+				strategy: 'auto',
+				projections: [
+					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },
+				],
+			}),
+		]);
+		expect(get(notificationStore)[0].msg).toContain('转写文本');
+		expect(get(notificationStore)[0].msg).toContain('当前模型能力未知');
 	});
 });

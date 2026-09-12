@@ -82,6 +82,12 @@ export interface AgentMediaPlanPayload {
 	stepNumber: number;
 	runId: number;
 	role: string;
+	strategy: string;
+	projections: Array<{
+		assetId: string;
+		representation: string;
+		mode: string;
+	}>;
 	notices: Array<{ assetId: string; code: string }>;
 }
 
@@ -236,6 +242,12 @@ interface AgentMediaPlanWirePayload {
 	step_number: number;
 	run_id: number;
 	role: string;
+	strategy: string;
+	projections: Array<{
+		asset_id: string;
+		representation: string;
+		mode: string;
+	}>;
 	notices: Array<{ asset_id: string; code: string }>;
 }
 interface AgentWebSearchWirePayload {
@@ -415,6 +427,12 @@ export function mapAgentEvent<K extends AgentEventName>(
 				stepNumber: payload.step_number,
 				runId: payload.run_id,
 				role: payload.role,
+				strategy: payload.strategy,
+				projections: payload.projections.map((projection) => ({
+					assetId: projection.asset_id,
+					representation: projection.representation,
+					mode: projection.mode,
+				})),
 				notices: payload.notices.map((notice) => ({
 					assetId: notice.asset_id,
 					code: notice.code,

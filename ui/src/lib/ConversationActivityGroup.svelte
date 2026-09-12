@@ -3,6 +3,7 @@
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
+	import MediaPlanCard from '$lib/MediaPlanCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import { toolDisplayName } from '$lib/toolIdentity.ts';
 
@@ -16,6 +17,7 @@
 		onAskSelectionChange = () => {},
 		onIgnore = () => {},
 		onAskSubmit = () => {},
+		mediaPlans = [],
 	} = $props();
 
 	// A work process is visible while it is active, then becomes a compact
@@ -52,6 +54,12 @@
 			? `${stepCount || entries.length} 个步骤`
 			: `${stepCount || entries.length} 个步骤 · 点击查看详情`,
 	);
+	let activityStepNumbers = $derived(
+		new Set(entries.map(({ message }) => message.stepNumber).filter((step) => step != null)),
+	);
+	let visibleMediaPlans = $derived(
+		mediaPlans.filter((plan) => activityStepNumbers.has(plan.stepNumber)),
+	);
 </script>
 
 <section
@@ -72,6 +80,14 @@
 			<span class="activity-summary">{summary}</span>
 			<span class="activity-meta">{meta}</span>
 		{/snippet}
+
+		{#if visibleMediaPlans.length > 0}
+			<div class="media-plan-items">
+				{#each visibleMediaPlans as plan (`${plan.stepNumber}:${plan.runId}:${plan.role}`)}
+					<MediaPlanCard {plan} />
+				{/each}
+			</div>
+		{/if}
 
 		<div class="activity-items">
 			{#each entries as entry (entry.message.id)}
@@ -178,6 +194,12 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
 		padding: var(--md-sys-space-sm) 0 var(--md-sys-space-xs);
+	}
+	.media-plan-items {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-xs);
+		padding-top: var(--md-sys-space-sm);
 	}
 	@keyframes activity-pulse {
 		0%,

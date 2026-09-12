@@ -633,17 +633,17 @@ impl ReActEngine {
                         let retry_role =
                             super::choose_agent_role(&router, &raw_retry_context).await;
                         *role = retry_role;
-                        let (retry_context, media_notices) = raw_retry_context.with_capabilities(
+                        let (retry_context, media_plan) = raw_retry_context.with_capabilities(
                             &router.capability_profile(retry_role),
                             self.media_strategy(),
                         );
-                        super::emit_media_plan_notices(
+                        super::emit_media_plan(
                             &ctx.emitter,
                             &ctx.session_id,
                             ctx.step_num,
                             ctx.run_id,
                             retry_role,
-                            media_notices,
+                            media_plan,
                         )
                         .await;
                         match self

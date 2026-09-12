@@ -9,7 +9,7 @@
 
 use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_requirements};
 use haven_common::media::{
-    CapabilityProfile, MediaInputStrategy, MediaPlanNotice, MediaProjectionMode, build_media_plan,
+    CapabilityProfile, MediaInputStrategy, MediaPlan, MediaProjectionMode, build_media_plan,
     legacy_attachment_to_media_input,
 };
 use haven_common::types::{CanonicalMessage, ContentPart, MessageAttachment};
@@ -55,7 +55,7 @@ impl RequestContext {
         &self,
         capabilities: &CapabilityProfile,
         strategy: MediaInputStrategy,
-    ) -> (Self, Vec<MediaPlanNotice>) {
+    ) -> (Self, MediaPlan) {
         let mut messages = self.messages.clone();
         let mut media_inputs = Vec::new();
         let mut media_positions = Vec::new();
@@ -71,7 +71,6 @@ impl RequestContext {
         }
 
         let plan = build_media_plan(&media_inputs, capabilities, strategy);
-        let notices = plan.notices.clone();
         let projected = haven_llm::media::project_media_plan(&plan, &media_inputs).ok();
         let projected_by_asset = projected
             .into_iter()
@@ -108,7 +107,7 @@ impl RequestContext {
             message.content = content;
         }
         let repairs = crate::sanitize_canonical(&mut messages);
-        (Self { messages, repairs }, notices)
+        (Self { messages, repairs }, plan)
     }
 
     pub(super) fn messages(&self) -> &[CanonicalMessage] {
@@ -263,7 +262,7 @@ mod tests {
             ..CapabilityProfile::default()
         };
 
-        let (planned, notices) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
+        let (planned, plan) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
 
         assert!(
             !planned.messages()[0]
@@ -274,7 +273,7 @@ mod tests {
         assert!(planned.messages()[0].content.iter().any(|part| {
             matches!(part, ContentPart::Text(text) if text.contains("降级为文本占位"))
         }));
-        assert!(notices.iter().any(|notice| {
+        assert!(plan.notices.iter().any(|notice| {
             notice.code == haven_common::media::MediaPlanNoticeCode::RawCapabilityUnsupported
         }));
     }
@@ -299,7 +298,7 @@ mod tests {
             ..CapabilityProfile::default()
         };
 
-        let (planned, notices) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
+        let (planned, plan) = context.with_capabilities(&profile, MediaInputStrategy::Auto);
         let content = &planned.messages()[0].content;
         assert_eq!(
             content
@@ -315,7 +314,7 @@ mod tests {
                 .count(),
             1
         );
-        assert!(notices.iter().any(|notice| {
+        assert!(plan.notices.iter().any(|notice| {
             notice.code == haven_common::media::MediaPlanNoticeCode::InputPartLimit
         }));
     }

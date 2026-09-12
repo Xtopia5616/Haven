@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::session::{SessionExecutor, SessionStatus};
 use haven_common::config::ContextLimitsConfig;
 use haven_common::media::{
-    CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, build_media_plan,
-    legacy_attachment_to_media_input,
+    CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, MediaPlan,
+    MediaProjectionMode, build_media_plan, legacy_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
@@ -183,31 +183,50 @@ pub(super) async fn choose_agent_role(
     preferred
 }
 
-pub(super) async fn emit_media_plan_notices(
+pub(super) async fn emit_media_plan(
     emitter: &Arc<dyn AgentEventEmitter>,
     session_id: &str,
     step_number: u32,
     run_id: u64,
     role: EndpointRole,
-    notices: Vec<haven_common::media::MediaPlanNotice>,
+    plan: MediaPlan,
 ) {
-    if notices.is_empty() {
+    let has_non_raw_projection = plan
+        .projections
+        .iter()
+        .any(|projection| projection.mode != MediaProjectionMode::Raw);
+    if plan.notices.is_empty() && !has_non_raw_projection {
         return;
     }
-    tracing::warn!(
-        session_id,
-        step_number,
-        role = role.as_str(),
-        notices = ?notices,
-        "media request was downgraded to match the selected adapter capability profile"
-    );
+    if plan.notices.is_empty() {
+        tracing::info!(
+            session_id,
+            step_number,
+            role = role.as_str(),
+            strategy = plan.strategy.as_str(),
+            projections = ?plan.projections,
+            "media request selected a non-raw representation"
+        );
+    } else {
+        tracing::warn!(
+            session_id,
+            step_number,
+            role = role.as_str(),
+            strategy = plan.strategy.as_str(),
+            projections = ?plan.projections,
+            notices = ?plan.notices,
+            "media request was downgraded to match the selected adapter capability profile"
+        );
+    }
     emitter
         .emit(AgentEvent::MediaPlan {
             session_id: session_id.to_string(),
             step_number,
             run_id,
             role: role.as_str().to_string(),
-            notices,
+            strategy: plan.strategy,
+            projections: plan.projections,
+            notices: plan.notices,
         })
         .await;
 }

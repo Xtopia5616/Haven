@@ -303,12 +303,16 @@ impl TauriEmitter {
                 step_number,
                 run_id,
                 role,
+                strategy,
+                projections,
                 notices,
             } => serialize(AgentMediaPlanEvent {
                 session_id: session_id.clone(),
                 step_number: *step_number,
                 run_id: *run_id,
                 role: role.clone(),
+                strategy: *strategy,
+                projections: projections.clone(),
                 notices: notices.clone(),
             }),
             AgentEvent::WebSearch {

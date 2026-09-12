@@ -23,6 +23,7 @@
 		onIgnore = () => {},
 		onAskSubmit = () => {},
 		onContinue = () => {},
+		mediaPlans = [],
 	} = $props();
 
 	let timelineItems = $derived(groupConversationMessages(messages));
@@ -50,6 +51,7 @@
 					toolCount={item.toolCount}
 					stepCount={item.stepCount}
 					allMessages={messages}
+					{mediaPlans}
 					{onContextMenu}
 					{onAskSelectionChange}
 					{onIgnore}

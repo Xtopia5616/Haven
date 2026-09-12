@@ -50,6 +50,7 @@
 		refreshActions,
 		finalizeBackgroundActionMessages,
 		actionStore,
+		mediaPlanStore,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
 	} from '$lib/stores.ts';
@@ -277,6 +278,8 @@
 	// the global actionStore kept by +layout.
 	let actionsById = $state(/** @type {Record<string, any>} */ ({}));
 	$effect(() => syncStore(actionStore, (v) => (actionsById = v || {})));
+	let mediaPlansBySession = $state(/** @type {Record<string, any[]>} */ ({}));
+	$effect(() => syncStore(mediaPlanStore, (v) => (mediaPlansBySession = v || {})));
 	const activeSessionStatus = $derived(
 		activeSessionId ? sessions.find((t) => t.id === activeSessionId)?.status : undefined,
 	);
@@ -1664,6 +1667,7 @@
 		>
 			<ConversationTimeline
 				{messages}
+				mediaPlans={activeSessionId ? mediaPlansBySession[activeSessionId] || [] : []}
 				loading={initialLoading}
 				{hotkeyBinding}
 				{awaitingBackground}

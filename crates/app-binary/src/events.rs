@@ -440,6 +440,8 @@ pub(crate) struct AgentMediaPlanEvent {
     pub step_number: u32,
     pub run_id: u64,
     pub role: String,
+    pub strategy: haven_common::media::MediaInputStrategy,
+    pub projections: Vec<haven_common::media::MediaProjection>,
     pub notices: Vec<haven_common::media::MediaPlanNotice>,
 }
 

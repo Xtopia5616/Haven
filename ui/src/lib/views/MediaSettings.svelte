@@ -51,6 +51,13 @@
 		{ value: 'extracted_preferred', label: '优先 OCR / STT / 描述' },
 		{ value: 'text_only_safe', label: '仅安全文本' },
 	];
+	/** @type {Record<string, string>} */
+	const MEDIA_INPUT_STRATEGY_HINTS = {
+		auto: '支持时发送原始图片/音频；模型能力不足时自动改用 OCR、转写或其他安全表示。',
+		raw_preferred: '尽量保留原始媒体，但不会绕过模型能力检查；发生降级时会显示原因。',
+		extracted_preferred: '优先使用 OCR、STT 和图片描述，适合希望减少原始媒体输入的场景。',
+		text_only_safe: '只发送用户文字和安全派生文本，不发送原始媒体或仅路径引用。',
+	};
 
 	/** @param {string} name */
 	function providerByName(name) {
@@ -211,6 +218,9 @@
 					mediaInputStrategy = v;
 				})}
 			/>
+			<p class="strategy-hint">
+				{MEDIA_INPUT_STRATEGY_HINTS[mediaInputStrategy] || MEDIA_INPUT_STRATEGY_HINTS.auto}
+			</p>
 		</div>
 	</MaterialCard>
 	<div class="card-list">
@@ -797,6 +807,15 @@
 	}
 	.model-field .md-input {
 		width: 100%;
+	}
+	.strategy-field {
+		align-items: stretch;
+	}
+	.strategy-hint {
+		margin: var(--md-sys-space-xs) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.model-field :global(.md-number-field),
 	.model-field :global(.md-select-container),

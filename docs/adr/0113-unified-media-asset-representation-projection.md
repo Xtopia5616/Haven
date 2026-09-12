@@ -158,6 +158,17 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 - 不在没有真实 provider capability 来源前按模型名维护硬编码能力表；未知能力
   必须走保守降级。
 
+## 阶段 4 收口实现（2026-09-12）
+
+阶段 4 的表示策略与降级可见性已接通：`MediaConfig.input_strategy` 通过现有
+`ConfigService` / `ConfigChanged` 链路热应用到 ReAct；`agent:media_plan` 事件现在同时
+携带实际策略、每个资产最终选择的 representation/mode 和稳定 notice code。前端将该事件
+保留为会话内临时诊断，在对应 Agent 工作过程中显示资产表示卡，并以 toast 告知降级原因。
+
+该诊断仍是 ephemeral UI 状态，不写入 `ReActSnapshot.events`、`messages` 或
+`session_steps`，也不包含原始 bytes、绝对路径或 provider 原始响应。默认 `auto`
+策略与既有行为保持一致；没有降级或非 raw 选择时不额外发出媒体计划通知。
+
 ## 回滚与重置
 
 阶段 0–2 不改变数据库 schema，回退相应提交即可恢复旧运行时路径，已存消息仍

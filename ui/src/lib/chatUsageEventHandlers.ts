@@ -11,6 +11,12 @@ import {
 	formatTokenCount,
 	updateSessionTokenStats,
 } from './sessionUsage.ts';
+import { rememberMediaPlan } from './stores.ts';
+import {
+	mediaPlanNoticeLabel,
+	mediaPlanProjectionLabel,
+	mediaPlanStrategyLabel,
+} from './mediaPlanPresentation.ts';
 
 type UsageEvent = TauriEvent<AgentUsagePayload>;
 type CompactionEvent = TauriEvent<AgentCompactionPayload>;
@@ -143,31 +149,23 @@ export function createChatUsageEventHandlers(): {
 		},
 		'agent:media_plan': (event: MediaPlanEvent) => {
 			const d = event.payload;
+			rememberMediaPlan(d);
+			const projections = d.projections.map(mediaPlanProjectionLabel);
 			const reasons = d.notices
 				.map((notice) => mediaPlanNoticeLabel(notice.code))
 				.filter((label, index, all) => all.indexOf(label) === index);
-			if (reasons.length > 0) {
+			const details = [
+				projections.length > 0 ? `已使用 ${projections.join('、')}` : '没有发送兼容的附件表示',
+				`策略：${mediaPlanStrategyLabel(d.strategy)}`,
+				...reasons.map((reason) => `原因：${reason}`),
+			];
+			if (details.length > 0) {
 				addNotification(
-					`已按 ${d.role} 模型能力调整附件：${reasons.join('、')}`,
-					'warning',
-					4500,
+					`附件表示（${d.role}）：${details.join('；')}`,
+					d.notices.length > 0 ? 'warning' : 'info',
+					5000,
 				);
 			}
 		},
 	};
-}
-
-function mediaPlanNoticeLabel(code: string): string {
-	const labels: Record<string, string> = {
-		raw_capability_unsupported: '模型不支持该媒体类型',
-		raw_capability_unknown: '模型能力未知，已安全降级',
-		raw_mime_unsupported: '媒体格式不受支持',
-		raw_size_exceeded: '媒体超过模型输入上限',
-		input_part_limit: '媒体数量超过模型上限',
-		no_compatible_representation: '没有兼容的附件表示',
-		strategy_excluded: '当前媒体策略已排除原始附件',
-		derived_fallback: '已改用派生内容',
-		managed_reference_fallback: '已改用受管附件引用',
-	};
-	return labels[code] || '附件表示已调整';
 }

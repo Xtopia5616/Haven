@@ -150,6 +150,8 @@ fn channel_maps_every_variant_to_expected_channel() {
                 step_number: 1,
                 run_id: 1,
                 role: "image_model".into(),
+                strategy: haven_common::media::MediaInputStrategy::Auto,
+                projections: vec![],
                 notices: vec![haven_common::media::MediaPlanNotice {
                     asset_id: "asset-1".into(),
                     code: haven_common::media::MediaPlanNoticeCode::RawCapabilityUnknown,
@@ -238,6 +240,38 @@ fn channel_maps_every_variant_to_expected_channel() {
             event
         );
     }
+}
+
+#[test]
+fn media_plan_payload_contains_strategy_projection_and_reason() {
+    let event = AgentEvent::MediaPlan {
+        session_id: "ses-1".into(),
+        step_number: 4,
+        run_id: 8,
+        role: "audio_model".into(),
+        strategy: haven_common::media::MediaInputStrategy::Auto,
+        projections: vec![haven_common::media::MediaProjection {
+            asset_id: "asset-1".into(),
+            representation: haven_common::media::MediaRepresentationKind::Transcript,
+            mode: haven_common::media::MediaProjectionMode::Derived,
+            provenance: haven_common::media::MediaProvenance::Derived {
+                operation: haven_common::media::MediaDerivation::Stt,
+                provider: None,
+                source_kind: Some(haven_common::media::MediaRepresentationKind::RawAudio),
+            },
+        }],
+        notices: vec![haven_common::media::MediaPlanNotice {
+            asset_id: "asset-1".into(),
+            code: haven_common::media::MediaPlanNoticeCode::RawCapabilityUnknown,
+        }],
+    };
+
+    let payload = TauriEmitter::payload(&event, None);
+    assert_eq!(payload["strategy"], "auto");
+    assert_eq!(payload["projections"][0]["asset_id"], "asset-1");
+    assert_eq!(payload["projections"][0]["representation"], "transcript");
+    assert_eq!(payload["projections"][0]["mode"], "derived");
+    assert_eq!(payload["notices"][0]["code"], "raw_capability_unknown");
 }
 
 #[test]

@@ -111,15 +111,15 @@ impl ReActEngine {
         let tools = self.build_tool_definitions_for_session(session_id).await;
         let router = self.router();
         let role = choose_agent_role(&router, &request_context).await;
-        let (request_context, media_notices) = request_context
+        let (request_context, media_plan) = request_context
             .with_capabilities(&router.capability_profile(role), self.media_strategy());
-        super::emit_media_plan_notices(
+        super::emit_media_plan(
             &ctx.emitter,
             session_id,
             step_num,
             ctx.run_id,
             role,
-            media_notices,
+            media_plan,
         )
         .await;
         let partial_thought = Arc::new(std::sync::Mutex::new(String::new()));

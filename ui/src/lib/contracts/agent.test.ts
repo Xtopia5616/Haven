@@ -105,6 +105,12 @@ describe('agent IPC contract', () => {
 				step_number: 4,
 				run_id: 8,
 				role: 'image_model',
+				strategy: 'auto',
+				projections: [{
+					asset_id: 'asset-1',
+					representation: 'ocr_text',
+					mode: 'derived',
+				}],
 				notices: [{ asset_id: 'asset-1', code: 'raw_capability_unknown' }],
 			},
 		});
@@ -114,6 +120,12 @@ describe('agent IPC contract', () => {
 			stepNumber: 4,
 			runId: 8,
 			role: 'image_model',
+			strategy: 'auto',
+			projections: [{
+				assetId: 'asset-1',
+				representation: 'ocr_text',
+				mode: 'derived',
+			}],
 			notices: [{ assetId: 'asset-1', code: 'raw_capability_unknown' }],
 		});
 	});

@@ -2,6 +2,7 @@ import { get, writable } from 'svelte/store';
 import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
 import { mapActionPayload, type ActionKind, type ActionPayload } from './contracts/action.ts';
+import type { AgentMediaPlanPayload } from './contracts/agent.ts';
 import { sessionMessagesStore, updateSessionMessages } from './sessionMessages.ts';
 
 export const sessionStore = writable<any[]>([]);
@@ -58,6 +59,40 @@ export function clearToolOutputPreview(stepId: string) {
 		if (!(stepId in m)) return m;
 		const next = { ...m };
 		delete next[stepId];
+		return next;
+	});
+}
+
+/**
+ * Ephemeral media projection diagnostics keyed by session. These describe the
+ * provider request that was actually prepared; they are intentionally not
+ * persisted with the transcript or snapshot.
+ */
+export const mediaPlanStore = writable<Record<string, AgentMediaPlanPayload[]>>({});
+
+const MEDIA_PLAN_HISTORY_LIMIT = 32;
+
+export function rememberMediaPlan(payload: AgentMediaPlanPayload) {
+	if (!payload.sessionId) return;
+	const key = `${payload.stepNumber}:${payload.runId}:${payload.role}`;
+	mediaPlanStore.update((all) => {
+		const previous = all[payload.sessionId] || [];
+		const next = previous.filter(
+			(plan) => `${plan.stepNumber}:${plan.runId}:${plan.role}` !== key,
+		);
+		return {
+			...all,
+			[payload.sessionId]: [...next, payload].slice(-MEDIA_PLAN_HISTORY_LIMIT),
+		};
+	});
+}
+
+export function clearMediaPlans(sessionId: string) {
+	if (!sessionId) return;
+	mediaPlanStore.update((all) => {
+		if (!(sessionId in all)) return all;
+		const next = { ...all };
+		delete next[sessionId];
 		return next;
 	});
 }
