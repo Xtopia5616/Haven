@@ -63,21 +63,33 @@ export function getToolResultRenderer(
 		Array.isArray(_data.results)
 	)
 		return ToolFileSearchResult;
-	if (kind === 'custom' && rootToolName === 'system') return ToolSystemResult;
-	if (kind === 'custom' && rootToolName === 'process') return ToolProcessResult;
-	if (kind === 'custom' && rootToolName === 'window') return ToolWindowResult;
-	if (kind === 'custom' && rootToolName === 'actions') return ToolActionResult;
-	if (kind === 'custom' && rootToolName === 'schedule') return ToolScheduleResult;
+	if (kind === 'custom' && rootToolName === 'system') {
+		const scope =
+			typeof _data === 'object' && _data !== null && 'scope' in _data
+				? (_data as { scope?: unknown }).scope
+				: null;
+		if (scope === 'process') return ToolProcessResult;
+		if (scope === 'window') return ToolWindowResult;
+		if (scope === 'clipboard') return ToolClipboardResult;
+		if (scope === 'input') return ToolInputResult;
+		return ToolSystemResult;
+	}
+	if (kind === 'custom' && rootToolName === 'haven') {
+		const operation =
+			typeof _data === 'object' && _data !== null && 'operation' in _data
+				? (_data as { operation?: unknown }).operation
+				: null;
+		if (typeof operation === 'string' && operation.startsWith('actions_')) {
+			return ToolActionResult;
+		}
+		if (typeof operation === 'string' && operation.startsWith('schedule_')) {
+			return ToolScheduleResult;
+		}
+		return ToolAdminResult;
+	}
 	if (kind === 'custom' && rootToolName === 'http') return ToolHttpResult;
-	if (kind === 'custom' && rootToolName === 'clipboard') return ToolClipboardResult;
 	if (kind === 'custom' && rootToolName === 'web_search') return ToolWebSearchResult;
 	if (kind === 'custom' && rootToolName === 'memory') return ToolMemoryResult;
-	if (kind === 'custom' && rootToolName === 'input') return ToolInputResult;
 	if (kind === 'custom' && rootToolName === 'media') return ToolMediaResult;
-	if (
-		kind === 'custom' &&
-		['haven_config', 'haven_diagnostics', 'haven_mcp', 'haven_skills', 'haven_tools'].includes(rootToolName)
-	)
-		return ToolAdminResult;
 	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;
 }

@@ -188,11 +188,16 @@ export function createChatAgentEventHandlers({
 				const actionId = parsed?.action_id || 'unknown';
 				const cardId = `action-result-${supplementId}-${actionId}`;
 				const content = JSON.stringify(
-					parsed || {
-						operation: 'result_injected',
-						action_id: actionId,
-						status: 'completed',
-						auto: true,
+					{
+						...(parsed || {
+							action_id: actionId,
+							status: 'completed',
+							auto: true,
+						}),
+						// This is a UI-only synthetic result, so use the grouped
+						// renderer discriminator without pretending it was a model
+						// invocation of an exposed `actions_result_injected` route.
+						operation: 'actions_result_injected',
 					},
 				);
 				updateSessionMessages(sessionId, (messages) => {
@@ -202,7 +207,7 @@ export function createChatAgentEventHandlers({
 						newToolMessage({
 							id: cardId,
 							stepNumber: data.stepNumber ?? 0,
-							toolName: 'actions',
+						toolName: 'haven',
 							content,
 							time: new Date().toLocaleTimeString(),
 						}),

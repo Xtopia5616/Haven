@@ -140,6 +140,7 @@
 - 2026-09-10：P1/P2 Tools/Agent/Memory/UI 多模态用量边界收口：媒体派生文本只保留一个 `media.content`，模型观察去除运行时元数据；媒体 LLM 调用单独记录为 `call_kind=media`，其它工具内部 LLM 调用记录为 `call_kind=tool`，不降低 Agent 主循环缓存率，UI 分组展示内部推理用量（ADR 0124）。
 - 2026-09-12：P1/P2 Agent/Tools/LLM/UI 收口：补齐 `ContentPart::Video` 的能力门控和 Gemini 原生 inline wire；文档抽取增加 `page_index`/`next_page`；模型目录注册 `system.info`、`files.read_text`、`files.outline`、`files.summary`、`files.search` 瘦 operation view；搜索/outline 输出范围与上下文元数据；新增 session-scoped 非阻断 `preferences`/`checklist` 和 memory 空结果来源诊断（ADR 0131）。
 - 2026-09-12：测试版破坏性兼容清理：`Supplement`/`FollowUp` 统一为 FollowUp 队列 API；confirmation IPC 只接受 typed effect/scope；删除 ask sentinel/文本启发式、rollback 内容匹配、UI optimistic 内容反查和 provider→wire-style 隐式推导；旧数据按 reset/release 说明处理（ADR 0131）。
+- 2026-09-12：P1 Tools 聚合边界重构：`system` 聚合 process/clipboard/input/window 子 scope，`haven` 聚合管理面与 actions/schedule/preferences/checklist；聚合器逐 operation 转发 schema、风险、幂等、并发和 session 策略；旧根工具名与权限按 reset 边界删除（ADR 0135）。
 
 ## 完成标准
 

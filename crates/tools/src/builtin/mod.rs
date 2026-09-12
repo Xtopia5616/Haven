@@ -8,6 +8,8 @@ mod env;
 mod file_outline;
 pub mod file_search;
 pub mod files;
+mod grouped_schema;
+pub mod haven;
 pub mod http;
 pub mod input;
 pub mod load_mcp;
@@ -80,6 +82,7 @@ pub use admin::{
     ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs, ConfigOperationError,
     ConfigOperationOutput, ConfigViewOutput, LogLevelOutput,
 };
+pub use haven::HavenTool;
 pub use memory::{MemoryRecallFn, MemoryRecallSlot, MemoryTool, new_memory_recall_slot};
 pub use messaging::{
     AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot, new_agent_spawner_slot,
@@ -210,35 +213,46 @@ pub async fn register_builtin_tools(
             tools.push(OperationViewTool::new(files_tool.clone(), contract));
         }
     }
-    tools.push(Arc::new(process::ProcessTool {
-        max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
-    }));
-    tools.push(Arc::new(clipboard::ClipboardTool::new(
+    let process_tool: ToolBox = Arc::new(process::ProcessTool {
+        max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
+    });
+    let clipboard_tool: ToolBox = Arc::new(clipboard::ClipboardTool::new(
         clipboard_history,
-        tool_output_cap(settings, "clipboard", limits.max_observation_chars),
+        tool_output_cap(settings, "system", limits.max_observation_chars),
         limits.clipboard_history_entries,
         limits.clipboard_history_max_entries,
         limits.clipboard_entry_max_chars,
-    )));
+    ));
     tools.push(Arc::new(shell::ShellTool {
         actions: background_actions.clone(),
         live_outputs,
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
     }));
-    tools.push(Arc::new(actions::ActionsTool {
+    let actions_tool: ToolBox = Arc::new(actions::ActionsTool {
         actions: background_actions,
-    }));
-    tools.push(Arc::new(input::InputTool));
-    tools.push(Arc::new(scheduled_action::ScheduledActionTool {
+    });
+    let input_tool: ToolBox = Arc::new(input::InputTool);
+    let schedule_tool: ToolBox = Arc::new(scheduled_action::ScheduledActionTool {
         center: scheduled_actions,
         // Weak registry probe so `set` can validate tool_name / risk at
         // schedule time; taken before `registry` is moved into SelfTool.
         registry: Some(registry.probe()),
-    }));
-    let system_tool: ToolBox = Arc::new(system::SystemTool {
-        max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
     });
+    let preferences_tool: ToolBox = Arc::new(preferences::PreferencesTool::default());
+    let checklist_tool: ToolBox = Arc::new(checklist::ChecklistTool::default());
+    let window_tool: ToolBox = Arc::new(
+        window::WindowTool::new(managed_assets).with_media_tool(media_tool),
+    );
+    let system_tool: ToolBox = Arc::new(
+        system::SystemTool::default()
+            .with_max_output_chars(tool_output_cap(
+                settings,
+                "system",
+                limits.max_observation_chars,
+            ))
+            .with_desktop_tools(process_tool, clipboard_tool, input_tool, window_tool),
+    );
     tools.push(system_tool.clone());
     if tool_config_enabled(settings, "system") && tool_config_enabled(settings, "system.info") {
         let contract = operation_view_contracts(limits.search_max_results)
@@ -247,11 +261,6 @@ pub async fn register_builtin_tools(
             .expect("system.info operation view contract");
         tools.push(OperationViewTool::new(system_tool, contract));
     }
-    tools.push(Arc::new(preferences::PreferencesTool::default()));
-    tools.push(Arc::new(checklist::ChecklistTool::default()));
-    tools.push(Arc::new(
-        window::WindowTool::new(managed_assets).with_media_tool(media_tool),
-    ));
     tools.push(Arc::new(http::HttpTool {
         max_retries: limits.network_max_retries,
         backoff_base_secs: limits.network_backoff_base_secs,
@@ -289,6 +298,7 @@ pub async fn register_builtin_tools(
             max_tools_per_request: max_tools,
         }));
     }
+    let mut haven_admin_tools: Vec<ToolBox> = Vec::new();
     if let Some(ctx) = self_context {
         let config_admin = Arc::new(admin::new_config_admin_tool(admin::ConfigAdminContext {
             config_service: ctx.config_service.clone(),
@@ -310,20 +320,26 @@ pub async fn register_builtin_tools(
             limits.self_tool_max_script_bytes,
         ));
         self_tool_arc = Some(tool.clone());
-        // The broad native surface is retained only for app commands. The
-        // model receives capability-scoped adapters, each with its own
-        // schema and AuthorizationEngine permission key.
+        // The broad native surface is retained for app commands. The model
+        // receives one Haven root with route-specific schemas and policies.
         for capability in admin::AdminCapability::ALL {
             if capability == admin::AdminCapability::Config {
-                tools.push(config_admin.clone());
+                haven_admin_tools.push(config_admin.clone());
             } else {
-                tools.push(Arc::new(admin::AdminCapabilityTool::new(
+                haven_admin_tools.push(Arc::new(admin::AdminCapabilityTool::new(
                     tool.clone(),
                     capability,
                 )));
             }
         }
     }
+    tools.push(Arc::new(haven::HavenTool::new(
+        haven_admin_tools,
+        actions_tool,
+        schedule_tool,
+        preferences_tool,
+        checklist_tool,
+    )));
     self_tool_arc
 }
 

@@ -76,7 +76,9 @@ provider tool name、权限矩阵、session catalog、历史恢复和旧步骤�
 
 ### P1.3 非阻断偏好收集
 
-保留 `ask` 作为高代价决策的暂停确认；`preferences` / `checklist` 已作为按 session 隔离的不暂停、低风险机制，用于记录风格、详细程度、是否并行等偏好和待办项。它们不承担权限确认或副作用授权。
+保留 `ask` 作为高代价决策的暂停确认；`haven` 下的 `preferences_*` / `checklist_*`
+仍是按 session 隔离的不暂停、低风险机制，用于记录风格、详细程度、是否并行等偏好和待办项。
+它们不承担权限确认或副作用授权。
 
 ### P1.4 Memory 空结果诊断
 
@@ -87,7 +89,7 @@ provider tool name、权限矩阵、session catalog、历史恢复和旧步骤�
 - 模型 tool catalog 同时提供独立 operation view 与聚合入口；view 的 schema 不包含无关写操作字段。
 - 搜索/outline/文档抽取的返回值包含可继续使用的结构化游标和范围信息；`next_page` 不依赖正文切分。
 - inline 视频在具备视频能力的 provider（当前 Gemini）走原生 `ContentPart::Video`/`inline_data`；不支持的 provider 只允许显式文本占位降级，不静默转成图片或丢弃。托管视频上传和 keyframe 抽取仍需各 provider 的专用能力评审。
-- `preferences` / `checklist` 不产生 ask/confirm 暂停，且 session 之间互不泄漏。
+- `haven.preferences_*` / `haven.checklist_*` 不产生 ask/confirm 暂停，且 session 之间互不泄漏。
 - memory 空结果包含来源诊断和建议动作，同时保持 `success=true`。
 
 ## P2：体验打磨

@@ -153,7 +153,7 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - `files.outline` returns bounded declarations, ranges, and `next_page.start_line`; use that cursor for the next page instead of guessing from the returned text.\n\
 - `files.summary` is a derived summary, not source text; use `files.read_text` when exact wording or line numbers matter.\n\
 - `files.search` returns bounded snippets plus a small before/after context window for content matches; follow its path/line metadata with a targeted `files.read_text` when the match is not enough.\n\
-- `system.info` is a bounded read-only machine snapshot; pass `category` to keep the observation narrow.\n\
+- `system.info` is a bounded read-only machine snapshot; pass `category` to keep the observation narrow. The grouped `system` tool also routes `scope=process|clipboard|input|window`; each child operation keeps its own risk level, so inspect before mutating.\n\
 - `http` fetches a URL; it is not a search engine. Use a provider search capability when it is present, otherwise state that web search is unavailable.\n\
 - HTTP requests reject local/private/link-local and cloud metadata destinations, validate every redirect hop, and may be limited to configured domains; do not try to bypass those boundaries with alternate host spellings.\n\
 - Tool failures carry a structured class (`transient`, `unknown_outcome`, `validation`, `permission`, or `side_effect_may_have_happened`); use that class to decide whether to retry, verify, or ask.\n\
@@ -162,8 +162,9 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - `shell` must be non-interactive. Use explicit flags or provide all input up front.\n\
 - `shell.silent` is only for a user-requested quiet tool card; never use it to conceal a side effect or skip the required preamble/confirmation.\n\
 - For desktop UI work, observe the current window/UI state before acting, use the narrowest title/PID target, and re-observe after a side effect when the result matters.\n\
-- For `schedule`, use the target tool's exact schema and treat the fire-time call as a future separate execution; scheduling a mutation does not mean that mutation has already happened.\n\
-- Background actions finish asynchronously and wake the session; never turn `actions` into a polling loop.";
+- For `haven`, use the exact operation prefix: `actions_*`, `schedule_*`, `preferences_*`, `checklist_*`, or an administration operation such as `config_get`/`mcp_list`. Each route keeps its own authorization and confirmation policy.\n\
+- `haven.schedule_*` treats the fire-time call as a future separate execution; scheduling a mutation does not mean that mutation has already happened.\n\
+- Background actions finish asynchronously and wake the session; never turn `haven.actions_list` into a polling loop.";
 
 /// Conversation title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";

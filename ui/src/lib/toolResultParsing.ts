@@ -112,56 +112,22 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				data.hibernate
 				? data
 				: null;
-		case 'process':
-			return typeof data.operation === 'string' || Array.isArray(data.processes)
-				? data
-				: null;
-		case 'window':
-			return typeof data.operation === 'string' ||
-				Array.isArray(data.windows) ||
-				Array.isArray(data.elements) ||
-				data.available === false ||
-				typeof data.text === 'string' ||
-				data.waited === true
-				? data
-				: null;
-		case 'actions':
-			return typeof data.operation === 'string' ||
-				Array.isArray(data.actions) ||
-				typeof data.status === 'string' ||
-				data.operation === 'result_injected'
-				? data
-				: null;
-		case 'schedule':
-			return typeof data.operation === 'string' ||
-				Array.isArray(data.scheduled_actions) ||
-				(data.id && data.mode)
-				? data
-				: null;
 		case 'memory':
 			return typeof data.operation === 'string' ||
 				Array.isArray(data.facts) ||
 				Array.isArray(data.hits)
 				? data
 				: null;
-		case 'input':
-			return typeof data.operation === 'string' ? data : null;
 		case 'media':
 			return typeof data.operation === 'string' &&
 				(['record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) ||
 					typeof data.asset_id === 'string' || isObject(data.media))
 				? data
 				: null;
-		case 'haven_config':
-		case 'haven_diagnostics':
-		case 'haven_mcp':
-		case 'haven_skills':
-		case 'haven_tools':
+		case 'haven':
 			return data;
 		case 'http':
 			return typeof data.status === 'number' ? data : null;
-		case 'clipboard':
-			return 'content' in data || data.written === true ? data : null;
 		case 'web_search':
 			// Provider built-in web search tool return: `{label, queries,
 			// results:[{title,url,snippet}]}` composed by the page handler.

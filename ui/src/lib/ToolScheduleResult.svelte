@@ -2,9 +2,14 @@
 	import { scheduleModeLabel, taskTitle } from '$lib/taskTerminology.ts';
 
 	let { data = {} } = $props();
+	let operation = $derived(
+		typeof data.operation === 'string'
+			? data.operation.replace(/^schedule_/, '')
+			: data.operation,
+	);
 </script>
 
-{#if data.operation === 'cancel'}
+{#if operation === 'cancel'}
 	<div class="action-row">
 		<span class="scheduled-mode">已取消</span>
 		{#if data.cancelled}<span class="action-id">#{data.cancelled}</span>{/if}
@@ -24,7 +29,7 @@
 	{:else}
 		<p class="tool-card-empty">没有待触发的定时任务</p>
 	{/if}
-{:else if data.operation === 'set' || (data.id && data.mode)}
+{:else if operation === 'set' || (data.id && data.mode)}
 	<div class="action-row">
 		<span class="action-id">#{data.id}</span>
 		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>

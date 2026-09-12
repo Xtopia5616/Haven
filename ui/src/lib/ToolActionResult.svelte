@@ -5,6 +5,11 @@
 	import ToolCardList from '$lib/ToolCardList.svelte';
 
 	let { data = {} } = $props();
+	let operation = $derived(
+		typeof data.operation === 'string'
+			? data.operation.replace(/^actions_/, '')
+			: data.operation,
+	);
 
 	/** @param {unknown} status */
 	function statusTone(status) {
@@ -17,7 +22,7 @@
 	}
 </script>
 
-{#if data.operation === 'result_injected'}
+{#if operation === 'result_injected'}
 	<div class="tool-card-count">
 		后台任务结果已回灌，正在继续{#if data.action_id} · {data.action_id}{/if}
 	</div>
@@ -27,7 +32,7 @@
 			<StatusBadge label={actionStatusLabel(data.status)} tone={statusTone(data.status)} />
 		</div>
 	{/if}
-{:else if data.operation === 'cancel'}
+{:else if operation === 'cancel'}
 	<div class="action-row">
 		<StatusBadge label={data.cancelled ? '已取消' : '未找到任务'} tone={data.cancelled ? 'success' : 'neutral'} />
 		<span class="action-id">{data.action_id || '—'}</span>

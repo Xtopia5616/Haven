@@ -266,7 +266,9 @@ Temp（全局约束）。
 
 ### 2.5.2 内置 `system` 工具（机器信息与系统控制）
 
-统一入口：`haven-tools` `builtin/system.rs`（`env` / `registry` / `power` 子模块由 `scope=` 转发）。
+统一入口：`haven-tools` `builtin/system.rs`。`env` / `registry` / `power` 是 system 的内部 scope；
+`process` / `clipboard` / `input` / `window` 也作为桌面子 scope 聚合进 system。`media` 与 `files`
+本来就是独立的成熟聚合工具，本次不再拆分或改名。
 
 | scope | 能力 | 风险 |
 |---|---|---|
@@ -275,6 +277,10 @@ Temp（全局约束）。
 | `registry` | Windows 注册表 get/set/delete/list | 读=Medium；写/删=High |
 | `power` | 电源 status / lock / sleep / hibernate | status=Safe；lock/sleep=High；hibernate=Critical |
 | `display` | 监视器几何 + DPI/缩放 + 刷新率 | Safe |
+| `process` | 进程 list / kill | list=Low；kill=High |
+| `clipboard` | 剪贴板 read / write / history | read/history=Low；write=Medium |
+| `input` | 键鼠 type / key / click / move / scroll | move/scroll=Low；其它=Medium |
+| `window` | 窗口 list / foreground / focus / close / screenshot / OCR / UI tree / wait | 读/观察=Low；focus=Medium；close/OCR=High |
 
 `scope=info` 的 `category`：
 
@@ -311,16 +317,19 @@ Temp（全局约束）。
 
 ### 2.5.4 Admin Surface
 
-模型不再看到跨域的 `haven` 超级 dispatcher，而看到按 capability 分组的
-`haven_diagnostics`、`haven_config`、`haven_skills`、`haven_tools` 和 `haven_mcp`。
-`haven_diagnostics` 统一承载应用健康、日志摘要和会话诊断，但仍按 operation allowlist
-及独立资源并发边界执行；其它工具的 AuthorizationEngine permission key 与风险等级不会因此混在一起。
+模型看到一个 `haven` 根工具；其 operation 仍按 capability 与 session utility 划分：
+`status`/`config_get`/`skills_list`/`mcp_list` 等管理操作，以及
+`actions_*`、`schedule_*`、`preferences_*`、`checklist_*`。聚合器只负责路由，
+每个 operation 继续复用子工具自己的严格 schema、风险等级、幂等性、并发资源和
+session 归属；因此 `mcp_add` 是 High，而 `mcp_list` 是 Low，二者不会因共用根名
+而被压平。
 
 配置写入使用 `ConfigService::apply_patch` 的 typed patch；普通模型路径没有任意
 `config_set(path, value)`。诊断结果只提供脱敏、截断后的日志和 session 元数据，不能
-返回 API key、完整 prompt、完整命令输出或会话正文。原 `SelfTool` 仅作为 native
-Tauri command 的迁移期 structured surface，未注册进模型目录；后续
-`TypedToolOperation` 完成后删除它。
+返回 API key、完整 prompt、完整命令输出或会话正文。原 `SelfTool` 仍只作为 native
+Tauri command 的 structured surface，未直接注册进模型目录；`haven` 通过受限 adapter
+路由到同一实现。高风险、网络、媒体、文件和跨 session 协作仍保留独立根工具，以维持
+各自的确认、路径、provider 和生命周期边界。
 
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 

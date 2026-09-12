@@ -128,3 +128,4 @@
 - [0131：内置工具结果与边界契约加固](0131-builtin-tool-contract-hardening.md)
 - [0133：统一媒体与音频的模型工具契约](0133-unified-media-audio-tool-contract.md)
 - [0134：媒体工具按职责拆分内部模块](0134-media-tool-module-boundaries.md)
+- [0135：system 与 haven 聚合工具的子操作安全契约](0135-grouped-system-and-haven-tool-contract.md)

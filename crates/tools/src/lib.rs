@@ -1718,11 +1718,17 @@ mod tests {
             haven_common::types::RiskLevel::Medium
         );
 
-        let process_tool = mgr.get_tool("process").await;
-        assert!(process_tool.is_some());
-
-        let clipboard_tool = mgr.get_tool("clipboard").await;
-        assert!(clipboard_tool.is_some());
+        let system_tool = mgr.get_tool("system").await.expect("system tool");
+        assert!(mgr.get_tool("process").await.is_none());
+        assert!(mgr.get_tool("clipboard").await.is_none());
+        assert!(system_tool
+            .validate_input(&json!({"scope": "process", "operation": "list"}))
+            .is_ok());
+        assert_eq!(
+            system_tool.risk_level(&json!({"scope": "process", "operation": "kill"})),
+            haven_common::types::RiskLevel::High
+        );
+        assert!(mgr.get_tool("haven").await.is_some());
 
         // No skills are configured in this isolated manager, so the
         // progressive loader should not be advertised to the model.

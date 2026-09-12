@@ -2669,9 +2669,8 @@ mod tests {
         };
         mgr.set_admin_context(ctx).await;
         assert!(mgr.get_tool("shell").await.is_some());
-        assert!(mgr.get_tool("haven_diagnostics").await.is_some());
+        assert!(mgr.get_tool("haven").await.is_some());
         assert!(mgr.get_tool("haven_session_diagnostics").await.is_none());
-        assert!(mgr.get_tool("haven").await.is_none());
 
         let tool = mgr.admin_surface().await.expect("admin surface wired");
         let result = tool
@@ -2701,13 +2700,13 @@ mod tests {
         let (tool, dir) = make_tool();
         let result = tool
             .execute(
-                json!({"operation": "tool_enable", "name": "clipboard"}),
+                json!({"operation": "tool_enable", "name": "system"}),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert!(result.output["enabled"].as_bool().unwrap());
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        assert!(loader.config().tool_settings["clipboard"].enabled);
+        assert!(loader.config().tool_settings["system"].enabled);
     }
 }

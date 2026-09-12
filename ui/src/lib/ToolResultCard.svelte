@@ -25,7 +25,6 @@
 		type = 'tool',
 		embedded = false,
 		toolName = '',
-		unrecoverable = false,
 		outcome = null,
 		content = '',
 		options = [],
@@ -166,14 +165,20 @@
 		if (kind === 'raw') return 'file';
 		const rootToolName = toolRootName(toolName);
 		if (rootToolName === 'files' && Array.isArray(data.results)) return 'search';
-		if (rootToolName === 'system') return 'cpu';
-		if (rootToolName === 'process') return 'activity';
-		if (rootToolName === 'window') return 'monitor';
-		if (rootToolName === 'actions') return 'clock';
-		if (rootToolName === 'schedule') return 'bell';
+		if (rootToolName === 'system') {
+			if (data.scope === 'process') return 'activity';
+			if (data.scope === 'window') return 'monitor';
+			if (data.scope === 'clipboard') return 'clipboard';
+			if (data.scope === 'input') return 'tools';
+			return 'cpu';
+		}
+		if (rootToolName === 'haven') {
+			if (typeof data.operation === 'string' && data.operation.startsWith('actions_')) return 'clock';
+			if (typeof data.operation === 'string' && data.operation.startsWith('schedule_')) return 'bell';
+			return 'settings';
+		}
 		if (rootToolName === 'files') return 'file';
 		if (rootToolName === 'http' || rootToolName === 'web_search') return 'globe';
-		if (rootToolName === 'clipboard') return 'clipboard';
 		if (rootToolName === 'agent') return 'users';
 		if (rootToolName === 'memory') return 'memory';
 		if (rootToolName === 'media') return 'image';
@@ -390,12 +395,6 @@
 				<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
 				{#if showFallbackIntent}<span class="tool-intent">{TOOL_INTENT_FALLBACK}</span>{/if}
 				<span class="tool-card-label" title={toolName}>{displayName}</span>
-				{#if unrecoverable}
-					<span
-						class="tool-unrecoverable"
-						title="该历史操作已移除，不能从当前工具目录恢复">历史操作不可恢复</span
-					>
-				{/if}
 				{#if outcomeLabel}
 					<span
 						class="tool-outcome"
@@ -890,13 +889,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.tool-unrecoverable {
-		flex: none;
-		color: var(--md-sys-color-error);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.tool-outcome {
