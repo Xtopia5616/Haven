@@ -276,11 +276,10 @@
 	 * scales with viewport width but never grows past this cap. */
 	--md-sys-content-max-width: 960px;
 	--md-sys-content-gutter: clamp(16px, 3.5vw, 32px);
-	/* Shared conversation surface widths. Agent surfaces stay slightly wider
-	 * than user bubbles, while leaving the same small visual breathing room. */
+	/* Shared conversation surface width. User and agent bubbles use the same
+	 * reading width so the conversation keeps one consistent text rail. */
 	--md-sys-chat-max-width: 800px;
 	--md-sys-chat-agent-max-width: 96%;
-	--md-sys-chat-user-max-width: 90%;
 	--md-sys-focus-ring: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 
 	/* ---------- Motion (expressive spring-like) ---------- */

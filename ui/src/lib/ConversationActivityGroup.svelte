@@ -112,25 +112,22 @@
 		margin-right: auto;
 		box-sizing: border-box;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border: 1px solid var(--md-sys-color-outline-variant);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-outline-variant));
 		border-radius: var(--md-sys-shape-large);
 		background: color-mix(
 			in srgb,
-			var(--md-sys-color-surface-container-low) 72%,
-			var(--md-sys-color-primary-container) 28%
+			var(--md-sys-color-primary-container) 18%,
+			var(--md-sys-color-surface-container-low)
 		);
 		color: var(--md-sys-color-on-surface);
+		box-shadow: var(--md-sys-elevation-1);
 	}
 	.activity-group.is-streaming {
 		border-color: color-mix(
 			in srgb,
-			var(--md-sys-color-primary) 42%,
+			var(--md-sys-color-primary) 30%,
 			var(--md-sys-color-outline-variant)
-		);
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-primary-container) 24%,
-			var(--md-sys-color-surface-container-low)
 		);
 	}
 	.activity-group :global(.md-collapsible-header) {

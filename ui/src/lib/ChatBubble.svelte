@@ -488,8 +488,8 @@
 	}
 	.bubble.user {
 		margin-left: auto;
-		width: var(--md-sys-chat-user-max-width);
-		max-width: var(--md-sys-chat-user-max-width);
+		width: var(--md-sys-chat-agent-max-width);
+		max-width: var(--md-sys-chat-agent-max-width);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary) 84%,
@@ -1069,8 +1069,8 @@
 			padding-inline: var(--md-sys-space-md);
 		}
 		.bubble.user {
-			width: 94%;
-			max-width: 94%;
+			width: 100%;
+			max-width: 100%;
 		}
 		.bubble.assistant {
 			width: 100%;
