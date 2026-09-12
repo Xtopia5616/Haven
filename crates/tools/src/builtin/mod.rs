@@ -201,6 +201,9 @@ pub async fn register_builtin_tools(
     tools.push(files_tool.clone());
     if tool_config_enabled(settings, "files") {
         for contract in operation_view_contracts(limits.search_max_results) {
+            if !contract.name.starts_with("files.") {
+                continue;
+            }
             if !tool_config_enabled(settings, contract.name) {
                 continue;
             }

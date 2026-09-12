@@ -1661,6 +1661,18 @@ mod tests {
         let mgr = ToolsManager::new();
         mgr.rebuild_catalog().await;
 
+        let builtin_tools = mgr.list_builtin_tools().await;
+        let names: Vec<_> = builtin_tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
+            .collect();
+        let unique_names: std::collections::HashSet<_> = names.iter().copied().collect();
+        assert_eq!(
+            names.len(),
+            unique_names.len(),
+            "builtin tool names must be unique"
+        );
+
         let file_tool = mgr.get_tool("files").await;
         assert!(file_tool.is_some());
         for name in [
