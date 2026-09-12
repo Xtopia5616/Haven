@@ -1,7 +1,6 @@
 <script>
 	import Icon from './Icon.svelte';
 	import { cubicOut } from 'svelte/easing';
-	import { slide } from 'svelte/transition';
 	/**
 	 * Material Collapsible — header with a rotating caret.
 	 * Same expand/collapse chrome as the settings Limits danger groups.
@@ -28,6 +27,30 @@
 		}
 		return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration;
 	}
+
+	/**
+	 * Reveal only the block-axis size of the body.
+	 *
+	 * Svelte's generic slide transition also interpolates padding, margins and
+	 * border widths. Tool bodies can contain content-visibility based chat
+	 * bubbles, so those extra interpolations may briefly use an intrinsic
+	 * placeholder size and then snap back when the transition is released.
+	 * Keeping the transition to a measured height and opacity leaves the
+	 * inline geometry stable while the body is being revealed.
+	 *
+	 * @param {HTMLElement} node
+	 * @param {{ delay?: number, duration?: number, easing?: (t: number) => number }} options
+	 */
+	function stableReveal(node, { delay = 0, duration = 400, easing = cubicOut } = {}) {
+		const height = node.scrollHeight;
+		return {
+			delay,
+			duration,
+			easing,
+			css: /** @param {number} t */ (t) =>
+				`overflow: hidden; height: ${t * height}px; min-height: 0; opacity: ${Math.min(t * 20, 1)};`,
+		};
+	}
 </script>
 
 <div class="md-collapsible" data-variant={variant} data-open={open} data-lazy={lazy}>
@@ -43,7 +66,7 @@
 		{#if open}
 			<div
 				class="md-collapsible-body"
-				transition:slide={{ duration: motionDuration(240), easing: cubicOut }}
+				transition:stableReveal={{ duration: motionDuration(240), easing: cubicOut }}
 			>
 				{@render children?.()}
 			</div>
@@ -102,6 +125,9 @@
 		min-width: 0;
 	}
 	.md-collapsible-body {
+		display: block;
+		width: 100%;
+		min-width: 0;
 		margin-top: var(--md-sys-space-xs);
 	}
 </style>

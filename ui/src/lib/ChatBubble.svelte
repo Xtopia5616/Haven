@@ -461,6 +461,10 @@
 		width: 100%;
 		max-width: 100%;
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		/* Expandable work bubbles must report their real body size to the
+		 * disclosure transition instead of the global virtualized estimate. */
+		content-visibility: visible;
+		contain-intrinsic-size: none;
 		background: transparent;
 		border-color: transparent;
 		box-shadow: none;
@@ -468,6 +472,9 @@
 	.bubble.tool {
 		width: 100%;
 		max-width: 100%;
+		/* Tool details are lazy-mounted and measured during expand/collapse. */
+		content-visibility: visible;
+		contain-intrinsic-size: none;
 		/* Tool calls use the same outer surface as assistant messages. The
 		 * nested result component only owns the header and details. */
 	}

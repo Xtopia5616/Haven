@@ -360,6 +360,21 @@ describe('ChatBubble', () => {
 		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 
+	it('keeps expandable tool bubbles on their real layout size', () => {
+		const { container } = render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: 'stdout output',
+				type: 'tool',
+				toolName: 'shell',
+			}),
+		);
+		const bubble = container.querySelector('.bubble') as HTMLElement;
+
+		expect(getComputedStyle(bubble).contentVisibility).toBe('visible');
+	});
+
 	it('collapses a tool result card as streaming ends', async () => {
 		const { container, rerender } = render(
 			ChatBubble,

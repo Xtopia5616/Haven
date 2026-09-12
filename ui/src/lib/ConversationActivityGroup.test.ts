@@ -41,4 +41,22 @@ describe('ConversationActivityGroup', () => {
 		expect(header.getAttribute('aria-expanded')).toBe('true');
 		expect(container.textContent).toContain('已检查完成');
 	});
+
+	it('does not add a frame around the nested work entries', () => {
+		const toolMessage = {
+			...entry(false).message,
+			type: 'tool',
+			toolName: 'shell',
+			content: 'stdout output',
+		};
+		const { container } = render(ConversationActivityGroup, {
+			entries: [{ message: toolMessage, index: 0 }],
+			streaming: false,
+			toolCount: 1,
+			stepCount: 1,
+		});
+		const group = container.querySelector('.activity-group') as HTMLElement;
+
+		expect(group.getAttribute('data-surface')).toBe('flat');
+	});
 });
