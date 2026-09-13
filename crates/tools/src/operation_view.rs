@@ -5,9 +5,10 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    OperationIdempotency, Tool, ToolBox, ToolConcurrency, ToolExecutionOutcome, ToolOperationScope,
-    ToolRegistration, ToolResult, ToolSignals,
+    OperationIdempotency, Tool, ToolBox, ToolConcurrency, ToolDef, ToolExecutionOutcome,
+    ToolOperationScope, ToolRegistration, ToolResult, ToolSignals,
 };
+use haven_common::tools::ToolPrompt;
 
 /// Declarative contract for a model-facing operation view. The aggregate tool
 /// remains the execution implementation, while this record is the one source
@@ -49,7 +50,8 @@ pub(crate) struct OperationViewTool {
 }
 
 impl OperationViewTool {
-    pub(crate) fn new(inner: ToolBox, contract: OperationViewContract) -> Arc<Self> {
+    pub(crate) fn new(inner: ToolBox, mut contract: OperationViewContract) -> Arc<Self> {
+        annotate_schema(&mut contract);
         let fixed = Map::from_iter(contract.fixed.iter().cloned());
         Arc::new(Self {
             inner,
@@ -68,6 +70,21 @@ impl OperationViewTool {
         }
         Value::Object(object)
     }
+}
+
+/// Add view-level schema metadata after the selected operation branch has been
+/// extracted. The branch remains the validation authority; these fields only
+/// make the narrow provider schema self-describing in tool inspectors and
+/// provider traces.
+fn annotate_schema(contract: &mut OperationViewContract) {
+    let Some(schema) = contract.schema.as_object_mut() else {
+        return;
+    };
+    schema.insert("title".into(), Value::String(contract.name.into()));
+    schema.insert(
+        "description".into(),
+        Value::String(contract.description.into()),
+    );
 }
 
 /// Extract one operation branch from an aggregate tool schema and remove the
@@ -231,6 +248,23 @@ impl Tool for OperationViewTool {
         self.contract.schema.clone()
     }
 
+    fn tool_def(&self) -> ToolDef {
+        ToolDef::new(
+            self.name(),
+            self.description(),
+            self.input_schema(),
+            self.contract.risk_level,
+        )
+        .with_retry_safety(self.contract.idempotency.tool_retry_safety())
+        .with_prompt(ToolPrompt {
+            when_to_use: self.contract.prompt.clone(),
+            when_not_to_use:
+                "Use a different operation view for another action; do not add an operation field."
+                    .into(),
+            key_operations: vec![self.contract.name.into()],
+        })
+    }
+
     fn concurrency(&self, _input: &Value) -> ToolConcurrency {
         self.contract.concurrency.clone()
     }
@@ -295,6 +329,50 @@ mod tests {
         assert_eq!(view["properties"]["path"]["type"], "string");
         assert!(view["properties"].get("operation").is_none());
         assert_eq!(view["required"], json!(["path"]));
+    }
+
+    #[test]
+    fn operation_view_schema_is_self_describing() {
+        let inner: ToolBox = Arc::new(crate::tool_contract::tests::MockTool::with_schema(
+            "files",
+            json!({
+                "type": "object",
+                "oneOf": [{
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"operation": {"const": "read"}, "path": {"type": "string"}},
+                    "required": ["operation", "path"]
+                }]
+            }),
+        ));
+        let view = OperationViewTool::new(
+            inner,
+            OperationViewContract {
+                name: "files.read",
+                description: "Read text.",
+                fixed: vec![("operation".into(), json!("read"))],
+                schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }),
+                risk_level: RiskLevel::Low,
+                risk_rule: None,
+                idempotency: OperationIdempotency::Idempotent,
+                scope: ToolOperationScope::Session,
+                concurrency: ToolConcurrency::ReadOnly,
+                permission_key: "files.read".into(),
+                renderer: "files".into(),
+                icon: "file".into(),
+                prompt: "Read text.".into(),
+            },
+        );
+
+        assert_eq!(view.input_schema()["title"], "files.read");
+        assert_eq!(view.input_schema()["description"], "Read text.");
+        let def = view.tool_def();
+        assert_eq!(def.prompt.unwrap().key_operations, ["files.read"]);
     }
 
     #[test]

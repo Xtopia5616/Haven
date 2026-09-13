@@ -626,6 +626,7 @@ impl ToolResult {
             "error_class",
             "retryability",
             "outcome",
+            "asset_id",
             "path",
             "root",
             "next_offset",
@@ -633,7 +634,6 @@ impl ToolResult {
             "hint",
             "retry_safety",
             "truncated",
-            "asset_id",
             "action_id",
             "operation",
             "status",
@@ -660,6 +660,7 @@ const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
     "error_class",
     "retryability",
     "outcome",
+    "asset_id",
     "path",
     "root",
     "next_offset",
@@ -667,7 +668,6 @@ const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
     "hint",
     "retry_safety",
     "truncated",
-    "asset_id",
     "action_id",
     "operation",
     "status",
@@ -1370,6 +1370,23 @@ pub(crate) mod tests {
         assert_eq!(parsed["next_offset"], 4096);
         assert_eq!(parsed["hint"], "continue with the returned cursor");
         assert!(parsed["content"].as_str().unwrap().ends_with('…'));
+    }
+
+    #[test]
+    fn structured_observation_puts_asset_handle_before_large_body_fields() {
+        let result = ToolResult::ok(json!({
+            "content": "x".repeat(2_000),
+            "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mime_type": "image/png",
+        }));
+
+        let observation = result.observation_text(220);
+        assert!(
+            observation.find("asset_id").unwrap() < observation.find("content").unwrap(),
+            "asset handles must survive before large body fields: {observation}"
+        );
+        let parsed: Value = serde_json::from_str(&observation).expect("bounded JSON object");
+        assert_eq!(parsed["asset_id"], "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     }
 
     #[test]

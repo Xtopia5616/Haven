@@ -132,3 +132,4 @@
 - [0136：多模态探测、表示与结果契约统一](0136-canonical-multimodal-contract.md)
 - [0137：统一点号 operation view 与扩展工具入口](0137-dotted-operation-view-contract.md)
 - [0139：工具页按 operation root 收束内置能力](0139-ui-operation-grouping.md)
+- [0140：工具 Schema 与 Prompt 目录收敛](0140-tool-schema-and-prompt-catalog.md)

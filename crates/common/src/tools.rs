@@ -30,6 +30,18 @@ pub enum ToolRetrySafety {
     Unknown,
 }
 
+/// Prompt-only orientation for a tool definition.
+///
+/// This is deliberately not part of [`ToolDef::json`] or provider tool
+/// parameters. It helps the system-prompt catalog explain a capability
+/// without duplicating that prose in every provider-facing description.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolPrompt {
+    pub when_to_use: String,
+    pub when_not_to_use: String,
+    pub key_operations: Vec<String>,
+}
+
 /// Start a background-wait observation object with `next_step` first, then
 /// `hint`. Callers insert the rest (`background` / `action_id` / `actions`…).
 /// Centralized so producers cannot forget the wait marker the ReAct policy
@@ -60,6 +72,11 @@ pub struct ToolDef {
     /// transient failure. The execution result carries the per-call value.
     #[serde(default)]
     pub retry_safety: ToolRetrySafety,
+    /// Short catalog guidance used by the Agent system prompt. This is not
+    /// serialized into the UI/provider wire shape; the schema and description
+    /// remain the executable model-facing contract.
+    #[serde(skip)]
+    pub prompt: Option<ToolPrompt>,
 }
 
 impl ToolDef {
@@ -75,11 +92,17 @@ impl ToolDef {
             input_schema,
             risk_level,
             retry_safety: ToolRetrySafety::Unknown,
+            prompt: None,
         }
     }
 
     pub fn with_retry_safety(mut self, retry_safety: ToolRetrySafety) -> Self {
         self.retry_safety = retry_safety;
+        self
+    }
+
+    pub fn with_prompt(mut self, prompt: ToolPrompt) -> Self {
+        self.prompt = Some(prompt);
         self
     }
 
@@ -115,6 +138,25 @@ mod tests {
         assert_eq!(json["risk_level"], "low");
         assert_eq!(json["retry_safety"], "unknown");
         assert!(json["input_schema"].is_object());
+        assert!(json.get("prompt").is_none());
+    }
+
+    #[test]
+    fn tool_prompt_is_available_to_prompt_builders_but_not_wire_json() {
+        let def = ToolDef::new(
+            "files.read",
+            "Read a file",
+            serde_json::json!({"type": "object"}),
+            RiskLevel::Low,
+        )
+        .with_prompt(ToolPrompt {
+            when_to_use: "Read source text".into(),
+            when_not_to_use: "Do not use for edits".into(),
+            key_operations: vec!["files.read".into()],
+        });
+
+        assert_eq!(def.prompt.as_ref().unwrap().key_operations, ["files.read"]);
+        assert!(def.json().get("prompt").is_none());
     }
 
     #[test]
@@ -124,5 +166,6 @@ mod tests {
         assert_eq!(def.description, "Run commands");
         assert_eq!(def.risk_level, RiskLevel::High);
         assert!(def.input_schema.is_null());
+        assert!(def.prompt.is_none());
     }
 }
