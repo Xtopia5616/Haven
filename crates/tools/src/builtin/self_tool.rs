@@ -250,7 +250,7 @@ impl Tool for SelfTool {
     }
 
     fn description(&self) -> String {
-        "Inspect and manage Haven itself: config, skills, builtin tools, MCP servers, logs, sessions.".into()
+        crate::prompts::SELF_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

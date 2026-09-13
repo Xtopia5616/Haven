@@ -122,7 +122,7 @@ impl Tool for ActionsTool {
         "actions".into()
     }
     fn description(&self) -> String {
-        "List or inspect background actions of the current session, or cancel one with operation=cancel and action_id. One-shot awareness only — never poll in a wait loop. While actions are still running and you have no other foreground work, end your turn; completion results are auto-pushed and the session is auto-woken.".into()
+        crate::prompts::ACTIONS_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

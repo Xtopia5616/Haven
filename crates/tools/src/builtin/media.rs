@@ -345,7 +345,7 @@ impl Tool for MediaTool {
     }
 
     fn description(&self) -> String {
-        "Operate on media through explicit operation branches: inspect, describe or OCR images, transcribe audio, extract document content, generate images, record/play/speak audio, or read/change the default output volume and mute state. Managed media operations use asset_id; local audio playback accepts a trusted .wav path and TTS accepts text.".into()
+        crate::prompts::MEDIA_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

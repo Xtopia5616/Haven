@@ -136,7 +136,7 @@ impl Tool for ProcessTool {
         "process".into()
     }
     fn description(&self) -> String {
-        "List or kill processes".into()
+        crate::prompts::PROCESS_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

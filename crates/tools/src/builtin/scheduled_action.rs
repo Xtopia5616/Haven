@@ -1097,13 +1097,7 @@ impl Tool for ScheduledActionTool {
     }
 
     fn description(&self) -> String {
-        "Schedule actions to run later, mode picks what happens when \
-         it fires: tool (default) calls the tool; continue \
-         resumes the current session later (only while the session is still \
-         active — it is cancelled when the session ends). With watch_action_id \
-         the scheduled action fires when a background action finishes instead of on a \
-         timer, resuming the session with the action's result."
-            .into()
+        crate::prompts::SCHEDULE_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

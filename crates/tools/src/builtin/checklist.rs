@@ -144,7 +144,7 @@ impl Tool for ChecklistTool {
         "checklist".into()
     }
     fn description(&self) -> String {
-        "Maintain a small per-session checklist without blocking the session.".into()
+        crate::prompts::CHECKLIST_DESCRIPTION.into()
     }
     fn risk_level(&self, _input: &Value) -> RiskLevel {
         RiskLevel::Low

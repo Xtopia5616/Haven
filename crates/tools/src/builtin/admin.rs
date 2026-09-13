@@ -78,13 +78,11 @@ impl AdminCapability {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Diagnostics => {
-                "Inspect Haven health, bounded logs, and session diagnostics without changing state."
-            }
-            Self::Config => "Read masked configuration and change the typed runtime log level.",
-            Self::Skills => "List, enable, disable, or create Haven skills.",
-            Self::Tools => "Enable or disable a builtin Haven tool.",
-            Self::Mcp => "Inspect and manage configured MCP servers and connections.",
+            Self::Diagnostics => crate::prompts::DIAGNOSTICS_DESCRIPTION,
+            Self::Config => crate::prompts::CONFIG_DESCRIPTION,
+            Self::Skills => crate::prompts::SKILLS_DESCRIPTION,
+            Self::Tools => crate::prompts::TOOLS_DESCRIPTION,
+            Self::Mcp => crate::prompts::MCP_DESCRIPTION,
         }
     }
 

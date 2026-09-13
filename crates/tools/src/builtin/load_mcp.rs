@@ -354,7 +354,7 @@ impl Tool for LoadMcpTool {
         "load_mcp".into()
     }
     fn description(&self) -> String {
-        "Load an MCP server's tools by server name, activating them for this session. Optional tool_names loads only that subset (required when the server has too many tools for the per-request budget). Prefer this over weaker built-in tools when the server's tools fit the session.".into()
+        crate::prompts::LOAD_MCP_DESCRIPTION.into()
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {

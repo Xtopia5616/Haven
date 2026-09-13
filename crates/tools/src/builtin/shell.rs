@@ -298,7 +298,7 @@ impl Tool for ShellTool {
         "shell".into()
     }
     fn description(&self) -> String {
-        "Execute a shell command on the user's PC. The default shell is user-configurable in the app settings (cmd / Windows PowerShell / PowerShell 7, reported in the result's shell field; any shell is selectable per call via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. Commands that exceed the timeout are terminated when possible, but Windows child processes may outlive the shell and are reported as an unknown timeout.".into()
+        crate::prompts::SHELL_DESCRIPTION.into()
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {

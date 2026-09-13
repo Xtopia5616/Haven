@@ -134,7 +134,7 @@ impl Tool for HttpTool {
         "http".into()
     }
     fn description(&self) -> String {
-        "HTTP GET/POST for pages or APIs. HTML is converted to plain text by default; pass as_html for raw HTML. For web search prefer load_mcp.".into()
+        crate::prompts::HTTP_DESCRIPTION.into()
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {

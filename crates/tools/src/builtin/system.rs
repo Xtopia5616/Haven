@@ -188,13 +188,7 @@ impl Tool for SystemTool {
         "system".into()
     }
     fn description(&self) -> String {
-        "System control and info. scope=info (default): machine snapshot — \
-         category=overview|os|cpu|memory|disk|network|user|locale|all. \
-         scope=env: get/set/unset/list (list accepts name as prefix filter; credential-like get values are masked and set never echoes value). \
-         scope=registry: get/set/delete/list Windows Registry. \
-         scope=power: status/lock/sleep/hibernate. \
-         scope=display: monitors with geometry, DPI/scale, refresh rate."
-            .into()
+        crate::prompts::SYSTEM_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

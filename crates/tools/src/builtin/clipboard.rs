@@ -136,7 +136,7 @@ impl Tool for ClipboardTool {
         "clipboard".into()
     }
     fn description(&self) -> String {
-        "Read, write, or inspect the system clipboard history".into()
+        crate::prompts::CLIPBOARD_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

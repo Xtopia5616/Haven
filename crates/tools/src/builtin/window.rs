@@ -479,12 +479,7 @@ impl Tool for WindowTool {
         "window".into()
     }
     fn description(&self) -> String {
-        "List, query, and manage desktop windows: list/foreground/focus/close/screenshot; \
-         `screenshot` returns a managed asset_id for follow-up media operations; \
-         `ocr` captures the screen and extracts text via vision; `ui_tree` enumerates \
-         interactive UI Automation elements; `wait` polls until a title/UI text condition \
-         matches. For monitor layout use system scope=display."
-            .into()
+        crate::prompts::WINDOW_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

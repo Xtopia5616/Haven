@@ -248,12 +248,7 @@ impl Tool for InputTool {
     }
 
     fn description(&self) -> String {
-        "Simulate keyboard/mouse input on the desktop: type, \
-         type_element, key, click, click_element, \
-         move, scroll. Coordinates are screen pixels from the top-left. \
-         Element operations re-query a Windows UI Automation control by name \
-         and require an unambiguous match unless a zero-based index is supplied."
-            .into()
+        crate::prompts::INPUT_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

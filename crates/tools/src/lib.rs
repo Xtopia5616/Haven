@@ -11,6 +11,7 @@ pub mod messaging_service;
 mod operation_view;
 mod output;
 mod process;
+mod prompts;
 pub(crate) mod registry;
 pub(crate) mod security;
 mod shell_runtime;

@@ -172,7 +172,7 @@ impl Tool for AskTool {
     }
 
     fn description(&self) -> String {
-        "Ask the user one question when you need a decision or missing information. One question per call — do not pack multiple questions or mixed option sets into a single ask.".into()
+        crate::prompts::ASK_DESCRIPTION.into()
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {

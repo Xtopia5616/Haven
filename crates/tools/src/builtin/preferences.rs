@@ -97,8 +97,7 @@ impl Tool for PreferencesTool {
         "preferences".into()
     }
     fn description(&self) -> String {
-        "Read and update lightweight per-session user preferences without blocking the session."
-            .into()
+        crate::prompts::PREFERENCES_DESCRIPTION.into()
     }
     fn risk_level(&self, _input: &Value) -> RiskLevel {
         RiskLevel::Low

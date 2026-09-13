@@ -1140,7 +1140,7 @@ impl Tool for FilesTool {
         "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, create directories, edit, patch, copy, move, delete, list, outline, summarize, or search files. Managed images, audio, PDFs, and Office documents are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
+        crate::prompts::FILES_DESCRIPTION.into()
     }
 
     fn requires_session_id(&self) -> bool {
@@ -1196,7 +1196,7 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; read/summary may use asset_id instead of path; outline returns headings/declarations with line numbers; other operations use path." },
+                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": crate::prompts::FILES_OPERATION_SELECTOR_DESCRIPTION },
                 "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment; use this instead of guessing a local path" }
             },
             "required": ["operation"],

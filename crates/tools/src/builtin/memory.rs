@@ -371,11 +371,7 @@ impl Tool for MemoryTool {
         "memory".into()
     }
     fn description(&self) -> String {
-        "Haven memory (SPO edges + past conversation items). \
-         search/list/remember/forget manage SPO facts; \
-         recall(query, kind=fact|episode) is the unified retrieval entry \
-         (same path as History memory search: vector when configured, else keyword)."
-            .into()
+        crate::prompts::MEMORY_DESCRIPTION.into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

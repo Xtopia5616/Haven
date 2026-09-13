@@ -101,7 +101,7 @@ async fn set_max_steps_updates_field() {
 async fn build_system_prompt_succeeds() {
     let (agent, _) = make_test_agent();
     let prompt = agent.prompt_builder.build("test session", &[]).await;
-    assert!(prompt.contains("You have access to the following built-in tools"));
+    assert!(prompt.contains("Available capability families"));
 }
 
 #[tokio::test]
