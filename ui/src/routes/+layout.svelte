@@ -37,6 +37,7 @@
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
+	import { setToolManifests } from '$lib/toolManifest.ts';
 	import {
 		formatLlmConnectionFailure,
 		formatLlmConnectionRecovery,
@@ -555,6 +556,11 @@
 
 	onMount(async () => {
 		runtime = isTauri() ? 'tauri' : 'browser';
+		if (isTauri()) {
+			invoke('get_tools')
+				.then((result) => setToolManifests(result?.tools))
+				.catch((error) => logger.debug('+layout', 'tool manifest warmup unavailable', error));
+		}
 		removeGlobalErrorHandlers = installGlobalErrorHandlers();
 		// Keep the static shell above the live DOM until it has had a paint pass.
 		// This avoids exposing a partially hydrated layout for one frame, while

@@ -88,7 +88,7 @@
 					<article class="operation-item">
 						<div class="operation-header">
 							<div class="operation-info">
-								<div class="operation-name">{operation.name}</div>
+								<div class="operation-name">{operation.label || operation.name}</div>
 								<div class="operation-meta">
 									<StatusBadge
 										label={`风险：${riskLabel(operation.risk)}`}
@@ -98,6 +98,9 @@
 										label={operation.enabled ? '已启用' : '已停用'}
 										tone={operation.enabled ? 'success' : 'error'}
 									/>
+									{#if operation.available === false}
+										<StatusBadge label="缺少依赖" tone="warning" />
+									{/if}
 								</div>
 							</div>
 							<div class="operation-actions">
@@ -120,6 +123,9 @@
 							</div>
 						</div>
 						<p class="operation-desc">{operation.desc || '暂无描述'}</p>
+						{#if operation.available === false && operation.availabilityReason}
+							<p class="operation-desc">{operation.availabilityReason}</p>
+						{/if}
 						{#if operation.schema && Object.keys(operation.schema).length > 0}
 							<details class="operation-schema">
 								<summary>查看输入 Schema</summary>

@@ -34,13 +34,16 @@ use tokio::sync::RwLock;
 use crate::BackgroundActions;
 use crate::ToolRegistry;
 use crate::operation_view::{
-    OperationViewContract, OperationViewRiskRule, OperationViewTool, split_operation_schema,
+    OperationSpec, OperationViewRiskRule, OperationViewTool, split_operation_schema,
     split_scope_operation_schema,
 };
 use crate::registry::SessionCatalog;
 use crate::skill_runner::SkillRunner;
-use crate::{OperationIdempotency, ToolBox, ToolConcurrency, ToolOperationScope};
-use haven_common::tools::ToolCatalogGroup;
+use crate::{
+    ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolBox, ToolConcurrency,
+    ToolOperationScope,
+};
+use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt};
 use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
@@ -254,7 +257,7 @@ pub async fn register_builtin_tools(
         )
         .with_media_tool(media_tool.clone()),
     );
-    for contract in operation_view_contracts(limits.search_max_results) {
+    for contract in operation_specs(limits.search_max_results) {
         if !contract.name.starts_with("files.") {
             continue;
         }
@@ -298,13 +301,13 @@ pub async fn register_builtin_tools(
     let system_tool: ToolBox = Arc::new(system::SystemTool::default().with_max_output_chars(
         tool_output_cap(settings, "system", limits.max_observation_chars),
     ));
-    let contract = operation_view_contracts(limits.search_max_results)
+    let contract = operation_specs(limits.search_max_results)
         .into_iter()
         .find(|contract| contract.name == "system.info")
         .expect("system.info operation view contract");
     tools.push(OperationViewTool::new(system_tool.clone(), contract));
     add_system_scope_operation_views(tools, system_tool.clone(), settings);
-    let contract = operation_view_contract(
+    let contract = operation_spec(
         &system_tool,
         "system.display",
         "List connected displays.",
@@ -478,89 +481,137 @@ fn system_info_schema() -> serde_json::Value {
 
 /// The operation-view catalog is the backend source of truth for the model
 /// schema, execution policy and the cross-boundary UI/prompt identifiers.
-fn operation_view_contracts(max_results: usize) -> Vec<OperationViewContract> {
+fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
     vec![
-        OperationViewContract {
+        OperationSpec {
             name: "files.read",
             description: "Read a text file by path with byte or line cursors.",
             fixed: vec![("operation".into(), serde_json::json!("read"))],
             schema: files_read_text_schema(),
-            risk_level: RiskLevel::Low,
+            policy: OperationPolicy {
+                risk_level: RiskLevel::Low,
+                permission_key: "files.read".into(),
+                confirmation: ConfirmationRequirement::SecurityPolicy,
+                idempotency: OperationIdempotency::Idempotent,
+                scope: ToolOperationScope::Session,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
+            },
             risk_rule: None,
-            idempotency: OperationIdempotency::Idempotent,
-            scope: ToolOperationScope::Session,
-            concurrency: ToolConcurrency::SharedResource("files".into()),
-            permission_key: "files.read".into(),
             catalog_group: ToolCatalogGroup::System,
-            renderer: "files".into(),
-            icon: "file".into(),
-            prompt: "Read text; continue with offset/limit or line cursors when truncated.".into(),
+            presentation: ToolPresentation {
+                label: "读取文件".into(),
+                renderer: "files".into(),
+                icon: "file".into(),
+            },
+            prompt: ToolPrompt {
+                when_to_use: "Read text; continue with offset/limit or line cursors when truncated.".into(),
+                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                key_operations: vec!["files.read".into()],
+            },
         },
-        OperationViewContract {
+        OperationSpec {
             name: "files.outline",
             description: "Return source headings and declarations with line ranges.",
             fixed: vec![("operation".into(), serde_json::json!("outline"))],
             schema: files_outline_schema(),
-            risk_level: RiskLevel::Low,
+            policy: OperationPolicy {
+                risk_level: RiskLevel::Low,
+                permission_key: "files.outline".into(),
+                confirmation: ConfirmationRequirement::SecurityPolicy,
+                idempotency: OperationIdempotency::Idempotent,
+                scope: ToolOperationScope::Session,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
+            },
             risk_rule: None,
-            idempotency: OperationIdempotency::Idempotent,
-            scope: ToolOperationScope::Session,
-            concurrency: ToolConcurrency::SharedResource("files".into()),
-            permission_key: "files.outline".into(),
             catalog_group: ToolCatalogGroup::System,
-            renderer: "files".into(),
-            icon: "fileSearch".into(),
-            prompt: "Inspect source structure first; continue with next_page.start_line.".into(),
+            presentation: ToolPresentation {
+                label: "文件大纲".into(),
+                renderer: "files".into(),
+                icon: "fileSearch".into(),
+            },
+            prompt: ToolPrompt {
+                when_to_use: "Inspect source structure first; continue with next_page.start_line.".into(),
+                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                key_operations: vec!["files.outline".into()],
+            },
         },
-        OperationViewContract {
+        OperationSpec {
             name: "files.summary",
             description: "Summarize a text file or a bounded line range.",
             fixed: vec![("operation".into(), serde_json::json!("summary"))],
             schema: files_summary_schema(),
-            risk_level: RiskLevel::Low,
+            policy: OperationPolicy {
+                risk_level: RiskLevel::Low,
+                permission_key: "files.summary".into(),
+                confirmation: ConfirmationRequirement::SecurityPolicy,
+                idempotency: OperationIdempotency::Idempotent,
+                scope: ToolOperationScope::Session,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
+            },
             risk_rule: None,
-            idempotency: OperationIdempotency::Idempotent,
-            scope: ToolOperationScope::Session,
-            concurrency: ToolConcurrency::SharedResource("files".into()),
-            permission_key: "files.summary".into(),
             catalog_group: ToolCatalogGroup::System,
-            renderer: "files".into(),
-            icon: "file".into(),
-            prompt: "Summarize text or a bounded range; do not treat the summary as source text."
-                .into(),
+            presentation: ToolPresentation {
+                label: "文件摘要".into(),
+                renderer: "files".into(),
+                icon: "file".into(),
+            },
+            prompt: ToolPrompt {
+                when_to_use: "Summarize text or a bounded range; do not treat the summary as source text.".into(),
+                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                key_operations: vec!["files.summary".into()],
+            },
         },
-        OperationViewContract {
+        OperationSpec {
             name: "files.search",
             description: "Search filenames or file contents and return match context.",
             fixed: vec![("operation".into(), serde_json::json!("search"))],
             schema: files_search_schema(max_results),
-            risk_level: RiskLevel::Low,
+            policy: OperationPolicy {
+                risk_level: RiskLevel::Low,
+                permission_key: "files.search".into(),
+                confirmation: ConfirmationRequirement::SecurityPolicy,
+                idempotency: OperationIdempotency::Idempotent,
+                scope: ToolOperationScope::Session,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
+            },
             risk_rule: Some(OperationViewRiskRule::ContentSearchMedium),
-            idempotency: OperationIdempotency::Idempotent,
-            scope: ToolOperationScope::Session,
-            concurrency: ToolConcurrency::SharedResource("files".into()),
-            permission_key: "files.search".into(),
             catalog_group: ToolCatalogGroup::System,
-            renderer: "files.search".into(),
-            icon: "search".into(),
-            prompt: "Use path/line/context metadata; call files.read for the surrounding source."
-                .into(),
+            presentation: ToolPresentation {
+                label: "搜索文件".into(),
+                renderer: "files.search".into(),
+                icon: "search".into(),
+            },
+            prompt: ToolPrompt {
+                when_to_use: "Use path/line/context metadata; call files.read for the surrounding source.".into(),
+                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                key_operations: vec!["files.search".into()],
+            },
         },
-        OperationViewContract {
+        OperationSpec {
             name: "system.info",
             description: "Read a bounded machine information snapshot.",
             fixed: vec![("scope".into(), serde_json::json!("info"))],
             schema: system_info_schema(),
-            risk_level: RiskLevel::Safe,
+            policy: OperationPolicy {
+                risk_level: RiskLevel::Safe,
+                permission_key: "system.info".into(),
+                confirmation: ConfirmationRequirement::None,
+                idempotency: OperationIdempotency::Idempotent,
+                scope: ToolOperationScope::Global,
+                concurrency: ToolConcurrency::ReadOnly,
+            },
             risk_rule: None,
-            idempotency: OperationIdempotency::Idempotent,
-            scope: ToolOperationScope::Global,
-            concurrency: ToolConcurrency::ReadOnly,
-            permission_key: "system.info".into(),
             catalog_group: ToolCatalogGroup::System,
-            renderer: "system".into(),
-            icon: "cpu".into(),
-            prompt: "Read a bounded machine snapshot; use category to narrow the response.".into(),
+            presentation: ToolPresentation {
+                label: "系统信息".into(),
+                renderer: "system".into(),
+                icon: "cpu".into(),
+            },
+            prompt: ToolPrompt {
+                when_to_use: "Read a bounded machine snapshot; use category to narrow the response.".into(),
+                when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
+                key_operations: vec!["system.info".into()],
+            },
         },
     ]
 }
@@ -1439,7 +1490,7 @@ fn catalog_group_for_operation(name: &str) -> ToolCatalogGroup {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn operation_view_contract(
+fn operation_spec(
     inner: &ToolBox,
     name: &'static str,
     description: &'static str,
@@ -1448,24 +1499,119 @@ fn operation_view_contract(
     renderer: &'static str,
     icon: &'static str,
     prompt: &'static str,
-) -> OperationViewContract {
+) -> OperationSpec {
     let policy_input = Value::Object(fixed.iter().cloned().collect());
-    OperationViewContract {
+    let mut policy = inner.operation_policy(&policy_input);
+    // Operation views are stable permission identities even though execution
+    // is delegated to an aggregate builtin implementation.
+    policy.permission_key = name.into();
+    OperationSpec {
         name,
         description,
         fixed,
         schema,
-        risk_level: inner.risk_level(&policy_input),
+        policy,
         risk_rule: None,
-        idempotency: inner.idempotency(&policy_input),
-        scope: inner.operation_scope(&policy_input),
-        concurrency: inner.concurrency(&policy_input),
-        permission_key: name.into(),
         catalog_group: catalog_group_for_operation(name),
-        renderer: renderer.into(),
-        icon: icon.into(),
-        prompt: prompt.into(),
+        presentation: ToolPresentation {
+            label: operation_label(name),
+            renderer: renderer.into(),
+            icon: icon.into(),
+        },
+        prompt: ToolPrompt {
+            when_to_use: prompt.into(),
+            when_not_to_use: "Use a narrower operation view when one is available; do not add an operation field.".into(),
+            key_operations: vec![name.into()],
+        },
     }
+}
+
+/// User-facing labels belong to the backend manifest, next to the stable
+/// operation registration. Unknown/new operations remain readable without a
+/// second frontend registry.
+fn operation_label(name: &str) -> String {
+    match name {
+        "files.write" => "写入文件",
+        "files.create_dir" => "创建目录",
+        "files.edit" => "编辑文件",
+        "files.copy" => "复制文件",
+        "files.move" => "移动文件",
+        "files.delete" => "删除文件",
+        "files.list" => "列出文件",
+        "process.list" => "列出进程",
+        "process.kill" => "终止进程",
+        "clipboard.read" => "读取剪贴板",
+        "clipboard.write" => "写入剪贴板",
+        "clipboard.history" => "剪贴板历史",
+        "input.type" => "输入文字",
+        "input.key" => "按键",
+        "input.click" => "点击",
+        "input.move" => "移动鼠标",
+        "input.scroll" => "滚动",
+        "window.list" => "列出窗口",
+        "window.foreground" => "前台窗口",
+        "window.focus" => "聚焦窗口",
+        "window.close" => "关闭窗口",
+        "window.screenshot" => "窗口截图",
+        "window.ocr" => "窗口 OCR",
+        "window.ui_tree" => "窗口 UI 树",
+        "window.wait" => "等待窗口",
+        "media.inspect" => "检查媒体",
+        "media.describe" => "描述图像",
+        "media.ocr" => "媒体 OCR",
+        "media.transcribe" => "转录音频",
+        "media.extract" => "提取文档",
+        "media.generate" => "生成图像",
+        "media.record" => "录音",
+        "media.play" => "播放音频",
+        "media.speak" => "语音朗读",
+        "media.volume_get" => "读取音量",
+        "media.volume_set" => "设置音量",
+        "media.mute_get" => "读取静音状态",
+        "media.mute_set" => "设置静音",
+        "memory.search" => "搜索记忆",
+        "memory.list" => "列出记忆",
+        "memory.remember" => "记住信息",
+        "memory.forget" => "忘记信息",
+        "memory.recall" => "召回记忆",
+        "agent.list" => "列出 Agent",
+        "agent.inbox" => "读取 Agent 消息",
+        "agent.send" => "发送 Agent 消息",
+        "agent.reply" => "回复 Agent",
+        "agent.profile" => "Agent 资料",
+        "agent.request" => "请求 Agent",
+        "agent.spawn" => "创建 Agent",
+        "actions.list" => "后台任务列表",
+        "actions.inspect" => "查看后台任务",
+        "actions.cancel" => "取消后台任务",
+        "schedule.set" => "设置定时任务",
+        "schedule.list" => "定时任务列表",
+        "schedule.cancel" => "取消定时任务",
+        "preferences.get" => "读取偏好",
+        "preferences.set" => "设置偏好",
+        "preferences.clear" => "清除偏好",
+        "preferences.list" => "偏好列表",
+        "checklist.list" => "检查清单",
+        "checklist.add" => "添加清单项",
+        "checklist.update" => "更新清单项",
+        "checklist.remove" => "移除清单项",
+        "checklist.clear" => "清空检查清单",
+        "system.display" => "显示器信息",
+        "system.env.list" => "列出环境变量",
+        "system.env.get" => "读取环境变量",
+        "system.env.set" => "设置环境变量",
+        "system.env.unset" => "删除环境变量",
+        "system.registry.list" => "列出注册表",
+        "system.registry.get" => "读取注册表",
+        "system.registry.set" => "设置注册表",
+        "system.registry.delete" => "删除注册表值",
+        "system.power.status" => "电源状态",
+        "system.power.lock" => "锁定电脑",
+        "system.power.sleep" => "睡眠",
+        "system.power.hibernate" => "休眠",
+        _ => name,
+    }
+    .into()
 }
 
 fn add_operation_views(
@@ -1479,7 +1625,7 @@ fn add_operation_views(
         let Some(view_schema) = split_operation_schema(&schema, spec.operation) else {
             continue;
         };
-        let contract = operation_view_contract(
+        let contract = operation_spec(
             &inner,
             spec.name,
             spec.description,
@@ -1509,7 +1655,7 @@ fn add_system_scope_operation_views(
             ("scope".into(), serde_json::json!(scope)),
             ("operation".into(), serde_json::json!(operation)),
         ];
-        let contract = operation_view_contract(
+        let contract = operation_spec(
             &inner,
             name,
             description,
@@ -1562,7 +1708,7 @@ fn add_admin_operation_views(
         let Some(view_schema) = split_operation_schema(&schema, operation) else {
             continue;
         };
-        let mut contract = operation_view_contract(
+        let mut contract = operation_spec(
             &inner,
             name,
             description,
@@ -1572,7 +1718,14 @@ fn add_admin_operation_views(
             icon,
             description,
         );
-        contract.risk_level = admin_operation_risk(name);
+        contract.policy.risk_level = admin_operation_risk(name);
+        contract.policy.confirmation = if contract.policy.risk_level >= RiskLevel::Critical {
+            ConfirmationRequirement::Required
+        } else if contract.policy.risk_level == RiskLevel::Safe {
+            ConfirmationRequirement::None
+        } else {
+            ConfirmationRequirement::SecurityPolicy
+        };
         tools.push(OperationViewTool::new(inner.clone(), contract));
     }
 }
@@ -1594,7 +1747,7 @@ fn add_action_views(
             action_list_schema(true),
         ),
     ] {
-        let contract = operation_view_contract(
+        let contract = operation_spec(
             &inner,
             name,
             description,
@@ -1730,8 +1883,8 @@ mod tests {
     }
 
     #[test]
-    fn operation_view_contracts_cover_policy_and_security_metadata() {
-        let contracts = operation_view_contracts(64);
+    fn operation_specs_cover_policy_and_security_metadata() {
+        let contracts = operation_specs(64);
         assert_eq!(
             contracts
                 .iter()
@@ -1748,10 +1901,10 @@ mod tests {
         for contract in contracts {
             assert!(contract.schema.is_object(), "{} schema", contract.name);
             assert_eq!(contract.schema["additionalProperties"], json!(false));
-            assert!(!contract.permission_key.is_empty());
-            assert!(!contract.renderer.is_empty());
-            assert!(!contract.icon.is_empty());
-            assert!(!contract.prompt.is_empty());
+            assert!(!contract.policy.permission_key.is_empty());
+            assert!(!contract.presentation.renderer.is_empty());
+            assert!(!contract.presentation.icon.is_empty());
+            assert!(!contract.prompt.when_to_use.is_empty());
 
             let policy_input = json!(
                 contract
@@ -1762,7 +1915,7 @@ mod tests {
             );
             assert_eq!(
                 haven_common::types::permission_key(contract.name, &policy_input),
-                contract.permission_key,
+                contract.policy.permission_key,
                 "permission key drift for {}",
                 contract.name
             );
@@ -1770,7 +1923,7 @@ mod tests {
                 .iter()
                 .find(|case| case.tool_name == contract.name && case.operation == contract.name)
                 .unwrap_or_else(|| panic!("security matrix missing {}", contract.name));
-            assert_eq!(matrix.risk_level, contract.risk_level);
+            assert_eq!(matrix.risk_level, contract.policy.risk_level);
         }
     }
 }

@@ -220,6 +220,8 @@ impl TauriEmitter {
                 outcome,
                 idempotency,
                 operation_scope,
+                renderer,
+                result,
             } => serialize(AgentObservationEvent {
                 session_id: session_id.clone(),
                 observation: observation.clone(),
@@ -234,6 +236,8 @@ impl TauriEmitter {
                 outcome: outcome.clone(),
                 idempotency: idempotency.clone(),
                 operation_scope: operation_scope.clone(),
+                renderer: renderer.clone(),
+                result: result.clone(),
                 event_seq,
             }),
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {

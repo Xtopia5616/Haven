@@ -33,6 +33,7 @@
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import { groupBuiltinTools, matchesBuiltinToolCard } from '$lib/builtinToolPresentation.ts';
+	import { setToolManifests } from '$lib/toolManifest.ts';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -96,14 +97,19 @@
 			const result = await invoke('get_tools');
 			if (result && result.tools) {
 				const tools = /** @type {Array<any>} */ (result.tools);
+				setToolManifests(tools);
 				builtinTools = tools
 					.map((t) => ({
 						name: t.name || 'unknown',
-						desc: t.description || '',
-						risk: t.risk_level || 'unknown',
-						category: t.catalog_group || 'other',
-						schema: t.input_schema || {},
-						enabled: t.enabled !== false,
+						label: t.manifest?.presentation?.label || t.name || 'unknown',
+						desc: t.manifest?.model?.description || t.description || '',
+						risk: t.manifest?.policy?.risk_level || t.risk_level || 'unknown',
+						category: t.manifest?.identity?.catalog_group || t.catalog_group || 'other',
+						schema: t.manifest?.model?.input_schema || t.input_schema || {},
+						enabled: t.manifest?.availability?.enabled ?? t.enabled !== false,
+						available: t.manifest?.availability?.available ?? true,
+						availabilityReason: t.manifest?.availability?.availability_reason || null,
+						manifest: t.manifest || null,
 					}))
 					.sort((a, b) => a.name.localeCompare(b.name));
 			}

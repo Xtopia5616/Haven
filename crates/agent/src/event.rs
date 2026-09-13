@@ -4,6 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_memory::Database;
+use haven_tools::ToolResultEnvelope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -66,6 +67,11 @@ pub enum AgentEvent {
         idempotency: String,
         /// Whether the operation targets session-local or global state.
         operation_scope: String,
+        /// Backend-owned renderer selected from the operation manifest.
+        renderer: String,
+        /// Stable result metadata; operation-specific payload stays in
+        /// `observation` and is not forced into a shared output schema.
+        result: ToolResultEnvelope,
     },
     SessionCreated(SessionInfo),
     SessionCompleted {

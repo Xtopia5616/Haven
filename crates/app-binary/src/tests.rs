@@ -71,6 +71,8 @@ fn channel_maps_every_variant_to_expected_channel() {
                 outcome: "succeeded".into(),
                 idempotency: "idempotent".into(),
                 operation_scope: "session".into(),
+                renderer: "generic".into(),
+                result: haven_tools::ToolResultEnvelope::default(),
             },
             "agent:observation",
         ),

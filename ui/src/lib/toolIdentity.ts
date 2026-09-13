@@ -1,16 +1,11 @@
 /** Shared tool-name → source / label helpers for chat tool cards. */
 
-import { operationViewContract, toolRootName } from './operationViewContract.ts';
+import { getToolManifest, toolLabel, toolRootName } from './toolManifest.ts';
 
 export type ToolSource = 'builtin' | 'skill' | 'mcp';
 
 /** @type {Record<string, string>} */
 export const TOOL_LABELS: Record<string, string> = {
-	'files.read': '读取文件',
-	'files.outline': '文件大纲',
-	'files.summary': '文件摘要',
-	'files.search': '搜索文件',
-	'system.info': '系统信息',
 	files: '文件与搜索',
 	media: '媒体',
 	http: 'HTTP 请求',
@@ -42,7 +37,8 @@ export { toolRootName };
 
 /** Return the fixed operation for a model-facing operation view. */
 export function toolOperationName(toolName: string): string | null {
-	return operationViewContract(toolName) ? toolName : null;
+	const manifest = getToolManifest(toolName);
+	return manifest?.identity.operation ? manifest.identity.stable_name : null;
 }
 
 /** Strip the provider-safe namespace prefix from a dynamic tool name. */
@@ -55,6 +51,10 @@ function stripToolPrefix(name: string, prefix: string): string | null {
 /** Classify a wire tool name into builtin / skill / MCP. */
 export function classifyToolSource(toolName: string): ToolSource {
 	const name = String(toolName || '');
+	const manifest = getToolManifest(name);
+	if (manifest?.identity.source === 'mcp') return 'mcp';
+	if (manifest?.identity.source === 'skill') return 'skill';
+	if (manifest?.identity.source === 'builtin') return 'builtin';
 	// The activation tools are implemented by Haven, but their card represents
 	// the capability being activated, so keep them visually consistent with the
 	// dynamic tools they expose.
@@ -89,8 +89,8 @@ export function toolDisplayName(
 ): string {
 	const name = String(toolName || '');
 	if (labels[name]) return labels[name];
-	const view = operationViewContract(name);
-	if (view) return view.label;
+	const manifestLabel = toolLabel(name);
+	if (manifestLabel) return manifestLabel;
 	const stripped = stripToolPrefix(name, 'mcp__') ?? stripToolPrefix(name, 'skill__');
 	return stripped ?? name;
 }

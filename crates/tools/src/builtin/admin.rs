@@ -748,6 +748,7 @@ impl Tool for AdminCapabilityTool {
     }
 
     fn tool_def(&self) -> ToolDef {
+        let manifest = self.tool_manifest();
         ToolDef::new(
             self.name(),
             self.description(),
@@ -765,6 +766,7 @@ impl Tool for AdminCapabilityTool {
                     }
                 }),
         )
+        .with_manifest(manifest)
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {

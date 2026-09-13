@@ -19,13 +19,15 @@
 		toolSourceLabel,
 	} from '$lib/toolIdentity.ts';
 	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
-	import { toolIconName, toolRootName } from '$lib/operationViewContract.ts';
+	import { toolIconName, toolRendererName, toolRootName } from '$lib/toolManifest.ts';
 
 	let {
 		type = 'tool',
 		embedded = false,
 		toolName = '',
 		outcome = null,
+		renderer = null,
+		result = null,
 		content = '',
 		options = [],
 		awaiting = false,
@@ -51,6 +53,7 @@
 		unknown: '结果未知，可能已执行',
 	});
 	let outcomeLabel = $derived(outcomeLabels[outcome || ''] || '');
+	let resultHint = $derived(result?.verificationHint || result?.nextAction || '');
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
 	// chat input submits (page composes selected options + any typed text).
@@ -140,7 +143,11 @@
 		type === 'tool' ? estimateToolDataTokens(toolName, toolArgs, displayContent) : null,
 	);
 
-	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, displayContent) : null);
+	let parsed = $derived(
+		type === 'tool'
+			? parseToolResult(toolName, displayContent, renderer || toolRendererName(toolName))
+			: null,
+	);
 
 	// Keep live output visible while a tool is running, then collapse the card
 	// once its output is complete. Manual clicks after completion persist until
@@ -184,7 +191,9 @@
 		if (rootToolName === 'media') return 'image';
 		return 'tools';
 	});
-	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data));
+	let BodyRenderer = $derived(
+		getToolResultRenderer(kind, toolName, data, renderer || toolRendererName(toolName)),
+	);
 	const toolStateLabels = /** @type {Record<string, string>} */ ({
 		running: '执行中',
 		completed: '完成',
@@ -426,6 +435,13 @@
 						{toolStateLabel}
 					</span>
 				</section>
+
+				{#if resultHint}
+					<section class="tool-detail" data-detail="result-meta">
+						<div class="tool-detail-label">后续提示</div>
+						<div class="tool-detail-value">{resultHint}</div>
+					</section>
+				{/if}
 
 				<section class="tool-detail" data-detail="args">
 					<div class="tool-detail-label">调用参数</div>

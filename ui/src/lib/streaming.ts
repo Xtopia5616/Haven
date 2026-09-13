@@ -15,6 +15,8 @@
 // persisted under), so the live bubble, the snap and the resume copy are
 // one entity and merges need no content-based dedup.
 
+import type { AgentToolResultEnvelope } from './contracts/agent.ts';
+
 /** A chat-bubble message in the live streaming view. */
 export interface StreamMessage {
 	id: string;
@@ -35,6 +37,7 @@ export interface StreamMessage {
 	/** Mid-turn user steer/queue: keep continuing agent output above this bubble. */
 	steering?: boolean;
 	received?: boolean;
+	result?: AgentToolResultEnvelope;
 	_ts?: number;
 }
 
@@ -177,6 +180,8 @@ export function newToolMessage({
 	toolArgs = undefined,
 	showFallbackIntent = undefined,
 	outcome = undefined,
+	renderer = undefined,
+	result = undefined,
 }: {
 	id: string;
 	stepNumber: number;
@@ -191,6 +196,8 @@ export function newToolMessage({
 	toolArgs?: unknown;
 	showFallbackIntent?: boolean | undefined;
 	outcome?: string | null | undefined;
+	renderer?: string | null | undefined;
+	result?: AgentToolResultEnvelope | undefined;
 }) {
 	const isAsk = toolName === 'ask';
 	return {
@@ -205,6 +212,8 @@ export function newToolMessage({
 		streaming,
 		...(showFallbackIntent !== undefined ? { showFallbackIntent } : {}),
 		...(outcome ? { outcome } : {}),
+		...(renderer ? { renderer } : {}),
+		...(result ? { result } : {}),
 		...(actionId ? { actionId } : {}),
 		...(toolArgs !== undefined ? { toolArgs } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),

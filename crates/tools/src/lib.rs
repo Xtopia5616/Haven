@@ -117,11 +117,13 @@ pub use shell_runtime::{
 };
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
-    OperationIdempotency, StructuredToolError, Tool, ToolBox, ToolCancellationPolicy,
-    ToolConcurrency, ToolDef, ToolErrorClass, ToolErrorMetadata, ToolExecutionOutcome,
-    ToolLlmUsage, ToolOperationMetadata, ToolOperationScope, ToolRegistration, ToolResult,
-    ToolRetryability, ToolSignals, TypedToolAdapter, TypedToolOperation, extract_ask_signal,
-    extract_notify_signal, is_silent_action, parse_tool_input,
+    ConfirmationRequirement, OperationIdempotency, OperationPolicy, StructuredToolError, Tool,
+    ToolAvailability, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef, ToolErrorClass,
+    ToolErrorMetadata, ToolExecutionOutcome, ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel,
+    ToolOperationMetadata, ToolOperationScope, ToolPolicy, ToolPresentation, ToolRegistration,
+    ToolResult, ToolResultEnvelope, ToolRetryability, ToolSignals, ToolSource, TypedToolAdapter,
+    TypedToolOperation, extract_ask_signal, extract_notify_signal, is_silent_action,
+    parse_tool_input,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.
@@ -1098,6 +1100,8 @@ impl ToolsManager {
             .filter(|t| !t.name().starts_with("skill__"))
             .map(|t| {
                 let def = t.tool_def();
+                let mut manifest = t.tool_manifest();
+                manifest.availability.enabled = tool_config_enabled(&settings, &t.name());
                 let mut json = def.json();
                 json.as_object_mut()
                     .expect("ToolDef::json returns an object")
@@ -1109,7 +1113,13 @@ impl ToolsManager {
                     .expect("ToolDef::json returns an object")
                     .insert(
                         "enabled".into(),
-                        serde_json::json!(tool_config_enabled(&settings, &t.name())),
+                        serde_json::json!(manifest.availability.enabled),
+                    );
+                json.as_object_mut()
+                    .expect("ToolDef::json returns an object")
+                    .insert(
+                        "manifest".into(),
+                        serde_json::to_value(manifest).unwrap_or(Value::Null),
                     );
                 json
             })
@@ -1330,9 +1340,31 @@ impl ToolsManager {
         let reported = self
             .get_tool_for_session(session_id, tool_name)
             .await
-            .map(|t| t.risk_level(input))
+            .map(|t| t.operation_policy(input).risk_level)
             .unwrap_or(RiskLevel::Safe);
         self.authorization.effective_risk(tool_name, reported).await
+    }
+
+    /// Return the canonical operation policy used by runtime and catalog
+    /// consumers. The authorization override is intentionally applied by the
+    /// security gateway, so this method exposes intrinsic policy only.
+    pub async fn get_operation_policy(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> OperationPolicy {
+        self.get_tool_for_session(session_id, tool_name)
+            .await
+            .map(|tool| tool.operation_policy(input))
+            .unwrap_or_else(|| OperationPolicy {
+                risk_level: RiskLevel::Safe,
+                permission_key: haven_common::types::permission_key(tool_name, input),
+                confirmation: crate::ConfirmationRequirement::None,
+                idempotency: OperationIdempotency::Unknown,
+                scope: ToolOperationScope::Session,
+                concurrency: ToolConcurrency::Exclusive,
+            })
     }
 
     /// Return the canonical policy input used by a tool, including fixed
@@ -1361,7 +1393,7 @@ impl ToolsManager {
     ) -> ToolConcurrency {
         self.get_tool_for_session(session_id, tool_name)
             .await
-            .map(|tool| tool.concurrency(input))
+            .map(|tool| tool.operation_policy(input).concurrency)
             .unwrap_or(ToolConcurrency::Exclusive)
     }
 
@@ -1376,7 +1408,7 @@ impl ToolsManager {
     ) -> OperationIdempotency {
         self.get_tool_for_session(session_id, tool_name)
             .await
-            .map(|tool| tool.idempotency(input))
+            .map(|tool| tool.operation_policy(input).idempotency)
             .unwrap_or(OperationIdempotency::Unknown)
     }
 
@@ -1389,8 +1421,20 @@ impl ToolsManager {
     ) -> ToolOperationScope {
         self.get_tool_for_session(session_id, tool_name)
             .await
-            .map(|tool| tool.operation_scope(input))
+            .map(|tool| tool.operation_policy(input).scope)
             .unwrap_or(ToolOperationScope::Session)
+    }
+
+    /// Result rendering is catalog metadata, not a payload-shape heuristic.
+    /// Unknown/legacy tools fall back to their stable root renderer.
+    pub async fn get_tool_manifest(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+    ) -> Option<ToolManifest> {
+        self.get_tool_for_session(session_id, tool_name)
+            .await
+            .map(|tool| tool.tool_manifest())
     }
 
     /// Apply the configured per-tool/global observation cap to the stable
@@ -1751,6 +1795,12 @@ mod tests {
                 .find(|tool| tool["name"].as_str() == Some(name))
                 .unwrap_or_else(|| panic!("builtin tool {name} should be listed"));
             assert_eq!(listed["catalog_group"].as_str(), Some(group), "{name}");
+            assert_eq!(
+                listed["manifest"]["identity"]["stable_name"].as_str(),
+                Some(name),
+                "manifest identity drift for {name}"
+            );
+            assert!(listed["manifest"]["presentation"]["renderer"].is_string());
         }
 
         assert!(mgr.get_tool("files").await.is_none());

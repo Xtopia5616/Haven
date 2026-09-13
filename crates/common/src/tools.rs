@@ -59,6 +59,91 @@ impl ToolCatalogGroup {
     }
 }
 
+/// Execution source of a tool. This is catalog metadata only; it does not
+/// collapse the security boundaries of builtins, skills, and MCP adapters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSource {
+    #[default]
+    Builtin,
+    Skill,
+    Mcp,
+}
+
+/// Stable identity shared by the prompt catalog, UI, permissions and result
+/// events. `stable_name` is the provider/permission identifier and must not be
+/// regenerated from presentation fields at the frontend boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolIdentity {
+    pub source: ToolSource,
+    pub catalog_group: ToolCatalogGroup,
+    pub root: String,
+    pub operation: Option<String>,
+    pub stable_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolModel {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+/// Catalog form of the operation policy. Runtime code uses the typed policy
+/// enums; this DTO deliberately remains provider-independent and stable over
+/// the Tauri/UI boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolPolicy {
+    pub risk_level: crate::types::RiskLevel,
+    pub permission_key: String,
+    pub confirmation: String,
+    pub idempotency: String,
+    pub scope: String,
+    pub concurrency: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolPresentation {
+    pub label: String,
+    pub renderer: String,
+    pub icon: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolAvailability {
+    pub enabled: bool,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub availability_reason: Option<String>,
+    pub requires_connection: bool,
+    pub requires_permission: bool,
+}
+
+impl Default for ToolAvailability {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            available: true,
+            availability_reason: None,
+            requires_connection: false,
+            requires_permission: false,
+        }
+    }
+}
+
+/// Backend-owned metadata for prompts, UI and authorization presentation.
+/// This is intentionally not part of [`ToolDef::json`] and therefore never
+/// contaminates provider-facing `tools[]` schemas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolManifest {
+    pub identity: ToolIdentity,
+    pub model: ToolModel,
+    pub policy: ToolPolicy,
+    pub presentation: ToolPresentation,
+    pub prompt: ToolPrompt,
+    pub availability: ToolAvailability,
+}
+
 /// Prompt-only orientation for a tool definition.
 ///
 /// This is deliberately not part of [`ToolDef::json`] or provider tool
@@ -110,6 +195,9 @@ pub struct ToolDef {
     /// remain the executable model-facing contract.
     #[serde(skip)]
     pub prompt: Option<ToolPrompt>,
+    /// Backend catalog metadata. Kept out of provider JSON by construction.
+    #[serde(skip)]
+    pub manifest: Option<ToolManifest>,
 }
 
 impl ToolDef {
@@ -127,6 +215,7 @@ impl ToolDef {
             retry_safety: ToolRetrySafety::Unknown,
             catalog_group: ToolCatalogGroup::Other,
             prompt: None,
+            manifest: None,
         }
     }
 
@@ -142,6 +231,11 @@ impl ToolDef {
 
     pub fn with_catalog_group(mut self, catalog_group: ToolCatalogGroup) -> Self {
         self.catalog_group = catalog_group;
+        self
+    }
+
+    pub fn with_manifest(mut self, manifest: ToolManifest) -> Self {
+        self.manifest = Some(manifest);
         self
     }
 

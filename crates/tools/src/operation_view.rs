@@ -5,31 +5,29 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    OperationIdempotency, Tool, ToolBox, ToolConcurrency, ToolDef, ToolExecutionOutcome,
-    ToolOperationScope, ToolRegistration, ToolResult, ToolSignals,
+    ConfirmationRequirement, OperationIdempotency, OperationPolicy, Tool, ToolBox, ToolConcurrency,
+    ToolDef, ToolExecutionOutcome, ToolOperationScope, ToolRegistration, ToolResult, ToolSignals,
 };
-use haven_common::tools::{ToolCatalogGroup, ToolPrompt};
+use haven_common::tools::{
+    ToolAvailability, ToolCatalogGroup, ToolIdentity, ToolManifest, ToolModel, ToolPresentation,
+    ToolPrompt, ToolSource,
+};
 
-/// Declarative contract for a model-facing operation view. The aggregate tool
+/// Declarative specification for a model-facing operation view. The aggregate tool
 /// remains the execution implementation, while this record is the one source
 /// for the view's model schema and runtime policy metadata.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub(crate) struct OperationViewContract {
+pub(crate) struct OperationSpec {
     pub(crate) name: &'static str,
     pub(crate) description: &'static str,
     pub(crate) fixed: Vec<(String, Value)>,
     pub(crate) schema: Value,
-    pub(crate) risk_level: RiskLevel,
+    pub(crate) policy: OperationPolicy,
     pub(crate) risk_rule: Option<OperationViewRiskRule>,
-    pub(crate) idempotency: OperationIdempotency,
-    pub(crate) scope: ToolOperationScope,
-    pub(crate) concurrency: ToolConcurrency,
-    pub(crate) permission_key: String,
     pub(crate) catalog_group: ToolCatalogGroup,
-    pub(crate) renderer: String,
-    pub(crate) icon: String,
-    pub(crate) prompt: String,
+    pub(crate) presentation: ToolPresentation,
+    pub(crate) prompt: ToolPrompt,
 }
 
 #[allow(dead_code)]
@@ -46,19 +44,15 @@ pub(crate) enum OperationViewRiskRule {
 /// model-facing callers therefore continue to share the same implementation.
 pub(crate) struct OperationViewTool {
     inner: ToolBox,
-    contract: OperationViewContract,
+    spec: OperationSpec,
     fixed: Map<String, Value>,
 }
 
 impl OperationViewTool {
-    pub(crate) fn new(inner: ToolBox, mut contract: OperationViewContract) -> Arc<Self> {
-        annotate_schema(&mut contract);
-        let fixed = Map::from_iter(contract.fixed.iter().cloned());
-        Arc::new(Self {
-            inner,
-            contract,
-            fixed,
-        })
+    pub(crate) fn new(inner: ToolBox, mut spec: OperationSpec) -> Arc<Self> {
+        annotate_schema(&mut spec);
+        let fixed = Map::from_iter(spec.fixed.iter().cloned());
+        Arc::new(Self { inner, spec, fixed })
     }
 
     fn routed_input(&self, input: &Value) -> Value {
@@ -77,15 +71,12 @@ impl OperationViewTool {
 /// extracted. The branch remains the validation authority; these fields only
 /// make the narrow provider schema self-describing in tool inspectors and
 /// provider traces.
-fn annotate_schema(contract: &mut OperationViewContract) {
-    let Some(schema) = contract.schema.as_object_mut() else {
+fn annotate_schema(spec: &mut OperationSpec) {
+    let Some(schema) = spec.schema.as_object_mut() else {
         return;
     };
-    schema.insert("title".into(), Value::String(contract.name.into()));
-    schema.insert(
-        "description".into(),
-        Value::String(contract.description.into()),
-    );
+    schema.insert("title".into(), Value::String(spec.name.into()));
+    schema.insert("description".into(), Value::String(spec.description.into()));
 }
 
 /// Extract one operation branch from an aggregate tool schema and remove the
@@ -203,30 +194,43 @@ fn remove_fixed_property(schema: &mut Value, name: &str) {
 #[async_trait]
 impl Tool for OperationViewTool {
     fn name(&self) -> String {
-        self.contract.name.to_string()
+        self.spec.name.to_string()
     }
 
     fn description(&self) -> String {
-        self.contract.description.to_string()
+        self.spec.description.to_string()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
-        match self.contract.risk_rule {
+        match self.spec.risk_rule {
             Some(OperationViewRiskRule::ContentSearchMedium)
                 if input.get("mode").and_then(Value::as_str) == Some("content") =>
             {
                 RiskLevel::Medium
             }
-            _ => self.contract.risk_level,
+            _ => self.spec.policy.risk_level,
         }
     }
 
+    fn operation_policy(&self, input: &Value) -> OperationPolicy {
+        let mut policy = self.spec.policy.clone();
+        policy.risk_level = self.risk_level(input);
+        policy.confirmation = if policy.risk_level >= RiskLevel::Critical {
+            ConfirmationRequirement::Required
+        } else if policy.risk_level == RiskLevel::Safe {
+            ConfirmationRequirement::None
+        } else {
+            ConfirmationRequirement::SecurityPolicy
+        };
+        policy
+    }
+
     fn idempotency(&self, _input: &Value) -> OperationIdempotency {
-        self.contract.idempotency
+        self.spec.policy.idempotency
     }
 
     fn operation_scope(&self, _input: &Value) -> ToolOperationScope {
-        self.contract.scope
+        self.spec.policy.scope
     }
 
     fn timeout_outcome(&self) -> ToolExecutionOutcome {
@@ -246,7 +250,7 @@ impl Tool for OperationViewTool {
     }
 
     fn input_schema(&self) -> Value {
-        self.contract.schema.clone()
+        self.spec.schema.clone()
     }
 
     fn tool_def(&self) -> ToolDef {
@@ -254,21 +258,16 @@ impl Tool for OperationViewTool {
             self.name(),
             self.description(),
             self.input_schema(),
-            self.contract.risk_level,
+            self.spec.policy.risk_level,
         )
-        .with_retry_safety(self.contract.idempotency.tool_retry_safety())
-        .with_catalog_group(self.contract.catalog_group)
-        .with_prompt(ToolPrompt {
-            when_to_use: self.contract.prompt.clone(),
-            when_not_to_use:
-                "Use a different operation view for another action; do not add an operation field."
-                    .into(),
-            key_operations: vec![self.contract.name.into()],
-        })
+        .with_retry_safety(self.spec.policy.idempotency.tool_retry_safety())
+        .with_catalog_group(self.spec.catalog_group)
+        .with_prompt(self.spec.prompt.clone())
+        .with_manifest(self.tool_manifest())
     }
 
     fn concurrency(&self, _input: &Value) -> ToolConcurrency {
-        self.contract.concurrency.clone()
+        self.spec.policy.concurrency.clone()
     }
 
     fn default_timeout_secs(&self) -> u64 {
@@ -297,6 +296,46 @@ impl Tool for OperationViewTool {
 
     fn authorization_input(&self, input: &Value) -> Value {
         self.routed_input(input)
+    }
+
+    fn tool_manifest(&self) -> ToolManifest {
+        let name = self.name();
+        let root = name.split('.').next().unwrap_or(&name).to_string();
+        let operation = name
+            .strip_prefix(&format!("{root}."))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        // A manifest has no concrete input, so expose the conservative upper
+        // bound for input-dependent risk rules. Runtime calls still refine the
+        // same policy through `operation_policy(input)`.
+        let mut manifest_policy = self.spec.policy.clone();
+        if self.spec.risk_rule.is_some() {
+            if manifest_policy.risk_level < RiskLevel::Medium {
+                manifest_policy.risk_level = RiskLevel::Medium;
+            }
+            manifest_policy.confirmation = ConfirmationRequirement::SecurityPolicy;
+        }
+        ToolManifest {
+            identity: ToolIdentity {
+                source: ToolSource::Builtin,
+                catalog_group: self.spec.catalog_group,
+                root,
+                operation,
+                stable_name: name.clone(),
+            },
+            model: ToolModel {
+                name: name.clone(),
+                description: self.description(),
+                input_schema: self.input_schema(),
+            },
+            policy: manifest_policy.to_catalog_policy(),
+            presentation: self.spec.presentation.clone(),
+            prompt: self.spec.prompt.clone(),
+            availability: ToolAvailability {
+                requires_permission: manifest_policy.risk_level >= RiskLevel::Medium,
+                ..ToolAvailability::default()
+            },
+        }
     }
 }
 
@@ -349,7 +388,7 @@ mod tests {
         ));
         let view = OperationViewTool::new(
             inner,
-            OperationViewContract {
+            OperationSpec {
                 name: "files.read",
                 description: "Read text.",
                 fixed: vec![("operation".into(), json!("read"))],
@@ -359,23 +398,38 @@ mod tests {
                     "properties": {"path": {"type": "string"}},
                     "required": ["path"]
                 }),
-                risk_level: RiskLevel::Low,
+                policy: OperationPolicy {
+                    risk_level: RiskLevel::Low,
+                    permission_key: "files.read".into(),
+                    confirmation: ConfirmationRequirement::SecurityPolicy,
+                    idempotency: OperationIdempotency::Idempotent,
+                    scope: ToolOperationScope::Session,
+                    concurrency: ToolConcurrency::ReadOnly,
+                },
                 risk_rule: None,
-                idempotency: OperationIdempotency::Idempotent,
-                scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::ReadOnly,
-                permission_key: "files.read".into(),
                 catalog_group: ToolCatalogGroup::System,
-                renderer: "files".into(),
-                icon: "file".into(),
-                prompt: "Read text.".into(),
+                presentation: ToolPresentation {
+                    label: "读取文件".into(),
+                    renderer: "files".into(),
+                    icon: "file".into(),
+                },
+                prompt: ToolPrompt {
+                    when_to_use: "Read text.".into(),
+                    when_not_to_use: "Use another operation view.".into(),
+                    key_operations: vec!["files.read".into()],
+                },
             },
         );
 
         assert_eq!(view.input_schema()["title"], "files.read");
         assert_eq!(view.input_schema()["description"], "Read text.");
         let def = view.tool_def();
-        assert_eq!(def.prompt.unwrap().key_operations, ["files.read"]);
+        assert_eq!(def.prompt.as_ref().unwrap().key_operations, ["files.read"]);
+        let manifest = view.tool_manifest();
+        assert_eq!(manifest.identity.stable_name, "files.read");
+        assert_eq!(manifest.presentation.renderer, "files");
+        assert_eq!(manifest.presentation.label, "读取文件");
+        assert!(def.json().get("manifest").is_none());
     }
 
     #[test]

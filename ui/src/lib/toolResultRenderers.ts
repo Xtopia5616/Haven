@@ -16,7 +16,7 @@ import ToolScheduleResult from './ToolScheduleResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolWebSearchResult from './ToolWebSearchResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
-import { toolRootName } from './operationViewContract.ts';
+import { toolRootName } from './toolManifest.ts';
 
 const renderers = {
 	shell: ToolShellResult,
@@ -35,8 +35,12 @@ export function getToolResultRenderer(
 	kind: string | null | undefined,
 	toolName = '',
 	_data: unknown = null,
+	resultRenderer: string | null = null,
 ) {
-	const rootToolName = toolRootName(toolName);
+	// The event/catalog discriminator is authoritative for new calls. The
+	// payload-shape branches below remain only for legacy/resumed messages.
+	if (kind === 'custom' && resultRenderer === 'files.search') return ToolFileSearchResult;
+	const rootToolName = resultRenderer || toolRootName(toolName);
 	if (
 		kind === 'custom' &&
 		isMediaOperationResult(_data) &&

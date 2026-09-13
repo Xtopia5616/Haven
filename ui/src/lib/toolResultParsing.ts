@@ -1,4 +1,4 @@
-import { toolRootName } from './operationViewContract.ts';
+import { toolRootName } from './toolManifest.ts';
 
 type ToolResultObject = Record<string, any>;
 
@@ -18,8 +18,12 @@ function isObject(value: unknown): value is ToolResultObject {
  * and anything else falls back to the `raw` card — so this is only false
  * for empty content.
  */
-export function canRenderToolResult(toolName: string, content: string): boolean {
-	return parseToolResult(toolName, content) !== null;
+export function canRenderToolResult(
+	toolName: string,
+	content: string,
+	resultRenderer: string | null = null,
+): boolean {
+	return parseToolResult(toolName, content, resultRenderer) !== null;
 }
 
 /**
@@ -27,8 +31,12 @@ export function canRenderToolResult(toolName: string, content: string): boolean 
  * renderer selection remains in `toolResultRenderers.ts`; this module only
  * determines the stable result kind and preserves the decoded data.
  */
-export function parseToolResult(toolName: string, content: string): ParsedToolResult | null {
-	const rootToolName = toolRootName(toolName);
+export function parseToolResult(
+	toolName: string,
+	content: string,
+	resultRenderer: string | null = null,
+): ParsedToolResult | null {
+	const rootToolName = resultRenderer || toolRootName(toolName);
 	// Empty content is still a shell card while streaming / waiting for the
 	// first live-output chunk (or a background action bind).
 	if (!content) {
@@ -59,7 +67,7 @@ export function parseToolResult(toolName: string, content: string): ParsedToolRe
 		// JSON arrays / primitives — pretty-printed in the raw card.
 		return { kind: 'raw', data };
 	}
-	return customShape(rootToolName, data)
+	return customShape(rootToolName === 'files.search' ? 'files' : rootToolName, data)
 		? { kind: 'custom', data }
 		: { kind: 'generic', data };
 }

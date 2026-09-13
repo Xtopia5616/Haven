@@ -5,6 +5,7 @@ import {
 	toolDisplayName,
 	toolSourceLabel,
 } from './toolIdentity.ts';
+import { setToolManifests } from './toolManifest.ts';
 
 describe('classifyToolSource', () => {
 	it('detects mcp and skill wire prefixes', () => {
@@ -43,6 +44,11 @@ describe('toolSourceLabel / toolDisplayName', () => {
 	});
 
 	it('uses stable labels for operation views', () => {
+		setToolManifests([
+			{ manifest: { identity: { stable_name: 'files.read' }, presentation: { label: '读取文件', renderer: 'files', icon: 'file' } } },
+			{ manifest: { identity: { stable_name: 'files.search' }, presentation: { label: '搜索文件', renderer: 'files.search', icon: 'search' } } },
+			{ manifest: { identity: { stable_name: 'system.info' }, presentation: { label: '系统信息', renderer: 'system', icon: 'cpu' } } },
+		]);
 		expect(toolDisplayName('files.read')).toBe('读取文件');
 		expect(toolDisplayName('files.search')).toBe('搜索文件');
 		expect(toolDisplayName('system.info')).toBe('系统信息');

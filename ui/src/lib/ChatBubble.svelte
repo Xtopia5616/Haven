@@ -22,6 +22,8 @@
 		streaming = false,
 		toolName = '',
 		outcome = null,
+		renderer = null,
+		result = null,
 		messageId = '',
 		stepNumber = null,
 		toolArgs = null,
@@ -356,6 +358,8 @@
 				embedded
 				{toolName}
 				{outcome}
+				renderer={renderer}
+				result={result}
 				{content}
 				{streaming}
 				{actionId}

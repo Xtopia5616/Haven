@@ -57,7 +57,29 @@ export interface AgentObservationPayload {
 	outcome: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'unknown' | string;
 	idempotency: 'idempotent' | 'non_idempotent' | 'unknown' | string;
 	operationScope: 'global' | 'session' | string;
+	renderer?: string;
+	result?: AgentToolResultEnvelope;
 	eventSeq?: number;
+}
+
+export interface AgentToolResultEnvelope {
+	outcome: string;
+	errorClass?: string | null;
+	retrySafety: string;
+	retryability: string;
+	verificationHint?: string | null;
+	nextAction?: string | null;
+	assets: string[];
+}
+
+interface AgentToolResultWireEnvelope {
+	outcome: string;
+	error_class?: string | null;
+	retry_safety: string;
+	retryability: string;
+	verification_hint?: string | null;
+	next_action?: string | null;
+	assets: string[];
 }
 
 export interface AgentChunkPayload {
@@ -219,6 +241,8 @@ interface AgentObservationWirePayload {
 	outcome: string;
 	idempotency: string;
 	operation_scope: string;
+	renderer?: string;
+	result?: AgentToolResultWireEnvelope;
 	event_seq?: number;
 }
 
@@ -378,6 +402,18 @@ export function mapAgentEvent<K extends AgentEventName>(
 				outcome: payload.outcome,
 				idempotency: payload.idempotency,
 				operationScope: payload.operation_scope,
+				renderer: payload.renderer,
+				result: payload.result
+					? {
+						outcome: payload.result.outcome,
+						errorClass: payload.result.error_class,
+						retrySafety: payload.result.retry_safety,
+						retryability: payload.result.retryability,
+						verificationHint: payload.result.verification_hint,
+						nextAction: payload.result.next_action,
+						assets: payload.result.assets,
+					}
+					: undefined,
 				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}

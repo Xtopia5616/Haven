@@ -1,10 +1,13 @@
-use haven_common::types::RiskLevel;
+use haven_common::types::{RiskLevel, permission_key};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-pub use haven_common::tools::{ToolCatalogGroup, ToolDef};
+pub use haven_common::tools::{
+    ToolAvailability, ToolCatalogGroup, ToolDef, ToolIdentity, ToolManifest, ToolModel, ToolPolicy,
+    ToolPresentation, ToolPrompt, ToolSource,
+};
 
 /// The durable meaning of a tool invocation's terminal state.
 ///
@@ -194,6 +197,58 @@ impl OperationIdempotency {
     }
 }
 
+/// Confirmation is intentionally a policy mode, not a frontend boolean. The
+/// authorization engine still applies the active security configuration to
+/// `SecurityPolicy`; `Required` is reserved for operations with a hard floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationRequirement {
+    None,
+    SecurityPolicy,
+    Required,
+}
+
+impl ConfirmationRequirement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::SecurityPolicy => "security_policy",
+            Self::Required => "required",
+        }
+    }
+}
+
+/// Single runtime policy returned by every tool implementation. The manifest
+/// is derived from this value, while the authorization gateway consumes the
+/// same risk and permission identity for the actual call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationPolicy {
+    pub risk_level: RiskLevel,
+    pub permission_key: String,
+    pub confirmation: ConfirmationRequirement,
+    pub idempotency: OperationIdempotency,
+    pub scope: ToolOperationScope,
+    pub concurrency: ToolConcurrency,
+}
+
+impl OperationPolicy {
+    pub fn to_catalog_policy(&self) -> ToolPolicy {
+        let concurrency = match self.concurrency {
+            ToolConcurrency::ReadOnly => "read_only".to_string(),
+            ToolConcurrency::SharedResource(_) => "shared_resource".to_string(),
+            ToolConcurrency::Resource(_) => "resource".to_string(),
+            ToolConcurrency::Exclusive => "exclusive".to_string(),
+        };
+        ToolPolicy {
+            risk_level: self.risk_level,
+            permission_key: self.permission_key.clone(),
+            confirmation: self.confirmation.as_str().into(),
+            idempotency: self.idempotency.as_str().into(),
+            scope: self.scope.as_str().into(),
+            concurrency,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolResult {
     pub success: bool,
@@ -226,6 +281,61 @@ pub struct ToolResult {
     /// observation.
     #[serde(skip)]
     pub llm_usage: Vec<ToolLlmUsage>,
+}
+
+/// Stable metadata envelope emitted with a terminal observation. The
+/// operation-specific payload remains in `ToolResult::output`; this envelope
+/// only carries fields that Agent, UI and logs must interpret consistently.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolResultEnvelope {
+    pub outcome: ToolExecutionOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<ToolErrorClass>,
+    pub retry_safety: String,
+    pub retryability: ToolRetryability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+    #[serde(default)]
+    pub assets: Vec<String>,
+}
+
+impl Default for ToolResultEnvelope {
+    fn default() -> Self {
+        Self::from_parts(
+            ToolExecutionOutcome::Failed,
+            None,
+            ToolRetryability::Unknown,
+            OperationIdempotency::Unknown,
+        )
+    }
+}
+
+impl ToolResultEnvelope {
+    pub fn from_parts(
+        outcome: ToolExecutionOutcome,
+        error_class: Option<ToolErrorClass>,
+        retryability: ToolRetryability,
+        idempotency: OperationIdempotency,
+    ) -> Self {
+        Self {
+            outcome,
+            error_class,
+            retry_safety: idempotency.as_str().into(),
+            retryability,
+            verification_hint: None,
+            next_action: None,
+            assets: Vec::new(),
+        }
+    }
+
+    pub fn with_default_retry_safety(mut self, idempotency: OperationIdempotency) -> Self {
+        if self.retry_safety == OperationIdempotency::Unknown.as_str() {
+            self.retry_safety = idempotency.as_str().into();
+        }
+        self
+    }
 }
 
 /// One model call made inside a tool. The runtime-only `call_kind` keeps
@@ -370,6 +480,33 @@ pub enum ToolRegistration {
 }
 
 impl ToolResult {
+    /// Project the common result metadata without changing the operation's
+    /// payload shape. Asset handles are collected from the canonical top-level
+    /// and nested media/assets fields, never from host paths.
+    pub fn envelope(&self, idempotency: OperationIdempotency) -> ToolResultEnvelope {
+        let mut envelope = ToolResultEnvelope::from_parts(
+            self.outcome,
+            self.error_class,
+            self.retryability,
+            idempotency,
+        );
+        if let Some(value) = self.output.get("retry_safety").and_then(Value::as_str) {
+            envelope.retry_safety = value.into();
+        }
+        envelope.verification_hint = self
+            .output
+            .get("verification_hint")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        envelope.next_action = self
+            .output
+            .get("next_action")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        collect_asset_ids(&self.output, &mut envelope.assets);
+        envelope
+    }
+
     /// Build a successful result while keeping the transport-level truncation
     /// bit in sync with the structured output.  Builtin tools often include a
     /// `truncated` field in their JSON so the model can see it; callers must
@@ -654,6 +791,29 @@ impl ToolResult {
     }
 }
 
+fn collect_asset_ids(value: &Value, assets: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(asset_id) = object.get("asset_id").and_then(Value::as_str)
+                && !assets.iter().any(|existing| existing == asset_id)
+            {
+                assets.push(asset_id.into());
+            }
+            for key in ["assets", "media"] {
+                if let Some(value) = object.get(key) {
+                    collect_asset_ids(value, assets);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_asset_ids(value, assets);
+            }
+        }
+        _ => {}
+    }
+}
+
 const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
     "success",
     "error",
@@ -830,6 +990,76 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> String;
     fn risk_level(&self, input: &Value) -> RiskLevel;
 
+    /// Canonical policy for the concrete invocation. All catalog and runtime
+    /// consumers should use this method instead of independently combining
+    /// risk, permission, idempotency, scope and concurrency fields.
+    fn operation_policy(&self, input: &Value) -> OperationPolicy {
+        let name = self.name();
+        let risk_level = self.risk_level(input);
+        OperationPolicy {
+            risk_level,
+            permission_key: permission_key(&name, &self.authorization_input(input)),
+            confirmation: if risk_level >= RiskLevel::Critical {
+                ConfirmationRequirement::Required
+            } else if risk_level == RiskLevel::Safe {
+                ConfirmationRequirement::None
+            } else {
+                ConfirmationRequirement::SecurityPolicy
+            },
+            idempotency: self.idempotency(input),
+            scope: self.operation_scope(input),
+            concurrency: self.concurrency(input),
+        }
+    }
+
+    /// Backend-owned metadata for prompt/UI/catalog consumers. It is not
+    /// serialized into provider-facing tool definitions.
+    fn tool_manifest(&self) -> ToolManifest {
+        let name = self.name();
+        let root = name.split('.').next().unwrap_or(&name).to_string();
+        let operation = name
+            .strip_prefix(&format!("{root}."))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let description = self.description();
+        let policy = self.operation_policy(&Value::Object(Default::default()));
+        ToolManifest {
+            identity: ToolIdentity {
+                source: if name.starts_with("skill__") {
+                    ToolSource::Skill
+                } else if name.starts_with("mcp__") {
+                    ToolSource::Mcp
+                } else {
+                    ToolSource::Builtin
+                },
+                catalog_group: self.catalog_group(),
+                root: root.clone(),
+                operation,
+                stable_name: name.clone(),
+            },
+            model: ToolModel {
+                name: name.clone(),
+                description: description.clone(),
+                input_schema: self.input_schema(),
+            },
+            availability: ToolAvailability {
+                requires_permission: policy.risk_level >= RiskLevel::Medium,
+                ..ToolAvailability::default()
+            },
+            policy: policy.to_catalog_policy(),
+            presentation: ToolPresentation {
+                label: name.clone(),
+                renderer: root,
+                icon: "tools".into(),
+            },
+            prompt: ToolPrompt {
+                when_to_use: description,
+                when_not_to_use: "Use a narrower operation when one is available.".into(),
+                key_operations: vec![name],
+            },
+        }
+    }
+
     /// Canonical input used by the authorization layer. Operation views add
     /// their fixed discriminator here so disabled-operation and path rules
     /// see the same operation that execution and risk policy see.
@@ -891,6 +1121,7 @@ pub trait Tool: Send + Sync {
     /// registry and manager surface; per-call risk is still refined via
     /// `risk_level(input)`. Tools may override to e.g. memoize the schema.
     fn tool_def(&self) -> ToolDef {
+        let manifest = self.tool_manifest();
         ToolDef::new(
             self.name(),
             self.description(),
@@ -902,6 +1133,7 @@ pub trait Tool: Send + Sync {
             self.idempotency(&Value::Object(Default::default()))
                 .tool_retry_safety(),
         )
+        .with_manifest(manifest)
     }
 
     /// High-level catalog grouping shared by the Agent prompt and UI. The
@@ -1153,6 +1385,7 @@ where
 
     fn tool_def(&self) -> ToolDef {
         let metadata = self.operation.default_metadata();
+        let manifest = self.tool_manifest();
         ToolDef::new(
             self.name(),
             self.description(),
@@ -1161,6 +1394,7 @@ where
         )
         .with_catalog_group(self.catalog_group)
         .with_retry_safety(metadata.idempotency.tool_retry_safety())
+        .with_manifest(manifest)
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -1240,6 +1474,28 @@ pub(crate) mod tests {
         let complete = ToolResult::from_output(json!({"truncated": false}), false);
         assert!(complete.success);
         assert!(!complete.truncated);
+    }
+
+    #[test]
+    fn result_envelope_keeps_recovery_metadata_and_asset_handles() {
+        let result = ToolResult::ok(json!({
+            "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "verification_hint": "Check the generated file.",
+            "next_action": "Use media.inspect with the asset_id.",
+            "media": {"asset_id": "asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        }));
+        let envelope = result.envelope(OperationIdempotency::Idempotent);
+        assert_eq!(envelope.outcome, ToolExecutionOutcome::Succeeded);
+        assert_eq!(envelope.retry_safety, "idempotent");
+        assert_eq!(
+            envelope.verification_hint.as_deref(),
+            Some("Check the generated file.")
+        );
+        assert_eq!(
+            envelope.next_action.as_deref(),
+            Some("Use media.inspect with the asset_id.")
+        );
+        assert_eq!(envelope.assets.len(), 2);
     }
 
     #[test]

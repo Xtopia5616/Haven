@@ -1,3 +1,5 @@
+import type { AgentToolResultEnvelope } from './contracts/agent.ts';
+
 /** Messages that describe agent work rather than user-facing conversation. */
 const MERGED_MESSAGE_TYPES = new Set(['thought', 'reasoning', 'tool']);
 
@@ -18,6 +20,8 @@ export interface ConversationMessage {
 	resolved?: unknown;
 	actionId?: string | null;
 	outcome?: string | null;
+	renderer?: string | null;
+	result?: AgentToolResultEnvelope;
 	showFallbackIntent?: boolean;
 	stepNumber?: number | null;
 	[key: string]: any;

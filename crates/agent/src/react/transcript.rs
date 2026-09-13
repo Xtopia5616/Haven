@@ -25,7 +25,9 @@ use super::*;
 use crate::types::{Action, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
-use haven_tools::{OperationIdempotency, ToolExecutionOutcome, ToolOperationScope};
+use haven_tools::{
+    OperationIdempotency, ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope,
+};
 use serde_json::Value;
 
 /// Pending Action card (+ step row) emitted from [`TranscriptEvent::ToolCall`].
@@ -52,6 +54,8 @@ pub(super) struct ObservationCard {
     pub outcome: ToolExecutionOutcome,
     pub idempotency: OperationIdempotency,
     pub operation_scope: ToolOperationScope,
+    pub renderer: String,
+    pub result_envelope: ToolResultEnvelope,
 }
 
 /// Runtime transcript event (UI cards + serializable payload).
@@ -85,7 +89,7 @@ pub(super) enum TranscriptEvent {
         action: Action,
         action_index: u32,
         step_id: String,
-        observation_card: Option<ObservationCard>,
+        observation_card: Option<Box<ObservationCard>>,
     },
     UserInject {
         source: InjectSource,
@@ -363,6 +367,8 @@ impl ReActEngine {
                             outcome: card.outcome.as_str().into(),
                             idempotency: card.idempotency.as_str().into(),
                             operation_scope: card.operation_scope.as_str().into(),
+                            renderer: card.renderer.clone(),
+                            result: card.result_envelope.clone(),
                         })
                         .await;
                 }
@@ -922,7 +928,7 @@ mod tests {
                     action,
                     action_index: 0,
                     step_id: step_id.clone(),
-                    observation_card: Some(ObservationCard {
+                    observation_card: Some(Box::new(ObservationCard {
                         tool_name: "echo".into(),
                         tool_call_id: Some("call-2".into()),
                         step_id: step_id.clone(),
@@ -932,7 +938,14 @@ mod tests {
                         outcome: haven_tools::ToolExecutionOutcome::Succeeded,
                         idempotency: haven_tools::OperationIdempotency::Idempotent,
                         operation_scope: haven_tools::ToolOperationScope::Session,
-                    }),
+                        renderer: "generic".into(),
+                        result_envelope: haven_tools::ToolResultEnvelope::from_parts(
+                            haven_tools::ToolExecutionOutcome::Succeeded,
+                            None,
+                            haven_tools::ToolRetryability::Unknown,
+                            haven_tools::OperationIdempotency::Idempotent,
+                        ),
+                    })),
                 },
                 &mut state,
             )
@@ -1034,7 +1047,7 @@ mod tests {
                     },
                     action_index: 0,
                     step_id: step_id.clone(),
-                    observation_card: Some(ObservationCard {
+                    observation_card: Some(Box::new(ObservationCard {
                         tool_name: "ask".into(),
                         tool_call_id: Some("call-ask".into()),
                         step_id: step_id.clone(),
@@ -1044,7 +1057,14 @@ mod tests {
                         outcome: haven_tools::ToolExecutionOutcome::Succeeded,
                         idempotency: haven_tools::OperationIdempotency::Idempotent,
                         operation_scope: haven_tools::ToolOperationScope::Session,
-                    }),
+                        renderer: "generic".into(),
+                        result_envelope: haven_tools::ToolResultEnvelope::from_parts(
+                            haven_tools::ToolExecutionOutcome::Succeeded,
+                            None,
+                            haven_tools::ToolRetryability::Unknown,
+                            haven_tools::OperationIdempotency::Idempotent,
+                        ),
+                    })),
                 },
                 &mut state,
             )

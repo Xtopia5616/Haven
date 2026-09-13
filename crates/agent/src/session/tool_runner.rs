@@ -343,6 +343,14 @@ impl SessionExecutor {
             .await
     }
 
+    pub async fn tool_renderer(&self, session_id: &str, tool_name: &str) -> String {
+        self.tools
+            .get_tool_manifest(Some(session_id), tool_name)
+            .await
+            .map(|manifest| manifest.presentation.renderer)
+            .unwrap_or_else(|| tool_name.split('.').next().unwrap_or("generic").into())
+    }
+
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
         self.tools.observation_text(tool_name, result).await
     }

@@ -17,7 +17,7 @@ use crate::types::Action;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{
     OperationIdempotency, ToolConcurrency, ToolErrorClass, ToolExecutionOutcome, ToolLlmUsage,
-    ToolOperationScope, ToolRetryability, is_silent_action,
+    ToolOperationScope, ToolResultEnvelope, ToolRetryability, is_silent_action,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -73,6 +73,8 @@ impl ToolBatchState {
             error_class,
             retryability,
             operation_scope,
+            renderer,
+            result_envelope,
             llm_usage,
             ask_question,
             ask_options,
@@ -160,7 +162,7 @@ impl ToolBatchState {
                     action,
                     action_index,
                     step_id: step_id.clone(),
-                    observation_card: Some(ObservationCard {
+                    observation_card: Some(Box::new(ObservationCard {
                         tool_name,
                         tool_call_id,
                         step_id,
@@ -170,7 +172,9 @@ impl ToolBatchState {
                         outcome,
                         idempotency,
                         operation_scope,
-                    }),
+                        renderer,
+                        result_envelope,
+                    })),
                 },
                 state,
             )
@@ -248,6 +252,8 @@ pub(super) struct CompletedTool {
     pub(super) error_class: ToolErrorClass,
     pub(super) retryability: ToolRetryability,
     pub(super) operation_scope: ToolOperationScope,
+    pub(super) renderer: String,
+    pub(super) result_envelope: ToolResultEnvelope,
     llm_usage: Vec<ToolLlmUsage>,
     ask_question: Option<String>,
     ask_options: Vec<String>,
@@ -265,6 +271,12 @@ impl CompletedTool {
         step_result: String,
         outcome: ToolExecutionOutcome,
     ) -> Self {
+        let renderer = action
+            .tool_name
+            .split('.')
+            .next()
+            .unwrap_or("generic")
+            .to_string();
         Self {
             tool_name: action.tool_name.clone(),
             action,
@@ -275,6 +287,13 @@ impl CompletedTool {
             error_class: ToolErrorClass::Other,
             retryability: ToolRetryability::Unknown,
             operation_scope: ToolOperationScope::Session,
+            renderer,
+            result_envelope: ToolResultEnvelope::from_parts(
+                outcome,
+                Some(ToolErrorClass::Other),
+                ToolRetryability::Unknown,
+                OperationIdempotency::Unknown,
+            ),
             llm_usage: Vec::new(),
             ask_question: None,
             ask_options: Vec::new(),
@@ -358,8 +377,10 @@ pub(super) async fn execute_tool_action(
         ask_options,
         notify_title,
         notify_body,
+        mut result_envelope,
     ) = match result {
         Ok(result) => {
+            let result_envelope = result.envelope(OperationIdempotency::Unknown);
             let output_len = serde_json::to_string(&result.output)
                 .map(|text| text.len())
                 .unwrap_or(0);
@@ -388,6 +409,7 @@ pub(super) async fn execute_tool_action(
                 result.signals.ask_options,
                 result.signals.notify_title,
                 result.signals.notify_body,
+                Some(result_envelope),
             )
         }
         Err(error) => {
@@ -426,6 +448,7 @@ pub(super) async fn execute_tool_action(
                 Vec::new(),
                 None,
                 None,
+                None,
             )
         }
     };
@@ -436,6 +459,13 @@ pub(super) async fn execute_tool_action(
     let operation_scope = executor
         .tool_operation_scope(&session_id, &tool_name, &action.tool_input)
         .await;
+    let renderer = executor.tool_renderer(&session_id, &tool_name).await;
+    let result_envelope = result_envelope
+        .take()
+        .unwrap_or_else(|| {
+            ToolResultEnvelope::from_parts(outcome, Some(error_class), retryability, idempotency)
+        })
+        .with_default_retry_safety(idempotency);
 
     CompletedTool {
         action,
@@ -447,6 +477,8 @@ pub(super) async fn execute_tool_action(
         error_class,
         retryability,
         operation_scope,
+        renderer,
+        result_envelope,
         llm_usage,
         ask_question,
         ask_options,

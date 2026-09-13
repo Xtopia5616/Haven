@@ -104,6 +104,8 @@
 					streaming={!!msg.streaming}
 					toolName={String(msg.toolName || '')}
 					outcome={msg.outcome || null}
+					renderer={msg.renderer || null}
+					result={msg.result}
 					messageId={msg.id}
 					stepNumber={msg.stepNumber ?? null}
 					toolArgs={msg.toolArgs ?? null}

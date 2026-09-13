@@ -382,6 +382,8 @@ pub(crate) struct AgentObservationEvent {
     pub outcome: String,
     pub idempotency: String,
     pub operation_scope: String,
+    pub renderer: String,
+    pub result: haven_tools::ToolResultEnvelope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_seq: Option<u64>,
 }

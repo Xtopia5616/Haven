@@ -31,7 +31,10 @@ pub use media_detection::{
     probe_media_with_hint,
 };
 
-pub use tools::{ToolCatalogGroup, ToolDef, ToolPrompt, ToolRetrySafety};
+pub use tools::{
+    ToolAvailability, ToolCatalogGroup, ToolDef, ToolIdentity, ToolManifest, ToolModel, ToolPolicy,
+    ToolPresentation, ToolPrompt, ToolRetrySafety, ToolSource,
+};
 
 pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,

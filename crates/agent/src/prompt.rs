@@ -497,17 +497,24 @@ fn add_unique(values: &mut Vec<String>, value: String) {
 fn render_tool_index(defs: &[ToolDef]) -> String {
     let mut groups = BTreeMap::<String, ToolIndexGroup>::new();
     for def in defs.iter().filter(|def| !def.name.starts_with("mcp__")) {
-        let orientation = if def.catalog_group == ToolCatalogGroup::Other {
+        let catalog_group = def
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.identity.catalog_group)
+            .unwrap_or(def.catalog_group);
+        let orientation = if catalog_group == ToolCatalogGroup::Other {
             fallback_tool_prompt(def)
         } else {
-            catalog_group_prompt(def.catalog_group)
+            catalog_group_prompt(catalog_group)
         };
         let prompt = def
-            .prompt
-            .clone()
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.prompt.clone())
+            .or_else(|| def.prompt.clone())
             .unwrap_or_else(|| fallback_tool_prompt(def));
         let group = groups
-            .entry(def.catalog_group.as_str().into())
+            .entry(catalog_group.as_str().into())
             .or_insert_with(|| ToolIndexGroup {
                 when_to_use: vec![orientation.when_to_use],
                 when_not_to_use: vec![orientation.when_not_to_use],

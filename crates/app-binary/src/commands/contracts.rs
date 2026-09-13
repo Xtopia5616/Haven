@@ -591,6 +591,8 @@ pub struct ToolInfoResponse {
     #[serde(default)]
     pub catalog_group: haven_common::tools::ToolCatalogGroup,
     pub enabled: bool,
+    #[serde(default)]
+    pub manifest: Option<haven_common::tools::ToolManifest>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
