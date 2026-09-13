@@ -33,122 +33,142 @@ macro_rules! security_case {
 
 pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("ask", "ask", Safe),
-    security_case!("files", "read", Low),
-    security_case!("files", "write", Medium),
-    security_case!("files", "edit", Medium),
-    security_case!("files", "copy", Medium),
-    security_case!("files", "move", Medium),
-    security_case!("files", "delete", High),
-    security_case!("files", "create_dir", Medium),
-    security_case!("files", "list", Low),
-    security_case!("files", "outline", Low),
-    security_case!("files", "summary", Low),
-    security_case!("files", "search", Low),
-    security_case!("files", "search:content", Medium),
-    security_case!("files.read_text", "files.read_text", Low),
+    security_case!("files.read", "files.read", Low),
     security_case!("files.outline", "files.outline", Low),
     security_case!("files.summary", "files.summary", Low),
     security_case!("files.search", "files.search", Low),
     security_case!("files.search", "search:content", Medium),
+    security_case!("files.write", "files.write", Medium),
+    security_case!("files.create_dir", "files.create_dir", Medium),
+    security_case!("files.edit", "files.edit", Medium),
+    security_case!("files.copy", "files.copy", Medium),
+    security_case!("files.move", "files.move", Medium),
+    security_case!("files.delete", "files.delete", High),
+    security_case!("files.list", "files.list", Low),
+    security_case!("process.list", "process.list", Low),
+    security_case!("process.kill", "process.kill", High),
+    security_case!("clipboard.read", "clipboard.read", Low),
+    security_case!("clipboard.write", "clipboard.write", Medium),
+    security_case!("clipboard.history", "clipboard.history", Low),
     security_case!("shell", "execute", High),
-    security_case!("system", "info", Safe),
-    security_case!("system", "overview", Safe),
-    security_case!("system", "display", Safe),
-    security_case!("system", "displays", Safe),
-    security_case!("system", "process:list", Low),
-    security_case!("system", "process:kill", High),
-    security_case!("system", "clipboard:read", Low),
-    security_case!("system", "clipboard:write", Medium),
-    security_case!("system", "clipboard:history", Low),
-    security_case!("system", "input:type", Medium),
-    security_case!("system", "input:key", Medium),
-    security_case!("system", "input:click", Medium),
-    security_case!("system", "input:move", Low),
-    security_case!("system", "input:scroll", Low),
-    security_case!("system", "window:list", Low),
-    security_case!("system", "window:foreground", Low),
-    security_case!("system", "window:focus", Medium),
-    security_case!("system", "window:close", High),
-    security_case!("system", "window:screenshot", Low),
-    security_case!("system", "window:ocr", High),
-    security_case!("system", "window:ui_tree", Low),
-    security_case!("system", "window:wait", Low),
-    security_case!("system", "env:list", High),
-    security_case!("system", "env:get", Low),
-    security_case!("system", "env:set", High),
-    security_case!("system", "env:unset", High),
-    security_case!("system", "registry:list", Medium),
-    security_case!("system", "registry:get", Medium),
-    security_case!("system", "registry:set", High),
-    security_case!("system", "registry:delete", High),
-    security_case!("system", "power:status", Safe),
-    security_case!("system", "power:lock", High),
-    security_case!("system", "power:sleep", High),
-    security_case!("system", "power:hibernate", Critical),
+    security_case!("actions.list", "actions.list", Safe),
+    security_case!("actions.inspect", "actions.inspect", Safe),
+    security_case!("actions.cancel", "actions.cancel", Medium),
+    security_case!("input.type", "input.type", Medium),
+    security_case!("input.key", "input.key", Medium),
+    security_case!("input.click", "input.click", Medium),
+    security_case!("input.move", "input.move", Low),
+    security_case!("input.scroll", "input.scroll", Low),
     security_case!("system.info", "system.info", Safe),
-    security_case!("media", "inspect", Low),
-    security_case!("media", "describe", Medium),
-    security_case!("media", "ocr", High),
-    security_case!("media", "transcribe", Medium),
-    security_case!("media", "extract", Low),
-    security_case!("media", "generate", Medium),
-    security_case!("media", "record", Medium),
-    security_case!("media", "play", Low),
-    security_case!("media", "speak", Low),
-    security_case!("media", "volume_get", Low),
-    security_case!("media", "volume_set", Medium),
-    security_case!("media", "mute_get", Low),
-    security_case!("media", "mute_set", Medium),
+    security_case!("system.display", "system.display", Safe),
+    security_case!("system.env.list", "system.env.list", High),
+    security_case!("system.env.get", "system.env.get", Low),
+    security_case!("system.env.set", "system.env.set", High),
+    security_case!("system.env.unset", "system.env.unset", High),
+    security_case!("system.registry.list", "system.registry.list", Medium),
+    security_case!("system.registry.get", "system.registry.get", Medium),
+    security_case!("system.registry.set", "system.registry.set", High),
+    security_case!("system.registry.delete", "system.registry.delete", High),
+    security_case!("system.power.status", "system.power.status", Safe),
+    security_case!("system.power.lock", "system.power.lock", High),
+    security_case!("system.power.sleep", "system.power.sleep", High),
+    security_case!("system.power.hibernate", "system.power.hibernate", Critical),
+    security_case!("schedule.set", "schedule.set", Low),
+    security_case!("schedule.list", "schedule.list", Safe),
+    security_case!("schedule.cancel", "schedule.cancel", Safe),
+    security_case!("preferences.get", "preferences.get", Low),
+    security_case!("preferences.set", "preferences.set", Low),
+    security_case!("preferences.clear", "preferences.clear", Low),
+    security_case!("preferences.list", "preferences.list", Low),
+    security_case!("checklist.list", "checklist.list", Low),
+    security_case!("checklist.add", "checklist.add", Low),
+    security_case!("checklist.update", "checklist.update", Low),
+    security_case!("checklist.remove", "checklist.remove", Low),
+    security_case!("checklist.clear", "checklist.clear", Low),
+    security_case!("window.list", "window.list", Low),
+    security_case!("window.foreground", "window.foreground", Low),
+    security_case!("window.focus", "window.focus", Medium),
+    security_case!("window.close", "window.close", High),
+    security_case!("window.screenshot", "window.screenshot", Low),
+    security_case!("window.ocr", "window.ocr", High),
+    security_case!("window.ui_tree", "window.ui_tree", Low),
+    security_case!("window.wait", "window.wait", Low),
+    security_case!("media.inspect", "media.inspect", Low),
+    security_case!("media.describe", "media.describe", Medium),
+    security_case!("media.ocr", "media.ocr", High),
+    security_case!("media.transcribe", "media.transcribe", Medium),
+    security_case!("media.extract", "media.extract", Low),
+    security_case!("media.generate", "media.generate", Medium),
+    security_case!("media.record", "media.record", Medium),
+    security_case!("media.play", "media.play", Low),
+    security_case!("media.speak", "media.speak", Low),
+    security_case!("media.volume_get", "media.volume_get", Low),
+    security_case!("media.volume_set", "media.volume_set", Medium),
+    security_case!("media.mute_get", "media.mute_get", Low),
+    security_case!("media.mute_set", "media.mute_set", Medium),
     security_case!("http", "request", Medium),
     security_case!("notify", "notify", Safe),
-    security_case!("agent", "list", Safe),
-    security_case!("agent", "send", Safe),
-    security_case!("agent", "inbox", Safe),
-    security_case!("agent", "reply", Safe),
-    security_case!("agent", "profile", Safe),
-    security_case!("agent", "request", Safe),
-    security_case!("agent", "spawn", Medium),
-    security_case!("load_skill", "load", Safe),
+    security_case!("agent.list", "agent.list", Safe),
+    security_case!("agent.send", "agent.send", Safe),
+    security_case!("agent.inbox", "agent.inbox", Safe),
+    security_case!("agent.reply", "agent.reply", Safe),
+    security_case!("agent.profile", "agent.profile", Safe),
+    security_case!("agent.request", "agent.request", Safe),
+    security_case!("agent.spawn", "agent.spawn", Medium),
     security_case!("load_mcp", "load", Safe),
-    security_case!("memory", "search", Safe),
-    security_case!("memory", "list", Safe),
-    security_case!("memory", "remember", Medium),
-    security_case!("memory", "forget", Medium),
-    security_case!("memory", "recall", Safe),
-    security_case!("haven", "status", Low),
-    security_case!("haven", "logs_tail", Low),
-    security_case!("haven", "sessions", Low),
-    security_case!("haven", "errors", Low),
-    security_case!("haven", "config_get", Low),
-    security_case!("haven", "logs_level", Medium),
-    security_case!("haven", "skills_list", Low),
-    security_case!("haven", "skill_enable", Medium),
-    security_case!("haven", "skill_disable", Medium),
-    security_case!("haven", "skill_create", High),
-    security_case!("haven", "tool_enable", Medium),
-    security_case!("haven", "tool_disable", Medium),
-    security_case!("haven", "mcp_list", Low),
-    security_case!("haven", "mcp_connect", Medium),
-    security_case!("haven", "mcp_disconnect", Medium),
-    security_case!("haven", "mcp_add", High),
-    security_case!("haven", "mcp_update", High),
-    security_case!("haven", "mcp_toggle", High),
-    security_case!("haven", "mcp_remove", High),
-    security_case!("haven", "mcp_reload", Medium),
-    security_case!("haven", "actions_list", Safe),
-    security_case!("haven", "actions_cancel", Medium),
-    security_case!("haven", "schedule_set", Low),
-    security_case!("haven", "schedule_list", Safe),
-    security_case!("haven", "schedule_cancel", Safe),
-    security_case!("haven", "preferences_get", Low),
-    security_case!("haven", "preferences_set", Low),
-    security_case!("haven", "preferences_clear", Low),
-    security_case!("haven", "preferences_list", Low),
-    security_case!("haven", "checklist_list", Low),
-    security_case!("haven", "checklist_add", Low),
-    security_case!("haven", "checklist_update", Low),
-    security_case!("haven", "checklist_remove", Low),
-    security_case!("haven", "checklist_clear", Low),
+    security_case!("memory.search", "memory.search", Safe),
+    security_case!("memory.list", "memory.list", Safe),
+    security_case!("memory.remember", "memory.remember", Medium),
+    security_case!("memory.forget", "memory.forget", Medium),
+    security_case!("memory.recall", "memory.recall", Safe),
+    security_case!("haven.diagnostics.status", "haven.diagnostics.status", Low),
+    security_case!(
+        "haven.diagnostics.logs_tail",
+        "haven.diagnostics.logs_tail",
+        Low
+    ),
+    security_case!(
+        "haven.diagnostics.sessions",
+        "haven.diagnostics.sessions",
+        Low
+    ),
+    security_case!("haven.diagnostics.errors", "haven.diagnostics.errors", Low),
+    security_case!("haven.config.config_get", "haven.config.config_get", Low),
+    security_case!("haven.config.logs_level", "haven.config.logs_level", Medium),
+    security_case!("haven.skills.skills_list", "haven.skills.skills_list", Low),
+    security_case!(
+        "haven.skills.skill_enable",
+        "haven.skills.skill_enable",
+        Medium
+    ),
+    security_case!(
+        "haven.skills.skill_disable",
+        "haven.skills.skill_disable",
+        Medium
+    ),
+    security_case!(
+        "haven.skills.skill_create",
+        "haven.skills.skill_create",
+        High
+    ),
+    security_case!("haven.tools.tool_enable", "haven.tools.tool_enable", Medium),
+    security_case!(
+        "haven.tools.tool_disable",
+        "haven.tools.tool_disable",
+        Medium
+    ),
+    security_case!("haven.mcp.mcp_list", "haven.mcp.mcp_list", Low),
+    security_case!("haven.mcp.mcp_connect", "haven.mcp.mcp_connect", Medium),
+    security_case!(
+        "haven.mcp.mcp_disconnect",
+        "haven.mcp.mcp_disconnect",
+        Medium
+    ),
+    security_case!("haven.mcp.mcp_add", "haven.mcp.mcp_add", High),
+    security_case!("haven.mcp.mcp_update", "haven.mcp.mcp_update", High),
+    security_case!("haven.mcp.mcp_toggle", "haven.mcp.mcp_toggle", High),
+    security_case!("haven.mcp.mcp_remove", "haven.mcp.mcp_remove", High),
+    security_case!("haven.mcp.mcp_reload", "haven.mcp.mcp_reload", Medium),
 ];
 
 /// Check an absolute local path without applying a tool-specific allowlist.
@@ -190,6 +210,9 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
 /// registry. Dynamic extension arguments must never become renderer text;
 /// unknown values collapse to a generic label.
 fn registered_operation_label(tool_name: &str, params: &Value) -> String {
+    if tool_name == "files.search" && params["mode"].as_str() == Some("content") {
+        return "search:content".into();
+    }
     let operation = params.get("operation").and_then(Value::as_str);
     let scope = params.get("scope").and_then(Value::as_str);
     let candidate = match (scope, operation) {
@@ -208,7 +231,7 @@ fn registered_operation_label(tool_name: &str, params: &Value) -> String {
         return candidate;
     }
     // Operation views use their public name as the permission-matrix
-    // operation while their canonical execution input carries the grouped
+    // operation while their canonical execution input carries the aggregate
     // tool's discriminator (for example `read`).
     if LOCAL_TOOL_SECURITY_MATRIX
         .iter()
@@ -962,21 +985,21 @@ mod tests {
     #[test]
     fn permission_prompt_summary_routes_operation_views_to_their_family() {
         let summary = permission_prompt_summary(
-            "files.read_text",
+            "files.read",
             &json!({"operation": "read", "path": "private.txt"}),
         );
         assert!(summary.starts_with("文件操作："));
-        assert!(summary.contains("files.read_text"));
+        assert!(summary.contains("files.read"));
         assert!(!summary.contains("private.txt"));
     }
 
     #[test]
     fn permission_prompt_summary_routes_media_operations_without_arguments() {
         let summary = permission_prompt_summary(
-            "media",
+            "media.speak",
             &json!({"operation": "speak", "text": "secret spoken content"}),
         );
-        assert!(summary.starts_with("媒体操作：speak"));
+        assert!(summary.starts_with("媒体操作：media.speak"));
         assert!(!summary.contains("secret spoken content"));
     }
 
@@ -1317,7 +1340,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn operation_view_inherits_grouped_tool_safety_settings() {
+    async fn operation_view_inherits_aggregate_tool_safety_settings() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
         let mut settings = HashMap::new();
         settings.insert(
@@ -1331,7 +1354,7 @@ mod tests {
         let result = gw
             .check(
                 None,
-                "files.read_text",
+                "files.read",
                 &json!({"operation": "read", "path": "notes.md"}),
                 RiskLevel::Low,
             )
@@ -1586,13 +1609,6 @@ mod tests {
     }
 
     fn route_label(tool_name: &str, input: &Value) -> String {
-        if tool_name == "system" {
-            let scope = input["scope"].as_str().unwrap_or("info");
-            return match input["operation"].as_str() {
-                Some(operation) => format!("{scope}:{operation}"),
-                None => scope.to_string(),
-            };
-        }
         if tool_name == "files"
             && input["operation"].as_str() == Some("search")
             && input["mode"].as_str() == Some("content")
@@ -1601,6 +1617,9 @@ mod tests {
         }
         if tool_name == "files.search" && input["mode"].as_str() == Some("content") {
             return "search:content".into();
+        }
+        if tool_name.contains('.') {
+            return tool_name.to_string();
         }
         input["operation"]
             .as_str()
@@ -1611,29 +1630,18 @@ mod tests {
                 "shell" => "execute".into(),
                 "http" => "request".into(),
                 "notify" => "notify".into(),
-                "load_skill" | "load_mcp" => "load".into(),
+                "load_mcp" => "load".into(),
                 other => other.to_string(),
             })
     }
 
     fn matrix_input(case: &LocalToolSecurityCase) -> Value {
-        if case.tool_name == "system" {
-            let mut parts = case.operation.split(':');
-            let scope = parts.next().unwrap();
-            let mut input = serde_json::json!({"scope": scope});
-            if let Some(operation) = parts.next() {
-                input["operation"] = Value::String(operation.into());
-            }
-            return input;
-        }
         if case.operation == "search:content" {
-            return serde_json::json!({"operation": "search", "mode": "content"});
+            return serde_json::json!({"mode": "content"});
         }
         match case.tool_name {
-            "actions" if case.operation == "cancel" => {
-                serde_json::json!({"operation": "cancel"})
-            }
-            "ask" | "actions" | "shell" | "http" | "notify" | "load_skill" | "load_mcp" => {
+            name if name.contains('.') => serde_json::json!({}),
+            "ask" | "shell" | "http" | "notify" | "load_mcp" => {
                 serde_json::json!({})
             }
             _ => serde_json::json!({"operation": case.operation}),
@@ -1694,13 +1702,7 @@ mod tests {
             }
             assert!(!inputs.is_empty(), "{name} must expose a contract route");
 
-            for mut input in inputs {
-                if name == "haven" && input["operation"].as_str() == Some("logs_level") {
-                    // TypedToolAdapter parses the full operation args before
-                    // consulting metadata, so provide the smallest valid
-                    // non-routing field for this route.
-                    input["level"] = Value::String("info".into());
-                }
+            for input in inputs {
                 let operation = route_label(&name, &input);
                 let case = LOCAL_TOOL_SECURITY_MATRIX
                     .iter()
@@ -1747,14 +1749,13 @@ mod tests {
         }
 
         let optional_routes = [
-            ("media", "describe"),
-            ("media", "ocr"),
-            ("media", "transcribe"),
-            ("media", "generate"),
-            ("media", "record"),
-            ("media", "speak"),
-            ("system", "window:ocr"),
-            ("load_skill", "load"),
+            ("media.describe", "media.describe"),
+            ("media.ocr", "media.ocr"),
+            ("media.transcribe", "media.transcribe"),
+            ("media.generate", "media.generate"),
+            ("media.record", "media.record"),
+            ("media.speak", "media.speak"),
+            ("window.ocr", "window.ocr"),
             ("load_mcp", "load"),
         ];
         for case in LOCAL_TOOL_SECURITY_MATRIX {
@@ -1813,18 +1814,17 @@ mod tests {
             .map(|case| case.tool_name)
             .collect();
         for expected in [
-            "media",
+            "media.inspect",
             "ask",
-            "files",
+            "files.read",
             "shell",
-            "system",
+            "system.info",
             "http",
             "notify",
-            "agent",
-            "load_skill",
+            "agent.list",
             "load_mcp",
-            "memory",
-            "haven",
+            "memory.search",
+            "haven.diagnostics.status",
         ] {
             assert!(
                 names.contains(expected),

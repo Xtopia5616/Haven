@@ -521,10 +521,9 @@ impl AgentLayer {
         let start_step = snapshot.step_number;
         let branch_points = snapshot.branch_points;
 
-        // X2 / G7: full system rebuild on resume (short index + MEMORY +
-        // session). Pause-path infer writes the DB; this rebuild makes facts
-        // and any newly installed skills/MCP visible on the next run. Mid-run
-        // load_skill still only updates API tools[] (freeze-per-run).
+        // X2: full system rebuild on resume (tool index + MEMORY + session).
+        // Pause-path infer writes the DB; this rebuild makes facts and any
+        // newly discovered skills/MCP visible on the next run.
         self.rebuild_canonical_system(session_id, description, &mut canonical)
             .await;
 
@@ -658,21 +657,13 @@ impl AgentLayer {
         tools.unregister_session(session_id).await;
         for round in rounds {
             for tool in &round.tools {
-                match tool.action.tool_name.as_str() {
-                    "load_skill" => {
-                        if let Some(name) = tool.action.tool_input["skill_name"].as_str() {
-                            tools.register_skill_for_session(session_id, name).await;
-                        }
-                    }
-                    "load_mcp" => {
-                        if let Some(name) = tool.action.tool_input["server_name"].as_str() {
-                            let tool_names = load_mcp_tool_names(&tool.action.tool_input);
-                            tools
-                                .register_mcp_for_session(session_id, name, tool_names.as_deref())
-                                .await;
-                        }
-                    }
-                    _ => {}
+                if tool.action.tool_name.as_str() == "load_mcp"
+                    && let Some(name) = tool.action.tool_input["server_name"].as_str()
+                {
+                    let tool_names = load_mcp_tool_names(&tool.action.tool_input);
+                    tools
+                        .register_mcp_for_session(session_id, name, tool_names.as_deref())
+                        .await;
                 }
             }
         }

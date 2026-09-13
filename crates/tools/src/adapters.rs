@@ -104,9 +104,8 @@ impl SkillToolAdapter {
     }
 
     /// Canonical qualified tool name (`skill::<name>`) after LLM name
-    /// sanitization. Single shared implementation for the adapter and the
-    /// `load_skill` meta-tool, so the name advertised to the model always
-    /// matches the registration key.
+    /// sanitization. The same deterministic name is used for catalog
+    /// registration and execution lookup.
     pub fn qualified_name_of(skill_name: &str) -> String {
         crate::llm_tool_name(&format!("skill::{}", skill_name))
     }

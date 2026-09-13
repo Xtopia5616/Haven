@@ -6,7 +6,7 @@ export type ToolSource = 'builtin' | 'skill' | 'mcp';
 
 /** @type {Record<string, string>} */
 export const TOOL_LABELS: Record<string, string> = {
-	'files.read_text': '读取文件',
+	'files.read': '读取文件',
 	'files.outline': '文件大纲',
 	'files.summary': '文件摘要',
 	'files.search': '搜索文件',
@@ -20,7 +20,7 @@ export const TOOL_LABELS: Record<string, string> = {
 	haven: 'Haven 管理与会话工具',
 	memory: '记忆',
 	load_mcp: '加载 MCP',
-	load_skill: '加载技能',
+	// Skills are registered directly as independent tools.
 	web_search: '联网搜索',
 	agent: 'Agent 协作',
 };
@@ -48,7 +48,7 @@ export function classifyToolSource(toolName: string): ToolSource {
 	if (name === 'load_mcp' || name.startsWith('mcp__')) {
 		return 'mcp';
 	}
-	if (name === 'load_skill' || name.startsWith('skill__')) {
+	if (name.startsWith('skill__')) {
 		return 'skill';
 	}
 	return 'builtin';
@@ -76,6 +76,8 @@ export function toolDisplayName(
 ): string {
 	const name = String(toolName || '');
 	if (labels[name]) return labels[name];
+	const view = operationViewContract(name);
+	if (view) return view.label;
 	const stripped = stripToolPrefix(name, 'mcp__') ?? stripToolPrefix(name, 'skill__');
 	return stripped ?? name;
 }

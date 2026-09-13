@@ -16,7 +16,7 @@ describe('classifyToolSource', () => {
 
 	it('classifies MCP and skill activation tools by the capability they load', () => {
 		expect(classifyToolSource('load_mcp')).toBe('mcp');
-		expect(classifyToolSource('load_skill')).toBe('skill');
+		expect(classifyToolSource('skill__weather')).toBe('skill');
 	});
 
 	it('treats regular builtins as builtin', () => {
@@ -34,7 +34,6 @@ describe('toolSourceLabel / toolDisplayName', () => {
 
 	it('uses Chinese labels for builtins and strips mcp/skill prefixes', () => {
 		expect(toolDisplayName('shell')).toBe('终端输出');
-		expect(toolDisplayName('haven')).toBe('Haven 管理与会话工具');
 		expect(toolDisplayName('load_mcp')).toBe('加载 MCP');
 		expect(toolDisplayName('mcp__test-server__greet')).toBe('test-server__greet');
 		expect(toolDisplayName('skill__echo')).toBe('echo');
@@ -44,7 +43,7 @@ describe('toolSourceLabel / toolDisplayName', () => {
 	});
 
 	it('uses stable labels for operation views', () => {
-		expect(toolDisplayName('files.read_text')).toBe('读取文件');
+		expect(toolDisplayName('files.read')).toBe('读取文件');
 		expect(toolDisplayName('files.search')).toBe('搜索文件');
 		expect(toolDisplayName('system.info')).toBe('系统信息');
 	});

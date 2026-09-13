@@ -186,19 +186,8 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         "agent_profile",
         "agent_spawn",
         "audio",
-        "actions",
-        "process",
-        "clipboard",
-        "input",
-        "window",
-        "schedule",
-        "preferences",
-        "checklist",
-        "haven_diagnostics",
-        "haven_config",
-        "haven_skills",
-        "haven_tools",
-        "haven_mcp",
+        "haven",
+        "load_skill",
     ];
     if let Some(settings) = value.get("tool_settings").and_then(toml::Value::as_table)
         && let Some(name) = REMOVED_TOOL_SETTINGS
@@ -224,19 +213,8 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         "audio",
         "scheduled_action",
         "haven_session_diagnostics",
-        "actions",
-        "process",
-        "clipboard",
-        "input",
-        "window",
-        "schedule",
-        "preferences",
-        "checklist",
-        "haven_diagnostics",
-        "haven_config",
-        "haven_skills",
-        "haven_tools",
-        "haven_mcp",
+        "haven",
+        "load_skill",
     ];
     permissions.iter().find_map(|permission| {
         let key = permission.get("key").and_then(toml::Value::as_str)?;

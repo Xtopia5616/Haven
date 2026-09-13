@@ -130,3 +130,4 @@
 - [0134：媒体工具按职责拆分内部模块](0134-media-tool-module-boundaries.md)
 - [0135：system 与 haven 聚合工具的子操作安全契约](0135-grouped-system-and-haven-tool-contract.md)
 - [0136：多模态探测、表示与结果契约统一](0136-canonical-multimodal-contract.md)
+- [0137：统一点号 operation view 与扩展工具入口](0137-dotted-operation-view-contract.md)

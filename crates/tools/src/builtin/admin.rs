@@ -19,11 +19,27 @@ use serde_json::{Map, Value};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// The model may toggle ordinary execution tools, but not progressive loaders
-/// or any admin capability. Keeping this an explicit allowlist means a newly
-/// added management/security surface is protected until it is reviewed here.
+/// The model may toggle ordinary execution tool roots, but not progressive
+/// loaders or any admin capability. Operation views inherit the root setting,
+/// so a root toggle enables/disables the complete dotted family.
 const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
-    "media", "ask", "files", "shell", "system", "http", "notify", "agent", "memory",
+    "media",
+    "ask",
+    "files",
+    "shell",
+    "system",
+    "http",
+    "notify",
+    "agent",
+    "memory",
+    "process",
+    "clipboard",
+    "input",
+    "window",
+    "actions",
+    "schedule",
+    "preferences",
+    "checklist",
 ];
 
 fn is_model_toggleable_tool(name: &str) -> bool {
@@ -49,7 +65,7 @@ impl AdminCapability {
         Self::Mcp,
     ];
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Diagnostics => "haven_diagnostics",
             Self::Config => "haven_config",
@@ -356,7 +372,7 @@ pub struct ConfigAdminContext {
     pub set_log_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
-/// Typed arguments for the `haven_config` grouped tool. The serde tag is the
+/// Typed arguments for the `haven_config` aggregate implementation. The serde tag is the
 /// sole provider-boundary operation selector; every variant carries only the
 /// fields that its operation can consume.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -474,7 +490,7 @@ impl TypedToolOperation for ConfigAdminOperation {
     }
 
     fn default_metadata(&self) -> ToolOperationMetadata {
-        // The grouped ToolDef advertises the most conservative operation.
+        // The aggregate ToolDef advertises the most conservative operation.
         Self::metadata_for(&ConfigOperationArgs::LogsLevel {
             level: LogLevel::Info,
         })
@@ -953,7 +969,7 @@ mod tests {
     async fn model_tool_toggle_rejects_admin_and_loader_targets() {
         let (surface, _dir) = test_surface();
         let tools = AdminCapabilityTool::new(surface, AdminCapability::Tools);
-        for name in ["haven_tools", "haven_config", "load_skill", "load_mcp"] {
+        for name in ["haven_tools", "haven_config", "load_mcp"] {
             let error = tools
                 .execute(
                     serde_json::json!({ "operation": "tool_disable", "name": name }),

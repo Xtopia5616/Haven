@@ -118,6 +118,18 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 				Array.isArray(data.hits)
 				? data
 				: null;
+		case 'process':
+		case 'clipboard':
+		case 'input':
+		case 'window':
+		case 'actions':
+		case 'schedule':
+		case 'haven_diagnostics':
+		case 'haven_config':
+		case 'haven_skills':
+		case 'haven_tools':
+		case 'haven_mcp':
+			return data;
 		case 'media':
 			return typeof data.operation === 'string' &&
 				(['inspect', 'describe', 'ocr', 'transcribe', 'extract', 'generate', 'record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) ||

@@ -11,10 +11,12 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 
 本版本同样不再迁移顶层 `[audio]`、旧的 `[tool_settings.audio]` 或已删除的 `[tool_settings.*]` 名称；这几类配置会备份后以默认值启动。
 旧工具名称不再迁移或兼容：`[tool_settings.file]`、`file[:operation]`、
-`file_search[:operation]`、`scheduled_action[:operation]`、`process`、`clipboard`、`input`、
-`window`、`actions`、`schedule`、`preferences`、`checklist` 以及旧的 `haven_*` capability
-入口会触发备份并以默认配置启动。新的聚合入口是 `system`（桌面子 scope）和 `haven`
-（管理与 session utility operation）；`media` 和 `files` 保持原有聚合入口。
+`file_search[:operation]`、`scheduled_action[:operation]`、旧的聚合根权限和旧的 `haven_*`
+capability 入口会触发备份并以默认配置启动。当前模型入口统一为点号 operation view：
+`files.*`、`system.*`、`process.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、
+`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`；这些名称同时作为
+权限 key 与 UI renderer 的正式名称。聚合实现仍可供 native/Tauri 使用，但不再作为模型入口。
+启用 Skill 直接注册为 `skill__...`，`load_skill` 已删除；MCP 继续使用 `load_mcp` 按需加载。
 已删除的 `haven_session_diagnostics` 及其 operation 权限也不再迁移；升级时会触发同样的备份与配置重置。
 Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 vendor/preset 值
 （例如 `deepseek-responses`）不会再作为 wire style 解释，检测到后同样备份并重置配置。
@@ -39,16 +41,17 @@ FTS/embedding 形状；`llm_usage.call_kind` 将 Agent 主循环和工具拥有�
 只删除这三个数据库文件即可，不必删除整个数据根目录。
 
 本版本的模型工具媒体契约也已收敛：原独立 `audio` 工具已删除，录音、播放、播报、音量和静音
-统一为 `media` 的 operation 分支；`media` 的内容派生仍使用 `asset_id`，
-`system(scope=window, operation=screenshot|ocr)` 不再接受宿主 `path`；窗口截图会登记到生成媒体目录，图片、音频和支持的
-文档通过 `media` 派生。旧 `audio:*` 权限不会自动映射到 `media:*`；含旧 audio/window path 调用的未完成 ReAct snapshot 不保证恢复；请删除
+统一为 `media.record`、`media.play`、`media.speak`、`media.volume_*` 和 `media.mute_*`；
+`media.*` 的内容派生仍使用 `asset_id`，`window.screenshot` / `window.ocr` 不再接受宿主
+`path`；窗口截图会登记到生成媒体目录，图片、音频和支持的文档通过对应的 `media.*` view 派生。
+旧 `audio:*` 权限不会自动映射到 `media.*`；含旧 audio/window path 调用的未完成 ReAct snapshot 不保证恢复；请删除
 数据库与媒体缓存后重新开始会话，不要混用新旧运行态数据。
 
-本版本进一步收敛模型工具入口：`system` 现在承载 process/clipboard/input/window 的 scope
-路由，`haven` 承载管理、后台任务、定时任务、偏好和清单。风险不会按根工具统一计算，
-每个 scope/operation 仍独立执行 schema、授权、确认和并发策略；例如
-`system:process:kill` 与 `system:info`、`haven:mcp_add` 与 `haven:mcp_list` 的风险
-分别保持 High/Safe、High/Low。旧根名的未完成 ReAct snapshot 不保证恢复。
+本版本进一步收敛模型工具入口：`system.*`、`process.*`、`clipboard.*`、`input.*`、
+`window.*`、`media.*` 和 `haven.*` 均使用独立点号 view。风险不会按根工具统一计算，
+每个 view 仍独立执行 schema、授权、确认和并发策略；例如 `process.kill` 与 `system.info`、
+`haven.mcp.mcp_add` 与 `haven.mcp.mcp_list` 的风险分别保持 High/Safe、High/Low。旧根名的
+未完成 ReAct snapshot 不保证恢复。
 
 ## 用户数据位置
 

@@ -2,26 +2,27 @@
 
 本矩阵覆盖 `haven-tools` 的 builtin 工具、MCP/skill 适配器和所有进入
 `AuthorizationEngine` 的执行路径。风险级别的可执行代表行位于
-`crates/tools/src/security.rs` 的 `LOCAL_TOOL_SECURITY_MATRIX`；这里补充每个工具的
-操作面、路径字段、授权继承、取消与竞态要求。矩阵中的“拒绝”是 fail-closed，
+`crates/tools/src/security.rs` 的 `LOCAL_TOOL_SECURITY_MATRIX`；这里补充每个 view 的
+操作面、路径字段、授权继承、取消与竞态要求。模型可见的 operation-based builtin 统一使用
+`root.operation`，聚合实现仅是 native/内部执行边界。矩阵中的“拒绝”是 fail-closed，
 不得降级为确认或依赖前端传入的 `confirmed`。
 
 ## 风险与入口矩阵
 
 | 工具 | 低风险/只读操作 | 需确认或更高风险操作 | 授权 key | 路径/外部边界 | 取消与重试 |
 |---|---|---|---|---|---|
-| `media`（音频设备分支） | `play`, `speak`, `volume_get`, `mute_get` | `record`, `volume_set`, `mute_set` = medium | `media` 或 `media:<operation>` | `play.file_path` 与文件工具一样受 `allowed_paths` 约束；`speak.text` 发往已配置 TTS provider；录音设备由 input 管线管理 | 录音取消清理 recording id；TTS 合成支持取消，播放完成当前 WAV |
+| `media.*`（音频设备分支） | `media.play`, `media.speak`, `media.volume_get`, `media.mute_get` | `media.record`, `media.volume_set`, `media.mute_set` = medium | view 的完整名称；父级 `media` 可作为 ToolConfig 家族设置 | `media.play.file_path` 与文件工具一样受 `allowed_paths` 约束；`media.speak.text` 发往已配置 TTS provider；录音设备由 input 管线管理 | 录音取消清理 recording id；TTS 合成支持取消，播放完成当前 WAV |
+| `media.*`（内容派生） | `media.inspect`, `media.extract` = low | `media.describe`, `media.transcribe`, `media.generate` = medium；`media.ocr` = high | view 的完整名称；父级 `media` 可作为 ToolConfig 家族设置 | 仅接受受管 `asset_id`；视觉、OCR、STT 和生成分别经过实时 provider capability 与大小预算 | 派生调用可取消；provider 失败保留受管 asset reference，不暴露宿主路径 |
 | `ask` | 全部 | 无系统副作用 = safe | `ask` | 无本地路径 | 不得静默跳过用户问题 |
-| `files` / operation view | `read`, `list`, `files.read_text`, `files.outline`, `files.summary`, `files.search` = low | `write`, `edit`, `copy`, `move`, `create_dir` = medium；`delete` = high；内容搜索 = medium | `files`, `files:<operation>` 或 view 专用 key | view 固定 operation，继承 `allowed_paths`；`path`, `paths`, `source`, `destination`, `file`, `dir`, `directory` 逐一校验 | 失败不得部分放宽；重试沿用同一 gate |
+| `files.*` | `files.read`, `files.list`, `files.outline`, `files.summary`, `files.search` = low | `files.write`, `files.edit`, `files.copy`, `files.move`, `files.create_dir` = medium；`files.delete` = high；内容搜索 = medium | view 的完整名称；父级 `files` 可作为 ToolConfig 家族设置 | view 固定 operation，继承 `allowed_paths`；`path`, `paths`, `source`, `destination`, `file`, `dir`, `directory` 逐一校验 | 失败不得部分放宽；重试沿用同一 gate |
 | `shell` | 无 | 所有命令 = high | `shell` | `cwd` 必须纳入路径校验；命令不通过 shell 拼接绕过 | 取消终止受管子进程；unsafe 重试默认关闭 |
-| `system` / `system.info` | `info`, `display`, `power:status`, `process:list`, `clipboard:read`, `input:move`, `input:scroll`, `window:list`, `window:foreground`, `window:screenshot`, `window:ui_tree`, `window:wait`, `system.info` = safe/low | env 写操作、registry 写操作 = high；registry 读 = medium；power lock/sleep = high；hibernate = critical；process kill = high；clipboard write、input click/type/key = medium；window focus = medium、close/ocr = high | `system:<scope>[:operation]` 或 `system.info` | `system.info` 固定 `scope=info`；process、clipboard、input、window 只是 system 的子 scope，分别沿用各自路径、桌面和设备边界；env list 只返回名称，credential-like get 脱敏且 set 不回显 | 聚合器只转发子工具策略；取消只允许在操作未提交前生效 |
+| `system.*` / `process.*` / `clipboard.*` / `input.*` / `window.*` | `system.info`, `system.display`, `system.power.status`, `process.list`, `clipboard.read`, `clipboard.history`, `input.move`, `input.scroll`, `window.list`, `window.foreground`, `window.screenshot`, `window.ui_tree`, `window.wait`, `system.env.get` = safe/low | `system.env.list/set/unset`、registry 写操作 = high；registry 读 = medium；`system.power.lock/sleep` = high、hibernate = critical；`process.kill` = high；`clipboard.write`、`input.click/type/key` = medium；`window.focus` = medium、`window.close/ocr` = high | view 的完整名称；各 family 父级可作为 ToolConfig 家族设置 | 每个 view 固定 scope/operation，分别沿用路径、桌面和设备边界；env list 只返回名称，credential-like get 脱敏且 set 不回显 | 聚合实现只转发子工具策略；取消只允许在操作未提交前生效 |
 | `http` | 无 | 请求 = medium | `http` | 默认阻断 localhost/loopback、私网、link-local、云元数据和解析到受限地址的域名；可用 `allowed_domains` 进一步收窄；每个 redirect hop 重新校验，跨 origin 移除认证/cookie 头 | timeout/cancel 后不得自动升级重试；未知结果不重放 |
 | `notify` | 全部 = safe | 无 | `notify` | UI 文本按纯文本处理 | 重复通知可丢弃/幂等 |
-| `agent` | list/profile/mail/poll = safe | `spawn` = medium | `agent`, `agent:spawn` | peer bus 路径固定在受管 root | request 等待取消必须释放 waiter |
-| `load_skill` | 加载元数据 = safe | 被加载 skill 的工具另行 high gate | `load_skill` | skill root 由 engine 固定 | 失败不留下半注册工具 |
+| `agent.*` | `agent.list`, `agent.profile`, `agent.inbox`, `agent.reply`, `agent.request`, `agent.send` = safe | `agent.spawn` = medium | view 的完整名称；父级 `agent` 可作为 ToolConfig 家族设置 | peer bus 路径固定在受管 root | request 等待取消必须释放 waiter |
 | `load_mcp` | 加载元数据 = safe | 被加载 MCP 工具统一按 high gate | `load_mcp` | MCP 配置/env 不进入普通错误或 UI | 连接取消必须关闭 client |
-| `memory` | search/list/recall = safe | remember/forget = medium | `memory`, `memory:<operation>` | 事实写入拒绝 credential-like 值 | maintenance/embedding 操作支持取消或有界执行 |
-| `haven` | status、config_get、skills_list、mcp_list、logs_tail、sessions、errors、actions_list、schedule_list、preferences_get/list、checklist_list = safe/low | logs_level、skill_enable/disable、tool_enable/disable、mcp_connect/disconnect/reload、actions_cancel = medium；skill_create、mcp_add/update/toggle/remove = high；schedule_set、preferences_set/clear、checklist_add/update/remove/clear = 按子工具原有 low | `haven`, `haven:<operation>` | 一个根下的每个 operation 仍使用独立的 schema、风险、并发资源和 session 归属；配置读取递归脱敏，MCP env 不返回，任务取消按 session 校验 | 聚合器只转发子工具策略；保存失败不产生半更新状态，诊断失败不得暴露原始日志或会话正文 |
+| `memory.*` | `memory.search`, `memory.list`, `memory.recall` = safe | `memory.remember`, `memory.forget` = medium | view 的完整名称；父级 `memory` 可作为 ToolConfig 家族设置 | 事实写入拒绝 credential-like 值 | maintenance/embedding 操作支持取消或有界执行 |
+| `haven.*`、`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` | 诊断、配置读取、技能/工具/MCP 列表、`actions.list/inspect`、`schedule.list`、`preferences.get/list`、`checklist.list` = safe/low | `haven.config.logs_level`、技能/工具 enable/disable、MCP connect/disconnect/reload、`actions.cancel` = medium；skill_create、MCP add/update/toggle/remove = high；schedule/preferences/checklist 写操作沿用各自 view 风险 | view 的完整名称；各 family 父级可作为 ToolConfig 家族设置 | 每个 view 使用独立 schema、风险、并发资源和 session 归属；配置读取递归脱敏，MCP env 不返回，任务取消按 session 校验 | 聚合实现只转发子工具策略；保存失败不产生半更新状态，诊断失败不得暴露原始日志或会话正文 |
 
 ### 入口一致性
 

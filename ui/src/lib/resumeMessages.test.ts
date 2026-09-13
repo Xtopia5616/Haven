@@ -92,14 +92,14 @@ describe('buildResumeMessages', () => {
 				{ id: 'm-thought', role: 'assistant', content: '检查目标文件', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 'step-view', action_tool: 'files.read_text', action_input: '{"path":"notes.md"}', observation: '{"operation":"read","path":"notes.md","content":"ok"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:01Z' },
+				{ id: 'step-view', action_tool: 'files.read', action_input: '{"path":"notes.md"}', observation: '{"operation":"read","path":"notes.md","content":"ok"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:01Z' },
 			],
 		});
 		const tool = items.find((item) => item.id === 'step-view');
 		expect(tool).toMatchObject({
 			id: 'step-view',
 			type: 'tool',
-			toolName: 'files.read_text',
+			toolName: 'files.read',
 			toolArgs: '{"path":"notes.md"}',
 		});
 	});

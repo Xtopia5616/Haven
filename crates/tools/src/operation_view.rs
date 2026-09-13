@@ -9,7 +9,7 @@ use crate::{
     ToolRegistration, ToolResult, ToolSignals,
 };
 
-/// Declarative contract for a model-facing operation view. The grouped tool
+/// Declarative contract for a model-facing operation view. The aggregate tool
 /// remains the execution implementation, while this record is the one source
 /// for the view's model schema and runtime policy metadata.
 #[allow(dead_code)]
@@ -17,17 +17,17 @@ use crate::{
 pub(crate) struct OperationViewContract {
     pub(crate) name: &'static str,
     pub(crate) description: &'static str,
-    pub(crate) fixed: (&'static str, Value),
+    pub(crate) fixed: Vec<(String, Value)>,
     pub(crate) schema: Value,
     pub(crate) risk_level: RiskLevel,
     pub(crate) risk_rule: Option<OperationViewRiskRule>,
     pub(crate) idempotency: OperationIdempotency,
     pub(crate) scope: ToolOperationScope,
     pub(crate) concurrency: ToolConcurrency,
-    pub(crate) permission_key: &'static str,
-    pub(crate) renderer: &'static str,
-    pub(crate) icon: &'static str,
-    pub(crate) prompt: &'static str,
+    pub(crate) permission_key: String,
+    pub(crate) renderer: String,
+    pub(crate) icon: String,
+    pub(crate) prompt: String,
 }
 
 #[allow(dead_code)]
@@ -36,9 +36,9 @@ pub(crate) enum OperationViewRiskRule {
     ContentSearchMedium,
 }
 
-/// A narrow provider-facing view over a grouped tool.
+/// A narrow provider-facing view over an aggregate tool.
 ///
-/// The grouped implementation remains the single execution and policy
+/// The aggregate implementation remains the single execution and policy
 /// source. This adapter only fixes the operation discriminator and publishes
 /// the smaller schema that the model needs for that operation. Native and
 /// model-facing callers therefore continue to share the same implementation.
@@ -50,7 +50,7 @@ pub(crate) struct OperationViewTool {
 
 impl OperationViewTool {
     pub(crate) fn new(inner: ToolBox, contract: OperationViewContract) -> Arc<Self> {
-        let fixed = Map::from_iter([(contract.fixed.0.to_string(), contract.fixed.1.clone())]);
+        let fixed = Map::from_iter(contract.fixed.iter().cloned());
         Arc::new(Self {
             inner,
             contract,
@@ -70,14 +70,126 @@ impl OperationViewTool {
     }
 }
 
+/// Extract one operation branch from an aggregate tool schema and remove the
+/// fixed discriminator from the provider-facing input. The aggregate remains
+/// the execution boundary; this helper only creates a narrow model view.
+pub(crate) fn split_operation_schema(schema: &Value, operation: &str) -> Option<Value> {
+    let mut branches = Vec::new();
+    collect_operation_branches(schema, operation, &mut branches);
+    match branches.len() {
+        0 => None,
+        1 => branches.into_iter().next(),
+        _ => Some(serde_json::json!({
+            "type": "object",
+            "oneOf": branches,
+        })),
+    }
+}
+
+/// Extract one nested `scope` + `operation` branch, used by `system` views.
+pub(crate) fn split_scope_operation_schema(
+    schema: &Value,
+    scope: &str,
+    operation: &str,
+) -> Option<Value> {
+    let mut branches = Vec::new();
+    collect_scope_operation_branches(schema, scope, operation, &mut branches);
+    match branches.len() {
+        0 => None,
+        1 => branches.into_iter().next(),
+        _ => Some(serde_json::json!({
+            "type": "object",
+            "oneOf": branches,
+        })),
+    }
+}
+
+fn collect_operation_branches(node: &Value, operation: &str, out: &mut Vec<Value>) {
+    let Some(object) = node.as_object() else {
+        return;
+    };
+    if let Some(one_of) = object.get("oneOf").and_then(Value::as_array) {
+        for branch in one_of {
+            collect_operation_branches(branch, operation, out);
+        }
+        return;
+    }
+    let Some(operation_schema) = object
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("operation"))
+    else {
+        return;
+    };
+    let matches = operation_schema.get("const").and_then(Value::as_str) == Some(operation)
+        || operation_schema
+            .get("enum")
+            .and_then(Value::as_array)
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(operation)));
+    if !matches {
+        return;
+    }
+    let mut branch = node.clone();
+    remove_fixed_property(&mut branch, "operation");
+    out.push(branch);
+}
+
+fn collect_scope_operation_branches(
+    node: &Value,
+    scope: &str,
+    operation: &str,
+    out: &mut Vec<Value>,
+) {
+    let Some(object) = node.as_object() else {
+        return;
+    };
+    if let Some(one_of) = object.get("oneOf").and_then(Value::as_array) {
+        for branch in one_of {
+            collect_scope_operation_branches(branch, scope, operation, out);
+        }
+        return;
+    }
+    let Some(properties) = object.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    let scope_matches = properties
+        .get("scope")
+        .and_then(|value| value.get("const"))
+        .and_then(Value::as_str)
+        == Some(scope);
+    let operation_matches = properties
+        .get("operation")
+        .and_then(|value| value.get("const"))
+        .and_then(Value::as_str)
+        == Some(operation);
+    if scope_matches && operation_matches {
+        let mut branch = node.clone();
+        remove_fixed_property(&mut branch, "scope");
+        remove_fixed_property(&mut branch, "operation");
+        out.push(branch);
+    }
+}
+
+fn remove_fixed_property(schema: &mut Value, name: &str) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.remove(name);
+    }
+    if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|value| value.as_str() != Some(name));
+    }
+}
+
 #[async_trait]
 impl Tool for OperationViewTool {
     fn name(&self) -> String {
-        self.contract.name.into()
+        self.contract.name.to_string()
     }
 
     fn description(&self) -> String {
-        self.contract.description.into()
+        self.contract.description.to_string()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -149,5 +261,59 @@ impl Tool for OperationViewTool {
 
     fn authorization_input(&self, input: &Value) -> Value {
         self.routed_input(input)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn split_operation_schema_keeps_only_the_selected_branch() {
+        let schema = json!({
+            "type": "object",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "read" },
+                        "path": { "type": "string" }
+                    },
+                    "required": ["operation", "path"]
+                },
+                {
+                    "type": "object",
+                    "properties": { "operation": { "const": "write" }, "content": { "type": "string" } },
+                    "required": ["operation", "content"]
+                }
+            ]
+        });
+
+        let view = split_operation_schema(&schema, "read").expect("read branch");
+        assert_eq!(view["properties"]["path"]["type"], "string");
+        assert!(view["properties"].get("operation").is_none());
+        assert_eq!(view["required"], json!(["path"]));
+    }
+
+    #[test]
+    fn split_scope_operation_schema_removes_both_fixed_discriminators() {
+        let schema = json!({
+            "oneOf": [{
+                "type": "object",
+                "properties": {
+                    "scope": { "const": "env" },
+                    "operation": { "const": "get" },
+                    "name": { "type": "string" }
+                },
+                "required": ["scope", "operation", "name"]
+            }]
+        });
+
+        let view = split_scope_operation_schema(&schema, "env", "get").expect("env.get branch");
+        assert!(view["properties"].get("scope").is_none());
+        assert!(view["properties"].get("operation").is_none());
+        assert_eq!(view["required"], json!(["name"]));
     }
 }

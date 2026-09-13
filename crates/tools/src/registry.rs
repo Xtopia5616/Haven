@@ -104,7 +104,7 @@ impl ToolRegistry {
 
 /// Per-session overlay catalog layered on top of [`ToolRegistry`]. The
 /// overlay owns both its registrations and its version clock so progressive
-/// skill/MCP loading cannot invalidate unrelated sessions or create a second
+/// MCP loading cannot invalidate unrelated sessions or create a second
 /// catalog source in `ToolsManager`.
 #[derive(Clone)]
 pub struct SessionCatalog {

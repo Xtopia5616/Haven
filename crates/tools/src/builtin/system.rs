@@ -4,29 +4,20 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::env::{EnvOperation, EnvParams, EnvTool};
-use super::grouped_schema::expand_branches;
 use super::power::{PowerOperation, PowerParams, PowerTool};
 use super::registry::{RegistryOperation, RegistryParams, RegistryTool};
-use crate::{OperationIdempotency, Tool, ToolBox, ToolConcurrency, ToolOperationScope, ToolResult};
+use crate::{Tool, ToolConcurrency, ToolResult};
 
-/// Unified system tool: machine info, desktop controls, env vars, registry,
-/// power, and displays.
+/// System information and control: machine info, env vars, registry, power,
+/// and displays.
 pub struct SystemTool {
     pub max_output_chars: usize,
-    process: Option<ToolBox>,
-    clipboard: Option<ToolBox>,
-    input: Option<ToolBox>,
-    window: Option<ToolBox>,
 }
 
 impl Default for SystemTool {
     fn default() -> Self {
         Self {
             max_output_chars: 20_000,
-            process: None,
-            clipboard: None,
-            input: None,
-            window: None,
         }
     }
 }
@@ -57,40 +48,12 @@ pub struct SystemParams {
     /// Registry value type.
     #[serde(default, rename = "type")]
     pub value_type: Option<String>,
-    /// Fields belonging to a desktop child scope. This keeps the native
-    /// structured entry aligned with the provider-facing JSON entry.
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, Value>,
 }
 
 impl SystemTool {
     pub fn with_max_output_chars(mut self, max_output_chars: usize) -> Self {
         self.max_output_chars = max_output_chars;
         self
-    }
-
-    pub fn with_desktop_tools(
-        mut self,
-        process: ToolBox,
-        clipboard: ToolBox,
-        input: ToolBox,
-        window: ToolBox,
-    ) -> Self {
-        self.process = Some(process);
-        self.clipboard = Some(clipboard);
-        self.input = Some(input);
-        self.window = Some(window);
-        self
-    }
-
-    fn desktop_child(&self, scope: &str) -> Option<&ToolBox> {
-        match scope {
-            "process" => self.process.as_ref(),
-            "clipboard" => self.clipboard.as_ref(),
-            "input" => self.input.as_ref(),
-            "window" => self.window.as_ref(),
-            _ => None,
-        }
     }
 
     /// Entry ①: structured native interface.
@@ -109,23 +72,6 @@ impl SystemTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("info");
-
-        if let Some(child) = self.desktop_child(scope) {
-            let mut child_input = serde_json::to_value(&params)?;
-            if let Some(object) = child_input.as_object_mut() {
-                object.remove("scope");
-                object.remove("_step_id");
-                object.remove("_idempotency_key");
-                if !child.requires_session_id() {
-                    object.remove("_session_id");
-                }
-            }
-            let mut result = child.execute(child_input, cancel).await?;
-            if let Some(object) = result.output.as_object_mut() {
-                object.insert("scope".into(), Value::String(scope.to_string()));
-            }
-            return Ok(result);
-        }
 
         let mut result = match scope {
             "info" | "overview" => self.run_info(params.category, cancel).await?,
@@ -247,21 +193,12 @@ impl Tool for SystemTool {
          scope=env: get/set/unset/list (list accepts name as prefix filter; credential-like get values are masked and set never echoes value). \
          scope=registry: get/set/delete/list Windows Registry. \
          scope=power: status/lock/sleep/hibernate. \
-         scope=display: monitors with geometry, DPI/scale, refresh rate. \
-         scope=process|clipboard|input|window routes to the corresponding \
-         desktop operation while retaining that operation's risk policy."
+         scope=display: monitors with geometry, DPI/scale, refresh rate."
             .into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         let scope = input["scope"].as_str().unwrap_or("info");
-        if let Some(child) = self.desktop_child(scope) {
-            let mut child_input = input.clone();
-            if let Some(object) = child_input.as_object_mut() {
-                object.remove("scope");
-            }
-            return child.risk_level(&child_input);
-        }
         // Match execution defaults: env/registry omit → list; power omit → status.
         let op = input["operation"].as_str().unwrap_or(match scope {
             "env" | "registry" => "list",
@@ -289,43 +226,8 @@ impl Tool for SystemTool {
         }
     }
 
-    fn idempotency(&self, input: &Value) -> OperationIdempotency {
-        self.desktop_child(input["scope"].as_str().unwrap_or("info"))
-            .map(|child| {
-                let mut child_input = input.clone();
-                if let Some(object) = child_input.as_object_mut() {
-                    object.remove("scope");
-                }
-                child.idempotency(&child_input)
-            })
-            .unwrap_or(OperationIdempotency::Unknown)
-    }
-
-    fn operation_scope(&self, input: &Value) -> ToolOperationScope {
-        self.desktop_child(input["scope"].as_str().unwrap_or("info"))
-            .map(|child| {
-                let mut child_input = input.clone();
-                if let Some(object) = child_input.as_object_mut() {
-                    object.remove("scope");
-                }
-                child.operation_scope(&child_input)
-            })
-            .unwrap_or(ToolOperationScope::Session)
-    }
-
-    fn requires_session_id(&self) -> bool {
-        self.window.is_some()
-    }
-
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         let scope = input["scope"].as_str().unwrap_or("info");
-        if let Some(child) = self.desktop_child(scope) {
-            let mut child_input = input.clone();
-            if let Some(object) = child_input.as_object_mut() {
-                object.remove("scope");
-            }
-            return child.concurrency(&child_input);
-        }
         let operation = input["operation"].as_str();
         match scope {
             "info" | "overview" | "display" | "displays" => {
@@ -348,7 +250,7 @@ impl Tool for SystemTool {
     }
 
     fn input_schema(&self) -> Value {
-        let mut schema = serde_json::json!({
+        serde_json::json!({
             "type": "object",
             "properties": {
                 "scope": { "type": "string", "enum": ["info", "overview", "env", "registry", "power", "display", "displays"] },
@@ -444,52 +346,7 @@ impl Tool for SystemTool {
                     ]
                 }
             ]
-        });
-        let desktop_scopes = [
-            ("process", self.process.as_ref()),
-            ("clipboard", self.clipboard.as_ref()),
-            ("input", self.input.as_ref()),
-            ("window", self.window.as_ref()),
-        ];
-        let scope_enum = schema["properties"]["scope"]
-            .get_mut("enum")
-            .and_then(Value::as_array_mut)
-            .expect("system scope enum");
-        for scope in desktop_scopes
-            .iter()
-            .filter_map(|(scope, child)| child.as_ref().map(|_| *scope))
-        {
-            scope_enum.push(Value::String(scope.into()));
-        }
-        for (scope, child) in desktop_scopes {
-            let Some(child) = child else {
-                continue;
-            };
-            for mut branch in expand_branches(&child.input_schema()) {
-                let Some(object) = branch.as_object_mut() else {
-                    continue;
-                };
-                let properties = object
-                    .entry("properties")
-                    .or_insert_with(|| Value::Object(Default::default()));
-                if let Some(properties) = properties.as_object_mut() {
-                    properties.insert("scope".into(), serde_json::json!({ "const": scope }));
-                }
-                let required = object
-                    .entry("required")
-                    .or_insert_with(|| Value::Array(Vec::new()));
-                if let Some(required) = required.as_array_mut()
-                    && !required.iter().any(|value| value.as_str() == Some("scope"))
-                {
-                    required.push(Value::String("scope".into()));
-                }
-                schema["oneOf"]
-                    .as_array_mut()
-                    .expect("system schema oneOf")
-                    .push(branch);
-            }
-        }
-        schema
+        })
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -960,11 +817,7 @@ mod display_imp {
 mod tests {
     use super::*;
     use crate::Tool;
-    use crate::builtin::clipboard::{ClipboardHistory, ClipboardTool};
-    use crate::builtin::process::ProcessTool;
-    use crate::builtin::window::WindowTool;
     use serde_json::json;
-    use std::sync::Arc;
 
     #[test]
     fn test_system_tool_name() {
@@ -989,67 +842,6 @@ mod tests {
         );
         // Omitted operation defaults to list for both risk and execution.
         assert_eq!(tool.risk_level(&json!({"scope": "env"})), RiskLevel::High);
-    }
-
-    #[test]
-    fn desktop_children_keep_schema_and_risk_boundaries() {
-        let tool = SystemTool::default().with_desktop_tools(
-            Arc::new(ProcessTool::default()),
-            Arc::new(ClipboardTool::new(
-                Arc::new(ClipboardHistory::new(8)),
-                2_000,
-                4,
-                8,
-                500,
-            )),
-            Arc::new(crate::builtin::input::InputTool),
-            Arc::new(WindowTool::new(crate::ManagedAssetRegistry::default())),
-        );
-        assert!(
-            tool.validate_input(&json!({"scope": "process", "operation": "kill", "pid": 1}))
-                .is_ok()
-        );
-        assert!(
-            tool.validate_input(&json!({"scope": "process", "operation": "kill"}))
-                .is_err()
-        );
-        assert_eq!(
-            tool.risk_level(&json!({"scope": "process", "operation": "kill"})),
-            RiskLevel::High
-        );
-        assert_eq!(
-            tool.risk_level(&json!({"scope": "clipboard", "operation": "read"})),
-            RiskLevel::Low
-        );
-    }
-
-    #[tokio::test]
-    async fn grouped_process_child_does_not_receive_private_session_field() {
-        let tool = SystemTool::default().with_desktop_tools(
-            Arc::new(ProcessTool::default()),
-            Arc::new(ClipboardTool::new(
-                Arc::new(ClipboardHistory::new(8)),
-                2_000,
-                4,
-                8,
-                500,
-            )),
-            Arc::new(crate::builtin::input::InputTool),
-            Arc::new(WindowTool::new(crate::ManagedAssetRegistry::default())),
-        );
-        let result = tool
-            .execute(
-                json!({
-                    "scope": "process",
-                    "operation": "list",
-                    "_session_id": "ses-0123456789abcdef0123456789abcdef"
-                }),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.output["scope"], "process");
     }
 
     #[test]
@@ -1173,7 +965,6 @@ mod tests {
                     value: None,
                     path: None,
                     value_type: None,
-                    extra: Default::default(),
                 },
                 CancellationToken::new(),
             )

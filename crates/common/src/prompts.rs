@@ -144,11 +144,11 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose
 /// not to use" advice without bloating the list.
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - The short tool/skill/MCP index above is descriptive and frozen for this run; the per-step `tools[]` list is authoritative.\n\
-- `files.read_text`: `start_line`/`end_line` are 1-based lines; `offset`/`limit` are bytes. A full read that exceeds its observation budget also returns `next_offset`; continue from that cursor instead of repeating the same call. Use `files.outline` first for unfamiliar source files.\n\
+- `files.read`: `start_line`/`end_line` are 1-based lines; `offset`/`limit` are bytes. A full read that exceeds its observation budget also returns `next_offset`; continue from that cursor instead of repeating the same call. Use `files.outline` first for unfamiliar source files.\n\
 - `files.outline` returns bounded declarations, ranges, and `next_page.start_line`; use that cursor for the next page instead of guessing from the returned text.\n\
-- `files.summary` is a derived summary, not source text; use `files.read_text` when exact wording or line numbers matter.\n\
-- `files.search` returns bounded snippets plus a small before/after context window for content matches; follow its path/line metadata with a targeted `files.read_text` when the match is not enough.\n\
-- `system.info` is a bounded read-only machine snapshot; pass `category` to keep the observation narrow. The grouped `system` tool also routes `scope=process|clipboard|input|window`; each child operation keeps its own risk level, so inspect before mutating.\n\
+- `files.summary` is a derived summary, not source text; use `files.read` when exact wording or line numbers matter.\n\
+- `files.search` returns bounded snippets plus a small before/after context window for content matches; follow its path/line metadata with a targeted `files.read` when the match is not enough.\n\
+- `system.info` is a bounded read-only machine snapshot; pass `category` to keep the observation narrow. Process, clipboard, input, and window capabilities are exposed as their own dotted operation views, each with its own risk level.\n\
 - `http` fetches a URL; it is not a search engine. Use a provider search capability when it is present, otherwise state that web search is unavailable.\n\
 - HTTP requests reject local/private/link-local and cloud metadata destinations, validate every redirect hop, and may be limited to configured domains; do not try to bypass those boundaries with alternate host spellings.\n\
 - Tool failures carry a structured class (`transient`, `unknown_outcome`, `validation`, `permission`, or `side_effect_may_have_happened`); use that class to decide whether to retry, verify, or ask.\n\
@@ -157,9 +157,9 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - `shell` must be non-interactive. Use explicit flags or provide all input up front.\n\
 - `shell.silent` is only for a user-requested quiet tool card; never use it to conceal a side effect or skip the required preamble/confirmation.\n\
 - For desktop UI work, observe the current window/UI state before acting, use the narrowest title/PID target, and re-observe after a side effect when the result matters.\n\
-- For `haven`, use the exact operation prefix: `actions_*`, `schedule_*`, `preferences_*`, `checklist_*`, or an administration operation such as `config_get`/`mcp_list`. Each route keeps its own authorization and confirmation policy.\n\
-- `haven.schedule_*` treats the fire-time call as a future separate execution; scheduling a mutation does not mean that mutation has already happened.\n\
-- Background actions finish asynchronously and wake the session; never turn `haven.actions_list` into a polling loop.";
+- For `haven.*` views, use one administration operation at a time; each view keeps its own authorization and confirmation policy.\n\
+- `schedule.set` treats the fire-time call as a future separate execution; scheduling a mutation does not mean that mutation has already happened.\n\
+- Background actions finish asynchronously and wake the session; never turn `actions.list` into a polling loop.";
 
 /// Conversation title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";

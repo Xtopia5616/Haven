@@ -35,7 +35,11 @@ use tokio_util::sync::CancellationToken;
 /// registry filter, the execution gate, and the UI listing, so the three
 /// cannot drift apart.
 fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bool {
-    settings.get(name).map(|c| c.enabled).unwrap_or(true)
+    settings
+        .get(name)
+        .or_else(|| name.split('.').next().and_then(|root| settings.get(root)))
+        .map(|c| c.enabled)
+        .unwrap_or(true)
 }
 
 /// Live capabilities that affect both the model-facing operation schemas and
@@ -177,7 +181,7 @@ pub struct ToolsManager {
     /// re-enable disabled tools even though they are excluded from the
     /// registry snapshot used by the agent.
     all_builtin_tools: RwLock<Vec<ToolBox>>,
-    /// Per-session skill/MCP overlays and their catalog version clocks.
+    /// Per-session MCP overlays and their catalog version clocks.
     session_catalog: SessionCatalog,
     tool_circuits: ToolCircuitRegistry,
     /// Shared LlmRouter. Tools that need a model (currently the file `summary`
@@ -419,7 +423,7 @@ impl ToolsManager {
 
     /// Version pair for a session's complete tool-definition view. The first
     /// component covers global registry changes; the second covers only that
-    /// session's progressive skill/MCP overlay.
+    /// session's progressive MCP overlay.
     pub async fn catalog_version_for_session(&self, session_id: &str) -> (u64, u64) {
         self.session_catalog
             .catalog_version_for_session(session_id)
@@ -669,12 +673,10 @@ impl ToolsManager {
     /// Rebuild the tool catalog from the current builtin state.
     /// Called at startup and whenever MCP or Skills state changes.
     ///
-    /// Skills and MCP servers are progressively loaded (refine §4.7): the
-    /// `load_skill` / `load_mcp` meta-tools are advertised only when their
-    /// corresponding enabled index/config is non-empty. Full skill and MCP
-    /// tool adapters are NOT injected into the global registry until the LLM
-    /// explicitly calls a loader, which registers them per-session (see
-    /// `register_for_session`).
+    /// MCP servers are progressively loaded: the `load_mcp` meta-tool is
+    /// advertised only when an enabled server exists and its adapters are
+    /// registered per-session. Enabled skills are ordinary global tools and
+    /// are rebuilt into the catalog from the live skills index.
     pub async fn rebuild_catalog(&self) {
         let mut all_tools: Vec<ToolBox> = Vec::new();
 
@@ -824,46 +826,6 @@ impl ToolsManager {
         true
     }
 
-    /// Resume / executor path for skills: refuse when a *new* skill tool
-    /// would exceed the per-request ceiling (reload of an already-registered
-    /// skill name is always allowed).
-    pub async fn register_skill_for_session(&self, session_id: &str, skill_name: &str) -> bool {
-        let Some(skill) = self.skills_engine.get_skill(skill_name).await else {
-            return false;
-        };
-        if !skill.enabled() {
-            return false;
-        }
-        let runner = self.skill_runner.read().await.clone();
-        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        let name = adapter.name();
-        let max = self
-            .context_limits
-            .read()
-            .await
-            .max_tools_per_request
-            .max(1);
-        let global_count = self.registry.list().await.len();
-        let registrations = self.session_catalog.registrations();
-        let mut reg = registrations.write().await;
-        let entry = reg.entry(session_id.to_string()).or_default();
-        let already = entry.contains_key(&name);
-        let net_new = if already { 0 } else { 1 };
-        if SessionCatalog::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
-            tracing::warn!(
-                session_id,
-                skill_name,
-                max,
-                "register_skill_for_session: refusing skill over max_tools_per_request"
-            );
-            return false;
-        }
-        entry.insert(name, Arc::new(adapter));
-        drop(reg);
-        self.session_catalog.bump_session_version(session_id).await;
-        true
-    }
-
     /// Look up a tool: first check per-session registrations, then global registry.
     pub async fn get_tool_for_session(
         &self,
@@ -876,25 +838,6 @@ impl ToolsManager {
             return Some(tool);
         }
         self.registry.get(name).await
-    }
-
-    /// Build a skill index (name + description) for injection into the
-    /// system prompt (refine §4.7). The LLM uses `load_skill` to get full
-    /// schemas. The raw skill name is shown so the value passed to
-    /// `load_skill(skill_name)` matches (the index previously advertised the
-    /// transformed `skill__<name>` tool name, which `load_skill` rejected).
-    pub async fn build_skill_index(&self) -> Vec<Value> {
-        let skills = self.skills_engine.list().await;
-        skills
-            .into_iter()
-            .filter(|s| s.enabled)
-            .map(|s| {
-                serde_json::json!({
-                    "name": sanitize_index_field(&s.name),
-                    "description": sanitize_index_field(&s.description),
-                })
-            })
-            .collect()
     }
 
     /// Build an MCP server index (name + available tool names) for injection
@@ -1021,7 +964,7 @@ impl ToolsManager {
         tool_config_enabled(&*self.tool_settings.read().await, name)
     }
 
-    /// Schemas for ALL builtin tools (enabled and disabled) plus their
+    /// Schemas for ALL model-facing builtin operation views (enabled and disabled) plus their
     /// `enabled` state, so the UI can list every tool and re-enable disabled
     /// ones. The registry itself only holds enabled tools (see
     /// `rebuild_catalog`).
@@ -1068,6 +1011,7 @@ impl ToolsManager {
         let settings = self.tool_settings.read().await;
         tools
             .iter()
+            .filter(|t| !t.name().starts_with("skill__"))
             .map(|t| {
                 let mut json = t.tool_def().json();
                 json.as_object_mut()
@@ -1159,7 +1103,15 @@ impl ToolsManager {
             }
         }
         let settings = self.tool_settings.read().await;
-        let configured = settings.get(tool_name).cloned();
+        let configured = settings
+            .get(tool_name)
+            .or_else(|| {
+                tool_name
+                    .split('.')
+                    .next()
+                    .and_then(|root| settings.get(root))
+            })
+            .cloned();
         let cfg = configured.clone().unwrap_or_default();
         // A settings entry refines only fields explicitly configured. In
         // particular, `None` must preserve operation-specific intrinsic
@@ -1349,6 +1301,12 @@ impl ToolsManager {
         let settings = self.tool_settings.read().await;
         let cap = settings
             .get(tool_name)
+            .or_else(|| {
+                tool_name
+                    .split('.')
+                    .next()
+                    .and_then(|root| settings.get(root))
+            })
             .and_then(|config| config.max_output_chars)
             .unwrap_or(limits.max_observation_chars);
         result.observation_text(cap)
@@ -1673,16 +1631,27 @@ mod tests {
             "builtin tool names must be unique"
         );
 
-        let file_tool = mgr.get_tool("files").await;
-        assert!(file_tool.is_some());
-        assert!(mgr.get_tool("media").await.is_some());
+        assert!(mgr.get_tool("files").await.is_none());
+        assert!(mgr.get_tool("media").await.is_none());
         assert!(mgr.get_tool("audio").await.is_none());
         for name in [
-            "files.read_text",
+            "files.read",
             "files.outline",
             "files.summary",
             "files.search",
             "system.info",
+            "files.write",
+            "files.list",
+            "process.list",
+            "clipboard.read",
+            "input.click",
+            "window.list",
+            "media.inspect",
+            "actions.list",
+            "schedule.list",
+            "preferences.get",
+            "checklist.list",
+            "agent.list",
         ] {
             let view = mgr.get_tool(name).await;
             assert!(view.is_some(), "operation view {name} should be registered");
@@ -1693,7 +1662,7 @@ mod tests {
                 "operation discriminator stays fixed in {name}"
             );
         }
-        let read_view = mgr.get_tool("files.read_text").await.unwrap();
+        let read_view = mgr.get_tool("files.read").await.unwrap();
         assert!(
             read_view
                 .validate_input(&json!({"path": "notes.md"}))
@@ -1718,24 +1687,20 @@ mod tests {
             haven_common::types::RiskLevel::Medium
         );
 
-        let system_tool = mgr.get_tool("system").await.expect("system tool");
+        assert!(mgr.get_tool("system").await.is_none());
         assert!(mgr.get_tool("process").await.is_none());
         assert!(mgr.get_tool("clipboard").await.is_none());
-        assert!(
-            system_tool
-                .validate_input(&json!({"scope": "process", "operation": "list"}))
-                .is_ok()
-        );
+        assert!(mgr.get_tool("system.env.get").await.is_some());
+        assert!(mgr.get_tool("system.power.hibernate").await.is_some());
         assert_eq!(
-            system_tool.risk_level(&json!({"scope": "process", "operation": "kill"})),
+            mgr.get_tool("process.kill")
+                .await
+                .expect("process.kill view")
+                .risk_level(&json!({})),
             haven_common::types::RiskLevel::High
         );
-        assert!(mgr.get_tool("haven").await.is_some());
-
-        // No skills are configured in this isolated manager, so the
-        // progressive loader should not be advertised to the model.
-        let load_skill_tool = mgr.get_tool("load_skill").await;
-        assert!(load_skill_tool.is_none());
+        assert!(mgr.get_tool("haven").await.is_none());
+        assert!(mgr.get_tool("load_skill").await.is_none());
     }
 
     #[tokio::test]
@@ -1758,20 +1723,25 @@ mod tests {
         assert!(mgr.get_tool("files").await.is_none());
         let schemas = mgr.registry.list_schemas().await;
         assert!(!schemas.iter().any(|s| s["name"].as_str() == Some("files")));
-        assert!(mgr.get_tool("files.read_text").await.is_none());
+        assert!(mgr.get_tool("files.read").await.is_none());
         assert!(mgr.get_tool("files.search").await.is_none());
 
         // ...still listed for the UI with enabled = false...
         let all = mgr.list_builtin_tools().await;
         let file = all
             .iter()
-            .find(|s| s["name"].as_str() == Some("files"))
+            .find(|s| s["name"].as_str() == Some("files.read"))
             .unwrap();
         assert_eq!(file["enabled"].as_bool(), Some(false));
 
         // ...and execution is blocked.
         let result = mgr
-            .execute_tool(None, "files", json!({}), CancellationToken::new())
+            .execute_tool(
+                None,
+                "files.read",
+                json!({"path": "notes.md"}),
+                CancellationToken::new(),
+            )
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("disabled"));
@@ -1789,8 +1759,8 @@ mod tests {
         let result = mgr
             .execute_tool(
                 None,
-                "files",
-                json!({"operation": "read", "path": file.to_string_lossy()}),
+                "files.read",
+                json!({"path": file.to_string_lossy()}),
                 CancellationToken::new(),
             )
             .await

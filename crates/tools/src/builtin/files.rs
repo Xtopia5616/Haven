@@ -76,7 +76,7 @@ fn binary_result(path: &str, size: u64) -> ToolResult {
         }
         "office" => "Office document. Its binary format cannot be read as text.",
         "audio" => {
-            "Audio file. Read it to request a bounded transcript, or use media(operation=\"play\") to play it."
+            "Audio file. Read it to request a bounded transcript, or use media.play to play it."
         }
         "video" => "Video file. It cannot be read as text.",
         "executable" => "Executable/binary file. It cannot be read as text.",

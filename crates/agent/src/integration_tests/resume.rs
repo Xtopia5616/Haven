@@ -22,7 +22,7 @@ fn managed_test_image() -> (haven_common::types::MessageAttachment, std::path::P
 }
 
 #[tokio::test]
-async fn restore_per_session_tools_rebuilds_from_history() {
+async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() {
     // Create a skill on disk so SkillsEngine can discover it.
     let dir = std::env::temp_dir().join(format!("haven_restore_test_{}", uuid::Uuid::new_v4()));
     let skill_dir = dir.join("echo");
@@ -63,39 +63,25 @@ async fn restore_per_session_tools_rebuilds_from_history() {
         ContextLimitsConfig::default(),
     ));
 
-    // Simulate rounds where load_skill was called.
-    let rounds = vec![ReActRound {
-        step_number: 1,
-        thought: Some("I need the echo skill".into()),
-        tools: vec![ToolRecord {
-            action: Action {
-                tool_name: "load_skill".into(),
-                tool_input: serde_json::json!({"skill_name": "echo"}),
-                is_final: false,
-                tool_call_id: Some("tc1".into()),
-            },
-            observation: Some(r#"{"skill":{"name":"skill__echo"}}"#.into()),
-            action_index: 0,
-            step_id: "step-skill".into(),
-        }],
-    }];
-
-    // Before restore, no per-session tools.
+    // Enabled skills are direct global adapters, so every session sees the
+    // same catalog before and after resume. Resume only rebuilds MCP overlays.
+    let rounds = Vec::new();
     let before = tools.list_schemas_for_session("ses-x").await;
-    assert!(!before.iter().any(|s| s["name"] == "skill__echo"));
+    assert!(before.iter().any(|s| s["name"] == "skill__echo"));
+    let other_before = tools.list_schemas_for_session("ses-y").await;
+    assert!(other_before.iter().any(|s| s["name"] == "skill__echo"));
 
     agent.restore_per_session_tools("ses-x", &rounds).await;
 
-    // After restore, the skill tool should be visible per-session.
+    // The resume path must not move or duplicate the global skill.
     let after = tools.list_schemas_for_session("ses-x").await;
     assert!(
         after.iter().any(|s| s["name"] == "skill__echo"),
         "restored skill should appear in per-session schemas"
     );
 
-    // Other sessions should NOT see it.
     let other = tools.list_schemas_for_session("ses-y").await;
-    assert!(!other.iter().any(|s| s["name"] == "skill__echo"));
+    assert!(other.iter().any(|s| s["name"] == "skill__echo"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

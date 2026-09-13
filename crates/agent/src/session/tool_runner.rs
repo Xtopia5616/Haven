@@ -554,8 +554,8 @@ impl SessionExecutor {
             "execute_step result"
         );
 
-        // Apply the tool's declared per-session side effects (skill/MCP adapter
-        // registration) instead of name-matching load_skill/load_mcp here —
+        // Apply the tool's declared per-session side effects (MCP adapter
+        // registration) instead of name-matching loader tools here —
         // a new tool with a side effect declares it via `Tool::registrations`
         // and nothing in this executor needs to change. Background-action
         // bindings are applied after the running-set guard below (a action
@@ -586,15 +586,10 @@ impl SessionExecutor {
         }
         // Apply session-local registrations only after the terminal/rollback
         // fence above. A tool can finish successfully just as its session is
-        // ended; registering its skill/MCP overlay after that point would
+        // ended; registering its MCP overlay after that point would
         // leak tools into a dead session and let a late result mutate state.
         for reg in &registrations {
             match reg {
-                haven_tools::ToolRegistration::Skill(name) => {
-                    self.tools
-                        .register_skill_for_session(session_id, name)
-                        .await;
-                }
                 haven_tools::ToolRegistration::McpServer(name) => {
                     self.tools
                         .register_mcp_for_session(session_id, name, None)

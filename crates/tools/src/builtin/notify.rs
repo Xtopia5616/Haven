@@ -74,7 +74,7 @@ impl Tool for NotifyTool {
     }
 
     fn description(&self) -> String {
-        "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use media(operation=\"speak\") for spoken content, not notify.".into()
+        "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use media.speak for spoken content, not notify.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

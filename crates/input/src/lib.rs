@@ -75,7 +75,7 @@ pub enum RecordingReason {
 
 /// Recording flavor for the recording loop. User-input recordings (button /
 /// hotkey / VAD) run VAD auto-stop and notify the input handler; agent-tool
-/// (`media(operation="record")`) recordings capture a fixed window with no VAD and no
+/// (`media.record`) recordings capture a fixed window with no VAD and no
 /// handler notifications, so the user-facing recording UI and shell state
 /// are never disturbed by an agent-initiated recording.
 #[derive(Debug, Clone, Copy)]
@@ -238,7 +238,7 @@ impl InputPipeline {
     }
 
     /// Capture audio for a fixed `duration`, returning the recorded PCM.
-    /// Used by the agent `media(operation="record")`: no VAD auto-stop, no handler
+    /// Used by the agent `media.record`: no VAD auto-stop, no handler
     /// notifications, and the capture is capped by the configured
     /// `max_duration_secs` so a runaway tool call cannot monopolize the
     /// microphone. Fails when a user recording is already in flight.

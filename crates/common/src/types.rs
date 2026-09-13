@@ -198,7 +198,24 @@ pub enum PermissionScope {
 /// Tools whose Haven routing uses `scope` / `operation` params in the key.
 /// Other tools (MCP/skills/arbitrary args) use the bare tool name so a random
 /// `operation` field in args cannot fragment grants.
-const ROUTING_PARAM_TOOLS: &[&str] = &["files", "system", "media", "memory", "agent", "haven"];
+const ROUTING_PARAM_TOOLS: &[&str] = &[
+    "actions",
+    "files",
+    "process",
+    "window",
+    "system",
+    "clipboard",
+    "input",
+    "media",
+    "memory",
+    "agent",
+    "schedule",
+    "haven_diagnostics",
+    "haven_config",
+    "haven_skills",
+    "haven_tools",
+    "haven_mcp",
+];
 
 /// Default `operation` when a routing tool omits it — must match execution
 /// defaults so Always grants cannot land on a bare `tool:scope` parent key
@@ -1314,20 +1331,23 @@ mod tests {
             "media:speak"
         );
         assert_eq!(
-            permission_key("haven", &serde_json::json!({"operation": "schedule_set"})),
-            "haven:schedule_set"
+            permission_key("schedule", &serde_json::json!({"operation": "set"})),
+            "schedule:set"
         );
         assert_eq!(
-            permission_key("haven", &serde_json::json!({"operation": "actions_cancel"})),
-            "haven:actions_cancel"
+            permission_key("actions", &serde_json::json!({"operation": "cancel"})),
+            "actions:cancel"
         );
         assert_eq!(
             permission_key("agent", &serde_json::json!({"operation": "spawn"})),
             "agent:spawn"
         );
         assert_eq!(
-            permission_key("haven", &serde_json::json!({"operation": "logs_level"})),
-            "haven:logs_level"
+            permission_key(
+                "haven_config",
+                &serde_json::json!({"operation": "logs_level"})
+            ),
+            "haven_config:logs_level"
         );
         assert_eq!(
             permission_key(
@@ -1364,11 +1384,21 @@ mod tests {
         );
         assert_eq!(permission_tool_root("system:power:lock"), "system");
         assert_eq!(
+            permission_key("process", &serde_json::json!({"operation": "kill"})),
+            "process:kill"
+        );
+        // Model-facing operation views use their complete dotted name as the
+        // permission key; the aggregate discriminator is internal only.
+        assert_eq!(
+            permission_key("files.read", &serde_json::json!({"operation": "read"})),
+            "files.read"
+        );
+        assert_eq!(
             permission_key(
-                "system",
-                &serde_json::json!({"scope": "process", "operation": "kill"})
+                "system.env.get",
+                &serde_json::json!({"scope": "env", "operation": "get"})
             ),
-            "system:process:kill"
+            "system.env.get"
         );
     }
 

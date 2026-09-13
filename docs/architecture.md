@@ -86,14 +86,16 @@ notice，避免模型重复派生或猜测资产是否已经进入上下文（AD
 安全元数据和统一调度；`media_reference.rs` 负责模态分类与模型媒体引用，
 `media_asset.rs` 负责普通路径资产登记，`media_content.rs` 负责图片/音频/文档派生，
 `media_generation.rs` 负责生成资产，`media_audio.rs` 集中负责统一媒体工具的音频分支和本机
-音频设备适配（ADR 0133、0134、0136）。这些模块共同实现一个 `media` 工具，不重新引入
-分立的模型入口。
+音频设备适配（ADR 0133、0134、0136）。这些模块共同实现一个 `media` 聚合执行边界；模型
+目录暴露 `media.inspect`、`media.describe`、`media.ocr`、`media.transcribe` 等点号 operation
+view，不把聚合根作为模型入口。
 
-Builtin 的模型目录按频率拆分 operation view：`system.info`、`files.read_text`、
-`files.outline`、`files.summary` 和 `files.search` 为高频窄入口；`system` 内的 `env`、
-`power`、`registry` 仍是私有实现模块。公共聚合工具继续保留给 native/Tauri 和低频/写
-operation，模型的日常读路径使用窄 schema；provider-facing schema 按 live capability
-过滤不可用 operation / extension loader（ADR 0127、0131）。
+Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.read`、`files.outline`、
+`files.summary`、`files.search`、`system.info`、`system.env.get`、`haven.config.config_get`
+和 `media.inspect`。`files`、`system`、`haven`、`media` 以及其它聚合模块仍作为 native/Tauri
+和内部执行边界；模型只接收对应的窄 schema。provider-facing schema 按 live capability
+过滤不可用 operation / extension loader；启用 Skill 直接注册为 `skill__...`，MCP 仍由
+`load_mcp` 按需加载并在 session catalog 中注册（ADR 0127、0131、0137）。
 模型可见 observation 对结构化结果优先保留错误、路径、hint 与续读游标；工具定义和失败结果
 分别暴露静态/具体 retry safety，仓库会话的 shell/files 相对路径默认对齐 workspace root，
 同时保留 Temp sandbox fallback（ADR 0128）。
@@ -165,7 +167,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `builtin::media` 工具统一编排；图片/音频以内联 `ContentPart` 进入模型，普通文件落盘后
   以受管 `asset_id` 交给 `media`；视频只有在 capability profile 明确支持时才投影为
   `RawVideo`（当前 Gemini 支持，其它 adapter 显式返回不支持）。TTS 由
-  `media(operation="speak")` 显式触发并在本机播放；Windows 设备适配仍隔离在
+  `media.speak` 显式触发并在本机播放；Windows 设备适配仍隔离在
   `builtin/media_audio.rs::AudioRuntime`。
 - `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体工具的
   自动处理分支，因此用户文本不会因为关键词被隐式朗读。
@@ -269,9 +271,10 @@ Temp（全局约束）。
 
 ### 2.5.2 内置 `system` 工具（机器信息与系统控制）
 
-统一入口：`haven-tools` `builtin/system.rs`。`env` / `registry` / `power` 是 system 的内部 scope；
-`process` / `clipboard` / `input` / `window` 也作为桌面子 scope 聚合进 system。`media` 与 `files`
-本来就是独立的成熟聚合工具，本次不再拆分或改名。
+统一实现：`haven-tools` 的 `builtin/system.rs`。`env` / `registry` / `power` 以及桌面能力仍可
+在代码中由聚合实现承载，但模型目录统一暴露 `system.*`、`process.*`、`clipboard.*`、
+`input.*`、`window.*` 点号 operation view；`files.*` 与 `media.*` 也遵循同一规则。聚合根
+只保留给 native/Tauri 或内部路由，不作为模型可见入口。
 
 | scope | 能力 | 风险 |
 |---|---|---|
@@ -320,9 +323,9 @@ Temp（全局约束）。
 
 ### 2.5.4 Admin Surface
 
-模型看到一个 `haven` 根工具；其 operation 仍按 capability 与 session utility 划分：
-`status`/`config_get`/`skills_list`/`mcp_list` 等管理操作，以及
-`actions_*`、`schedule_*`、`preferences_*`、`checklist_*`。聚合器只负责路由，
+模型看到 `haven.diagnostics.*`、`haven.config.*`、`haven.skills.*`、`haven.tools.*`、
+`haven.mcp.*` 等点号 operation view，以及独立的 `actions.*`、`schedule.*`、
+`preferences.*`、`checklist.*`。聚合器只负责内部路由，
 每个 operation 继续复用子工具自己的严格 schema、风险等级、幂等性、并发资源和
 session 归属；因此 `mcp_add` 是 High，而 `mcp_list` 是 Low，二者不会因共用根名
 而被压平。
@@ -330,9 +333,9 @@ session 归属；因此 `mcp_add` 是 High，而 `mcp_list` 是 Low，二者不�
 配置写入使用 `ConfigService::apply_patch` 的 typed patch；普通模型路径没有任意
 `config_set(path, value)`。诊断结果只提供脱敏、截断后的日志和 session 元数据，不能
 返回 API key、完整 prompt、完整命令输出或会话正文。原 `SelfTool` 仍只作为 native
-Tauri command 的 structured surface，未直接注册进模型目录；`haven` 通过受限 adapter
-路由到同一实现。高风险、网络、媒体、文件和跨 session 协作仍保留独立根工具，以维持
-各自的确认、路径、provider 和生命周期边界。
+Tauri command 的 structured surface，未直接注册进模型目录；`haven` view 通过受限 adapter
+路由到同一实现。高风险、网络、媒体、文件和跨 session 协作仍保留独立的内部实现边界，
+以维持各自的确认、路径、provider 和生命周期边界；模型看到的名称仍遵循点号 view 契约。
 
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
@@ -434,6 +437,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-12 | §2.5 Tools / Agent / Common：按实时路由能力裁剪媒体与录音 operation；structured-first observation 保留恢复字段；仓库会话默认工作区路径；区分只读重试安全性并补充 runtime capability snapshot（ADR 0128） |
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |
 | 2026-09-12 | §2.5 Tools / LLM / Agent / UI：完成 P1 operation view、搜索/outline 结构化模型视图、文档页游标、原生视频 ContentPart、session-scoped 偏好/清单和 memory 空结果诊断；按测试版 reset 边界删除 FollowUp/confirmation/ask/rollback/provider-style 内部兼容层（ADR 0131） |
+| 2026-09-13 | §2.5 Tools / Agent / UI / Security：模型与 UI 统一使用 `root.operation` 点号 view；files/system/haven/media 及其它 operation-based builtin 不再以聚合根注册，启用 Skill 直接注册，删除 `load_skill`（ADR 0137） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |

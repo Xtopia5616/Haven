@@ -109,7 +109,7 @@ describe('canRenderToolResult', () => {
 	it('routes independent operation views through their root renderer', () => {
 		expect(
 			parseToolResult(
-				'files.read_text',
+				'files.read',
 				JSON.stringify({ operation: 'read', path: 'a.rs', content: 'x' }),
 			),
 		).toMatchObject({ kind: 'custom' });
@@ -133,7 +133,7 @@ describe('operation view UI contract', () => {
 			expect(contract.icon).toBeTruthy();
 			expect(contract.prompt).toBeTruthy();
 			expect(contract.label).toBeTruthy();
-			expect(name).toMatch(/^(files|system)\./);
+			expect(name).toContain('.');
 		}
 	});
 });
@@ -497,7 +497,7 @@ describe('ToolResultCard source + args', () => {
 		expect(screen.getByText('"Shanghai"')).toBeTruthy();
 	});
 
-	it('labels MCP and skill activation cards with their source and icon', () => {
+	it('labels MCP activation cards while Skills use direct adapters', () => {
 		const { container, rerender } = render(ToolResultCard, {
 			toolName: 'load_mcp',
 			content: JSON.stringify({ loaded: true }),
@@ -508,7 +508,7 @@ describe('ToolResultCard source + args', () => {
 		expect(container.querySelector('.tool-card-icon svg')).toBeTruthy();
 
 		rerender({
-			toolName: 'load_skill',
+			toolName: 'skill__weather',
 			content: JSON.stringify({ loaded: true }),
 		});
 		badge = container.querySelector('.tool-source') as HTMLElement;

@@ -20,12 +20,12 @@ use haven_tools::ToolsManager;
 use crate::compactor::estimate_tokens;
 use crate::memory_index::embedding_index_model;
 
-/// Builds the system prompt, including a **short** tools / skills / MCP index.
+/// Builds the system prompt, including a **short** tools / MCP index.
 ///
 /// G7 (X2 rethink): this index is **not** the schema authority. It is frozen
-/// for the **current run** (mid-run `load_skill` / `load_mcp` only update API
-/// `tools[]`). On resume, [`Self::rebuild_canonical_system`] rebuilds the full
-/// system prompt (tools/skills/MCP index + MEMORY + session). Mid-run memory
+/// for the **current run** (mid-run `load_mcp` only updates API `tools[]`).
+/// On resume, [`Self::rebuild_canonical_system`] rebuilds the full system
+/// prompt (tools/MCP index + MEMORY + session). Mid-run memory
 /// refresh stays fence-only via [`Self::patch_canonical_memory_fence`] (M2).
 /// Full parameter schemas live in the per-step API `tools[]` list
 /// (`ReActEngine::build_tool_definitions_for_session`). `TOOL_USAGE_NOTES`
@@ -38,12 +38,12 @@ pub struct SystemPromptBuilder {
     /// (facts get a similarity bonus, episodes surface even without shared
     /// keywords). `None` (headless/tests) degrades to keyword-only recall.
     router: Option<Arc<LlmRouter>>,
-    /// Cached short index for built-in tools / installable skills / MCP
-    /// servers. Invalidated when the **global** tool registry version
+    /// Cached short index for built-in tools / MCP servers. Invalidated when
+    /// the **global** tool registry version
     /// changes (register/rebuild), and cleared on resume full rebuild so
-    /// newly installed skills/MCP appear. Per-session `load_skill` /
-    /// `load_mcp` registrations do **not** bump this cache — those tools
-    /// appear only in the API `tools[]` list (G7 freeze-per-run).
+    /// newly discovered skills/MCP appear. Per-session `load_mcp` registrations
+    /// do **not** bump this cache — those tools appear only in the API
+    /// `tools[]` list (G7 freeze-per-run).
     schema_cache: RwLock<Option<SchemaCache>>,
     /// Cached memory-only render keyed by the canonicalized query scope,
     /// embedding model, and database memory revision. Dirty notifications can
@@ -56,7 +56,6 @@ pub struct SystemPromptBuilder {
 struct SchemaCache {
     registry_version: u64,
     built_in_section: String,
-    skill_index_section: String,
     mcp_server_index_section: String,
 }
 
@@ -476,7 +475,14 @@ impl SystemPromptBuilder {
             .into_iter()
             .filter(|server| server.enabled)
             .count();
-        let skill_count = self.tools.build_skill_index().await.len();
+        let skill_count = self
+            .tools
+            .skills_engine
+            .list()
+            .await
+            .into_iter()
+            .filter(|skill| skill.enabled)
+            .count();
 
         let model_capabilities = if let Some(router) = &self.router {
             let mut states = Vec::new();
@@ -599,14 +605,7 @@ impl SystemPromptBuilder {
     ) -> String {
         let sections = self.get_or_build_sections().await;
 
-        let skills_section = if sections.skill_index_section.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "\nInstallable skills — call `load_skill` (skill_name) to activate its tools:\n{}",
-                sections.skill_index_section
-            )
-        };
+        let skills_section = String::new();
 
         let mcp_section = if sections.mcp_server_index_section.is_empty() {
             String::new()
@@ -1041,10 +1040,10 @@ impl SystemPromptBuilder {
     }
 
     /// X2 / G7 (freeze-per-run): fully rebuild `canonical[0]` on resume —
-    /// tools/skills/MCP short index + MEMORY fence + session description.
+    /// tools/MCP short index + MEMORY fence + session description.
     /// Preserves existing Additional context lines (canonical already holds
-    /// the transcript; DB history is not re-loaded). Mid-run `load_skill` /
-    /// `load_mcp` still do **not** call this — only resume does.
+    /// the transcript; DB history is not re-loaded). Mid-run `load_mcp` still
+    /// does **not** call this — only resume does.
     pub async fn rebuild_canonical_system(
         &self,
         session_id: &str,
@@ -1105,11 +1104,10 @@ impl SystemPromptBuilder {
     async fn build_sections(&self, version: u64, defs: Vec<ToolDef>) -> SchemaCache {
         let mut built_in = String::new();
         for def in &defs {
-            // Per-session skill__ and mcp__ tools are never in the global
-            // registry (progressive loading), so they won't appear here —
-            // intentional: prompt holds a short index; schemas come from
-            // the API tools[] list after load_skill / load_mcp (G7).
-            if !def.name.starts_with("skill__") && !def.name.starts_with("mcp__") {
+            // Per-session mcp__ tools are never in the global registry, so
+            // they won't appear here — intentional: prompt holds a short
+            // index; schemas come from the API tools[] list after load_mcp.
+            if !def.name.starts_with("mcp__") {
                 built_in.push_str(&format!("- {}: {}\n", def.name, def.description));
             }
         }
@@ -1118,15 +1116,6 @@ impl SystemPromptBuilder {
         // from peers (low-trust, not user instructions).
         if defs.iter().any(|d| d.name == "agent") {
             built_in.push_str(CROSS_SESSION_MESSAGING_NOTES);
-        }
-
-        let mut skill_index = String::new();
-        for entry in self.tools.build_skill_index().await {
-            skill_index.push_str(&format!(
-                "  - {}: {}\n",
-                entry["name"].as_str().unwrap_or(""),
-                entry["description"].as_str().unwrap_or("")
-            ));
         }
 
         let mut mcp_server_index = String::new();
@@ -1141,7 +1130,6 @@ impl SystemPromptBuilder {
         SchemaCache {
             registry_version: version,
             built_in_section: built_in,
-            skill_index_section: skill_index,
             mcp_server_index_section: mcp_server_index,
         }
     }

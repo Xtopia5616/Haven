@@ -152,7 +152,7 @@ export function createChatAgentEventHandlers({
 						messages.some(
 							(message) =>
 								message.id === cardId ||
-								(message.toolName === 'agent' && message.content === content),
+							(message.toolName === 'agent.inbox' && message.content === content),
 						)
 					)
 						return messages;
@@ -161,7 +161,7 @@ export function createChatAgentEventHandlers({
 						newToolMessage({
 							id: cardId,
 							stepNumber: data.stepNumber ?? 0,
-							toolName: 'agent',
+						toolName: 'agent.inbox',
 							content,
 							time: new Date().toLocaleTimeString(),
 						}),
@@ -180,9 +180,9 @@ export function createChatAgentEventHandlers({
 							status: 'completed',
 							auto: true,
 						}),
-						// This is a UI-only synthetic result, so use the grouped
+						// This is a UI-only synthetic result, so use the operation
 						// renderer discriminator without pretending it was a model
-						// invocation of an exposed `actions_result_injected` route.
+						// invocation of an exposed model operation.
 						operation: 'actions_result_injected',
 					},
 				);
@@ -193,7 +193,7 @@ export function createChatAgentEventHandlers({
 						newToolMessage({
 							id: cardId,
 							stepNumber: data.stepNumber ?? 0,
-						toolName: 'haven',
+						toolName: 'actions.inspect',
 							content,
 							time: new Date().toLocaleTimeString(),
 						}),

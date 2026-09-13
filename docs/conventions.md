@@ -163,7 +163,7 @@ AgentEvent / 其它后端事件
 | 能力 | 目的 | 用户可见效果 | 调用方式 |
 |---|---|---|---|
 | `notify` | 提醒用户注意状态、结果或需要处理的事项 | 应用内 toast + Windows 桌面通知；不朗读正文 | 模型显式调用 `notify` |
-| `media(operation="speak")` | 传递需要用户听到的内容 | TTS provider 合成后由本机扬声器播放；不产生 toast 或桌面通知 | 模型显式调用 `media` |
+| `media.speak` | 传递需要用户听到的内容 | TTS provider 合成后由本机扬声器播放；不产生 toast 或桌面通知 | 模型显式调用 `media.speak` |
 
 二者没有自动联动：模型需要同时提醒并播报时，必须分别调用两个工具；只需要内容播报时用
 `media.speak`，只需要引起注意或给出短状态提示时用 `notify`。Windows 可能因系统通知设置

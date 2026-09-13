@@ -44,6 +44,12 @@ export function getToolResultRenderer(
 	)
 		return ToolMediaResult;
 	if (kind === 'custom' && rootToolName === 'agent') return ToolAgentResult;
+	if (kind === 'custom' && rootToolName === 'process') return ToolProcessResult;
+	if (kind === 'custom' && rootToolName === 'clipboard') return ToolClipboardResult;
+	if (kind === 'custom' && rootToolName === 'input') return ToolInputResult;
+	if (kind === 'custom' && rootToolName === 'window') return ToolWindowResult;
+	if (kind === 'custom' && rootToolName === 'actions') return ToolActionResult;
+	if (kind === 'custom' && rootToolName === 'schedule') return ToolScheduleResult;
 	if (
 		kind === 'custom' &&
 		rootToolName === 'files' &&
@@ -93,6 +99,13 @@ export function getToolResultRenderer(
 		}
 		return ToolAdminResult;
 	}
+	if (
+		kind === 'custom' &&
+		['haven_diagnostics', 'haven_config', 'haven_skills', 'haven_tools', 'haven_mcp'].includes(
+			rootToolName,
+		)
+	)
+		return ToolAdminResult;
 	if (kind === 'custom' && rootToolName === 'http') return ToolHttpResult;
 	if (kind === 'custom' && rootToolName === 'web_search') return ToolWebSearchResult;
 	if (kind === 'custom' && rootToolName === 'memory') return ToolMemoryResult;

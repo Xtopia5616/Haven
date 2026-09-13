@@ -162,7 +162,7 @@ pub enum ToolConcurrency {
 
 /// The scope in which a typed operation is allowed to observe or mutate
 /// state. This is deliberately separate from the LLM-facing tool name: one
-/// grouped tool can contain both global and session-scoped operations.
+/// aggregate tool can contain both global and session-scoped operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOperationScope {
     Global,
@@ -229,14 +229,12 @@ pub trait TypedToolOperation: Send + Sync {
 }
 
 /// Per-session side effects a tool declares through its result. The session
-/// executor applies them (registering skill/MCP adapters, attaching
+/// executor applies them (registering MCP adapters, attaching
 /// background actions) without hard-coding tool names, so a new tool that needs
 /// a side effect declares it here instead of adding a name check in the
 /// executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRegistration {
-    /// Load a skill (raw name) for the current session.
-    Skill(String),
     /// Load an MCP server (by name) for the current session.
     McpServer(String),
     /// Attach a background action (an action of kind `action`) to the current

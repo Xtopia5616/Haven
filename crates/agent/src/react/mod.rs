@@ -516,17 +516,17 @@ impl ReActEngine {
     }
 
     /// Build the full tool-definition list for a session: global registry tools
-    /// plus per-session skill/MCP adapters registered via `load_skill`/`load_mcp`.
+    /// plus per-session MCP adapters registered via `load_mcp`.
     /// Called each step so freshly loaded tools are immediately visible.
     ///
     /// G7 (X2 rethink) — **API `tools[]` is the schema authority.** The
-    /// system prompt only embeds a short built-in / installable-skill /
-    /// MCP-server **index** (names + one-line descriptions), frozen for the
-    /// **current run** (`TOOL_USAGE_NOTES` declares this). Mid-run
-    /// `load_skill` / `load_mcp` never rewrite the index; resume fully
-    /// rebuilds the system prompt (X2) so catalog drift is picked up between
-    /// runs. After `load_skill` / `load_mcp`, new tool schemas appear here on
-    /// the next step; they are **not** spliced into the prompt index.
+    /// system prompt only embeds a short built-in / MCP-server **index**
+    /// (names + one-line descriptions), frozen for the **current run**
+    /// (`TOOL_USAGE_NOTES` declares this). Mid-run `load_mcp` never rewrites
+    /// the index; resume fully rebuilds the system prompt (X2) so catalog
+    /// drift is picked up between runs. After `load_mcp`, new tool schemas
+    /// appear here on the next step; they are **not** spliced into the prompt
+    /// index.
     ///
     /// The result is cached per session against both the global catalog
     /// version and that session's registration-overlay version. This keeps a
