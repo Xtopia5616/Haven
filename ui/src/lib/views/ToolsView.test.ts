@@ -100,6 +100,7 @@ describe('ToolsView toolbar actions', () => {
 							risk_level: 'low',
 							catalog_group: 'system',
 							input_schema: { type: 'object' },
+							manifest: { presentation: { label: '读取文件' } },
 						},
 						{
 							name: 'files.search',
@@ -108,6 +109,7 @@ describe('ToolsView toolbar actions', () => {
 							catalog_group: 'system',
 							input_schema: { type: 'object' },
 							enabled: false,
+							manifest: { presentation: { label: '搜索文件' } },
 						},
 						{
 							name: 'shell',
@@ -128,12 +130,14 @@ describe('ToolsView toolbar actions', () => {
 
 		await waitFor(() => expect(screen.getByText('共 1 项')).toBeTruthy());
 		expect(document.querySelectorAll('[data-card-kind="builtin-tool"]')).toHaveLength(1);
-		expect(screen.getByText('系统')).toBeTruthy();
+		expect(screen.getByText('System')).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();
 
-		await fireEvent.click(screen.getByRole('button', { name: /系统/ }));
+		await fireEvent.click(screen.getByRole('button', { name: /System/ }));
 		expect(screen.getByText('files.read')).toBeTruthy();
 		expect(screen.getByText('files.search')).toBeTruthy();
+		expect(screen.queryByText('读取文件')).toBeNull();
+		expect(screen.queryByText('搜索文件')).toBeNull();
 		expect(screen.getByRole('switch', { name: '切换工具 files.read' })).toBeTruthy();
 
 		await fireEvent.click(screen.getByRole('switch', { name: '切换工具 files.read' }));

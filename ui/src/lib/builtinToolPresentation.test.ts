@@ -36,7 +36,7 @@ describe('builtin tool presentation', () => {
 		expect(cards[1]).toMatchObject({
 			kind: 'category-group',
 			name: 'system',
-			label: '系统',
+			label: 'System',
 			operations: [filesRead, shell, filesSearch],
 		});
 	});

@@ -88,7 +88,7 @@
 					<article class="operation-item">
 						<div class="operation-header">
 							<div class="operation-info">
-								<div class="operation-name">{operation.label || operation.name}</div>
+								<div class="operation-name">{operation.name}</div>
 								<div class="operation-meta">
 									<StatusBadge
 										label={`风险：${riskLabel(operation.risk)}`}

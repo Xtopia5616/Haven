@@ -52,11 +52,11 @@ function categoryOrder(category: string): number {
 function categoryLabel(category: string): string {
 	return {
 		haven: 'Haven',
-		system: '系统',
+		system: 'System',
 		agent: 'Agent',
-		skills: '技能',
+		skills: 'Skills',
 		mcp: 'MCP',
-		other: '其他',
+		other: 'Other',
 	}[category] || category;
 }
 
