@@ -133,3 +133,50 @@ impl InteractionRequest {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interaction_lifecycle_is_one_shot_and_roundtrips() {
+        let mut request = InteractionRequest::new(
+            "ses-0123456789abcdef0123456789abcdef",
+            InteractionKind::Ask,
+            "Which file should I use?",
+            vec!["step-0123456789abcdef0123456789abcdef".into()],
+        );
+        assert!(request.id.starts_with("step-"));
+        assert_eq!(request.status, InteractionStatus::Pending);
+        assert!(request.resolve(Value::String("notes.md".into())));
+        assert!(!request.resolve(Value::String("other.md".into())));
+        assert_eq!(request.status, InteractionStatus::Resolved);
+        assert_eq!(request.response, Some(Value::String("notes.md".into())));
+
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: InteractionRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, request);
+        assert!(!request.clone().cancel());
+    }
+
+    #[test]
+    fn interaction_cancel_and_expire_are_terminal() {
+        let mut cancelled = InteractionRequest::new(
+            "ses-0123456789abcdef0123456789abcdef",
+            InteractionKind::Confirm,
+            "Allow the operation?",
+            Vec::new(),
+        );
+        assert!(cancelled.cancel());
+        assert!(!cancelled.expire());
+
+        let mut expired = InteractionRequest::new(
+            "ses-0123456789abcdef0123456789abcdef",
+            InteractionKind::ScheduledConfirm,
+            "Allow the scheduled operation?",
+            Vec::new(),
+        );
+        assert!(expired.expire());
+        assert!(!expired.resolve(Value::Bool(true)));
+    }
+}

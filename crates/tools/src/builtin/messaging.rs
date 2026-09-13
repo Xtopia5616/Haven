@@ -1968,6 +1968,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inbox_claim_token_acknowledges_the_exact_claim() {
+        let (_dir, bus, tool) = test_tools();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let message = Envelope::new("ses-b", "ses-a", "durable batch");
+        bus.deliver("ses-a", &message).unwrap();
+
+        let inbox = tool
+            .execute(
+                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(inbox.output["ack_required"], true);
+        let token = inbox.output["claim_token"].as_str().unwrap().to_string();
+        assert!(token.starts_with("claim-"));
+
+        let ack = tool
+            .execute(
+                with_sid(json!({"operation": "ack", "claim_token": token}), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ack.output["acknowledged"], 1);
+        assert_eq!(ack.output["claim_token"], token);
+
+        let inbox = tool
+            .execute(
+                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(inbox.output["count"], 0);
+    }
+
+    #[tokio::test]
     async fn send_validates_field_limits() {
         let (_dir, _bus, tool) = test_tools();
         // Empty text.

@@ -141,6 +141,23 @@ fn schema_is_operation_specific_and_capability_pruned() {
 }
 
 #[test]
+fn ocr_is_not_advertised_without_a_dedicated_ocr_client() {
+    let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000);
+    let schema = tool.input_schema();
+    let operations = schema["properties"]["operation"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(!operations.iter().any(|operation| operation == "ocr"));
+    assert!(
+        tool.validate_input(&json!({
+            "operation": "ocr",
+            "asset_id": "asset-0123456789abcdef0123456789abcdef"
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn schema_rejects_cross_operation_media_arguments() {
     let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000)
         .with_image_gen_client(Some(Arc::new(DummyImageGenClient)))

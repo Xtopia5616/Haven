@@ -3507,4 +3507,79 @@ mod tests {
         let content = tokio::fs::read_to_string(&file).await.unwrap();
         assert_eq!(content, "native content");
     }
+
+    #[tokio::test]
+    async fn atomic_write_supports_dry_run_and_compare_and_swap() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("atomic.txt");
+        tokio::fs::write(&file, b"before").await.unwrap();
+        let path = file.to_string_lossy().to_string();
+        let expected = sha256_bytes(b"before");
+        let tool = FilesTool::default();
+
+        let dry_run = tool
+            .execute(
+                json!({
+                    "operation": "write",
+                    "path": path,
+                    "content": "after",
+                    "expected_hash": expected,
+                    "dry_run": true
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(dry_run.success);
+        assert_eq!(dry_run.output["dry_run"], true);
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "before");
+
+        let mismatch = tool
+            .execute(
+                json!({
+                    "operation": "write",
+                    "path": file.to_string_lossy(),
+                    "content": "after",
+                    "expected_hash": sha256_bytes(b"stale")
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(mismatch.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "before");
+
+        let written = tool
+            .execute(
+                json!({
+                    "operation": "write",
+                    "path": file.to_string_lossy(),
+                    "content": "after",
+                    "expected_hash": expected
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(written.output["written"], true);
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "after");
+    }
+
+    #[tokio::test]
+    async fn inspect_returns_bounded_file_metadata_and_hash() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("inspect.txt");
+        tokio::fs::write(&file, "hello").await.unwrap();
+        let result = FilesTool::default()
+            .execute(
+                json!({"operation": "inspect", "path": file.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["exists"], true);
+        assert_eq!(result.output["file_type"], "file");
+        assert_eq!(result.output["size"], 5);
+        assert_eq!(result.output["hash"], sha256_bytes(b"hello"));
+        assert_eq!(result.output["encoding"], "utf-8");
+    }
 }
