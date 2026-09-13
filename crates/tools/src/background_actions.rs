@@ -5,6 +5,8 @@ use std::time::Duration;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::Instrument;
 
+use crate::ActionLifecycle;
+
 fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
     lock.lock().unwrap_or_else(|poisoned| {
         tracing::error!(
@@ -45,28 +47,9 @@ pub struct BackgroundActionCompletion {
 ///   JSON, which already carries `action_id`, `status`, and the output/error
 ///   payload)
 ///
-/// Shared by the scheduled-action registry (`action:created` / `action:finished`
-/// / `action:updated`), which uses the same callback shape.
-pub type EventSink = Arc<dyn Fn(String, serde_json::Value) + Send + Sync>;
-
-/// Shared storage + forwarding for the UI event sink, used identically by
-/// `BackgroundActions` and the scheduled-action registry. Keeps the sink behind a
-/// `Mutex<Option<_>>` so `set_event_sink` can be called once from the desktop
-/// shell and `emit` is a no-op before that.
-#[derive(Default)]
-pub(crate) struct EventSinkState(Mutex<Option<EventSink>>);
-
-impl EventSinkState {
-    pub(crate) fn set(&self, sink: EventSink) {
-        *lock_or_recover(&self.0, "event_sink") = Some(sink);
-    }
-
-    pub(crate) fn emit(&self, event: &str, payload: Value) {
-        if let Some(sink) = lock_or_recover(&self.0, "event_sink").as_ref() {
-            sink(event.to_string(), payload);
-        }
-    }
-}
+/// Shared by the scheduled-action registry (`action:created` /
+/// `action:finished` / `action:updated`), which uses the same callback shape.
+pub use crate::action_lifecycle::EventSink;
 
 #[derive(Clone, Debug)]
 enum BackgroundActionState {
@@ -180,7 +163,7 @@ pub struct BackgroundActions {
     terminal_job_ttl: RwLock<Duration>,
     /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
     /// to forward lifecycle events as Tauri events.
-    event_sink: EventSinkState,
+    event_sink: ActionLifecycle,
     /// Persistent store; `None` in headless/test builds (in-memory only).
     /// Terminal action rows stay here as history even after the in-memory board
     /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
@@ -205,14 +188,14 @@ impl BackgroundActions {
             job_tail_max_chars: RwLock::new(2000),
             job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
             terminal_job_ttl: RwLock::new(Duration::from_secs(600)),
-            event_sink: EventSinkState::default(),
+            event_sink: ActionLifecycle::default(),
             db: RwLock::new(None),
         }
     }
 
     /// Install the UI event sink (called once by the desktop shell).
     pub fn set_event_sink(&self, sink: EventSink) {
-        self.event_sink.set(sink);
+        self.event_sink.set_event_sink(sink);
     }
 
     /// Forward a lifecycle event to the installed sink (no-op without one).

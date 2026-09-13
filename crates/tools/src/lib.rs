@@ -1,3 +1,4 @@
+mod action_lifecycle;
 pub mod adapters;
 mod asset_registry;
 mod background_actions;
@@ -24,7 +25,7 @@ use haven_common::types::{MessageAttachment, PermissionMode, RiskLevel, ShellCho
 use haven_llm::{EndpointRole, LlmRouter};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -42,6 +43,31 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
         .unwrap_or(true)
 }
 
+#[derive(Debug, Clone, Default)]
+enum CatalogRebuildScope {
+    #[default]
+    All,
+    Roots(HashSet<String>),
+}
+
+impl CatalogRebuildScope {
+    fn roots(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self::Roots(names.into_iter().map(Into::into).collect())
+    }
+
+    fn affects(&self, name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Roots(roots) => {
+                let root = name.split('.').next().unwrap_or(name);
+                roots.contains(root)
+                    || (name.starts_with("skill__") && roots.contains("skills"))
+                    || (name.starts_with("mcp__") && roots.contains("mcp"))
+            }
+        }
+    }
+}
+
 /// Live capabilities that affect both the model-facing operation schemas and
 /// the runtime snapshot. These values describe usable routes, not merely
 /// configured model slots.
@@ -56,9 +82,9 @@ pub struct RuntimeCapabilities {
     pub web_search: String,
 }
 
+pub(crate) use action_lifecycle::{ActionLifecycle, EventSinkState};
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
-pub(crate) use background_actions::EventSinkState;
 pub use background_actions::{BackgroundActionCompletion, BackgroundActions, EventSink};
 pub use builtin::{
     AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentSpawnRequest,
@@ -74,7 +100,8 @@ pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, 
 pub use live_output::LiveOutputHub;
 pub use messaging_service::{MessageClaim, MessageTransport, MessagingService};
 pub use output::{
-    append_windows_diagnostics, is_progress_clixml, sanitize_shell_output, summarize_error,
+    OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
+    sanitize_shell_output, summarize_error,
 };
 pub(crate) use process::{read_stream_capped, take_tail_if_changed};
 pub use registry::{RegistryProbe, SessionCatalog, ToolRegistry};
@@ -90,10 +117,11 @@ pub use shell_runtime::{
 };
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
-    OperationIdempotency, Tool, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef,
-    ToolErrorClass, ToolExecutionOutcome, ToolLlmUsage, ToolOperationMetadata, ToolOperationScope,
-    ToolRegistration, ToolResult, ToolSignals, TypedToolAdapter, TypedToolOperation,
-    extract_ask_signal, extract_notify_signal, is_silent_action, parse_tool_input,
+    OperationIdempotency, StructuredToolError, Tool, ToolBox, ToolCancellationPolicy,
+    ToolConcurrency, ToolDef, ToolErrorClass, ToolErrorMetadata, ToolExecutionOutcome,
+    ToolLlmUsage, ToolOperationMetadata, ToolOperationScope, ToolRegistration, ToolResult,
+    ToolRetryability, ToolSignals, TypedToolAdapter, TypedToolOperation, extract_ask_signal,
+    extract_notify_signal, is_silent_action, parse_tool_input,
 };
 
 /// All dependencies needed to install the desktop tool catalog in one pass.
@@ -434,7 +462,8 @@ impl ToolsManager {
     /// `file summary`) pick up the new endpoint config.
     pub async fn set_router(&self, router: Arc<LlmRouter>) {
         *self.router.write().await = Some(router);
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files"]))
+            .await;
     }
 
     /// Replace the router and media clients together during a live settings
@@ -455,7 +484,8 @@ impl ToolsManager {
         *self.image_gen_client.write().await = image_gen_client;
         *self.tts_client.write().await = tts_client;
         *self.media_config.write().await = media_config;
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files", "window"]))
+            .await;
     }
 
     /// Apply cold-start wiring in one pass and rebuild the catalog once.
@@ -504,7 +534,7 @@ impl ToolsManager {
             .set_db(admin_context.db.clone())
             .await;
         *self.self_context.write().await = Some(admin_context);
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
     /// Wire the app-level context for the native admin surface. Called by the
@@ -516,13 +546,25 @@ impl ToolsManager {
         self.scheduled_actions.set_db(ctx.db.clone()).await;
         self.background_actions.set_db(ctx.db.clone()).await;
         *self.self_context.write().await = Some(ctx);
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
+        let affected = {
+            let current = self.tool_settings.read().await;
+            current
+                .keys()
+                .chain(settings.keys())
+                .filter(|name| current.get(*name) != settings.get(*name))
+                .map(|name| name.split('.').next().unwrap_or(name).to_string())
+                .collect::<HashSet<_>>()
+        };
         *self.tool_settings.write().await = settings.clone();
         self.authorization.set_tool_settings(settings).await;
-        self.rebuild_catalog().await;
+        if !affected.is_empty() {
+            self.rebuild_catalog_scoped(CatalogRebuildScope::Roots(affected))
+                .await;
+        }
     }
 
     /// The native admin surface, when the desktop shell wired the app
@@ -544,7 +586,11 @@ impl ToolsManager {
             .or_insert_with(ToolConfig::default)
             .enabled = enabled;
         drop(settings);
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::roots([name
+            .split('.')
+            .next()
+            .unwrap_or(name)]))
+            .await;
     }
 
     /// Replace the unified context limits (global tool output cap etc.) and
@@ -556,14 +602,15 @@ impl ToolsManager {
         self.live_outputs.set_limits(&limits).await;
         self.scheduled_actions.set_limits(&limits).await;
         *self.context_limits.write().await = limits;
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
     /// Replace the default shell for the `shell` tool and rebuild the catalog
     /// so the running agent picks up the new value on its next step.
     pub async fn set_default_shell(&self, shell: ShellChoice) {
         *self.default_shell.write().await = shell;
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["shell"]))
+            .await;
     }
 
     /// Snapshot the shell default used by the model-facing `shell` tool.
@@ -636,7 +683,8 @@ impl ToolsManager {
     /// update. A disabled or failed client is represented by `None`.
     pub async fn set_tts_client(&self, client: Option<Arc<dyn haven_llm::TtsClient>>) {
         *self.tts_client.write().await = client;
-        self.rebuild_catalog().await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media"]))
+            .await;
     }
 
     pub async fn load_mcp_from_config(&self, servers: &[haven_common::McpServerConfig]) {
@@ -678,7 +726,21 @@ impl ToolsManager {
     /// registered per-session. Enabled skills are ordinary global tools and
     /// are rebuilt into the catalog from the live skills index.
     pub async fn rebuild_catalog(&self) {
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+    }
+
+    /// Rebuild only the runtime instances affected by a live wiring change.
+    /// The registration pass emits the current static operation set and live
+    /// capability views. Unchanged runtime instances are retained by name so
+    /// a scoped update does not tear down unrelated providers or action
+    /// adapters.
+    async fn rebuild_catalog_scoped(&self, scope: CatalogRebuildScope) {
         let mut all_tools: Vec<ToolBox> = Vec::new();
+        let previous_tools = self.all_builtin_tools.read().await.clone();
+        let previous_by_name: HashMap<String, ToolBox> = previous_tools
+            .into_iter()
+            .map(|tool| (tool.name(), tool))
+            .collect();
 
         // Register builtin tools, including capability-scoped progressive
         // loaders when an enabled skill/MCP source is actually available.
@@ -694,36 +756,51 @@ impl ToolsManager {
         let tts_client = self.tts_client.read().await.clone();
         let self_tool_arc = builtin::register_builtin_tools(
             &mut all_tools,
-            &self.skills_engine,
-            &self.skill_runner,
-            &Arc::new(self.mcp_manager.clone()),
-            &self.mcp_server_configs,
-            router,
-            self.background_actions.clone(),
-            self.live_outputs.clone(),
-            self.scheduled_actions.clone(),
-            self_context,
-            self.registry.clone(),
-            self.clipboard_history.clone(),
-            &settings,
-            &limits,
-            *self.default_shell.read().await,
-            audio_pipeline,
-            stt_client,
-            ocr_client,
-            image_gen_client,
-            tts_client,
-            media_config,
-            self.session_catalog.clone(),
-            self.agent_spawner.clone(),
-            self.memory_recall.clone(),
-            self.managed_assets.clone(),
+            builtin::BuiltinContext {
+                skills_engine: self.skills_engine.clone(),
+                skill_runner: self.skill_runner.clone(),
+                mcp_manager: Arc::new(self.mcp_manager.clone()),
+                server_configs: self.mcp_server_configs.clone(),
+                registry: self.registry.clone(),
+                session_catalog: self.session_catalog.clone(),
+                settings: settings.clone(),
+                limits: limits.clone(),
+                default_shell: *self.default_shell.read().await,
+                clipboard_history: self.clipboard_history.clone(),
+                self_context,
+                agent_spawner: self.agent_spawner.clone(),
+                memory_recall: self.memory_recall.clone(),
+                managed_assets: self.managed_assets.clone(),
+                media: builtin::MediaDeps {
+                    router,
+                    audio_pipeline,
+                    stt_client,
+                    ocr_client,
+                    image_gen_client,
+                    tts_client,
+                    config: media_config,
+                },
+                actions: builtin::ActionDeps {
+                    background: self.background_actions.clone(),
+                    live_outputs: self.live_outputs.clone(),
+                    scheduled: self.scheduled_actions.clone(),
+                },
+            },
         )
         .await;
-        *self.admin_surface.write().await = self_tool_arc;
 
         // Keep the full list (enabled + disabled) for the UI, and exclude
         // disabled tools from the registry the agent sees.
+        let all_tools: Vec<ToolBox> = all_tools
+            .into_iter()
+            .map(|tool| {
+                if scope.affects(&tool.name()) {
+                    tool
+                } else {
+                    previous_by_name.get(&tool.name()).cloned().unwrap_or(tool)
+                }
+            })
+            .collect();
         let enabled_tools: Vec<ToolBox> = all_tools
             .iter()
             .filter(|t| tool_config_enabled(&settings, &t.name()))
@@ -731,8 +808,15 @@ impl ToolsManager {
             .collect();
         drop(settings);
 
+        if let Err(error) = self.registry.rebuild(enabled_tools).await {
+            // Keep the previous atomic snapshot on a construction conflict.
+            // A partial catalog is more dangerous than a stale one because it
+            // can make authorization and execution disagree about a name.
+            tracing::error!(error = %error, "builtin catalog rebuild rejected");
+            return;
+        }
         *self.all_builtin_tools.write().await = all_tools;
-        self.registry.rebuild(enabled_tools).await;
+        *self.admin_surface.write().await = self_tool_arc;
         self.session_catalog.bump_global_version();
     }
 
@@ -1057,21 +1141,36 @@ impl ToolsManager {
     ) -> anyhow::Result<ToolResult> {
         if !self.tool_circuits.allow_request(tool_name) {
             tracing::warn!("tool '{}' circuit breaker open — fast-failing", tool_name);
-            anyhow::bail!(
-                "tool '{}' is temporarily unavailable (circuit breaker open)",
-                tool_name
-            );
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                format!(
+                    "tool '{}' is temporarily unavailable (circuit breaker open)",
+                    tool_name
+                ),
+                ToolErrorMetadata::transient(),
+            )));
         }
 
         if !self.tool_enabled(tool_name).await {
             tracing::warn!("tool '{}' is disabled", tool_name);
-            anyhow::bail!("tool '{}' is disabled", tool_name);
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                format!("tool '{}' is disabled", tool_name),
+                ToolErrorMetadata {
+                    class: ToolErrorClass::Permission,
+                    outcome: ToolExecutionOutcome::Failed,
+                    retryability: ToolRetryability::NotRetryable,
+                },
+            )));
         }
 
         let tool = self
             .get_tool_for_session(session_id, tool_name)
             .await
-            .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
+            .ok_or_else(|| {
+                anyhow::Error::new(StructuredToolError::new(
+                    format!("tool '{}' not found in registry", tool_name),
+                    ToolErrorMetadata::other(),
+                ))
+            })?;
 
         // Private fields (`_session_id` / `_step_id` / `_idempotency_key`) are never trusted from
         // the LLM or scheduled tool_args: always strip first, validate the
@@ -1161,7 +1260,6 @@ impl ToolsManager {
                 Ok(result) => result,
                 Err(e) => {
                     let message = e.to_string();
-                    let lower = message.to_ascii_lowercase();
                     // Cancellation is a control-plane fact owned by the
                     // token, not a substring in an arbitrary tool error. A
                     // normal tool failure such as "cancelled request was
@@ -1169,14 +1267,9 @@ impl ToolsManager {
                     // treat it as an externally cancelled run.
                     if cancel.is_cancelled() {
                         ToolResult::cancelled(message)
-                    } else if lower.contains("timeout") || lower.contains("timed out") {
-                        ToolResult::timed_out(tool.timeout_outcome(), message)
                     } else {
-                        ToolResult::failed_with_class(
-                            Value::Null,
-                            message.clone(),
-                            classify_tool_error(&message),
-                        )
+                        let metadata = tool.error_metadata(&e);
+                        ToolResult::failed_with_metadata(Value::Null, message.clone(), metadata)
                     }
                 }
             };
@@ -1309,7 +1402,7 @@ impl ToolsManager {
             })
             .and_then(|config| config.max_output_chars)
             .unwrap_or(limits.max_observation_chars);
-        result.observation_text(cap)
+        OutputBudget::new(cap).observe(result)
     }
 }
 
@@ -1344,11 +1437,16 @@ fn annotate_retry_safety(result: &mut ToolResult, idempotency: OperationIdempote
                     Value::String(error_class.as_str().into()),
                 );
             }
+            object.insert(
+                "retryability".into(),
+                Value::String(result.retryability.as_str().into()),
+            );
         }
         output => {
             let previous = std::mem::replace(output, Value::Null);
             *output = serde_json::json!({
                 "retry_safety": retry_safety,
+                "retryability": result.retryability.as_str(),
                 "output": previous,
             });
         }
@@ -1383,57 +1481,7 @@ fn retryable_result(result: &ToolResult) -> bool {
     ) {
         return false;
     }
-    result.error_class == Some(ToolErrorClass::Transient)
-}
-
-/// Classify adapter/typed-tool errors once at the tools boundary. The agent
-/// consumes the resulting enum and never needs to infer policy from prose.
-fn classify_tool_error(error: &str) -> ToolErrorClass {
-    let lower = error.to_ascii_lowercase();
-    if [
-        "input validation failed",
-        "missing required",
-        "invalid tool input",
-        "unknown variant",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-    {
-        return ToolErrorClass::Validation;
-    }
-    if [
-        "permission",
-        "blocked",
-        "denied",
-        "disabled",
-        "not authorized",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-    {
-        return ToolErrorClass::Permission;
-    }
-    if [
-        "connection",
-        "timed out",
-        "timeout",
-        "temporarily unavailable",
-        "service unavailable",
-        "too many requests",
-        "rate limit",
-        "status 429",
-        "status 502",
-        "status 503",
-        "status 504",
-        "network is unreachable",
-        "eof",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-    {
-        return ToolErrorClass::Transient;
-    }
-    ToolErrorClass::Other
+    result.retryability == crate::ToolRetryability::Retryable
 }
 
 #[cfg(test)]
@@ -1461,6 +1509,58 @@ mod tests {
         let mgr = ToolsManager::new();
         let tools = mgr.registry.list().await;
         assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoped_catalog_rebuild_reuses_unaffected_runtime_instances() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        let ask_before = mgr.registry.get("ask").await.unwrap();
+        let shell_before = mgr.registry.get("shell").await.unwrap();
+
+        mgr.set_default_shell(ShellChoice::default()).await;
+
+        let ask_after = mgr.registry.get("ask").await.unwrap();
+        let shell_after = mgr.registry.get("shell").await.unwrap();
+        assert!(Arc::ptr_eq(&ask_before, &ask_after));
+        assert!(!Arc::ptr_eq(&shell_before, &shell_after));
+    }
+
+    #[tokio::test]
+    async fn manager_control_plane_errors_preserve_structured_metadata() {
+        let mgr = ToolsManager::new();
+        let missing = mgr
+            .execute_tool(None, "missing", json!({}), CancellationToken::new())
+            .await
+            .expect_err("missing tool must fail");
+        let missing_metadata = missing
+            .downcast_ref::<StructuredToolError>()
+            .expect("missing tool error must carry metadata")
+            .metadata();
+        assert_eq!(missing_metadata, ToolErrorMetadata::other());
+
+        mgr.set_tool_settings(HashMap::from([(
+            "ask".into(),
+            ToolConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        )]))
+        .await;
+        let disabled = mgr
+            .execute_tool(None, "ask", json!({}), CancellationToken::new())
+            .await
+            .expect_err("disabled tool must fail");
+        let disabled_metadata = disabled
+            .downcast_ref::<StructuredToolError>()
+            .expect("disabled tool error must carry metadata")
+            .metadata();
+        assert_eq!(disabled_metadata.class, ToolErrorClass::Permission);
+        assert_eq!(disabled_metadata.outcome, ToolExecutionOutcome::Failed);
+        assert_eq!(
+            disabled_metadata.retryability,
+            ToolRetryability::NotRetryable
+        );
     }
 
     #[tokio::test]
@@ -1513,7 +1613,7 @@ mod tests {
         }
 
         let mgr = ToolsManager::new();
-        mgr.registry.register(Arc::new(StrictTool)).await;
+        mgr.registry.register(Arc::new(StrictTool)).await.unwrap();
         let result = mgr
             .execute_tool_with_step(
                 None,
@@ -1821,7 +1921,8 @@ mod tests {
                 name: "failing".into(),
                 call_count: call_count.clone(),
             }))
-            .await;
+            .await
+            .unwrap();
 
         for i in 0..5 {
             let r = mgr
@@ -1869,6 +1970,9 @@ mod tests {
             fn idempotency(&self, _: &Value) -> OperationIdempotency {
                 OperationIdempotency::Idempotent
             }
+            fn error_metadata(&self, _: &anyhow::Error) -> ToolErrorMetadata {
+                ToolErrorMetadata::transient()
+            }
             fn input_schema(&self) -> Value {
                 json!({"type": "object"})
             }
@@ -1899,7 +2003,8 @@ mod tests {
             .register(Arc::new(FlakyTool {
                 attempts: attempts.clone(),
             }))
-            .await;
+            .await
+            .unwrap();
 
         let result = mgr
             .execute_tool(None, "flaky", json!({}), CancellationToken::new())
@@ -1945,7 +2050,10 @@ mod tests {
             },
         )]))
         .await;
-        mgr.registry.register(Arc::new(SlowIntrinsicTool)).await;
+        mgr.registry
+            .register(Arc::new(SlowIntrinsicTool))
+            .await
+            .unwrap();
 
         let result = mgr
             .execute_tool(None, "slow_intrinsic", json!({}), CancellationToken::new())
@@ -1983,6 +2091,9 @@ mod tests {
             fn default_retry_backoff_secs(&self) -> u64 {
                 0
             }
+            fn error_metadata(&self, _: &anyhow::Error) -> ToolErrorMetadata {
+                ToolErrorMetadata::transient()
+            }
             fn input_schema(&self) -> Value {
                 json!({"type": "object"})
             }
@@ -2008,7 +2119,8 @@ mod tests {
             .register(Arc::new(IntrinsicRetryTool {
                 attempts: attempts.clone(),
             }))
-            .await;
+            .await
+            .unwrap();
 
         let result = mgr
             .execute_tool(None, "intrinsic_retry", json!({}), CancellationToken::new())

@@ -108,34 +108,88 @@ fn tool_output_cap(
         .unwrap_or(default_cap)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Provider and host dependencies used by media producers/consumers. Media
+/// tools are rebuilt as one generation so a settings update cannot combine a
+/// new router with stale specialized clients.
+pub struct MediaDeps {
+    pub router: Option<Arc<haven_llm::LlmRouter>>,
+    pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    pub ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
+    pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
+    pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
+    pub config: haven_common::config::MediaConfig,
+}
+
+/// Long-running action dependencies. Background processes and scheduled
+/// timers intentionally remain separate implementations, but share their
+/// registries and event/output plumbing through this group.
+pub struct ActionDeps {
+    pub background: Arc<BackgroundActions>,
+    pub live_outputs: Arc<crate::live_output::LiveOutputHub>,
+    pub scheduled: Arc<ScheduledActionCenter>,
+}
+
+/// Complete dependency object for constructing the builtin catalog. Keeping
+/// this boundary as a value object makes additions explicit and prevents the
+/// constructor from growing another positional argument.
+pub struct BuiltinContext {
+    pub skills_engine: SkillsEngine,
+    pub skill_runner: Arc<RwLock<SkillRunner>>,
+    pub mcp_manager: Arc<McpManager>,
+    pub server_configs: Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
+    pub registry: ToolRegistry,
+    pub session_catalog: SessionCatalog,
+    pub settings: HashMap<String, haven_common::config::ToolConfig>,
+    pub limits: haven_common::config::ContextLimitsConfig,
+    pub default_shell: haven_common::types::ShellChoice,
+    pub clipboard_history: Arc<clipboard::ClipboardHistory>,
+    pub self_context: Option<SelfToolContext>,
+    pub agent_spawner: messaging::AgentSpawnerSlot,
+    pub memory_recall: memory::MemoryRecallSlot,
+    pub managed_assets: crate::ManagedAssetRegistry,
+    pub media: MediaDeps,
+    pub actions: ActionDeps,
+}
+
 pub async fn register_builtin_tools(
     tools: &mut Vec<ToolBox>,
-    skills_engine: &SkillsEngine,
-    skill_runner: &Arc<RwLock<SkillRunner>>,
-    mcp_manager: &Arc<McpManager>,
-    server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
-    router: Option<Arc<haven_llm::LlmRouter>>,
-    background_actions: Arc<BackgroundActions>,
-    live_outputs: Arc<crate::live_output::LiveOutputHub>,
-    scheduled_actions: Arc<ScheduledActionCenter>,
-    self_context: Option<SelfToolContext>,
-    registry: ToolRegistry,
-    clipboard_history: Arc<clipboard::ClipboardHistory>,
-    settings: &HashMap<String, haven_common::config::ToolConfig>,
-    limits: &haven_common::config::ContextLimitsConfig,
-    default_shell: haven_common::types::ShellChoice,
-    audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
-    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
-    ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
-    image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
-    tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
-    media_config: haven_common::config::MediaConfig,
-    session_catalog: SessionCatalog,
-    agent_spawner: messaging::AgentSpawnerSlot,
-    memory_recall: memory::MemoryRecallSlot,
-    managed_assets: crate::ManagedAssetRegistry,
+    context: BuiltinContext,
 ) -> Option<Arc<self_tool::SelfTool>> {
+    let BuiltinContext {
+        skills_engine,
+        skill_runner,
+        mcp_manager,
+        server_configs,
+        registry,
+        session_catalog,
+        settings,
+        limits,
+        default_shell,
+        clipboard_history,
+        self_context,
+        agent_spawner,
+        memory_recall,
+        managed_assets,
+        media:
+            MediaDeps {
+                router,
+                audio_pipeline,
+                stt_client,
+                ocr_client,
+                image_gen_client,
+                tts_client,
+                config: media_config,
+            },
+        actions:
+            ActionDeps {
+                background: background_actions,
+                live_outputs,
+                scheduled: scheduled_actions,
+            },
+    } = context;
+    let settings = &settings;
+    let limits = &limits;
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     let (vision_available, transcribe_available) =
         resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
@@ -154,7 +208,7 @@ pub async fn register_builtin_tools(
         .await
         .values()
         .any(|server| server.enabled);
-    tools.push(Arc::new(ask::AskTool));
+    tools.push(Arc::new(ask::typed_adapter()));
     // One media runtime serves every producer/consumer boundary. `files` and
     // `window` only create assets; interpretation and generation always land
     // in this same instance and therefore share provider routing, limits,
@@ -269,7 +323,7 @@ pub async fn register_builtin_tools(
             .map(|config| config.allowed_domains.clone())
             .unwrap_or_default(),
     }));
-    tools.push(Arc::new(notify::NotifyTool));
+    tools.push(Arc::new(notify::typed_adapter()));
     // Cross-session messaging / peer collab: one aggregate implementation over
     // the shared file bus, exposed to the model as operation views. Agents
     // lazily register on first call; spawn needs the desktop-wired spawner

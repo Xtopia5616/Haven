@@ -3,7 +3,10 @@ use haven_common::types::RiskLevel;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{
+    StructuredToolError, Tool, ToolCancellationPolicy, ToolConcurrency, ToolErrorMetadata,
+    ToolOperationMetadata, ToolOperationScope, ToolResult, TypedToolOperation,
+};
 
 const MAX_TITLE_CHARS: usize = 120;
 const MAX_BODY_CHARS: usize = 4_000;
@@ -65,6 +68,79 @@ impl NotifyTool {
             "delivered_to": ["in_app", "windows"],
         })))
     }
+}
+
+#[async_trait]
+impl TypedToolOperation for NotifyTool {
+    type Args = NotifyParams;
+    type Output = Value;
+    type Error = StructuredToolError;
+
+    fn metadata(&self, _args: &Self::Args) -> ToolOperationMetadata {
+        self.default_metadata()
+    }
+
+    fn default_metadata(&self) -> ToolOperationMetadata {
+        ToolOperationMetadata {
+            capability: "notify",
+            operation: "notify",
+            scope: ToolOperationScope::Session,
+            risk_level: RiskLevel::Safe,
+            idempotency: crate::OperationIdempotency::NonIdempotent,
+            cancellation: ToolCancellationPolicy::Cooperative,
+            timeout_secs: 30,
+            concurrency: ToolConcurrency::Exclusive,
+        }
+    }
+
+    fn input_schema(&self) -> Value {
+        <Self as Tool>::input_schema(self)
+    }
+
+    fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
+        let (title, body) = crate::extract_notify_signal(output);
+        crate::tool_contract::ToolSignals {
+            notify_title: title,
+            notify_body: body,
+            ..Default::default()
+        }
+    }
+
+    fn error_metadata(&self, error: &Self::Error) -> ToolErrorMetadata {
+        error.metadata()
+    }
+
+    async fn execute_typed(
+        &self,
+        args: Self::Args,
+        cancel: CancellationToken,
+    ) -> Result<Self::Output, Self::Error> {
+        self.run(args, cancel.clone())
+            .await
+            .map(|result| result.output)
+            .map_err(|error| {
+                StructuredToolError::new(
+                    error.to_string(),
+                    if cancel.is_cancelled() {
+                        ToolErrorMetadata {
+                            class: crate::ToolErrorClass::UnknownOutcome,
+                            outcome: crate::ToolExecutionOutcome::Cancelled,
+                            retryability: crate::ToolRetryability::Unknown,
+                        }
+                    } else {
+                        ToolErrorMetadata::validation()
+                    },
+                )
+            })
+    }
+}
+
+pub fn typed_adapter() -> crate::TypedToolAdapter<NotifyTool> {
+    crate::TypedToolAdapter::new(
+        "notify",
+        "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use media.speak for spoken content, not notify.",
+        NotifyTool,
+    )
 }
 
 #[async_trait]
@@ -143,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_notify_schema_requires_body() {
-        let schema = NotifyTool.input_schema();
+        let schema = <NotifyTool as Tool>::input_schema(&NotifyTool);
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "body"));
         assert_eq!(schema["additionalProperties"], false);

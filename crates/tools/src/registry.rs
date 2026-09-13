@@ -41,17 +41,25 @@ impl ToolRegistry {
         }
     }
 
-    /// Current registry version. Bumps on every `register`/`rebuild`.
+    /// Current registry version. Bumps on every successful `register`/`rebuild`.
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)
     }
 
-    pub async fn register(&self, tool: ToolBox) {
+    /// Register a new tool name. Names are unique in a registry snapshot;
+    /// callers that intentionally replace an implementation must use
+    /// [`Self::replace`] so an accidental duplicate cannot leave a stale tool
+    /// in the ordered list.
+    pub async fn register(&self, tool: ToolBox) -> anyhow::Result<()> {
         let name = tool.name();
         let mut snap = self.snapshot.write().await;
+        if snap.name_index.contains_key(&name) {
+            anyhow::bail!("tool '{}' is already registered", name);
+        }
         snap.tools.push(tool.clone());
         snap.name_index.insert(name, tool);
         self.version.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     pub async fn get(&self, name: &str) -> Option<ToolBox> {
@@ -79,16 +87,20 @@ impl ToolRegistry {
 
     /// Atomically rebuild the entire registry from a list of tools.
     /// Uses a single write lock so readers see a consistent snapshot.
-    pub async fn rebuild(&self, new_tools: Vec<ToolBox>) {
+    pub async fn rebuild(&self, new_tools: Vec<ToolBox>) -> anyhow::Result<()> {
         let mut index = HashMap::new();
         for t in &new_tools {
-            index.insert(t.name(), t.clone());
+            let name = t.name();
+            if index.insert(name.clone(), t.clone()).is_some() {
+                anyhow::bail!("duplicate tool '{}' in registry rebuild", name);
+            }
         }
         let mut snap = self.snapshot.write().await;
         snap.tools = new_tools;
         snap.name_index = index;
         drop(snap);
         self.version.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Non-owning probe into the current snapshot (see [`RegistryProbe`]).
@@ -273,7 +285,7 @@ mod tests {
     async fn test_registry_register_and_get() {
         let registry = ToolRegistry::new();
         let tool = Arc::new(MockTool::new("mock1"));
-        registry.register(tool).await;
+        registry.register(tool).await.unwrap();
 
         let fetched = registry.get("mock1").await;
         assert!(fetched.is_some());
@@ -290,8 +302,14 @@ mod tests {
     #[tokio::test]
     async fn test_registry_list_multiple() {
         let registry = ToolRegistry::new();
-        registry.register(Arc::new(MockTool::new("a"))).await;
-        registry.register(Arc::new(MockTool::new("b"))).await;
+        registry
+            .register(Arc::new(MockTool::new("a")))
+            .await
+            .unwrap();
+        registry
+            .register(Arc::new(MockTool::new("b")))
+            .await
+            .unwrap();
 
         let tools = registry.list().await;
         assert_eq!(tools.len(), 2);
@@ -307,7 +325,10 @@ mod tests {
     #[tokio::test]
     async fn test_registry_list_schemas() {
         let registry = ToolRegistry::new();
-        registry.register(Arc::new(MockTool::new("mock"))).await;
+        registry
+            .register(Arc::new(MockTool::new("mock")))
+            .await
+            .unwrap();
 
         let schemas = registry.list_schemas().await;
         assert_eq!(schemas.len(), 1);
@@ -319,7 +340,10 @@ mod tests {
     #[tokio::test]
     async fn test_registry_list_defs_structured() {
         let registry = ToolRegistry::new();
-        registry.register(Arc::new(MockTool::new("mock"))).await;
+        registry
+            .register(Arc::new(MockTool::new("mock")))
+            .await
+            .unwrap();
 
         let defs = registry.list_defs().await;
         assert_eq!(defs.len(), 1);
@@ -343,12 +367,46 @@ mod tests {
     async fn test_registry_rebuild() {
         let registry = ToolRegistry::new();
         let old_tool = Arc::new(MockTool::new("old"));
-        registry.register(old_tool).await;
+        registry.register(old_tool).await.unwrap();
 
         let new_tool = Arc::new(MockTool::new("new"));
-        registry.rebuild(vec![new_tool.clone()]).await;
+        registry.rebuild(vec![new_tool.clone()]).await.unwrap();
 
         assert!(registry.get("old").await.is_none());
         assert!(registry.get("new").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_registry_rejects_duplicate_names_without_shadowing() {
+        let registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(MockTool::new("same")))
+            .await
+            .unwrap();
+        let error = registry
+            .register(Arc::new(MockTool::new("same")))
+            .await
+            .expect_err("duplicate registration must be explicit");
+        assert!(error.to_string().contains("already registered"));
+        assert_eq!(registry.list().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_registry_rebuild_rejects_duplicate_names_atomically() {
+        let registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(MockTool::new("old")))
+            .await
+            .unwrap();
+        let error = registry
+            .rebuild(vec![
+                Arc::new(MockTool::new("new")),
+                Arc::new(MockTool::new("new")),
+            ])
+            .await
+            .expect_err("duplicate rebuild must be explicit");
+        assert!(error.to_string().contains("duplicate tool"));
+        assert!(registry.get("old").await.is_some());
+        assert!(registry.get("new").await.is_none());
     }
 }

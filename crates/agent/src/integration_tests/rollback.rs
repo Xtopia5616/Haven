@@ -684,7 +684,8 @@ async fn rollback_while_ask_wait_clears_awaiting_answer_gate() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
             text: Some("Need a choice.".into()),
@@ -753,11 +754,13 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
     tools
         .registry
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     tools
         .registry
         .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("Running both.".into()),
@@ -853,7 +856,8 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
             text: Some("Need a choice.".into()),

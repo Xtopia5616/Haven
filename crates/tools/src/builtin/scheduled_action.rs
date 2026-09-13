@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::registry::RegistryProbe;
-use crate::{BackgroundActions, EventSink, EventSinkState};
+use crate::{ActionLifecycle, BackgroundActions, EventSink};
 use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// What happens when a scheduled_action fires.
@@ -134,7 +134,7 @@ pub struct ScheduledActionCenter {
     max_due_horizon_secs: RwLock<i64>,
     /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
     /// to forward lifecycle events as Tauri events.
-    event_sink: EventSinkState,
+    event_sink: ActionLifecycle,
     /// Background-action registry for `watch_action_id` scheduled_actions (polled for a
     /// terminal state). Wired by the tools manager; `None` in headless/test
     /// builds where action-watch scheduled_actions are rejected.
@@ -158,7 +158,7 @@ impl ScheduledActionCenter {
             db: RwLock::new(None),
             max_scheduled_actions: RwLock::new(32),
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
-            event_sink: EventSinkState::default(),
+            event_sink: ActionLifecycle::default(),
             actions: Mutex::new(None),
         }
     }
@@ -171,7 +171,7 @@ impl ScheduledActionCenter {
 
     /// Install the UI event sink (called once by the desktop shell).
     pub fn set_event_sink(&self, sink: EventSink) {
-        self.event_sink.set(sink);
+        self.event_sink.set_event_sink(sink);
     }
 
     /// Forward a lifecycle event to the installed sink (no-op without one).
@@ -1651,7 +1651,8 @@ mod tests {
                 name: "notify",
                 risk: RiskLevel::Safe,
             }))
-            .await;
+            .await
+            .unwrap();
         let tool = ScheduledActionTool {
             center: Arc::new(ScheduledActionCenter::new()),
             registry: Some(registry.probe()),
@@ -1700,13 +1701,15 @@ mod tests {
                 name: "shell",
                 risk: RiskLevel::High,
             }))
-            .await;
+            .await
+            .unwrap();
         registry
             .register(Arc::new(DummyTool {
                 name: "notify",
                 risk: RiskLevel::Safe,
             }))
-            .await;
+            .await
+            .unwrap();
         let tool = ScheduledActionTool {
             center: Arc::new(ScheduledActionCenter::new()),
             registry: Some(registry.probe()),
@@ -1983,7 +1986,7 @@ mod tests {
 
         // A future scheduled_action (5s out) and an overdue one (already past).
         let future_id = center.set(tool_spec(5, "Future", "later")).await.unwrap();
-        let overdue_id = format!("action-{}", uuid::Uuid::new_v4().simple());
+        let overdue_id = haven_common::types::new_id("act");
         db.save_scheduled_action(
             &overdue_id,
             &(chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339(),

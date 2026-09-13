@@ -1300,7 +1300,8 @@ mod tests {
             .register(std::sync::Arc::new(DummyTool {
                 name: "agent".into(),
             }))
-            .await;
+            .await
+            .unwrap();
         let prompt = builder.build("t", &[]).await;
         assert!(prompt.contains("Cross-session collaboration"));
         assert!(prompt.contains("operation=list"));

@@ -8,11 +8,13 @@ async fn run_session_parallel_tool_execution() {
     tools
         .registry
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     tools
         .registry
         .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("Running both in parallel.".into()),
@@ -91,11 +93,13 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     tools
         .registry
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     tools
         .registry
         .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
             text: Some("Running both in parallel.".into()),

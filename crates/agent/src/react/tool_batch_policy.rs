@@ -7,7 +7,7 @@
 
 use super::*;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_tools::{OperationIdempotency, ToolErrorClass, ToolExecutionOutcome};
+use haven_tools::{OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolRetryability};
 
 /// Failure classification used to shape the post-failure retry nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,12 +30,13 @@ pub(super) struct ToolFailureSignal {
     pub(super) tool_name: String,
     pub(super) tool_input: serde_json::Value,
     pub(super) error_class: ToolErrorClass,
+    pub(super) retryability: ToolRetryability,
     pub(super) tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct ToolRetryBudget {
-    attempts: std::collections::HashMap<(String, String, FailureKind), u8>,
+    attempts: std::collections::HashMap<(String, String, FailureKind, ToolRetryability), u8>,
 }
 
 const MAX_AGENT_RETRIES_PER_FAILURE: u8 = 2;
@@ -49,6 +50,7 @@ impl ToolRetryBudget {
             signal.tool_name.clone(),
             normalize_tool_input(&signal.tool_input),
             failure_kind(signal.error_class),
+            signal.retryability,
         );
         let attempts = self.attempts.entry(key).or_default();
         if *attempts >= MAX_AGENT_RETRIES_PER_FAILURE {
@@ -84,8 +86,10 @@ pub(super) fn is_retryable_failure_outcome(
     outcome: ToolExecutionOutcome,
     idempotency: OperationIdempotency,
     error_class: ToolErrorClass,
+    retryability: ToolRetryability,
 ) -> bool {
     matches!(idempotency, OperationIdempotency::Idempotent)
+        && matches!(retryability, ToolRetryability::Retryable)
         && matches!(error_class, ToolErrorClass::Transient)
         && matches!(
             outcome,
@@ -183,7 +187,9 @@ pub(super) fn failure_kind(error_class: ToolErrorClass) -> FailureKind {
 #[cfg(test)]
 mod tests {
     use super::is_retryable_failure_outcome;
-    use haven_tools::{OperationIdempotency, ToolErrorClass, ToolExecutionOutcome};
+    use haven_tools::{
+        OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolRetryability,
+    };
 
     #[test]
     fn unknown_and_cancelled_outcomes_never_request_retry() {
@@ -191,26 +197,37 @@ mod tests {
             ToolExecutionOutcome::Cancelled,
             OperationIdempotency::Idempotent,
             ToolErrorClass::UnknownOutcome,
+            ToolRetryability::Unknown,
         ));
         assert!(!is_retryable_failure_outcome(
             ToolExecutionOutcome::TimedOutUnknown,
             OperationIdempotency::Idempotent,
             ToolErrorClass::UnknownOutcome,
+            ToolRetryability::Unknown,
         ));
         assert!(is_retryable_failure_outcome(
             ToolExecutionOutcome::Failed,
             OperationIdempotency::Idempotent,
             ToolErrorClass::Transient,
+            ToolRetryability::Retryable,
         ));
         assert!(is_retryable_failure_outcome(
             ToolExecutionOutcome::TimedOutAndTerminated,
             OperationIdempotency::Idempotent,
             ToolErrorClass::Transient,
+            ToolRetryability::Retryable,
+        ));
+        assert!(!is_retryable_failure_outcome(
+            ToolExecutionOutcome::Failed,
+            OperationIdempotency::Idempotent,
+            ToolErrorClass::Transient,
+            ToolRetryability::NotRetryable,
         ));
         assert!(!is_retryable_failure_outcome(
             ToolExecutionOutcome::Failed,
             OperationIdempotency::NonIdempotent,
             ToolErrorClass::Transient,
+            ToolRetryability::Retryable,
         ));
     }
 
@@ -221,6 +238,7 @@ mod tests {
             tool_name: "files".into(),
             tool_input: serde_json::json!({"path":"a.txt", "operation":"read"}),
             error_class: ToolErrorClass::Validation,
+            retryability: ToolRetryability::NotRetryable,
             tool_call_id: Some("call-1".into()),
         };
         assert!(budget.admit(&signal));

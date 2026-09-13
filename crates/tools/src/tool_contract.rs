@@ -36,6 +36,113 @@ pub enum ToolErrorClass {
     Other,
 }
 
+/// Whether replaying a failed invocation is safe after the operation has
+/// returned. This is deliberately separate from [`OperationIdempotency`]:
+/// idempotency describes the operation, while this value describes the
+/// concrete failure that was observed.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRetryability {
+    Retryable,
+    NotRetryable,
+    #[default]
+    Unknown,
+}
+
+impl ToolRetryability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Retryable => "retryable",
+            Self::NotRetryable => "not_retryable",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Complete machine-readable policy for a tool failure. The diagnostic text
+/// remains user/model-facing context; recovery code must consume this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolErrorMetadata {
+    pub class: ToolErrorClass,
+    pub outcome: ToolExecutionOutcome,
+    pub retryability: ToolRetryability,
+}
+
+impl ToolErrorMetadata {
+    pub const fn other() -> Self {
+        Self {
+            class: ToolErrorClass::Other,
+            outcome: ToolExecutionOutcome::Failed,
+            retryability: ToolRetryability::NotRetryable,
+        }
+    }
+
+    pub const fn validation() -> Self {
+        Self {
+            class: ToolErrorClass::Validation,
+            outcome: ToolExecutionOutcome::Failed,
+            retryability: ToolRetryability::NotRetryable,
+        }
+    }
+
+    pub const fn transient() -> Self {
+        Self {
+            class: ToolErrorClass::Transient,
+            outcome: ToolExecutionOutcome::Failed,
+            retryability: ToolRetryability::Retryable,
+        }
+    }
+
+    pub const fn unknown_outcome() -> Self {
+        Self {
+            class: ToolErrorClass::UnknownOutcome,
+            outcome: ToolExecutionOutcome::TimedOutUnknown,
+            retryability: ToolRetryability::Unknown,
+        }
+    }
+
+    pub const fn unknown_failure() -> Self {
+        Self {
+            class: ToolErrorClass::UnknownOutcome,
+            outcome: ToolExecutionOutcome::Failed,
+            retryability: ToolRetryability::Unknown,
+        }
+    }
+}
+
+/// Error wrapper for implementation boundaries that must preserve structured
+/// recovery metadata while keeping the object-safe `Tool::execute` contract as
+/// `anyhow::Result`. The diagnostic is still a string for display, but policy
+/// never needs to inspect it.
+#[derive(Debug)]
+pub struct StructuredToolError {
+    message: String,
+    metadata: ToolErrorMetadata,
+}
+
+impl StructuredToolError {
+    pub fn new(message: impl Into<String>, metadata: ToolErrorMetadata) -> Self {
+        Self {
+            message: message.into(),
+            metadata,
+        }
+    }
+
+    pub fn metadata(&self) -> ToolErrorMetadata {
+        self.metadata
+    }
+}
+
+impl std::fmt::Display for StructuredToolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StructuredToolError {}
+
 impl ToolErrorClass {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -95,6 +202,11 @@ pub struct ToolResult {
     /// Machine-readable failure class. `None` for successful results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_class: Option<ToolErrorClass>,
+    /// Whether this concrete failure may be replayed. `Unknown` is the safe
+    /// default for results constructed by an adapter that cannot prove the
+    /// side-effect state.
+    #[serde(default, skip_serializing_if = "ToolResult::retryability_is_unknown")]
+    pub retryability: ToolRetryability,
     pub truncated: bool,
     #[serde(default)]
     pub outcome: ToolExecutionOutcome,
@@ -221,6 +333,21 @@ pub trait TypedToolOperation: Send + Sync {
     fn default_metadata(&self) -> ToolOperationMetadata;
     fn input_schema(&self) -> Value;
 
+    /// Structured side-channel signals produced by the typed operation.
+    /// The adapter forwards these without making the provider-facing layer
+    /// inspect operation names or output JSON.
+    fn signals(&self, _output: &Value) -> ToolSignals {
+        ToolSignals::default()
+    }
+
+    /// Map a domain error to the complete recovery contract at the typed
+    /// operation boundary. Implementations should override this whenever the
+    /// error can be transient, permission-related, or have an unknown
+    /// side-effect outcome. The default is fail-closed.
+    fn error_metadata(&self, _error: &Self::Error) -> ToolErrorMetadata {
+        ToolErrorMetadata::other()
+    }
+
     async fn execute_typed(
         &self,
         args: Self::Args,
@@ -270,6 +397,7 @@ impl ToolResult {
             output,
             error: None,
             error_class: None,
+            retryability: ToolRetryability::Unknown,
             truncated: false,
             outcome: ToolExecutionOutcome::Succeeded,
             attempts: 1,
@@ -284,6 +412,7 @@ impl ToolResult {
             output,
             error: None,
             error_class: None,
+            retryability: ToolRetryability::Unknown,
             truncated: true,
             outcome: ToolExecutionOutcome::Succeeded,
             attempts: 1,
@@ -301,13 +430,39 @@ impl ToolResult {
         error: impl Into<String>,
         error_class: ToolErrorClass,
     ) -> Self {
+        let retryability = match error_class {
+            ToolErrorClass::Transient => ToolRetryability::Retryable,
+            ToolErrorClass::UnknownOutcome | ToolErrorClass::SideEffectMayHaveHappened => {
+                ToolRetryability::Unknown
+            }
+            ToolErrorClass::Validation | ToolErrorClass::Permission | ToolErrorClass::Other => {
+                ToolRetryability::NotRetryable
+            }
+        };
+        Self::failed_with_metadata(
+            output,
+            error,
+            ToolErrorMetadata {
+                class: error_class,
+                outcome: ToolExecutionOutcome::Failed,
+                retryability,
+            },
+        )
+    }
+
+    pub fn failed_with_metadata(
+        output: Value,
+        error: impl Into<String>,
+        metadata: ToolErrorMetadata,
+    ) -> Self {
         Self {
             success: false,
             output,
             error: Some(error.into()),
-            error_class: Some(error_class),
+            error_class: Some(metadata.class),
+            retryability: metadata.retryability,
             truncated: false,
-            outcome: ToolExecutionOutcome::Failed,
+            outcome: metadata.outcome,
             attempts: 1,
             signals: ToolSignals::default(),
             llm_usage: Vec::new(),
@@ -320,6 +475,7 @@ impl ToolResult {
             output: Value::Null,
             error: Some(error.into()),
             error_class: Some(ToolErrorClass::UnknownOutcome),
+            retryability: ToolRetryability::Unknown,
             truncated: false,
             outcome: ToolExecutionOutcome::Cancelled,
             attempts: 1,
@@ -342,12 +498,21 @@ impl ToolResult {
                 ToolExecutionOutcome::TimedOutAndTerminated => ToolErrorClass::Transient,
                 _ => ToolErrorClass::Other,
             }),
+            retryability: match outcome {
+                ToolExecutionOutcome::TimedOutAndTerminated => ToolRetryability::Retryable,
+                ToolExecutionOutcome::TimedOutUnknown => ToolRetryability::Unknown,
+                _ => ToolRetryability::Unknown,
+            },
             truncated: false,
             outcome,
             attempts: 1,
             signals: ToolSignals::default(),
             llm_usage: Vec::new(),
         }
+    }
+
+    fn retryability_is_unknown(value: &ToolRetryability) -> bool {
+        matches!(value, ToolRetryability::Unknown)
     }
 
     /// Plain-text summary of the result: the serialized output on success,
@@ -420,13 +585,30 @@ impl ToolResult {
     /// The previous string-prefix truncation could cut away `next_offset`,
     /// `next_start_line`, `path`, or `hint` while retaining a large body.
     fn structured_observation(&self) -> Option<Value> {
-        let output = self.output.as_object()?;
+        if self.success && !self.output.is_object() {
+            return None;
+        }
         let mut object = Map::new();
 
+        if !self.success {
+            object.insert("success".into(), Value::Bool(false));
+        }
         if !self.success
             && let Some(error) = self.error.as_deref().filter(|error| !error.is_empty())
         {
             object.insert("error".into(), Value::String(error.into()));
+        }
+        if !self.success {
+            if let Some(error_class) = self.error_class {
+                object.insert(
+                    "error_class".into(),
+                    Value::String(error_class.as_str().into()),
+                );
+            }
+            object.insert(
+                "retryability".into(),
+                Value::String(self.retryability.as_str().into()),
+            );
         }
         if !self.success && self.outcome != ToolExecutionOutcome::Failed {
             object.insert(
@@ -441,6 +623,8 @@ impl ToolResult {
         const PRIORITY_KEYS: &[&str] = &[
             "success",
             "error",
+            "error_class",
+            "retryability",
             "outcome",
             "path",
             "root",
@@ -456,21 +640,25 @@ impl ToolResult {
             "available",
         ];
         for key in PRIORITY_KEYS {
-            if let Some(value) = output.get(*key) {
+            if let Some(value) = self.output.get(*key) {
                 object.entry(*key).or_insert_with(|| value.clone());
             }
         }
-        for (key, value) in output {
-            object.entry(key.clone()).or_insert_with(|| value.clone());
+        if let Some(output) = self.output.as_object() {
+            for (key, value) in output {
+                object.entry(key.clone()).or_insert_with(|| value.clone());
+            }
         }
 
-        Some(Value::Object(object))
+        (!object.is_empty()).then_some(Value::Object(object))
     }
 }
 
 const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
     "success",
     "error",
+    "error_class",
+    "retryability",
     "outcome",
     "path",
     "root",
@@ -667,6 +855,16 @@ pub trait Tool: Send + Sync {
     /// `TimedOutUnknown` unless they can prove termination.
     fn timeout_outcome(&self) -> ToolExecutionOutcome {
         ToolExecutionOutcome::TimedOutUnknown
+    }
+
+    /// Convert an implementation error into structured recovery metadata.
+    /// This hook is intentionally policy-bearing; the manager must never
+    /// infer retry or outcome semantics by scanning the diagnostic string.
+    fn error_metadata(&self, error: &anyhow::Error) -> ToolErrorMetadata {
+        error
+            .downcast_ref::<StructuredToolError>()
+            .map(StructuredToolError::metadata)
+            .unwrap_or_else(ToolErrorMetadata::other)
     }
 
     /// Intrinsic retry budget used when no per-tool configuration exists.
@@ -872,7 +1070,11 @@ where
         serde_json::from_value::<O::Args>(input.clone())
             .ok()
             .map(|args| self.operation.metadata(&args).risk_level)
-            .unwrap_or(RiskLevel::Critical)
+            // Authorization can run before argument validation. Use the
+            // operation's declared baseline for malformed input so the
+            // adapter preserves the tool's public risk contract while the
+            // execution path still rejects the invalid arguments.
+            .unwrap_or_else(|| self.operation.default_metadata().risk_level)
     }
 
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
@@ -902,6 +1104,10 @@ where
         self.operation.input_schema()
     }
 
+    fn signals(&self, output: &Value) -> ToolSignals {
+        self.operation.signals(output)
+    }
+
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         serde_json::from_value::<O::Args>(input.clone())
             .ok()
@@ -920,6 +1126,13 @@ where
             .unwrap_or_else(|| self.default_timeout_secs())
     }
 
+    fn error_metadata(&self, error: &anyhow::Error) -> ToolErrorMetadata {
+        error
+            .downcast_ref::<StructuredToolError>()
+            .map(StructuredToolError::metadata)
+            .unwrap_or_else(ToolErrorMetadata::other)
+    }
+
     fn tool_def(&self) -> ToolDef {
         let metadata = self.operation.default_metadata();
         ToolDef::new(
@@ -932,12 +1145,22 @@ where
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let args = parse_tool_input::<O::Args>(&self.name(), input)?;
+        let args = parse_tool_input::<O::Args>(&self.name(), input).map_err(|error| {
+            anyhow::Error::new(StructuredToolError::new(
+                error.to_string(),
+                ToolErrorMetadata::validation(),
+            ))
+        })?;
         let output = self
             .operation
             .execute_typed(args, cancel)
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(|error| {
+                anyhow::Error::new(StructuredToolError::new(
+                    error.to_string(),
+                    self.operation.error_metadata(&error),
+                ))
+            })?;
         let output = serde_json::to_value(output)
             .map_err(|error| anyhow::anyhow!("serialize typed tool output: {error}"))?;
         Ok(ToolResult::ok(output))
@@ -1059,6 +1282,7 @@ pub(crate) mod tests {
             output: json!(null),
             error: Some("boom".into()),
             error_class: Some(ToolErrorClass::Other),
+            retryability: ToolRetryability::NotRetryable,
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -1075,6 +1299,7 @@ pub(crate) mod tests {
             output: json!(null),
             error: None,
             error_class: None,
+            retryability: ToolRetryability::Unknown,
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -1094,6 +1319,7 @@ pub(crate) mod tests {
             output: json!({"output": "some stdout"}),
             error: Some(String::new()),
             error_class: Some(ToolErrorClass::Other),
+            retryability: ToolRetryability::NotRetryable,
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -1110,6 +1336,7 @@ pub(crate) mod tests {
             output: json!(null),
             error: Some("   ".into()),
             error_class: Some(ToolErrorClass::Other),
+            retryability: ToolRetryability::NotRetryable,
             truncated: false,
             outcome: ToolExecutionOutcome::Failed,
             attempts: 1,
@@ -1154,7 +1381,10 @@ pub(crate) mod tests {
 
         let observation = result.observation_text(200);
         let parsed: Value = serde_json::from_str(&observation).expect("bounded JSON object");
+        assert_eq!(parsed["success"], false);
         assert_eq!(parsed["error"], "summarizer call failed");
+        assert_eq!(parsed["error_class"], "other");
+        assert_eq!(parsed["retryability"], "not_retryable");
         assert_eq!(parsed["path"], "notes.md");
         assert_eq!(parsed["summary_error"], true);
     }

@@ -6,7 +6,10 @@ use std::net::IpAddr;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::{OperationIdempotency, Tool, ToolConcurrency, ToolExecutionOutcome, ToolResult};
+use crate::{
+    OperationIdempotency, StructuredToolError, Tool, ToolConcurrency, ToolErrorMetadata,
+    ToolExecutionOutcome, ToolResult,
+};
 
 pub struct HttpTool {
     /// Max retries for failed HTTP requests.
@@ -157,6 +160,21 @@ impl Tool for HttpTool {
         // stream; unlike a shell or remote MCP server there is no child
         // process that can continue after the future is dropped.
         ToolExecutionOutcome::TimedOutAndTerminated
+    }
+
+    fn default_timeout_secs(&self) -> u64 {
+        // `NetworkParams::timeout_secs` is the provider/request timeout. The
+        // manager's outer timer gets a small handoff margin below.
+        20
+    }
+
+    fn timeout_secs_for(&self, input: &Value) -> u64 {
+        input
+            .get("timeout_secs")
+            .and_then(Value::as_i64)
+            .map(|value| value.clamp(1, 120) as u64)
+            .unwrap_or(15)
+            .saturating_add(5)
     }
 
     fn default_max_retries(&self) -> u32 {
@@ -651,15 +669,35 @@ fn html_to_text(html: &str) -> String {
 
 fn map_reqwest_error(e: reqwest::Error) -> anyhow::Error {
     let detail = haven_common::error::sanitize_error_text(&e.to_string());
-    if e.is_timeout() {
-        anyhow::anyhow!("request timed out: {}", detail)
+    let (message, metadata) = if e.is_timeout() {
+        (
+            format!("request timed out: {detail}"),
+            ToolErrorMetadata::transient(),
+        )
     } else if e.is_connect() {
-        anyhow::anyhow!("connection failed: {}", detail)
+        (
+            format!("connection failed: {detail}"),
+            ToolErrorMetadata::transient(),
+        )
     } else if e.is_status() {
-        anyhow::anyhow!("HTTP error: {}", detail)
+        let transient = e.status().is_some_and(|status| {
+            status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+        });
+        (
+            format!("HTTP error: {detail}"),
+            if transient {
+                ToolErrorMetadata::transient()
+            } else {
+                ToolErrorMetadata::other()
+            },
+        )
     } else {
-        anyhow::anyhow!("request failed: {}", detail)
-    }
+        (
+            format!("request failed: {detail}"),
+            ToolErrorMetadata::other(),
+        )
+    };
+    anyhow::Error::new(StructuredToolError::new(message, metadata))
 }
 
 #[cfg(test)]

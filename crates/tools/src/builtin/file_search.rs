@@ -10,6 +10,93 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ToolResult;
 
+/// Typed request passed from the files aggregate tool to the search engine.
+/// The JSON-shaped `Value` entry remains only at the model boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRequest {
+    pub root: String,
+    pub pattern: String,
+    pub mode: String,
+    pub max_depth: usize,
+    pub max_results: usize,
+    pub ignore_hidden: bool,
+    pub max_file_size: u64,
+    pub start_line: u64,
+    pub end_line: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    pub mode: Option<String>,
+    pub max_depth: Option<i64>,
+    pub max_results: Option<i64>,
+    pub ignore_hidden: Option<bool>,
+    pub max_file_size: Option<u64>,
+    pub start_line: Option<u64>,
+    pub end_line: Option<u64>,
+}
+
+impl SearchRequest {
+    pub fn from_value(
+        input: Value,
+        max_results_cap: usize,
+        default_max_file_size: u64,
+    ) -> anyhow::Result<Self> {
+        let root = input["root"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("root is required"))?
+            .to_string();
+        let pattern = input["pattern"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("pattern is required"))?
+            .to_string();
+        Ok(Self::new(
+            root,
+            pattern,
+            SearchOptions {
+                mode: input["mode"].as_str().map(str::to_owned),
+                max_depth: input["max_depth"].as_i64(),
+                max_results: input["max_results"].as_i64(),
+                ignore_hidden: input["ignore_hidden"].as_bool(),
+                max_file_size: input["max_file_size"].as_u64(),
+                start_line: input["start_line"].as_u64(),
+                end_line: input["end_line"].as_u64(),
+            },
+            max_results_cap,
+            default_max_file_size,
+        ))
+    }
+
+    pub fn new(
+        root: String,
+        pattern: String,
+        options: SearchOptions,
+        max_results_cap: usize,
+        default_max_file_size: u64,
+    ) -> Self {
+        let start_line = options.start_line.unwrap_or(1).max(1);
+        let end_line = match options.end_line {
+            Some(end) if end > 0 => end.max(start_line),
+            _ => 0,
+        };
+        Self {
+            root,
+            pattern,
+            mode: options.mode.unwrap_or_else(|| "filename".into()),
+            max_depth: options.max_depth.unwrap_or(10).max(0) as usize,
+            max_results: options
+                .max_results
+                .filter(|value| *value > 0)
+                .map(|value| (value as usize).min(max_results_cap))
+                .unwrap_or(50),
+            ignore_hidden: options.ignore_hidden.unwrap_or(true),
+            max_file_size: options.max_file_size.unwrap_or(default_max_file_size),
+            start_line,
+            end_line,
+        }
+    }
+}
+
 /// Search engine used by the `files` tool's `search` operation.
 pub struct FileSearchEngine {
     /// Snippet chars around each content-mode match.
@@ -57,37 +144,30 @@ impl FileSearchEngine {
         input: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        let request = SearchRequest::from_value(input, self.max_results_cap, self.max_file_size)?;
+        self.search_request(request, cancel).await
+    }
+
+    pub async fn search_request(
+        &self,
+        request: SearchRequest,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
 
-        let root = input["root"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("root is required"))?
-            .to_string();
-        let pattern_str = input["pattern"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("pattern is required"))?
-            .to_string();
-        let mode = input["mode"].as_str().unwrap_or("filename").to_string();
-        let max_depth = input["max_depth"].as_i64().unwrap_or(10) as usize;
-        // Clamp: negative values would wrap to usize::MAX and disable the
-        // result cap entirely.
-        let max_results = input["max_results"]
-            .as_i64()
-            .filter(|v| *v > 0)
-            .map(|v| (v as usize).min(self.max_results_cap))
-            .unwrap_or(50);
-        let ignore_hidden = input["ignore_hidden"].as_bool().unwrap_or(true);
-        let max_file_size = input["max_file_size"]
-            .as_u64()
-            .unwrap_or(self.max_file_size);
-        let start_line = input["start_line"].as_u64().unwrap_or(1).max(1);
-        // end_line = 0 means "unbounded" (scan to EOF).
-        let end_line = match input["end_line"].as_u64() {
-            Some(e) if e > 0 => e.max(start_line),
-            _ => 0,
-        };
+        let SearchRequest {
+            root,
+            pattern: pattern_str,
+            mode,
+            max_depth,
+            max_results,
+            ignore_hidden,
+            max_file_size,
+            start_line,
+            end_line,
+        } = request;
 
         let root_path = std::path::PathBuf::from(&root);
         if !root_path.exists() {

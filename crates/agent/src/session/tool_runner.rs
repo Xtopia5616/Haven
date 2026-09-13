@@ -701,6 +701,7 @@ impl SessionExecutor {
                         tool_name
                     )),
                     error_class: Some(haven_tools::ToolErrorClass::Permission),
+                    retryability: haven_tools::ToolRetryability::NotRetryable,
                     truncated: false,
                     outcome: haven_tools::ToolExecutionOutcome::Cancelled,
                     attempts: 1,
@@ -727,6 +728,7 @@ impl SessionExecutor {
                             "operation '{tool_name}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach."
                         )),
                         error_class: Some(haven_tools::ToolErrorClass::Permission),
+                        retryability: haven_tools::ToolRetryability::NotRetryable,
                         truncated: false,
                         outcome: haven_tools::ToolExecutionOutcome::Failed,
                         attempts: 1,
@@ -760,6 +762,7 @@ impl SessionExecutor {
                                     tool_name
                                 )),
                                 error_class: Some(haven_tools::ToolErrorClass::Permission),
+                                retryability: haven_tools::ToolRetryability::NotRetryable,
                                 truncated: false,
                                 outcome: haven_tools::ToolExecutionOutcome::Cancelled,
                                 attempts: 1,

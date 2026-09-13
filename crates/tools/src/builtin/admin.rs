@@ -10,7 +10,8 @@ use super::admin_support::{mask_sensitive_config, value_at};
 use super::self_tool::{SelfOperation, SelfParams, SelfTool, sanitize_diagnostic};
 use crate::{
     OperationIdempotency, Tool, ToolCancellationPolicy, ToolConcurrency, ToolDef,
-    ToolOperationMetadata, ToolOperationScope, ToolResult, TypedToolAdapter, TypedToolOperation,
+    ToolErrorMetadata, ToolExecutionOutcome, ToolOperationMetadata, ToolOperationScope, ToolResult,
+    TypedToolAdapter, TypedToolOperation,
 };
 use async_trait::async_trait;
 use haven_common::config::{ConfigPatch, ConfigService, LogLevel};
@@ -519,6 +520,20 @@ impl TypedToolOperation for ConfigAdminOperation {
                 }
             ]
         })
+    }
+
+    fn error_metadata(&self, error: &Self::Error) -> ToolErrorMetadata {
+        match error {
+            ConfigOperationError::Cancelled => ToolErrorMetadata {
+                class: crate::ToolErrorClass::UnknownOutcome,
+                outcome: ToolExecutionOutcome::Cancelled,
+                retryability: crate::ToolRetryability::Unknown,
+            },
+            ConfigOperationError::PathNotFound { .. } => ToolErrorMetadata::validation(),
+            ConfigOperationError::Unavailable | ConfigOperationError::Failed => {
+                ToolErrorMetadata::other()
+            }
+        }
     }
 
     async fn execute_typed(

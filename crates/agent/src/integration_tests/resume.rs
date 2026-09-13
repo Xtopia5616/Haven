@@ -646,7 +646,11 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     // the dangling assistant message instead of sending it to the LLM,
     // which would reject it with a 400 error.
     let tools = Arc::new(ToolsManager::new());
-    tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+    tools
+        .registry
+        .register(Arc::new(EchoTool) as ToolBox)
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
             text: Some("Done.".into()),

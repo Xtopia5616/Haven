@@ -1,3 +1,71 @@
+use crate::tool_contract::ToolResult;
+use serde_json::Value;
+
+/// One output budget shared by tool observations and the recovery metadata
+/// shown with them. Tools may add domain-specific limits before this boundary,
+/// but the final model/UI observation is capped here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputBudget {
+    max_chars: usize,
+}
+
+impl OutputBudget {
+    pub const fn new(max_chars: usize) -> Self {
+        Self { max_chars }
+    }
+
+    pub const fn max_chars(self) -> usize {
+        self.max_chars
+    }
+
+    /// Render a result through the canonical observation formatter. Keeping
+    /// this call in one small value object gives shell/files/system/actions
+    /// one entry point without duplicating cap and recovery-key policy.
+    pub fn observe(self, result: &ToolResult) -> String {
+        result.observation_text(self.max_chars)
+    }
+
+    pub fn cap_text(self, text: &str) -> (String, bool) {
+        let mut chars = text.chars();
+        let output: String = chars.by_ref().take(self.max_chars).collect();
+        (output, chars.next().is_some())
+    }
+}
+
+/// A producer-side output envelope. It keeps truncation and recovery metadata
+/// adjacent so a tool cannot return a partial body while forgetting to mark it
+/// or losing the full-output log path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolOutput {
+    pub value: Value,
+    pub truncated: bool,
+    pub log_path: Option<String>,
+}
+
+impl ToolOutput {
+    pub fn new(value: Value, truncated: bool) -> Self {
+        Self {
+            value,
+            truncated,
+            log_path: None,
+        }
+    }
+
+    pub fn with_log_path(mut self, path: impl Into<String>) -> Self {
+        self.log_path = Some(path.into());
+        self
+    }
+
+    pub fn into_result(mut self) -> ToolResult {
+        if let Some(path) = self.log_path.take()
+            && let Some(object) = self.value.as_object_mut()
+        {
+            object.insert("log_path".into(), Value::String(path));
+        }
+        ToolResult::from_output(self.value, self.truncated)
+    }
+}
+
 /// Strip PowerShell-specific noise from captured command output so the real
 /// message survives instead of NativeCommandError formatting:
 /// - pwsh 7 serializes native stderr as CLIXML (`#< CLIXML` + escape chars);

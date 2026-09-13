@@ -12,11 +12,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_outline;
-use super::file_search::FileSearchEngine;
+use super::file_search::{FileSearchEngine, SearchOptions, SearchRequest};
 use super::media::{MediaParams, MediaTool};
 use crate::{
-    ManagedAsset, ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, ToolLlmUsage,
-    ToolResult,
+    ManagedAsset, ManagedAssetRegistry, OperationIdempotency, OutputBudget, Tool, ToolConcurrency,
+    ToolLlmUsage, ToolResult,
 };
 use file_classification::classify_by_extension;
 use file_media_handoff::{media_operation_for, register_rich_path_asset};
@@ -526,7 +526,9 @@ pub struct FilesTool {
     max_list_entries: usize,
     /// Absolute safety cap for byte-mode reads, regardless of caller `limit`.
     max_byte_read: u64,
-    /// Outer timeout (secs) for summarization / vision LLM calls.
+    /// Provider timeout (secs) for summarization / vision LLM calls. The
+    /// Tool implementation adds a small margin to its manager-owned outer
+    /// timeout so only one layer reports the terminal timeout.
     summary_timeout_secs: u64,
     /// Search engine for the `search` operation (filename / content modes).
     search: FileSearchEngine,
@@ -905,6 +907,7 @@ impl FilesTool {
                         }),
                         error: None,
                         error_class: None,
+                        retryability: crate::ToolRetryability::Unknown,
                         truncated: false,
                         outcome: crate::ToolExecutionOutcome::Succeeded,
                         attempts: 1,
@@ -1011,13 +1014,22 @@ impl FilesTool {
                 .await
             }
             FilesOperation::Search => {
-                // The search engine keeps its own (Value-based) input contract;
-                // rebuild it from the typed params so it reads the same fields.
-                let mut search_input = serde_json::to_value(params.clone())?;
-                if let Some(root) = search_root.as_deref() {
-                    search_input["root"] = Value::String(root.into());
-                }
-                self.search.search(search_input, cancel).await
+                let request = SearchRequest::new(
+                    search_root.clone().unwrap_or_default(),
+                    params.pattern.clone().unwrap_or_default(),
+                    SearchOptions {
+                        mode: params.mode.clone(),
+                        max_depth: params.max_depth,
+                        max_results: params.max_results,
+                        ignore_hidden: params.ignore_hidden,
+                        max_file_size: params.max_file_size,
+                        start_line: params.start_line,
+                        end_line: params.end_line,
+                    },
+                    self.search.max_results_cap,
+                    self.search.max_file_size,
+                );
+                self.search.search_request(request, cancel).await
             }
         };
         let mut result = match operation_result {
@@ -1074,6 +1086,18 @@ impl Tool for FilesTool {
             Some("write") | Some("create_dir") | Some("edit") | Some("copy") | Some("move")
             | Some("delete") => OperationIdempotency::NonIdempotent,
             _ => OperationIdempotency::Unknown,
+        }
+    }
+
+    /// File operations are normally bounded by the manager's outer timeout.
+    /// Summarization owns a separate provider timeout; leave a small amount
+    /// of bookkeeping time around it so the two timers cannot race and report
+    /// different terminal states for the same call.
+    fn timeout_secs_for(&self, input: &Value) -> u64 {
+        if input["operation"].as_str() == Some("summary") {
+            self.summary_timeout_secs.saturating_add(5).max(30)
+        } else {
+            30
         }
     }
 
@@ -1296,6 +1320,7 @@ async fn summarize(
                 output: serde_json::json!({"summary_error": true, "path": path}),
                 error: Some(format!("summarizer call failed: {}", e)),
                 error_class: Some(crate::ToolErrorClass::Transient),
+                retryability: crate::ToolRetryability::Retryable,
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::Failed,
                 attempts: 1,
@@ -1312,6 +1337,7 @@ async fn summarize(
                     summary_timeout_secs
                 )),
                 error_class: Some(crate::ToolErrorClass::UnknownOutcome),
+                retryability: crate::ToolRetryability::Unknown,
                 truncated: false,
                 outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
                 attempts: 1,
@@ -1381,9 +1407,7 @@ async fn read_summary_source(
 }
 
 fn cap_chars(text: &str, max_chars: usize) -> (String, bool) {
-    let mut chars = text.chars();
-    let output: String = chars.by_ref().take(max_chars).collect();
-    (output, chars.next().is_some())
+    OutputBudget::new(max_chars).cap_text(text)
 }
 
 /// Build a stable System + User pair. The system message is static; all

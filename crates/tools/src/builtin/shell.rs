@@ -276,20 +276,17 @@ impl ShellTool {
                 &raw_combined,
             );
             let log_path = log_path.to_string_lossy().into_owned();
-            output["log_path"] = serde_json::Value::String(log_path.clone());
             err_text = append_windows_diagnostics(&shell, &cmd, &err_text);
             err_text = format!("{}\n[full output: {}]", err_text.trim_end(), log_path);
-            Ok(ToolResult {
-                success: false,
-                output,
-                error: Some(format!("exit code {}:\n{}", code_str, err_text)),
-                error_class: Some(crate::ToolErrorClass::Other),
-                truncated,
-                outcome: ToolExecutionOutcome::Failed,
-                attempts: 1,
-                signals: crate::tool_contract::ToolSignals::default(),
-                llm_usage: Vec::new(),
-            })
+            let mut result = crate::ToolOutput::new(output, truncated)
+                .with_log_path(log_path)
+                .into_result();
+            result.success = false;
+            result.error = Some(format!("exit code {}:\n{}", code_str, err_text));
+            result.error_class = Some(crate::ToolErrorClass::Other);
+            result.retryability = crate::ToolRetryability::NotRetryable;
+            result.outcome = ToolExecutionOutcome::Failed;
+            Ok(result)
         }
     }
 }

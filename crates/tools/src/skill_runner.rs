@@ -31,6 +31,13 @@ impl SkillRunner {
         &self.config
     }
 
+    /// The subprocess wall-clock timeout. Tool adapters use this to set an
+    /// outer timeout with a small cleanup margin instead of racing the same
+    /// deadline at two layers.
+    pub fn timeout_secs(&self) -> u64 {
+        self.config.timeout_secs
+    }
+
     /// Execute a skill's script with the given parameters.
     pub async fn execute(
         &self,

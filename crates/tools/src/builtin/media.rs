@@ -385,13 +385,17 @@ impl Tool for MediaTool {
     }
 
     fn default_timeout_secs(&self) -> u64 {
-        self.timeout_secs.max(30)
+        self.timeout_secs.saturating_add(5).max(30)
     }
 
     fn timeout_secs_for(&self, input: &Value) -> u64 {
         if input["operation"].as_str() == Some("record") {
             let duration = input["duration"].as_f64().unwrap_or(10.0).clamp(1.0, 60.0);
-            return self.timeout_secs.max(duration.ceil() as u64 + 30).max(30);
+            return self
+                .timeout_secs
+                .max(duration.ceil() as u64 + 30)
+                .saturating_add(5)
+                .max(30);
         }
         self.default_timeout_secs()
     }

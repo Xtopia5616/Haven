@@ -222,7 +222,11 @@ async fn truncated_text_only_response_retried_before_final() {
 #[tokio::test]
 async fn run_session_executes_tool_then_final_answer() {
     let tools = Arc::new(ToolsManager::new());
-    tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+    tools
+        .registry
+        .register(Arc::new(EchoTool) as ToolBox)
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("I'll echo that.".into()),
@@ -306,7 +310,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
         .authorization
         .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
         .await;
-    tools.registry.register(media_tool).await;
+    tools.registry.register(media_tool).await.unwrap();
     let main_client = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("I will inspect the image.".into()),
@@ -384,7 +388,11 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     // references an id the assistant never declared and the next request
     // is rejected with a 400.
     let tools = Arc::new(ToolsManager::new());
-    tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+    tools
+        .registry
+        .register(Arc::new(EchoTool) as ToolBox)
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("I'll echo that.".into()),
@@ -459,7 +467,11 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
     // arrives while that call is still in flight; the agent must then
     // re-run with the message in context.
     let tools = Arc::new(ToolsManager::new());
-    tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+    tools
+        .registry
+        .register(Arc::new(EchoTool) as ToolBox)
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("I'll echo that.".into()),
@@ -581,7 +593,8 @@ async fn run_session_injects_steering_between_tool_calls() {
     tools
         .registry
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("Running the tool.".into()),
@@ -665,7 +678,8 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("I need to clarify before proceeding.".into()),
@@ -732,7 +746,8 @@ async fn run_session_ask_resumes_after_user_answer() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         // Step 1: agent asks.
         ScriptedResponse::Chunk(StreamChunk {
@@ -812,7 +827,8 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         // Step 1: ask the question.
         ScriptedResponse::Chunk(StreamChunk {
@@ -940,7 +956,8 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::notify::NotifyTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("Notifying the user.".into()),
@@ -1007,7 +1024,8 @@ async fn run_session_multiple_asks_surface_all_questions() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
             text: Some("Two questions.".into()),
@@ -1194,7 +1212,11 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
 #[tokio::test]
 async fn run_session_compaction_retry_on_context_exceeded() {
     let tools = Arc::new(ToolsManager::new());
-    tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+    tools
+        .registry
+        .register(Arc::new(EchoTool) as ToolBox)
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("Calling echo.".into()),
@@ -1420,7 +1442,8 @@ async fn pause_snapshot_includes_run_budget() {
     tools
         .registry
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
             text: Some("Asking.".into()),

@@ -7,7 +7,8 @@ async fn invalid_tool_inputs_are_reported_without_repairing_arguments() {
     tools
         .registry
         .register(Arc::new(ActionRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -36,7 +37,8 @@ async fn valid_tool_inputs_and_final_actions_have_no_validation_failures() {
     tools
         .registry
         .register(Arc::new(ActionRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -77,7 +79,8 @@ async fn null_tool_input_is_reported_without_repairing_arguments() {
     tools
         .registry
         .register(Arc::new(ActionRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -105,7 +108,8 @@ async fn null_valued_tool_fields_are_reported_without_repairing_arguments() {
     tools
         .registry
         .register(Arc::new(ActionRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -133,7 +137,8 @@ async fn missing_enum_field_is_reported_without_guessing_a_value() {
     tools
         .registry
         .register(Arc::new(EnumRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -165,7 +170,8 @@ async fn invalid_enum_value_is_reported_without_repairing_arguments() {
     tools
         .registry
         .register(Arc::new(ActionRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -195,7 +201,8 @@ async fn wrong_type_tool_value_is_reported_without_repairing_arguments() {
     tools
         .registry
         .register(Arc::new(ActionRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -225,7 +232,8 @@ async fn valid_enum_values_have_no_validation_failures() {
     tools
         .registry
         .register(Arc::new(ActionRequiredTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();
@@ -253,7 +261,8 @@ async fn invalid_optional_field_is_reported_without_repairing_arguments() {
     tools
         .registry
         .register(Arc::new(EnumWithOptionalTool) as ToolBox)
-        .await;
+        .await
+        .unwrap();
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("do it").await.unwrap();

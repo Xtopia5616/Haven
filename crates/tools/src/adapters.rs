@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::skill_runner::SkillRunner;
-use crate::{Tool, ToolResult};
+use crate::{StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
 use haven_mcp::{McpClient, McpToolInfo};
 use haven_skills::Skill;
 
@@ -70,22 +70,23 @@ impl Tool for McpToolAdapter {
         let out = self
             .client
             .call_tool(&self.info.name, input, cancel)
-            .await?;
-        Ok(ToolResult {
-            success: out.success,
-            output: out.output,
-            error: out.error,
-            error_class: (!out.success).then_some(crate::ToolErrorClass::Other),
-            truncated: false,
-            outcome: if out.success {
-                crate::ToolExecutionOutcome::Succeeded
-            } else {
-                crate::ToolExecutionOutcome::Failed
-            },
-            attempts: 1,
-            signals: crate::tool_contract::ToolSignals::default(),
-            llm_usage: Vec::new(),
-        })
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(StructuredToolError::new(
+                    error.to_string(),
+                    ToolErrorMetadata::unknown_outcome(),
+                ))
+            })?;
+        if out.success {
+            Ok(ToolResult::from_output(out.output, false))
+        } else {
+            Ok(ToolResult::failed_with_metadata(
+                out.output,
+                out.error
+                    .unwrap_or_else(|| "MCP tool returned an error".into()),
+                ToolErrorMetadata::unknown_failure(),
+            ))
+        }
     }
 }
 
@@ -145,11 +146,26 @@ impl Tool for SkillToolAdapter {
         })
     }
 
+    fn default_timeout_secs(&self) -> u64 {
+        self.runner.timeout_secs().saturating_add(5).max(30)
+    }
+
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = input
-            .get("params")
-            .ok_or_else(|| anyhow::anyhow!("skill parameters are required"))?;
-        self.runner.execute(&self.skill, params, cancel).await
+        let params = input.get("params").ok_or_else(|| {
+            anyhow::Error::new(StructuredToolError::new(
+                "skill parameters are required",
+                ToolErrorMetadata::validation(),
+            ))
+        })?;
+        self.runner
+            .execute(&self.skill, params, cancel)
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(StructuredToolError::new(
+                    error.to_string(),
+                    ToolErrorMetadata::other(),
+                ))
+            })
     }
 }
 

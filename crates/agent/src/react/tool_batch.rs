@@ -17,7 +17,7 @@ use crate::types::Action;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{
     OperationIdempotency, ToolConcurrency, ToolErrorClass, ToolExecutionOutcome, ToolLlmUsage,
-    ToolOperationScope, is_silent_action,
+    ToolOperationScope, ToolRetryability, is_silent_action,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -71,6 +71,7 @@ impl ToolBatchState {
             outcome,
             idempotency,
             error_class,
+            retryability,
             operation_scope,
             llm_usage,
             ask_question,
@@ -105,7 +106,8 @@ impl ToolBatchState {
             ));
         }
 
-        if is_error && is_retryable_failure_outcome(outcome, idempotency, error_class) {
+        if is_error && is_retryable_failure_outcome(outcome, idempotency, error_class, retryability)
+        {
             self.retryable_failure = true;
             self.last_retryable_failed_tool_call_id = action.tool_call_id.clone();
             if self.failure_signals.len() < 3 {
@@ -113,6 +115,7 @@ impl ToolBatchState {
                     tool_name: tool_name.clone(),
                     tool_input: action.tool_input.clone(),
                     error_class,
+                    retryability,
                     tool_call_id: action.tool_call_id.clone(),
                 });
             }
@@ -243,6 +246,7 @@ pub(super) struct CompletedTool {
     pub(super) outcome: ToolExecutionOutcome,
     pub(super) idempotency: OperationIdempotency,
     pub(super) error_class: ToolErrorClass,
+    pub(super) retryability: ToolRetryability,
     pub(super) operation_scope: ToolOperationScope,
     llm_usage: Vec<ToolLlmUsage>,
     ask_question: Option<String>,
@@ -269,6 +273,7 @@ impl CompletedTool {
             outcome,
             idempotency: OperationIdempotency::Unknown,
             error_class: ToolErrorClass::Other,
+            retryability: ToolRetryability::Unknown,
             operation_scope: ToolOperationScope::Session,
             llm_usage: Vec::new(),
             ask_question: None,
@@ -347,6 +352,7 @@ pub(super) async fn execute_tool_action(
         is_error,
         outcome,
         error_class,
+        retryability,
         llm_usage,
         ask_question,
         ask_options,
@@ -376,6 +382,7 @@ pub(super) async fn execute_tool_action(
                 !result.success,
                 result.outcome,
                 result.error_class.unwrap_or(ToolErrorClass::Other),
+                result.retryability,
                 result.llm_usage,
                 result.signals.ask_question,
                 result.signals.ask_options,
@@ -390,19 +397,30 @@ pub(super) async fn execute_tool_action(
                 step_num,
                 error
             );
+            let metadata = error
+                .downcast_ref::<haven_tools::StructuredToolError>()
+                .map(haven_tools::StructuredToolError::metadata);
+            let (outcome, error_class, retryability) = if let Some(metadata) = metadata {
+                (metadata.outcome, metadata.class, metadata.retryability)
+            } else if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
+                (
+                    ToolExecutionOutcome::TimedOutUnknown,
+                    ToolErrorClass::UnknownOutcome,
+                    ToolRetryability::Unknown,
+                )
+            } else {
+                (
+                    ToolExecutionOutcome::Failed,
+                    ToolErrorClass::Other,
+                    ToolRetryability::NotRetryable,
+                )
+            };
             (
                 error.to_string(),
                 true,
-                if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
-                    ToolExecutionOutcome::TimedOutUnknown
-                } else {
-                    ToolExecutionOutcome::Failed
-                },
-                if error.downcast_ref::<ActionStepPersistenceError>().is_some() {
-                    ToolErrorClass::UnknownOutcome
-                } else {
-                    ToolErrorClass::Other
-                },
+                outcome,
+                error_class,
+                retryability,
                 Vec::new(),
                 None,
                 Vec::new(),
@@ -427,6 +445,7 @@ pub(super) async fn execute_tool_action(
         outcome,
         idempotency,
         error_class,
+        retryability,
         operation_scope,
         llm_usage,
         ask_question,

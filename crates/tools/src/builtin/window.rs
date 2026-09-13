@@ -427,6 +427,18 @@ impl Tool for WindowTool {
         true
     }
 
+    fn timeout_secs_for(&self, input: &Value) -> u64 {
+        if input["operation"].as_str() == Some("wait") {
+            input
+                .get("timeout_secs")
+                .and_then(Value::as_u64)
+                .unwrap_or(10)
+                .saturating_add(5)
+        } else {
+            30
+        }
+    }
+
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         match input["operation"].as_str() {
             Some("list") | Some("foreground") | Some("ui_tree") | Some("wait") => {

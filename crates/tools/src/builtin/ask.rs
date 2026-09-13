@@ -3,7 +3,10 @@ use haven_common::types::RiskLevel;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{
+    StructuredToolError, Tool, ToolCancellationPolicy, ToolConcurrency, ToolErrorMetadata,
+    ToolOperationMetadata, ToolOperationScope, ToolResult, TypedToolOperation,
+};
 
 const MAX_QUESTION_CHARS: usize = 2_000;
 const MAX_CONTEXT_CHARS: usize = 4_000;
@@ -88,6 +91,79 @@ impl AskTool {
 }
 
 #[async_trait]
+impl TypedToolOperation for AskTool {
+    type Args = AskParams;
+    type Output = Value;
+    type Error = StructuredToolError;
+
+    fn metadata(&self, _args: &Self::Args) -> ToolOperationMetadata {
+        self.default_metadata()
+    }
+
+    fn default_metadata(&self) -> ToolOperationMetadata {
+        ToolOperationMetadata {
+            capability: "ask",
+            operation: "ask",
+            scope: ToolOperationScope::Session,
+            risk_level: RiskLevel::Safe,
+            idempotency: crate::OperationIdempotency::NonIdempotent,
+            cancellation: ToolCancellationPolicy::Cooperative,
+            timeout_secs: 30,
+            concurrency: ToolConcurrency::Exclusive,
+        }
+    }
+
+    fn input_schema(&self) -> Value {
+        <Self as Tool>::input_schema(self)
+    }
+
+    fn signals(&self, output: &Value) -> crate::tool_contract::ToolSignals {
+        let (question, options) = crate::extract_ask_signal(output);
+        crate::tool_contract::ToolSignals {
+            ask_question: question,
+            ask_options: options,
+            ..Default::default()
+        }
+    }
+
+    fn error_metadata(&self, error: &Self::Error) -> ToolErrorMetadata {
+        error.metadata()
+    }
+
+    async fn execute_typed(
+        &self,
+        args: Self::Args,
+        cancel: CancellationToken,
+    ) -> Result<Self::Output, Self::Error> {
+        self.run(args, cancel.clone())
+            .await
+            .map(|result| result.output)
+            .map_err(|error| {
+                StructuredToolError::new(
+                    error.to_string(),
+                    if cancel.is_cancelled() {
+                        ToolErrorMetadata {
+                            class: crate::ToolErrorClass::UnknownOutcome,
+                            outcome: crate::ToolExecutionOutcome::Cancelled,
+                            retryability: crate::ToolRetryability::Unknown,
+                        }
+                    } else {
+                        ToolErrorMetadata::validation()
+                    },
+                )
+            })
+    }
+}
+
+pub fn typed_adapter() -> crate::TypedToolAdapter<AskTool> {
+    crate::TypedToolAdapter::new(
+        "ask",
+        "Ask the user one question when you need a decision or missing information. One question per call — do not pack multiple questions or mixed option sets into a single ask.",
+        AskTool,
+    )
+}
+
+#[async_trait]
 impl Tool for AskTool {
     fn name(&self) -> String {
         "ask".into()
@@ -169,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_ask_schema_requires_question() {
-        let schema = AskTool.input_schema();
+        let schema = <AskTool as Tool>::input_schema(&AskTool);
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "question"));
         assert_eq!(schema["additionalProperties"], false);
