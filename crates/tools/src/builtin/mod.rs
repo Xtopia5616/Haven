@@ -241,9 +241,8 @@ pub async fn register_builtin_tools(
     });
     let preferences_tool: ToolBox = Arc::new(preferences::PreferencesTool::default());
     let checklist_tool: ToolBox = Arc::new(checklist::ChecklistTool::default());
-    let window_tool: ToolBox = Arc::new(
-        window::WindowTool::new(managed_assets).with_media_tool(media_tool),
-    );
+    let window_tool: ToolBox =
+        Arc::new(window::WindowTool::new(managed_assets).with_media_tool(media_tool));
     let system_tool: ToolBox = Arc::new(
         system::SystemTool::default()
             .with_max_output_chars(tool_output_cap(
@@ -602,7 +601,7 @@ mod tests {
             ),
             (
                 &schedule,
-                json!({"operation": "set", "delay_secs": 5, "body": "check"}),
+                json!({"operation": "set", "delay_secs": 5, "body": "check", "mode": "tool", "tool_name": "notify"}),
                 json!({"operation": "cancel"}),
             ),
         ];

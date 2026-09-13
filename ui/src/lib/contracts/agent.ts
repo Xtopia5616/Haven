@@ -156,7 +156,7 @@ export interface AgentUsagePayload {
 	stepNumber?: number;
 	durationMs?: number;
 	role?: string;
-	callKind?: 'agent' | 'media' | 'tool' | string;
+	callKind: 'agent' | 'media' | 'tool';
 	hasCost: boolean;
 }
 
@@ -275,7 +275,7 @@ interface AgentCompactionWirePayload {
 	summary: string;
 	tokens_before: number;
 	tokens_after: number;
-	degraded?: boolean;
+	degraded: boolean;
 	episode_id?: string;
 }
 interface AgentNotificationWirePayload { session_id: string; title: string; body: string; }
@@ -304,7 +304,7 @@ interface AgentUsageWirePayload {
 	step_number?: number;
 	duration_ms?: number;
 	role?: string;
-	call_kind?: string;
+	call_kind: string;
 	has_cost: boolean;
 }
 interface AgentToolOutputWirePayload {
@@ -459,7 +459,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				summary: payload.summary,
 				tokensBefore: payload.tokens_before,
 				tokensAfter: payload.tokens_after,
-				degraded: payload.degraded ?? false,
+				degraded: payload.degraded,
 				...(payload.episode_id !== undefined ? { episodeId: payload.episode_id } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
@@ -490,7 +490,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				...(payload.step_number !== undefined ? { stepNumber: payload.step_number } : {}),
 				...(payload.duration_ms !== undefined ? { durationMs: payload.duration_ms } : {}),
 				...(payload.role !== undefined ? { role: payload.role } : {}),
-				callKind: payload.call_kind || 'agent',
+				callKind: payload.call_kind,
 				hasCost: payload.has_cost,
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}

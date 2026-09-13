@@ -135,19 +135,13 @@ pub(crate) fn apply_wire_inject_prefix(
     content
 }
 
-/// Resolve the wire protocol style for an endpoint. An explicit `api_style`
-/// wins (after [`normalize_api_style`]); an omitted style uses the neutral
-/// OpenAI-compatible protocol. Vendor identity is not a protocol selector.
+/// Resolve the wire protocol style for an endpoint. An explicit canonical
+/// `api_style` wins; an omitted style uses the neutral OpenAI-compatible
+/// protocol. Unknown values remain invalid and are never remapped.
 pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
     if let Some(style) = &endpoint.api_style
-        && !style.is_empty()
+        && !style.trim().is_empty()
     {
-        if !is_known_api_style(style) {
-            tracing::warn!(
-                api_style = %style,
-                "unknown api_style; falling back to openai-chat"
-            );
-        }
         return normalize_api_style(style);
     }
     "openai-chat"
@@ -155,15 +149,15 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
 
 /// Build the protocol adapter for an endpoint.
 ///
-/// Dispatch happens on the resolved + normalized `api_style`
-/// (see `api_style_for` / [`normalize_api_style`]):
+/// Dispatch happens on the resolved canonical `api_style` (see
+/// `api_style_for`):
 /// - `openai-chat` / `llama.cpp`: OpenAI-compatible `/chat/completions`
 ///   (OpenAI, Ollama, vLLM, DeepSeek chat, llama.cpp server, and most
 ///   third-party gateways). Whisper-family models also implement `transcribe`
 ///   via `/audio/transcriptions`. Embeddings use `/embeddings`.
 /// - `xai`: same OpenAI chat adapter with xAI Live Search `search_parameters`
 ///   (embeddings still `/embeddings`)
-/// - `openai-responses` (+ alias `deepseek-responses`): OpenAI Responses API
+/// - `openai-responses`: OpenAI Responses API
 ///   (`/v1/responses`), including DeepSeek thinking + built-in `web_search`.
 ///   Embeddings still use the OpenAI-compatible `/v1/embeddings` path — chat
 ///   wire style does not apply to that endpoint.
@@ -173,7 +167,17 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
 ///   embeddings via `batchEmbedContents`
 /// - `deepgram` / `assemblyai`: speech-to-text only
 pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
-    match normalize_api_style(api_style_for(endpoint)) {
+    let style = api_style_for(endpoint);
+    if style == "invalid" {
+        return unavailable(
+            "invalid",
+            LlmError::Configuration(format!(
+                "unsupported api_style '{}'; choose a canonical wire protocol",
+                endpoint.api_style.as_deref().unwrap_or_default()
+            )),
+        );
+    }
+    match style {
         "anthropic" => anthropic::AnthropicAdapter::try_new(endpoint.clone())
             .map(|adapter| Box::new(adapter) as Box<dyn LlmClient>)
             .unwrap_or_else(|error| unavailable("anthropic", error)),
@@ -378,16 +382,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(api_style_for(&llama), "openai-chat");
-        let llama_alias = ModelEndpoint {
-            provider: "llama".into(),
-            ..Default::default()
-        };
-        assert_eq!(api_style_for(&llama_alias), "openai-chat");
-        let llamacpp = ModelEndpoint {
-            provider: "llamacpp".into(),
-            ..Default::default()
-        };
-        assert_eq!(api_style_for(&llamacpp), "openai-chat");
         let deepgram = ModelEndpoint {
             provider: "deepgram".into(),
             ..Default::default()
@@ -419,13 +413,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(adapter_for(&responses).style(), "openai-responses");
-        let deepseek_alias = ModelEndpoint {
+        let invalid_style = ModelEndpoint {
             api_style: Some("deepseek-responses".into()),
             provider: "deepseek".into(),
             ..Default::default()
         };
-        assert_eq!(api_style_for(&deepseek_alias), "openai-responses");
-        assert_eq!(adapter_for(&deepseek_alias).style(), "openai-responses");
+        assert_eq!(api_style_for(&invalid_style), "invalid");
+        assert_eq!(adapter_for(&invalid_style).style(), "invalid");
         let openai = ModelEndpoint::default();
         assert_eq!(adapter_for(&openai).style(), "openai-chat");
         // llama.cpp speaks the OpenAI-compatible wire protocol and is served by

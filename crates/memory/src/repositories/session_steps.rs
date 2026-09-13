@@ -170,8 +170,7 @@ impl Database {
     /// row is persisted under in the `messages` table, so the resume builder
     /// links the two without content matching. The `thought` column is
     /// intentionally NOT written — the text lives exclusively in the
-    /// `messages` table (single content authority). Legacy rows keep their
-    /// text.
+    /// `messages` table (single content authority).
     pub fn create_thought_step(
         &self,
         session_id: &str,
@@ -276,42 +275,6 @@ impl Database {
         };
         let created_at = self.insert_action_step(fields, false)?;
         Ok(Self::action_step_from_fields(fields, created_at))
-    }
-
-    /// Ensure a pending action step row exists under the pre-minted `step-*`
-    /// id. The ReAct loop calls this at Action-emit time so an interrupted /
-    /// mid-flight tool always has a DB row the resume rebuild can hydrate;
-    /// `execute_step` calls it again as a fallback when tests invoke it
-    /// without going through Action emit. Idempotent: a second call with the
-    /// same id is a no-op (optionally refreshing `confirmed` while still
-    /// pending).
-    #[allow(clippy::too_many_arguments)]
-    pub fn ensure_action_step(
-        &self,
-        session_id: &str,
-        step_number: i32,
-        tool_name: &str,
-        tool_input: &str,
-        is_high_risk: bool,
-        silent: bool,
-        confirmed: Option<bool>,
-        id: &str,
-    ) -> anyhow::Result<()> {
-        self.ensure_action_step_record(
-            ActionStepFields {
-                id,
-                session_id,
-                step_number,
-                action_index: 0,
-                tool_name,
-                tool_input,
-                tool_call_id: None,
-                is_high_risk,
-                silent,
-                confirmed,
-            },
-            false,
-        )
     }
 
     /// Ensure an action step exists while retaining its stable invocation
@@ -590,22 +553,26 @@ mod tests {
     fn ensure_action_step_is_idempotent_and_updates_confirmed() {
         let db = test_db();
         seed_session(&db, "ses-1");
-        db.ensure_action_step(
+        db.ensure_action_step_with_identity(
             "ses-1",
+            0,
             0,
             "shell",
             "{}",
+            None,
             false,
             false,
             None,
             "step-ensure-1",
         )
         .unwrap();
-        db.ensure_action_step(
+        db.ensure_action_step_with_identity(
             "ses-1",
+            0,
             0,
             "shell",
             "{}",
+            None,
             false,
             false,
             Some(true),
@@ -623,8 +590,10 @@ mod tests {
     fn fail_pending_action_steps_finalizes_unfinished_only() {
         let db = test_db();
         seed_session(&db, "ses-1");
-        db.ensure_action_step("ses-1", 0, "shell", "{}", false, false, None, "step-p1")
-            .unwrap();
+        db.ensure_action_step_with_identity(
+            "ses-1", 0, 0, "shell", "{}", None, false, false, None, "step-p1",
+        )
+        .unwrap();
         let done = db
             .create_action_step("ses-1", 1, "shell", "{}", false, false, None, None)
             .unwrap();

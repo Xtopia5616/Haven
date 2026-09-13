@@ -19,7 +19,7 @@ export interface LlmUsage {
 	id?: string;
 	step_number?: number | null;
 	role?: string;
-	call_kind?: 'agent' | 'media' | 'tool' | string;
+	call_kind: 'agent' | 'media' | 'tool' | string;
 	model?: string | null;
 	prompt_tokens?: number;
 	completion_tokens?: number;
@@ -72,13 +72,10 @@ export function clearSessionTokenStats(sessionId: string) {
  * totals are the persisted running totals; per-step and budget fields stay
  * empty until the next `agent:usage` event. `restored` marks the entry as
  * coming from persistence (a resume / reopened conversation): no further
- * `agent:usage` events may arrive, so the widget falls back to showing the
- * cumulative total instead of the per-step context count. When the session
- * predates usage persistence, `estimated` marks the restored totals as a
- * rough estimate derived from the persisted conversation text (no cost).
+ * `agent:usage` events may arrive, so the widget shows the cumulative total
+ * instead of the per-step context count.
  * @param {string} sessionId
  * @param {object} usage - { prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_creation_tokens, cost_usd, has_cost }
- * @param {boolean} [estimated]
  */
 export function restoreSessionTokenStats(
 	sessionId: string,
@@ -94,7 +91,6 @@ export function restoreSessionTokenStats(
 		cost_usd?: number | null;
 		has_cost?: boolean;
 	},
-	estimated = false,
 ) {
 	if (!sessionId || !usage) return;
 	const hasCost = !!usage.has_cost && usage.cost_usd != null;
@@ -128,7 +124,6 @@ export function restoreSessionTokenStats(
 		cumulativeCostUsd: hasCost ? usage.cost_usd : null,
 		contextWindow: usage.context_window ?? null,
 		model: null,
-		estimated: !!estimated,
 		restored: true,
 	});
 }
@@ -148,8 +143,7 @@ export const sessionLlmUsageStore = writable<Record<string, LlmUsage[]>>({});
  * `get_session_for_resume` / `get_last_conversation`). An EMPTY array overwrites
  * too: after a rollback truncates the usage rows the backend returns `[]`,
  * and the stale detail for discarded steps must not linger in the store
- * (mirrors restoreSessionTokenStats's unconditional overwrite). Only
- * `undefined` (backend predates the field) is ignored.
+ * (mirrors restoreSessionTokenStats's unconditional overwrite).
  */
 export function restoreSessionLlmUsage(sessionId: string, usageList: LlmUsage[]) {
 	if (!sessionId || !Array.isArray(usageList)) return;
@@ -182,7 +176,7 @@ export function clearSessionLlmUsage(sessionId: string) {
 /**
  * Reconstruct `total` when a provider omitted it. Matches
  * `Usage::normalize`: inclusive `prompt + completion`, plus an explicitly
- * exclusive cache read/write bucket. Unknown legacy rows never guess from
+ * exclusive cache read/write bucket. Unknown rows never guess from
  * cache token values.
  * @param {number} [prompt]
  * @param {number} [completion]
@@ -206,11 +200,11 @@ export function coalesceTokenTotal(
 /**
  * Calculate a session's cache-hit rate from per-call provider contracts.
  * `prompt_tokens` already contains cache reads for inclusive providers, while
- * exclusive providers report them beside prompt tokens. Unknown legacy rows
+ * exclusive providers report them beside prompt tokens. Unknown rows
  * return null rather than silently using an incorrect aggregate denominator.
  */
 export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null {
-	const agentCalls = calls.filter((call) => (call.call_kind || 'agent') === 'agent');
+	const agentCalls = calls.filter((call) => call.call_kind === 'agent');
 	if (
 		!agentCalls.length ||
 		agentCalls.some(

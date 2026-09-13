@@ -281,7 +281,7 @@
 			updateSessionMessages(session.id, (existing) =>
 				mergeLiveStreaming(buildResumeMessages(result), existing),
 			);
-			restoreSessionTokenStats(session.id, result.usage, result.usage_estimated);
+			restoreSessionTokenStats(session.id, result.usage);
 			restoreSessionLlmUsage(session.id, result.llm_usage);
 			resumeTargetStore.set({
 				sessionId: session.id,

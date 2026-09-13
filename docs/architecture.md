@@ -84,9 +84,10 @@ notice，避免模型重复派生或猜测资产是否已经进入上下文（AD
 
 媒体工具的公共契约与实现按职责拆分：`media.rs` 只保留 `MediaTool`、operation/schema、
 安全元数据和统一调度；`media_reference.rs` 负责模态分类与模型媒体引用，
-`media_content.rs` 负责图片/音频/文档派生，`media_generation.rs` 负责生成与资产登记，
-`media_audio.rs` 集中负责统一媒体工具的音频分支和本机音频设备适配（ADR 0133、0134）。这些模块共同实现一个 `media`
-工具，不重新引入分立的模型入口。
+`media_asset.rs` 负责普通路径资产登记，`media_content.rs` 负责图片/音频/文档派生，
+`media_generation.rs` 负责生成资产，`media_audio.rs` 集中负责统一媒体工具的音频分支和本机
+音频设备适配（ADR 0133、0134、0136）。这些模块共同实现一个 `media` 工具，不重新引入
+分立的模型入口。
 
 Builtin 的模型目录按频率拆分 operation view：`system.info`、`files.read_text`、
 `files.outline`、`files.summary` 和 `files.search` 为高频窄入口；`system` 内的 `env`、
@@ -111,9 +112,10 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `types.rs`：跨 crate 的规范类型 —— 实体 ID（`new_id` / newtype）、`CanonicalMessage` /
   `ContentPart` / `CanonicalToolCall`、`MessageAttachment`、`FollowUp`、`RiskLevel`、
   `HotkeyMode` / `ShellChoice` 等。
-- `media.rs`：provider-neutral 的 `MediaAsset`、`MediaRepresentation`、能力画像和纯
-  `MediaPlan` 计划器；只选择安全的 raw/derived/managed 表示，不执行文件 I/O 或
-  provider 路由。
+- `media.rs` / `media_detection.rs`：provider-neutral 的 `MediaAsset`、
+  `MediaRepresentation`、能力画像、统一文件探测和纯 `MediaPlan` 计划器；只选择安全的
+  raw/derived/managed 表示，不执行文件 I/O 或 provider 路由。文件/MIME 探测以
+  `media_detection` 为唯一权威实现。
 - `prompts.rs`：系统提示词与各专用 prompt 常量（含 `STT_SYSTEM_PROMPT`）。
 - `encoding.rs` / `text.rs`：编码解码（UTF-8 → GBK 回退）、文本工具。
 
@@ -124,7 +126,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `adapters/`：按 **`api_style`（线协议）** 分发的 provider 适配与统一 `LlmClient` +
   `with_retry`。能力矩阵见 `adapters/capabilities.rs`：
   - `openai-chat` / `llama.cpp` → OpenAI Chat Completions；embedding 走 `/embeddings`
-  - `openai-responses`（含 DeepSeek Responses 别名 / thinking echo + `web_search`）；embedding 仍走 `/v1/embeddings`
+  - `openai-responses`（含 DeepSeek Responses thinking echo + `web_search`）；embedding 仍走 `/v1/embeddings`
   - `xai` → OpenAI chat + xAI Live Search `search_parameters`；embedding 走 `/embeddings`
   - `anthropic` → Messages API（可选 server `web_search_*`）；无 embedding
   - `gemini` → `generateContent`（可选 `google_search` grounding）；embedding 走 `batchEmbedContents`
@@ -158,10 +160,11 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   （ADR 0028）。
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
-- `media/`：provider-neutral 媒体原语——模态检测、provider content parts、MediaPlan 投影和
+- `media/`：provider-neutral 媒体原语——common 探测器类型、provider content parts、MediaPlan 投影和
   vision adapter。媒体理解、OCR/STT fallback、文档抽取和文生图由 `haven-tools` 的
   `builtin::media` 工具统一编排；图片/音频以内联 `ContentPart` 进入模型，普通文件落盘后
-  以受管 `asset_id` 交给 `media`，视频暂不盲发到 provider。TTS 由
+  以受管 `asset_id` 交给 `media`；视频只有在 capability profile 明确支持时才投影为
+  `RawVideo`（当前 Gemini 支持，其它 adapter 显式返回不支持）。TTS 由
   `media(operation="speak")` 显式触发并在本机播放；Windows 设备适配仍隔离在
   `builtin/media_audio.rs::AudioRuntime`。
 - `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体工具的
@@ -214,11 +217,11 @@ provider（STT 客户端来自 `haven-llm`）。
 
 - `react/`：ReAct 循环（`loop` / `turn` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责阶段编排，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
-- **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。多模态输入在 ingress 仍接受兼容 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
-- **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；无快照恢复只读取步骤投影中的身份，旧行才按 `step-{row_id}` 生成确定性 fallback。
+- **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
+- **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失 snapshot 不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
-- `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 投影；`resume_support` 只提供确定性的候选合并、无快照投影和运行时工具选择恢复。
+- `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `inference.rs` / `memory_index.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_index` 只适配 embedding provider 与索引生命周期，`prompt` 通过 typed memory recall 组装 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
 - `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签/谓词规范化、prompt
@@ -369,7 +372,10 @@ Tauri command 的 structured surface，未直接注册进模型目录；`haven` 
 工具层的 `media` 走「agent 资产」路径。云端 STT（Whisper / Groq / Gemini / Deepgram /
 AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider = "llm"` 走
 `LlmRouter::transcribe_audio`（原生 `transcribe`，否则 multimodal chat 回退）。
-MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
+MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。两条录音路径的语义也保持显式
+不同：UI 麦克风是 `voice input`，只提交转写文本并用 `rec-*` 关联事件；`media.record` 是
+`recorded media asset`，先登记 WAV 并返回可复用的 `asset_id`，再附带转写结果。两者共享
+STT 实现与事件规范，但不会隐式互相升级为另一种生命周期。
 
 ### 3.2 媒体编排归属
 
@@ -383,13 +389,17 @@ MediaPlan 投影和 vision 等 provider-neutral 原语；`haven-agent` ingress �
 bytes 规范化为一次 vision 请求，不负责 asset lookup、工具权限、生命周期或跨 provider
 fallback。`media` 的音频同样由 `MediaTool` 统一处理专用 STT、超时、置信度和
 `LlmRouter::transcribe_audio` fallback；媒体派生结果携带 canonical `MediaInput`，不再
-以宿主路径作为跨工具引用（ADR 0122、0123、0130）。
+以宿主路径作为跨工具引用（ADR 0122、0123、0130、0136）。`files` 只拥有路径安全、读写
+和进入注册表的边界；分类与媒体 handoff 分别位于 `file_classification.rs` 和
+`file_media_handoff.rs`，普通路径资产登记位于 `media_asset.rs`。`MediaTool` 的所有
+asset/device 分支都通过 common 的 `MediaRepresentationKind` 和 `MediaResult` 外壳投影，
+UI、Agent 与 provider 只在各自边界做场景适配。
 
 ### 3.3 agent 对 input 的依赖（2026-08-18 清理）
 
 - **改前**：`agent → input` 的唯一理由是重导出历史输入类型（`session.rs`），agent 不调用任何
   input 能力，属于不必要的耦合。
-- **改后**：`FollowUp` 下沉到 `haven_common::types`，`agent/src/session.rs` 改为
+- **改后**：`FollowUp` 下沉到 `haven_common::types`，`agent/src/session/mod.rs` 改为
   `pub use haven_common::types::FollowUp`，删除 `haven-input` 依赖与 `input/src/message.rs`。
   现在 `agent` 与 `input` 分层不互相依赖（都只依赖 common / llm）。
 
@@ -419,6 +429,7 @@ fallback。`media` 的音频同样由 `MediaTool` 统一处理专用 STT、超�
 | 2026-09-12 | §2.5 Tools / Agent / App：删除 `MediaGateway`、coverage、intent 与 ingress eager preprocessing；由单一共享 `MediaTool` 统一 OCR、STT fallback、文档抽取和显式媒体生成，并同步 UI 媒体结果契约（ADR 0130） |
 | 2026-09-12 | §2.5 Tools / UI / Security：删除独立 `audio` 模型工具，将录音、播放、TTS、音量和静音纳入 `media` operation 分支；旧 audio 配置/权限按测试版策略重置（ADR 0133） |
 | 2026-09-12 | §2.5 Tools：按公共契约、媒体引用、内容派生、生成/资产登记和测试职责拆分 `media` 内部模块；模型入口与运行时行为不变（ADR 0134） |
+| 2026-09-12 | §2.5 Common / LLM / Tools / Agent / UI：统一媒体探测、视频 raw 表示、MediaResult 外壳和 STT MediaPlan 投影；区分 voice input 与 recorded media asset，并拆出文件分类/handoff 与路径资产模块（ADR 0136） |
 | 2026-09-12 | §2.5 Agent / Tools / LLM：统一 producer→asset_id→media consumer；files rich path、window OCR、录音均收敛到同一资产链，并在模型请求中说明 MediaPlan 表示（ADR 0129） |
 | 2026-09-12 | §2.5 Tools / Agent / Common：按实时路由能力裁剪媒体与录音 operation；structured-first observation 保留恢复字段；仓库会话默认工作区路径；区分只读重试安全性并补充 runtime capability snapshot（ADR 0128） |
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |

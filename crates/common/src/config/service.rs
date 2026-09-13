@@ -68,13 +68,9 @@ pub struct ConfigUpdate<T> {
 }
 
 /// Typed mutations currently used by the settings and model commands.
-/// `ReplaceAppConfig` is a deliberately narrow migration escape hatch for
-/// domain adapters that already validate a complete `AppConfig`; it should be
-/// removed once all specialized admin operations use typed variants.
 #[derive(Debug, Clone)]
 pub enum ConfigPatch {
-    Settings(Settings),
-    ReplaceAppConfig(AppConfig),
+    Settings(Box<Settings>),
     Llm(LlmConfig),
     LlmRole {
         role: EndpointRole,
@@ -107,7 +103,6 @@ impl ConfigPatch {
     fn apply(self, config: &mut AppConfig) -> anyhow::Result<()> {
         match self {
             Self::Settings(settings) => config.apply_settings(&settings),
-            Self::ReplaceAppConfig(updated) => *config = updated,
             Self::Llm(llm) => config.llm = llm,
             Self::LlmRole { role, patch } => {
                 let slot = config.llm.role_mut(role).ok_or_else(|| {
@@ -182,12 +177,6 @@ impl ConfigService {
         })
     }
 
-    /// Return a detached loader view for read-only adapters that have not yet
-    /// migrated to `ConfigSnapshot`.
-    pub fn loader(&self) -> anyhow::Result<ConfigLoader> {
-        Ok(self.lock_state()?.loader.clone())
-    }
-
     pub fn settings(&self) -> anyhow::Result<Settings> {
         let snapshot = self.snapshot()?;
         Ok(Settings::from(&snapshot.config))
@@ -212,27 +201,16 @@ impl ConfigService {
         self.edit(|config| patch.apply(config))
     }
 
-    /// Transitional adapter for domain code that already owns a validated
-    /// typed operation. The closure runs while the serialized config state is
-    /// locked; a failed save restores the previous in-memory snapshot.
+    /// Apply a typed mutation while the serialized config state is locked; a
+    /// failed save restores the previous in-memory snapshot.
     pub fn edit<T>(
         &self,
         edit: impl FnOnce(&mut AppConfig) -> anyhow::Result<T>,
     ) -> anyhow::Result<ConfigUpdate<T>> {
-        self.edit_loader(|loader| edit(loader.config_mut()))
-    }
-
-    /// Transitional adapter for existing domain code that needs the loader
-    /// shape. It still uses the service's single lock, atomic save, version,
-    /// and notification path; callers must not call `ConfigLoader::save`.
-    pub fn edit_loader<T>(
-        &self,
-        edit: impl FnOnce(&mut ConfigLoader) -> anyhow::Result<T>,
-    ) -> anyhow::Result<ConfigUpdate<T>> {
         let (update, change) = {
             let mut state = self.lock_state_mut()?;
             let before = state.loader.config().clone();
-            let value = match edit(&mut state.loader) {
+            let value = match edit(state.loader.config_mut()) {
                 Ok(value) => value,
                 Err(error) => {
                     *state.loader.config_mut() = before;
@@ -352,7 +330,7 @@ mod tests {
         settings.hotkey.key_binding = "Ctrl+Alt+H".into();
 
         let update = service
-            .apply_patch(ConfigPatch::Settings(settings))
+            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
             .unwrap();
         let change = update.change.clone().unwrap();
 
@@ -372,7 +350,7 @@ mod tests {
         let settings = service.settings().unwrap();
 
         let update = service
-            .apply_patch(ConfigPatch::Settings(settings))
+            .apply_patch(ConfigPatch::Settings(Box::new(settings)))
             .unwrap();
 
         assert!(update.change.is_none());
@@ -406,7 +384,10 @@ mod tests {
             },
         );
         service
-            .apply_patch(ConfigPatch::ReplaceAppConfig(config))
+            .edit(|current| {
+                *current = config;
+                Ok(())
+            })
             .unwrap();
 
         let update = service

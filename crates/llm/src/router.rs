@@ -157,7 +157,7 @@ impl LlmRouter {
         // Gemini reject the request with HTTP 400. Clamp each endpoint's
         // effective `max_tokens` to its resolved context window here so the
         // floor can never exceed what the provider will accept, while small
-        // legacy caps (8192) still get lifted so long outputs are not
+        // configured caps are lifted so long outputs are not
         // truncated mid-stream.
         let fallback = if default_context_window > 0 {
             default_context_window
@@ -884,7 +884,7 @@ impl LlmRouter {
     /// previous visible output. The callback is deliberately separate from
     /// `on_chunk`: a provider retry can start a new response before its first
     /// chunk arrives, and concatenating both attempts is never valid.
-    /// The legacy cancellable method above keeps the old callback-only API for
+    /// The cancellable method above keeps the callback-only API for
     /// non-agent callers.
     pub async fn chat_stream_with_tools_aggregated_cancellable_with_attempts(
         &self,
@@ -1317,6 +1317,13 @@ mod tests {
                 })
             }
         }
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat(messages).await
+        }
         async fn chat_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
@@ -1337,6 +1344,14 @@ mod tests {
                 })
             }
         }
+        async fn chat_with_tools_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            tools: Vec<ToolDefinition>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat_with_tools(messages, tools).await
+        }
         async fn chat_stream(
             &self,
             _messages: Vec<CanonicalMessage>,
@@ -1349,6 +1364,16 @@ mod tests {
             } else {
                 Ok(Box::pin(stream::iter(self.chunks.clone())))
             }
+        }
+        async fn chat_stream_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.chat_stream(messages).await
         }
         async fn chat_stream_with_tools(
             &self,
@@ -1363,6 +1388,17 @@ mod tests {
             } else {
                 Ok(Box::pin(stream::iter(self.chunks.clone())))
             }
+        }
+        async fn chat_stream_with_tools_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            tools: Vec<ToolDefinition>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.chat_stream_with_tools(messages, tools).await
         }
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
@@ -1609,6 +1645,16 @@ mod tests {
         > {
             Err(Unknown("mock: no chat_stream".into()))
         }
+        async fn chat_stream_output_cap(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.chat_stream_with_tools(Vec::new(), Vec::new()).await
+        }
         async fn chat_stream_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
@@ -1645,6 +1691,17 @@ mod tests {
                     _ => None,
                 }
             })))
+        }
+        async fn chat_stream_with_tools_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            tools: Vec<ToolDefinition>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.chat_stream_with_tools(messages, tools).await
         }
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
@@ -2142,6 +2199,13 @@ mod tests {
                 thinking_blocks: Vec::new(),
             })
         }
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat(messages).await
+        }
         async fn chat_stream(
             &self,
             _: Vec<CanonicalMessage>,
@@ -2205,6 +2269,13 @@ mod tests {
             Err(LlmError::RateLimit {
                 retry_after: Some(Duration::from_millis(300)),
             })
+        }
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat(messages).await
         }
         async fn chat_stream(
             &self,
@@ -2383,6 +2454,14 @@ mod tests {
         #[async_trait]
         impl LlmClient for PendingClient {
             async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+                std::future::pending().await
+            }
+
+            async fn chat_with_output_cap(
+                &self,
+                _: Vec<CanonicalMessage>,
+                _: Option<u32>,
+            ) -> Result<LlmResponse, LlmError> {
                 std::future::pending().await
             }
 

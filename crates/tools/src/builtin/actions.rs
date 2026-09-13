@@ -33,7 +33,7 @@ pub struct ActionsParams {
     #[serde(default)]
     pub action_id: Option<String>,
     /// Optional mutating operation. Listing and inspection retain their
-    /// compact legacy shapes; cancellation is explicit.
+    /// compact list/inspect shapes; cancellation is explicit.
     #[serde(default)]
     pub operation: Option<ActionsOperation>,
     /// Optional filter when listing: only actions in this state.

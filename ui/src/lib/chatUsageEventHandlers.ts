@@ -12,6 +12,7 @@ import {
 	updateSessionTokenStats,
 } from './sessionUsage.ts';
 import { rememberMediaPlan } from './stores.ts';
+import logger from '$lib/logger.ts';
 import {
 	mediaPlanNoticeLabel,
 	mediaPlanProjectionLabel,
@@ -36,7 +37,11 @@ export function createChatUsageEventHandlers(): {
 		'agent:usage': (event) => {
 			const d = event.payload;
 			if (!d.sessionId) return;
-			const callKind = d.callKind || 'agent';
+			const callKind = d.callKind;
+			if (callKind !== 'agent' && callKind !== 'media' && callKind !== 'tool') {
+				logger.error('chatUsageEventHandlers', `Unsupported usage call kind: ${String(callKind)}`);
+				return;
+			}
 			const prompt = d.promptTokens || 0;
 			const completion = d.completionTokens || 0;
 			const cached = d.cachedTokens || 0;
@@ -104,7 +109,6 @@ export function createChatUsageEventHandlers(): {
 				contextWindow: d.contextWindow ?? null,
 				model: d.model ?? null,
 				// A real usage event supersedes any restored estimate.
-				estimated: false,
 				// A live event means the conversation is active again: the widget
 				// switches back to the per-step context view.
 				restored: false,
@@ -135,8 +139,8 @@ export function createChatUsageEventHandlers(): {
 		},
 		'agent:compaction': (event) => {
 			const d = event.payload;
-			const before = formatTokenCount(d.tokensBefore || 0);
-			const after = formatTokenCount(d.tokensAfter || 0);
+			const before = formatTokenCount(d.tokensBefore);
+			const after = formatTokenCount(d.tokensAfter);
 			if (d.degraded) {
 				addNotification(
 					`上下文空间不足，已降级压缩：${before} → ${after} tokens；较早内容已省略`,

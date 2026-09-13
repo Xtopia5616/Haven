@@ -11,9 +11,9 @@
 	<div class="tool-card-count">{data.agents.length} 个同伴</div>
 	{#if data.agents.length > 0}
 		<ToolCardList>
-			{#each data.agents as agent (agent.name ?? agent.session_id ?? agent.agent)}
+			{#each data.agents as agent (agent.name)}
 				<div class="action-row">
-					<span class="action-id">{agent.title || agent.name || agent.session_id || agent.agent}</span>
+					<span class="action-id">{agent.title || agent.name}</span>
 					{#if agent.role}<span class="scheduled-mode">{agent.role}</span>{/if}
 					{#if agent.status}<StatusBadge label={agent.status} tone={agent.status === 'online' ? 'success' : 'neutral'} />{/if}
 				</div>
@@ -28,10 +28,10 @@
 		{#if data.message_id}<span class="action-id">{data.message_id}</span>{/if}
 	</div>
 	<div class="tool-card-meta">等待同伴回复超时（{data.timeout_secs ?? '?'}s）</div>
-{:else if data.session_id || data.agent}
+{:else if data.session_id}
 	<div class="action-row">
 		<StatusBadge label={data.ok === false ? '失败' : '已创建'} tone={data.ok === false ? 'error' : 'success'} />
-		<span class="action-id">{data.session_id || data.agent}</span>
+		<span class="action-id">{data.session_id}</span>
 	</div>
 	{#if data.parent}<div class="tool-card-meta">父会话 {data.parent}</div>{/if}
 	{#if data.role}<div class="tool-card-meta">角色 {data.role}</div>{/if}

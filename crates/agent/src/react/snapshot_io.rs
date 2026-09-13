@@ -59,20 +59,15 @@ impl SnapshotStore {
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
 /// of building an owned `ReActSnapshot` skips the per-step deep copies of
 /// events/branch_points (which accumulate to O(n²) over a long session).
-/// Field names/shape match `ReActSnapshot` exactly so the persisted JSON
-/// stays wire-compatible. `events` is the sole transcript authority (Phase 8).
+/// Field names/shape match `ReActSnapshot` exactly. `events` is the sole
+/// transcript authority (Phase 8).
 #[derive(serde::Serialize)]
 struct SnapshotView<'a> {
     events: &'a [TranscriptRecord],
     step_number: u32,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     branch_points: &'a HashMap<u32, BranchPoint>,
-    /// `saved_at` is retained for old snapshots and diagnostics. New resume
-    /// logic uses the durable ingress cursor below.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    saved_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_ingress_seq: Option<i64>,
+    last_ingress_seq: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error_partial_message_ids: Option<&'a [String]>,
     /// Explicit ask-awaiting flag (Phase 4 / C5); see `ReActSnapshot`.
@@ -531,7 +526,7 @@ impl ReActEngine {
             })
             .await
         {
-            Ok(cursor) => Some(cursor),
+            Ok(cursor) => cursor,
             Err(error) => {
                 tracing::warn!(
                     "failed to read message ingress cursor for snapshot {}: {}",
@@ -545,7 +540,6 @@ impl ReActEngine {
             events: &state.events,
             step_number,
             branch_points: &state.branch_points,
-            saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             last_ingress_seq,
             error_partial_message_ids,
             awaiting_answer: awaiting.as_ref(),

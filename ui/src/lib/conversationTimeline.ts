@@ -17,7 +17,6 @@ export interface ConversationMessage {
 	received?: boolean;
 	resolved?: unknown;
 	actionId?: string | null;
-	unrecoverable?: boolean;
 	outcome?: string | null;
 	showFallbackIntent?: boolean;
 	stepNumber?: number | null;

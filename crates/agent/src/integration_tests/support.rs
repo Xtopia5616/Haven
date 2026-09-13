@@ -61,6 +61,27 @@ impl LlmClient for FinalAnswerMock {
         };
         Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
+    async fn chat_stream_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        self.chat_stream_with_tools(messages, tools).await
+    }
+    async fn chat_stream_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        self.chat_stream_with_tools(messages, Vec::new()).await
+    }
     async fn health_check(&self) -> Result<(), LlmError> {
         Ok(())
     }
@@ -400,6 +421,27 @@ impl LlmClient for ScriptedMock {
             }
         }
     }
+    async fn chat_stream_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        self.chat_stream_with_tools(messages, tools).await
+    }
+    async fn chat_stream_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        self.chat_stream_with_tools(messages, Vec::new()).await
+    }
     async fn health_check(&self) -> Result<(), LlmError> {
         Ok(())
     }
@@ -437,6 +479,14 @@ impl LlmClient for VisionUsageMock {
             model: Some("vision-test".into()),
             ..LlmResponse::default()
         })
+    }
+
+    async fn chat_with_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat(messages).await
     }
 
     async fn chat_stream(
@@ -682,8 +732,7 @@ pub(super) fn seed_hello_snapshot(
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points,
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(session_id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,

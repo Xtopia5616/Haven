@@ -2,50 +2,6 @@ use super::support::*;
 use super::*;
 
 #[tokio::test]
-async fn rollback_without_react_state_truncates_messages() {
-    let (agent, executor) = make_test_agent();
-    let session = executor.create_session("no state").await.unwrap();
-    // No react_state saved ??simulate an old session that errored before
-    // snapshots were persisted.
-    agent
-        .db
-        .update_session_status(&session.id, "error")
-        .unwrap();
-    executor
-        .update_session_status(&session.id, SessionStatus::Error)
-        .await
-        .unwrap();
-    agent
-        .db
-        .add_message(&session.id, "user", "hello", Some("text"), None)
-        .unwrap();
-    agent
-        .db
-        .add_message(&session.id, "assistant", "partial", Some("text"), None)
-        .unwrap();
-    let hello_id = agent
-        .db
-        .get_session_messages(&session.id)
-        .unwrap()
-        .into_iter()
-        .find(|m| m.content == "hello")
-        .unwrap()
-        .id;
-
-    // User-message rollback (pause=true) should truncate from the user msg.
-    agent
-        .rollback_session(&session.id, 1, true, Some(&hello_id))
-        .await
-        .unwrap();
-    assert_eq!(
-        executor.get_session_state(&session.id).await,
-        Some(SessionStatus::Paused)
-    );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
-    assert!(msgs.is_empty(), "messages should be empty after rollback");
-}
-
-#[tokio::test]
 async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("no bp").await.unwrap();
@@ -65,8 +21,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         events: seed_events_from_canonical(canonical.clone()),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -168,8 +123,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points,
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -267,8 +221,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         events: seed_events_from_canonical(canonical),
         step_number: 2,
         branch_points,
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -356,8 +309,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         events: seed_events_from_canonical(canonical),
         step_number: 2,
         branch_points,
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -546,8 +498,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points,
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -674,8 +625,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         events: seed_events_from_canonical(canonical),
         step_number: 2,
         branch_points,
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,

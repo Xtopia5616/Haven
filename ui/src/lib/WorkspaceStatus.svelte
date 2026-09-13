@@ -39,10 +39,10 @@
 	});
 
 	const statusColor = $derived.by(() => {
-		if (runtime === 'browser') return 'outline';
+		if (runtime === 'browser') return 'neutral';
 		if (overlay.isRecording) return 'error';
 		if (conversationStatus === '已暂停') return 'warning';
-		if (conversationStatus === '等待后台任务') return 'tertiary';
+		if (conversationStatus === '等待后台任务') return 'tool';
 		if (conversationStatus === '运行中' || conversationStatus === '等待中') return 'warning';
 		if (
 			overlay.processing ||
@@ -51,10 +51,10 @@
 			busySessions.size > 0
 		)
 			return 'warning';
-		if (modelState === 'streaming') return 'primary';
-		if (modelState === 'tool' || awaitingBackgroundActive) return 'tertiary';
+		if (modelState === 'streaming') return 'info';
+		if (modelState === 'tool' || awaitingBackgroundActive) return 'tool';
 		if (runningActionCount > 0 || llmConnected === 'ready') return 'success';
-		return 'outline';
+		return 'neutral';
 	});
 
 	const statusAnimating = $derived(

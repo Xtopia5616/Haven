@@ -249,7 +249,6 @@ mod pending_context_tests {
             source: InjectSource::FollowUp,
             text: "already projected".to_string(),
             media_inputs: Vec::new(),
-            attachments: Vec::new(),
             message_id: Some(message_id.clone()),
         };
         let mut state =

@@ -22,10 +22,7 @@
 //! - **Terminal action-result**: no live loop left — history-only persist.
 
 use super::*;
-use crate::types::{
-    Action, TranscriptRecord, attachment_media_inputs_for_snapshot,
-    canonical_for_snapshot_with_media_inputs,
-};
+use crate::types::{Action, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_tools::{OperationIdempotency, ToolExecutionOutcome, ToolOperationScope};
@@ -161,8 +158,11 @@ impl TranscriptEvent {
                 step_number,
                 source: *source,
                 text: text.clone(),
-                media_inputs: attachment_media_inputs_for_snapshot(attachments),
-                attachments: Vec::new(),
+                media_inputs: attachments
+                    .iter()
+                    .map(haven_common::media::message_attachment_to_media_input)
+                    .map(|input| input.for_snapshot())
+                    .collect(),
                 message_id: message_id.clone(),
             },
             Self::CompactSummary {
@@ -421,7 +421,7 @@ impl ReActEngine {
                 let strategy = self.media_strategy();
                 let media_inputs = attachments
                     .iter()
-                    .map(haven_common::media::legacy_attachment_to_media_input)
+                    .map(haven_common::media::message_attachment_to_media_input)
                     .collect::<Vec<_>>();
                 let media_plan = crate::react::media_plan_for_inputs(&media_inputs, strategy);
                 if !media_plan.is_empty() || !media_plan.notices.is_empty() {
@@ -449,7 +449,7 @@ impl ReActEngine {
                 }
                 let mut content = vec![ContentPart::text(text)];
                 for attachment in &attachments {
-                    let input = haven_common::media::legacy_attachment_to_media_input(attachment);
+                    let input = haven_common::media::message_attachment_to_media_input(attachment);
                     crate::types::append_media_projection(&mut content, &input, strategy);
                 }
                 state

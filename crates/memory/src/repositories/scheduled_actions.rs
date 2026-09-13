@@ -5,9 +5,8 @@ use crate::db::Database;
 /// (or fires overdue ones immediately). `mode` selects the fire behavior:
 /// - `notify`: show a notification (title/body).
 /// - `tool`: call the tool in `tool_name` with `tool_args` (JSON text).
-/// - `continue`: resume the session in `session_id`, delivering `prompt` (or body)
-///   as the continuation message; `session_id` is the session that scheduled the
-///   action.
+/// - `continue`: resume the session in `session_id`, delivering `prompt` as the
+///   continuation message; `session_id` is the session that scheduled the action.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScheduledActionRow {
     pub id: String,
@@ -171,9 +170,8 @@ fn row_to_action(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionRow> {
 impl Database {
     /// Persist a newly spawned background action (status `running`). The action is
     /// later finalized by [`Database::finish_action`]; terminal rows stay in the
-    /// table as history. `due_at`/`body` are filled with safe placeholders
-    /// because databases created before the action columns existed still carry
-    /// `NOT NULL` on those scheduled-action columns.
+    /// table as history. Scheduled-only columns remain NULL for background
+    /// actions because each action kind owns its own payload fields.
     pub fn save_action(
         &self,
         id: &str,
@@ -183,8 +181,8 @@ impl Database {
     ) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO actions (id, kind, session_id, command, status, due_at, body, started_at, created_at)
-             VALUES (?1, 'background', ?2, ?3, 'running', ?4, '', ?4, datetime('now'))",
+            "INSERT INTO actions (id, kind, session_id, command, status, started_at, created_at)
+             VALUES (?1, 'background', ?2, ?3, 'running', ?4, datetime('now'))",
             rusqlite::params![id, session_id, command, started_at],
         )?;
         Ok(())

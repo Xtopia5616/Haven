@@ -46,19 +46,13 @@ export const STATUS_COLORS: Record<StatusTone, StatusColorTokens> = {
 	},
 };
 
-const STATUS_ALIASES: Record<string, StatusTone> = {
-	primary: 'info',
-	tertiary: 'tool',
-	outline: 'neutral',
-};
-
-/** Resolve current component vocabulary to the shared semantic tone. */
+/** Resolve a semantic status tone; unknown values are neutral by contract. */
 export function resolveStatusTone(value: string | undefined | null): StatusTone {
 	const normalized = value?.toLowerCase();
 	if (normalized && normalized in STATUS_COLORS) {
 		return normalized as StatusTone;
 	}
-	return (normalized && STATUS_ALIASES[normalized]) || 'neutral';
+	return 'neutral';
 }
 
 export function getStatusColorTokens(value: string | undefined | null): StatusColorTokens {

@@ -1,7 +1,7 @@
 use crate::db::Database;
 use base64::Engine as _;
 use chrono::{SecondsFormat, Utc};
-use haven_common::media::{MediaInput, legacy_attachment_to_media_input};
+use haven_common::media::{MediaInput, message_attachment_to_media_input};
 use haven_common::types::MessageAttachment;
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
@@ -52,15 +52,13 @@ pub struct Message {
     pub message_type: Option<String>,
     pub created_at: String,
     pub tool_call_id: Option<String>,
-    #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
     /// Durable provider-neutral media representations. This is the canonical
-    /// persistence projection; `attachments` remains a UI/legacy projection.
+    /// persistence projection; `attachments` remains the UI/ingress projection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media_inputs: Vec<MediaInput>,
     /// True for user messages that came from voice transcription (mic style
     /// in the UI survives reloads). Assistant/tool messages are always false.
-    #[serde(default)]
     pub voice: bool,
     /// Durable per-session ingress order. This is intentionally omitted from
     /// the IPC JSON surface; it is a recovery cursor, not user-visible data.
@@ -105,7 +103,7 @@ impl Database {
     ) -> anyhow::Result<Message> {
         let media_inputs: Vec<MediaInput> = attachments
             .iter()
-            .map(legacy_attachment_to_media_input)
+            .map(message_attachment_to_media_input)
             .map(|input| input.for_snapshot())
             .collect();
         self.add_message_full_with_media(
@@ -226,7 +224,7 @@ impl Database {
                 .iter()
                 .map(|attachment| {
                     let mut attachment = attachment.clone();
-                    // Never persist base64 in the legacy projection. The
+                    // Never persist base64 in the UI projection. The
                     // canonical media_inputs column carries metadata and a
                     // trusted host path is rehydrated only for UI previews.
                     attachment.data.clear();
@@ -242,7 +240,7 @@ impl Database {
             Some(s) if !s.is_empty() => serde_json::from_str(&s).unwrap_or_default(),
             _ => Vec::new(),
         };
-        // `messages.attachments` is a compatibility/UI projection. Rehydrate
+        // `messages.attachments` is a UI projection. Rehydrate
         // a preview only from the two host-owned media roots; the durable
         // provider-neutral representation remains `media_inputs`.
         for attachment in &mut attachments {
@@ -343,31 +341,6 @@ impl Database {
         Ok(msgs)
     }
 
-    /// Return every message persisted strictly after the given timestamp
-    /// (ascending). Resume uses this to recover inputs that landed after the
-    /// restored snapshot (supplements/steering/answers persisted to the DB
-    /// while paused or after a crash): anything newer than `saved_at` cannot
-    /// be in the snapshot's canonical, so no content comparison is needed.
-    pub fn get_session_messages_since(
-        &self,
-        session_id: &str,
-        since: &str,
-    ) -> anyhow::Result<Vec<Message>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq, media_inputs
-             FROM messages WHERE session_id = ?1 AND created_at > ?2
-             ORDER BY created_at ASC, rowid ASC",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![session_id, since], map_message_row)?;
-        let mut msgs = Vec::new();
-        for row in rows {
-            msgs.push(row?);
-        }
-        Ok(msgs)
-    }
-
     /// Return every message persisted after a durable ingress cursor.
     /// Unlike timestamp recovery, this remains correct when the wall clock
     /// moves backwards or multiple writes share the same millisecond.
@@ -403,18 +376,13 @@ impl Database {
     ///
     /// The session's FIRST user message is the session input seeded into the
     /// canonical directly (it never carries an anchor), so it is excluded here.
-    pub fn get_undelivered_user_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
-        self.get_undelivered_user_messages_since(session_id, None)
-    }
-
-    /// Like [`Self::get_undelivered_user_messages`], but when `since_created_at`
-    /// is set only rows with `created_at > since` are returned. Callers use this
-    /// to bound crash/resume recovery (e.g. last 2 days) so ancient false
-    /// positives from missing anchors never re-enter the ReAct loop.
+    /// Only rows with `created_at > since_created_at` are returned. Callers
+    /// must provide a recovery window so ancient false positives from missing
+    /// anchors never re-enter the ReAct loop.
     pub fn get_undelivered_user_messages_since(
         &self,
         session_id: &str,
-        since_created_at: Option<&str>,
+        since_created_at: &str,
     ) -> anyhow::Result<Vec<Message>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -424,7 +392,7 @@ impl Database {
              WHERE m.session_id = ?1
                AND m.role = 'user'
                AND m.id LIKE 'msg-%'
-               AND (?2 IS NULL OR m.created_at > ?2)
+               AND m.created_at > ?2
                AND m.id <> (
                    SELECT id FROM messages
                    WHERE session_id = ?1 AND role = 'user'
@@ -724,22 +692,6 @@ mod tests {
     }
 
     #[test]
-    fn get_session_messages_since_returns_only_newer_rows() {
-        let db = test_db();
-        let tid = test_session(&db);
-        let first = db.add_message(&tid, "user", "before", None, None).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let cutoff = now_rfc3339_millis();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let second = db.add_message(&tid, "user", "after", None, None).unwrap();
-
-        let since = db.get_session_messages_since(&tid, &cutoff).unwrap();
-        assert_eq!(since.len(), 1, "only rows after the cutoff");
-        assert_eq!(since[0].id, second.id);
-        assert_ne!(since[0].id, first.id, "the earlier row must be excluded");
-    }
-
-    #[test]
     fn get_undelivered_user_messages_excludes_first_and_anchored() {
         let db = test_db();
         let tid = test_session(&db);
@@ -754,7 +706,7 @@ mod tests {
             .add_message(&tid, "user", "C:\\照片目录", None, None)
             .unwrap();
 
-        let undelivered = db.get_undelivered_user_messages(&tid).unwrap();
+        let undelivered = db.get_undelivered_user_messages_since(&tid, "").unwrap();
         assert_eq!(
             undelivered.len(),
             1,
@@ -772,11 +724,19 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         // No messages at all: nothing to recover.
-        assert!(db.get_undelivered_user_messages(&tid).unwrap().is_empty());
+        assert!(
+            db.get_undelivered_user_messages_since(&tid, "")
+                .unwrap()
+                .is_empty()
+        );
         // Assistant rows are never user inputs.
         db.add_message(&tid, "assistant", "hi", Some("text"), None)
             .unwrap();
-        assert!(db.get_undelivered_user_messages(&tid).unwrap().is_empty());
+        assert!(
+            db.get_undelivered_user_messages_since(&tid, "")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -791,7 +751,7 @@ mod tests {
         let after = (Utc::now() + chrono::Duration::seconds(1))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
         assert!(
-            db.get_undelivered_user_messages_since(&tid, Some(after.as_str()))
+            db.get_undelivered_user_messages_since(&tid, after.as_str())
                 .unwrap()
                 .is_empty()
         );
@@ -799,7 +759,7 @@ mod tests {
         let before =
             (Utc::now() - chrono::Duration::days(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
         let undelivered = db
-            .get_undelivered_user_messages_since(&tid, Some(before.as_str()))
+            .get_undelivered_user_messages_since(&tid, before.as_str())
             .unwrap();
         assert_eq!(undelivered.len(), 1);
         assert_eq!(undelivered[0].id, lost.id);
@@ -982,10 +942,6 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert!(msgs[0].voice, "voice message must keep the flag");
         assert!(!msgs[1].voice, "typed message stays non-voice");
-        // Serde default keeps old JSON payloads (pre-voice) decodable.
-        let legacy = r#"{"id":"x","session_id":"t","role":"user","content":"c","message_type":"text","created_at":"2026-01-01T00:00:00Z","tool_call_id":null,"attachments":[]}"#;
-        let decoded: Message = serde_json::from_str(legacy).unwrap();
-        assert!(!decoded.voice);
     }
 
     #[test]

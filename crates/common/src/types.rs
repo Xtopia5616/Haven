@@ -97,9 +97,7 @@ id_newtype! {
 #[serde(rename_all = "snake_case")]
 pub enum McpTransportType {
     #[default]
-    #[serde(alias = "Stdio")]
     Stdio,
-    #[serde(alias = "Http")]
     Http,
 }
 
@@ -347,10 +345,8 @@ impl std::fmt::Display for CanonicalRole {
 /// Origin of a user-role inject into the canonical transcript (Phase 6 / B3).
 /// Runtime queues already carry structured flags (`is_answer`, etc.).
 /// Canonical content stores **raw** text + `source`; LLM adapters prepend
-/// Legacy / content fallback detector for peer spawn kickoff briefs.
-/// Primary signal is `messages.message_type = "peer_kickoff"`; this prefix
-/// covers older rows and in-memory bubbles that only have the wrapper text.
-/// Keep in sync with `ui/src/lib/peerKickoff.ts`.
+/// Display prefix for peer spawn kickoff briefs. Trust decisions use the
+/// structured `messages.message_type = "peer_kickoff"` field, not this text.
 pub const PEER_KICKOFF_PREFIX: &str = "[Delegated task from agent ";
 
 /// `"{prefix}: "` at the wire boundary via [`Self::render_prefix`] (Phase 8
@@ -424,13 +420,13 @@ pub struct CanonicalMessage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking_blocks: Vec<serde_json::Value>,
     /// Structured inject origin (Phase 6 / B3). Skipped on the wire by
-    /// adapters; optional so legacy snapshots deserialize cleanly.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// adapters and present only on user-injected messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<InjectSource>,
     /// Stable `msg-*` identity shared with `memory_items` for compaction
-    /// summary bubbles (L1). Adapters ignore this; optional for legacy
-    /// snapshots.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// summary bubbles (L1). Adapters ignore this and ordinary messages do not
+    /// carry one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
 
@@ -519,11 +515,9 @@ pub struct CanonicalToolCall {
 
 impl CanonicalToolCall {
     /// Serialize the canonical argument object to the wire JSON string every
-    /// provider expects. Centralized so the encode policy (and the `{}`
-    /// fallback for a null/missing object) lives in one place instead of
-    /// being duplicated per adapter.
+    /// provider expects.
     pub fn args_to_wire(&self) -> String {
-        serde_json::to_string(&self.arguments).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string(&self.arguments).expect("JSON values must be serializable")
     }
 
     /// Parse a provider's wire arguments JSON string back into a canonical
@@ -723,42 +717,39 @@ fn repair_truncated_json(input: &str) -> Option<RepairOutcome> {
 
 /// A binary attachment on a message (e.g. a user-provided image or file).
 /// `data` holds base64-encoded bytes; `media_type` is the MIME type
-/// (e.g. "image/png"). Non-image attachments (user-uploaded files)
-/// additionally carry `filename` (the original name) and `path` (an absolute
-/// host path for persisted user uploads or generated media).
+/// (e.g. "image/png"). File-style attachments additionally carry `filename`
+/// (the original name) and `path` (an absolute host path for persisted user
+/// uploads or generated media); inline audio/video may carry a filename too.
 ///
 /// Lives in the shared types layer (not the memory crate) so the input /
 /// session / agent layers that carry attachments never depend on the
 /// persistence crate just for this data structure.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct MessageAttachment {
-    /// Opaque managed-asset id. Legacy rows may omit it; host ingress mints
-    /// one before persistence, while the compatibility adapter can mint an
-    /// ephemeral id for read-only projection.
+    /// Opaque managed-asset id. Host ingress mints one before persistence;
+    /// conversion also creates one for an in-memory attachment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<String>,
     pub media_type: String,
     pub data: String,
-    /// Original file name for non-image attachments (e.g. "report.pdf").
+    /// Original file name for file-style or inline media attachments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
-    /// Absolute path where a non-image attachment was persisted on disk.
+    /// Absolute path where a file-style attachment was persisted on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// SHA-256 of generated media bytes. Uploads and legacy attachments omit
-    /// this field.
+    /// SHA-256 of generated media bytes. Uploads may omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
     /// Exact byte length recorded for generated media.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
-    /// RFC3339 expiry for generated media. Uploads and legacy attachments
-    /// omit this field.
+    /// RFC3339 expiry for generated media. Uploads may omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     /// Provider-neutral derived views of this asset (OCR/STT/document
-    /// extraction, etc.).  The attachment remains the compatibility/UI
-    /// projection; the media planner consumes these representations.
+    /// extraction, etc.). The attachment is the UI/ingress projection; the
+    /// media planner consumes these representations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub representations: Vec<crate::media::MediaRepresentation>,
     /// A successful gateway extraction can be the preferred view for the
@@ -786,15 +777,16 @@ impl MessageAttachment {
         }
     }
 
-    /// True for vision-capable attachments (images), which are injected into
-    /// the model context as image content parts.
+    /// True for image attachments, which are injected into the model context
+    /// as image content parts.
     pub fn is_image(&self) -> bool {
         self.media_type.starts_with("image/")
     }
 
     /// True when the attachment can be sent to a multimodal chat endpoint as
-    /// an inline content part. Images and audio are kept in base64 for this
-    /// purpose; ordinary files are persisted and exposed through their path.
+    /// an inline content part. Images, audio and video are kept in base64 for
+    /// this purpose; ordinary files are persisted and exposed through their
+    /// managed asset reference.
     pub fn is_inline_media(&self) -> bool {
         self.is_image() || self.is_audio() || self.is_video()
     }

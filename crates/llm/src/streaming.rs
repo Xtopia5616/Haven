@@ -194,10 +194,21 @@ pub(crate) async fn aggregate_stream_cancellable(
     // Keep that phase cancellable too: otherwise pressing the UI interrupt
     // button cannot stop a provider that accepted the connection but has not
     // returned headers yet, and the caller waits for the transport timeout.
+    let stream_result = async {
+        if tools.is_empty() {
+            client
+                .chat_stream_output_cap(messages, max_output_tokens)
+                .await
+        } else {
+            client
+                .chat_stream_with_tools_output_cap(messages, tools, max_output_tokens)
+                .await
+        }
+    };
     let mut stream = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(LlmError::Cancelled),
-        result = client.chat_stream_with_tools_output_cap(messages, tools, max_output_tokens) => result?,
+        result = stream_result => result?,
     };
     tracing::debug!("aggregate_stream_cancellable start");
 
@@ -389,6 +400,17 @@ mod tests {
             LlmError,
         > {
             Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn chat_stream_output_cap(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            std::future::pending().await
         }
 
         async fn chat_stream_with_tools_output_cap(

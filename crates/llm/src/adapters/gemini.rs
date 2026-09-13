@@ -24,7 +24,7 @@ use base64::Engine;
 use haven_common::config::ModelEndpoint;
 #[cfg(test)]
 use haven_common::prompts::SESSION_CONTEXT_FENCE_START;
-use haven_common::prompts::{STT_SYSTEM_PROMPT, split_system_prompt_cache_boundary};
+use haven_common::prompts::{STT_SYSTEM_PROMPT, split_system_prompt_cache_sections};
 
 // ---------------------------------------------------------------------------
 // Gemini generateContent request / response types
@@ -447,7 +447,10 @@ impl GeminiAdapter {
             None
         } else {
             let text = system_parts.join("\n\n");
-            let parts = if let Some((stable, dynamic)) = split_system_prompt_cache_boundary(&text) {
+            let parts = if let Some((stable, session, memory)) =
+                split_system_prompt_cache_sections(&text)
+            {
+                let dynamic = format!("{session}{memory}");
                 vec![json!({"text": stable}), json!({"text": dynamic})]
             } else {
                 vec![json!({"text": text})]
@@ -629,7 +632,7 @@ impl GeminiAdapter {
         let system_split = messages.iter().any(|message| {
             message.role == CanonicalRole::System
                 && message.content.iter().any(|part| {
-                    matches!(part, ContentPart::Text(text) if split_system_prompt_cache_boundary(text).is_some())
+                    matches!(part, ContentPart::Text(text) if split_system_prompt_cache_sections(text).is_some())
                 })
         });
         let (contents, system_instruction) = Self::convert_contents(messages);

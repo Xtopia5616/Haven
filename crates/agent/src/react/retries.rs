@@ -47,7 +47,7 @@ pub(crate) struct ResponsePolicyState {
     pub empty_retry_delay_ms: u64,
     pub cut_off_retries_used: u32,
     pub cut_off_retries_max: u32,
-    /// Explicit ask-awaiting (C5) or legacy JSON scan.
+    /// Explicit ask-awaiting state restored by the executor.
     pub pending_ask: bool,
 }
 
@@ -233,8 +233,8 @@ impl ResponsePolicy {
     /// Detect shell/actions observations that mean "background still running;
     /// result will be auto-pushed".
     ///
-    /// Prefer parseable JSON with Haven's `next_step: end_turn` (or legacy
-    /// `background: true` + running). A short head gate skips full JSON parse
+    /// Parseable JSON with Haven's `next_step: end_turn` is the only accepted
+    /// background-wait marker. A short head gate skips full JSON parse
     /// of large non-wait observations. Truncated observations are invalid
     /// JSON; only a char-boundary head is scanned for the Haven-emitted
     /// `next_step` marker (producers put it first) — never the full string,
@@ -247,10 +247,7 @@ impl ResponsePolicy {
         let spaced =
             format!("\"{BACKGROUND_WAIT_NEXT_STEP_KEY}\": \"{BACKGROUND_WAIT_NEXT_STEP}\"");
         let head_has_next_step = head.contains(&compact) || head.contains(&spaced);
-        let head_looks_wait = head_has_next_step
-            || head.contains("\"background\":true")
-            || head.contains("\"background\": true");
-        if !head_looks_wait {
+        if !head_has_next_step {
             return false;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
@@ -280,12 +277,6 @@ impl ResponsePolicy {
             .get(BACKGROUND_WAIT_NEXT_STEP_KEY)
             .and_then(|s| s.as_str())
             == Some(BACKGROUND_WAIT_NEXT_STEP);
-        if v.get("background").and_then(|b| b.as_bool()) == Some(true) {
-            return matches!(
-                v.get("status").and_then(|s| s.as_str()),
-                Some("running") | None
-            );
-        }
         if !has_next_step {
             return false;
         }
@@ -432,7 +423,7 @@ mod tests {
         assert!(ResponsePolicy::observation_is_background_wait(
             r#"{"next_step":"end_turn","background":true,"action_id":"act-1","status":"running"}"#
         ));
-        assert!(ResponsePolicy::observation_is_background_wait(
+        assert!(!ResponsePolicy::observation_is_background_wait(
             r#"{"background":true,"action_id":"act-1","status":"running"}"#
         ));
         assert!(ResponsePolicy::observation_is_background_wait(
@@ -540,7 +531,7 @@ mod tests {
             CanonicalMessage::user_text("clone repo"),
             CanonicalMessage::tool(
                 vec![ContentPart::text(
-                    r#"{"background":true,"action_id":"act-9","status":"running"}"#,
+                    r#"{"next_step":"end_turn","background":true,"action_id":"act-9","status":"running"}"#,
                 )],
                 Some("c9".into()),
             ),

@@ -1,5 +1,5 @@
 //! Session start / resume drivers for [`AgentLayer`]: fresh ReAct runs,
-//! snapshot restore, and the snapshot-less tool-chain projector fallback.
+//! snapshot restore and fresh-session startup.
 //!
 //! Split out of `layer.rs` so the facade stays focused on wiring; these
 //! methods operate on the same private fields via `impl AgentLayer` blocks.
@@ -9,15 +9,9 @@
 //! - **Snapshot present and valid** → single authority. [`run_session_resumed`]
 //!   restores `events` (canonical + rounds are projected); RAM queues are a
 //!   cache only.
-//! - **Snapshot missing (`react_state` row absent)** → best-effort fresh run
-//!   that projects tool-call/result pairs via
-//!   [`project_tool_chain_from_steps`] (same projector shape as would appear
-//!   in a snapshot). Missing provider call ids receive fresh `call-*` local
-//!   ids; the lossy path never matches observation text against message rows.
+//! - **Snapshot missing (`react_state` row absent)** → fresh-session startup.
 //! - **Snapshot corrupt / unparsable** → **hard-fail** with a user-visible
-//!   error. Never silently fall through to the projector (that would fork
-//!   semantics: synthetic ids, no awaiting_answer/confirm, different
-//!   canonical shape).
+//!   error. A different transcript reconstruction path is never attempted.
 //!
 //! ## Queue durability (Phase 7 / D2)
 //!
@@ -28,8 +22,7 @@
 use crate::AgentLayer;
 use crate::react::{ReActState, RunInput};
 use crate::resume_support::{
-    load_mcp_tool_names, merge_recovery_candidates, project_tool_chain_from_steps,
-    reconcile_dangling_tool_call,
+    load_mcp_tool_names, merge_recovery_candidates, reconcile_dangling_tool_call,
 };
 use crate::rollback_support::trim_dangling_tool_call;
 
@@ -42,12 +35,12 @@ use haven_common::media::MediaInput;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use std::collections::HashMap;
 
-/// A recent conversation message (role, content) used by the FRESH-run /
-/// snapshot-less path. **S1 authority:** canonical is the LLM truth; this
+/// A recent conversation message (role, content) used by the fresh-session
+/// system-prompt path. **S1 authority:** canonical is the LLM truth; this
 /// window may feed Additional context only for turns not already represented
 /// as the first canonical user message. Resume does not use this type: the
 /// snapshot is the single authority and post-snapshot inputs are recovered by
-/// timestamp, not by content comparison.
+/// ingress sequence, not by content comparison.
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationMessage {
     role: String,
@@ -206,14 +199,14 @@ impl AgentLayer {
             .await
             .map_err(|error| anyhow::anyhow!("failed to load session resume data: {error}"))?;
 
-        // Snapshot events now carry metadata-only media inputs. Re-register
-        // the host-owned files from the materialized compatibility projection
-        // before a resumed request can ask the `files` tool to resolve them.
+        // Snapshot events carry metadata-only media inputs. Re-register the
+        // host-owned files from the materialized media projection before a
+        // resumed request can ask the `files` tool to resolve them.
         self.executor
             .get_tools()
             .register_managed_assets_for_session(session_id, &all_attachments);
 
-        let result = match react_state {
+        match react_state {
             Some(state_json) => match ReActSnapshot::from_json(&state_json) {
                 Ok(mut snapshot) => {
                     tracing::info!(
@@ -302,7 +295,7 @@ impl AgentLayer {
                     let (_, rounds) = snapshot.project();
                     self.restore_per_session_tools(session_id, &rounds).await;
                     // Phase 4 / C5+F2: restore the explicit ask gate from the
-                    // snapshot. Upgrade legacy "paused" status BEFORE publishing
+                    // snapshot. Upgrade a plain paused status BEFORE publishing
                     // the flag so auto-wake cannot race on plain Paused.
                     if let Some(pending) = snapshot.awaiting_answer.clone() {
                         if matches!(
@@ -314,7 +307,7 @@ impl AgentLayer {
                             .await
                         {
                             tracing::warn!(
-                                "failed to upgrade session {} to paused_awaiting_answer on resume: {}",
+                                "failed to restore session {} as paused_awaiting_answer on resume: {}",
                                 session_id,
                                 e
                             );
@@ -364,7 +357,7 @@ impl AgentLayer {
                                 .await
                             {
                                 tracing::warn!(
-                                    "failed to upgrade session {} to paused_awaiting_confirm on resume: {}",
+                                    "failed to restore session {} as paused_awaiting_confirm on resume: {}",
                                     session_id,
                                     e
                                 );
@@ -396,9 +389,8 @@ impl AgentLayer {
                 }
                 Err(e) => {
                     // Phase 7 / B4: corrupt or schema-drifted react_state must
-                    // NOT silently fall through to the snapshot-less projector
-                    // (synthetic call ids, no gate restore). Hard-fail so the
-                    // user sees the loss instead of a forked resume.
+                    // hard-fail so the user sees the loss instead of a forked
+                    // resume.
                     tracing::error!(
                         "react_state for session {} failed to parse ({}); refusing resume",
                         session_id,
@@ -412,8 +404,6 @@ impl AgentLayer {
                 }
             },
             None => {
-                // No snapshot row: best-effort fresh run +
-                // `project_tool_chain_from_steps` (documented Phase 7 / B4).
                 self.run_session(
                     &session.id,
                     &description,
@@ -427,17 +417,7 @@ impl AgentLayer {
                 )
                 .await
             }
-        };
-
-        // Retry title generation after a successful ReAct loop for sessions
-        // created before the early first-input trigger, or when that first
-        // attempt failed. A failed run still avoids spending title latency on
-        // an already unavailable endpoint.
-        if session.title.is_none() && result.is_ok() {
-            self.spawn_title_generation(session_id);
         }
-
-        result
     }
 
     /// Reopen a terminal session for history viewing without dispatching it.
@@ -467,9 +447,7 @@ impl AgentLayer {
         let sid = session_id.to_string();
         let since = haven_memory::repositories::messages::undelivered_recovery_since();
         let undelivered = db
-            .run_blocking(move |db| {
-                db.get_undelivered_user_messages_since(&sid, Some(since.as_str()))
-            })
+            .run_blocking(move |db| db.get_undelivered_user_messages_since(&sid, since.as_str()))
             .await
             .map_err(|e| anyhow::anyhow!("failed to scan pending inputs: {e}"))?;
         if undelivered.is_empty() {
@@ -538,13 +516,6 @@ impl AgentLayer {
         description: &str,
     ) -> anyhow::Result<Vec<ReActRound>> {
         let events = snapshot.events;
-        for event in &events {
-            if let TranscriptRecord::UserInject { attachments, .. } = event {
-                self.executor
-                    .get_tools()
-                    .register_managed_assets_for_session(session_id, attachments);
-            }
-        }
         let (mut canonical, _) =
             project_transcript_with_strategy(&events, self.react_engine.media_strategy());
         let start_step = snapshot.step_number;
@@ -572,38 +543,24 @@ impl AgentLayer {
         //
         // This alone misses inputs that PREDATE the snapshot yet were never
         // injected: a steering/supplement queued after the loop's last
-        // per-step drain is not in the events, but the error/exit
-        // snapshot written afterwards carries a `saved_at` NEWER than the
-        // input's persisted row. Those rows carry no step anchor (see
-        // `push_user_context`), so they are recovered by the undelivered
-        // scan below regardless of timestamp.
+        // per-step drain is not in the events. Those rows carry no step
+        // anchor (see `push_user_context`), so they are recovered by the
+        // undelivered scan below.
         //
         // When the in-memory queues still hold the inputs (pause → answer in
         // the same process), the ReAct loop injects them and the DB copy
         // must NOT be re-queued — that would double-inject.
-        if let Some(saved_at) = snapshot.saved_at.as_deref()
-            && !self.executor.has_pending_context(session_id).await
-        {
-            // Bound the anchor-less scan to the recovery window so ancient
-            // false positives (legacy missing anchors) are never re-injected
-            // on first post-upgrade resume. Rows after the ingress cursor are
-            // already covered by `pending` above.
+        if !self.executor.has_pending_context(session_id).await {
+            let ingress_cursor = snapshot.last_ingress_seq;
             let since = haven_memory::repositories::messages::undelivered_recovery_since();
             let db = self.db.clone();
             let sid = session_id.to_string();
-            let saved_at_for_query = saved_at.to_string();
-            let ingress_cursor = snapshot.last_ingress_seq;
             let (pending, undelivered) = db
                 .run_blocking(move |db| {
-                    let pending = match ingress_cursor {
-                        Some(cursor) => db.get_session_messages_since_ingress_seq(&sid, cursor)?,
-                        // Snapshots written before ingress cursors are retained
-                        // for compatibility and use the old timestamp bound
-                        // exactly once; all new snapshots take the cursor path.
-                        None => db.get_session_messages_since(&sid, &saved_at_for_query)?,
-                    };
+                    let pending =
+                        db.get_session_messages_since_ingress_seq(&sid, ingress_cursor)?;
                     let undelivered =
-                        db.get_undelivered_user_messages_since(&sid, Some(since.as_str()))?;
+                        db.get_undelivered_user_messages_since(&sid, since.as_str())?;
                     Ok((pending, undelivered))
                 })
                 .await
@@ -647,11 +604,10 @@ impl AgentLayer {
             }
             if restored > 0 {
                 tracing::info!(
-                    "run_session_resumed: recovered {} post-snapshot input(s) for session {} (ingress_seq {:?}, saved_at {})",
+                    "run_session_resumed: recovered {} post-snapshot input(s) for session {} (ingress_seq {})",
                     restored,
                     session_id,
-                    snapshot.last_ingress_seq,
-                    saved_at
+                    ingress_cursor
                 );
             }
         }
@@ -741,8 +697,8 @@ impl AgentLayer {
         );
         // S1: do not restate the *first* user turn (already canonical[1])
         // inside system Additional context. Later turns that happen to equal
-        // `context` (user repeating the same text) must stay — snapshot-less
-        // resume has no other channel for them.
+        // `context` (user repeating the same text) must stay in the fresh-run
+        // context.
         let mut skipped_first_user = false;
         let history_lines: Vec<String> = conversation_history
             .iter()
@@ -764,10 +720,10 @@ impl AgentLayer {
 
         let mut initial_content = vec![ContentPart::text(context.to_string())];
         let media_strategy = self.react_engine.media_strategy();
-        // A host-owned path is rehydrated into the legacy attachment preview
+        // A host-owned path is rehydrated into the attachment preview
         // during the same process, which lets the request keep the raw image
         // or audio bytes. If only the durable media projection is available
-        // (for example after a legacy row without a readable host file), use
+        // (for example when a row has no readable host file), use
         // its metadata-only fallback instead of reviving an inline payload.
         if initial
             .attachments
@@ -785,31 +741,13 @@ impl AgentLayer {
 
         let mut initial_user = CanonicalMessage::user(initial_content);
         initial_user.id = initial.message_id.map(str::to_owned);
-        let mut canonical: Vec<CanonicalMessage> = vec![
+        let canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage::system(vec![ContentPart::text(system_prompt)]),
             initial_user,
         ];
 
-        // Snapshot-less path only (react_state missing): project tool-call /
-        // result pairs from session_steps via the shared B4 projector.
-        // Corrupt snapshots hard-fail in `run_session_from_id` and never
-        // reach here.
-        let db = self.db.clone();
-        let sid = session_id.to_string();
-        canonical = db
-            .run_blocking(move |db| {
-                project_tool_chain_from_steps(db, &sid, &mut canonical)?;
-                Ok(canonical)
-            })
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "failed to project legacy tool steps for session {session_id}: {error}"
-                )
-            })?;
-
-        // Seed events so pause/resume snapshots carry system+user (+ any
-        // projected tool chain) as a CompactSummary; later applies append.
+        // Seed events so pause/resume snapshots carry the system and initial
+        // user request as a CompactSummary; later applies append.
         let events: Vec<TranscriptRecord> = seed_events_from_canonical(canonical.clone());
         let branch_points: HashMap<u32, BranchPoint> = HashMap::new();
         let emitter_arc = match self.events.emitter_arc() {

@@ -65,11 +65,8 @@ fn merge_branch(parent: &Value, child: &Value) -> Value {
 
 /// Rewrite operation const values in every leaf branch and return the public
 /// operation names. Branches without a discriminator are omitted; callers can
-/// add explicit branches for legacy list-style schemas.
-pub(crate) fn rename_operation_branches(
-    schema: &Value,
-    prefix: &str,
-) -> Vec<(String, Value)> {
+/// add explicit branches for schemas that need a separate discriminator.
+pub(crate) fn rename_operation_branches(schema: &Value, prefix: &str) -> Vec<(String, Value)> {
     expand_branches(schema)
         .into_iter()
         .filter_map(|mut branch| {
@@ -105,11 +102,7 @@ pub(crate) fn grouped_schema(operation_names: &[String], branches: Vec<Value>) -
     })
 }
 
-pub(crate) fn operation_branch(
-    operation: &str,
-    properties: Value,
-    required: &[&str],
-) -> Value {
+pub(crate) fn operation_branch(operation: &str, properties: Value, required: &[&str]) -> Value {
     let mut branch = serde_json::json!({
         "type": "object",
         "additionalProperties": false,

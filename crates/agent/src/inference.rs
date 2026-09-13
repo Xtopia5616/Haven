@@ -10,7 +10,7 @@ use haven_common::prompts::{
 };
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
-use haven_memory::recall::{MemoryKind, MemoryQuery, MemoryRecall, MemoryRetriever};
+use haven_memory::recall::{MemoryQuery, MemoryRecall, MemoryRetriever};
 use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
@@ -812,26 +812,8 @@ impl InferenceEngine {
         .unwrap_or(0)
     }
 
-    /// Retrieve the memory items most relevant to `query`. Uses the
-    /// `embedding_model` slot when configured (embed the query, then fuse
-    /// cosine candidates with keyword candidates); otherwise falls back to
-    /// keyword search. Retrieval and sensitive filtering are owned by
-    /// `haven_memory`; this method only acquires the optional provider vector
-    /// and moves the blocking read off the async runtime.
-    pub async fn recall_memory(
-        &self,
-        query: &str,
-        kind: &str,
-        limit: usize,
-    ) -> anyhow::Result<MemoryRecall> {
-        let kind = MemoryKind::parse(kind)?;
-        let query = MemoryQuery::new(query, kind, limit)?;
-        self.recall_memory_query(query).await
-    }
-
-    /// Execute a fully-scoped typed recall request. Callers that already own
-    /// a `MemoryQuery` must use this entry point so session and subject scope
-    /// cannot be silently discarded at an adapter boundary.
+    /// Execute a fully-scoped typed recall request. Session and subject scope
+    /// remain attached to the query through the agent boundary.
     pub async fn recall_memory_query(&self, query: MemoryQuery) -> anyhow::Result<MemoryRecall> {
         let vector_hits = self.embedding_index.search(&query).await?;
         let db = self.db.clone();
@@ -1370,6 +1352,13 @@ mod tests {
                 thinking_blocks: Vec::new(),
             })
         }
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat(messages).await
+        }
         async fn chat_stream(
             &self,
             _: Vec<CanonicalMessage>,
@@ -1669,12 +1658,14 @@ mod tests {
             "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nDo work",
         );
         kickoff.message_type = Some("peer_kickoff".into());
-        let legacy = make_role_message(
+        let second_kickoff = make_role_message(
             "user",
             "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nold",
         );
+        let mut second_kickoff = second_kickoff;
+        second_kickoff.message_type = Some("peer_kickoff".into());
         let real = make_role_message("user", "My name is Alice");
-        let window = build_extraction_window(&[kickoff.clone(), legacy, real.clone()], None, &[]);
+        let window = build_extraction_window(&[kickoff, second_kickoff, real.clone()], None, &[]);
         assert_eq!(window.messages.len(), 1);
         assert_eq!(window.messages[0].id, real.id);
         assert_eq!(window.cursor_last.as_deref(), Some(real.id.as_str()));

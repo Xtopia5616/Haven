@@ -188,7 +188,6 @@ pub struct Envelope {
     /// Number of durable delivery attempts for this message. The id remains
     /// stable across retries; this field is transport delivery state, not a
     /// new message identity.
-    #[serde(default)]
     pub delivery_attempt: u32,
 }
 
@@ -573,66 +572,6 @@ impl InboxBus {
         })
     }
 
-    /// Test-only regression helper for the removed synchronous drain semantic.
-    /// Application code must use `MessagingService::claim` and complete the
-    /// returned lease after processing.
-    ///
-    /// After draining, the empty mailbox is recreated so future sends keep
-    /// working (an existing mailbox is what `deliver` treats as "agent
-    /// registered").
-    #[cfg(test)]
-    pub fn read_and_archive(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
-        validate_agent_name(name)?;
-        let _lock = LockGuard::acquire(&self.root)?;
-        self.ensure_dir()?;
-        let mut collected: Vec<Envelope> = Vec::new();
-        let pending = self.processing(name);
-        loop {
-            if !pending.exists() {
-                let mailbox = self.mailbox(name);
-                if !mailbox.exists() {
-                    break;
-                }
-                std::fs::rename(&mailbox, &pending)?;
-            }
-            let content = match std::fs::read_to_string(&pending) {
-                Ok(c) => c,
-                // Crash between rename and open: treat as empty.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                Err(e) => return Err(e.into()),
-            };
-            let envs = parse_envelopes(name, &content);
-            let archive_ids = self.read_archive_tail_ids(name)?;
-            if !envs.is_empty() {
-                let mut af = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(self.archive(name))?;
-                for env in &envs {
-                    if !archive_ids.contains(&env.id) {
-                        writeln!(af, "{}", serde_json::to_string(env)?)?;
-                    }
-                }
-                af.flush()?;
-            }
-            std::fs::remove_file(&pending)?;
-            // The dedup filter applies to the RETURN too: after a crash
-            // between archiving and deleting `.processing`, the same envelope
-            // must not be delivered to the agent twice.
-            collected.extend(
-                envs.into_iter()
-                    .filter(|e| !archive_ids.contains(&e.id) && !is_expired(e)),
-            );
-        }
-        // Recreate the empty mailbox (under the same lock) so `deliver` to a
-        // registered agent keeps working after its inbox was drained.
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.mailbox(name))?;
-        Ok(collected)
-    }
-
     /// Claim mailbox messages for a durable consumer without acknowledging
     /// them yet.
     ///
@@ -649,10 +588,11 @@ impl InboxBus {
         self.recover_processing_tmp_unlocked(name)?;
         let pending = self.processing(name);
         let mailbox = self.mailbox(name);
+        let had_pending = pending.exists();
 
-        if !pending.exists() && mailbox.exists() {
+        if !had_pending && mailbox.exists() {
             std::fs::rename(&mailbox, &pending)?;
-        } else if pending.exists() && mailbox.exists() {
+        } else if had_pending && mailbox.exists() {
             // A previous claim may have survived a crash while new messages
             // arrived in the recreated mailbox. Merge both files atomically
             // before parsing so the old claim is never stranded.
@@ -690,11 +630,38 @@ impl InboxBus {
             return Ok(Vec::new());
         }
 
-        // Archive at claim time for auditability, but do not treat archive
-        // presence as an acknowledgement. An unacknowledged processing file
-        // must still be returned after a crash.
+        // Persist the claimed attempt before archiving. If the process dies
+        // between these two writes, the processing file still carries a
+        // non-zero attempt and will be redelivered; archive presence is never
+        // used as an acknowledgement.
         let archive_ids = self.read_archive_tail_ids(name)?;
-        let mut archived_ids = archive_ids;
+        let mut archived_ids = archive_ids.clone();
+        // Remove expired/corrupt entries from the durable claim and de-dupe
+        // repeated envelope ids before returning. Expired messages are still
+        // archived below, matching the service expiry/archive contract, but
+        // must not pin the processing file forever.
+        let mut seen = HashSet::new();
+        let active: Vec<Envelope> = envs
+            .iter()
+            .filter(|env| {
+                !is_expired(env)
+                    && seen.insert(env.id.clone())
+                    // A zero-attempt envelope in a fresh mailbox whose id is
+                    // already archived is a duplicate delivery. Claimed
+                    // envelopes carry their incremented attempt count in the
+                    // processing file, so crash recovery remains at-least-once.
+                    && (env.delivery_attempt > 0 || !archive_ids.contains(&env.id))
+            })
+            .cloned()
+            .map(|mut env| {
+                env.delivery_attempt = env.delivery_attempt.saturating_add(1);
+                env
+            })
+            .collect();
+        self.write_processing_unlocked(name, &active)?;
+
+        // Archive at claim time for auditability. The processing attempt is
+        // already durable, so a crash during this append remains recoverable.
         let mut archive: Option<File> = None;
         for env in &envs {
             if archived_ids.insert(env.id.clone()) {
@@ -716,20 +683,6 @@ impl InboxBus {
             file.flush()?;
         }
 
-        // Remove expired/corrupt entries from the durable claim and de-dupe
-        // repeated envelope ids before returning. Expired messages are still
-        // archived, matching the service expiry/archive contract, but must
-        // not pin the processing file forever.
-        let mut seen = HashSet::new();
-        let active: Vec<Envelope> = envs
-            .into_iter()
-            .filter(|env| !is_expired(env) && seen.insert(env.id.clone()))
-            .map(|mut env| {
-                env.delivery_attempt = env.delivery_attempt.saturating_add(1);
-                env
-            })
-            .collect();
-        self.write_processing_unlocked(name, &active)?;
         Ok(active)
     }
 
@@ -1222,6 +1175,16 @@ mod tests {
         (dir, bus)
     }
 
+    fn claim_and_ack(bus: &InboxBus, name: &str) -> Vec<Envelope> {
+        let messages = bus.claim_and_archive(name).unwrap();
+        let ids = messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        bus.ack_claimed(name, &ids).unwrap();
+        messages
+    }
+
     use std::sync::Arc;
 
     fn env_from(a: &str, to: &str, text: &str) -> Envelope {
@@ -1328,7 +1291,7 @@ mod tests {
         assert!(outcome.delivered);
         assert_eq!(outcome.status, AgentStatus::Online);
 
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(msgs.len(), 1);
         let got = &msgs[0];
         assert_eq!(got.id, env.id);
@@ -1344,7 +1307,7 @@ mod tests {
         );
 
         // Read-then-move: a second read yields nothing.
-        assert!(bus.read_and_archive("ses-b").unwrap().is_empty());
+        assert!(claim_and_ack(&bus, "ses-b").is_empty());
         // The archive keeps the full history for audit.
         let archive = std::fs::read_to_string(bus.archive("ses-b")).unwrap();
         assert_eq!(archive.lines().count(), 1);
@@ -1353,7 +1316,7 @@ mod tests {
             .deliver("ses-b", &env_from("ses-a", "ses-b", "第二封"))
             .unwrap();
         assert!(outcome.delivered);
-        assert_eq!(bus.read_and_archive("ses-b").unwrap().len(), 1);
+        assert_eq!(claim_and_ack(&bus, "ses-b").len(), 1);
     }
 
     #[test]
@@ -1460,7 +1423,7 @@ mod tests {
         );
         assert_eq!(outcome.status, AgentStatus::Offline);
         // The message is there when ses-b eventually polls.
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(msgs.len(), 1);
     }
 
@@ -1475,7 +1438,7 @@ mod tests {
                 .to_rfc3339_opts(SecondsFormat::Secs, false),
         );
         bus.deliver("ses-b", &env).unwrap();
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert!(msgs.is_empty(), "expired messages must be filtered");
         let archive = std::fs::read_to_string(bus.archive("ses-b")).unwrap();
         assert_eq!(archive.lines().count(), 1, "but archived for audit");
@@ -1491,7 +1454,7 @@ mod tests {
             (Local::now() + chrono::Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, false),
         );
         bus.deliver("ses-b", &env).unwrap();
-        assert_eq!(bus.read_and_archive("ses-b").unwrap().len(), 1);
+        assert_eq!(claim_and_ack(&bus, "ses-b").len(), 1);
     }
 
     #[test]
@@ -1512,7 +1475,7 @@ mod tests {
         )
         .unwrap();
         drop(f);
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].id, good.id);
     }
@@ -1525,9 +1488,9 @@ mod tests {
         write_mailbox(&bus, "ses-b", &[env.clone()]);
         // Simulate a crash after the mailbox → .processing rename.
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(msgs.len(), 1, "leftover .processing must be drained");
-        assert!(bus.read_and_archive("ses-b").unwrap().is_empty());
+        assert!(claim_and_ack(&bus, "ses-b").is_empty());
         let archive = std::fs::read_to_string(bus.archive("ses-b")).unwrap();
         assert_eq!(archive.lines().count(), 1);
     }
@@ -1541,7 +1504,7 @@ mod tests {
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
         // New writes land in the fresh mailbox after the crash.
         write_mailbox(&bus, "ses-b", &[env_from("ses-a", "ses-b", "第二次")]);
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(
             msgs.len(),
             2,
@@ -1560,11 +1523,11 @@ mod tests {
         // Crash AFTER archiving but BEFORE deleting .processing: the message
         // is already in the archive. Re-reading must not duplicate it — in
         // the archive NOR in what is returned to the agent.
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(msgs.len(), 1, "first drain returns the message");
         write_mailbox(&bus, "ses-b", &[env.clone()]);
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert!(
             msgs.is_empty(),
             "a message already archived must not be returned twice"
@@ -1598,7 +1561,7 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        let msgs = bus.read_and_archive("ses-b").unwrap();
+        let msgs = claim_and_ack(&bus, "ses-b");
         assert_eq!(
             msgs.len(),
             8 * 25,
@@ -1637,7 +1600,7 @@ mod tests {
         let old = env_from("ses-a", "ses-b", "旧消息");
         write_mailbox(&bus, "ses-b", &[old.clone()]);
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
-        bus.read_and_archive("ses-b").unwrap();
+        claim_and_ack(&bus, "ses-b");
         // New unread message from ses-c with a custom reply_address.
         let mut fresh = env_from("ses-c", "ses-b", "新消息");
         fresh.reply_address = Some("ses-cc".into());
@@ -1652,7 +1615,7 @@ mod tests {
         );
 
         // After reading the mailbox, the archive tail provides the last sender.
-        bus.read_and_archive("ses-b").unwrap();
+        claim_and_ack(&bus, "ses-b");
         let last = bus.last_received("ses-b").unwrap().unwrap();
         assert_eq!(last.id, fresh.id);
         assert_eq!(last.reply_target(), "ses-cc");
@@ -1672,7 +1635,7 @@ mod tests {
         let archived = env_from("ses-a", "ses-b", "已读");
         write_mailbox(&bus, "ses-b", &[archived.clone()]);
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
-        bus.read_and_archive("ses-b").unwrap();
+        claim_and_ack(&bus, "ses-b");
         let fresh = env_from("ses-a", "ses-b", "未读");
         write_mailbox(&bus, "ses-b", &[fresh.clone()]);
 
@@ -1755,7 +1718,7 @@ mod tests {
             .unwrap();
         assert!(outcome.delivered);
         assert_eq!(outcome.status, AgentStatus::Offline);
-        assert_eq!(bus.read_and_archive("ses-b").unwrap().len(), 1);
+        assert_eq!(claim_and_ack(&bus, "ses-b").len(), 1);
         // Re-registering restores online status with history intact.
         bus.register("ses-b", &[]).unwrap();
         assert!(bus.list_agents().unwrap().iter().any(|a| a.name == "ses-b"));
@@ -1886,7 +1849,7 @@ mod tests {
         assert_eq!(got[0].text, "done X");
 
         // Unrelated message + receipt remain for the normal inbox drain.
-        let left = bus.read_and_archive("ses-a").unwrap();
+        let left = claim_and_ack(&bus, "ses-a");
         assert_eq!(left.len(), 2);
         assert!(left.iter().any(|e| e.id == unrelated.id));
         assert!(left.iter().any(|e| e.r#type == MessageType::Receipt));
@@ -1910,7 +1873,7 @@ mod tests {
                 .is_empty(),
             "forged sender must not satisfy the wait"
         );
-        assert_eq!(bus.read_and_archive("ses-a").unwrap().len(), 1);
+        assert_eq!(claim_and_ack(&bus, "ses-a").len(), 1);
     }
 
     #[tokio::test]
@@ -1942,7 +1905,7 @@ mod tests {
         bus.deliver("ses-b", &m1).unwrap();
         bus.deliver("ses-b", &m2).unwrap();
 
-        let read = bus.read_and_archive("ses-b").unwrap();
+        let read = claim_and_ack(&bus, "ses-b");
         assert_eq!(read.len(), 2);
         let receipts = bus.send_receipts("ses-b", &read);
         assert_eq!(receipts.len(), 2, "one receipt per read message");
@@ -1950,7 +1913,7 @@ mod tests {
 
         // The sender sees two receipts, both referencing the originals and
         // typed `receipt`, carrying the recipient's reply address.
-        let acks = bus.read_and_archive("ses-a").unwrap();
+        let acks = claim_and_ack(&bus, "ses-a");
         assert_eq!(acks.len(), 2);
         assert!(acks.iter().all(|e| e.r#type == MessageType::Receipt));
         assert!(
@@ -1974,7 +1937,7 @@ mod tests {
         // Self-messages get no ack either.
         let self_msg = env_from("ses-b", "ses-b", "给自己");
         bus.deliver("ses-b", &self_msg).unwrap();
-        let read = bus.read_and_archive("ses-b").unwrap();
+        let read = claim_and_ack(&bus, "ses-b");
         assert_eq!(read.len(), 1);
         assert!(bus.send_receipts("ses-b", &read).is_empty());
     }
@@ -1986,7 +1949,7 @@ mod tests {
         let old = env_from("ses-a", "ses-b", "已读的旧消息");
         write_mailbox(&bus, "ses-b", &[old.clone()]);
         std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
-        bus.read_and_archive("ses-b").unwrap();
+        claim_and_ack(&bus, "ses-b");
         let fresh = env_from("ses-a", "ses-b", "未读的新消息");
         write_mailbox(&bus, "ses-b", &[fresh.clone()]);
 
@@ -1995,7 +1958,7 @@ mod tests {
         assert_eq!(history[0].id, fresh.id, "mailbox (newer) comes first");
         assert_eq!(history[1].id, old.id, "archive (older) comes last");
         // The read-only view must not consume the mailbox.
-        assert_eq!(bus.read_and_archive("ses-b").unwrap().len(), 1);
+        assert_eq!(claim_and_ack(&bus, "ses-b").len(), 1);
 
         let capped = bus.history("ses-b", 1).unwrap();
         assert_eq!(capped.len(), 1);

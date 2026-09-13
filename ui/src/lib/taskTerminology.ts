@@ -26,9 +26,6 @@ const ACTION_STATUS_LABELS: Record<string, string> = {
 const SCHEDULE_MODE_LABELS: Record<string, string> = {
 	tool: '调用工具',
 	continue: '继续会话',
-	// Kept for old/externally produced rows; current backend uses the notify tool
-	// within `tool` mode rather than a separate mode.
-	notify: '发送通知',
 };
 
 /** Return the stable Chinese label for a task kind. */

@@ -207,8 +207,7 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
 
     agent.reopen_session(&session.id).await.unwrap();
 
-    // No lost inputs: the session reopens as Paused (resume-only),
-    // matching the historical behavior.
+    // No lost inputs: the session reopens as Paused (resume-only).
     assert_eq!(
         executor.get_session_state(&session.id).await,
         Some(SessionStatus::Paused)
@@ -239,8 +238,7 @@ async fn resume_rejects_legacy_conversation_prefix_snapshot() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -259,9 +257,9 @@ async fn resume_rejects_legacy_conversation_prefix_snapshot() {
 async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
     // Follow-up/steering inputs are pushed into the canonical with a
     // text prefix ("Additional context from user: —, "Steering: —)
-    // while the DB stores the raw text. A legacy snapshot (no saved_at)
-    // is trusted as complete: nothing is recovered, so the already
-    // prefixed inputs are never re-injected as fresh user turns.
+    // while the DB stores the raw text. The snapshot cursor is already at the
+    // current ingress boundary, so the already-prefixed inputs are not
+    // re-injected as fresh user turns.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
@@ -288,8 +286,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -331,8 +328,7 @@ async fn resume_keeps_repeated_same_text_turns() {
     // Two distinct turns with identical text (user said "好的" twice) are
     // both legitimate history. The snapshot is the single authority for
     // everything it contains; a message persisted AFTER the snapshot's
-    // saved_at is recovered by timestamp — identical text is recovered
-    // too (timestamp recovery never drops a repeated turn).
+    // ingress cursor is recovered by id — identical text is recovered too.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
@@ -344,10 +340,9 @@ async fn resume_keeps_repeated_same_text_turns() {
         .persist_message_parts(&session.id, "assistant", "好的", Some("text"), &[], false)
         .await
         .unwrap();
-    // Snapshot saved right after the first pair: its saved_at sits
-    // between the persisted rows and the second user "好的" below.
-    let msgs_before = agent.db.get_session_messages(&session.id).unwrap();
-    let saved_at = msgs_before[1].created_at.clone();
+    // Snapshot saved right after the first pair: its ingress cursor sits
+    // before the second user "好的" below.
+    let ingress_cursor = agent.db.get_last_message_ingress_seq(&session.id);
     let canonical = vec![
         CanonicalMessage::system(vec![ContentPart::text("sys")]),
         CanonicalMessage::user_text("好的"),
@@ -363,8 +358,7 @@ async fn resume_keeps_repeated_same_text_turns() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: Some(saved_at),
-        last_ingress_seq: None,
+        last_ingress_seq: ingress_cursor,
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -410,7 +404,7 @@ async fn resume_keeps_repeated_same_text_turns() {
     assert_eq!(
         follow_ups.len(),
         1,
-        "the second identical user turn must be recovered by timestamp as FollowUp: {:?}",
+        "the second identical user turn must be recovered by ingress id as FollowUp: {:?}",
         user_texts
     );
     assert!(
@@ -421,11 +415,10 @@ async fn resume_keeps_repeated_same_text_turns() {
 }
 
 #[tokio::test]
-async fn resume_does_not_recover_messages_before_saved_at() {
-    // Timestamp recovery is bounded by the snapshot's saved_at: rows
-    // persisted before it are already represented in the canonical and
-    // must NOT be re-queued, even when the canonical never carried them
-    // as user turns (e.g. an ask question persisted under the step id).
+async fn resume_does_not_recover_messages_before_ingress_cursor() {
+    // Ingress recovery is bounded by the snapshot cursor: rows persisted
+    // before it are already represented in the canonical and must not be
+    // re-queued, even when the canonical never carried them as user turns.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
@@ -433,9 +426,7 @@ async fn resume_does_not_recover_messages_before_saved_at() {
         .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
         .await
         .unwrap();
-    let saved_at = agent.db.get_session_messages(&session.id).unwrap()[0]
-        .created_at
-        .clone();
+    let ingress_cursor = agent.db.get_last_message_ingress_seq(&session.id);
     let canonical = vec![
         CanonicalMessage::system(vec![ContentPart::text("sys")]),
         CanonicalMessage::user_text("hello"),
@@ -451,8 +442,7 @@ async fn resume_does_not_recover_messages_before_saved_at() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: Some(saved_at),
-        last_ingress_seq: None,
+        last_ingress_seq: ingress_cursor,
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -462,7 +452,8 @@ async fn resume_does_not_recover_messages_before_saved_at() {
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
         .unwrap();
-    // Assistant rows older than saved_at are not recovered either.
+    // Assistant rows after the cursor are not user inputs and are not
+    // recovered either.
     agent
         .persist_message_parts(
             &session.id,
@@ -493,7 +484,7 @@ async fn resume_does_not_recover_messages_before_saved_at() {
     assert_eq!(
         user_texts.iter().filter(|t| t.as_str() == "hello").count(),
         1,
-        "nothing older than saved_at may be recovered: {:?}",
+        "no user input after the cursor may be recovered: {:?}",
         user_texts
     );
     assert!(
@@ -509,7 +500,7 @@ async fn resume_does_not_recover_messages_before_saved_at() {
 async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
     // Compaction replaces the old turns with a summary inside the
     // canonical but leaves the DB message stream untouched. Recovery is
-    // timestamp-bounded (only rows newer than the snapshot's saved_at are
+    // cursor-bounded (only rows newer than the snapshot's ingress cursor are
     // re-queued), so the summarized-away turns — all older than the
     // snapshot — are never resurrected; a compacted canonical stays
     // compacted across resume.
@@ -547,8 +538,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -746,8 +736,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         events,
         step_number: 2,
         branch_points: HashMap::new(),
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -781,8 +770,8 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     );
 }
 
-/// Phase 7 / B4: corrupt react_state must hard-fail, not silently fork
-/// into the snapshot-less projector path.
+/// Phase 7 / B4: corrupt react_state must hard-fail instead of starting a
+/// different transcript path.
 #[tokio::test]
 async fn corrupt_react_state_hard_fails_resume() {
     let tools = Arc::new(ToolsManager::new());
@@ -824,92 +813,5 @@ async fn corrupt_react_state_hard_fails_resume() {
     assert!(
         mock.seen.lock().unwrap().is_empty(),
         "LLM must not be called after corrupt-snapshot hard-fail"
-    );
-}
-
-/// Phase 7 / B4: projector uses the provider tool-call id persisted on the
-/// step row, without matching tool-role content.
-#[tokio::test]
-async fn project_tool_chain_uses_step_tool_call_id() {
-    let tools = Arc::new(ToolsManager::new());
-    tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
-    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
-        StreamChunk {
-            text: Some("Done.".into()),
-            tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
-                name: "final_answer".into(),
-                arguments: serde_json::json!({}),
-            }],
-            finish_reason: Some(FinishReason::Stop),
-            usage: None,
-            model: None,
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-        },
-    )]));
-    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
-    let collector = Arc::new(EventCollector::new());
-    agent.set_emitter(collector);
-    let session = executor.create_session("real call id").await.unwrap();
-    agent
-        .persist_message_parts(
-            &session.id,
-            "user",
-            "real call id",
-            Some("text"),
-            &[],
-            false,
-        )
-        .await
-        .unwrap();
-    agent
-        .db
-        .run_blocking({
-            let session_id = session.id.clone();
-            move |db| {
-                let step = db.create_action_step_with_identity(
-                    &session_id,
-                    1,
-                    0,
-                    "echo",
-                    r#"{"text":"hi"}"#,
-                    Some("call_real_1"),
-                    false,
-                    false,
-                    None,
-                    None,
-                )?;
-                db.complete_action_step(&step.id, "hi", true)?;
-                db.add_message(
-                    &session_id,
-                    "tool",
-                    "hi",
-                    Some("observation"),
-                    Some("call_real_1"),
-                )?;
-                Ok::<(), anyhow::Error>(())
-            }
-        })
-        .await
-        .unwrap();
-    assert!(agent.db.get_react_state(&session.id).unwrap().is_none());
-
-    agent.run_session_from_id(&session.id).await.unwrap();
-
-    let seen = mock.seen.lock().unwrap();
-    let first = &seen[0];
-    let used_real = first.iter().any(|m| {
-        matches!(m.role, CanonicalRole::Assistant)
-            && m.tool_calls.as_ref().is_some_and(|c| {
-                c.iter()
-                    .any(|tc| tc.name == "echo" && tc.id == "call_real_1")
-            })
-    });
-    assert!(
-        used_real,
-        "projector must reuse the tool_call_id persisted on session_steps"
     );
 }

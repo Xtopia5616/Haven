@@ -83,24 +83,10 @@ export function createChatAgentEventHandlers({
 			// A null-id card would collide with the later keyed update.
 			if (!callId) return;
 			const searchId = webSearchId(sessionId, data.stepNumber, data.runId, callId);
-			const placeholderId = webSearchId(sessionId, data.stepNumber, data.runId, null);
 			const { reasoningId, thoughtId } = blockIdsOf(sessionId, data.stepNumber, data.runId);
 			updateSessionMessages(sessionId, (messages) => {
 				let next = messages;
 				let existing = next.find((message) => message.id === searchId);
-				// Upgrade a legacy null-id placeholder when the real call id arrives.
-				if (!existing) {
-					const placeholderIndex = next.findIndex(
-						(message) =>
-							message.id === placeholderId && message.toolName === 'web_search',
-					);
-					if (placeholderIndex >= 0) {
-						next = next.map((message, index) =>
-							index === placeholderIndex ? { ...message, id: searchId } : message,
-						);
-						existing = next[placeholderIndex];
-					}
-				}
 				const content = webSearchCardContent(data, existing?.content);
 				// Only a new card finalizes the preceding stream blocks. Later phases
 				// for the same call id must not finalize post-search text.

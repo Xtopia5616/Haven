@@ -556,16 +556,7 @@ describe('sessionTokenStatsStore', () => {
 		expect(e.cumulativeTotalTokens).toBe(150);
 		expect(e.cumulativeCostUsd).toBe(0.25);
 		expect(e.costUsd).toBeNull();
-		expect(e.estimated).toBe(false);
 		expect(e.restored).toBe(true);
-	});
-
-	it('restoreSessionTokenStats flags estimated totals and drops cost', () => {
-		restoreSessionTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.0, has_cost: false }, true);
-		const e = statsMap().t1;
-		expect(e.cumulativeTotalTokens).toBe(150);
-		expect(e.estimated).toBe(true);
-		expect(e.cumulativeCostUsd).toBeNull();
 	});
 
 	it('restoreSessionTokenStats no-ops without usage', () => {
@@ -578,7 +569,7 @@ describe('sessionTokenStatsStore', () => {
 		expect(statsMap().t1.cumulativeTotalTokens).toBe(150);
 	});
 
-	it('restoreSessionTokenStats does not guess an omitted legacy cache total', () => {
+	it('restoreSessionTokenStats does not guess an omitted cache total', () => {
 		restoreSessionTokenStats('t1', {
 			prompt_tokens: 100,
 			completion_tokens: 20,
@@ -608,11 +599,13 @@ describe('token usage helpers', () => {
 	it('calculates a mixed-provider cache rate from each call contract', () => {
 		const rate = cumulativeCacheHitRatePercent([
 			{
+				call_kind: 'agent',
 				prompt_tokens: 100,
 				cached_tokens: 100,
 				cache_accounting: 'inclusive',
 			},
 			{
+				call_kind: 'agent',
 				prompt_tokens: 100,
 				cached_tokens: 400,
 				cache_accounting: 'exclusive',
@@ -621,10 +614,10 @@ describe('token usage helpers', () => {
 		expect(rate).toBeCloseTo(500 / 600 * 100, 6);
 	});
 
-	it('does not guess a cache rate for unknown legacy calls', () => {
+	it('does not guess a cache rate for unknown calls', () => {
 		expect(
 			cumulativeCacheHitRatePercent([
-				{ prompt_tokens: 100, cached_tokens: 80, cache_accounting: 'unknown' },
+				{ call_kind: 'agent', prompt_tokens: 100, cached_tokens: 80, cache_accounting: 'unknown' },
 			]),
 		).toBeNull();
 	});

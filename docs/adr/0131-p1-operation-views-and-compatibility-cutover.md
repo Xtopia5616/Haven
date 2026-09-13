@@ -75,8 +75,9 @@ provider wire；托管视频上传 API、视频转码和 keyframe 抽取依赖�
 
 模型能以独立 schema 直接选择常用读 operation，文档续读不会依赖正文切割，视频能力不会
 跨 provider 静默降级，memory 空结果可行动；同时删除了会改变身份或授权语义的内部猜测
-路径。仍保留的 snapshot-less projector、inbox 双消费、scheduled row fallback 和 prompt
-旧布局属于后续 P2/灾难恢复边界，不能在本 ADR 中重新扩展。
+路径。后续 2026-09-13 的破坏性收敛又删除了 snapshot-less projector、inbox 双消费、
+scheduled row fallback 和 prompt 旧布局；旧 snapshot/config/row 按
+`docs/release-and-reset.md` 的 reset 边界处理。本 ADR 不保留这些内部兼容入口。
 
 ## 验证
 

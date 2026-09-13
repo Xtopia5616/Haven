@@ -10,8 +10,7 @@
 //! | `openai-chat`              | `openai-chat`     | no                  |
 //! | `llama.cpp`                | `llama.cpp`       | no                  |
 //! | `openai-responses`         | `openai-responses`| yes                 |
-//! | `deepseek-responses`       | `openai-responses`| yes                 |
-//! | `xai` / `grok`             | `xai`             | yes                 |
+//! | `xai`                      | `xai`             | yes                 |
 //! | `anthropic`                | `anthropic`       | yes                 |
 //! | `gemini`                   | `gemini`          | yes                 |
 //! | `deepgram` / `assemblyai`  | same              | n/a                 |
@@ -82,23 +81,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_aliases() {
-        assert_eq!(
-            normalize_api_style("deepseek-responses"),
-            "openai-responses"
-        );
+    fn normalize_canonical_styles() {
         assert_eq!(normalize_api_style("OpenAI-Responses"), "openai-responses");
-        assert_eq!(normalize_api_style("grok"), "xai");
         assert_eq!(normalize_api_style("xai"), "xai");
-        assert_eq!(normalize_api_style("claude"), "anthropic");
-        assert_eq!(normalize_api_style("google"), "gemini");
-        assert_eq!(normalize_api_style("llama"), "llama.cpp");
+        assert_eq!(normalize_api_style("unknown"), "invalid");
     }
 
     #[test]
     fn known_style_rejects_typos() {
         assert!(is_known_api_style("anthropic"));
-        assert!(is_known_api_style("deepseek-responses"));
+        assert!(!is_known_api_style("deepseek-responses"));
+        assert!(!is_known_api_style("grok"));
         assert!(!is_known_api_style("antropic"));
         assert!(!is_known_api_style("openai-respones"));
     }
@@ -106,9 +99,7 @@ mod tests {
     #[test]
     fn web_search_capability_matrix() {
         assert!(supports_builtin_web_search("openai-responses"));
-        assert!(supports_builtin_web_search("deepseek-responses"));
         assert!(supports_builtin_web_search("xai"));
-        assert!(supports_builtin_web_search("grok"));
         assert!(supports_builtin_web_search("anthropic"));
         assert!(supports_builtin_web_search("gemini"));
         assert!(!supports_builtin_web_search("openai-chat"));

@@ -52,6 +52,7 @@ describe('buildTokenUsageDetails', () => {
 			},
 			[
 				{
+					call_kind: 'agent',
 					prompt_tokens: 300,
 					completion_tokens: 40,
 					total_tokens: 340,

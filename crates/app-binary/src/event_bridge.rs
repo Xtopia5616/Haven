@@ -100,8 +100,8 @@ impl AgentEventEmitter for TauriEmitter {
         // resolve a display title (SessionUpdated fill, toasts, secondary).
         self.notifications.remember_session_status(&event);
         let mut payload = Self::payload_with_event_seq(&event, chunk_seq, event_seq);
-        // SessionUpdated wire historically sent title:""; fill a safe display
-        // title so in-app toast matches Windows (never raw input).
+        // Add a safe display title so in-app toast matches Windows (never raw
+        // input).
         if let AgentEvent::SessionUpdated { session_id, .. } = &event {
             payload["title"] =
                 serde_json::json!(self.notifications.session_display_title(session_id));

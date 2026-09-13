@@ -51,7 +51,9 @@ pub async fn update_settings(
         .clone();
     let update = state
         .config_service
-        .apply_patch(haven_common::config::ConfigPatch::Settings(settings))
+        .apply_patch(haven_common::config::ConfigPatch::Settings(Box::new(
+            settings,
+        )))
         .map_err(|e| log_err("update_settings", e))?;
     let Some(change) = update.change else {
         return Ok(());

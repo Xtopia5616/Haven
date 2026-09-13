@@ -90,18 +90,10 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
 }
 
 /// Low-trust user rows that must never seed durable facts: peer spawn kickoff
-/// (`message_type=peer_kickoff` or delegated-task wrapper). Cross-session mail
-/// is inject-only (not persisted as user rows), so it is not filtered here.
+/// (`message_type=peer_kickoff`). Cross-session mail is inject-only (not
+/// persisted as user rows), so it is not filtered here.
 fn is_low_trust_extraction_user(m: &haven_memory::repositories::messages::Message) -> bool {
-    if m.role != "user" {
-        return false;
-    }
-    if m.message_type.as_deref() == Some("peer_kickoff") {
-        return true;
-    }
-    m.content
-        .trim_start()
-        .starts_with(haven_common::types::PEER_KICKOFF_PREFIX)
+    m.role == "user" && m.message_type.as_deref() == Some("peer_kickoff")
 }
 
 /// Collect up to [`EXTRACTION_MAX_ASSISTANTS_PER_TURN`] assistants (closest to

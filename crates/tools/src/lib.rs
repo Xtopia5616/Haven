@@ -1721,9 +1721,11 @@ mod tests {
         let system_tool = mgr.get_tool("system").await.expect("system tool");
         assert!(mgr.get_tool("process").await.is_none());
         assert!(mgr.get_tool("clipboard").await.is_none());
-        assert!(system_tool
-            .validate_input(&json!({"scope": "process", "operation": "list"}))
-            .is_ok());
+        assert!(
+            system_tool
+                .validate_input(&json!({"scope": "process", "operation": "list"}))
+                .is_ok()
+        );
         assert_eq!(
             system_tool.risk_level(&json!({"scope": "process", "operation": "kill"})),
             haven_common::types::RiskLevel::High

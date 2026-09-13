@@ -57,15 +57,15 @@
 - 文件名 = 组件名，**PascalCase**：`ApiKeyDialog.svelte`、`ToolResultCard.svelte`。
 - 由 `.svelte` 文件隐式定义组件，不额外命名导出，避免名不符文件。
 
-### 模块（`.js`）
-- 工具 / 状态模块 → **camelCase**：`streaming.js`、`voiceSubmit.js`、`markdownRenderer.js`、`sessionStatus.js`、`modelRoles.js`。
-- 主要导出 Svelte store 的模块 → `xxxStore.js`：`themeStore.js`、`syncStore.js`（`syncStore.js` 导出同名的 `syncStore` 辅助函数，名随主导出）。
-- 聚合 store 桶文件保留 `stores.js` 命名（导出 `sessionStore`/`actionStore` 等命名导出）。
+### 模块（`.ts`）
+- 工具 / 状态模块 → **camelCase**：`streaming.ts`、`voiceSubmit.ts`、`markdownRenderer.ts`、`sessionStatus.ts`、`modelRoles.ts`。
+- 主要导出 Svelte store 的模块 → `xxxStore.ts`：`themeStore.ts`、`syncStore.ts`（`syncStore.ts` 导出同名的 `syncStore` 辅助函数，名随主导出）。
+- 聚合 store 桶文件保留 `stores.ts` 命名（导出 `sessionStore`/`actionStore` 等命名导出）。
 - 常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUSES`、`COLOR_MAP`、`ROLE_KEYS`。
 - 局部变量 / 函数参数 → **camelCase**：`newKeyValue`、`reasoningOpen`、`ctxMenuItems`。
 
 ### 路由
-遵循 SvelteKit 约定：`+page.svelte`、`+layout.svelte`，目录用小写连字符（`dev-recording/`、`settings/`、`tools/`）。
+遵循 SvelteKit 约定：`+page.svelte`、`+layout.svelte`。当前工作区只保留根路由，设置、工具和记忆通过根路由的 `?tab=` 查询参数切换，不保留旧的目录路由。
 
 ---
 

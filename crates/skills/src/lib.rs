@@ -243,7 +243,7 @@ pub fn parse_skill_md(
         }
         let (key, val) = match line.split_once(':') {
             Some(pair) => pair,
-            None => continue,
+            None => anyhow::bail!("invalid SKILL.md metadata entry: {line}"),
         };
         let key = key.trim().to_lowercase();
         let val = val.trim().to_string();
@@ -252,7 +252,7 @@ pub fn parse_skill_md(
             "description" => description = val,
             "version" => version = Some(val),
             "language" => language = Language::parse(&val),
-            _ => {}
+            _ => anyhow::bail!("unknown SKILL.md metadata field: {key}"),
         }
     }
 
@@ -644,13 +644,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_ignores_unknown_metadata_fields() {
-        // `allowed_tools` is no longer part of the metadata schema; unknown
-        // fields must be ignored so legacy SKILL.md files keep parsing.
+    fn parse_rejects_unknown_metadata_fields() {
         let md = "# Skill: x\n## Metadata\n- allowed_tools: [a, b]\n- description: d\n## Instructions\ni\n";
-        let m = parse_skill_md(md, 5000, 4096).unwrap();
-        assert_eq!(m.name, "x");
-        assert_eq!(m.description, "d");
+        assert!(parse_skill_md(md, 5000, 4096).is_err());
     }
 
     #[test]

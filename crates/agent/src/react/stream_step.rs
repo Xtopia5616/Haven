@@ -866,6 +866,29 @@ mod tests {
             }
         }
 
+        async fn chat_stream_with_tools_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            tools: Vec<ToolDefinition>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.chat_stream_with_tools(messages, tools).await
+        }
+
+        async fn chat_stream_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.chat_stream_with_tools(messages, Vec::new()).await
+        }
+
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
         }

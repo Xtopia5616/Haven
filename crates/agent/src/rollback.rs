@@ -71,67 +71,12 @@ impl AgentLayer {
         self.executor.clear_awaiting_answer(session_id).await;
         self.executor.clear_awaiting_confirm(session_id).await;
 
-        let state_json = match self.db.get_react_state(session_id)? {
-            Some(s) => s,
-            None => {
-                // No saved state at all — this happens when a session errored
-                // before any snapshot was saved (e.g. first LLM call failed
-                // in an older version without Fix 1). We can't restore
-                // events, but we can still truncate session messages so
-                // the user can edit and re-send their input.
-                tracing::warn!(
-                    "rollback_session {}: no react_state — falling back to message-only truncation",
-                    session_id
-                );
-                if pause {
-                    // User-message rollback needs the exact clicked message;
-                    // the "newest user message" guess is gone — an
-                    // unresolvable id is an error.
-                    let id = target_message_id.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "rollback_session {}: pause=true requires target_message_id",
-                            session_id
-                        )
-                    })?;
-                    let target = self
-                        .db
-                        .get_session_messages(session_id)
-                        ?
-                        .into_iter()
-                        .find(|m| m.id == id)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "rollback_session {}: target message '{}' not found in session messages",
-                                session_id,
-                                id
-                            )
-                        })?;
-                    self.db
-                        .truncate_session_after(session_id, &target.created_at, true)?;
-                } else if let Some(ts) = self.db.last_user_message_ts(session_id)? {
-                    self.db.truncate_session_after(session_id, &ts, false)?;
-                }
-                // After truncation (and after any in-flight run join above):
-                // drop the cutoff cache so a late persist cannot repopulate
-                // timestamps that no longer exist. Also invalidate in-memory
-                // usage so the next run re-seeds from the rebuilt DB totals.
-                self.react_engine.clear_last_msg_at(session_id);
-                self.react_engine
-                    .invalidate_usage_after_truncate(session_id);
-                // Reload into memory and set status.
-                self.executor.ensure_session_loaded(session_id).await?;
-                self.set_session_status(
-                    session_id,
-                    if pause {
-                        SessionStatus::Paused
-                    } else {
-                        SessionStatus::Pending
-                    },
-                )
-                .await?;
-                return Ok(());
-            }
-        };
+        let state_json = self.db.get_react_state(session_id)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "rollback_session {}: no react_state; session is not resumable",
+                session_id
+            )
+        })?;
         let mut snapshot = ReActSnapshot::from_json(&state_json)?;
 
         // Compaction replaces the pre-compaction event prefix and clears its

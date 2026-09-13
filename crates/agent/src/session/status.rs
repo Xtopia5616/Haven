@@ -480,8 +480,8 @@ impl SessionExecutor {
     ) -> anyhow::Result<()> {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
         let Some(entry) = entry else {
-            // Session not in memory (e.g. already removed): no-op, matching the
-            // historical behavior of silently succeeding.
+            // Session not in memory (e.g. already removed): status updates are
+            // idempotent once the runtime entry no longer exists.
             return Ok(());
         };
         let mut session = entry.lock().await;

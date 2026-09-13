@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::commands::rebuild_router;
-use haven_common::config::{AppConfig, LlmConfig, ProviderConfig, RoleConfig};
+use haven_common::config::{
+    AppConfig, LlmConfig, ProviderConfig, RoleConfig, provider_config_wire_style,
+};
 use haven_llm::EndpointRole;
 use haven_llm::ModelInfo;
 use haven_llm::ModelRegistry;
@@ -523,20 +525,9 @@ pub async fn set_web_search(
             llm.providers
                 .iter()
                 .find(|p| p.name == slot.provider)
-                .and_then(|p| {
-                    p.api_style
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                        .or_else(|| {
-                            if p.provider.is_empty() {
-                                None
-                            } else {
-                                Some(p.provider.clone())
-                            }
-                        })
-                })
-                .unwrap_or_else(|| "openai-chat".into())
+                .map(provider_config_wire_style)
+                .unwrap_or("openai-chat")
+                .to_string()
         };
         if !haven_llm::supports_builtin_web_search(&style) {
             return Err(format!(

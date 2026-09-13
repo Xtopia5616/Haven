@@ -85,8 +85,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         events: seed_events_from_canonical(canonical),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: Some(crate::types::AskPending {
             question: "which file?".into(),
             step_ids: vec!["step-ask".into()],
@@ -218,107 +217,6 @@ async fn truncated_text_only_response_retried_before_final() {
         "Here is the complete answer.",
         "the retried (complete) response must be the final message, not the truncated one"
     );
-}
-
-#[tokio::test]
-async fn run_session_rebuilds_tool_chain_from_steps_without_snapshot() {
-    // Phase 7 / B4: when react_state is *missing*, resume uses the
-    // shared projector (best-effort). Corrupt snapshots hard-fail
-    // instead (see `corrupt_react_state_hard_fails_resume`). The DB
-    // message stream holds only text, so the projected canonical must
-    // recover tool-call/result pairs from session_steps.
-    let tools = Arc::new(ToolsManager::new());
-    tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
-    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
-        StreamChunk {
-            text: Some("Done.".into()),
-            tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
-                name: "final_answer".into(),
-                arguments: serde_json::json!({}),
-            }],
-            finish_reason: Some(FinishReason::Stop),
-            usage: None,
-            model: None,
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-        },
-    )]));
-    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
-    let collector = Arc::new(EventCollector::new());
-    agent.set_emitter(collector.clone());
-    let session = executor.create_session("resume me").await.unwrap();
-    // Persisted text turns (what the DB message stream holds)—
-    agent
-        .persist_message_parts(&session.id, "user", "resume me", Some("text"), &[], false)
-        .await
-        .unwrap();
-    // …plus the action chain in session_steps (what a snapshot-less resume
-    // must reconstruct). Use raw repo calls to avoid going through the
-    // ReAct loop.
-    agent
-        .db
-        .run_blocking({
-            let session_id = session.id.clone();
-            move |db| {
-                db.create_thought_step(&session_id, 1, "step-echo-thought")?;
-                let step = db.create_action_step(
-                    &session_id,
-                    2,
-                    "echo",
-                    r#"{"text":"hi"}"#,
-                    false,
-                    false,
-                    None,
-                    None,
-                )?;
-                db.complete_action_step(&step.id, "hi", true)?;
-                Ok::<(), anyhow::Error>(())
-            }
-        })
-        .await
-        .unwrap();
-    // NO react_state row: fallback path.
-    assert!(agent.db.get_react_state(&session.id).unwrap().is_none());
-
-    agent.run_session_from_id(&session.id).await.unwrap();
-
-    {
-        let seen = mock.seen.lock().unwrap();
-        assert_eq!(seen.len(), 1, "fresh run after snapshot-less resume");
-        let first = &seen[0];
-        let roles: Vec<String> = first.iter().map(|m| m.role.to_string()).collect();
-        // The rebuilt chain must appear: assistant with tool_calls,
-        // followed by its tool result (sanitize may keep them intact).
-        assert!(
-            roles.iter().any(|r| r == "assistant"),
-            "expected an assistant tool-call message: {:?}",
-            roles
-        );
-        let rebuilt_tool = first.iter().any(|m| {
-            matches!(m.role, CanonicalRole::Assistant)
-                && m.tool_calls.as_ref().is_some_and(|c| {
-                    c.iter()
-                        .any(|tc| tc.name == "echo" && tc.id.starts_with("call-"))
-                })
-        });
-        assert!(
-            rebuilt_tool,
-            "snapshot-less resume must rebuild the echo call from session_steps"
-        );
-        let rebuilt_result = first.iter().any(|m| {
-            matches!(m.role, CanonicalRole::Tool)
-                && m.tool_call_id
-                    .as_deref()
-                    .is_some_and(|id| id.starts_with("call-"))
-        });
-        assert!(
-            rebuilt_result,
-            "snapshot-less resume must rebuild the echo result from session_steps"
-        );
-    }
 }
 
 #[tokio::test]
@@ -1389,8 +1287,7 @@ async fn continue_session_resumes_errored_session() {
         }]),
         step_number: 1,
         branch_points: HashMap::new(),
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
@@ -1484,8 +1381,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         events: seed_events_from_canonical(vec![CanonicalMessage::user_text("opening")]),
         step_number: 1,
         branch_points,
-        saved_at: None,
-        last_ingress_seq: None,
+        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         error_partial_message_ids: None,
         awaiting_answer: None,
         awaiting_confirm: None,

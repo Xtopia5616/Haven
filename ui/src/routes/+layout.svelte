@@ -99,22 +99,13 @@
 	// Top-level tab state. Views stay MOUNTED once first activated (keep-alive)
 	// instead of being destroyed/re-created on every switch, so switching is
 	// instant and rapid tab clicks never tear down a view that is being
-	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
-	// also makes direct deep links (/tools etc.) restore the right tab.
-	// Legacy `history` / `/history` map to `memory` (the history center).
+	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState).
 	const TAB_IDS = ['chat', 'tools', 'memory', 'settings'];
 	function initialTabFromUrl() {
 		if (typeof window === 'undefined') return 'chat';
 		const url = get(page).url;
 		const tabParam = url.searchParams.get('tab');
-		if (tabParam === 'history') return 'memory';
-		if (tabParam === 'tasks') return 'memory';
 		if (tabParam && TAB_IDS.includes(tabParam)) return tabParam;
-		const path = url.pathname;
-		if (path === '/tools') return 'tools';
-		if (String(path) === '/tasks') return 'memory';
-		if (path === '/memory' || path === '/history') return 'memory';
-		if (path === '/settings') return 'settings';
 		return 'chat';
 	}
 	const initialTab = initialTabFromUrl();
@@ -371,34 +362,9 @@
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const url = $page.url;
-		const path = url.pathname;
-		if (path !== '/') {
-			// Legacy direct deep link (/tools, /tasks, /memory|/history, /settings):
-			// normalize to the keep-alive URL scheme so the root route (chat)
-			// stays mounted. `/tasks` maps to the history center's task section.
-			const isLegacyTasksPath = String(path) === '/tasks';
-			const t =
-				path === '/tools'
-					? 'tools'
-					: isLegacyTasksPath
-						? 'memory'
-						: path === '/memory' || path === '/history'
-							? 'memory'
-							: path === '/settings'
-								? 'settings'
-								: 'chat';
-			goto(
-				isLegacyTasksPath ? '/?tab=memory&section=tasks' : '/?tab=' + t,
-				{ replaceState: true },
-			);
-			return;
-		}
+		if (url.pathname !== '/') return;
 		const rawTab = url.searchParams.get('tab');
-		if (rawTab === 'tasks') {
-			goto('/?tab=memory&section=tasks', { replaceState: true });
-			return;
-		}
-		const tabParam = rawTab === 'history' ? 'memory' : rawTab;
+		const tabParam = rawTab;
 		const t = TAB_IDS.includes(tabParam || '') ? tabParam || 'chat' : 'chat';
 		if (t === activeTab) {
 			visited[t] = true;

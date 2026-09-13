@@ -41,9 +41,9 @@
 	<div class="tool-card-count">{data.actions.length} 个后台任务</div>
 	{#if data.actions.length > 0}
 		<ToolCardList>
-			{#each data.actions as action (action.action_id ?? action.job_id)}
+			{#each data.actions as action (action.action_id)}
 				<div class="action-row">
-					<span class="action-id">{action.action_id ?? action.job_id}</span>
+					<span class="action-id">{action.action_id}</span>
 					<StatusBadge label={actionStatusLabel(action.status)} tone={statusTone(action.status)} />
 				</div>
 			{/each}
@@ -51,9 +51,9 @@
 	{:else}
 		<p class="tool-card-empty">没有后台任务</p>
 	{/if}
-{:else if data.action_id || data.job_id || data.status}
+{:else if data.action_id || data.status}
 	<div class="action-row">
-		<span class="action-id">{data.action_id ?? data.job_id}</span>
+		<span class="action-id">{data.action_id || '—'}</span>
 		<StatusBadge label={actionStatusLabel(data.status)} tone={statusTone(data.status)} />
 	</div>
 	{#if data.exit_code != null}

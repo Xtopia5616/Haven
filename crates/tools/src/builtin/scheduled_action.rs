@@ -55,14 +55,14 @@ pub struct ScheduledActionFired {
     pub body: String,
     pub mode: ScheduleMode,
     /// Session that scheduled the scheduled_action —resume target for `Continue` mode,
-    /// tool-context scope for `Tool` mode. `None` on legacy rows.
+    /// tool-context scope for `Tool` mode. It is absent when the task is not
+    /// associated with a session.
     pub session_id: Option<String>,
     /// `Tool` mode: tool to call when the scheduled_action fires.
     pub tool_name: Option<String>,
     /// `Tool` mode: arguments for the tool call.
     pub tool_args: Option<Value>,
-    /// `Continue` mode: continuation message delivered to the session (falls
-    /// back to `body`). On legacy rows it is the wake text for a new session.
+    /// `Continue` mode: required continuation message delivered to the session.
     pub prompt: Option<String>,
 }
 
@@ -341,10 +341,15 @@ impl ScheduledActionCenter {
                 ScheduleMode::Tool => tool_name
                     .as_deref()
                     .is_some_and(|name| !name.trim().is_empty()),
-                ScheduleMode::Continue => row
-                    .session_id
-                    .as_deref()
-                    .is_some_and(|session_id| !session_id.trim().is_empty()),
+                ScheduleMode::Continue => {
+                    row.session_id
+                        .as_deref()
+                        .is_some_and(|session_id| !session_id.trim().is_empty())
+                        && row
+                            .prompt
+                            .as_deref()
+                            .is_some_and(|prompt| !prompt.trim().is_empty())
+                }
             };
             if !valid_payload {
                 tracing::error!(
@@ -909,6 +914,14 @@ impl ScheduledActionTool {
                         "one of delay_secs, due_at or watch_action_id is required for set"
                     );
                 }
+                if due_at.is_some() && delay.is_some() {
+                    anyhow::bail!("use exactly one of due_at or delay_secs, not both");
+                }
+                if let Some(delay) = delay
+                    && !(1..=86_400).contains(&delay)
+                {
+                    anyhow::bail!("delay_secs must be between 1 and 86400");
+                }
                 let title = params.title.as_deref().unwrap_or("Haven");
                 let body = params
                     .body
@@ -931,10 +944,24 @@ impl ScheduledActionTool {
                 }
                 let tool_name = params.tool_name;
                 let tool_args = params.tool_args.filter(|v| !v.is_null());
-                if let Some(delay) = delay
-                    && !(1..=86_400).contains(&delay)
-                {
-                    anyhow::bail!("delay_secs must be between 1 and 86400");
+                match mode {
+                    ScheduleMode::Tool => {
+                        if tool_name
+                            .as_deref()
+                            .is_none_or(|name| name.trim().is_empty())
+                        {
+                            anyhow::bail!("tool_name is required when mode is 'tool'");
+                        }
+                    }
+                    ScheduleMode::Continue => {
+                        if params
+                            .prompt
+                            .as_deref()
+                            .is_none_or(|prompt| prompt.trim().is_empty())
+                        {
+                            anyhow::bail!("prompt is required when mode is 'continue'");
+                        }
+                    }
                 }
                 if let Some(args) = &tool_args
                     && !args.is_object()
@@ -978,7 +1005,7 @@ impl ScheduledActionTool {
                 } else {
                     None
                 };
-                let prompt = params.prompt;
+                let prompt = params.prompt.map(|prompt| prompt.trim().to_string());
                 let id = self
                     .center
                     .set(ScheduledActionSpec {
@@ -1149,6 +1176,23 @@ impl Tool for ScheduledActionTool {
                     "oneOf": [
                         { "required": ["delay_secs"], "not": { "anyOf": [{ "required": ["due_at"] }, { "required": ["watch_action_id"] }] } },
                         { "required": ["due_at"], "not": { "required": ["delay_secs"] } }
+                    ],
+                    "allOf": [
+                        {
+                            "if": { "properties": { "mode": { "const": "continue" } } },
+                            "then": {
+                                "required": ["prompt"],
+                                "not": { "anyOf": [{ "required": ["tool_name"] }, { "required": ["tool_args"] }] }
+                            }
+                        },
+                        {
+                            "if": { "not": { "required": ["mode"] } },
+                            "then": { "required": ["tool_name"], "not": { "required": ["prompt"] } }
+                        },
+                        {
+                            "if": { "properties": { "mode": { "const": "tool" } } },
+                            "then": { "required": ["tool_name"], "not": { "required": ["prompt"] } }
+                        }
                     ]
                 },
                 {
@@ -1162,7 +1206,7 @@ impl Tool for ScheduledActionTool {
                         "body": { "type": "string", "minLength": 1 },
                         "prompt": { "type": "string", "minLength": 1 }
                     },
-                    "required": ["operation", "watch_action_id", "mode", "body"]
+                    "required": ["operation", "watch_action_id", "mode", "body", "prompt"]
                 }
             ]
         })

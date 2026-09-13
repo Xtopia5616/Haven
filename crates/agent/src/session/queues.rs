@@ -7,7 +7,7 @@
 //! These queues are an **in-memory cache** for the current process only.
 //! Durability for user injects is:
 //! 1. the persisted `messages` row (written at submit time),
-//! 2. snapshot `saved_at`, and
+//! 2. snapshot ingress cursor, and
 //! 3. the undelivered (anchor-less) scan in `run_session_resumed`.
 //!
 //! Resume re-queues recovered rows by `message_id`; enqueue helpers skip a
@@ -262,7 +262,7 @@ impl SessionExecutor {
     /// results are always drained in the same batch.
     ///
     /// Phase 7 / D2: this only clears the **RAM cache**. Durability lives in
-    /// DB messages + snapshot `saved_at` + undelivered scan; resume may
+    /// DB messages + snapshot ingress cursor + undelivered scan; resume may
     /// re-queue the same `message_id` after a restart, and enqueue is
     /// idempotent so a duplicate id does not double-inject.
     pub(crate) async fn drain_react_context(&self, session_id: &str) -> ReactContextBatch {

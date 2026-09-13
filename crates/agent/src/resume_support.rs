@@ -7,8 +7,6 @@
 
 use std::collections::HashSet;
 
-use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart};
-use haven_memory::Database;
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use serde_json::Value;
@@ -139,69 +137,10 @@ pub(crate) fn reconcile_dangling_tool_call(
     true
 }
 
-/// Project completed tool calls from the materialized step projection when the
-/// snapshot row is absent.
-///
-/// A valid snapshot keeps `events` as the sole authority. When no snapshot
-/// exists, this helper uses the durable step identity directly; legacy rows
-/// without a provider id receive a fresh local id from the canonical `call-*`
-/// namespace. It never matches tool names, arguments, or observation text to
-/// infer an association.
-pub(crate) fn project_tool_chain_from_steps(
-    db: &Database,
-    session_id: &str,
-    canonical: &mut Vec<CanonicalMessage>,
-) -> anyhow::Result<()> {
-    let steps = db.get_session_steps(session_id)?;
-    let mut projected = 0usize;
-    for step in steps {
-        let Some(tool) = step.action_tool else {
-            continue;
-        };
-        if tool == "ask" {
-            continue;
-        }
-        let Some(observation) = step.observation else {
-            continue;
-        };
-        let arguments: Value = step
-            .action_input
-            .as_deref()
-            .and_then(|input| serde_json::from_str(input).ok())
-            .unwrap_or(Value::Null);
-        let call_id = step
-            .tool_call_id
-            .unwrap_or_else(|| haven_common::types::new_id("call"));
-        canonical.push(CanonicalMessage::assistant(
-            Vec::new(),
-            Some(vec![CanonicalToolCall {
-                id: call_id.clone(),
-                name: tool,
-                arguments,
-            }]),
-            None,
-            Vec::new(),
-            Vec::new(),
-        ));
-        canonical.push(CanonicalMessage::tool(
-            vec![ContentPart::text(observation)],
-            Some(call_id),
-        ));
-        projected += 1;
-    }
-    if projected > 0 {
-        tracing::info!(
-            "run_session: projected {} tool step(s) from session_steps for session {}",
-            projected,
-            session_id
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::types::CanonicalToolCall;
 
     fn message(id: &str, role: &str) -> Message {
         Message {
@@ -317,50 +256,5 @@ mod tests {
                 ..
             }) if canonical_observation.contains("recovery:unknown")
         ));
-    }
-
-    #[test]
-    fn project_tool_chain_preserves_duplicate_calls_by_step_identity() {
-        let db_path = std::env::temp_dir().join(format!(
-            "haven_resume_identity_test_{}.db",
-            uuid::Uuid::new_v4()
-        ));
-        let db = Database::open(&db_path).unwrap();
-        let session = db.create_session("resume", "").unwrap();
-        for (index, id) in [(0, "call-a"), (1, "call-b")] {
-            let step = db
-                .create_action_step_with_identity(
-                    &session.id,
-                    1,
-                    index,
-                    "echo",
-                    r#"{"text":"same"}"#,
-                    Some(id),
-                    false,
-                    false,
-                    None,
-                    None,
-                )
-                .unwrap();
-            db.complete_action_step(&step.id, "same", true).unwrap();
-        }
-
-        let mut canonical = Vec::new();
-        project_tool_chain_from_steps(&db, &session.id, &mut canonical).unwrap();
-
-        let call_ids: Vec<_> = canonical
-            .iter()
-            .filter(|message| message.role == haven_common::types::CanonicalRole::Assistant)
-            .flat_map(|message| message.tool_calls.as_deref().unwrap_or_default())
-            .map(|call| call.id.as_str())
-            .collect();
-        assert_eq!(call_ids, ["call-a", "call-b"]);
-        let result_ids: Vec<_> = canonical
-            .iter()
-            .filter_map(|message| message.tool_call_id.as_deref())
-            .collect();
-        assert_eq!(result_ids, ["call-a", "call-b"]);
-        drop(db);
-        let _ = std::fs::remove_file(db_path);
     }
 }

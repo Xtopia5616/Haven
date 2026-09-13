@@ -147,8 +147,10 @@ impl Tool for SkillToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = input.get("params").cloned().unwrap_or(input);
-        self.runner.execute(&self.skill, &params, cancel).await
+        let params = input
+            .get("params")
+            .ok_or_else(|| anyhow::anyhow!("skill parameters are required"))?;
+        self.runner.execute(&self.skill, params, cancel).await
     }
 }
 

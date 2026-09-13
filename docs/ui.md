@@ -313,7 +313,7 @@ component-local ($state / $derived)
     ↑  props / callbacks  ↓
 route-level ($state, invoke 调用)
     ↑  subscribe  ↓
-shared stores (writable stores in stores.js / themeStore.js)
+shared stores (writable stores in stores.ts / themeStore.ts)
 ```
 
 ### 4.2 组件本地状态
@@ -335,7 +335,7 @@ shared stores (writable stores in stores.js / themeStore.js)
 
 ### 4.3 跨组件共享状态
 
-使用 `svelte/store` `writable`，定义在 `stores.js` 中：
+使用 `svelte/store` `writable`，定义在 `stores.ts` 中：
 
 ```js
 export const messagesStore = writable([]);
@@ -345,7 +345,7 @@ export const notificationStore = writable([]);
 在组件中订阅：
 
 ```js
-import { notificationStore } from '$lib/stores.js';
+import { notificationStore } from '$lib/stores.ts';
 
 let items = $state([]);
 notificationStore.subscribe((v) => (items = v));
@@ -403,10 +403,10 @@ notificationStore.subscribe((v) => (items = v));
 
 ### 6.1 调用规则
 
-所有 Tauri 调用通过 `$lib/tauri.js` 的 `invoke` 函数，禁止直接使用 `@tauri-apps/api`：
+所有 Tauri 调用通过 `$lib/tauri.ts` 的 `invoke` 函数，禁止直接使用 `@tauri-apps/api`：
 
-```js
-import { invoke } from '$lib/tauri.js';
+```ts
+import { invoke } from '$lib/tauri.ts';
 
 async function loadData() {
  try {
@@ -466,12 +466,12 @@ ui/src/
 ├── app.css                 # 全局 token + 组件原始类
 ├── app.html                # SvelteKit shell
 ├── lib/
-│   ├── components/         # 预留复合组件目录（当前为空）
+│   ├── AppShell.svelte     # 工作区壳层
 │   ├── Icon.svelte          # 统一尺寸与可访问性的图标原语
 │   ├── icons.ts             # 唯一图形定义和静态 HTML 图标渲染器
-│   ├── stores.js           # 共享 writable stores
-│   ├── tauri.js            # Tauri 桥接懒加载
-│   ├── themeStore.js       # 主题管理
+│   ├── stores.ts           # 共享 writable stores
+│   ├── tauri.ts            # Tauri 桥接懒加载
+│   ├── themeStore.ts       # 主题管理
 │   ├── ChatBubble.svelte   # 聊天气泡
 │   ├── ConfirmationDialog.svelte
 │   ├── Logo.svelte
@@ -490,16 +490,12 @@ ui/src/
 │   ├── RecordingIndicator.svelte
 │   ├── SkillCard.svelte
 │   ├── SkillDetailDrawer.svelte
-│   └── ActionCard.svelte
+│   ├── ActionCard.svelte
+│   ├── ConversationTimeline.svelte
+│   └── ToolResultCard.svelte
 └── routes/
     ├── +layout.svelte      # 布局 + 事件总线
-    ├── +page.svelte        # 聊天页
-    ├── history/
-    │   └── +page.svelte    # 历史页
-    ├── settings/
-    │   └── +page.svelte    # 设置页
-    └── tools/
-        └── +page.svelte    # 工具页
+    └── +page.svelte        # 聊天页与工作区 Tab
 ```
 
 ### 8.1 Material 组件命名规则
@@ -544,7 +540,7 @@ ui/src/
 当需要从 `svelte/store` 的 `writable` 读取数据时：
 
 ```js
-import { notificationStore } from '$lib/stores.js';
+import { notificationStore } from '$lib/stores.ts';
 
 let items = $state([]);
 notificationStore.subscribe((v) => (items = v));
@@ -752,9 +748,9 @@ ready + 用户修改 → dirty → saving → saved | error
 | Phase 4 | `635af95` | 设置分组状态、未配置提示、保存/放弃与离开保护；check/test/build 通过 |
 | Phase 5 | `e1b7601` | 工具资源搜索/筛选与记忆分组详情；check/test/build 通过 |
 | Phase 6 | `ade5901` | 统一异步状态、响应式与可访问性收口；40 个测试文件、469 个测试通过，build 通过 |
-| Phase 7 | 当前提交 | 清理旧页面实现、保留深链归一化桩并记录验收矩阵 |
+| Phase 7 | 当前提交 | 清理旧页面实现、删除旧路由与深链归一化，并记录验收矩阵 |
 
-旧的 `/tools`、`/memory`、`/history`、`/settings` 路由文件仅负责深链归一化；实际页面唯一实现位于工作区壳层，避免保留第二套 DOM 和交互逻辑。
+旧的 `/tools`、`/memory`、`/history`、`/settings` 路由文件与深链归一化已删除；实际页面唯一实现位于工作区壳层，避免保留第二套 DOM 和交互逻辑。当前只支持根路由及其 `?tab=` 查询契约。
 
 ---
 
@@ -799,7 +795,7 @@ ready + 用户修改 → dirty → saving → saved | error
 ```svelte
 <script>
  import { onMount } from 'svelte';
- import { invoke } from '$lib/tauri.js';
+ import { invoke } from '$lib/tauri.ts';
 
  let data = $state([]);
 

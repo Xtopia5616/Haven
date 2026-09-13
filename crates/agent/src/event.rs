@@ -174,7 +174,6 @@ pub enum AgentEvent {
         episode_id: Option<String>,
         /// True when a deterministic older-context marker was used instead
         /// of an LLM-generated summary.
-        #[serde(default)]
         degraded: bool,
     },
     TitleUpdated {
@@ -201,25 +200,19 @@ pub enum AgentEvent {
         completion_tokens: u32,
         total_tokens: u32,
         /// Prompt-cache hit / read tokens for this call.
-        #[serde(default)]
         cached_tokens: u32,
         /// Prompt-cache write / creation tokens for this call.
-        #[serde(default)]
         cache_creation_tokens: u32,
         /// Prompt tokens processed outside the cache read path.
-        #[serde(default)]
         cache_miss_tokens: u32,
         /// Tokens occupying the model context window for this call
         /// (prompt, plus exclusive cache tokens when the provider reports
         /// cache outside `prompt_tokens`).
-        #[serde(default)]
         context_tokens: u32,
         /// True when cache read/write tokens are counted outside `prompt_tokens`.
-        #[serde(default)]
         cache_exclusive: bool,
         /// Explicit per-call cache token accounting contract (`inclusive`,
-        /// `exclusive`, or `unknown` for legacy/unsupported providers).
-        #[serde(default)]
+        /// `exclusive`, or `unknown` for unsupported providers).
         cache_accounting: String,
         cost_usd: Option<f64>,
         model: Option<String>,
@@ -227,11 +220,8 @@ pub enum AgentEvent {
         cumulative_prompt_tokens: u32,
         cumulative_completion_tokens: u32,
         cumulative_total_tokens: u32,
-        #[serde(default)]
         cumulative_cached_tokens: u32,
-        #[serde(default)]
         cumulative_cache_creation_tokens: u32,
-        #[serde(default)]
         cumulative_cache_miss_tokens: u32,
         /// Non-sensitive routing/outcome metadata; never includes cache key or prompt text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,10 +239,8 @@ pub enum AgentEvent {
         /// Endpoint role that produced the response (`default` / `small` / …).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
-        #[serde(default = "default_usage_call_kind")]
         call_kind: String,
         /// Whether `cost_usd` is a real priced value (vs absent pricing).
-        #[serde(default)]
         has_cost: bool,
     },
 }
@@ -986,10 +974,6 @@ pub struct UsagePayload {
     pub role: Option<String>,
     pub call_kind: String,
     pub has_cost: bool,
-}
-
-fn default_usage_call_kind() -> String {
-    "agent".into()
 }
 
 #[cfg(test)]

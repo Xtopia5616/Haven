@@ -786,7 +786,6 @@ impl AgentTool {
         Ok(ToolResult::ok(json!({
             "ok": true,
             "session_id": result.session_id,
-            "agent": result.session_id,
             "parent": sid,
             "title": result.title.or(title),
             "role": result.role.or(role),
@@ -954,6 +953,16 @@ mod tests {
         let service = Arc::new(MessagingService::new(bus.clone()));
         let tool = AgentTool::new(service, new_agent_spawner_slot());
         (dir, bus, tool)
+    }
+
+    fn claim_and_ack(bus: &InboxBus, name: &str) -> Vec<Envelope> {
+        let messages = bus.claim_and_archive(name).unwrap();
+        let ids = messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        bus.ack_claimed(name, &ids).unwrap();
+        messages
     }
 
     fn with_sid(value: Value, sid: &str) -> Value {
@@ -1529,10 +1538,9 @@ mod tests {
             for _ in 0..50 {
                 let msgs = tokio::task::spawn_blocking({
                     let bus = bus_for_peer.clone();
-                    move || bus.read_and_archive("ses-b")
+                    move || claim_and_ack(&bus, "ses-b")
                 })
                 .await
-                .unwrap()
                 .unwrap();
                 if let Some(req) = msgs.into_iter().next() {
                     let _ = bus_for_peer.send_receipts("ses-b", std::slice::from_ref(&req));
@@ -1744,10 +1752,9 @@ mod tests {
             for _ in 0..50 {
                 let msgs = tokio::task::spawn_blocking({
                     let bus = bus_for_evil.clone();
-                    move || bus.read_and_archive("ses-b")
+                    move || claim_and_ack(&bus, "ses-b")
                 })
                 .await
-                .unwrap()
                 .unwrap();
                 if let Some(req) = msgs.into_iter().next() {
                     let mut forged = Envelope::new("ses-evil", "ses-a", "forged");

@@ -212,19 +212,7 @@ impl AgentLayer {
         self.inference.run_memory_maintenance().await
     }
 
-    /// Retrieve memory items (facts or episodes) most relevant to `query`.
-    pub async fn recall_memory(
-        &self,
-        query: &str,
-        kind: &str,
-        limit: usize,
-    ) -> anyhow::Result<haven_memory::MemoryRecall> {
-        self.inference.recall_memory(query, kind, limit).await
-    }
-
-    /// Forward a fully-scoped memory query without reducing it to the legacy
-    /// text/kind/limit tuple. App adapters use this to preserve current-session
-    /// and subject scope through the agent boundary.
+    /// Forward a fully-scoped memory query through the agent boundary.
     pub async fn recall_memory_query(
         &self,
         query: haven_memory::recall::MemoryQuery,
@@ -501,7 +489,10 @@ impl AgentLayer {
                             let Some(tool_name) = fired.tool_name else {
                                 agent
                                     .events
-                                    .emit_notification(&fired.title, &fired.body)
+                                    .emit_notification(
+                                        &fired.title,
+                                        "定时任务未执行：缺少要调用的工具。",
+                                    )
                                     .await;
                                 continue;
                             };
@@ -617,13 +608,21 @@ impl AgentLayer {
                             }
                         }
                         ScheduleMode::Continue => {
-                            let message = fired
+                            let Some(message) = fired
                                 .prompt
-                                .clone()
-                                .or_else(|| Some(fired.body.clone()))
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .unwrap_or_else(|| "定时任务已触发，请继续当前会话。".into());
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|prompt| !prompt.is_empty())
+                            else {
+                                agent
+                                    .events
+                                    .emit_notification(
+                                        &fired.title,
+                                        "定时任务未执行：继续会话缺少 prompt。",
+                                    )
+                                    .await;
+                                continue;
+                            };
                             // A continue-mode action requires the session it
                             // continues; without one it cannot run (there is
                             // no fallback to a brand-new session).
@@ -652,7 +651,7 @@ impl AgentLayer {
                             }
                             match agent
                                 .process_input_with_attachments(
-                                    &message,
+                                    message,
                                     Some(session_id),
                                     &[],
                                     false,
@@ -718,9 +717,8 @@ impl AgentLayer {
     /// Schedule short-title generation using small_model. The normal ingress
     /// path calls this immediately after the first user message is persisted,
     /// before the ReAct dispatcher is woken, so the title can appear while the
-    /// first response is being generated. Resume still calls it after a
-    /// successful run as a retry/fallback for sessions created before this
-    /// early trigger. Only one title call per session may be in flight.
+    /// first response is being generated. Only one title call per session may
+    /// be in flight.
     pub(crate) fn spawn_title_generation(&self, session_id: &str) {
         let db = self.db.clone();
         let executor = self.executor.clone();

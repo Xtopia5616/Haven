@@ -39,9 +39,8 @@ impl HavenTool {
         add_child_routes(&mut routes, preferences, "preferences_");
         add_child_routes(&mut routes, checklist, "checklist_");
 
-        // Actions historically inferred list/inspect from the absence of an
-        // operation. Give the grouped public contract explicit discriminators
-        // while preserving that child execution behavior.
+        // The action board has explicit grouped discriminators for list,
+        // inspect, and cancel while retaining the child tool's typed payload.
         routes.push(HavenRoute {
             public_operation: "actions_list".into(),
             child_operation: None,
@@ -161,13 +160,21 @@ impl Tool for HavenTool {
 
     fn operation_scope(&self, input: &Value) -> ToolOperationScope {
         self.route(input)
-            .map(|route| route.child.operation_scope(&Self::child_input(route, input)))
+            .map(|route| {
+                route
+                    .child
+                    .operation_scope(&Self::child_input(route, input))
+            })
             .unwrap_or(ToolOperationScope::Session)
     }
 
     fn timeout_secs_for(&self, input: &Value) -> u64 {
         self.route(input)
-            .map(|route| route.child.timeout_secs_for(&Self::child_input(route, input)))
+            .map(|route| {
+                route
+                    .child
+                    .timeout_secs_for(&Self::child_input(route, input))
+            })
             .unwrap_or_else(|| self.default_timeout_secs())
     }
 
@@ -288,19 +295,21 @@ mod tests {
             }))
             .is_ok()
         );
-        assert!(tool
-            .validate_input(&serde_json::json!({
+        assert!(
+            tool.validate_input(&serde_json::json!({
                 "operation": "preferences_set",
                 "key": "style"
             }))
-            .is_err());
-        assert!(tool
-            .validate_input(&serde_json::json!({
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({
                 "operation": "actions_list",
                 "action_id": "act-1",
                 "status": "running"
             }))
-            .is_err());
+            .is_err()
+        );
     }
 
     #[tokio::test]

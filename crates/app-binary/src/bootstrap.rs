@@ -43,26 +43,12 @@ pub(crate) fn run() {
     // Load config early so we can initialize tracing with the right level
     let config_loader = match haven_common::config::ConfigLoader::load() {
         Ok(loader) => loader,
-        Err(primary_error) => {
-            let default_path = haven_common::config::ConfigLoader::default_path();
-            match haven_common::config::ConfigLoader::load_from(&default_path) {
-                Ok(loader) => {
-                    eprintln!(
-                        "Haven config load fell back to defaults: {}",
-                        sanitize_error_text(&primary_error.to_string())
-                    );
-                    loader
-                }
-                Err(fallback_error) => {
-                    eprintln!(
-                        "Haven cannot start because configuration is unavailable: {}",
-                        sanitize_error_text(&format!(
-                            "primary: {primary_error}; fallback: {fallback_error}"
-                        ))
-                    );
-                    return;
-                }
-            }
+        Err(error) => {
+            eprintln!(
+                "Haven cannot start because configuration is unavailable: {}",
+                sanitize_error_text(&error.to_string())
+            );
+            return;
         }
     };
     let log_cfg = config_loader.config().log.clone();
@@ -321,7 +307,7 @@ pub(crate) fn run() {
                             let _ = app.get_webview_window("main").map(|w| {
                                 log_ignored_result!(
                                     "tray.settings.navigate",
-                                    w.eval("window.location.href = '/settings'")
+                                    w.eval("window.location.href = '/?tab=settings'")
                                 );
                                 log_ignored_result!("tray.settings.show", w.show());
                                 log_ignored_result!("tray.settings.set_focus", w.set_focus());

@@ -64,6 +64,7 @@ describe('agent IPC contract', () => {
 				step_number: 3,
 				duration_ms: 42,
 				role: 'default_model',
+				call_kind: 'agent',
 				has_cost: false,
 			},
 		});
@@ -157,8 +158,8 @@ describe('agent IPC contract', () => {
 		expect(event.payload.eventSeq).toBe(17);
 	});
 
-	it('maps degraded compaction and keeps legacy payloads compatible', () => {
-		const degraded = mapAgentEvent({
+	it('maps the current compaction payload', () => {
+		const event = mapAgentEvent({
 			event: 'agent:compaction',
 			id: 4,
 			payload: {
@@ -169,18 +170,7 @@ describe('agent IPC contract', () => {
 				degraded: true,
 			},
 		});
-		const legacy = mapAgentEvent({
-			event: 'agent:compaction',
-			id: 5,
-			payload: {
-				session_id: 'ses-1',
-				summary: 'prior turns',
-				tokens_before: 1000,
-				tokens_after: 400,
-			},
-		});
 
-		expect(degraded.payload.degraded).toBe(true);
-		expect(legacy.payload.degraded).toBe(false);
+		expect(event.payload.degraded).toBe(true);
 	});
 });

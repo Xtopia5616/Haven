@@ -178,9 +178,9 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
         "files" => format!("文件操作：{operation}（目标详情已隐藏）"),
         "shell" => "将执行一条受保护的本机命令（命令内容不会显示在弹窗中）".into(),
         "http" => "将向外部网络发起请求（请求内容已隐藏）".into(),
-		"media" => format!("媒体操作：{operation}（参数详情已隐藏）"),
-		"system" => format!("系统操作：{operation}（参数详情已隐藏）"),
-		"haven" => format!("Haven 操作：{operation}（参数详情已隐藏）"),
+        "media" => format!("媒体操作：{operation}（参数详情已隐藏）"),
+        "system" => format!("系统操作：{operation}（参数详情已隐藏）"),
+        "haven" => format!("Haven 操作：{operation}（参数详情已隐藏）"),
         "mcp" | "skill" => format!("扩展能力将执行：{tool_name}（参数已隐藏）"),
         _ => format!("工具 {tool_name} 将执行受保护操作：{operation}"),
     }

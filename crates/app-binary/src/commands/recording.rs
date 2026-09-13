@@ -1023,7 +1023,7 @@ mod tests {
 
     #[test]
     fn test_validate_attachments_accepts_valid() {
-        let imgs = vec![att("image/png", "aGVsbG8="), att("image/jpeg", "YWJj")];
+        let imgs = vec![att("image/png", "iVBORw0KGgo="), att("image/jpeg", "/9j/")];
         let out = validate_attachments(imgs.clone(), &limits()).unwrap();
         assert_eq!(out.len(), 2);
         // Files need a name; with one attached they pass through fine.
@@ -1044,7 +1044,7 @@ mod tests {
 
     #[test]
     fn test_validate_attachments_rejects_images_over_count() {
-        let imgs: Vec<_> = (0..5).map(|_| att("image/png", "aGVsbG8=")).collect();
+        let imgs: Vec<_> = (0..5).map(|_| att("image/png", "iVBORw0KGgo=")).collect();
         let err = validate_attachments(imgs, &limits()).unwrap_err();
         assert!(err.contains("最多支持"));
     }
@@ -1095,7 +1095,7 @@ mod tests {
 
     #[test]
     fn test_validate_attachments_drops_renderer_managed_metadata() {
-        let mut image = att("image/png", "aGVsbG8=");
+        let mut image = att("image/png", "iVBORw0KGgo=");
         image.asset_id = Some("asset-attacker-choice".into());
         image.path = Some(r"C:\Windows\win.ini".into());
 

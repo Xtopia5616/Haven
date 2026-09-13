@@ -9,7 +9,6 @@
 	import { getSelectedTextWithin } from '$lib/contextMenu.ts';
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { PEER_KICKOFF_PREFIX } from '$lib/peerKickoff.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -22,7 +21,6 @@
 		voice = false,
 		streaming = false,
 		toolName = '',
-		unrecoverable = false,
 		outcome = null,
 		messageId = '',
 		stepNumber = null,
@@ -249,10 +247,7 @@
 		};
 	}
 
-	let isPeerKickoff = $derived(
-		msgType === 'peer_kickoff' ||
-			(typeof content === 'string' && content.startsWith(PEER_KICKOFF_PREFIX)),
-	);
+	let isPeerKickoff = $derived(msgType === 'peer_kickoff');
 	// Keep the Markdown effect aligned with the template branch below. Some
 	// persisted messages carry a non-text type that has no dedicated bubble;
 	// they still represent assistant content and must render code fences.
@@ -360,7 +355,6 @@
 			<ToolResultCard
 				embedded
 				{toolName}
-				{unrecoverable}
 				{outcome}
 				{content}
 				{streaming}
@@ -685,12 +679,6 @@
 		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
 		object-fit: contain;
 		display: block;
-	.attachment-video {
-		max-width: min(100%, 420px);
-		max-height: 280px;
-		border-radius: var(--md-sys-shape-small);
-		background: var(--md-sys-color-surface-container-high);
-	}
 		cursor: zoom-in;
 	}
 	.attachment-img:hover {
@@ -701,6 +689,12 @@
 		height: 36px;
 		border-radius: var(--md-sys-shape-small);
 		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
+	}
+	.attachment-video {
+		max-width: min(100%, 420px);
+		max-height: 280px;
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container-high);
 	}
 	.attachment-file {
 		display: inline-flex;

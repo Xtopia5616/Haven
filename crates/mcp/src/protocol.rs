@@ -239,10 +239,10 @@ pub struct McpToolInfo {
     #[serde(default)]
     pub description: String,
     /// MCP wire key is camelCase `inputSchema`; Haven/UI keep snake_case on
-    /// serialize. Without the alias, serde ignores `inputSchema` and
-    /// `#[serde(default)]` yields `Null`, which OpenAI Responses rejects
-    /// (`null is not of types "boolean", "object"` at schema root).
-    #[serde(default, alias = "inputSchema")]
+    /// serialize. The field is required by the current MCP tools/list
+    /// contract; malformed tool definitions are rejected at the discovery
+    /// boundary instead of becoming an invalid null schema downstream.
+    #[serde(alias = "inputSchema")]
     pub input_schema: Value,
 }
 

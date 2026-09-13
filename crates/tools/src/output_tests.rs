@@ -94,7 +94,7 @@ fn test_sanitize_shell_output_clixml_preserves_preceding_stdout() {
 #[test]
 fn test_sanitize_shell_output_drops_progress_clixml() {
     // ProgressRecords (module first-use / Write-Progress) serialize as
-    // CLIXML with no <S S="Error">. The old strip_xml_markup fallback
+    // CLIXML with no <S S="Error">. The sanitizer must not
     // concatenated type names + Activity into a fake error like
     // "System.Management.Automation.PSCustomObject…正在准备首次使用模块".
     let text = concat!(

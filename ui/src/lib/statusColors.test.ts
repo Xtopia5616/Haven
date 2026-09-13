@@ -7,13 +7,11 @@ describe('statusColors', () => {
 		expect(getStatusDotColor('warning')).toBe('var(--md-sys-color-warning)');
 		expect(getStatusDotColor('error')).toBe('var(--md-sys-color-error)');
 		expect(getStatusDotColor('info')).toBe('var(--md-sys-color-primary)');
-		expect(getStatusDotColor('outline')).toBe('var(--md-sys-color-outline)');
+		expect(getStatusDotColor('neutral')).toBe('var(--md-sys-color-outline)');
 	});
 
-	it('maps existing component aliases to the same standard tones', () => {
-		expect(resolveStatusTone('primary')).toBe('info');
-		expect(resolveStatusTone('tertiary')).toBe('tool');
-		expect(resolveStatusTone('outline')).toBe('neutral');
+	it('uses neutral for unknown values', () => {
+		expect(resolveStatusTone('unknown')).toBe('neutral');
 		expect(getStatusColorTokens('error').background).toBe(
 			'var(--md-sys-color-error-container)',
 		);

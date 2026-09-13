@@ -113,7 +113,6 @@ mod tests {
             source: InjectSource::FollowUp,
             text: text.into(),
             media_inputs: Vec::new(),
-            attachments: Vec::new(),
             message_id: id.map(str::to_string),
         }
     }

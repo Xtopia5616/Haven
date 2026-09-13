@@ -25,7 +25,6 @@ export interface SessionTokenStats {
 	cumulativeCostUsd?: number | null;
 	contextWindow?: number | null;
 	model?: string | null;
-	estimated?: boolean;
 	restored?: boolean;
 }
 
@@ -137,9 +136,9 @@ export function buildTokenUsageDetails(
 	stats: SessionTokenStats,
 	llmUsage: LlmUsage[],
 ): TokenUsageDetails {
-	const agentCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'agent');
-	const mediaCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'media');
-	const toolCalls = llmUsage.filter((call) => (call.call_kind || 'agent') === 'tool');
+	const agentCalls = llmUsage.filter((call) => call.call_kind === 'agent');
+	const mediaCalls = llmUsage.filter((call) => call.call_kind === 'media');
+	const toolCalls = llmUsage.filter((call) => call.call_kind === 'tool');
 	const lastCall = agentCalls.at(-1);
 	const useLastCall = !!stats.restored && !!lastCall;
 	const currentPromptTokens = useLastCall
@@ -317,6 +316,5 @@ export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUs
 	}
 	if (details.model) parts.push(`模型 ${details.model}`);
 	if (details.costUsd != null) parts.push(`费用 ${formatCostUsd(details.costUsd)}`);
-	if (stats.estimated) parts.push('估算值（历史对话，未计费）');
 	return parts.join('\n');
 }

@@ -51,7 +51,6 @@ describe('statusColor', () => {
 		expect(statusColor('paused_awaiting_answer')).toBe('#ccaa44');
 		expect(statusColor('paused_awaiting_confirm')).toBe('#ccaa44');
 		expect(statusColor('completed')).toBe('#4488ff');
-		expect(statusColor('failed')).toBe('#ff4444');
 		expect(statusColor('error')).toBe('#ff4444');
 	});
 
@@ -70,7 +69,6 @@ describe('statusVariant', () => {
 		expect(statusVariant('paused_awaiting_answer')).toBe('warning');
 		expect(statusVariant('paused_awaiting_confirm')).toBe('warning');
 		expect(statusVariant('completed')).toBe('success');
-		expect(statusVariant('failed')).toBe('error');
 		expect(statusVariant('error')).toBe('error');
 	});
 
@@ -83,7 +81,6 @@ describe('statusVariant', () => {
 describe('isErrorStatus', () => {
 	it('keeps terminal failures distinct from paused sessions', () => {
 		expect(isErrorStatus('error')).toBe(true);
-		expect(isErrorStatus('failed')).toBe(true);
 		expect(isErrorStatus('paused')).toBe(false);
 		expect(isErrorStatus('completed')).toBe(false);
 	});

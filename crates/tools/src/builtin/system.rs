@@ -455,9 +455,10 @@ impl Tool for SystemTool {
             .get_mut("enum")
             .and_then(Value::as_array_mut)
             .expect("system scope enum");
-        for scope in desktop_scopes.iter().filter_map(|(scope, child)| {
-            child.as_ref().map(|_| *scope)
-        }) {
+        for scope in desktop_scopes
+            .iter()
+            .filter_map(|(scope, child)| child.as_ref().map(|_| *scope))
+        {
             scope_enum.push(Value::String(scope.into()));
         }
         for (scope, child) in desktop_scopes {
@@ -958,10 +959,10 @@ mod display_imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Tool;
     use crate::builtin::clipboard::{ClipboardHistory, ClipboardTool};
     use crate::builtin::process::ProcessTool;
     use crate::builtin::window::WindowTool;
-    use crate::Tool;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1004,12 +1005,14 @@ mod tests {
             Arc::new(crate::builtin::input::InputTool),
             Arc::new(WindowTool::new(crate::ManagedAssetRegistry::default())),
         );
-        assert!(tool
-            .validate_input(&json!({"scope": "process", "operation": "kill", "pid": 1}))
-            .is_ok());
-        assert!(tool
-            .validate_input(&json!({"scope": "process", "operation": "kill"}))
-            .is_err());
+        assert!(
+            tool.validate_input(&json!({"scope": "process", "operation": "kill", "pid": 1}))
+                .is_ok()
+        );
+        assert!(
+            tool.validate_input(&json!({"scope": "process", "operation": "kill"}))
+                .is_err()
+        );
         assert_eq!(
             tool.risk_level(&json!({"scope": "process", "operation": "kill"})),
             RiskLevel::High

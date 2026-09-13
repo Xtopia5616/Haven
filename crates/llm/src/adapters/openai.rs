@@ -17,11 +17,9 @@ use crate::adapters::{
     send_request, spawn_line_reader, stream_header_timeout, xai_search_mode,
 };
 use crate::client::LlmClient;
+use haven_common::prompts::split_system_prompt_cache_sections;
 #[cfg(test)]
 use haven_common::prompts::{MEMORY_FENCE_START, SESSION_CONTEXT_FENCE_START};
-use haven_common::prompts::{
-    split_system_prompt_cache_boundary, split_system_prompt_cache_sections,
-};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_common::{CapabilityProfile, CapabilitySupport};
 
@@ -426,8 +424,8 @@ impl OpenAiAdapter {
         let mut has_stable_system = false;
         for part in &system.content {
             if let ContentPart::Text(text) = part {
-                let stable = split_system_prompt_cache_boundary(text)
-                    .map(|(stable, _)| stable)
+                let stable = split_system_prompt_cache_sections(text)
+                    .map(|(stable, _, _)| stable)
                     .unwrap_or(text);
                 if !stable.trim().is_empty() {
                     hasher.update(stable.as_bytes());

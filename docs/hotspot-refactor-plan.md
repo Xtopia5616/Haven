@@ -62,13 +62,13 @@
 | 优先级 | 位置 | 为什么不是简单删一行 | 目标架构 |
 |---|---|---|---|
 | P0 | [`crates/agent/src/rollback_support.rs`](../crates/agent/src/rollback_support.rs)、[`crates/common/src/types.rs`](../crates/common/src/types.rs) | **已完成（2026-09-12）**：rollback 全路径只接受精确 `msg-*` 身份；compaction provenance、`InjectSource` 和 UI optimistic row 均不再按内容或 prefix 猜测。 | 保留 rollback 双时钟和 `last_msg_at` 语义不变。 |
-| P1 | [`crates/agent/src/resume.rs`](../crates/agent/src/resume.rs)、[`crates/agent/src/resume_support.rs`](../crates/agent/src/resume_support.rs) | 当前有两套 resume authority：有效 snapshot 走 `events`，缺 snapshot 时从 `session_steps` 重新投影，并为缺失 provider id 生成 `call-*`。这不是单纯的模块拆分，而是两种可能不一致的 transcript 语义。 | 测试版可在发布边界选择严格方案：snapshot 缺失就提示 reset / 新会话，删除 snapshot-less projector；如果产品仍要保留灾难恢复，则必须把它命名为独立的显式 recovery mode，不能继续称为普通 resume，也不能继续扩展第二套投影语义。 |
+| P1 | [`crates/agent/src/resume.rs`](../crates/agent/src/resume.rs)、[`crates/agent/src/resume_support.rs`](../crates/agent/src/resume_support.rs) | **已完成（2026-09-13）**：resume 只有有效 snapshot 这一条 ReAct 状态路径；缺失或损坏的 snapshot 明确拒绝恢复，删除了从 `session_steps` 重投影的第二套 transcript 语义。 | 旧 snapshot 按 reset/release 说明处理；恢复逻辑只负责当前 snapshot 的确定性修复与崩溃后的未投递输入重排。 |
 | P1 | [`crates/agent/src/react/retries.rs`](../crates/agent/src/react/turn.rs) | **已完成（2026-09-12）**：`awaiting_answer` / typed tool result 是唯一 ask 来源；旧 canonical JSON 扫描、问题文本猜测和 substring 测试已删除，无法恢复时 fail closed。 | 保持结构化 ask signal 为唯一来源。 |
-| P1 | [`ui/src/lib/resumeMessages.ts`](../ui/src/lib/resumeMessages.ts)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | **已完成（2026-09-12）**：ask 只从 step/message 共享 id 恢复；旧 sentinel、内容配对和 optimistic bubble 的内容+时间反查已删除。 | 保持提交时 canonical `msg-*` 与 optimistic row 一一绑定；snapshot-less recovery 仍是单独的恢复策略，不再向 UI 暴露旧猜测路径。 |
+| P1 | [`ui/src/lib/resumeMessages.ts`](../ui/src/lib/resumeMessages.ts)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | **已完成（2026-09-12）**：ask 只从 step/message 共享 id 恢复；旧 sentinel、内容配对和 optimistic bubble 的内容+时间反查已删除。 | 保持提交时 canonical `msg-*` 与 optimistic row 一一绑定；恢复失败直接进入当前错误处理，不向 UI 暴露猜测路径。 |
 | P1 | [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) | **已完成（2026-09-12）**：`api_style` 为空时只使用中性 `openai-chat`，`provider` 仅作为 vendor identity；`wire_provider_hint` 和 provider→wire 隐式推导已删除。 | 继续在 reset 边界清理 `model`→`model_name`、`Stdio`/`Http` serde alias；厂商 preset 只用于 UI 创建配置。 |
-| P2 | [`crates/tools/src/inbox.rs`](../crates/tools/src/inbox.rs)、[`crates/agent/src/react/context.rs`](../crates/agent/src/react/context.rs)、[`crates/tools/src/builtin/messaging.rs`](../crates/tools/src/builtin/messaging.rs) | ReAct 自动收件使用 durable `claim_and_archive` + `ack_claimed`，显式 `inbox` 工具仍使用立即 drain 的 `read_and_archive`。两条路径的崩溃和确认语义不同；代码注释直接称后者为 legacy path。 | 统一到一个 claim/project/ack 原语；显式工具如果需要同步返回，应在该原语之上做一次受控消费，而不是保留第二套文件状态机。若短期不能合并，必须写明它是用户可见的同步 adapter、禁止新增内部调用，并给出删除/合并条件。 |
-| P2 | [`crates/agent/src/prompt.rs`](../crates/agent/src/prompt.rs) | `patch_system_memory` 仍能升级旧 `USER FACTS` / `Past conversation excerpts` 布局。当前 builder 已有明确的新布局，旧 patch 主要服务旧 snapshot 中的 system prompt。 | 在 snapshot reset 边界后只保留当前布局替换；删除 `strip_legacy_past_excerpts` 及旧 fence 分支，并保留当前 prompt-cache-friendly 的局部 patch。 |
-| P2 | [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) | `ScheduledActionFired` 对旧行允许 `session_id=None`、`prompt=None` 并回退到 `body`，导致同一 DTO 同时表示当前 Tool/Continue 语义和旧唤醒语义。 | 迁移或清理旧 scheduled rows 后，按 mode 要求相应字段；`prompt` 与 `body` 的语义不要再互相兜底。 |
+| P2 | [`crates/tools/src/inbox.rs`](../crates/tools/src/inbox.rs)、[`crates/agent/src/react/context.rs`](../crates/agent/src/react/context.rs)、[`crates/tools/src/builtin/messaging.rs`](../crates/tools/src/builtin/messaging.rs) | **已完成（2026-09-13）**：自动收件和显式 `inbox` 都通过 `MessagingService::claim` 获取 durable claim；request/reply 的 selective wait 只消费匹配回复，不是第二套普通收件模型。 | 继续以 claim/project/ack 为唯一批量收件原语，保留 selective request/reply 作为独立协议操作。 |
+| P2 | [`crates/agent/src/prompt.rs`](../crates/agent/src/prompt.rs) | **已完成（2026-09-13）**：`patch_system_memory` 只替换当前 `MEMORY` fence，要求 canonical closer；`strip_legacy_past_excerpts`、旧 fence 查找/升级分支及对应 fixtures 已删除。 | 旧 snapshot 按 release/reset 说明处理；当前 prompt 仅保留 prompt-cache-friendly 的局部 patch。 |
+| P2 | [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) | **已完成（2026-09-13）**：有效行和新建请求按 mode 要求 `session_id`、`prompt` 或 `tool_name`；无效旧行跳过，`prompt` 与 `body` 不再互相兜底。 | 旧 scheduled rows 按 release/reset 说明取消或重建；运行时只处理当前 Tool/Continue/Watch 契约。 |
 
 ### C. 不应误删的兼容/降级
 
@@ -77,14 +77,14 @@
 - [`crates/llm/src/adapters`](../crates/llm/src/adapters) 对 OpenAI-compatible、Anthropic、Gemini、Deepgram 以及 MCP JSON-RPC wire shape 的字段别名和协议差异。这些是外部服务契约，不是 Haven 内部旧 API；Responses 的 developer-input downgrade、DeepSeek reasoning echo、prompt-cache capability probe 也属于供应商互操作。
 - ~~`crates/memory/src/migrations.rs` 的版本化 schema/data migration。它是有边界的历史数据迁移，不等同于永久保留内部双入口；若要整体清理，应另做数据库 reset/release 任务。~~ 已在 ADR 0105 的数据库 reset/release 任务中删除；此处保留为历史审查记录。
 - UTF-8/GBK、PowerShell CLIXML、provider failover、媒体低置信度回退、进程崩溃恢复和超时保护。这些是平台/供应商/故障处理能力，除非后续证明它们只是旧内部实现的残留，否则不能按兼容层删除。
-- `/history`、旧 tab 路径和 keep-alive 路由 redirect。它们是用户导航兼容，优先级低；若决定删除，应先确认没有需要保留的书签/深链接，再单独改路由契约。
+- `/history`、旧 tab 路径和 keep-alive 路由 redirect 已在 2026-09-13 删除；当前只保留规范的根路由和 tab 查询契约。旧书签按测试版发布边界失效，不再在 UI 中维护兼容跳转。
 
 ### D. 建议执行顺序
 
 1. 已完成无生产调用的 `upgrade_tool_rounds`、memory text-only search facade、`ToolResultCard` parsing re-export 和 `ACTION_STATUSES` 删除（ADR 0082/0131）。
 2. 已完成 FollowUp、confirmation IPC、旧 ask/retry signal、rollback provenance/UI 内容匹配和 provider→wire-style 隐式推导清理（ADR 0131）。
-3. snapshot-less projector 仍作为显式灾难恢复策略保留；它不再被用于 corrupt snapshot fallback，后续如删除需以 reset/release 任务单独变更。
-4. P2 仍待收敛配置字段 alias、inbox 双消费路径、scheduled row fallback 和 prompt 旧布局；每项都要明确是否删除旧数据。
+3. 已删除 snapshot-less projector、inbox 双消费路径、scheduled row fallback、prompt 旧布局和旧 tab/route redirect；无效旧 snapshot/config/row 按 reset/release 边界处理。
+4. provider/platform 协议适配、崩溃恢复、超时保护、媒体表示选择和向量不可用时的关键词召回仍是当前能力，不作为内部兼容层删除。
 
 本节中的“删除”均默认测试版破坏性变更：删除前同步更新旧测试、文档和发布重置说明；不得只删生产分支而保留旧 fixture 继续掩盖兼容入口。
 
@@ -136,7 +136,7 @@ RunEngine（纯 ReAct 状态机）
 
 ### B. P0：把 snapshot blob 权威改成数据库事件流，snapshot 降级为缓存
 
-当前 [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) 已经把 `ReActSnapshot.events` 定为 transcript 权威，但它仍作为整块压缩 blob 存储并频繁重写；同时 `messages`、`session_steps`、`AgentEvent` 和前端 resume builder 又分别承担投影或实时状态。恢复因此存在 snapshot authority、snapshot-less projector、DB projection merge 和 live event merge 多条语义路径。
+当前 [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) 已经把 `ReActSnapshot.events` 定为 transcript 权威，但它仍作为整块压缩 blob 存储并频繁重写；同时 `messages`、`session_steps`、`AgentEvent` 和前端 resume builder 又分别承担投影或实时状态。snapshot-less projector 已在 2026-09-13 删除；后续若引入事件表，应在新的事件 schema 中解决剩余投影边界。
 
 更彻底的目标是新增版本化的 `session_events` append-only 存储：每个事件有 `session_id`、单调 `sequence`、事件类型、payload、时间和 run/step identity。`ReActSnapshot` 只保留为定期 checkpoint/cache，不再是唯一持久化真源。`messages`、`session_steps`、usage、action 和 UI live stream 都从同一批已提交事件投影；实时订阅按 sequence 重放，断线后从最后 sequence 继续。
 
@@ -255,7 +255,7 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 3. 引入 `SessionActor` / `SessionSupervisor`，暂时把旧 ReAct 引擎包在 actor 内；新链路稳定后删除旧 executor maps/callbacks。
 4. 迁移 `InteractionRequest` 和 `ActionService`，删除 ask/confirm 双状态机与 background/scheduled 双 registry。
 5. 收窄 tools、memory、prompt 和 model routing 的 ports；删除 callback setter、prompt DB 访问和硬编码身份事实。
-6. 迁移 UI `SessionReducer` 与 `ApplicationRuntime`，最后删除 snapshot-less projector、内容匹配、旧 sentinel 和旧事件 merge 分支。
+6. 迁移 UI `SessionReducer` 与 `ApplicationRuntime`；snapshot-less projector、内容匹配、旧 sentinel 和旧事件 merge 分支已删除，后续只需在新事件 schema 中保持这一不变量。
 
 在第 2 步之前，不应开始大规模 provider 或 UI 视觉重写；在第 6 步完成之前，不应宣布“事件统一”完成。上述战略候选与本文件第 3 节的机械拆分是两条不同路线：文件拆分可以先做，但一旦选定战略路线，相关模块拆分应服务于新边界，不能把临时 facade 固化成最终架构。
 
@@ -388,7 +388,7 @@ ConfigService
 
 ### M. P1：把 inbox 和多 Agent 协作重做为 `MessagingService`
 
-当前 [`crates/tools/src/inbox.rs`](../crates/tools/src/inbox.rs) 是一个文件型 JSONL 消息总线，里面同时处理 agent 注册、mailbox、archive、锁、过期锁、processing 状态和读取语义；`read_and_archive` 还是旧的同步消费路径，`claim_and_archive` / `ack_claimed` 则是 ReAct 路径。[`crates/tools/src/builtin/messaging.rs`](../crates/tools/src/builtin/messaging.rs) 又把 list/send/inbox/reply/profile/request/spawn 等操作集中在一个多操作工具中，并通过 callback 把 agent spawn 反向接回 app/agent 层。
+当前 [`crates/tools/src/inbox.rs`](../crates/tools/src/inbox.rs) 是一个文件型 JSONL 消息总线，里面同时处理 agent 注册、mailbox、archive、锁、过期锁和 processing 状态；`claim_and_archive` / `ack_claimed` 是唯一的批量收件原语。[`crates/tools/src/builtin/messaging.rs`](../crates/tools/src/builtin/messaging.rs) 又把 list/send/inbox/reply/profile/request/spawn 等操作集中在一个多操作工具中，并通过 callback 把 agent spawn 反向接回 app/agent 层。
 
 这使消息的投递、认领、确认、重试、重复消费和 Agent 生命周期分散在文件锁、工具 dispatcher、callback 和 session 逻辑中。它已经不只是“把 inbox.rs 拆成几个模块”的问题，而是 crash recovery、幂等和请求生命周期没有一个权威模型。
 
@@ -406,7 +406,7 @@ MessagingService
 
 目标和边界：
 
-- 统一 `send → claim → process → ack` 语义；删除旧的同步 `read_and_archive` 与 ReAct 专用消费路径之间的双轨行为。
+- 统一 `send → claim → process → ack` 语义；当前所有批量收件都使用同一 durable claim。
 - 每条消息有稳定的 message identity、sender、recipient、session、correlation、attempt 和 delivery state，重复投递必须可检测且不会重复执行不可幂等副作用。
 - session 内部通信优先走 `SessionActor` mailbox；如果仍需跨进程或外部工具互操作，可以保留 JSONL 作为 transport adapter，但不能让 wire format 同时承担内部状态机。
 - `spawn`、request、reply、receipt 统一走请求生命周期和 supervisor/actor port，不再通过可变 callback slot 隐藏 agent 依赖。
@@ -418,7 +418,7 @@ MessagingService
 `InboxBus` 收窄为 JSONL transport adapter；`agent` 工具、ReAct inbox、peer lifecycle 均使用
 `send → claim → process → complete`，并记录稳定 message id 与 `delivery_attempt`。完整
 `SessionActor` mailbox、supervisor port 以及 spawn callback 的删除仍留在后续阶段；本切片不保留
-运行时 `read_and_archive` 兼容路径。
+运行时同步 drain 路径。
 
 ### N. P1：拆掉 `self` 超级管理工具，重建受限的 Admin Surface
 

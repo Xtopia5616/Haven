@@ -8,7 +8,7 @@ use crate::session::{SessionExecutor, SessionStatus};
 use haven_common::config::ContextLimitsConfig;
 use haven_common::media::{
     CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, MediaPlan,
-    MediaProjectionMode, build_media_plan, legacy_attachment_to_media_input,
+    MediaProjectionMode, build_media_plan, message_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
@@ -18,7 +18,6 @@ use haven_memory::Database;
 use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, TranscriptRecord, media_inputs_from_events};
-use chrono::Utc;
 
 mod context;
 mod hook_policy;
@@ -59,8 +58,8 @@ pub(crate) use snapshot_io::set_status_and_emit;
 #[cfg(test)]
 use tool_batch_policy::FailureKind;
 
-/// Project a legacy attachment using the current user-selected media policy.
-/// Legacy attachments first pass through the common media plan and the LLM
+/// Project an ingress attachment using the current user-selected media policy.
+/// Attachments first pass through the common media plan and the LLM
 /// projection boundary. Ordinary files deliberately do not expose their
 /// persisted absolute path to provider-facing text; managed-file resolution
 /// is a later trusted-tool stage.
@@ -68,7 +67,7 @@ pub(crate) fn attachment_to_content_part_with_strategy(
     att: &MessageAttachment,
     strategy: MediaInputStrategy,
 ) -> ContentPart {
-    let input = legacy_attachment_to_media_input(att);
+    let input = message_attachment_to_media_input(att);
     media_input_to_content_part_with_strategy(&input, strategy)
 }
 
@@ -131,8 +130,8 @@ fn media_capabilities_for_input(input: &MediaInput) -> CapabilityProfile {
         audio: CapabilitySupport::Supported,
         video: CapabilitySupport::Supported,
         // A persisted ordinary attachment is addressable through the trusted
-        // `files` tool using its opaque asset id. Legacy/in-memory attachments
-        // without both host markers stay on the safe fallback path.
+        // `files` tool using its opaque asset id. Attachments without a
+        // managed reference stay on the safe text path.
         tools: if matches!(
             input.asset.source,
             haven_common::media::MediaAssetSource::UserAttachment
@@ -1276,7 +1275,7 @@ impl ReActEngine {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use haven_common::types::{CanonicalRole, CanonicalToolCall, MessageAttachment};
+    use haven_common::types::{CanonicalRole, CanonicalToolCall, InjectSource, MessageAttachment};
 
     #[test]
     fn loop_exit_variants_distinguish_pause_reasons() {
@@ -1470,22 +1469,22 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_file_attachment_does_not_leak_absolute_path() {
+    fn ordinary_file_attachment_uses_opaque_reference_without_path() {
         let mut attachment = MessageAttachment::new("application/pdf", "");
         attachment.filename = Some("report.pdf".into());
         attachment.path = Some(r"C:\Users\olive\uploads\report.pdf".into());
         let ContentPart::Text(text) =
             attachment_to_content_part_with_strategy(&attachment, MediaInputStrategy::Auto)
         else {
-            panic!("ordinary files use a safe text fallback until managed tools resolve them");
+            panic!("ordinary files use an opaque managed reference");
         };
         assert!(text.contains("report.pdf"));
-        assert!(text.contains("不会发送给模型"));
+        assert!(text.contains("asset_id="));
         assert!(!text.contains(r"C:\Users\olive"));
     }
 
     #[test]
-    fn raw_managed_attachment_exposes_media_plan_handle() {
+    fn snapshotted_managed_attachment_exposes_media_plan_handle() {
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
         attachment.path = Some(r"C:\Users\olive\uploads\photo.png".into());
@@ -1494,8 +1493,10 @@ mod tests {
                 step_number: 1,
                 source: haven_common::types::InjectSource::FollowUp,
                 text: "看这张图".into(),
-                media_inputs: Vec::new(),
-                attachments: vec![attachment],
+                media_inputs: vec![
+                    haven_common::media::message_attachment_to_media_input(&attachment)
+                        .for_snapshot(),
+                ],
                 message_id: None,
             }],
             MediaInputStrategy::Auto,
@@ -1509,7 +1510,7 @@ mod tests {
             })
             .expect("raw managed media should leave a plan notice");
         assert!(text.contains("asset-0123456789abcdef0123456789abcdef"));
-        assert!(text.contains("raw_image"));
+        assert!(text.contains("managed_file_ref"));
         assert!(!text.contains(r"C:\Users\olive"));
     }
 
@@ -1583,6 +1584,28 @@ mod tests {
         RequestContext::from_state(&ReActState::new(Vec::new(), messages, HashMap::new()), None)
     }
 
+    fn media_request_context(
+        message: CanonicalMessage,
+        media_type: &str,
+        data: &str,
+    ) -> RequestContext {
+        let input = message_attachment_to_media_input(&MessageAttachment::new(media_type, data));
+        RequestContext::from_state(
+            &ReActState::new(
+                vec![TranscriptRecord::UserInject {
+                    step_number: 1,
+                    source: InjectSource::FollowUp,
+                    text: "media input".into(),
+                    media_inputs: vec![input],
+                    message_id: None,
+                }],
+                vec![message],
+                HashMap::new(),
+            ),
+            None,
+        )
+    }
+
     #[tokio::test]
     async fn choose_agent_role_default_without_images() {
         let router = mock_router();
@@ -1600,8 +1623,8 @@ mod tests {
     #[tokio::test]
     async fn choose_agent_role_default_when_image_model_unconfigured() {
         let router = mock_router();
-        let messages = [image_msg(CanonicalRole::User)];
-        let context = request_context(messages.into());
+        let context =
+            media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");
         assert_eq!(
             choose_agent_role(&router, &context).await,
             EndpointRole::DefaultModel
@@ -1662,7 +1685,8 @@ mod tests {
         router
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
-        let context = request_context(vec![image_msg(CanonicalRole::User)]);
+        let context =
+            media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");
 
         assert_eq!(
             choose_agent_role(&router, &context).await,
@@ -1681,7 +1705,8 @@ mod tests {
         router
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
-        let context = request_context(vec![image_msg(CanonicalRole::User)]);
+        let context =
+            media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");
 
         assert_eq!(
             choose_agent_role(&router, &context).await,

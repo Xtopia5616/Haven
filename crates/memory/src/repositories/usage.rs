@@ -111,7 +111,6 @@ pub struct LlmCallUsage {
     /// Call surface that owns the usage. Agent turns feed session totals;
     /// tool-owned media and other tool inference are retained for diagnostics
     /// but excluded from those totals.
-    #[serde(default = "default_call_kind")]
     pub call_kind: String,
     pub model: Option<String>,
     pub prompt_tokens: u32,
@@ -123,8 +122,9 @@ pub struct LlmCallUsage {
     pub cache_creation_tokens: u32,
     #[serde(default)]
     pub cache_miss_tokens: u32,
-    /// `inclusive`, `exclusive`, or `unknown` for legacy rows. Only per-call
-    /// rows can safely express this when a session switches providers.
+    /// `inclusive`, `exclusive`, or `unknown` when the provider does not
+    /// report cache accounting. Only per-call rows can safely express this
+    /// when a session switches providers.
     #[serde(default)]
     pub cache_accounting: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,10 +153,6 @@ impl LlmCallUsage {
             &self.cache_accounting,
         );
     }
-}
-
-fn default_call_kind() -> String {
-    "agent".into()
 }
 
 impl Database {
@@ -622,8 +618,7 @@ impl Database {
             .optional()?
             .unwrap_or((0, None));
         // Always upsert — including zeros when no detail remains — so resume
-        // does not treat a cleared row as "predates persistence" and fall
-        // back to estimate_session_usage.
+        // does not treat a cleared row as if usage persistence had never run.
         conn.execute(
             "INSERT INTO session_usage
                  (session_id, prompt_tokens, completion_tokens, total_tokens,

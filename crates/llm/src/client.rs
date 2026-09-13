@@ -78,31 +78,37 @@ pub trait LlmClient: Send + Sync {
 
     async fn chat_with_tools(
         &self,
-        messages: Vec<CanonicalMessage>,
+        _messages: Vec<CanonicalMessage>,
         _tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat(messages).await
+        Err(LlmError::UnsupportedCapability(
+            "tool calling is not supported by this adapter".into(),
+        ))
     }
 
-    /// Chat with a per-request output cap. The default keeps compatibility
-    /// with lightweight/test clients; provider adapters override this so the
-    /// cap reaches the wire request.
+    /// Chat with a per-request output cap. Implementations must forward the
+    /// cap to their provider request; silently dropping it changes the model
+    /// budget and is not a valid operation.
     async fn chat_with_output_cap(
         &self,
-        messages: Vec<CanonicalMessage>,
+        _messages: Vec<CanonicalMessage>,
         _max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat(messages).await
+        Err(LlmError::UnsupportedCapability(
+            "per-request output caps are not supported by this adapter".into(),
+        ))
     }
 
     /// Tool chat with a per-request output cap.
     async fn chat_with_tools_output_cap(
         &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        _messages: Vec<CanonicalMessage>,
+        _tools: Vec<ToolDefinition>,
         _max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat_with_tools(messages, tools).await
+        Err(LlmError::UnsupportedCapability(
+            "tool calling with an output cap is not supported by this adapter".into(),
+        ))
     }
 
     async fn chat_stream(
@@ -112,55 +118,35 @@ pub trait LlmClient: Send + Sync {
 
     async fn chat_stream_with_tools(
         &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        _messages: Vec<CanonicalMessage>,
+        _tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        let resp = self.chat_with_tools(messages, tools).await?;
-        let chunk = StreamChunk {
-            text: Some(resp.text.clone()),
-            tool_calls: resp.tool_calls.clone(),
-            finish_reason: resp.finish_reason,
-            usage: Some(resp.usage.clone()),
-            model: resp.model.clone(),
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-        };
-        let final_chunk = StreamChunk {
-            text: None,
-            tool_calls: Vec::new(),
-            finish_reason: None,
-            usage: None,
-            model: None,
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-        };
-        Ok(Box::pin(futures_util::stream::iter(vec![
-            Ok(chunk),
-            Ok(final_chunk),
-        ])))
+        Err(LlmError::UnsupportedCapability(
+            "streaming tool calling is not supported by this adapter".into(),
+        ))
     }
 
     /// Streaming chat with a per-request output cap.
     async fn chat_stream_output_cap(
         &self,
-        messages: Vec<CanonicalMessage>,
+        _messages: Vec<CanonicalMessage>,
         _max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        self.chat_stream(messages).await
+        Err(LlmError::UnsupportedCapability(
+            "streaming output caps are not supported by this adapter".into(),
+        ))
     }
 
     /// Streaming tool chat with a per-request output cap.
     async fn chat_stream_with_tools_output_cap(
         &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        _messages: Vec<CanonicalMessage>,
+        _tools: Vec<ToolDefinition>,
         _max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        self.chat_stream_with_tools(messages, tools).await
+        Err(LlmError::UnsupportedCapability(
+            "streaming tool calling with an output cap is not supported by this adapter".into(),
+        ))
     }
 
     /// Embed a batch of texts into vectors via the provider's embeddings API.

@@ -5,10 +5,6 @@
 import { formatMessageTime } from '$lib/stores.ts';
 import { isPausedStatus } from '$lib/sessionStatus.ts';
 
-function isUnrecoverableHistoricalTool(name: string | null | undefined): boolean {
-	return name === 'process.launch';
-}
-
 /** A resume-only bubble shown when a session has no persisted message rows. */
 export function isDisplayOnlyMessageId(id: unknown): boolean {
 	return typeof id === 'string' && id.startsWith('placeholder-');
@@ -30,8 +26,6 @@ interface ResumeMessage {
 	toolName?: string;
 	/** JSON tool-call arguments from `session_steps.action_input`. */
 	toolArgs?: unknown;
-	/** Historical operation has no safe current-tool equivalent. */
-	unrecoverable?: boolean;
 	/** Durable tool outcome used to render failed/cancelled/unknown history. */
 	outcome?: string | null;
 	/** Live-only mid-turn anchor marking a user message as steering; the DB
@@ -233,9 +227,6 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			...(isToolObservation
 				? {
 						toolName: persistedToolName || 'tool',
-						...(isUnrecoverableHistoricalTool(step?.action_tool)
-							? { unrecoverable: true }
-							: {}),
 						...(step?.action_input != null && step.action_input !== ''
 							? { toolArgs: step.action_input }
 							: {}),
@@ -266,7 +257,6 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		if (!step.action_tool) continue;
 		if (msgIds.has(stepId) && step.action_tool !== 'ask') continue;
 		const toolName = step.action_tool;
-		const unrecoverable = isUnrecoverableHistoricalTool(step.action_tool);
 		const obs = step.observation && step.observation !== '{}' ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card
 		// under the step row's id (matching the live card). The question text
@@ -328,7 +318,6 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 			content: obs || '',
 			type: 'tool',
 			toolName,
-			...(unrecoverable ? { unrecoverable: true } : {}),
 			...(step.action_input != null && step.action_input !== ''
 				? { toolArgs: step.action_input }
 				: {}),

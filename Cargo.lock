@@ -2347,7 +2347,6 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
- "encoding_rs",
  "futures-util",
  "haven-common",
  "regex",

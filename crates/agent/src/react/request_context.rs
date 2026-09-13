@@ -11,9 +11,9 @@ use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_me
 use crate::types::TranscriptRecord;
 use haven_common::media::{
     CapabilityProfile, MediaInput, MediaInputStrategy, MediaModality, MediaPlan,
-    MediaProjectionMode, build_media_plan, legacy_attachment_to_media_input,
+    MediaProjectionMode, build_media_plan,
 };
-use haven_common::types::{CanonicalMessage, ContentPart, MessageAttachment};
+use haven_common::types::{CanonicalMessage, ContentPart};
 
 /// One immutable provider request snapshot.
 #[derive(Debug, Clone)]
@@ -69,17 +69,16 @@ impl RequestContext {
         let mut planned_inputs = Vec::new();
         let mut media_positions = Vec::new();
         for (message_index, message) in messages.iter().enumerate() {
-            for (part_index, part) in message.content.iter().enumerate() {
-                let Some(fallback) = attachment_from_content_part(part) else {
-                    continue;
-                };
-                let input = self
+            for (part_index, _part) in message.content.iter().enumerate() {
+                let Some(input) = self
                     .media_inputs
                     .get(message_index)
                     .and_then(|parts| parts.get(part_index))
                     .and_then(Option::as_ref)
                     .cloned()
-                    .unwrap_or_else(|| legacy_attachment_to_media_input(&fallback));
+                else {
+                    continue;
+                };
                 media_positions.push((message_index, part_index, input.asset.asset_id.clone()));
                 planned_inputs.push(input);
             }
@@ -148,28 +147,29 @@ impl RequestContext {
     /// can trigger a retry through the default role instead of silently
     /// becoming a placeholder on the specialized endpoint.
     pub(super) fn raw_media_fits_profile(&self, capabilities: &CapabilityProfile) -> bool {
-        let inputs: Vec<_> = self
-            .messages
-            .iter()
-            .enumerate()
-            .flat_map(|(message_index, message)| {
-                message
-                    .content
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(part_index, part)| {
-                        let fallback = attachment_from_content_part(part)?;
-                        Some(
-                            self.media_inputs
-                                .get(message_index)
-                                .and_then(|parts| parts.get(part_index))
-                                .and_then(Option::as_ref)
-                                .cloned()
-                                .unwrap_or_else(|| legacy_attachment_to_media_input(&fallback)),
-                        )
-                    })
-            })
-            .collect();
+        let mut inputs = Vec::new();
+        for (message_index, message) in self.messages.iter().enumerate() {
+            for (part_index, part) in message.content.iter().enumerate() {
+                if !matches!(
+                    part,
+                    ContentPart::Image { .. }
+                        | ContentPart::Audio { .. }
+                        | ContentPart::Video { .. }
+                ) {
+                    continue;
+                }
+                let Some(input) = self
+                    .media_inputs
+                    .get(message_index)
+                    .and_then(|parts| parts.get(part_index))
+                    .and_then(Option::as_ref)
+                    .cloned()
+                else {
+                    return false;
+                };
+                inputs.push(input);
+            }
+        }
         if inputs.is_empty() {
             return true;
         }
@@ -229,19 +229,8 @@ fn media_inputs_for_state(
                 compacted_messages = Some(compacted.clone());
                 event_inputs.clear();
             }
-            TranscriptRecord::UserInject {
-                media_inputs,
-                attachments,
-                ..
-            } => {
-                let inputs = if media_inputs.is_empty() {
-                    attachments
-                        .iter()
-                        .map(legacy_attachment_to_media_input)
-                        .collect()
-                } else {
-                    media_inputs.clone()
-                };
+            TranscriptRecord::UserInject { media_inputs, .. } => {
+                let inputs = media_inputs.clone();
                 // Keep empty groups: source-tagged canonical user messages
                 // consume one UserInject per message, even when that inject
                 // has no attachments. Dropping the empty group would shift
@@ -282,11 +271,6 @@ fn media_inputs_for_state(
                 let result = event_inputs.get(next_event);
                 next_event += 1;
                 result.map(Vec::as_slice)
-            } else if compact_inputs.is_some() {
-                // Legacy compact roots may not have identity-bearing
-                // per-message markers. Keep a conservative modality-only
-                // fallback for those roots.
-                compact_inputs.as_deref()
             } else {
                 let result = event_inputs.get(next_event);
                 next_event += 1;
@@ -334,45 +318,30 @@ fn snapshot_media_inputs_for_message(
             let ContentPart::Text(text) = part else {
                 return None;
             };
-            let (modality, asset_id) = snapshot_media_marker_info(text)?;
-            let index = asset_id
-                .as_deref()
-                .and_then(|asset_id| {
-                    inputs.iter().enumerate().find_map(|(index, input)| {
-                        (input.asset.asset_id == asset_id && used.insert(index)).then_some(index)
-                    })
-                })
-                .or_else(|| {
-                    inputs.iter().enumerate().find_map(|(index, input)| {
-                        if used.contains(&index) || !media_input_matches_part(input, modality) {
-                            return None;
-                        }
-                        used.insert(index);
-                        Some(index)
-                    })
-                })?;
+            let asset_id = snapshot_media_marker_info(text)?;
+            let index = inputs.iter().enumerate().find_map(|(index, input)| {
+                (input.asset.asset_id == asset_id && used.insert(index)).then_some(index)
+            })?;
             inputs.get(index).cloned()
         })
         .collect()
 }
 
-fn snapshot_media_marker_info(text: &str) -> Option<(MediaModality, Option<String>)> {
-    let modality = if text.starts_with("[managed image omitted from snapshot;") {
-        MediaModality::Image
-    } else if text.starts_with("[managed audio omitted from snapshot;") {
-        MediaModality::Audio
-    } else if text.starts_with("[managed video omitted from snapshot;") {
-        MediaModality::Video
+fn snapshot_media_marker_info(text: &str) -> Option<String> {
+    if text.starts_with("[managed image omitted from snapshot;")
+        || text.starts_with("[managed audio omitted from snapshot;")
+        || text.starts_with("[managed video omitted from snapshot;")
+    {
+        let asset_id = text
+            .split_once("asset_id=")
+            .and_then(|(_, value)| value.split(';').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)?;
+        Some(asset_id)
     } else {
-        return None;
-    };
-    let asset_id = text
-        .split_once("asset_id=")
-        .and_then(|(_, value)| value.split(';').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
-    Some((modality, asset_id))
+        None
+    }
 }
 
 fn restore_raw_part(mut input: MediaInput, part: &ContentPart) -> MediaInput {
@@ -433,42 +402,42 @@ fn media_input_matches_part(input: &MediaInput, modality: MediaModality) -> bool
     input.asset.media_type.starts_with(match modality {
         MediaModality::Image => "image/",
         MediaModality::Audio => "audio/",
-        _ => return false,
+        MediaModality::Video => "video/",
+        MediaModality::Text | MediaModality::Document => return false,
     }) || input
         .representations
         .iter()
         .any(|representation| representation.representation.raw_modality() == Some(modality))
 }
 
-fn attachment_from_content_part(part: &ContentPart) -> Option<MessageAttachment> {
-    let (media_type, data) = match part {
-        ContentPart::Image {
-            media_type, data, ..
-        }
-        | ContentPart::Audio {
-            media_type, data, ..
-        }
-        | ContentPart::Video {
-            media_type, data, ..
-        } => (media_type, data),
-        ContentPart::Text(_) => return None,
-    };
-    let mut attachment = MessageAttachment::new(media_type.clone(), data.clone());
-    // Keep this metadata-only adapter explicit. Paths and managed ids are not
-    // recoverable from provider-neutral raw parts and must never be guessed.
-    attachment.asset_id = None;
-    Some(attachment)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::BranchPoint;
-    use haven_common::types::{CanonicalToolCall, ContentPart};
+    use haven_common::media::message_attachment_to_media_input;
+    use haven_common::types::{CanonicalToolCall, ContentPart, MessageAttachment};
     use std::collections::HashMap;
 
     fn state(messages: Vec<CanonicalMessage>) -> ReActState {
         ReActState::new(Vec::new(), messages, HashMap::<u32, BranchPoint>::new())
+    }
+
+    fn state_with_media(message: CanonicalMessage, inputs: Vec<MediaInput>) -> ReActState {
+        ReActState::new(
+            vec![TranscriptRecord::UserInject {
+                step_number: 1,
+                source: haven_common::types::InjectSource::FollowUp,
+                text: "media input".into(),
+                media_inputs: inputs,
+                message_id: None,
+            }],
+            vec![message],
+            HashMap::<u32, BranchPoint>::new(),
+        )
+    }
+
+    fn image_input(data: &str) -> MediaInput {
+        message_attachment_to_media_input(&MessageAttachment::new("image/png", data))
     }
 
     #[test]
@@ -542,7 +511,10 @@ mod tests {
             media_type: "image/png".into(),
             data: "aGVsbG8=".into(),
         }]);
-        let context = RequestContext::from_state(&state(vec![image]), None);
+        let context = RequestContext::from_state(
+            &state_with_media(image, vec![image_input("aGVsbG8=")]),
+            None,
+        );
         let profile = CapabilityProfile {
             image: haven_common::media::CapabilitySupport::Unsupported,
             ..CapabilityProfile::default()
@@ -572,10 +544,10 @@ mod tests {
             data: data.into(),
         };
         let context = RequestContext::from_state(
-            &state(vec![CanonicalMessage::user(vec![
-                image("aGVsbG8="),
-                image("d29ybGQ="),
-            ])]),
+            &state_with_media(
+                CanonicalMessage::user(vec![image("aGVsbG8="), image("d29ybGQ=")]),
+                vec![image_input("aGVsbG8="), image_input("d29ybGQ=")],
+            ),
             None,
         );
         let profile = CapabilityProfile {
@@ -611,13 +583,12 @@ mod tests {
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some(asset_id.into());
         attachment.path = Some(r"C:\Users\olive\uploads\photo.png".into());
-        let input = legacy_attachment_to_media_input(&attachment);
+        let input = message_attachment_to_media_input(&attachment);
         let event = TranscriptRecord::UserInject {
             step_number: 1,
             source: haven_common::types::InjectSource::FollowUp,
             text: "看图".into(),
             media_inputs: vec![input],
-            attachments: Vec::new(),
             message_id: None,
         };
         let message = CanonicalMessage::user(vec![
@@ -671,16 +642,14 @@ mod tests {
                 step_number: 1,
                 source: haven_common::types::InjectSource::FollowUp,
                 text: "先读图".into(),
-                media_inputs: vec![legacy_attachment_to_media_input(&image)],
-                attachments: Vec::new(),
+                media_inputs: vec![message_attachment_to_media_input(&image)],
                 message_id: Some("msg-11111111111111111111111111111111".into()),
             },
             TranscriptRecord::UserInject {
                 step_number: 2,
                 source: haven_common::types::InjectSource::FollowUp,
                 text: "再听音频".into(),
-                media_inputs: vec![legacy_attachment_to_media_input(&audio)],
-                attachments: Vec::new(),
+                media_inputs: vec![message_attachment_to_media_input(&audio)],
                 message_id: Some("msg-22222222222222222222222222222222".into()),
             },
         ];
@@ -709,7 +678,7 @@ mod tests {
         let mut attachment = MessageAttachment::new("audio/wav", "YXVkaW8=");
         attachment.asset_id = Some(asset_id.into());
         attachment.path = Some(r"C:\haven\uploads\recording.wav".into());
-        let input = legacy_attachment_to_media_input(&attachment);
+        let input = message_attachment_to_media_input(&attachment);
         let live_message = CanonicalMessage::user_with_source(
             vec![
                 ContentPart::text("继续处理录音"),

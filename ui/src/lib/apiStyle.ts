@@ -27,20 +27,11 @@ export function isKnownApiStyle(style: string | null | undefined): boolean {
 		.toLowerCase();
 	return (
 		s === 'openai-responses' ||
-		s === 'deepseek-responses' ||
-		s === 'responses' ||
 		s === 'openai-chat' ||
-		s === 'openai' ||
-		s === 'chat' ||
 		s === 'llama.cpp' ||
-		s === 'llama' ||
-		s === 'llamacpp' ||
 		s === 'xai' ||
-		s === 'grok' ||
 		s === 'anthropic' ||
-		s === 'claude' ||
 		s === 'gemini' ||
-		s === 'google' ||
 		s === 'deepgram' ||
 		s === 'assemblyai' ||
 		s === 'elevenlabs'
@@ -53,25 +44,16 @@ export function normalizeApiStyle(style: string | null | undefined): string {
 		.toLowerCase();
 	switch (s) {
 		case 'openai-responses':
-		case 'deepseek-responses':
-		case 'responses':
 			return 'openai-responses';
 		case 'openai-chat':
-		case 'openai':
-		case 'chat':
 			return 'openai-chat';
 		case 'llama.cpp':
-		case 'llama':
-		case 'llamacpp':
 			return 'llama.cpp';
 		case 'xai':
-		case 'grok':
 			return 'xai';
 		case 'anthropic':
-		case 'claude':
 			return 'anthropic';
 		case 'gemini':
-		case 'google':
 			return 'gemini';
 		case 'deepgram':
 			return 'deepgram';
@@ -80,7 +62,7 @@ export function normalizeApiStyle(style: string | null | undefined): string {
 		case 'elevenlabs':
 			return 'elevenlabs';
 		default:
-			return 'openai-chat';
+			return 'invalid';
 	}
 }
 
@@ -709,10 +691,11 @@ export const PROVIDER_PRESETS = [
 const PRESET_BY_VALUE = new Map(PROVIDER_PRESETS.map((p) => [p.value, p]));
 
 export function apiStylePreset(uiStyle: string): ProviderPreset {
-	return (
-		PRESET_BY_VALUE.get(uiStyle) ??
-		/** @type {ProviderPreset} */ (PRESET_BY_VALUE.get('openai-chat') ?? PROVIDER_PRESETS[0])
-	);
+	const preset = PRESET_BY_VALUE.get(uiStyle);
+	if (!preset) {
+		throw new Error(`Unknown provider preset: ${uiStyle}`);
+	}
+	return preset;
 }
 
 function normalizePresetUrl(url: string): string {
@@ -736,7 +719,7 @@ export function applyProviderPreset(
 	const next = apiStylePreset(nextStyle);
 	const current = normalizePresetUrl(form.base_url);
 	const prevDefault = normalizePresetUrl(prev.base_url);
-	form.api_style = nextStyle;
+	form.api_style = next.api_style;
 	if (!current || current === prevDefault) {
 		form.base_url = next.base_url;
 	}
@@ -769,8 +752,8 @@ function hostMatches(host: string | null | undefined, needles: string[]): boolea
 
 /**
  * Resolve which UI preset a saved provider should show.
- * Prefers stored `provider` + wire style; host is only a fallback for
- * generic `provider=openai` rows pointing at a known vendor URL.
+ * Prefers stored `provider` + wire style; host inference is used only for
+ * generic `provider=openai` configurations pointing at a known vendor URL.
  */
 export function displayApiStyle(
 	p: {
@@ -780,7 +763,6 @@ export function displayApiStyle(
 	} | null | undefined,
 ): string {
 	if (!p) return 'openai-chat';
-	const styleRaw = String(p.api_style || '').trim();
 	const style = providerWireStyle(p);
 	const provider = String(p.provider || '')
 		.trim()
@@ -792,7 +774,7 @@ export function displayApiStyle(
 	// DeepSeek has two presets on the same vendor hint.
 	if (
 		style === 'openai-responses' &&
-		(provider.includes('deepseek') || styleRaw === 'deepseek-responses')
+		provider.includes('deepseek')
 	) {
 		return 'deepseek-responses';
 	}
@@ -822,8 +804,6 @@ export function displayApiStyle(
 
 	if (style === 'openai-responses') return 'openai-responses';
 	if (style === 'openai-chat') return 'openai-chat';
-	if (PRESET_BY_VALUE.has(styleRaw)) return styleRaw;
-	if (PRESET_BY_VALUE.has(style)) return style;
 	return style || 'openai-chat';
 }
 
@@ -834,9 +814,7 @@ export function isKeylessProvider(
 	p: { api_style?: string | null; provider?: string | null } | null | undefined,
 ): boolean {
 	if (!p) return false;
-	const preset = apiStylePreset(displayApiStyle(p));
-	if (preset.keyless) return true;
 	const provider = String(p.provider || '').toLowerCase();
-	const style = String(p.api_style || '').toLowerCase();
-	return style === 'llama.cpp' || provider === 'ollama';
+	const style = providerWireStyle(p);
+	return style === 'llama.cpp' || provider === 'ollama' || provider === 'llama.cpp';
 }

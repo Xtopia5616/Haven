@@ -13,7 +13,7 @@ use crate::adapters::{
     stream_header_timeout,
 };
 use crate::client::LlmClient;
-use haven_common::prompts::split_system_prompt_cache_boundary;
+use haven_common::prompts::split_system_prompt_cache_sections;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_common::{CapabilityProfile, CapabilitySupport};
 
@@ -290,17 +290,17 @@ impl AnthropicAdapter {
     /// layout. The visible text is spliced back into segments at the recorded
     /// boundaries; adjacent original text blocks merge into one segment,
     /// which is semantically identical. Returns `None` when the layout is
-    /// absent or inconsistent (legacy snapshots, hand-built messages, or
-    /// content rewritten downstream), letting the caller fall back to the
-    /// legacy front-loaded order.
+    /// absent or inconsistent (hand-built messages or content rewritten
+    /// downstream), letting the caller use the deterministic front-loaded
+    /// order.
     fn rebuild_ordered_blocks(
         content: &[ContentPart],
         thinking_blocks: &[Value],
         tool_calls: Option<&[CanonicalToolCall]>,
         layout: &[(u8, usize, usize)],
     ) -> Option<Vec<Value>> {
-        // Non-text parts (e.g. images) have no position in the layout; keep
-        // the legacy order for such messages.
+        // Non-text parts (e.g. images) have no position in the layout; use
+        // the deterministic front-loaded order for such messages.
         if content.iter().any(|p| !matches!(p, ContentPart::Text(_))) {
             return None;
         }
@@ -380,9 +380,10 @@ impl AnthropicAdapter {
         Some(out)
     }
 
-    /// Legacy assistant block order: all thinking blocks first, then the
-    /// visible content, then the tool calls.
-    fn legacy_assistant_blocks(
+    /// Deterministic assistant block order when no valid interleaving marker
+    /// is available: all thinking blocks first, then visible content, then
+    /// tool calls.
+    fn front_loaded_assistant_blocks(
         captured: Vec<Value>,
         content: &[ContentPart],
         tool_calls: Option<Vec<CanonicalToolCall>>,
@@ -519,10 +520,12 @@ impl AnthropicAdapter {
                                 &layout,
                             ) {
                                 Some(ordered) => ordered,
-                                None => Self::legacy_assistant_blocks(captured, &m.content, calls),
+                                None => {
+                                    Self::front_loaded_assistant_blocks(captured, &m.content, calls)
+                                }
                             }
                         }
-                        None => Self::legacy_assistant_blocks(captured, &m.content, calls),
+                        None => Self::front_loaded_assistant_blocks(captured, &m.content, calls),
                     };
                     if blocks.is_empty() {
                         continue;
@@ -625,11 +628,14 @@ impl AnthropicAdapter {
     /// that threshold.
     fn system_with_cache_control(system: Option<String>) -> Option<Value> {
         let text = system.filter(|s| !s.is_empty())?;
-        if let Some((stable, volatile)) = split_system_prompt_cache_boundary(&text) {
+        if let Some((stable, session, memory)) = split_system_prompt_cache_sections(&text)
+            && !memory.is_empty()
+        {
+            let stable = format!("{stable}{session}");
             if stable.is_empty() {
                 return Some(json!([{
                     "type": "text",
-                    "text": volatile,
+                    "text": memory,
                 }]));
             }
             return Some(json!([
@@ -640,7 +646,7 @@ impl AnthropicAdapter {
                 },
                 {
                     "type": "text",
-                    "text": volatile
+                    "text": memory
                 }
             ]));
         }
@@ -655,7 +661,7 @@ impl AnthropicAdapter {
         let system_split = messages.iter().any(|message| {
             message.role == CanonicalRole::System
                 && message.content.iter().any(|part| {
-                    matches!(part, ContentPart::Text(text) if split_system_prompt_cache_boundary(text).is_some())
+                    matches!(part, ContentPart::Text(text) if split_system_prompt_cache_sections(text).is_some())
                 })
         });
         CacheDiagnostics::for_provider_cache(system_split)
@@ -2032,10 +2038,10 @@ mod tests {
     }
 
     #[test]
-    fn convert_messages_echo_falls_back_on_inconsistent_layout() {
+    fn convert_messages_echo_uses_front_loaded_order_for_inconsistent_layout() {
         // A hand-built message whose layout marker does not match the actual
-        // thinking blocks must fall back to the legacy front-loaded order
-        // instead of emitting a malformed echo.
+        // thinking blocks uses the deterministic front-loaded order instead
+        // of emitting a malformed echo.
         let thinking = serde_json::json!({
             "type": "thinking",
             "thinking": "plan",

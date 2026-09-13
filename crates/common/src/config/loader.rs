@@ -112,6 +112,22 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
     if value.get("audio").is_some() {
         return Some("top-level [audio]");
     }
+    let has_invalid_provider_style = value
+        .get("llm")
+        .and_then(toml::Value::as_table)
+        .and_then(|llm| llm.get("providers"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|providers| {
+            providers.iter().any(|provider| {
+                provider
+                    .get("api_style")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|style| !style.trim().is_empty() && !is_known_api_style(style))
+            })
+        });
+    if has_invalid_provider_style {
+        return Some("unsupported llm provider api_style");
+    }
     if let Some(media) = value.get("media").and_then(toml::Value::as_table) {
         for section in ["stt", "tts", "image_gen"] {
             if let Some(table) = media.get(section).and_then(toml::Value::as_table)
@@ -960,6 +976,39 @@ encrypt_sensitive = true
             loader.config().security.permission_mode,
             PermissionMode::Balanced
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_noncanonical_provider_api_style() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[llm.providers]]
+name = "deepseek"
+provider = "deepseek"
+api_style = "deepseek-responses"
+base_url = "https://api.deepseek.com"
+api_key = "test-key"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                name.starts_with("config.toml.") && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1, "noncanonical wire styles must require reset");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

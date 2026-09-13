@@ -16,6 +16,8 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 入口会触发备份并以默认配置启动。新的聚合入口是 `system`（桌面子 scope）和 `haven`
 （管理与 session utility operation）；`media` 和 `files` 保持原有聚合入口。
 已删除的 `haven_session_diagnostics` 及其 operation 权限也不再迁移；升级时会触发同样的备份与配置重置。
+Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 vendor/preset 值
+（例如 `deepseek-responses`）不会再作为 wire style 解释，检测到后同样备份并重置配置。
 数据库中待执行定时任务若仍引用已经删除的旧工具名不会自动改写，需取消并重新创建，或按下文完整重置。
 
 旧 Phase-7 ReAct 快照（包括未压缩的旧 `react_state` 行）以及直接在 `[media.stt]`、`[media.tts]`、`[media.image_gen]` 中使用

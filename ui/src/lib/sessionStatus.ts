@@ -6,7 +6,7 @@
 // isPausedStatus() covers plain pause, ask-awaiting (F2), and confirm-awaiting (E3).
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
-/** Session statuses only (not background-action `failed`). */
+/** Session statuses only. */
 export const SESSION_STATUSES = [
 	'pending',
 	'running',
@@ -24,8 +24,6 @@ const COLOR_MAP: Record<string, string> = {
 	paused_awaiting_answer: '#ccaa44',
 	paused_awaiting_confirm: '#ccaa44',
 	completed: '#4488ff',
-	// Legacy / background-action status — sessions use `error`.
-	failed: '#ff4444',
 	error: '#ff4444',
 };
 
@@ -36,7 +34,6 @@ const VARIANT_MAP: Record<string, string> = {
 	paused_awaiting_answer: 'warning',
 	paused_awaiting_confirm: 'warning',
 	completed: 'success',
-	failed: 'error',
 	error: 'error',
 };
 
@@ -55,7 +52,7 @@ export function isBusyStatus(status: string | undefined | null): boolean {
 
 /** Terminal failure states that should remain read-only when history is opened. */
 export function isErrorStatus(status: string | undefined | null): boolean {
-	return status === 'error' || status === 'failed';
+	return status === 'error';
 }
 
 export function statusColor(status: string) {

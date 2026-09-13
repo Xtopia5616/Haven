@@ -129,7 +129,7 @@ mod tests {
             media_type,
             16,
             Some("report.txt".into()),
-            MediaAssetSource::RestoredLegacy,
+            MediaAssetSource::UserAttachment,
             MediaAssetLifecycle::Session,
         );
         MediaInput {

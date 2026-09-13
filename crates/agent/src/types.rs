@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 
-use haven_common::media::{
-    MediaAssetSource, MediaInput, MediaInputStrategy, legacy_attachment_to_media_input,
-};
+use haven_common::media::{MediaAssetSource, MediaInput, MediaInputStrategy};
 use haven_common::text::sanitize_prompt_field;
 use haven_common::types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
-    MessageAttachment,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,9 +13,7 @@ use serde_json::Value;
 pub struct ToolRecord {
     pub action: Action,
     pub observation: Option<String>,
-    #[serde(default)]
     pub action_index: u32,
-    #[serde(default)]
     pub step_id: String,
 }
 
@@ -61,13 +56,11 @@ pub enum TranscriptRecord {
     },
     ToolResult {
         step_number: u32,
-        #[serde(default)]
         action_index: u32,
-        #[serde(default)]
         step_id: String,
         canonical_observation: String,
         history_observation: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         tool_call_id: Option<String>,
         action: Action,
     },
@@ -80,11 +73,7 @@ pub enum TranscriptRecord {
         /// before this record is serialized into a snapshot.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         media_inputs: Vec<MediaInput>,
-        /// Legacy snapshot field. It remains readable for the reset boundary,
-        /// but new event records never serialize attachment bytes here.
-        #[serde(default, skip_serializing)]
-        attachments: Vec<MessageAttachment>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
     },
     /// Durable request-projection metadata. This is deliberately separate
@@ -111,7 +100,6 @@ pub enum TranscriptRecord {
         tokens_before: u32,
         tokens_after: u32,
         episode_id: String,
-        #[serde(default)]
         degraded: bool,
     },
 }
@@ -129,7 +117,6 @@ pub struct BranchPoint {
     pub step_number: u32,
     /// `created_at` of the most recent session message at save time. On
     /// rollback, messages after this timestamp are deleted.
-    #[serde(default)]
     pub last_msg_at: Option<String>,
 }
 
@@ -147,19 +134,17 @@ pub struct ConfirmPendingTool {
     pub confirm_id: String,
     pub tool_name: String,
     pub tool_input: Value,
-    #[serde(default)]
     pub tool_call_id: String,
     pub step_id: String,
-    #[serde(default)]
     pub action_index: u32,
     pub risk_level: haven_common::types::RiskLevel,
     /// One-shot proof issued by the authorization engine for this exact
     /// invocation. `None` is used for safe/trusted siblings carried behind
     /// the same batch barrier and therefore rechecked normally on resume.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub receipt: Option<haven_tools::ConfirmationReceipt>,
     /// `None` = still waiting; `Some(true/false)` = user decided.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<bool>,
 }
 
@@ -167,7 +152,6 @@ pub struct ConfirmPendingTool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ConfirmPending {
     pub step_number: u32,
-    #[serde(default)]
     pub tools: Vec<ConfirmPendingTool>,
 }
 
@@ -195,7 +179,7 @@ pub struct RunBudget {
     /// Configured per-run `max_steps` at run start.
     pub max_steps: u32,
     /// Optional session-lifetime absolute step cap.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_max_steps: Option<u32>,
 }
 
@@ -212,14 +196,9 @@ pub struct ReActSnapshot {
     /// Rollback points keyed by step number for overwrite rollback (§2).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub branch_points: HashMap<u32, BranchPoint>,
-    /// Legacy wall-clock checkpoint retained for backward compatibility with
-    /// old snapshots. New resume logic uses `last_ingress_seq`.
-    #[serde(default)]
-    pub saved_at: Option<String>,
     /// Highest durable message ingress sequence included when this snapshot
     /// was written. Resume recovers rows strictly after this cursor.
-    #[serde(default)]
-    pub last_ingress_seq: Option<i64>,
+    pub last_ingress_seq: i64,
     /// Present only when the ReAct loop itself recorded a failed LLM stream.
     /// Continue may then use this step's branch point to replace the failed
     /// attempt. A normal periodic snapshot leaves this `None`, so an app or
@@ -241,26 +220,8 @@ impl ReActSnapshot {
     /// Snapshot upgrades are deliberately unsupported: a snapshot without
     /// `events` belongs to an incompatible Haven version and must be reset.
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        let mut snapshot: Self = serde_json::from_str(json)
+        let snapshot: Self = serde_json::from_str(json)
             .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;
-        // Older snapshots stored attachments directly on UserInject. Convert
-        // them once at the read boundary so a later checkpoint cannot write
-        // their inline bytes back out. The legacy field is intentionally
-        // cleared after conversion; the new media_inputs field is the only
-        // durable representation for subsequent saves.
-        for event in &mut snapshot.events {
-            if let TranscriptRecord::UserInject {
-                media_inputs,
-                attachments,
-                ..
-            } = event
-            {
-                if media_inputs.is_empty() && !attachments.is_empty() {
-                    *media_inputs = attachment_media_inputs_for_snapshot(attachments);
-                }
-                attachments.clear();
-            }
-        }
         if snapshot.events.iter().any(|event| match event {
             TranscriptRecord::UserInject { text, .. } => text.starts_with("[conversation] "),
             TranscriptRecord::CompactSummary { compacted, .. } => compacted.iter().any(|message| {
@@ -405,19 +366,11 @@ pub fn project_transcript_with_strategy(
                 source,
                 text,
                 media_inputs,
-                attachments,
                 ..
             } => {
                 let mut content = vec![ContentPart::text(text.clone())];
-                if media_inputs.is_empty() {
-                    for attachment in attachments {
-                        let input = legacy_attachment_to_media_input(attachment);
-                        append_media_projection(&mut content, &input, strategy);
-                    }
-                } else {
-                    for input in media_inputs {
-                        append_media_projection(&mut content, input, strategy);
-                    }
+                for input in media_inputs {
+                    append_media_projection(&mut content, input, strategy);
                 }
                 canonical.push(CanonicalMessage::user_with_source(content, *source));
             }
@@ -441,9 +394,15 @@ pub(crate) fn append_media_projection(
 ) {
     let projected = crate::react::media_input_to_content_part_with_strategy(input, strategy);
     let representation = match &projected {
-        ContentPart::Image { .. } => Some("raw_image"),
-        ContentPart::Audio { .. } => Some("raw_audio"),
-        ContentPart::Video { .. } => Some("raw_video"),
+        ContentPart::Image { .. } => {
+            Some(haven_common::media::MediaRepresentationKind::RawImage.as_str())
+        }
+        ContentPart::Audio { .. } => {
+            Some(haven_common::media::MediaRepresentationKind::RawAudio.as_str())
+        }
+        ContentPart::Video { .. } => {
+            Some(haven_common::media::MediaRepresentationKind::RawVideo.as_str())
+        }
         ContentPart::Text(_) => {
             crate::react::media_plan_for_inputs(std::slice::from_ref(input), strategy)
                 .projections
@@ -610,19 +569,6 @@ where
     canonical_for_snapshot(messages).serialize(serializer)
 }
 
-/// Convert a legacy attachment to the same request projection used by the
-/// durable media event. Kept here so old snapshots and new snapshots share
-/// exactly one projection implementation.
-pub(crate) fn attachment_media_inputs_for_snapshot(
-    attachments: &[MessageAttachment],
-) -> Vec<MediaInput> {
-    attachments
-        .iter()
-        .map(legacy_attachment_to_media_input)
-        .map(|input| input.for_snapshot())
-        .collect()
-}
-
 /// Collect the snapshot-safe media identities carried by the current event
 /// root. A compaction boundary replaces older events, so encountering one
 /// resets the collection just like transcript projection resets canonical
@@ -637,20 +583,7 @@ pub(crate) fn media_inputs_from_events(events: &[TranscriptRecord]) -> Vec<Media
                 seen.clear();
                 media_inputs.clone()
             }
-            TranscriptRecord::UserInject {
-                media_inputs,
-                attachments,
-                ..
-            } => {
-                if media_inputs.is_empty() {
-                    attachments
-                        .iter()
-                        .map(legacy_attachment_to_media_input)
-                        .collect()
-                } else {
-                    media_inputs.clone()
-                }
-            }
+            TranscriptRecord::UserInject { media_inputs, .. } => media_inputs.clone(),
             TranscriptRecord::MediaPlan { media_inputs, .. } => media_inputs.clone(),
             _ => Vec::new(),
         };
@@ -725,11 +658,13 @@ impl ProcessResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::media::message_attachment_to_media_input;
     use haven_common::media::{
         MediaDerivation, MediaProvenance, MediaRepresentation, MediaRepresentationKind,
         MediaRepresentationPayload,
     };
     use haven_common::types::CanonicalRole;
+    use haven_common::types::MessageAttachment;
 
     fn canonical_msg(role: CanonicalRole, text: &str) -> CanonicalMessage {
         CanonicalMessage {
@@ -904,8 +839,7 @@ mod tests {
             step_number: 1,
             source: InjectSource::FollowUp,
             text: "请看图".into(),
-            media_inputs: attachment_media_inputs_for_snapshot(&[attachment]),
-            attachments: Vec::new(),
+            media_inputs: vec![message_attachment_to_media_input(&attachment).for_snapshot()],
             message_id: Some("msg-0123456789abcdef0123456789abcdef".into()),
         };
         let json = serde_json::to_string(&record).unwrap();
@@ -949,7 +883,7 @@ mod tests {
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
         attachment.path = Some(r"C:\haven\uploads\photo.png".into());
-        let input = legacy_attachment_to_media_input(&attachment);
+        let input = message_attachment_to_media_input(&attachment);
         let messages = vec![CanonicalMessage {
             role: CanonicalRole::User,
             content: vec![ContentPart::Image {
@@ -988,38 +922,6 @@ mod tests {
         assert!(json.contains("extracted_preferred"));
         let roundtrip: TranscriptRecord = serde_json::from_str(&json).unwrap();
         assert!(matches!(roundtrip, TranscriptRecord::MediaPlan { .. }));
-    }
-
-    #[test]
-    fn reading_legacy_attachment_snapshot_migrates_without_reserializing_bytes() {
-        let json = serde_json::json!({
-            "events": [{
-                "type": "user_inject",
-                "step_number": 1,
-                "source": "follow_up",
-                "text": "请看图",
-                "attachments": [{
-                    "media_type": "image/png",
-                    "data": "aGVsbG8="
-                }]
-            }],
-            "step_number": 1
-        })
-        .to_string();
-
-        let snapshot = ReActSnapshot::from_json(&json).unwrap();
-        let saved = serde_json::to_string(&snapshot).unwrap();
-
-        assert!(!saved.contains("aGVsbG8="));
-        assert!(saved.contains("managed_file_ref"));
-        assert!(matches!(
-            &snapshot.events[0],
-            TranscriptRecord::UserInject {
-                media_inputs,
-                attachments,
-                ..
-            } if media_inputs.len() == 1 && attachments.is_empty()
-        ));
     }
 
     #[test]
@@ -1161,7 +1063,6 @@ mod tests {
                 source: InjectSource::FollowUp,
                 text: "a".into(),
                 media_inputs: vec![],
-                attachments: vec![],
                 message_id: None,
             },
             TranscriptRecord::UserInject {
@@ -1169,7 +1070,6 @@ mod tests {
                 source: InjectSource::FollowUp,
                 text: "b".into(),
                 media_inputs: vec![],
-                attachments: vec![],
                 message_id: None,
             },
         ];

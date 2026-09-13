@@ -75,6 +75,14 @@ mod tests {
             self.result.lock().unwrap().clone()
         }
 
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat(messages).await
+        }
+
         async fn chat_stream(
             &self,
             _messages: Vec<CanonicalMessage>,

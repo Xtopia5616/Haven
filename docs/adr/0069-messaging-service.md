@@ -2,10 +2,8 @@
 
 ## 背景
 
-跨 session 消息原本由 `haven-tools::inbox::InboxBus` 直接暴露给两个消费方：
-`agent` 工具使用 `read_and_archive` 同步清空邮箱，ReAct 自动注入使用
-`claim_and_archive` / `ack_claimed` 保留 processing 文件。这两条路径分别处理归档、崩溃恢复、
-已读回执和重复投递，导致同一条消息在工具调用与 Agent 循环中具有不同的可靠性语义。
+跨 session 消息原本由 `haven-tools::inbox::InboxBus` 直接暴露给两个消费方：工具和 ReAct
+自动注入分别处理邮箱消费，导致归档、崩溃恢复、已读回执和重复投递的可靠性语义不一致。
 
 `InboxBus` 同时承担 JSONL wire format、跨进程文件锁、registry、mailbox 和消费状态；工具、
 ReAct context、peer spawn 及 session 终态又各自直接访问它，消息 identity 和请求生命周期没有
@@ -19,7 +17,7 @@ ReAct context、peer spawn 及 session 终态又各自直接访问它，消息 i
    `send(Envelope) → claim(recipient) → process → MessageClaim::complete()`。
    `MessageClaim` 在 `complete` 前被丢弃时保留 durable processing claim，下一次 claim 会按同一
    `msg-{uuid32}` identity 重投；`delivery_attempt` 从 1 开始递增。过期消息不进入处理，但仍
-   归档供审计。`read_and_archive` 仅保留为 transport regression test helper，不再编译进运行时。
+   归档供审计。
 3. `MessagingService::deliver` 在写入前校验 sender、recipient、canonical message id、时间字段、
    receipt correlation 和非空正文，避免稳定业务 identity 由各个工具分支自行约定。
 4. ReAct inbox auto-inject、`agent` 的 `inbox`、peer spawn/cascade 和 session 注销均通过
@@ -42,9 +40,9 @@ ReAct context、peer spawn 及 session 终态又各自直接访问它，消息 i
 
 ## 影响与验证
 
-- JSONL mailbox/archive 路径保持不变；旧 envelope 缺少 `delivery_attempt` 时按 0 读取，首次
-  claim 会写入 attempt=1，无需删除或重置用户 inbox。
-- `read_and_archive` 不再是运行时兼容入口；crate 外部调用方必须迁移到 `MessagingService`。
+- JSONL mailbox/archive 路径保持不变；当前 envelope 必须包含 `delivery_attempt`，格式变更按
+  `docs/release-and-reset.md` 重置旧 mailbox。
+- `InboxBus` 不再向 crate 外部暴露消费生命周期；调用方必须使用 `MessagingService`。
 - 消息投递仍是 at-least-once。不可幂等的消费副作用必须在应用处理层按稳定 message id 做幂等，
   `MessagingService` 不会假装提供 exactly-once。
 - 负向测试覆盖 identity/routing 校验；行为测试覆盖 complete、drop/retry、attempt 递增、

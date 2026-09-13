@@ -16,7 +16,7 @@ const SCHEMA_SQL: &[&str] = &[
         input_text TEXT NOT NULL DEFAULT '',
         title TEXT,
         status TEXT NOT NULL DEFAULT 'pending'
-            CHECK(status IN ('pending','running','paused','paused_awaiting_answer','paused_awaiting_confirm','completed','failed','error')),
+            CHECK(status IN ('pending','running','paused','paused_awaiting_answer','paused_awaiting_confirm','completed','error')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         transcript TEXT NOT NULL DEFAULT '',

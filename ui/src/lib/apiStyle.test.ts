@@ -19,16 +19,17 @@ import {
 } from './apiStyle.ts';
 
 describe('apiStyle', () => {
-	it('normalizes aliases', () => {
-		expect(normalizeApiStyle('deepseek-responses')).toBe('openai-responses');
-		expect(normalizeApiStyle('grok')).toBe('xai');
-		expect(normalizeApiStyle('claude')).toBe('anthropic');
-		expect(normalizeApiStyle('google')).toBe('gemini');
+	it('accepts canonical styles and rejects aliases', () => {
+		expect(normalizeApiStyle('OpenAI-Responses')).toBe('openai-responses');
+		expect(normalizeApiStyle('deepseek-responses')).toBe('invalid');
+		expect(normalizeApiStyle('unknown')).toBe('invalid');
+		expect(displayApiStyle({ api_style: 'deepseek-responses', provider: 'deepseek' })).toBe(
+			'invalid',
+		);
 	});
 
 	it('marks builtin web-search styles', () => {
 		expect(supportsBuiltinWebSearch('openai-responses')).toBe(true);
-		expect(supportsBuiltinWebSearch('deepseek-responses')).toBe(true);
 		expect(supportsBuiltinWebSearch('xai')).toBe(true);
 		expect(supportsBuiltinWebSearch('anthropic')).toBe(true);
 		expect(supportsBuiltinWebSearch('gemini')).toBe(true);
@@ -156,7 +157,7 @@ describe('apiStyle', () => {
 	it('fills empty or previous-default URL when switching preset, keeps custom URL and key', () => {
 		const empty = { api_style: 'openai-chat', base_url: '', api_key: 'sk-keep' };
 		applyProviderPreset(empty, 'deepseek-chat');
-		expect(empty.api_style).toBe('deepseek-chat');
+		expect(empty.api_style).toBe('openai-chat');
 		expect(empty.base_url).toBe('https://api.deepseek.com');
 		expect(empty.api_key).toBe('sk-keep');
 
@@ -166,7 +167,7 @@ describe('apiStyle', () => {
 			api_key: 'sk-keep',
 		};
 		applyProviderPreset(fromDefault, 'moonshot');
-		expect(fromDefault.api_style).toBe('moonshot');
+		expect(fromDefault.api_style).toBe('openai-chat');
 		expect(fromDefault.base_url).toBe('https://api.moonshot.cn/v1');
 		expect(fromDefault.api_key).toBe('sk-keep');
 
@@ -176,7 +177,7 @@ describe('apiStyle', () => {
 			api_key: 'sk-keep',
 		};
 		applyProviderPreset(custom, 'deepseek-responses');
-		expect(custom.api_style).toBe('deepseek-responses');
+		expect(custom.api_style).toBe('openai-responses');
 		expect(custom.base_url).toBe('https://gateway.example/v1');
 		expect(custom.api_key).toBe('sk-keep');
 	});

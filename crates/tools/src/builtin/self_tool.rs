@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use haven_common::config::{
-    ConfigLoader, ConfigPatch, ConfigService, LogConfig, LogLevel, McpServerConfig,
+    AppConfig, ConfigLoader, ConfigPatch, ConfigService, LogConfig, LogLevel, McpServerConfig,
+    Settings,
 };
 use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::EndpointRole;
@@ -25,8 +26,7 @@ use super::admin_support::{mask_sensitive_config, value_at};
 /// absent.
 #[derive(Clone)]
 pub struct SelfToolContext {
-    /// Shared versioned config service (persists to `config.toml`). Falls back
-    /// to a fresh `ConfigLoader::load()` when absent for headless adapters.
+    /// Shared versioned config service (persists to `config.toml`).
     pub config_service: Option<Arc<ConfigService>>,
     /// Database handle for session/session introspection.
     pub db: Option<Arc<Database>>,
@@ -116,11 +116,19 @@ impl SelfTool {
         }
     }
 
-    /// Read the current config, preferring the shared loader when present.
-    fn read_config(&self) -> anyhow::Result<ConfigLoader> {
+    /// Read the current config from the shared service, or directly from the
+    /// default file for headless operation.
+    fn read_config(&self) -> anyhow::Result<AppConfig> {
         match &self.context.config_service {
-            Some(service) => service.loader(),
-            None => ConfigLoader::load(),
+            Some(service) => Ok(service.snapshot()?.config),
+            None => Ok(ConfigLoader::load()?.config().clone()),
+        }
+    }
+
+    fn config_path(&self) -> anyhow::Result<PathBuf> {
+        match &self.context.config_service {
+            Some(service) => Ok(service.path()?),
+            None => Ok(ConfigLoader::default_path()),
         }
     }
 
@@ -259,9 +267,9 @@ impl SelfTool {
 
         // Config overview (API keys masked via Settings).
         match self.read_config() {
-            Ok(loader) => {
-                out["config_path"] = loader.path().to_string_lossy().to_string().into();
-                let mut settings = serde_json::to_value(loader.settings())?;
+            Ok(config) => {
+                out["config_path"] = self.config_path()?.to_string_lossy().to_string().into();
+                let mut settings = serde_json::to_value(Settings::from(&config))?;
                 mask_sensitive_config(&mut settings);
                 out["settings"] = settings;
             }
@@ -356,14 +364,14 @@ impl SelfTool {
     }
 
     async fn op_config_get(&self, params: &SelfParams) -> anyhow::Result<Value> {
-        let loader = self.read_config()?;
+        let config = self.read_config()?;
         let Some(path) = params.path.as_deref().filter(|p| !p.is_empty()) else {
             // Full view with API keys masked.
-            let mut settings = serde_json::to_value(loader.settings())?;
+            let mut settings = serde_json::to_value(Settings::from(&config))?;
             mask_sensitive_config(&mut settings);
             return Ok(settings);
         };
-        let mut root = serde_json::to_value(loader.config())?;
+        let mut root = serde_json::to_value(&config)?;
         mask_sensitive_config(&mut root);
         let value = value_at(&root, path)
             .ok_or_else(|| anyhow::anyhow!("config key '{}' not found", path))?
@@ -601,7 +609,7 @@ impl SelfTool {
                 // first config load): fall back to the persisted config so
                 // `mcp_list` / `status` never report an empty server list
                 // while servers exist in config.toml.
-                self.read_config()?.config().mcp_servers.clone()
+                self.read_config()?.mcp_servers.clone()
             }
         };
 
@@ -735,7 +743,6 @@ impl SelfTool {
         // instead of erroring. Fresh names behave exactly as before.
         if let Some(existing) = self
             .read_config()?
-            .config()
             .mcp_servers
             .iter()
             .find(|s| s.name == name)
@@ -788,7 +795,6 @@ impl SelfTool {
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to update)"))?;
         let existing = self
             .read_config()?
-            .config()
             .mcp_servers
             .iter()
             .find(|s| s.name == name)
@@ -840,7 +846,6 @@ impl SelfTool {
             .ok_or_else(|| anyhow::anyhow!("enabled (boolean) is required for mcp_toggle"))?;
         let existing = self
             .read_config()?
-            .config()
             .mcp_servers
             .iter()
             .find(|s| s.name == name)
@@ -881,7 +886,7 @@ impl SelfTool {
     /// Re-read `mcp_servers` from disk into the in-memory index and reconnect
     /// every enabled server, dropping clients that are disabled or gone.
     async fn op_mcp_reload(&self) -> anyhow::Result<Value> {
-        let servers = self.read_config()?.config().mcp_servers.clone();
+        let servers = self.read_config()?.mcp_servers.clone();
 
         // Resync the in-memory index with disk.
         let mut map = self.server_configs.write().await;
@@ -1560,8 +1565,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("unknown variant `config_set`"));
-        let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().session.max_concurrent, 3);
+        let config = tool.read_config().unwrap();
+        assert_eq!(config.session.max_concurrent, 3);
     }
 
     #[tokio::test]
@@ -1598,8 +1603,8 @@ mod tests {
         assert_eq!(list.output["skills"][0]["enabled"], json!(false));
 
         // Filter persisted to config.
-        let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().skills.enabled, Some(vec![]));
+        let config = tool.read_config().unwrap();
+        assert_eq!(config.skills.enabled, Some(vec![]));
 
         let result = tool
             .execute(
@@ -1609,11 +1614,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.output["enabled"], json!(true));
-        let loader = tool.read_config().unwrap();
-        assert_eq!(
-            loader.config().skills.enabled,
-            Some(vec!["echo".to_string()])
-        );
+        let config = tool.read_config().unwrap();
+        assert_eq!(config.skills.enabled, Some(vec!["echo".to_string()]));
     }
 
     #[tokio::test]
@@ -1737,9 +1739,8 @@ mod tests {
         assert_eq!(result.output["connected"], json!(false));
 
         // Persisted to config.
-        let loader = tool.read_config().unwrap();
-        let server = loader
-            .config()
+        let config = tool.read_config().unwrap();
+        let server = config
             .mcp_servers
             .iter()
             .find(|s| s.name == "new-srv")
@@ -1785,9 +1786,8 @@ mod tests {
         assert_eq!(result.output["saved"], json!(true));
 
         // Same-name add updates in place instead of erroring.
-        let loader = tool.read_config().unwrap();
-        let matches: Vec<_> = loader
-            .config()
+        let config = tool.read_config().unwrap();
+        let matches: Vec<_> = config
             .mcp_servers
             .iter()
             .filter(|s| s.name == "dup")
@@ -1973,9 +1973,8 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["connected"], json!(true));
 
-        let loader = tool.read_config().unwrap();
-        let server = loader
-            .config()
+        let config = tool.read_config().unwrap();
+        let server = config
             .mcp_servers
             .iter()
             .find(|s| s.name == "echo-srv")
@@ -2001,9 +2000,8 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["connected"], json!(false));
 
-        let loader = tool.read_config().unwrap();
-        let server = loader
-            .config()
+        let config = tool.read_config().unwrap();
+        let server = config
             .mcp_servers
             .iter()
             .find(|s| s.name == "echo-srv")
@@ -2051,13 +2049,8 @@ mod tests {
         assert_eq!(result.output["saved"], json!(true));
         assert_eq!(result.output["connected"], json!(false));
 
-        let loader = tool.read_config().unwrap();
-        let server = loader
-            .config()
-            .mcp_servers
-            .iter()
-            .find(|s| s.name == "srv")
-            .unwrap();
+        let config = tool.read_config().unwrap();
+        let server = config.mcp_servers.iter().find(|s| s.name == "srv").unwrap();
         assert_eq!(server.env, vec!["API_KEY=abc"]);
         assert!(!server.enabled);
 
@@ -2070,10 +2063,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.output["connected"], json!(true));
-        let loader = tool.read_config().unwrap();
+        let config = tool.read_config().unwrap();
         assert!(
-            loader
-                .config()
+            config
                 .mcp_servers
                 .iter()
                 .find(|s| s.name == "srv")
@@ -2167,13 +2159,8 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("not connected"));
 
-        let loader = tool.read_config().unwrap();
-        let server = loader
-            .config()
-            .mcp_servers
-            .iter()
-            .find(|s| s.name == "srv")
-            .unwrap();
+        let config = tool.read_config().unwrap();
+        let server = config.mcp_servers.iter().find(|s| s.name == "srv").unwrap();
         assert!(!server.enabled, "failed enable must stay disabled");
         assert_eq!(server.command, "original-command");
         assert!(tool.mcp_manager.get_client("srv").await.is_none());
@@ -2195,14 +2182,8 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["removed"], json!(true));
 
-        let loader = tool.read_config().unwrap();
-        assert!(
-            !loader
-                .config()
-                .mcp_servers
-                .iter()
-                .any(|s| s.name == "echo-srv")
-        );
+        let config = tool.read_config().unwrap();
+        assert!(!config.mcp_servers.iter().any(|s| s.name == "echo-srv"));
         assert!(!tool.server_configs.read().await.contains_key("echo-srv"));
         assert!(tool.mcp_manager.get_client("echo-srv").await.is_none());
     }
@@ -2334,10 +2315,9 @@ mod tests {
         assert_eq!(result.output["connected"], json!(false));
         assert!(tool.mcp_manager.get_client("echo-srv").await.is_none());
 
-        let loader = tool.read_config().unwrap();
+        let config = tool.read_config().unwrap();
         assert!(
-            loader
-                .config()
+            config
                 .mcp_servers
                 .iter()
                 .find(|s| s.name == "echo-srv")
@@ -2382,8 +2362,8 @@ mod tests {
         // Engine sees it and the config filter stays None (all enabled).
         let skill = tool.skills_engine.get_skill("organizer").await.unwrap();
         assert!(skill.enabled());
-        let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().skills.enabled, None);
+        let config = tool.read_config().unwrap();
+        assert_eq!(config.skills.enabled, None);
     }
 
     #[tokio::test]
@@ -2535,11 +2515,8 @@ mod tests {
         assert_eq!(result.output["created"], json!(true));
 
         // The new skill was added to the allowlist and persisted.
-        let loader = tool.read_config().unwrap();
-        assert_eq!(
-            loader.config().skills.enabled,
-            Some(vec!["solo".to_string()])
-        );
+        let config = tool.read_config().unwrap();
+        assert_eq!(config.skills.enabled, Some(vec!["solo".to_string()]));
         assert!(
             tool.skills_engine
                 .get_skill("solo")
@@ -2606,8 +2583,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.output["level"], json!("debug"));
-        let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().log.level, LogLevel::Debug);
+        let config = tool.read_config().unwrap();
+        assert_eq!(config.log.level, LogLevel::Debug);
     }
 
     #[tokio::test]

@@ -254,8 +254,8 @@ impl SessionExecutor {
     }
 
     /// Move the Action-emit pending row to running immediately before the
-    /// tool is invoked. The ensure fallback keeps direct test/caller paths
-    /// safe when no Action event created the row first.
+    /// tool is invoked. The ensure step keeps direct callers safe when no
+    /// Action event created the row first.
     pub async fn start_action_step(
         &self,
         session_id: &str,

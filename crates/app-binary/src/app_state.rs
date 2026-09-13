@@ -681,7 +681,10 @@ mod tests {
         config.session.max_steps = 42;
         state
             .config_service
-            .apply_patch(haven_common::config::ConfigPatch::ReplaceAppConfig(config))
+            .edit(|current| {
+                *current = config;
+                Ok(())
+            })
             .unwrap();
         drop(state);
 

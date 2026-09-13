@@ -196,8 +196,6 @@
 	 * @property {number|null} cumulativeCostUsd
 	 * @property {number|null} contextWindow
 	 * @property {string|null} model
-	 * @property {boolean} [estimated] - totals restored from a rough backend
-	 *   estimate (session predates usage persistence), not real recorded usage.
 	 * @property {boolean} [restored] - entry came from persistence (resume /
 	 *   reopened conversation) with no live `agent:usage` events expected;
 	 *   the current context falls back to the latest persisted call.
@@ -578,7 +576,7 @@
 					existing.filter((m) => m.streaming),
 				),
 			);
-			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
+			restoreSessionTokenStats(sessionId, result.usage);
 			restoreSessionLlmUsage(sessionId, result.llm_usage);
 		} catch (e) {
 			reportError(e, { context: '+page', message: '同步消息失败', log: false });
@@ -642,7 +640,7 @@
 			updateSessionMessages(sessionId, (existing) =>
 				mergeLiveStreaming(dbMessages, existing),
 			);
-			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
+			restoreSessionTokenStats(sessionId, result.usage);
 			restoreSessionLlmUsage(sessionId, result.llm_usage);
 			// An explicit switch abandons the fresh-start intent: the chosen
 			// session becomes the active conversation (and may be auto-restored
@@ -1046,8 +1044,7 @@
 				if (
 					!prevSession ||
 					prevSession.status === 'completed' ||
-					prevSession.status === 'error' ||
-					prevSession.status === 'failed'
+					prevSession.status === 'error'
 				) {
 					evictTerminalSessionMemory(prevActive);
 				}
@@ -1404,7 +1401,7 @@
 		updateSessionMessages(last.session.id, (existing) =>
 			mergeLiveStreaming(buildResumeMessages(last), existing),
 		);
-		restoreSessionTokenStats(last.session.id, last.usage, last.usage_estimated);
+		restoreSessionTokenStats(last.session.id, last.usage);
 		restoreSessionLlmUsage(last.session.id, last.llm_usage);
 		activeSessionId = last.session.id;
 		activeSessionIdStore.set(activeSessionId);

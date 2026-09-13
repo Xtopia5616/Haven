@@ -54,7 +54,6 @@
 		paused_awaiting_confirm: '等待确认',
 		completed: '已完成',
 		error: '错误',
-		failed: '失败',
 	};
 	/** @param {string} status */
 	function sessionStatusLabel(status) {

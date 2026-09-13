@@ -11,8 +11,7 @@ pub struct ModelEndpoint {
     /// - `openai-chat` (default): OpenAI `/chat/completions` compatible
     ///   (also Ollama, vLLM, DeepSeek chat, and most gateways)
     /// - `llama.cpp`: llama.cpp server (OpenAI-compatible `/chat/completions`)
-    /// - `openai-responses`: OpenAI / DeepSeek Responses API (`/v1/responses`);
-    ///   alias `deepseek-responses` normalizes to this
+    /// - `openai-responses`: OpenAI / DeepSeek Responses API (`/v1/responses`)
     /// - `xai`: xAI Grok chat + Live Search (`search_parameters`)
     /// - `anthropic`: Anthropic Messages API (`/v1/messages`)
     /// - `gemini`: Google Gemini `generateContent` / `streamGenerateContent`
@@ -24,7 +23,6 @@ pub struct ModelEndpoint {
     pub api_style: Option<String>,
     pub base_url: String,
     pub api_key: String,
-    #[serde(alias = "model")]
     pub model_name: String,
     pub max_tokens: u32,
     pub temperature: f32,
@@ -522,8 +520,8 @@ impl LlmConfig {
     /// Build the fully materialized router configuration: one endpoint per
     /// role plus every router-level tuning knob. Called whenever the router is
     /// constructed or hot-swapped. `response_cap` / `reasoning_echo_cap`
-    /// mirror the legacy `with_response_cap` / `with_reasoning_echo_cap`
-    /// transforms (applied to the materialized endpoints so hand-edited
+    /// mirror the `with_response_cap` / `with_reasoning_echo_cap` transforms
+    /// (applied to the materialized endpoints so hand-edited
     /// per-role overrides are still respected).
     pub fn materialize(
         &self,
@@ -581,43 +579,34 @@ pub fn endpoint_credentials_ready(ep: &ModelEndpoint) -> bool {
         || ep.provider.eq_ignore_ascii_case("llama.cpp")
 }
 
-/// Normalize a stored / UI `api_style` to the canonical wire-protocol id.
-/// Unknown values fall back to `openai-chat`.
+/// Canonical wire-protocol id used for invalid-style detection. An empty style
+/// is handled by the caller as the neutral `openai-chat` default; non-empty
+/// unknown values become `invalid` and are never routed to another adapter.
 pub fn normalize_api_style(style: &str) -> &'static str {
     match style.trim().to_ascii_lowercase().as_str() {
-        "openai-responses" | "deepseek-responses" | "responses" => "openai-responses",
-        "openai-chat" | "openai" | "chat" => "openai-chat",
-        "llama.cpp" | "llama" | "llamacpp" => "llama.cpp",
-        "xai" | "grok" => "xai",
-        "anthropic" | "claude" => "anthropic",
-        "gemini" | "google" => "gemini",
+        "openai-responses" => "openai-responses",
+        "openai-chat" => "openai-chat",
+        "llama.cpp" => "llama.cpp",
+        "xai" => "xai",
+        "anthropic" => "anthropic",
+        "gemini" => "gemini",
         "deepgram" => "deepgram",
         "assemblyai" => "assemblyai",
         "elevenlabs" => "elevenlabs",
-        _ => "openai-chat",
+        _ => "invalid",
     }
 }
 
-/// True when `style` is a known wire-protocol id or alias (not a typo that
-/// would silently remap to `openai-chat`).
+/// True when `style` is a canonical wire-protocol id (not a typo or alias).
 pub fn is_known_api_style(style: &str) -> bool {
     matches!(
         style.trim().to_ascii_lowercase().as_str(),
         "openai-responses"
-            | "deepseek-responses"
-            | "responses"
             | "openai-chat"
-            | "openai"
-            | "chat"
             | "llama.cpp"
-            | "llama"
-            | "llamacpp"
             | "xai"
-            | "grok"
             | "anthropic"
-            | "claude"
             | "gemini"
-            | "google"
             | "deepgram"
             | "assemblyai"
             | "elevenlabs"
@@ -755,7 +744,7 @@ impl RouterConfig {
 
     /// Apply the global per-response output-cap floor and the global
     /// reasoning-echo cap to every role endpoint. The response-cap floor
-    /// raises small legacy `max_tokens` values so long outputs are never
+    /// raises small `max_tokens` values so long outputs are never
     /// truncated mid-stream (per-endpoint values above the floor are
     /// preserved); the reasoning-echo cap fills `reasoning_echo_max_chars`
     /// only where the endpoint does not set its own override.

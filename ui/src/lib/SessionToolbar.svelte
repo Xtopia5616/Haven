@@ -283,9 +283,6 @@
 				</div>
 			{/if}
 
-			{#if tokenStats.estimated}
-				<div class="token-detail-estimated">历史会话数据为估算值，未计费</div>
-			{/if}
 		</div>
 	{/if}
 </div>
@@ -661,11 +658,6 @@
 	.token-detail-line strong,
 	.token-detail-grid strong {
 		font-variant-numeric: tabular-nums;
-	}
-	.token-detail-estimated {
-		padding-top: var(--md-sys-space-sm);
-		color: var(--md-sys-color-tertiary);
-		font-size: var(--md-sys-typescale-label-small-size);
 	}
 	@keyframes token-details-in {
 		from {

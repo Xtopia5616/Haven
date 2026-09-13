@@ -1661,6 +1661,14 @@ mod tests {
             Ok(Box::pin(futures_util::stream::empty()))
         }
 
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<haven_llm::LlmResponse, haven_llm::LlmError> {
+            self.chat(messages).await
+        }
+
         async fn health_check(&self) -> Result<(), haven_llm::LlmError> {
             Ok(())
         }

@@ -23,15 +23,7 @@ use tokio_util::sync::CancellationToken;
 /// or any admin capability. Keeping this an explicit allowlist means a newly
 /// added management/security surface is protected until it is reviewed here.
 const MODEL_TOGGLEABLE_TOOL_NAMES: &[&str] = &[
-    "media",
-    "ask",
-    "files",
-    "shell",
-    "system",
-    "http",
-    "notify",
-    "agent",
-    "memory",
+    "media", "ask", "files", "shell", "system", "http", "notify", "agent", "memory",
 ];
 
 fn is_model_toggleable_tool(name: &str) -> bool {

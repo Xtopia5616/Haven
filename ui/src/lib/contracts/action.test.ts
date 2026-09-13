@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mapActionEvent, mapActionPayload } from './action.ts';
 
 describe('action IPC contract', () => {
-	it('maps the stable task wire payload to camelCase without legacy action_id', () => {
+	it('maps the stable task wire payload to camelCase', () => {
 		const event = mapActionEvent({
 			event: 'action:finished',
 			id: 4,

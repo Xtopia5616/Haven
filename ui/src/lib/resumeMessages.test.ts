@@ -104,7 +104,7 @@ describe('buildResumeMessages', () => {
 		});
 	});
 
-	it('does not translate removed historical tool names', () => {
+	it('keeps persisted tool names verbatim', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [],
@@ -115,21 +115,6 @@ describe('buildResumeMessages', () => {
 			],
 		});
 		expect(items.map((item) => item.toolName)).toEqual(['file', 'file_search', 'scheduled_action']);
-		expect(items.every((item) => !item.unrecoverable)).toBe(true);
-	});
-
-	it('marks removed process.launch history calls as unrecoverable', () => {
-		const items = buildResumeMessages({
-			session: sampleSession,
-			messages: [],
-			steps: [
-				{ id: 'step-launch', action_tool: 'process.launch', observation: '{"pid":1}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
-			],
-		});
-		expect(items[0]).toMatchObject({
-			toolName: 'process.launch',
-			unrecoverable: true,
-		});
 	});
 
 	it('normalizes persisted tool-role observations into tool cards', () => {
