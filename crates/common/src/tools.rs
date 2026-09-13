@@ -30,6 +30,35 @@ pub enum ToolRetrySafety {
     Unknown,
 }
 
+/// Stable high-level catalog grouping shared by the Agent prompt and the UI.
+///
+/// This is presentation metadata only: it never changes the model-facing tool
+/// name, authorization key, or execution boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCatalogGroup {
+    Haven,
+    System,
+    Agent,
+    Skills,
+    Mcp,
+    #[default]
+    Other,
+}
+
+impl ToolCatalogGroup {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Haven => "haven",
+            Self::System => "system",
+            Self::Agent => "agent",
+            Self::Skills => "skills",
+            Self::Mcp => "mcp",
+            Self::Other => "other",
+        }
+    }
+}
+
 /// Prompt-only orientation for a tool definition.
 ///
 /// This is deliberately not part of [`ToolDef::json`] or provider tool
@@ -72,6 +101,10 @@ pub struct ToolDef {
     /// transient failure. The execution result carries the per-call value.
     #[serde(default)]
     pub retry_safety: ToolRetrySafety,
+    /// Stable high-level grouping for the Agent prompt and UI catalog. This
+    /// is intentionally omitted from provider-facing tool JSON.
+    #[serde(skip)]
+    pub catalog_group: ToolCatalogGroup,
     /// Short catalog guidance used by the Agent system prompt. This is not
     /// serialized into the UI/provider wire shape; the schema and description
     /// remain the executable model-facing contract.
@@ -92,6 +125,7 @@ impl ToolDef {
             input_schema,
             risk_level,
             retry_safety: ToolRetrySafety::Unknown,
+            catalog_group: ToolCatalogGroup::Other,
             prompt: None,
         }
     }
@@ -103,6 +137,11 @@ impl ToolDef {
 
     pub fn with_prompt(mut self, prompt: ToolPrompt) -> Self {
         self.prompt = Some(prompt);
+        self
+    }
+
+    pub fn with_catalog_group(mut self, catalog_group: ToolCatalogGroup) -> Self {
+        self.catalog_group = catalog_group;
         self
     }
 
@@ -138,6 +177,8 @@ mod tests {
         assert_eq!(json["risk_level"], "low");
         assert_eq!(json["retry_safety"], "unknown");
         assert!(json["input_schema"].is_object());
+        assert_eq!(def.catalog_group, ToolCatalogGroup::Other);
+        assert!(json.get("catalog_group").is_none());
         assert!(json.get("prompt").is_none());
     }
 

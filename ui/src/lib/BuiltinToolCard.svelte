@@ -8,29 +8,16 @@
 	/** @typedef {import('./builtinToolPresentation.ts').BuiltinToolEntry} BuiltinToolEntry */
 	/** @type {{ tool: any; onToggle?: (name: string, checked: boolean) => void }} */
 	let { tool: card, onToggle } = $props();
-	let isGroup = $derived(card.kind === 'operation-group');
 	/** @type {BuiltinToolEntry[]} */
-	let operations = $derived(card.kind === 'operation-group' ? card.operations : [card.tool]);
-	/** @type {BuiltinToolEntry} */
-	let primaryTool = $derived(card.kind === 'single' ? card.tool : card.operations[0]);
+	let operations = $derived(card.operations);
 	let enabledCount = $derived(operations.filter((operation) => operation.enabled).length);
-	let groupStatusLabel = $derived(
-		isGroup
-			? `${enabledCount}/${operations.length} 个操作已启用`
-			: primaryTool?.enabled
-				? '已启用'
-				: '已停用',
-	);
+	let groupStatusLabel = $derived(`${enabledCount}/${operations.length} 个工具已启用`);
 	let groupStatusTone = $derived(
-		isGroup
-			? enabledCount === 0
-				? 'error'
-				: enabledCount === operations.length
-					? 'success'
-					: 'warning'
-			: primaryTool?.enabled
+		enabledCount === 0
+			? 'error'
+			: enabledCount === operations.length
 				? 'success'
-				: 'error',
+				: 'warning',
 	);
 
 	/** @param {string} risk */
@@ -64,10 +51,10 @@
 	}
 
 	function copyCardSchema() {
-		const schema = isGroup
-			? Object.fromEntries(operations.map((operation) => [operation.name, operation.schema]))
-			: primaryTool?.schema;
-		copyText(JSON.stringify(schema, null, 2), isGroup ? '全部 Schema' : 'Schema');
+		const schema = Object.fromEntries(
+			operations.map((operation) => [operation.name, operation.schema]),
+		);
+		copyText(JSON.stringify(schema, null, 2), '全部 Schema');
 	}
 
 	let contextMenuItems = $derived([
@@ -75,63 +62,28 @@
 			id: 'copyName',
 			label: '复制名称',
 			icon: 'copy',
-			action: () => copyText(isGroup ? card.name : primaryTool.name, '名称'),
+			action: () => copyText(card.name, '名称'),
 		},
 		{
 			id: 'copySchema',
-			label: isGroup ? '复制全部 Schema' : '复制 Schema',
+			label: '复制全部 Schema',
 			icon: 'copy',
 			action: copyCardSchema,
 		},
-		...(isGroup
-			? []
-			: [
-					primaryTool.enabled
-						? {
-								id: 'disable',
-								label: '禁用',
-								icon: 'power',
-								action: () => onToggle?.(primaryTool.name, false),
-							}
-						: {
-								id: 'enable',
-								label: '启用',
-								icon: 'power',
-								action: () => onToggle?.(primaryTool.name, true),
-							},
-				]),
 	]);
 </script>
 
-<ExpandableContextCard cardKind="builtin-tool" {contextMenuItems} showActions={!isGroup}>
+<ExpandableContextCard cardKind="builtin-tool" {contextMenuItems} showActions={false}>
 	{#snippet header()}
-		<div class="card-name">{isGroup ? card.label : primaryTool.name}</div>
+		<div class="card-name">{card.label}</div>
 		<div class="card-meta">
-			{#if isGroup}
-				<StatusBadge label={`${operations.length} 个 operation`} tone="neutral" />
-			{:else}
-				<StatusBadge
-					label={`风险：${riskLabel(primaryTool.risk)}`}
-					tone={riskTone(primaryTool.risk)}
-				/>
-			{/if}
+			<StatusBadge label={`${operations.length} 个工具`} tone="neutral" />
 			<StatusBadge label={groupStatusLabel} tone={groupStatusTone} />
 		</div>
 	{/snippet}
-	{#snippet actions()}
-		{#if !isGroup}
-			<MaterialSwitch
-				checked={primaryTool.enabled}
-				ariaLabel={`切换工具 ${primaryTool.name}`}
-				onChange={(/** @type {boolean} */ checked) =>
-					handleToggle(primaryTool.name, checked)}
-			/>
-		{/if}
-	{/snippet}
 	{#snippet children()}
-		{#if isGroup}
-			<p class="desc">展开后可查看并分别管理此能力下的每个 operation。</p>
-			<div class="operation-list" aria-label={`${card.label} operation 列表`}>
+		<p class="desc">展开后可查看并分别管理此分类下的工具。</p>
+		<div class="operation-list" aria-label={`${card.label} 工具列表`}>
 				{#each operations as operation (operation.name)}
 					<article class="operation-item">
 						<div class="operation-header">
@@ -176,14 +128,7 @@
 						{/if}
 					</article>
 				{/each}
-			</div>
-		{:else}
-			<p class="desc">{primaryTool.desc || '暂无描述'}</p>
-			{#if primaryTool.schema && Object.keys(primaryTool.schema).length > 0}
-				<h4>输入 Schema</h4>
-				<pre>{JSON.stringify(primaryTool.schema, null, 2)}</pre>
-			{/if}
-		{/if}
+		</div>
 	{/snippet}
 </ExpandableContextCard>
 

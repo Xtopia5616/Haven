@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -134,6 +135,10 @@ impl Tool for HttpTool {
     }
     fn description(&self) -> String {
         "HTTP GET/POST for pages or APIs. HTML is converted to plain text by default; pass as_html for raw HTML. For web search prefer load_mcp.".into()
+    }
+
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        ToolCatalogGroup::System
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

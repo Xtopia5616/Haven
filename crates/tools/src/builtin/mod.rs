@@ -40,6 +40,7 @@ use crate::operation_view::{
 use crate::registry::SessionCatalog;
 use crate::skill_runner::SkillRunner;
 use crate::{OperationIdempotency, ToolBox, ToolConcurrency, ToolOperationScope};
+use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
@@ -490,6 +491,7 @@ fn operation_view_contracts(max_results: usize) -> Vec<OperationViewContract> {
             scope: ToolOperationScope::Session,
             concurrency: ToolConcurrency::SharedResource("files".into()),
             permission_key: "files.read".into(),
+            catalog_group: ToolCatalogGroup::System,
             renderer: "files".into(),
             icon: "file".into(),
             prompt: "Read text; continue with offset/limit or line cursors when truncated.".into(),
@@ -505,6 +507,7 @@ fn operation_view_contracts(max_results: usize) -> Vec<OperationViewContract> {
             scope: ToolOperationScope::Session,
             concurrency: ToolConcurrency::SharedResource("files".into()),
             permission_key: "files.outline".into(),
+            catalog_group: ToolCatalogGroup::System,
             renderer: "files".into(),
             icon: "fileSearch".into(),
             prompt: "Inspect source structure first; continue with next_page.start_line.".into(),
@@ -520,6 +523,7 @@ fn operation_view_contracts(max_results: usize) -> Vec<OperationViewContract> {
             scope: ToolOperationScope::Session,
             concurrency: ToolConcurrency::SharedResource("files".into()),
             permission_key: "files.summary".into(),
+            catalog_group: ToolCatalogGroup::System,
             renderer: "files".into(),
             icon: "file".into(),
             prompt: "Summarize text or a bounded range; do not treat the summary as source text."
@@ -536,6 +540,7 @@ fn operation_view_contracts(max_results: usize) -> Vec<OperationViewContract> {
             scope: ToolOperationScope::Session,
             concurrency: ToolConcurrency::SharedResource("files".into()),
             permission_key: "files.search".into(),
+            catalog_group: ToolCatalogGroup::System,
             renderer: "files.search".into(),
             icon: "search".into(),
             prompt: "Use path/line/context metadata; call files.read for the surrounding source."
@@ -552,6 +557,7 @@ fn operation_view_contracts(max_results: usize) -> Vec<OperationViewContract> {
             scope: ToolOperationScope::Global,
             concurrency: ToolConcurrency::ReadOnly,
             permission_key: "system.info".into(),
+            catalog_group: ToolCatalogGroup::System,
             renderer: "system".into(),
             icon: "cpu".into(),
             prompt: "Read a bounded machine snapshot; use category to narrow the response.".into(),
@@ -1413,6 +1419,25 @@ fn admin_operation_risk(name: &str) -> RiskLevel {
     }
 }
 
+/// Single taxonomy for all model-facing builtin operation views. Tool names
+/// remain stable provider/permission identifiers; this only controls catalog
+/// presentation in the Agent prompt and the UI.
+fn catalog_group_for_operation(name: &str) -> ToolCatalogGroup {
+    if name.starts_with("agent.") {
+        ToolCatalogGroup::Agent
+    } else if name.starts_with("memory.")
+        || name.starts_with("actions.")
+        || name.starts_with("schedule.")
+        || name.starts_with("preferences.")
+        || name.starts_with("checklist.")
+        || name.starts_with("haven.")
+    {
+        ToolCatalogGroup::Haven
+    } else {
+        ToolCatalogGroup::System
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn operation_view_contract(
     inner: &ToolBox,
@@ -1436,6 +1461,7 @@ fn operation_view_contract(
         scope: inner.operation_scope(&policy_input),
         concurrency: inner.concurrency(&policy_input),
         permission_key: name.into(),
+        catalog_group: catalog_group_for_operation(name),
         renderer: renderer.into(),
         icon: icon.into(),
         prompt: prompt.into(),

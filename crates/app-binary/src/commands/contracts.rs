@@ -588,6 +588,8 @@ pub struct ToolInfoResponse {
     pub description: String,
     pub input_schema: serde_json::Value,
     pub risk_level: haven_common::types::RiskLevel,
+    #[serde(default)]
+    pub catalog_group: haven_common::tools::ToolCatalogGroup,
     pub enabled: bool,
 }
 

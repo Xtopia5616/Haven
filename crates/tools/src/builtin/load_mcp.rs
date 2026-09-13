@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use haven_common::config::McpServerConfig;
+use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -354,6 +355,10 @@ impl Tool for LoadMcpTool {
     }
     fn description(&self) -> String {
         "Load an MCP server's tools by server name, activating them for this session. Optional tool_names loads only that subset (required when the server has too many tools for the per-request budget). Prefer this over weaker built-in tools when the server's tools fit the session.".into()
+    }
+
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        ToolCatalogGroup::Haven
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

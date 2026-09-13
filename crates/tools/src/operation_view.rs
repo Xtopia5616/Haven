@@ -8,7 +8,7 @@ use crate::{
     OperationIdempotency, Tool, ToolBox, ToolConcurrency, ToolDef, ToolExecutionOutcome,
     ToolOperationScope, ToolRegistration, ToolResult, ToolSignals,
 };
-use haven_common::tools::ToolPrompt;
+use haven_common::tools::{ToolCatalogGroup, ToolPrompt};
 
 /// Declarative contract for a model-facing operation view. The aggregate tool
 /// remains the execution implementation, while this record is the one source
@@ -26,6 +26,7 @@ pub(crate) struct OperationViewContract {
     pub(crate) scope: ToolOperationScope,
     pub(crate) concurrency: ToolConcurrency,
     pub(crate) permission_key: String,
+    pub(crate) catalog_group: ToolCatalogGroup,
     pub(crate) renderer: String,
     pub(crate) icon: String,
     pub(crate) prompt: String,
@@ -256,6 +257,7 @@ impl Tool for OperationViewTool {
             self.contract.risk_level,
         )
         .with_retry_safety(self.contract.idempotency.tool_retry_safety())
+        .with_catalog_group(self.contract.catalog_group)
         .with_prompt(ToolPrompt {
             when_to_use: self.contract.prompt.clone(),
             when_not_to_use:
@@ -363,6 +365,7 @@ mod tests {
                 scope: ToolOperationScope::Session,
                 concurrency: ToolConcurrency::ReadOnly,
                 permission_key: "files.read".into(),
+                catalog_group: ToolCatalogGroup::System,
                 renderer: "files".into(),
                 icon: "file".into(),
                 prompt: "Read text.".into(),

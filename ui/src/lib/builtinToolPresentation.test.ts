@@ -10,6 +10,7 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 		name,
 		desc: `${name} description`,
 		risk: 'safe',
+		category: 'system',
 		schema: {},
 		enabled: true,
 		...overrides,
@@ -17,21 +18,27 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 }
 
 describe('builtin tool presentation', () => {
-	it('groups operation views by root while preserving standalone builtins', () => {
+	it('groups builtins by the shared catalog category', () => {
 		const filesRead = tool('files.read');
 		const shell = tool('shell');
 		const filesSearch = tool('files.search', { enabled: false });
+		const ask = tool('ask', { category: 'haven' });
 
-		const cards = groupBuiltinTools([filesRead, shell, filesSearch]);
+		const cards = groupBuiltinTools([filesRead, shell, filesSearch, ask]);
 
 		expect(cards).toHaveLength(2);
 		expect(cards[0]).toMatchObject({
-			kind: 'operation-group',
-			name: 'files',
-			label: '文件与搜索',
-			operations: [filesRead, filesSearch],
+			kind: 'category-group',
+			name: 'haven',
+			label: 'Haven',
+			operations: [ask],
 		});
-		expect(cards[1]).toEqual({ kind: 'single', tool: shell });
+		expect(cards[1]).toMatchObject({
+			kind: 'category-group',
+			name: 'system',
+			label: '系统',
+			operations: [filesRead, shell, filesSearch],
+		});
 	});
 
 	it('keeps a mixed operation group visible for either status filter', () => {

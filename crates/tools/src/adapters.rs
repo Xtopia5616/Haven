@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::sync::Arc;
@@ -49,6 +50,10 @@ impl Tool for McpToolAdapter {
 
     fn description(&self) -> String {
         self.info.description.clone()
+    }
+
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        ToolCatalogGroup::Mcp
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -124,6 +129,10 @@ impl Tool for SkillToolAdapter {
 
     fn description(&self) -> String {
         self.skill.description().to_string()
+    }
+
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        ToolCatalogGroup::Skills
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

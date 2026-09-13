@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-pub use haven_common::tools::ToolDef;
+pub use haven_common::tools::{ToolCatalogGroup, ToolDef};
 
 /// The durable meaning of a tool invocation's terminal state.
 ///
@@ -897,10 +897,17 @@ pub trait Tool: Send + Sync {
             self.input_schema(),
             self.risk_level(&Value::Object(Default::default())),
         )
+        .with_catalog_group(self.catalog_group())
         .with_retry_safety(
             self.idempotency(&Value::Object(Default::default()))
                 .tool_retry_safety(),
         )
+    }
+
+    /// High-level catalog grouping shared by the Agent prompt and UI. The
+    /// default keeps test/custom tools valid without inventing a category.
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        ToolCatalogGroup::Other
     }
 
     fn default_timeout_secs(&self) -> u64 {
@@ -1037,6 +1044,7 @@ pub struct TypedToolAdapter<O> {
     name: String,
     description: String,
     operation: O,
+    catalog_group: ToolCatalogGroup,
 }
 
 impl<O> TypedToolAdapter<O> {
@@ -1045,7 +1053,13 @@ impl<O> TypedToolAdapter<O> {
             name: name.into(),
             description: description.into(),
             operation,
+            catalog_group: ToolCatalogGroup::Other,
         }
+    }
+
+    pub fn with_catalog_group(mut self, catalog_group: ToolCatalogGroup) -> Self {
+        self.catalog_group = catalog_group;
+        self
     }
 
     pub fn operation(&self) -> &O {
@@ -1064,6 +1078,10 @@ where
 
     fn description(&self) -> String {
         self.description.clone()
+    }
+
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        self.catalog_group
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -1141,6 +1159,7 @@ where
             self.input_schema(),
             metadata.risk_level,
         )
+        .with_catalog_group(self.catalog_group)
         .with_retry_safety(metadata.idempotency.tool_retry_safety())
     }
 

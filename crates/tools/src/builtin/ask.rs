@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -161,6 +162,7 @@ pub fn typed_adapter() -> crate::TypedToolAdapter<AskTool> {
         "Ask the user one question when you need a decision or missing information. One question per call — do not pack multiple questions or mixed option sets into a single ask.",
         AskTool,
     )
+    .with_catalog_group(ToolCatalogGroup::Haven)
 }
 
 #[async_trait]
@@ -171,6 +173,10 @@ impl Tool for AskTool {
 
     fn description(&self) -> String {
         "Ask the user one question when you need a decision or missing information. One question per call — do not pack multiple questions or mixed option sets into a single ask.".into()
+    }
+
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        ToolCatalogGroup::Haven
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

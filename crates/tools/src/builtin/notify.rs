@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -141,6 +142,7 @@ pub fn typed_adapter() -> crate::TypedToolAdapter<NotifyTool> {
         "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use media.speak for spoken content, not notify.",
         NotifyTool,
     )
+    .with_catalog_group(ToolCatalogGroup::System)
 }
 
 #[async_trait]
@@ -151,6 +153,10 @@ impl Tool for NotifyTool {
 
     fn description(&self) -> String {
         "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use media.speak for spoken content, not notify.".into()
+    }
+
+    fn catalog_group(&self) -> ToolCatalogGroup {
+        ToolCatalogGroup::System
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

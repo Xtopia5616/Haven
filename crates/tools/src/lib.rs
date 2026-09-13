@@ -1097,7 +1097,14 @@ impl ToolsManager {
             .iter()
             .filter(|t| !t.name().starts_with("skill__"))
             .map(|t| {
-                let mut json = t.tool_def().json();
+                let def = t.tool_def();
+                let mut json = def.json();
+                json.as_object_mut()
+                    .expect("ToolDef::json returns an object")
+                    .insert(
+                        "catalog_group".into(),
+                        Value::String(def.catalog_group.as_str().into()),
+                    );
                 json.as_object_mut()
                     .expect("ToolDef::json returns an object")
                     .insert(
@@ -1730,6 +1737,21 @@ mod tests {
             unique_names.len(),
             "builtin tool names must be unique"
         );
+
+        for (name, group) in [
+            ("ask", "haven"),
+            ("notify", "system"),
+            ("shell", "system"),
+            ("http", "system"),
+            ("files.read", "system"),
+            ("agent.list", "agent"),
+        ] {
+            let listed = builtin_tools
+                .iter()
+                .find(|tool| tool["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("builtin tool {name} should be listed"));
+            assert_eq!(listed["catalog_group"].as_str(), Some(group), "{name}");
+        }
 
         assert!(mgr.get_tool("files").await.is_none());
         assert!(mgr.get_tool("media").await.is_none());

@@ -101,6 +101,7 @@
 						name: t.name || 'unknown',
 						desc: t.description || '',
 						risk: t.risk_level || 'unknown',
+						category: t.catalog_group || 'other',
 						schema: t.input_schema || {},
 						enabled: t.enabled !== false,
 					}))
@@ -419,7 +420,7 @@
 		<section class="resource-panel motion-surface-enter" aria-label="内置工具">
 			<WorkspaceSectionHeader
 				title="内置工具"
-				description="Haven 自带的可调用能力；同类 operation 收纳在同一张卡片中，可展开后分别启停。"
+				description="Haven 自带的可调用能力；按 Haven、系统和 Agent 分类收纳，可展开后分别启停。"
 			>
 				{#snippet children()}
 					<div class="toolbar-actions toolbar-actions--paired">
@@ -441,7 +442,7 @@
 				<AsyncState title="没有匹配的内置工具" message="换一个关键词或清除状态筛选。" />
 			{:else}
 				<div class="resource-list">
-					{#each visibleBuiltinTools as tool (tool.kind === 'operation-group' ? tool.name : tool.tool.name)}
+					{#each visibleBuiltinTools as tool (tool.name)}
 						<BuiltinToolCard {tool} onToggle={handleToolToggle} />
 					{/each}
 				</div>

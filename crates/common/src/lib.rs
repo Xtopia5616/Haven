@@ -31,7 +31,7 @@ pub use media_detection::{
     probe_media_with_hint,
 };
 
-pub use tools::{ToolDef, ToolPrompt, ToolRetrySafety};
+pub use tools::{ToolCatalogGroup, ToolDef, ToolPrompt, ToolRetrySafety};
 
 pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,

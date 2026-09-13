@@ -58,8 +58,8 @@ describe('ToolsView toolbar actions', () => {
 			if (command === 'get_tools') {
 				return {
 					tools: [
-						{ name: 'files', description: '', risk_level: 'safe', input_schema: {} },
-						{ name: 'shell', description: '', risk_level: 'high', input_schema: {} },
+						{ name: 'files', description: '', risk_level: 'safe', catalog_group: 'system', input_schema: {} },
+						{ name: 'shell', description: '', risk_level: 'high', catalog_group: 'system', input_schema: {} },
 					],
 				};
 			}
@@ -77,9 +77,9 @@ describe('ToolsView toolbar actions', () => {
 
 		render(ToolsView);
 
-		await waitFor(() => expect(screen.getByText('共 2 项')).toBeTruthy());
+		await waitFor(() => expect(screen.getByText('共 1 项')).toBeTruthy());
 		const resourceToolbar = () => document.querySelector('.resource-toolbar');
-		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
+		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 1 项');
 		expect(document.querySelectorAll('.section .count-chip')).toHaveLength(0);
 
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
@@ -98,12 +98,14 @@ describe('ToolsView toolbar actions', () => {
 							name: 'files.read',
 							description: 'Read a file',
 							risk_level: 'low',
+							catalog_group: 'system',
 							input_schema: { type: 'object' },
 						},
 						{
 							name: 'files.search',
 							description: 'Search files',
 							risk_level: 'medium',
+							catalog_group: 'system',
 							input_schema: { type: 'object' },
 							enabled: false,
 						},
@@ -111,6 +113,7 @@ describe('ToolsView toolbar actions', () => {
 							name: 'shell',
 							description: 'Run a command',
 							risk_level: 'high',
+							catalog_group: 'system',
 							input_schema: { type: 'object' },
 						},
 					],
@@ -123,13 +126,12 @@ describe('ToolsView toolbar actions', () => {
 
 		render(ToolsView);
 
-		await waitFor(() => expect(screen.getByText('共 2 项')).toBeTruthy());
-		expect(document.querySelectorAll('[data-card-kind="builtin-tool"]')).toHaveLength(2);
-		expect(screen.getByText('文件与搜索')).toBeTruthy();
-		expect(screen.getByText('shell')).toBeTruthy();
+		await waitFor(() => expect(screen.getByText('共 1 项')).toBeTruthy());
+		expect(document.querySelectorAll('[data-card-kind="builtin-tool"]')).toHaveLength(1);
+		expect(screen.getByText('系统')).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();
 
-		await fireEvent.click(screen.getByRole('button', { name: /文件与搜索/ }));
+		await fireEvent.click(screen.getByRole('button', { name: /系统/ }));
 		expect(screen.getByText('files.read')).toBeTruthy();
 		expect(screen.getByText('files.search')).toBeTruthy();
 		expect(screen.getByRole('switch', { name: '切换工具 files.read' })).toBeTruthy();
