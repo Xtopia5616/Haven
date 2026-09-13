@@ -23,6 +23,19 @@ export const TOOL_LABELS: Record<string, string> = {
 	// Skills are registered directly as independent tools.
 	web_search: '联网搜索',
 	agent: 'Agent 协作',
+	process: '进程',
+	clipboard: '剪贴板',
+	input: '输入控制',
+	window: '窗口与屏幕',
+	preferences: '会话偏好',
+	checklist: '检查清单',
+	actions: '后台任务',
+	schedule: '定时任务',
+	haven_diagnostics: 'Haven 诊断',
+	haven_config: 'Haven 配置',
+	haven_skills: 'Haven 技能',
+	haven_tools: '内置工具管理',
+	haven_mcp: 'MCP 管理',
 };
 
 export { toolRootName };

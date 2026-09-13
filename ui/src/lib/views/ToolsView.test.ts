@@ -89,6 +89,60 @@ describe('ToolsView toolbar actions', () => {
 		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
 	});
 
+	it('collapses operation views into one card while keeping operation controls', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_tools') {
+				return {
+					tools: [
+						{
+							name: 'files.read',
+							description: 'Read a file',
+							risk_level: 'low',
+							input_schema: { type: 'object' },
+						},
+						{
+							name: 'files.search',
+							description: 'Search files',
+							risk_level: 'medium',
+							input_schema: { type: 'object' },
+							enabled: false,
+						},
+						{
+							name: 'shell',
+							description: 'Run a command',
+							risk_level: 'high',
+							input_schema: { type: 'object' },
+						},
+					],
+				};
+			}
+			if (command === 'list_mcp_tools') return [];
+			if (command === 'list_skills') return [];
+			return undefined;
+		});
+
+		render(ToolsView);
+
+		await waitFor(() => expect(screen.getByText('共 2 项')).toBeTruthy());
+		expect(document.querySelectorAll('[data-card-kind="builtin-tool"]')).toHaveLength(2);
+		expect(screen.getByText('文件与搜索')).toBeTruthy();
+		expect(screen.getByText('shell')).toBeTruthy();
+		expect(screen.queryByText('files.read')).toBeNull();
+
+		await fireEvent.click(screen.getByRole('button', { name: /文件与搜索/ }));
+		expect(screen.getByText('files.read')).toBeTruthy();
+		expect(screen.getByText('files.search')).toBeTruthy();
+		expect(screen.getByRole('switch', { name: '切换工具 files.read' })).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('switch', { name: '切换工具 files.read' }));
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('set_tool_enabled', {
+				name: 'files.read',
+				enabled: false,
+			}),
+		);
+	});
+
 	it('locks the MCP refresh action until reconciliation finishes', async () => {
 		let finishRefresh: ((value: unknown) => void) | undefined;
 		invoke.mockImplementation((command: string) => {

@@ -1,11 +1,12 @@
 <script>
 	/** @typedef {{ name: string; enabled: boolean; [key: string]: any }} ToggleItem */
+	/** @typedef {import('$lib/builtinToolPresentation.ts').BuiltinToolEntry} BuiltinToolEntry */
 
 	/** @type {ToggleItem[]} */
 	let mcpServers = $state([]);
 	/** @type {ToggleItem[]} */
 	let skills = $state([]);
-	/** @type {ToggleItem[]} */
+	/** @type {BuiltinToolEntry[]} */
 	let builtinTools = $state([]);
 	let activeTab = $state('builtin');
 	let searchQuery = $state('');
@@ -31,6 +32,7 @@
 	import CountChip from '$lib/CountChip.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
+	import { groupBuiltinTools, matchesBuiltinToolCard } from '$lib/builtinToolPresentation.ts';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -64,7 +66,10 @@
 		enabledFilter = 'all';
 	}
 
-	const visibleBuiltinTools = $derived(builtinTools.filter(matchesResource));
+	const builtinToolCards = $derived(groupBuiltinTools(builtinTools));
+	const visibleBuiltinTools = $derived(
+		builtinToolCards.filter((card) => matchesBuiltinToolCard(card, searchQuery, enabledFilter)),
+	);
 	const visibleMcpServers = $derived(mcpServers.filter(matchesResource));
 	const visibleSkills = $derived(skills.filter(matchesResource));
 	const hasFilters = $derived(Boolean(searchQuery.trim() || enabledFilter !== 'all'));
@@ -209,10 +214,11 @@
 	// failure. `refresh` runs after a successful toggle. One implementation
 	// so the three handlers cannot drift (e.g. one forgetting the refresh).
 	/**
-	 * @param {ToggleItem[]} list
+	 * @template {ToggleItem} T
+	 * @param {T[]} list
 	 * @param {string} name
 	 * @param {boolean} enabled
-	 * @param {(v: ToggleItem[]) => void} setList
+	 * @param {(v: T[]) => void} setList
 	 * @param {string} invokeCmd
 	 * @param {(() => void | Promise<any>) | null} refresh
 	 */
@@ -413,7 +419,7 @@
 		<section class="resource-panel motion-surface-enter" aria-label="内置工具">
 			<WorkspaceSectionHeader
 				title="内置工具"
-				description="Haven 自带的可调用能力，可以单独启用或停用。"
+				description="Haven 自带的可调用能力；同类 operation 收纳在同一张卡片中，可展开后分别启停。"
 			>
 				{#snippet children()}
 					<div class="toolbar-actions toolbar-actions--paired">
@@ -435,7 +441,7 @@
 				<AsyncState title="没有匹配的内置工具" message="换一个关键词或清除状态筛选。" />
 			{:else}
 				<div class="resource-list">
-					{#each visibleBuiltinTools as tool (tool.name)}
+					{#each visibleBuiltinTools as tool (tool.kind === 'operation-group' ? tool.name : tool.tool.name)}
 						<BuiltinToolCard {tool} onToggle={handleToolToggle} />
 					{/each}
 				</div>
@@ -487,7 +493,11 @@
 				{#snippet children()}
 					<div class="toolbar-actions toolbar-actions--paired">
 						<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
-						<MaterialButton variant="outlined" label="打开文件夹" onclick={openFolder} />
+						<MaterialButton
+							variant="outlined"
+							label="打开文件夹"
+							onclick={openFolder}
+						/>
 					</div>
 				{/snippet}
 			</WorkspaceSectionHeader>

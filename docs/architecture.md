@@ -438,6 +438,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |
 | 2026-09-12 | §2.5 Tools / LLM / Agent / UI：完成 P1 operation view、搜索/outline 结构化模型视图、文档页游标、原生视频 ContentPart、session-scoped 偏好/清单和 memory 空结果诊断；按测试版 reset 边界删除 FollowUp/confirmation/ask/rollback/provider-style 内部兼容层（ADR 0131） |
 | 2026-09-13 | §2.5 Tools / Agent / UI / Security：模型与 UI 统一使用 `root.operation` 点号 view；files/system/haven/media 及其它 operation-based builtin 不再以聚合根注册，启用 Skill 直接注册，删除 `load_skill`（ADR 0137） |
+| 2026-09-13 | §2.6 UI：工具页将同一 operation root 收束为一张可展开卡片，保留每个 operation 的独立 Schema、风险和启用状态（ADR 0139） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |

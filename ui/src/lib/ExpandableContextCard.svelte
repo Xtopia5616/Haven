@@ -10,9 +10,17 @@
 	 * @prop {any[]} contextMenuItems — action objects consumed by the global menu host
 	 * @prop {any} header — header snippet
 	 * @prop {any} actions — optional header actions snippet
+	 * @prop {boolean} showActions — whether to render the optional actions snippet
 	 * @prop {any} children — expanded body snippet
 	 */
-	let { cardKind = '', contextMenuItems = [], header, actions, children } = $props();
+	let {
+		cardKind = '',
+		contextMenuItems = [],
+		header,
+		actions = undefined,
+		showActions = true,
+		children,
+	} = $props();
 	let expanded = $state(false);
 
 	/** @param {number} duration */
@@ -57,7 +65,7 @@
 		<div class="card-info">
 			{@render header?.()}
 		</div>
-		{#if actions}
+		{#if actions && showActions}
 			<div
 				class="card-actions"
 				onclick={(event) => event.stopPropagation()}
