@@ -1,4 +1,5 @@
 mod action_lifecycle;
+mod action_service;
 pub mod adapters;
 mod asset_registry;
 mod background_actions;
@@ -103,14 +104,17 @@ pub struct RuntimeCapabilities {
 }
 
 pub(crate) use action_lifecycle::{ActionLifecycle, EventSinkState};
+pub use action_service::ActionService;
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub use background_actions::{BackgroundActionCompletion, BackgroundActions, EventSink};
 pub use builtin::{
-    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentSpawnRequest,
-    AgentSpawnResult, AgentSpawner, ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool,
-    ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput, ConfigViewOutput,
-    LogLevelOutput, ScheduleMode, SelfOperation, SelfParams, SelfTool, SelfToolContext,
+    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentControlOperation,
+    AgentControlRequest, AgentControlResult, AgentController, AgentControllerSlot,
+    AgentSpawnRequest, AgentSpawnResult, AgentSpawner, ConfigAdminContext, ConfigAdminOperation,
+    ConfigAdminTool, ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput,
+    ConfigViewOutput, LogLevelOutput, ScheduleMode, SelfOperation, SelfParams, SelfTool,
+    SelfToolContext,
 };
 pub use circuit::ToolCircuitRegistry;
 pub use haven_mcp::{
@@ -380,6 +384,8 @@ pub struct ToolsManager {
     /// channel is consumed by the agent layer, which notifies, runs the
     /// scheduled tool, or resumes the scheduling session (see `ScheduleMode`).
     pub scheduled_actions: Arc<builtin::scheduled_action::ScheduledActionCenter>,
+    /// Unified model-facing task query/control facade.
+    pub action_service: Arc<ActionService>,
     /// App-level dependencies for the native admin surface (config loader,
     /// DB, router, log file). Wired in by the desktop shell; `None` in
     /// headless tests so the admin capabilities are not registered.
@@ -407,6 +413,8 @@ pub struct ToolsManager {
     media_config: RwLock<haven_common::config::MediaConfig>,
     /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
     agent_spawner: builtin::AgentSpawnerSlot,
+    /// Desktop-wired callback for peer status/wait/stop lifecycle operations.
+    agent_controller: builtin::AgentControllerSlot,
     /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
     memory_recall: builtin::MemoryRecallSlot,
 }
@@ -421,6 +429,10 @@ impl ToolsManager {
         let background_actions = Arc::new(BackgroundActions::new());
         let live_outputs = Arc::new(live_output::LiveOutputHub::new());
         let scheduled_actions = Arc::new(builtin::scheduled_action::ScheduledActionCenter::new());
+        let action_service = Arc::new(ActionService::new(
+            background_actions.clone(),
+            scheduled_actions.clone(),
+        ));
         // Wire the background-action registry into the scheduled_action center so
         // `watch_action_id` scheduled_actions can wait for a action to finish.
         scheduled_actions.set_actions(Some(background_actions.clone()));
@@ -446,6 +458,7 @@ impl ToolsManager {
             background_actions,
             live_outputs,
             scheduled_actions,
+            action_service,
             self_context: RwLock::new(None),
             admin_surface: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
@@ -456,6 +469,7 @@ impl ToolsManager {
             image_gen_client: RwLock::new(None),
             media_config: RwLock::new(haven_common::config::MediaConfig::default()),
             agent_spawner: builtin::new_agent_spawner_slot(),
+            agent_controller: builtin::new_agent_controller_slot(),
             memory_recall: builtin::new_memory_recall_slot(),
         }
     }
@@ -464,6 +478,12 @@ impl ToolsManager {
     /// Does not rebuild the catalog (the tool already holds this slot).
     pub async fn set_agent_spawner(&self, spawner: builtin::AgentSpawner) {
         *self.agent_spawner.write().await = Some(spawner);
+    }
+
+    /// Install the desktop agent-layer callback used by `agent.status`,
+    /// `agent.wait`, and `agent.stop`. Does not rebuild the catalog.
+    pub async fn set_agent_controller(&self, controller: builtin::AgentController) {
+        *self.agent_controller.write().await = Some(controller);
     }
 
     /// Install History-aligned recall for `memory` operation=recall.
@@ -926,6 +946,7 @@ impl ToolsManager {
                 clipboard_history: self.clipboard_history.clone(),
                 self_context,
                 agent_spawner: self.agent_spawner.clone(),
+                agent_controller: self.agent_controller.clone(),
                 memory_recall: self.memory_recall.clone(),
                 managed_assets: self.managed_assets.clone(),
                 media: builtin::MediaDeps {
@@ -941,6 +962,7 @@ impl ToolsManager {
                     background: self.background_actions.clone(),
                     live_outputs: self.live_outputs.clone(),
                     scheduled: self.scheduled_actions.clone(),
+                    service: self.action_service.clone(),
                 },
             },
         )

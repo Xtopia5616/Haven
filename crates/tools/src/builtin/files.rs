@@ -6,9 +6,10 @@ use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::EndpointRole;
 use haven_llm::LlmRouter;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::file_outline;
@@ -31,6 +32,208 @@ const UNTRUSTED_DOCUMENT_START: &str = "【附件派生内容开始";
 const UNTRUSTED_DOCUMENT_END: &str = "【附件派生内容结束】";
 const MAX_PATCH_EDITS: usize = 64;
 const MAX_PATCH_INPUT_BYTES: usize = 256 * 1024;
+const MAX_INSPECT_HASH_BYTES: u64 = 64 * 1024 * 1024;
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn expected_hash_matches(expected: &str, actual: &str) -> bool {
+    let expected = expected
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(expected.trim());
+    let actual = actual.strip_prefix("sha256:").unwrap_or(actual);
+    expected.eq_ignore_ascii_case(actual)
+}
+
+struct AtomicWriteResult {
+    bytes: u64,
+    sha256: String,
+    dry_run: bool,
+}
+
+/// Write a complete replacement beside the destination and then replace the
+/// destination in one filesystem operation. The optional hash is a compare-
+/// and-swap guard against edits based on stale content.
+async fn atomic_replace(
+    path: &Path,
+    bytes: &[u8],
+    expected_hash: Option<&str>,
+    max_write_bytes: u64,
+    dry_run: bool,
+) -> anyhow::Result<AtomicWriteResult> {
+    let size = u64::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("file is too large"))?;
+    if size > max_write_bytes {
+        anyhow::bail!(
+            "write is {} bytes, above the {} byte write limit",
+            size,
+            max_write_bytes
+        );
+    }
+    let current_hash = if expected_hash.is_some() {
+        match tokio::fs::metadata(path).await {
+            Ok(metadata) => {
+                if metadata.len() > MAX_INSPECT_HASH_BYTES {
+                    anyhow::bail!(
+                        "cannot verify expected_hash for a file larger than {} bytes",
+                        MAX_INSPECT_HASH_BYTES
+                    );
+                }
+                Some(sha256_bytes(&tokio::fs::read(path).await?))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        None
+    };
+    if let Some(expected) = expected_hash {
+        let matches = match current_hash.as_deref() {
+            Some(actual) => expected_hash_matches(expected, actual),
+            None => expected.trim().eq_ignore_ascii_case("missing"),
+        };
+        if !matches {
+            anyhow::bail!(
+                "write compare failed for '{}': expected_hash does not match the current file",
+                path.display()
+            );
+        }
+    }
+    let sha256 = sha256_bytes(bytes);
+    if dry_run {
+        return Ok(AtomicWriteResult {
+            bytes: size,
+            sha256,
+            dry_run: true,
+        });
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temporary = parent.join(format!(".{}.tmp", haven_common::types::new_id("file")));
+    let result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .await?;
+        file.write_all(bytes).await?;
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+        replace_file(&temporary, path).await
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result?;
+    Ok(AtomicWriteResult {
+        bytes: size,
+        sha256,
+        dry_run: false,
+    })
+}
+
+async fn replace_file(temporary: &Path, destination: &Path) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        };
+        let from: Vec<u16> = temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let to: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let ok = unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if ok == 0 {
+            anyhow::bail!(
+                "atomic file replacement failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::fs::rename(temporary, destination).await?;
+        Ok(())
+    }
+}
+
+async fn inspect_file(
+    path: &Path,
+    include_hash: bool,
+    max_hash_bytes: u64,
+) -> anyhow::Result<ToolResult> {
+    let metadata = match tokio::fs::metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ToolResult::ok(serde_json::json!({
+                "exists": false,
+                "file_type": "missing",
+                "path": path,
+                "hash": null,
+                "encoding": null,
+            })));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let file_type = if metadata.is_file() {
+        "file"
+    } else if metadata.is_dir() {
+        "directory"
+    } else {
+        "other"
+    };
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339());
+    let mut hash = None;
+    let mut encoding = None;
+    if metadata.is_file()
+        && metadata.len() <= max_hash_bytes
+        && metadata.len() <= MAX_INSPECT_HASH_BYTES
+    {
+        let bytes = tokio::fs::read(path).await?;
+        encoding = Some(haven_common::encoding::decode_with_encoding(&bytes).encoding);
+        if include_hash {
+            hash = Some(sha256_bytes(&bytes));
+        }
+    } else if include_hash && metadata.is_file() {
+        anyhow::bail!(
+            "file is too large to hash safely (limit {} bytes)",
+            max_hash_bytes.min(MAX_INSPECT_HASH_BYTES)
+        );
+    }
+    Ok(ToolResult::ok(serde_json::json!({
+        "exists": true,
+        "file_type": file_type,
+        "path": path,
+        "size": metadata.len(),
+        "mtime": modified_at,
+        "hash": hash,
+        "encoding": encoding,
+    })))
+}
 
 fn sanitize_path(path: &str) -> anyhow::Result<String> {
     let normalized = Path::new(path).components().collect::<std::path::PathBuf>();
@@ -528,6 +731,8 @@ pub struct FilesTool {
     max_list_entries: usize,
     /// Absolute safety cap for byte-mode reads, regardless of caller `limit`.
     max_byte_read: u64,
+    /// Absolute safety cap for a single atomic write/edit/patch result.
+    max_write_bytes: u64,
     /// Provider timeout (secs) for summarization / vision LLM calls. The
     /// Tool implementation adds a small margin to its manager-owned outer
     /// timeout so only one layer reports the terminal timeout.
@@ -553,6 +758,7 @@ impl Default for FilesTool {
             summary_input_chars: 60_000,
             max_list_entries: 1_000,
             max_byte_read: 16 * 1024 * 1024,
+            max_write_bytes: 16 * 1024 * 1024,
             summary_timeout_secs: 120,
             search: FileSearchEngine::default(),
             managed_assets: ManagedAssetRegistry::default(),
@@ -566,6 +772,9 @@ impl Default for FilesTool {
 #[serde(rename_all = "snake_case")]
 pub enum FilesOperation {
     Read,
+    Inspect,
+    Stat,
+    Hash,
     Write,
     CreateDir,
     Edit,
@@ -624,6 +833,14 @@ pub struct FilesParams {
     /// Content to write (write operation).
     #[serde(default)]
     pub content: Option<String>,
+    /// SHA-256 compare-and-swap guard for write/edit/patch. Accepts either
+    /// `sha256:<hex>` or the bare 64-character digest; `missing` matches a
+    /// destination that does not exist.
+    #[serde(default)]
+    pub expected_hash: Option<String>,
+    /// Validate and report the would-be replacement without mutating the file.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
     /// Text to search for (edit operation).
     #[serde(default)]
     pub old_string: Option<String>,
@@ -704,6 +921,7 @@ impl FilesTool {
             summary_input_chars,
             max_list_entries,
             max_byte_read,
+            max_write_bytes: max_byte_read,
             summary_timeout_secs,
             search,
             managed_assets,
@@ -713,6 +931,11 @@ impl FilesTool {
 
     pub(crate) fn with_media_tool(mut self, media_tool: Arc<MediaTool>) -> Self {
         self.media_tool = Some(media_tool);
+        self
+    }
+
+    pub(crate) fn with_max_write_bytes(mut self, max_write_bytes: u64) -> Self {
+        self.max_write_bytes = max_write_bytes.max(1);
         self
     }
 
@@ -855,6 +1078,29 @@ impl FilesTool {
                     read_full(&path, max_chars, self.max_read_chars, cancel.clone()).await
                 }
             }
+            FilesOperation::Inspect => {
+                inspect_file(Path::new(&path), true, self.max_byte_read).await
+            }
+            FilesOperation::Stat => inspect_file(Path::new(&path), false, self.max_byte_read).await,
+            FilesOperation::Hash => {
+                let result = inspect_file(Path::new(&path), true, self.max_byte_read).await?;
+                let mut output = result.output;
+                if let Some(object) = output.as_object_mut() {
+                    object.retain(|key, _| {
+                        matches!(
+                            key.as_str(),
+                            "exists"
+                                | "file_type"
+                                | "path"
+                                | "size"
+                                | "mtime"
+                                | "hash"
+                                | "encoding"
+                        )
+                    });
+                }
+                Ok(ToolResult::ok(output))
+            }
             FilesOperation::Outline => {
                 let start_line = params.start_line.unwrap_or(1).max(1);
                 let max_symbols = params.max_symbols.unwrap_or(100).clamp(1, 500) as usize;
@@ -869,12 +1115,19 @@ impl FilesTool {
             }
             FilesOperation::Write => {
                 let content = params.content.unwrap_or_default();
-                tokio::fs::write(&path, &content).await?;
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
+                let write = atomic_replace(
+                    Path::new(&path),
+                    content.as_bytes(),
+                    params.expected_hash.as_deref(),
+                    self.max_write_bytes,
+                    params.dry_run.unwrap_or(false),
+                )
+                .await?;
                 Ok(ToolResult::ok(
-                    serde_json::json!({"written": true, "path": path}),
+                    serde_json::json!({"written": !write.dry_run, "dry_run": write.dry_run, "bytes": write.bytes, "sha256": write.sha256, "path": path}),
                 ))
             }
             FilesOperation::CreateDir => {
@@ -947,10 +1200,20 @@ impl FilesTool {
                     });
                 }
                 let result = content.replace(old, &new);
-                tokio::fs::write(&path, &result).await?;
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                let write = atomic_replace(
+                    Path::new(&path),
+                    result.as_bytes(),
+                    params.expected_hash.as_deref(),
+                    self.max_write_bytes,
+                    params.dry_run.unwrap_or(false),
+                )
+                .await?;
                 let line = content[..positions[0]].matches('\n').count() + 1;
                 Ok(ToolResult::ok(
-                    serde_json::json!({"edited": true, "path": path, "line": line}),
+                    serde_json::json!({"edited": !write.dry_run, "dry_run": write.dry_run, "bytes": write.bytes, "sha256": write.sha256, "path": path, "line": line}),
                 ))
             }
             FilesOperation::Patch => {
@@ -986,9 +1249,19 @@ impl FilesTool {
                 // Keep the transaction in memory until every edit has been
                 // validated. This is the sole write performed by patch.
                 let encoded = encode_patched_text(&result, decoded.encoding)?;
-                tokio::fs::write(&path, encoded).await?;
+                let write = atomic_replace(
+                    Path::new(&path),
+                    &encoded,
+                    params.expected_hash.as_deref(),
+                    self.max_write_bytes,
+                    params.dry_run.unwrap_or(false),
+                )
+                .await?;
                 Ok(ToolResult::ok(serde_json::json!({
-                    "patched": true,
+                    "patched": !write.dry_run,
+                    "dry_run": write.dry_run,
+                    "bytes": write.bytes,
+                    "sha256": write.sha256,
                     "path": path,
                     "edits": summaries.len(),
                     "replacements": summaries
@@ -1159,7 +1432,8 @@ impl Tool for FilesTool {
 
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
         match input["operation"].as_str() {
-            Some("read") | Some("list") | Some("outline") | Some("summary") | Some("search") => {
+            Some("read") | Some("inspect") | Some("stat") | Some("hash") | Some("list")
+            | Some("outline") | Some("summary") | Some("search") => {
                 OperationIdempotency::Idempotent
             }
             Some("write") | Some("create_dir") | Some("edit") | Some("patch") | Some("copy")
@@ -1196,11 +1470,20 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": crate::prompts::FILES_OPERATION_SELECTOR_DESCRIPTION },
+                "operation": { "type": "string", "enum": ["read", "inspect", "stat", "hash", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": crate::prompts::FILES_OPERATION_SELECTOR_DESCRIPTION },
                 "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment; use this instead of guessing a local path" }
             },
             "required": ["operation"],
             "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "enum": ["inspect", "stat", "hash"] },
+                        "path": { "type": "string", "minLength": 1, "description": "File or directory path" }
+                    },
+                    "required": ["operation", "path"]
+                },
                 {
                     "type": "object",
                     "additionalProperties": false,
@@ -1223,7 +1506,9 @@ impl Tool for FilesTool {
                     "properties": {
                         "operation": { "const": "write" },
                         "path": { "type": "string", "minLength": 1, "description": "File path to replace or create" },
-                        "content": { "type": "string", "description": "Complete file content; an empty string is allowed" }
+                        "content": { "type": "string", "maxLength": self.max_write_bytes, "description": "Complete file content; an empty string is allowed" },
+                        "expected_hash": { "type": "string", "minLength": 1 },
+                        "dry_run": { "type": "boolean" }
                     },
                     "required": ["operation", "path", "content"]
                 },
@@ -1254,7 +1539,9 @@ impl Tool for FilesTool {
                         "operation": { "const": "edit" },
                         "path": { "type": "string", "minLength": 1, "description": "Text file path to edit" },
                         "old_string": { "type": "string", "description": "Existing text to replace; must match exactly once" },
-                        "new_string": { "type": "string", "description": "Replacement text; an empty string deletes the match" }
+                        "new_string": { "type": "string", "maxLength": self.max_write_bytes, "description": "Replacement text; an empty string deletes the match" },
+                        "expected_hash": { "type": "string", "minLength": 1 },
+                        "dry_run": { "type": "boolean" }
                     },
                     "required": ["operation", "path", "old_string", "new_string"]
                 },
@@ -1279,7 +1566,9 @@ impl Tool for FilesTool {
                                 },
                                 "required": ["old_string", "new_string"]
                             }
-                        }
+                        },
+                        "expected_hash": { "type": "string", "minLength": 1 },
+                        "dry_run": { "type": "boolean" }
                     },
                     "required": ["operation", "path", "edits"]
                 },
@@ -2119,7 +2408,7 @@ mod tests {
         assert!(ops.contains(&"list"));
         assert!(ops.contains(&"outline"));
         assert!(ops.contains(&"search"));
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 10);
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 11);
     }
 
     #[test]
@@ -3189,6 +3478,8 @@ mod tests {
                     asset_id: None,
                     destination: None,
                     content: Some("native content".into()),
+                    expected_hash: None,
+                    dry_run: None,
                     old_string: None,
                     new_string: None,
                     edits: None,

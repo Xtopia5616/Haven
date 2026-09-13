@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::ActionService;
 use crate::BackgroundActions;
 use crate::ToolRegistry;
 use crate::operation_view::{
@@ -91,7 +92,9 @@ pub use admin::{
 };
 pub use memory::{MemoryRecallFn, MemoryRecallSlot, MemoryTool, new_memory_recall_slot};
 pub use messaging::{
-    AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot, new_agent_spawner_slot,
+    AgentControlOperation, AgentControlRequest, AgentControlResult, AgentController,
+    AgentControllerSlot, AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot,
+    new_agent_controller_slot, new_agent_spawner_slot,
 };
 pub use scheduled_action::{
     ScheduleMode, ScheduledActionCenter, ScheduledActionFired, ScheduledActionTool,
@@ -135,6 +138,7 @@ pub struct ActionDeps {
     pub background: Arc<BackgroundActions>,
     pub live_outputs: Arc<crate::live_output::LiveOutputHub>,
     pub scheduled: Arc<ScheduledActionCenter>,
+    pub service: Arc<ActionService>,
 }
 
 /// Complete dependency object for constructing the builtin catalog. Keeping
@@ -154,6 +158,7 @@ pub struct BuiltinContext {
     pub clipboard_history: Arc<clipboard::ClipboardHistory>,
     pub self_context: Option<SelfToolContext>,
     pub agent_spawner: messaging::AgentSpawnerSlot,
+    pub agent_controller: messaging::AgentControllerSlot,
     pub memory_recall: memory::MemoryRecallSlot,
     pub managed_assets: crate::ManagedAssetRegistry,
     pub media: MediaDeps,
@@ -178,6 +183,7 @@ pub async fn register_builtin_tools(
         clipboard_history,
         self_context,
         agent_spawner,
+        agent_controller,
         memory_recall,
         managed_assets,
         media:
@@ -195,6 +201,7 @@ pub async fn register_builtin_tools(
                 background: background_actions,
                 live_outputs,
                 scheduled: scheduled_actions,
+                service: action_service,
             },
     } = context;
     let settings = &settings;
@@ -266,6 +273,7 @@ pub async fn register_builtin_tools(
             ),
             managed_assets.clone(),
         )
+        .with_max_write_bytes(limits.file_max_byte_read)
         .with_media_tool(media_tool.clone()),
     );
     for contract in operation_specs(limits.search_max_results) {
@@ -278,13 +286,16 @@ pub async fn register_builtin_tools(
     let process_tool: ToolBox = Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
     });
-    let clipboard_tool: ToolBox = Arc::new(clipboard::ClipboardTool::new(
-        clipboard_history,
-        tool_output_cap(settings, "clipboard", limits.max_observation_chars),
-        limits.clipboard_history_entries,
-        limits.clipboard_history_max_entries,
-        limits.clipboard_entry_max_chars,
-    ));
+    let clipboard_tool: ToolBox = Arc::new(
+        clipboard::ClipboardTool::new(
+            clipboard_history,
+            tool_output_cap(settings, "clipboard", limits.max_observation_chars),
+            limits.clipboard_history_entries,
+            limits.clipboard_history_max_entries,
+            limits.clipboard_entry_max_chars,
+        )
+        .with_managed_assets(managed_assets.clone()),
+    );
     tools.push(Arc::new(shell::ShellTool {
         actions: background_actions.clone(),
         live_outputs,
@@ -293,6 +304,7 @@ pub async fn register_builtin_tools(
     }));
     let actions_tool: ToolBox = Arc::new(actions::ActionsTool {
         actions: background_actions,
+        service: Some(action_service),
     });
     let input_tool: ToolBox = Arc::new(input::InputTool);
     let schedule_tool: ToolBox = Arc::new(scheduled_action::ScheduledActionTool {
@@ -344,7 +356,10 @@ pub async fn register_builtin_tools(
     // lazily register on first call; spawn needs the desktop-wired spawner
     // slot (None in headless → tool errors clearly).
     let messaging_service = Arc::new(crate::messaging_service::MessagingService::default_root());
-    let agent_tool: ToolBox = Arc::new(messaging::AgentTool::new(messaging_service, agent_spawner));
+    let agent_tool: ToolBox = Arc::new(
+        messaging::AgentTool::new(messaging_service, agent_spawner)
+            .with_controller(agent_controller),
+    );
     add_operation_views(tools, agent_tool, settings, AGENT_OPERATION_VIEWS);
     let max_tools = limits.max_tools_per_request.max(1);
     // Skills are executable adapters in the deferred catalog. They become
@@ -654,6 +669,9 @@ macro_rules! split_spec {
 }
 
 const FILE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
+    split_spec!("files.inspect", "inspect", "files", "fileSearch"),
+    split_spec!("files.stat", "stat", "files", "fileSearch"),
+    split_spec!("files.hash", "hash", "files", "fileSearch"),
     split_spec!("files.write", "write", "files", "file"),
     split_spec!("files.create_dir", "create_dir", "files", "folder"),
     split_spec!("files.edit", "edit", "files", "edit"),
@@ -693,6 +711,11 @@ const WINDOW_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("window.screenshot", "screenshot", "window", "image"),
     split_spec!("window.ocr", "ocr", "window", "image"),
     split_spec!("window.ui_tree", "ui_tree", "window", "account_tree"),
+    split_spec!("window.observe", "observe", "window", "image"),
+    split_spec!("window.invoke", "invoke", "window", "play"),
+    split_spec!("window.set_value", "set_value", "window", "edit"),
+    split_spec!("window.toggle", "toggle", "window", "settings"),
+    split_spec!("window.select", "select", "window", "list"),
     split_spec!("window.wait", "wait", "window", "hourglass"),
 ];
 
@@ -702,6 +725,7 @@ const MEDIA_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("media.ocr", "ocr", "media", "image"),
     split_spec!("media.transcribe", "transcribe", "media", "mic"),
     split_spec!("media.extract", "extract", "media", "fileText"),
+    split_spec!("media.render", "render", "media", "fileText"),
     split_spec!("media.generate", "generate", "media", "image"),
     split_spec!("media.record", "record", "media", "mic"),
     split_spec!("media.play", "play", "media", "volumeUp"),
@@ -722,12 +746,20 @@ const MEMORY_OPERATION_VIEWS: &[SplitOperationSpec] = &[
 
 const AGENT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
     split_spec!("agent.list", "list", "agent", "users"),
+    split_spec!("agent.children", "children", "agent", "users"),
+    split_spec!("agent.history", "history", "agent", "users"),
     split_spec!("agent.inbox", "inbox", "agent", "users"),
+    split_spec!("agent.ack", "ack", "agent", "users"),
     split_spec!("agent.send", "send", "agent", "users"),
     split_spec!("agent.reply", "reply", "agent", "users"),
     split_spec!("agent.profile", "profile", "agent", "users"),
     split_spec!("agent.request", "request", "agent", "users"),
     split_spec!("agent.spawn", "spawn", "agent", "users"),
+    split_spec!("agent.status", "status", "agent", "users"),
+    split_spec!("agent.join", "join", "agent", "hourglass"),
+    split_spec!("agent.wait", "wait", "agent", "users"),
+    split_spec!("agent.stop", "stop", "agent", "users"),
+    split_spec!("agent.collect", "collect", "agent", "fileText"),
 ];
 
 const ACTION_OPERATION_VIEWS: &[SplitOperationSpec] =
@@ -781,9 +813,16 @@ const SYSTEM_SCOPE_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
         "settings",
     ),
     (
-        "system.registry.delete",
+        "system.registry.delete_value",
         "registry",
-        "delete",
+        "delete_value",
+        "system",
+        "settings",
+    ),
+    (
+        "system.registry.delete_key",
+        "registry",
+        "delete_key",
         "system",
         "settings",
     ),
@@ -1029,6 +1068,9 @@ fn operation_spec(
 /// second frontend registry.
 fn operation_label(name: &str) -> String {
     match name {
+        "files.inspect" => "检查文件元数据",
+        "files.stat" => "读取文件状态",
+        "files.hash" => "计算文件哈希",
         "files.write" => "写入文件",
         "files.create_dir" => "创建目录",
         "files.edit" => "编辑文件",
@@ -1056,12 +1098,18 @@ fn operation_label(name: &str) -> String {
         "window.screenshot" => "窗口截图",
         "window.ocr" => "窗口 OCR",
         "window.ui_tree" => "窗口 UI 树",
+        "window.observe" => "观察窗口",
+        "window.invoke" => "调用界面元素",
+        "window.set_value" => "设置界面值",
+        "window.toggle" => "切换界面控件",
+        "window.select" => "选择界面元素",
         "window.wait" => "等待窗口",
         "media.inspect" => "检查媒体",
         "media.describe" => "描述图像",
         "media.ocr" => "媒体 OCR",
         "media.transcribe" => "转录音频",
         "media.extract" => "提取文档",
+        "media.render" => "渲染文档页",
         "media.generate" => "生成图像",
         "media.record" => "录音",
         "media.play" => "播放音频",
@@ -1076,12 +1124,20 @@ fn operation_label(name: &str) -> String {
         "memory.forget" => "忘记信息",
         "memory.recall" => "召回记忆",
         "agent.list" => "列出 Agent",
+        "agent.children" => "列出子 Agent",
+        "agent.history" => "Agent 消息历史",
         "agent.inbox" => "读取 Agent 消息",
+        "agent.ack" => "确认 Agent 消息",
         "agent.send" => "发送 Agent 消息",
         "agent.reply" => "回复 Agent",
         "agent.profile" => "Agent 资料",
         "agent.request" => "请求 Agent",
         "agent.spawn" => "创建 Agent",
+        "agent.status" => "Agent 状态",
+        "agent.join" => "等待 Agent 完成",
+        "agent.wait" => "等待 Agent",
+        "agent.stop" => "停止 Agent",
+        "agent.collect" => "收集 Agent 结果",
         "actions.list" => "后台任务列表",
         "actions.inspect" => "查看后台任务",
         "actions.cancel" => "取消后台任务",
@@ -1105,7 +1161,8 @@ fn operation_label(name: &str) -> String {
         "system.registry.list" => "列出注册表",
         "system.registry.get" => "读取注册表",
         "system.registry.set" => "设置注册表",
-        "system.registry.delete" => "删除注册表值",
+        "system.registry.delete_value" => "删除注册表值",
+        "system.registry.delete_key" => "删除注册表键",
         "system.power.status" => "电源状态",
         "system.power.lock" => "锁定电脑",
         "system.power.sleep" => "睡眠",

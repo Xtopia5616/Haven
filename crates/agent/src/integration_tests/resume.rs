@@ -63,25 +63,23 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         ContextLimitsConfig::default(),
     ));
 
-    // Enabled skills are direct global adapters, so every session sees the
-    // same catalog before and after resume. Resume only rebuilds MCP overlays.
+    // Enabled skills remain host-owned deferred adapters. They are available
+    // to the loader, but resume must not silently activate them in a session.
     let rounds = Vec::new();
+    assert!(tools.get_tool("skill__echo").await.is_some());
     let before = tools.list_schemas_for_session("ses-x").await;
-    assert!(before.iter().any(|s| s["name"] == "skill__echo"));
+    assert!(!before.iter().any(|s| s["name"] == "skill__echo"));
     let other_before = tools.list_schemas_for_session("ses-y").await;
-    assert!(other_before.iter().any(|s| s["name"] == "skill__echo"));
+    assert!(!other_before.iter().any(|s| s["name"] == "skill__echo"));
 
     agent.restore_per_session_tools("ses-x", &rounds).await;
 
-    // The resume path must not move or duplicate the global skill.
+    // The resume path must not activate or duplicate the deferred skill.
     let after = tools.list_schemas_for_session("ses-x").await;
-    assert!(
-        after.iter().any(|s| s["name"] == "skill__echo"),
-        "restored skill should appear in per-session schemas"
-    );
+    assert!(!after.iter().any(|s| s["name"] == "skill__echo"));
 
     let other = tools.list_schemas_for_session("ses-y").await;
-    assert!(other.iter().any(|s| s["name"] == "skill__echo"));
+    assert!(!other.iter().any(|s| s["name"] == "skill__echo"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -227,6 +225,7 @@ async fn resume_rejects_legacy_conversation_prefix_snapshot() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -275,6 +274,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -347,6 +347,7 @@ async fn resume_keeps_repeated_same_text_turns() {
         last_ingress_seq: ingress_cursor,
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -431,6 +432,7 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
         last_ingress_seq: ingress_cursor,
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -527,6 +529,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -729,6 +732,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };

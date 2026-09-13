@@ -209,12 +209,19 @@ pub struct ReActSnapshot {
     pub awaiting_answer: Option<AskPending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting_confirm: Option<ConfirmPending>,
+    /// Canonical projection for ask/confirm/scheduled-confirm waits. The two
+    /// legacy fields above are retained so older snapshots remain readable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interactions: Vec<crate::interaction::InteractionRequest>,
     /// Last run's effective step budget (R4). Absent before a run starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_budget: Option<RunBudget>,
 }
 
 impl ReActSnapshot {
+    pub fn interaction_requests(&self) -> &[crate::interaction::InteractionRequest] {
+        &self.interactions
+    }
     /// Parse the current events-authority snapshot shape.
     ///
     /// Snapshot upgrades are deliberately unsupported: a snapshot without

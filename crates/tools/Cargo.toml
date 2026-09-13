@@ -42,6 +42,7 @@ tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+clipboard-win = "5.4"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

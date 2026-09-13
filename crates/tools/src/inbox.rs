@@ -430,6 +430,25 @@ impl InboxBus {
         Ok(())
     }
 
+    /// Retain a completed peer's metadata and parent link while making its
+    /// liveness unambiguously offline. This is used by the AgentLayer for
+    /// spawned sessions so lifecycle authorization remains stable through the
+    /// asynchronous terminal cleanup window.
+    pub(crate) fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
+        validate_agent_name(name)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        let mut reg = self.read_registry_unlocked()?;
+        let Some(entry) = reg.get_mut(name) else {
+            return Ok(());
+        };
+        let stale_after = OFFLINE_AFTER.as_secs().saturating_add(1) as i64;
+        entry.last_seen = (Local::now() - chrono::Duration::seconds(stale_after))
+            .to_rfc3339_opts(SecondsFormat::Secs, false);
+        self.write_registry_unlocked(&reg)?;
+        Ok(())
+    }
+
     /// Agents whose registry `parent` equals `parent` (spawned children).
     /// Filters under one lock without the online-first sort used by
     /// [`Self::list_agents`] (cascade / spawn caps care about identity, not UI order).
@@ -1728,6 +1747,29 @@ mod tests {
     fn unregister_unknown_name_is_noop() {
         let (_dir, bus) = test_bus();
         bus.unregister("ses-ghost").unwrap();
+    }
+
+    #[test]
+    fn mark_offline_keeps_parent_metadata() {
+        let (_dir, bus) = test_bus();
+        bus.register_with_profile(
+            "ses-child",
+            &["docs".into()],
+            Some("worker"),
+            Some("coder"),
+            Some("ses-parent"),
+        )
+        .unwrap();
+        bus.mark_offline("ses-child").unwrap();
+        let child = bus
+            .list_agents()
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.name == "ses-child")
+            .unwrap();
+        assert_eq!(child.status, AgentStatus::Offline);
+        assert_eq!(child.parent.as_deref(), Some("ses-parent"));
+        assert_eq!(child.capabilities, vec!["docs"]);
     }
 
     #[test]

@@ -4,22 +4,23 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{BackgroundActions, Tool, ToolConcurrency, ToolResult};
+use crate::{ActionService, BackgroundActions, Tool, ToolConcurrency, ToolResult};
 
-/// Explicit mutating operation supported by the background-action board.
+/// Explicit mutating operation supported by the unified task board.
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionsOperation {
     Cancel,
 }
 
-/// Background-action board for the current session.
+/// Unified background/scheduled task board for the current session.
 ///
 /// - Without `action_id`: list all (optional `status` filter).
 /// - With `action_id`: return that single action's status (results are also
 ///   pushed back automatically on completion — prefer not polling).
 pub struct ActionsTool {
     pub actions: Arc<BackgroundActions>,
+    pub service: Option<Arc<ActionService>>,
 }
 
 /// Typed parameters for `ActionsTool`. Entry ① (native `run`) and entry ②
@@ -29,7 +30,7 @@ pub struct ActionsParams {
     /// Private owning session id, injected by the tools manager.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
-    /// When set, return this single action's status instead of the board.
+    /// When set, return this single task's status instead of the board.
     #[serde(default)]
     pub action_id: Option<String>,
     /// Optional mutating operation. Listing and inspection retain their
@@ -64,10 +65,13 @@ impl ActionsTool {
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
-            let cancelled = self
-                .actions
-                .cancel_for_session(action_id, &session_id)
-                .await;
+            let cancelled = if let Some(service) = &self.service {
+                service.cancel_for_session(action_id, &session_id).await
+            } else {
+                self.actions
+                    .cancel_for_session(action_id, &session_id)
+                    .await
+            };
             return Ok(ToolResult::ok(serde_json::json!({
                 "operation": "cancel",
                 "action_id": action_id,
@@ -81,10 +85,13 @@ impl ActionsTool {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
         {
-            let status = self
-                .actions
-                .status_for_session(action_id, &session_id)
-                .await;
+            let status = if let Some(service) = &self.service {
+                service.status_for_session(action_id, &session_id).await
+            } else {
+                self.actions
+                    .status_for_session(action_id, &session_id)
+                    .await
+            };
             let mut output = status;
             if let Some(object) = output.as_object_mut() {
                 object.insert("operation".into(), serde_json::json!("inspect"));
@@ -94,7 +101,11 @@ impl ActionsTool {
         }
 
         let filter = params.status;
-        let mut rows = self.actions.list_for_session(&session_id).await;
+        let mut rows = if let Some(service) = &self.service {
+            service.list_for_session(&session_id).await
+        } else {
+            self.actions.list_for_session(&session_id).await
+        };
         if let Some(f) = filter.as_deref() {
             rows.retain(|r| r["status"].as_str() == Some(f));
         }
@@ -154,17 +165,17 @@ impl Tool for ActionsTool {
                 "action_id": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Inspect this single background action instead of listing"
+                    "description": "Inspect this single background or scheduled task instead of listing"
                 },
                 "operation": {
                     "type": "string",
                     "enum": ["cancel"],
-                    "description": "Cancel a running background action owned by this session"
+                    "description": "Cancel a cancellable background or scheduled task owned by this session"
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["running", "completed", "failed", "cancelled"],
-                    "description": "Optional filter when listing: only actions in this state"
+                    "enum": ["scheduled", "running", "completed", "failed", "cancelled"],
+                    "description": "Optional filter when listing: only tasks in this state"
                 }
             },
             "oneOf": [
@@ -187,7 +198,7 @@ impl Tool for ActionsTool {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "status": { "type": "string", "enum": ["running", "completed", "failed", "cancelled"] }
+                        "status": { "type": "string", "enum": ["scheduled", "running", "completed", "failed", "cancelled"] }
                     }
                 }
             ]
@@ -210,7 +221,8 @@ mod tests {
     fn test_actions_tool_name() {
         assert_eq!(
             ActionsTool {
-                actions: Arc::new(BackgroundActions::new())
+                actions: Arc::new(BackgroundActions::new()),
+                service: None,
             }
             .name(),
             "actions"
@@ -221,6 +233,7 @@ mod tests {
     fn test_actions_tool_risk_level() {
         let tool = ActionsTool {
             actions: Arc::new(BackgroundActions::new()),
+            service: None,
         };
         assert_eq!(tool.risk_level(&json!({})), RiskLevel::Safe);
         assert_eq!(
@@ -233,6 +246,7 @@ mod tests {
     fn test_actions_tool_schema() {
         let tool = ActionsTool {
             actions: Arc::new(BackgroundActions::new()),
+            service: None,
         };
         let schema = tool.input_schema();
         assert!(schema["properties"]["action_id"].is_object());
@@ -245,6 +259,7 @@ mod tests {
     async fn test_actions_tool_requires_session_context() {
         let tool = ActionsTool {
             actions: Arc::new(BackgroundActions::new()),
+            service: None,
         };
         let result = tool.execute(json!({}), CancellationToken::new()).await;
         assert!(
@@ -256,7 +271,10 @@ mod tests {
     #[tokio::test]
     async fn test_actions_tool_lists_session_actions() {
         let actions = Arc::new(BackgroundActions::new());
-        let tool = ActionsTool { actions };
+        let tool = ActionsTool {
+            actions,
+            service: None,
+        };
         let result = tool
             .execute(json!({"_session_id": "ses-x"}), CancellationToken::new())
             .await
@@ -269,6 +287,7 @@ mod tests {
     async fn test_actions_tool_single_action_status() {
         let tool = ActionsTool {
             actions: Arc::new(BackgroundActions::new()),
+            service: None,
         };
         let result = tool
             .execute(
@@ -287,6 +306,7 @@ mod tests {
         cancel.cancel();
         let tool = ActionsTool {
             actions: Arc::new(BackgroundActions::new()),
+            service: None,
         };
         let result = tool.execute(json!({"_session_id": "ses-x"}), cancel).await;
         assert!(result.is_err());
@@ -296,6 +316,7 @@ mod tests {
     async fn test_actions_tool_native_entry_lands_in_run() {
         let tool = ActionsTool {
             actions: Arc::new(BackgroundActions::new()),
+            service: None,
         };
         let result = tool
             .run(
@@ -316,7 +337,10 @@ mod tests {
     #[tokio::test]
     async fn test_actions_tool_cancels_only_owned_running_action() {
         let actions = Arc::new(BackgroundActions::new());
-        let tool = ActionsTool { actions };
+        let tool = ActionsTool {
+            actions,
+            service: None,
+        };
         let result = tool
             .execute(
                 json!({

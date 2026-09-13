@@ -10,7 +10,8 @@ pub struct RegistryTool;
 pub enum RegistryOperation {
     Get,
     Set,
-    Delete,
+    DeleteValue,
+    DeleteKey,
     List,
 }
 
@@ -218,17 +219,25 @@ impl RegistryTool {
                         serde_json::json!({"set": true, "path": path, "name": name}),
                     ))
                 }
-                RegistryOperation::Delete => {
+                RegistryOperation::DeleteValue => {
+                    let name = params.name.ok_or_else(|| {
+                        anyhow::anyhow!("name is required for registry.delete_value")
+                    })?;
                     let (hive, subpath) = parse_hive(&path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_WRITE)?;
-                    if let Some(name) = params.name {
-                        key.delete_value(&name)?;
-                    } else {
-                        drop(key);
-                        hive.delete_subkey(&subpath)?;
-                    }
+                    key.delete_value(&name)?;
                     Ok(ToolResult::ok(
-                        serde_json::json!({"deleted": true, "path": path}),
+                        serde_json::json!({"deleted": true, "path": path, "name": name}),
+                    ))
+                }
+                RegistryOperation::DeleteKey => {
+                    let (hive, subpath) = parse_hive(&path)?;
+                    if subpath.is_empty() {
+                        anyhow::bail!("registry.delete_key cannot delete a hive root");
+                    }
+                    hive.delete_subkey_all(&subpath)?;
+                    Ok(ToolResult::ok(
+                        serde_json::json!({"deleted": true, "path": path, "key": true}),
                     ))
                 }
                 RegistryOperation::List => {

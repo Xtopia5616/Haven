@@ -256,7 +256,7 @@ Parent session                    Child session(s)
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`；`operation=` list / children / history / send / inbox / ack / reply / profile / request / spawn / status / wait / stop；通过 `MessagingService` 调用 |
+| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`；`operation=` list / children / history / send / inbox / ack / reply / profile / request / spawn / status / join / wait / stop / collect；通过 `MessagingService` 调用 |
 | 服务 | `haven-tools` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait 与 receipt 生命周期 |
 | 传输 | `haven-tools` `inbox.rs` | JSONL file transport adapter：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；不向应用暴露同步 drain 语义 |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
@@ -268,8 +268,9 @@ Parent session                    Child session(s)
 
 协议约定：同伴消息 ≠ 用户指令；`id` 是稳定的 `msg-{uuid32}`，`in_reply_to` 对齐 request id，
 `delivery_attempt` 记录 at-least-once 重投次数；批量消息必须走 `send → claim → process → ack`。
-显式 `agent.inbox` 默认只 claim 不 ack，处理完成后由 `agent.ack(message_ids)` 选择性确认；
-`agent.history` 为只读恢复入口。`agent.status/wait/stop` 只允许当前 session 或其后代，
+显式 `agent.inbox` 默认只 claim 不 ack，处理完成后由 `agent.ack(message_ids|claim_token)` 确认；
+`claim_token` 是进程内整批 receipt，崩溃后由 durable processing 状态触发 at-least-once 重投，
+而不是丢失消息。`agent.history` 为只读恢复入口。`agent.status/join/wait/stop/collect` 只允许当前 session 或其后代，
 并通过 `AgentController` 进入真实 `SessionExecutor` 状态机，`stop` 走正常取消与终端清理路径。
 当前跨进程仍使用 JSONL adapter，未来可替换为 SessionActor mailbox；子会话默认工作目录仍为
 Temp（全局约束）。
@@ -284,14 +285,24 @@ Temp（全局约束）。
 | scope | 能力 | 风险 |
 |---|---|---|
 | `info`（默认） | 只读机器快照；`category=` 细分 | Safe |
-| `env` | 环境变量 get/set/unset/list；list 可用 `name` 作前缀过滤 | get=Low；list/set/unset=High |
-| `registry` | Windows 注册表 get/set/delete/list | 读=Medium；写/删=High |
+| `env` | 环境变量 get/set/unset/list；`scope=process/user/machine`，list 可用 `name` 作前缀过滤 | get=Low；list/set/unset=High |
+| `registry` | Windows 注册表 get/set/delete_value/delete_key/list；值删除要求 `name`，键删除为递归删除 | 读=Medium；值写/删=High；键删=Critical |
 | `power` | 电源 status / lock / sleep / hibernate | status=Safe；lock/sleep=High；hibernate=Critical |
 | `display` | 监视器几何 + DPI/缩放 + 刷新率 | Safe |
 | `process` | 进程 list / kill | list=Low；kill=High |
 | `clipboard` | 剪贴板 read / write / history | read/history=Low；write=Medium |
 | `input` | 键鼠 type / key / click / move / scroll | move/scroll=Low；其它=Medium |
-| `window` | 窗口 list / foreground / focus / close / screenshot / OCR / UI tree / wait | 读/观察=Low；focus=Medium；close/OCR=High |
+| `window` | 窗口 list / foreground / focus / close / screenshot / OCR / UI tree / observe / invoke / set_value / toggle / select / wait | 读/观察=Low；语义操作/focus=Medium；close/OCR=High |
+
+`ActionService`（`haven-tools/src/action_service.rs`）是后台与定时任务的统一查询/状态/取消门面；
+`BackgroundActions` 和 `ScheduledActionCenter` 当前仍是内部 worker，但 model-facing `actions.*` 和
+app action board 都只读取规范化 task row。`InteractionRequest`（`haven-agent/src/interaction.rs`）
+是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照保留旧字段用于兼容读取，新的交互状态以
+`Pending → Resolved | Expired | Cancelled` 表达。
+
+Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具进入；图片/文件读取先复制到受管媒体
+资产并只向模型返回 `asset_id`。`media.render` 复用有界文档表示管线按页返回结果，不新增独立的
+`audio`、`file_search` 或 HTTP 搜索根工具。
 
 `scope=info` 的 `category`：
 

@@ -4,24 +4,28 @@ use crate::events::{ActionEvent, ActionKind};
 use std::sync::Arc;
 use tauri::State;
 
-/// Board view of every action (background actions + pending scheduled_actions), for
+/// Board view of every task (background actions + pending scheduled actions), for
 /// the UI's action panel. Mirrors the `action:created` / `action:updated`
 /// / `action:finished` / `action:output` events so the panel can hydrate
 /// on mount / navigation. Both action kinds use the same named action DTO and
 /// stable `id` field; the tool implementation's `action_id` is not exposed.
 ///
-/// Live actions come from the in-memory board (with output preview); terminal
+/// Live tasks come from the unified in-memory board (with output preview); terminal
 /// action rows that already aged out of the board's TTL are merged back in from
 /// the persisted action table, so the panel keeps showing history (results
 /// survive app restarts).
 #[tauri::command]
 pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionEvent>, String> {
-    let live_rows = state.tools.background_actions.board().await;
+    let live_rows = state.tools.action_service.board().await;
     let mut rows = Vec::with_capacity(live_rows.len());
     let mut live_ids = std::collections::HashSet::new();
     for row in &live_rows {
-        let event = ActionEvent::background_from_value(row)
-            .map_err(|error| log_err("list_actions background payload", error))?;
+        let kind = row.get("kind").and_then(|value| value.as_str());
+        let event = match kind {
+            Some("scheduled") => ActionEvent::scheduled_from_value(row, false),
+            _ => ActionEvent::background_from_value(row),
+        }
+        .map_err(|error| log_err("list_actions task payload", error))?;
         live_ids.insert(event.id.clone());
         rows.push(event);
     }
@@ -59,12 +63,6 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
             exit_code: a.exit_code,
             preview: Some(preview),
         });
-    }
-    for row in state.tools.scheduled_actions.list().await {
-        rows.push(
-            ActionEvent::scheduled_from_value(&row, false)
-                .map_err(|error| log_err("list_actions scheduled payload", error))?,
-        );
     }
     Ok(rows)
 }

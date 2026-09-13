@@ -41,10 +41,22 @@ impl SessionExecutor {
         let sid_err = sid.clone();
         tokio::spawn(async move {
             let messaging = haven_tools::MessagingService::default_root();
-            if let Ok(Err(e)) =
-                tokio::task::spawn_blocking(move || messaging.unregister(&sid)).await
-            {
-                tracing::debug!("messaging unregister failed for {sid_err}: {e}");
+            let result = tokio::task::spawn_blocking(move || {
+                let entry = messaging
+                    .list_agents()?
+                    .into_iter()
+                    .find(|agent| agent.name == sid);
+                if entry.as_ref().is_some_and(|agent| agent.parent.is_some()) {
+                    messaging.mark_offline(&sid)
+                } else {
+                    messaging.unregister(&sid)
+                }
+            })
+            .await;
+            if let Ok(Err(e)) = result {
+                tracing::debug!("messaging registry cleanup failed for {sid_err}: {e}");
+            } else if let Err(e) = result {
+                tracing::debug!("messaging registry cleanup task failed for {sid_err}: {e}");
             }
         });
     }

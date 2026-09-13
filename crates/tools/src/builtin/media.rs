@@ -45,6 +45,7 @@ pub enum MediaOperation {
     Ocr,
     Transcribe,
     Extract,
+    Render,
     Generate,
     Record,
     Play,
@@ -65,6 +66,7 @@ pub(crate) enum MediaAssetOperation {
     Ocr,
     Transcribe,
     Extract,
+    Render,
     Generate,
     Record,
 }
@@ -95,6 +97,7 @@ impl MediaOperation {
             Self::Ocr => MediaOperationGroup::Asset(MediaAssetOperation::Ocr),
             Self::Transcribe => MediaOperationGroup::Asset(MediaAssetOperation::Transcribe),
             Self::Extract => MediaOperationGroup::Asset(MediaAssetOperation::Extract),
+            Self::Render => MediaOperationGroup::Asset(MediaAssetOperation::Render),
             Self::Generate => MediaOperationGroup::Asset(MediaAssetOperation::Generate),
             Self::Record => MediaOperationGroup::Asset(MediaAssetOperation::Record),
             Self::Play => MediaOperationGroup::Device(AudioDeviceOperation::Play),
@@ -128,6 +131,7 @@ fn media_operation_from_name(value: Option<&str>) -> Option<MediaOperation> {
         "ocr" => MediaOperation::Ocr,
         "transcribe" => MediaOperation::Transcribe,
         "extract" => MediaOperation::Extract,
+        "render" => MediaOperation::Render,
         "generate" => MediaOperation::Generate,
         "record" => MediaOperation::Record,
         "play" => MediaOperation::Play,
@@ -206,7 +210,9 @@ impl MediaTool {
             ocr_client: None,
             image_gen_client: None,
             describe_available: has_router,
-            ocr_available: has_router,
+            // OCR is a dedicated capability. A router may support text-only
+            // requests, so it must never make OCR appear available by itself.
+            ocr_available: false,
             transcribe_available: has_router,
             generate_available: false,
             record_available: false,
@@ -227,7 +233,10 @@ impl MediaTool {
         transcribe_available: bool,
     ) -> Self {
         self.describe_available = describe_available;
-        self.ocr_available = self.ocr_available || describe_available;
+        // OCR is deliberately independent from the vision description route.
+        // The dedicated OCR client is the only supported OCR capability until
+        // a renderer-backed OCR provider is installed.
+        self.ocr_available = self.ocr_client.is_some();
         // Keep the schema truthful even when callers apply capability
         // overrides after installing the dedicated STT client. The client is
         // the authoritative live route for audio transcription.
@@ -250,9 +259,7 @@ impl MediaTool {
         mut self,
         ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
     ) -> Self {
-        if ocr_client.is_some() {
-            self.ocr_available = true;
-        }
+        self.ocr_available = ocr_client.is_some();
         self.ocr_client = ocr_client;
         self
     }
@@ -333,6 +340,7 @@ impl MediaTool {
             MediaOperation::Ocr => self.ocr(asset, params.focus, cancel).await,
             MediaOperation::Transcribe => self.transcribe(asset, cancel).await,
             MediaOperation::Extract => self.extract(asset, params.page_index, cancel).await,
+            MediaOperation::Render => self.render(asset, params.page_index, cancel).await,
             MediaOperation::Generate => unreachable!("generate handled before asset resolution"),
             _ => unreachable!("audio operation handled before asset resolution"),
         }
@@ -352,7 +360,7 @@ impl Tool for MediaTool {
         match input["operation"].as_str() {
             Some("ocr") => RiskLevel::High,
             Some("describe") | Some("transcribe") => RiskLevel::Medium,
-            Some("extract") | Some("inspect") => RiskLevel::Low,
+            Some("extract") | Some("render") | Some("inspect") => RiskLevel::Low,
             Some("generate") => RiskLevel::Medium,
             Some("record") | Some("volume_set") | Some("mute_set") => RiskLevel::Medium,
             Some("play") | Some("speak") | Some("volume_get") | Some("mute_get") => RiskLevel::Low,
@@ -363,7 +371,7 @@ impl Tool for MediaTool {
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
         match input["operation"].as_str() {
             Some("inspect") | Some("describe") | Some("ocr") | Some("transcribe")
-            | Some("extract") => OperationIdempotency::Idempotent,
+            | Some("extract") | Some("render") => OperationIdempotency::Idempotent,
             Some("generate") | Some("record") | Some("play") | Some("speak")
             | Some("volume_set") | Some("mute_set") => OperationIdempotency::NonIdempotent,
             Some("volume_get") | Some("mute_get") => OperationIdempotency::Idempotent,
@@ -409,7 +417,7 @@ impl Tool for MediaTool {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "generate", "record", "play", "speak", "volume_get", "volume_set", "mute_get", "mute_set"]},
+                "operation": {"type": "string", "enum": ["inspect", "describe", "ocr", "transcribe", "extract", "render", "generate", "record", "play", "speak", "volume_get", "volume_set", "mute_get", "mute_set"]},
                 "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"},
                 "page_index": {"type": "integer", "minimum": 0, "description": "Zero-based document page/section cursor; extract returns next_page when available"},
                 "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS},
@@ -427,6 +435,7 @@ impl Tool for MediaTool {
                 {"additionalProperties": false, "properties": {"operation": {"const": "ocr"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "focus": {"type": "string", "maxLength": MAX_FOCUS_CHARS}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "transcribe"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "extract"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "page_index": {"type": "integer", "minimum": 0}}, "required": ["operation", "asset_id"]},
+                {"additionalProperties": false, "properties": {"operation": {"const": "render"}, "asset_id": {"type": "string", "pattern": "^asset-[0-9a-f]{32}$"}, "page_index": {"type": "integer", "minimum": 0}}, "required": ["operation", "asset_id"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "generate"}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_GENERATION_PROMPT_CHARS}}, "required": ["operation", "prompt"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "record"}, "duration": {"type": "number", "minimum": 1, "maximum": 60}}, "required": ["operation"]},
                 {"additionalProperties": false, "properties": {"operation": {"const": "play"}, "file_path": {"type": "string", "minLength": 1}}, "required": ["operation", "file_path"]},

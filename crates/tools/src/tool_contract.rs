@@ -1844,7 +1844,7 @@ pub(crate) mod tests {
             "operation must be named, got: {err}"
         );
         assert!(
-            err.contains("read, write, create_dir"),
+            err.contains("read, inspect, stat"),
             "allowed operations should be listed, got: {err}"
         );
     }

@@ -2,7 +2,7 @@
 
 use haven_common::media::MediaRepresentationKind;
 use haven_common::media_detection::MediaType;
-use haven_common::prompts::{IMAGE_ANALYSIS_SYSTEM_PROMPT, OCR_SYSTEM_PROMPT};
+use haven_common::prompts::IMAGE_ANALYSIS_SYSTEM_PROMPT;
 use serde_json::Value;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -19,6 +19,24 @@ use super::media_reference::{
 use super::{MAX_FOCUS_CHARS, MediaOperation, MediaTool};
 
 impl MediaTool {
+    /// Render one bounded document page through the existing document parser.
+    /// This deliberately returns a managed, untrusted page representation; a
+    /// future native PDF renderer can add an image representation without
+    /// creating a second document ingestion path.
+    pub(super) async fn render(
+        &self,
+        asset: ManagedAsset,
+        page_index: Option<u64>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let mut result = self.extract(asset, page_index, cancel).await?;
+        result.output["operation"] = Value::String("render".into());
+        result.output["rendered"] = Value::Bool(true);
+        result.output["representation"] =
+            Value::String(MediaRepresentationKind::DocumentPages.as_str().into());
+        Ok(result)
+    }
+
     pub(crate) fn media_result_output(
         &self,
         operation: MediaOperation,
@@ -186,35 +204,39 @@ impl MediaTool {
     pub(super) async fn ocr(
         &self,
         asset: ManagedAsset,
-        focus: Option<String>,
+        _focus: Option<String>,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if !self.ocr_available {
+        if !self.ocr_available || self.ocr_client.is_none() {
             return Ok(self.unavailable_media_result(
                 MediaOperation::Ocr,
                 &asset,
-                "No OCR or vision-capable LLM provider is configured.",
+                "No dedicated OCR provider is configured.",
             ));
         }
-        if let Some(client) = self.ocr_client.clone() {
-            let bytes = match self.read_bounded(&asset, &cancel).await {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    return Ok(if cancel.is_cancelled() {
-                        self.cancelled_media_result(MediaOperation::Ocr, &asset, "OCR cancelled")
-                    } else {
-                        self.failed_media_result(MediaOperation::Ocr, &asset, error.to_string())
-                    });
-                }
-            };
-            let dedicated = tokio::time::timeout(
-                Duration::from_secs(self.timeout_secs),
-                client.recognize(&bytes, &asset.media_type),
-            )
-            .await;
-            if let Ok(Ok(response)) = dedicated
-                && !response.text.trim().is_empty()
-                && confidence_passes(response.confidence, self.ocr_min_confidence)
+        let client = self
+            .ocr_client
+            .clone()
+            .expect("ocr_available implies an OCR client");
+        let bytes = match self.read_bounded(&asset, &cancel).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Ok(if cancel.is_cancelled() {
+                    self.cancelled_media_result(MediaOperation::Ocr, &asset, "OCR cancelled")
+                } else {
+                    self.failed_media_result(MediaOperation::Ocr, &asset, error.to_string())
+                });
+            }
+        };
+        let dedicated = tokio::time::timeout(
+            Duration::from_secs(self.timeout_secs),
+            client.recognize(&bytes, &asset.media_type),
+        )
+        .await;
+        match dedicated {
+            Ok(Ok(response))
+                if !response.text.trim().is_empty()
+                    && confidence_passes(response.confidence, self.ocr_min_confidence) =>
             {
                 let (text, text_truncated) =
                     bound_text(response.text.trim(), self.max_output_chars);
@@ -225,29 +247,24 @@ impl MediaTool {
                     Some(&text),
                 );
                 output["untrusted_content"] = Value::Bool(true);
-                return Ok(if text_truncated {
+                Ok(if text_truncated {
                     ToolResult::truncated(output)
                 } else {
                     ToolResult::ok(output)
-                });
+                })
             }
-            if self.router.is_none() {
-                return Ok(self.failed_media_result(
-                    MediaOperation::Ocr,
-                    &asset,
-                    "OCR provider returned no acceptable result and no LLM fallback is configured",
-                ));
-            }
+            Ok(Ok(_)) => Ok(self.failed_media_result(
+                MediaOperation::Ocr,
+                &asset,
+                "OCR provider returned no acceptable result",
+            )),
+            Ok(Err(error)) => Ok(self.failed_media_result(
+                MediaOperation::Ocr,
+                &asset,
+                format!("OCR call failed: {error}"),
+            )),
+            Err(_) => Ok(self.timed_out_media_result(MediaOperation::Ocr, &asset)),
         }
-        self.derive_image(
-            asset,
-            focus,
-            cancel,
-            MediaOperation::Ocr,
-            OCR_SYSTEM_PROMPT,
-            MediaRepresentationKind::OcrText,
-        )
-        .await
     }
 
     async fn derive_image(

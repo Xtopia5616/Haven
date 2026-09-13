@@ -41,6 +41,26 @@ pub enum EnvOperation {
     List,
 }
 
+/// Where an environment variable lives. `process` is the legacy behavior;
+/// the other scopes are persisted in the Windows environment registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvScope {
+    Process,
+    User,
+    Machine,
+}
+
+impl EnvScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::User => "user",
+            Self::Machine => "machine",
+        }
+    }
+}
+
 /// Typed parameters for `EnvTool`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct EnvParams {
@@ -53,6 +73,9 @@ pub struct EnvParams {
     /// Value for set operation.
     #[serde(default)]
     pub value: Option<String>,
+    /// Environment scope; defaults to the current process.
+    #[serde(default)]
+    pub scope: Option<EnvScope>,
 }
 
 impl EnvTool {
@@ -65,23 +88,25 @@ impl EnvTool {
             anyhow::bail!("cancelled");
         }
 
+        let scope = params.scope.unwrap_or(EnvScope::Process);
         match params.operation.unwrap_or(EnvOperation::List) {
             EnvOperation::Get => {
                 let name = params
                     .name
                     .ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
-                match env::var(&name) {
+                match read_value(scope, &name)? {
                     Ok(val) => {
                         let masked = is_sensitive_env_name(&name);
                         Ok(ToolResult::ok(serde_json::json!({
                             "name": name,
+                            "scope": scope.as_str(),
                             "value": if masked { MASKED_ENV_VALUE } else { &val },
                             "masked": masked,
                         })))
                     }
                     Err(env::VarError::NotPresent) => Ok(ToolResult {
                         success: true,
-                        output: serde_json::json!({"name": name, "value": null, "masked": false}),
+                        output: serde_json::json!({"name": name, "scope": scope.as_str(), "value": null, "masked": false}),
                         error: None,
                         error_class: None,
                         retryability: crate::ToolRetryability::Unknown,
@@ -101,24 +126,21 @@ impl EnvTool {
                 let value = params
                     .value
                     .ok_or_else(|| anyhow::anyhow!("value is required for set"))?;
-                unsafe {
-                    env::set_var(&name, &value);
-                }
+                write_value(scope, &name, &value)?;
                 // Never echo a value back through the model-facing result.
                 Ok(ToolResult::ok(serde_json::json!({
                     "set": true,
                     "name": name,
+                    "scope": scope.as_str(),
                 })))
             }
             EnvOperation::Unset => {
                 let name = params
                     .name
                     .ok_or_else(|| anyhow::anyhow!("name is required for unset"))?;
-                unsafe {
-                    env::remove_var(&name);
-                }
+                remove_value(scope, &name)?;
                 Ok(ToolResult::ok(
-                    serde_json::json!({"removed": true, "name": name}),
+                    serde_json::json!({"removed": true, "name": name, "scope": scope.as_str()}),
                 ))
             }
             EnvOperation::List => {
@@ -128,7 +150,7 @@ impl EnvTool {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_ascii_uppercase());
-                let mut vars: Vec<Value> = env::vars()
+                let mut vars: Vec<Value> = list_values(scope)?
                     .filter(|(k, _)| {
                         prefix
                             .as_ref()
@@ -150,6 +172,7 @@ impl EnvTool {
                 if let Some(p) = prefix {
                     result["prefix"] = serde_json::json!(p);
                 }
+                result["scope"] = serde_json::json!(scope.as_str());
                 if truncated {
                     result["hint"] = serde_json::json!(
                         "Environment listing truncated to the max chars budget. Use get with a specific variable name, or list with name as a prefix filter."
@@ -159,6 +182,176 @@ impl EnvTool {
             }
         }
     }
+}
+
+fn read_value(scope: EnvScope, name: &str) -> anyhow::Result<Result<String, env::VarError>> {
+    match scope {
+        EnvScope::Process => Ok(env::var(name)),
+        EnvScope::User | EnvScope::Machine => {
+            #[cfg(windows)]
+            {
+                Ok(read_persistent_value(scope, name))
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (scope, name);
+                anyhow::bail!("user and machine environment scopes require Windows")
+            }
+        }
+    }
+}
+
+fn write_value(scope: EnvScope, name: &str, value: &str) -> anyhow::Result<()> {
+    match scope {
+        EnvScope::Process => {
+            // Rust 2024 marks process-global environment mutation unsafe.
+            // The tool manager serializes this resource, so this is the one
+            // deliberate process mutation boundary.
+            unsafe { env::set_var(name, value) };
+            Ok(())
+        }
+        EnvScope::User | EnvScope::Machine => {
+            #[cfg(windows)]
+            {
+                write_persistent_value(scope, name, value)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (scope, name, value);
+                anyhow::bail!("user and machine environment scopes require Windows")
+            }
+        }
+    }
+}
+
+fn remove_value(scope: EnvScope, name: &str) -> anyhow::Result<()> {
+    match scope {
+        EnvScope::Process => {
+            unsafe { env::remove_var(name) };
+            Ok(())
+        }
+        EnvScope::User | EnvScope::Machine => {
+            #[cfg(windows)]
+            {
+                remove_persistent_value(scope, name)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (scope, name);
+                anyhow::bail!("user and machine environment scopes require Windows")
+            }
+        }
+    }
+}
+
+fn list_values(scope: EnvScope) -> anyhow::Result<Box<dyn Iterator<Item = (String, String)>>> {
+    match scope {
+        EnvScope::Process => Ok(Box::new(env::vars())),
+        EnvScope::User | EnvScope::Machine => {
+            #[cfg(windows)]
+            {
+                Ok(Box::new(list_persistent_values(scope)?.into_iter()))
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = scope;
+                anyhow::bail!("user and machine environment scopes require Windows")
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn persistent_key(scope: EnvScope, write: bool) -> anyhow::Result<winreg::RegKey> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
+    let (hive, path, flags) = match scope {
+        EnvScope::User => (
+            winreg::RegKey::predef(HKEY_CURRENT_USER),
+            "Environment",
+            if write { KEY_WRITE } else { KEY_READ },
+        ),
+        EnvScope::Machine => (
+            winreg::RegKey::predef(HKEY_LOCAL_MACHINE),
+            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+            if write { KEY_WRITE } else { KEY_READ },
+        ),
+        EnvScope::Process => anyhow::bail!("process scope has no persistent registry key"),
+    };
+    if write {
+        Ok(hive.create_subkey(path)?.0)
+    } else {
+        Ok(hive.open_subkey_with_flags(path, flags)?)
+    }
+}
+
+#[cfg(windows)]
+fn read_persistent_value(scope: EnvScope, name: &str) -> Result<String, env::VarError> {
+    let Ok(key) = persistent_key(scope, false) else {
+        return Err(env::VarError::NotPresent);
+    };
+    match key.get_value::<String, _>(name) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(env::VarError::NotPresent),
+    }
+}
+
+#[cfg(windows)]
+fn write_persistent_value(scope: EnvScope, name: &str, value: &str) -> anyhow::Result<()> {
+    let key = persistent_key(scope, true)?;
+    key.set_value(name, &value)?;
+    broadcast_environment_change()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_persistent_value(scope: EnvScope, name: &str) -> anyhow::Result<()> {
+    let key = persistent_key(scope, true)?;
+    match key.delete_value(name) {
+        Ok(()) => {
+            broadcast_environment_change()?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(windows)]
+fn list_persistent_values(scope: EnvScope) -> anyhow::Result<Vec<(String, String)>> {
+    let key = persistent_key(scope, false)?;
+    Ok(key
+        .enum_values()
+        .filter_map(|result| result.ok())
+        .map(|(name, _)| (name, String::new()))
+        .collect())
+}
+
+#[cfg(windows)]
+fn broadcast_environment_change() -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
+    };
+    let setting: Vec<u16> = std::ffi::OsStr::new("Environment")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut result = 0usize;
+    let sent = unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            setting.as_ptr() as isize,
+            SMTO_ABORTIFHUNG,
+            5000,
+            &mut result,
+        )
+    };
+    if sent == 0 {
+        anyhow::bail!("environment value persisted but WM_SETTINGCHANGE broadcast failed")
+    }
+    Ok(())
 }
 
 impl Default for EnvTool {
@@ -192,6 +385,7 @@ mod tests {
                     operation: Some(EnvOperation::Get),
                     name: Some(name.clone()),
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -224,6 +418,7 @@ mod tests {
                     operation: Some(EnvOperation::Get),
                     name: Some(name.clone()),
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -248,6 +443,7 @@ mod tests {
                     operation: Some(EnvOperation::Get),
                     name: Some(name),
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -265,6 +461,7 @@ mod tests {
                     operation: Some(EnvOperation::Get),
                     name: None,
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -281,6 +478,7 @@ mod tests {
                     operation: Some(EnvOperation::Set),
                     name: Some(name.clone()),
                     value: Some("v1".into()),
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -303,6 +501,7 @@ mod tests {
                     operation: Some(EnvOperation::Set),
                     name: Some(unique_var_name("SET")),
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -322,6 +521,7 @@ mod tests {
                     operation: Some(EnvOperation::Unset),
                     name: Some(name.clone()),
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -340,6 +540,7 @@ mod tests {
                     operation: Some(EnvOperation::List),
                     name: None,
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -365,6 +566,7 @@ mod tests {
                     operation: Some(EnvOperation::List),
                     name: Some(prefix.clone()),
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )
@@ -395,6 +597,7 @@ mod tests {
                     operation: Some(EnvOperation::List),
                     name: None,
                     value: None,
+                    scope: None,
                 },
                 cancel,
             )
@@ -414,6 +617,7 @@ mod tests {
                     operation: Some(EnvOperation::Get),
                     name: Some(name.clone()),
                     value: None,
+                    scope: None,
                 },
                 CancellationToken::new(),
             )

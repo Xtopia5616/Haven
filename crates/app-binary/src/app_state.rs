@@ -165,6 +165,18 @@ impl AppState {
                 }))
                 .await;
         }
+        // Peer lifecycle operations stay behind the agent-layer authority so
+        // `agent.status/wait/stop` use the real SessionExecutor state machine
+        // instead of approximating it from the inbox heartbeat registry.
+        {
+            let agent_for_control = agent.clone();
+            tools
+                .set_agent_controller(std::sync::Arc::new(move |request| {
+                    let agent = agent_for_control.clone();
+                    Box::pin(async move { agent.control_peer_session(request).await })
+                }))
+                .await;
+        }
         // `memory` recall shares History/`InferenceEngine::recall_memory`.
         {
             let agent_for_recall = agent.clone();

@@ -877,6 +877,147 @@ impl AgentLayer {
         Ok((session, first_msg.id))
     }
 
+    /// Handle model-facing lifecycle requests for a peer session. The tools
+    /// crate deliberately receives this through a callback so it cannot reach
+    /// into executor internals; this method remains the single authority for
+    /// status reads, bounded waits, cancellation, and terminal cleanup.
+    pub async fn control_peer_session(
+        &self,
+        request: haven_tools::AgentControlRequest,
+    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+        self.authorize_peer_control(&request).await?;
+        match request.operation {
+            haven_tools::AgentControlOperation::Status => {
+                self.inspect_peer_session(&request.target_session_id).await
+            }
+            haven_tools::AgentControlOperation::Wait => {
+                self.wait_for_peer_session(&request.target_session_id, request.timeout_secs)
+                    .await
+            }
+            haven_tools::AgentControlOperation::Stop => {
+                let before = self
+                    .inspect_peer_session(&request.target_session_id)
+                    .await?;
+                let title = before
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| before.session_id.clone());
+                self.executor
+                    .end_session(&request.target_session_id)
+                    .await?;
+                self.emit_session_completed(&request.target_session_id, &title)
+                    .await;
+                Ok(haven_tools::AgentControlResult {
+                    session_id: request.target_session_id,
+                    status: SessionStatus::Completed.as_str().into(),
+                    terminal: true,
+                    timed_out: false,
+                    title: Some(title),
+                })
+            }
+        }
+    }
+
+    /// Defense in depth for the tools-layer parent/descendant check. The
+    /// requester may inspect itself, but only a descendant can be waited on or
+    /// stopped; sibling and unrelated sessions are never controllable.
+    async fn authorize_peer_control(
+        &self,
+        request: &haven_tools::AgentControlRequest,
+    ) -> anyhow::Result<()> {
+        if request.target_session_id == request.requester_session_id {
+            if request.operation == haven_tools::AgentControlOperation::Status {
+                return Ok(());
+            }
+            anyhow::bail!("a peer lifecycle operation cannot target the current session");
+        }
+        let requester = request.requester_session_id.clone();
+        let target = request.target_session_id.clone();
+        let related = tokio::task::spawn_blocking(move || {
+            let messaging = haven_tools::MessagingService::default_root();
+            Ok::<_, anyhow::Error>(
+                messaging
+                    .list_descendants(&requester)?
+                    .iter()
+                    .any(|candidate| candidate == &target),
+            )
+        })
+        .await??;
+        if !related {
+            anyhow::bail!("peer lifecycle control is limited to descendant sessions");
+        }
+        Ok(())
+    }
+
+    async fn inspect_peer_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+        if let Some(session) = self.executor.get_session(session_id).await {
+            return Ok(haven_tools::AgentControlResult {
+                session_id: session.id,
+                status: session.status.as_str().into(),
+                terminal: session.status.is_terminal(),
+                timed_out: false,
+                title: session.title,
+            });
+        }
+        let session_id_owned = session_id.to_string();
+        let record = self
+            .db
+            .run_blocking(move |db| db.get_session(&session_id_owned))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
+        let status = SessionStatus::from_status_str(&record.status);
+        Ok(haven_tools::AgentControlResult {
+            session_id: record.id,
+            status: status.as_str().into(),
+            terminal: status.is_terminal(),
+            timed_out: false,
+            title: record.title,
+        })
+    }
+
+    async fn wait_for_peer_session(
+        &self,
+        session_id: &str,
+        timeout_secs: u64,
+    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+        let timeout_secs = timeout_secs.clamp(1, 300);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let mut status_rx = self.executor.subscribe_status(session_id).await;
+        loop {
+            let current = self.inspect_peer_session(session_id).await?;
+            if current.terminal {
+                return Ok(current);
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok(haven_tools::AgentControlResult {
+                    timed_out: true,
+                    ..current
+                });
+            }
+            let remaining = deadline - now;
+            tokio::select! {
+                changed = status_rx.changed() => {
+                    if changed.is_err() {
+                        // The terminal transition removes its watcher after
+                        // notifying it. Re-read the DB/runtime state rather
+                        // than treating a closed channel as a timeout.
+                    }
+                }
+                _ = tokio::time::sleep(remaining) => {
+                    let current = self.inspect_peer_session(session_id).await?;
+                    return Ok(haven_tools::AgentControlResult {
+                        timed_out: !current.terminal,
+                        ..current
+                    });
+                }
+            }
+        }
+    }
+
     /// Spawn a peer agent session for multi-agent collaboration (Plan A).
     /// Persists a low-trust delegated-task brief as the child's first kickoff
     /// turn (wrapper-delimited; not elevated to human-user trust), registers

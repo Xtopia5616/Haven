@@ -735,6 +735,7 @@ pub(super) fn seed_hello_snapshot(
         last_ingress_seq: agent.db.get_last_message_ingress_seq(session_id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };

@@ -136,3 +136,5 @@
 - [0141：统一工具目录分类](0141-unified-tool-catalog-groups.md)
 - [0142：工具 Manifest、OperationSpec 与统一结果元数据](0142-tool-manifest-operation-policy.md)
 - [0143：工具目录预算与高层交互能力](0143-tool-ergonomic-capabilities.md)
+- [0146：Agent 协作生命周期与可恢复消息契约](0146-agent-collaboration-lifecycle.md)
+- [0147：工具契约加固与任务/交互生命周期统一](0147-tool-contract-hardening-and-lifecycle-unification.md)

@@ -1,5 +1,6 @@
 //! Cross-session messaging / peer-collab: single builtin tool `agent` with
-//! `operation` ∈ list | send | inbox | reply | profile | request | spawn.
+//! `operation` ∈ list | children | history | send | inbox | ack | reply |
+//! profile | request | spawn | status | join | wait | stop | collect.
 //! Thin tool layer over [`crate::MessagingService`].
 //!
 //! The agent name is the owning session id (injected privately as
@@ -21,9 +22,10 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -32,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use crate::inbox::InboxBus;
 use crate::inbox::{AgentStatus, Envelope, MessageType, SendOutcome, validate_agent_name};
-use crate::messaging_service::MessagingService;
+use crate::messaging_service::{MessageClaim, MessagingService};
 use crate::{OperationIdempotency, Tool, ToolResult};
 
 /// Max envelope field sizes (defensive caps; the bus is append-only JSONL).
@@ -47,6 +49,11 @@ const MAX_CAPABILITY_BYTES: usize = 64;
 const MAX_ROLE_BYTES: usize = 64;
 const MAX_TITLE_BYTES: usize = 128;
 const MAX_TASK_BYTES: usize = 16 * 1024;
+const DEFAULT_LIST_LIMIT: usize = 50;
+const MAX_LIST_LIMIT: usize = 100;
+const DEFAULT_HISTORY_LIMIT: usize = 20;
+const MAX_HISTORY_LIMIT: usize = 100;
+const MAX_INBOX_ACK_IDS: usize = 100;
 /// Soft cap on concurrently discoverable children per parent (online or offline
 /// registry entries with `parent` set). Prevents unbounded spawn storms.
 const MAX_CHILDREN_PER_PARENT: usize = 8;
@@ -58,7 +65,8 @@ const MAX_CHILDREN_PER_PARENT: usize = 8;
 const REQUEST_WAIT_FALLBACK: Duration = Duration::from_secs(1);
 
 const OPERATIONS: &[&str] = &[
-    "list", "send", "inbox", "reply", "profile", "request", "spawn",
+    "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request", "spawn",
+    "status", "join", "wait", "stop", "collect",
 ];
 
 /// Request to spawn a peer agent session (wired from the desktop agent layer).
@@ -98,6 +106,54 @@ pub type AgentSpawner = Arc<
 pub type AgentSpawnerSlot = Arc<RwLock<Option<AgentSpawner>>>;
 
 pub fn new_agent_spawner_slot() -> AgentSpawnerSlot {
+    Arc::new(RwLock::new(None))
+}
+
+/// Lifecycle operation delegated to the desktop agent runtime. The tools
+/// crate owns the model-facing contract; the runtime owns session state,
+/// cancellation, and durable status transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentControlOperation {
+    Status,
+    Wait,
+    Stop,
+}
+
+/// Request sent across the tools/agent boundary for lifecycle operations.
+#[derive(Debug, Clone)]
+pub struct AgentControlRequest {
+    pub requester_session_id: String,
+    pub target_session_id: String,
+    pub operation: AgentControlOperation,
+    pub timeout_secs: u64,
+}
+
+/// Runtime-owned lifecycle observation returned to the tool layer.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentControlResult {
+    pub session_id: String,
+    pub status: String,
+    pub terminal: bool,
+    pub timed_out: bool,
+    pub title: Option<String>,
+}
+
+/// Async callback installed by the desktop agent layer. Keeping this callback
+/// optional preserves headless/tool-unit-test behavior: lifecycle operations
+/// fail clearly when no runtime is wired, while discovery and messaging still
+/// work through the file bus.
+pub type AgentController = Arc<
+    dyn Fn(
+            AgentControlRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentControlResult>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Shared slot for the lifecycle callback, surviving catalog rebuilds.
+pub type AgentControllerSlot = Arc<RwLock<Option<AgentController>>>;
+
+pub fn new_agent_controller_slot() -> AgentControllerSlot {
     Arc::new(RwLock::new(None))
 }
 
@@ -262,6 +318,81 @@ fn check_timeout_secs(timeout_secs: Option<u64>) -> u64 {
         .clamp(1, MAX_REQUEST_TIMEOUT_SECS)
 }
 
+fn check_discovery_token(
+    value: Option<String>,
+    field: &str,
+    max_bytes: usize,
+) -> anyhow::Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = sanitize_profile_token(&value, max_bytes)?
+        .ok_or_else(|| anyhow::anyhow!("{field} must not be empty"))?;
+    Ok(Some(value))
+}
+
+fn check_target(target: Option<String>, fallback: &str) -> anyhow::Result<String> {
+    let target = target.as_deref().unwrap_or(fallback).trim().to_string();
+    if target.is_empty() {
+        anyhow::bail!("target must not be empty");
+    }
+    validate_agent_name(&target)?;
+    Ok(target)
+}
+
+fn check_status_filter(status: Option<String>) -> anyhow::Result<Option<AgentStatus>> {
+    let Some(status) = status else {
+        return Ok(None);
+    };
+    match status.trim().to_ascii_lowercase().as_str() {
+        "online" => Ok(Some(AgentStatus::Online)),
+        "offline" => Ok(Some(AgentStatus::Offline)),
+        other => anyhow::bail!("status must be online or offline, got '{other}'"),
+    }
+}
+
+fn check_message_ids(ids: Option<Vec<String>>) -> anyhow::Result<Vec<String>> {
+    let ids = ids.ok_or_else(|| anyhow::anyhow!("message_ids is required"))?;
+    if ids.is_empty() {
+        anyhow::bail!("message_ids must not be empty");
+    }
+    if ids.len() > MAX_INBOX_ACK_IDS {
+        anyhow::bail!("too many message_ids (max {MAX_INBOX_ACK_IDS})");
+    }
+    let mut unique = std::collections::HashSet::with_capacity(ids.len());
+    for id in &ids {
+        if !is_canonical_message_id(id) {
+            anyhow::bail!("invalid message id '{id}'");
+        }
+        if !unique.insert(id) {
+            anyhow::bail!("message_ids must be unique");
+        }
+    }
+    Ok(ids)
+}
+
+fn history_limit(limit: Option<u64>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_HISTORY_LIMIT as u64)
+        .clamp(1, MAX_HISTORY_LIMIT as u64) as usize
+}
+
+fn list_limit(limit: Option<u64>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_LIST_LIMIT as u64)
+        .clamp(1, MAX_LIST_LIMIT as u64) as usize
+}
+
+fn is_canonical_message_id(id: &str) -> bool {
+    let Some(suffix) = id.strip_prefix("msg-") else {
+        return false;
+    };
+    suffix.len() == 32
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn envelope_to_tool_json(env: &Envelope) -> Value {
     let mut v = serde_json::to_value(env).expect("envelope serializes");
     v.as_object_mut()
@@ -333,12 +464,20 @@ impl MessagingToolset {
 #[serde(rename_all = "snake_case")]
 pub enum AgentOperation {
     List,
+    Children,
+    History,
     Send,
     Inbox,
+    Ack,
     Reply,
     Profile,
     Request,
     Spawn,
+    Status,
+    Join,
+    Wait,
+    Stop,
+    Collect,
 }
 
 /// Typed parameters for `AgentTool`. Entry ① (native `run`) and entry ②
@@ -349,6 +488,10 @@ pub struct AgentParams {
     /// Private owning session id, injected by the tools manager.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
+    /// Optional peer filter for list, or target session for lifecycle/history
+    /// operations. `_session_id` remains the authoritative caller identity.
+    #[serde(default)]
+    pub target: Option<String>,
     /// Recipient agent name (send / request), or omit for reply auto-target.
     #[serde(default)]
     pub to: Option<String>,
@@ -368,6 +511,15 @@ pub struct AgentParams {
     /// Id of the original message being replied to.
     #[serde(default)]
     pub in_reply_to: Option<String>,
+    /// Optional discovery filter for `list`.
+    #[serde(default)]
+    pub capability: Option<String>,
+    /// Optional parent filter for `list`.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Optional liveness filter for `list`: online | offline.
+    #[serde(default)]
+    pub status: Option<String>,
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
@@ -377,6 +529,19 @@ pub struct AgentParams {
     /// Seconds to wait for a reply on request (1..=300, default 60).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Maximum number of entries returned by `history`.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// Whether `inbox` should acknowledge the claimed messages immediately.
+    /// Defaults to false so a crash after tool execution cannot lose mail.
+    #[serde(default)]
+    pub ack: Option<bool>,
+    /// Stable message ids to acknowledge with `ack`.
+    #[serde(default)]
+    pub message_ids: Option<Vec<String>>,
+    /// Process-local receipt for a claim returned by `inbox`.
+    #[serde(default)]
+    pub claim_token: Option<String>,
     /// Delegated task brief for spawn.
     #[serde(default)]
     pub task: Option<String>,
@@ -386,6 +551,11 @@ pub struct AgentParams {
 pub struct AgentTool {
     inner: MessagingToolset,
     spawner: AgentSpawnerSlot,
+    controller: AgentControllerSlot,
+    /// Claims held across the `inbox` → process → `ack` calls. Dropping a
+    /// claim leaves the transport's durable processing record eligible for
+    /// redelivery, including after a process restart.
+    claims: Arc<Mutex<HashMap<String, (String, MessageClaim)>>>,
 }
 
 impl AgentTool {
@@ -393,7 +563,16 @@ impl AgentTool {
         Self {
             inner: MessagingToolset::new(service),
             spawner,
+            controller: new_agent_controller_slot(),
+            claims: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Install the optional desktop lifecycle callback while keeping the
+    /// constructor compatible with headless callers and existing tests.
+    pub fn with_controller(mut self, controller: AgentControllerSlot) -> Self {
+        self.controller = controller;
+        self
     }
 
     /// Entry ①: structured native interface. Entry ② deserializes JSON and
@@ -405,12 +584,32 @@ impl AgentTool {
     ) -> anyhow::Result<ToolResult> {
         match params.operation {
             AgentOperation::List => self.op_list(params, cancel).await,
+            AgentOperation::Children => self.op_children(params, cancel).await,
+            AgentOperation::History => self.op_history(params, cancel).await,
             AgentOperation::Send => self.op_send(params, cancel).await,
             AgentOperation::Inbox => self.op_inbox(params, cancel).await,
+            AgentOperation::Ack => self.op_ack(params, cancel).await,
             AgentOperation::Reply => self.op_reply(params, cancel).await,
             AgentOperation::Profile => self.op_profile(params, cancel).await,
             AgentOperation::Request => self.op_request(params, cancel).await,
             AgentOperation::Spawn => self.op_spawn(params, cancel).await,
+            AgentOperation::Status => {
+                self.op_control(params, cancel, AgentControlOperation::Status)
+                    .await
+            }
+            AgentOperation::Join => {
+                self.op_control(params, cancel, AgentControlOperation::Wait)
+                    .await
+            }
+            AgentOperation::Wait => {
+                self.op_control(params, cancel, AgentControlOperation::Wait)
+                    .await
+            }
+            AgentOperation::Stop => {
+                self.op_control(params, cancel, AgentControlOperation::Stop)
+                    .await
+            }
+            AgentOperation::Collect => self.op_collect(params, cancel).await,
         }
     }
 
@@ -420,12 +619,117 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id)?;
+        let role = check_discovery_token(params.role, "role", MAX_ROLE_BYTES)?;
+        let capability =
+            check_discovery_token(params.capability, "capability", MAX_CAPABILITY_BYTES)?;
+        let parent = params
+            .parent
+            .map(|parent| check_target(Some(parent), ""))
+            .transpose()?;
+        let status = check_status_filter(params.status)?;
         self.inner.register(&sid, &cancel).await?;
         let service = self.inner.service.clone();
-        let agents = blocking(service, |service| service.list_agents()).await?;
+        let mut agents = blocking(service, |service| service.list_agents()).await?;
+        agents.retain(|agent| {
+            role.as_deref()
+                .is_none_or(|role| agent.role.as_deref() == Some(role))
+                && capability.as_deref().is_none_or(|capability| {
+                    agent.capabilities.iter().any(|item| item == capability)
+                })
+                && parent
+                    .as_deref()
+                    .is_none_or(|parent| agent.parent.as_deref() == Some(parent))
+                && status.is_none_or(|status| agent.status == status)
+        });
+        let limit = list_limit(params.limit);
+        let truncated = agents.len() > limit;
+        agents.truncate(limit);
         Ok(ToolResult::ok(json!({
+            "count": agents.len(),
+            "limit": limit,
+            "truncated": truncated,
             "agents": agents,
         })))
+    }
+
+    async fn op_children(
+        &self,
+        params: AgentParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let sid = session_of(params.session_id)?;
+        self.inner.register(&sid, &cancel).await?;
+        let service = self.inner.service.clone();
+        let parent = sid.clone();
+        let mut children = blocking(service, move |service| service.list_children(&parent)).await?;
+        // The registry is backed by a map; make the model-facing result stable
+        // even though this operation intentionally does not expose arbitrary
+        // parent queries.
+        children.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(ToolResult::ok(json!({
+            "parent": sid,
+            "children": children,
+        })))
+    }
+
+    async fn op_history(
+        &self,
+        params: AgentParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let sid = session_of(params.session_id.clone())?;
+        let target = check_target(params.target, &sid)?;
+        self.ensure_related_target(&sid, &target, false).await?;
+        self.inner.register(&sid, &cancel).await?;
+        let limit = history_limit(params.limit);
+        let service = self.inner.service.clone();
+        let history_target = target.clone();
+        let messages = blocking(service, move |service| {
+            service.history(&history_target, limit)
+        })
+        .await?;
+        let messages: Vec<Value> = messages
+            .into_iter()
+            .map(|envelope| envelope_to_tool_json(&envelope))
+            .collect();
+        Ok(ToolResult::ok(json!({
+            "session_id": target,
+            "count": messages.len(),
+            "limit": limit,
+            "messages": messages,
+        })))
+    }
+
+    async fn ensure_related_target(
+        &self,
+        requester: &str,
+        target: &str,
+        require_child: bool,
+    ) -> anyhow::Result<()> {
+        if target == requester {
+            if require_child {
+                anyhow::bail!("target must be a child session, not the current session");
+            }
+            return Ok(());
+        }
+        let service = self.inner.service.clone();
+        let requester = requester.to_string();
+        let target = target.to_string();
+        let related = blocking(service, move |service| {
+            Ok::<_, anyhow::Error>(
+                service
+                    .list_descendants(&requester)?
+                    .iter()
+                    .any(|candidate| candidate == &target),
+            )
+        })
+        .await?;
+        if !related {
+            anyhow::bail!(
+                "agent lifecycle/history access is limited to the current session and its descendants"
+            );
+        }
+        Ok(())
     }
 
     async fn op_send(
@@ -504,24 +808,117 @@ impl AgentTool {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let sid = session_of(params.session_id)?;
+        let acknowledge = params.ack.unwrap_or(false);
         self.inner.register(&sid, &cancel).await?;
         let service = self.inner.service.clone();
-        let messages = blocking(service, move |service| {
-            let claim = service.claim(&sid)?;
+        let claim_recipient = sid.clone();
+        let (messages, claim) = blocking(service, move |service| {
+            let claim = service.claim(&claim_recipient)?;
             let messages = claim.envelopes().to_vec();
-            // Complete the same durable claim before exposing the messages to
-            // the tool caller. A failed claim completion remains retryable.
-            claim.complete()?;
-            Ok(messages)
+            if acknowledge {
+                // Opt-in immediate drain for callers that explicitly accept
+                // the one-shot semantics. The safe default leaves the claim
+                // durable until a later `agent.ack` call.
+                claim.complete()?;
+                return Ok((messages, None));
+            }
+            if claim.is_empty() {
+                Ok((messages, None))
+            } else {
+                Ok((messages, Some(claim)))
+            }
         })
         .await?;
         let messages: Vec<Value> = messages
             .into_iter()
             .map(|env| envelope_to_tool_json(&env))
             .collect();
+        let claim_token = if let Some(claim) = claim {
+            let token = haven_common::types::new_id("claim");
+            let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
+            // A forgotten token must not retain an unbounded number of file
+            // leases. Evicting the oldest-looking arbitrary entry is safe:
+            // dropping it makes those messages redeliverable.
+            if claims.len() >= 128
+                && let Some(evicted) = claims.keys().next().cloned()
+            {
+                claims.remove(&evicted);
+            }
+            claims.insert(token.clone(), (sid.clone(), claim));
+            Some(token)
+        } else {
+            None
+        };
         Ok(ToolResult::ok(json!({
             "count": messages.len(),
+            "acknowledged": acknowledge,
+            "ack_required": !acknowledge && !messages.is_empty(),
+            "claim_token": claim_token,
             "messages": messages,
+        })))
+    }
+
+    async fn op_ack(
+        &self,
+        params: AgentParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let sid = session_of(params.session_id)?;
+        self.inner.register(&sid, &cancel).await?;
+        if let Some(token) = params
+            .claim_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        {
+            let claim = {
+                let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
+                claims.remove(token)
+            }
+            .ok_or_else(|| anyhow::anyhow!("claim_token is unknown or already acknowledged"))?;
+            if claim.0 != sid {
+                let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
+                claims.insert(token.to_string(), claim);
+                anyhow::bail!("claim_token belongs to a different session");
+            }
+            let acknowledged = claim.1.envelopes().len();
+            let receipts_sent = blocking(self.inner.service.clone(), move |_service| {
+                Ok::<_, anyhow::Error>(claim.1.complete()?.len())
+            })
+            .await?;
+            return Ok(ToolResult::ok(json!({
+                "ok": true,
+                "acknowledged": acknowledged,
+                "requested": acknowledged,
+                "receipts_sent": receipts_sent,
+                "claim_token": token,
+            })));
+        }
+        let requested = check_message_ids(params.message_ids)?;
+        let service = self.inner.service.clone();
+        let requested_for_io = requested.clone();
+        let (acknowledged, receipts_sent) = blocking(service, move |service| {
+            let claim = service.claim(&sid)?;
+            let selected: Vec<Envelope> = claim
+                .envelopes()
+                .iter()
+                .filter(|envelope| requested_for_io.iter().any(|id| id == &envelope.id))
+                .cloned()
+                .collect();
+            let acknowledged = selected.len();
+            if selected.is_empty() {
+                claim.retry();
+                return Ok((0usize, 0usize));
+            }
+            let receipts = claim.complete_selected(&requested_for_io)?;
+            Ok((acknowledged, receipts.len()))
+        })
+        .await?;
+        Ok(ToolResult::ok(json!({
+            "ok": true,
+            "acknowledged": acknowledged,
+            "requested": requested.len(),
+            "receipts_sent": receipts_sent,
         })))
     }
 
@@ -604,7 +1001,29 @@ impl AgentTool {
         let title = check_title(params.title)?;
         let capabilities = check_capabilities(params.capabilities)?;
         if role.is_none() && title.is_none() && capabilities.is_empty() {
-            anyhow::bail!("provide at least one of role, title, or capabilities");
+            self.inner.register(&sid, &cancel).await?;
+            let service = self.inner.service.clone();
+            let profile_name = sid.clone();
+            let profile = blocking(service, move |service| {
+                Ok::<_, anyhow::Error>(
+                    service
+                        .list_agents()?
+                        .into_iter()
+                        .find(|agent| agent.name == profile_name),
+                )
+            })
+            .await?;
+            return Ok(ToolResult::ok(json!({
+                "ok": true,
+                "read_only": true,
+                "found": profile.is_some(),
+                "name": sid,
+                "status": profile.as_ref().map(|agent| agent.status),
+                "parent": profile.as_ref().and_then(|agent| agent.parent.clone()),
+                "role": profile.as_ref().and_then(|agent| agent.role.clone()),
+                "title": profile.as_ref().and_then(|agent| agent.title.clone()),
+                "capabilities": profile.map(|agent| agent.capabilities).unwrap_or_default(),
+            })));
         }
         let service = self.inner.service.clone();
         let sid_c = sid.clone();
@@ -623,11 +1042,71 @@ impl AgentTool {
         .await?;
         Ok(ToolResult::ok(json!({
             "ok": true,
+            "read_only": false,
             "name": sid,
             "role": role,
             "title": title,
             "capabilities": capabilities,
         })))
+    }
+
+    async fn op_control(
+        &self,
+        params: AgentParams,
+        cancel: CancellationToken,
+        operation: AgentControlOperation,
+    ) -> anyhow::Result<ToolResult> {
+        let sid = session_of(params.session_id.clone())?;
+        let requires_child = !matches!(operation, AgentControlOperation::Status);
+        if requires_child && params.target.is_none() {
+            anyhow::bail!("target is required for agent wait/stop");
+        }
+        let target = check_target(params.target, &sid)?;
+        self.ensure_related_target(&sid, &target, requires_child)
+            .await?;
+        self.inner.register(&sid, &cancel).await?;
+        let timeout_secs = check_timeout_secs(params.timeout_secs);
+        let controller = self.controller.read().await.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "agent {} requires the desktop agent runtime (controller not wired)",
+                match operation {
+                    AgentControlOperation::Status => "status",
+                    AgentControlOperation::Wait => "wait",
+                    AgentControlOperation::Stop => "stop",
+                }
+            )
+        })?;
+        let request = AgentControlRequest {
+            requester_session_id: sid,
+            target_session_id: target,
+            operation,
+            timeout_secs,
+        };
+        let result = tokio::select! {
+            result = controller(request) => result?,
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        };
+        Ok(ToolResult::ok(json!({
+            "ok": true,
+            "session_id": result.session_id,
+            "status": result.status,
+            "terminal": result.terminal,
+            "timed_out": result.timed_out,
+            "title": result.title,
+        })))
+    }
+
+    async fn op_collect(
+        &self,
+        mut params: AgentParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        params.operation = AgentOperation::History;
+        let mut result = self.op_history(params, cancel).await?;
+        if let Some(object) = result.output.as_object_mut() {
+            object.insert("operation".into(), Value::String("collect".into()));
+        }
+        Ok(result)
     }
 
     async fn op_request(
@@ -812,18 +1291,21 @@ impl Tool for AgentTool {
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input.get("operation").and_then(|v| v.as_str()) {
             Some("spawn") => RiskLevel::Medium,
+            Some("stop") => RiskLevel::High,
             _ => RiskLevel::Safe,
         }
     }
 
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
         match input.get("operation").and_then(Value::as_str) {
-            Some("list") | Some("profile") => OperationIdempotency::Idempotent,
-            // inbox archives/claims messages; all delivery, reply, request and
-            // spawn operations have externally visible side effects.
-            Some("inbox") | Some("send") | Some("reply") | Some("request") | Some("spawn") => {
-                OperationIdempotency::NonIdempotent
+            Some("list") | Some("children") | Some("history") | Some("ack") | Some("profile")
+            | Some("status") | Some("join") | Some("wait") | Some("collect") => {
+                OperationIdempotency::Idempotent
             }
+            // inbox claims mail and the delivery/reply/request/spawn/stop
+            // operations have externally visible side effects.
+            Some("inbox") | Some("send") | Some("reply") | Some("request") | Some("spawn")
+            | Some("stop") => OperationIdempotency::NonIdempotent,
             _ => OperationIdempotency::Unknown,
         }
     }
@@ -840,6 +1322,8 @@ impl Tool for AgentTool {
         match input["operation"].as_str() {
             // request waits up to MAX_REQUEST_TIMEOUT_SECS inside the tool.
             Some("request") => MAX_REQUEST_TIMEOUT_SECS + 15,
+            Some("wait") => MAX_REQUEST_TIMEOUT_SECS + 15,
+            Some("join") => MAX_REQUEST_TIMEOUT_SECS + 15,
             Some("spawn") => 60,
             _ => 30,
         }
@@ -850,6 +1334,7 @@ impl Tool for AgentTool {
             "type": "object",
             "properties": {
                 "operation": { "type": "string", "enum": OPERATIONS },
+                "target": { "type": "string", "minLength": 1 },
                 "to": { "type": "string", "minLength": 1 },
                 "text": { "type": "string", "minLength": 1 },
                 "subject": { "type": "string" },
@@ -857,16 +1342,29 @@ impl Tool for AgentTool {
                 "type": { "type": "string", "enum": ["message", "reply", "broadcast", "request"] },
                 "expires_at": { "type": "string", "minLength": 1 },
                 "in_reply_to": { "type": "string", "minLength": 1 },
+                "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES },
+                "parent": { "type": "string", "minLength": 1, "maxLength": 64 },
+                "status": { "type": "string", "enum": ["online", "offline"] },
                 "role": { "type": "string", "minLength": 1 },
                 "title": { "type": "string", "minLength": 1 },
                 "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } },
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS },
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT },
+                "ack": { "type": "boolean" },
+                "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" } },
+                "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$" },
                 "task": { "type": "string", "minLength": 1 }
             },
             "required": ["operation"],
             "oneOf": [
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" } }, "required": ["operation"] },
-                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "list" }, "role": { "type": "string", "minLength": 1, "maxLength": MAX_ROLE_BYTES }, "capability": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES }, "parent": { "type": "string", "minLength": 1, "maxLength": 64 }, "status": { "type": "string", "enum": ["online", "offline"] }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "children" } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "history" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "inbox" }, "ack": { "type": "boolean" } }, "required": ["operation"] },
+                { "oneOf": [
+                    { "type": "object", "properties": { "operation": { "const": "ack" }, "message_ids": { "type": "array", "minItems": 1, "maxItems": MAX_INBOX_ACK_IDS, "uniqueItems": true, "items": { "type": "string", "pattern": "^msg-[0-9a-f]{32}$" } } }, "required": ["operation", "message_ids"] },
+                    { "type": "object", "properties": { "operation": { "const": "ack" }, "claim_token": { "type": "string", "pattern": "^claim-[0-9a-f]{32}$" } }, "required": ["operation", "claim_token"] }
+                ] },
                 {
                     "type": "object",
                     "additionalProperties": false,
@@ -931,7 +1429,12 @@ impl Tool for AgentTool {
                         "capabilities": { "type": "array", "minItems": 1, "maxItems": MAX_CAPABILITIES, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": MAX_CAPABILITY_BYTES } }
                     },
                     "required": ["operation", "task"]
-                }
+                },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "status" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 } }, "required": ["operation"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "join" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS } }, "required": ["operation", "target"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "wait" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_REQUEST_TIMEOUT_SECS } }, "required": ["operation", "target"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "stop" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 } }, "required": ["operation", "target"] },
+                { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "collect" }, "target": { "type": "string", "minLength": 1, "maxLength": 64 }, "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT } }, "required": ["operation", "target"] }
             ],
         })
     }
@@ -979,6 +1482,12 @@ mod tests {
         v.as_object_mut()
             .unwrap()
             .insert("operation".into(), json!(operation));
+        // Legacy round-trip tests exercise the one-shot receipt behavior
+        // explicitly. New tests that omit `ack` use a raw operation object to
+        // verify the safer default.
+        if operation == "inbox" && v.get("ack").is_none() {
+            v.as_object_mut().unwrap().insert("ack".into(), json!(true));
+        }
         v
     }
 
@@ -989,8 +1498,14 @@ mod tests {
         // `_session_id` every op must fail with a session-context error.
         let inputs: Vec<Value> = vec![
             op("list", json!({})),
+            op("children", json!({})),
+            op("history", json!({})),
             op("send", json!({"to": "ses-b", "text": "hi"})),
             op("inbox", json!({})),
+            op(
+                "ack",
+                json!({"message_ids": ["msg-0123456789abcdef0123456789abcdef"]}),
+            ),
             op("reply", json!({"text": "hi"})),
             op("profile", json!({"role": "coder"})),
             op(
@@ -998,6 +1513,9 @@ mod tests {
                 json!({"to": "ses-b", "text": "hi", "timeout_secs": 1}),
             ),
             op("spawn", json!({"task": "do X"})),
+            op("status", json!({})),
+            op("wait", json!({"target": "ses-b", "timeout_secs": 1})),
+            op("stop", json!({"target": "ses-b"})),
         ];
         for input in inputs {
             let result = tool.execute(input.clone(), CancellationToken::new()).await;
@@ -1324,6 +1842,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agents_list_filters_and_children_are_scoped() {
+        let (_dir, bus, tool) = test_tools();
+        bus.register_with_profile("ses-b", &["docs".into()], Some("API"), Some("coder"), None)
+            .unwrap();
+        bus.register_with_profile(
+            "ses-child000000000000000000000001",
+            &["docs".into()],
+            Some("worker"),
+            Some("coder"),
+            Some("ses-a"),
+        )
+        .unwrap();
+        bus.register_with_profile(
+            "ses-child000000000000000000000002",
+            &["web".into()],
+            Some("worker"),
+            Some("researcher"),
+            Some("ses-a"),
+        )
+        .unwrap();
+
+        let result = tool
+            .execute(
+                with_sid(
+                    op("list", json!({"role": "coder", "capability": "docs"})),
+                    "ses-a",
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let names: Vec<&str> = result.output["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|agent| agent["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["ses-b", "ses-child000000000000000000000001"]);
+
+        let result = tool
+            .execute(
+                with_sid(op("list", json!({"limit": 1})), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["count"], 1);
+        assert_eq!(result.output["limit"], 1);
+        assert_eq!(result.output["truncated"], true);
+        assert_eq!(result.output["agents"].as_array().unwrap().len(), 1);
+
+        let result = tool
+            .execute(
+                with_sid(op("children", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let children = result.output["children"].as_array().unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0]["name"], "ses-child000000000000000000000001");
+        assert_eq!(children[1]["name"], "ses-child000000000000000000000002");
+    }
+
+    #[tokio::test]
+    async fn inbox_requires_explicit_ack_and_ack_is_selective() {
+        let (_dir, bus, tool) = test_tools();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let first = Envelope::new("ses-b", "ses-a", "first");
+        let first_id = first.id.clone();
+        bus.deliver("ses-a", &first).unwrap();
+
+        let result = tool
+            .execute(
+                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["acknowledged"], false);
+        assert_eq!(result.output["ack_required"], true);
+        assert_eq!(result.output["messages"][0]["id"], first_id);
+
+        // A new message arriving after the claim must not be consumed by an
+        // acknowledgement for the older id.
+        let second = Envelope::new("ses-b", "ses-a", "second");
+        let second_id = second.id.clone();
+        bus.deliver("ses-a", &second).unwrap();
+        let ack = tool
+            .execute(
+                with_sid(op("ack", json!({"message_ids": [first_id]})), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ack.output["acknowledged"], 1);
+
+        let remaining = tool
+            .execute(
+                with_sid(json!({"operation": "inbox"}), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(remaining.output["count"], 1);
+        assert_eq!(remaining.output["messages"][0]["id"], second_id);
+        let _ = tool
+            .execute(
+                with_sid(op("ack", json!({"message_ids": [second_id]})), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let history = tool
+            .execute(
+                with_sid(op("history", json!({"limit": 1})), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(history.output["count"], 1);
+        assert_eq!(history.output["messages"][0]["text"], "second");
+    }
+
+    #[tokio::test]
     async fn send_validates_field_limits() {
         let (_dir, _bus, tool) = test_tools();
         // Empty text.
@@ -1467,7 +2111,10 @@ mod tests {
     #[test]
     fn risk_levels_are_safe_except_spawn() {
         let (_dir, _bus, tool) = test_tools();
-        for op_name in ["list", "send", "inbox", "reply", "profile", "request"] {
+        for op_name in [
+            "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request",
+            "status", "wait",
+        ] {
             assert_eq!(
                 tool.risk_level(&json!({"operation": op_name})),
                 RiskLevel::Safe,
@@ -1477,6 +2124,10 @@ mod tests {
         assert_eq!(
             tool.risk_level(&json!({"operation": "spawn"})),
             RiskLevel::Medium
+        );
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "stop"})),
+            RiskLevel::High
         );
         // Missing operation defaults to Safe (schema will reject later).
         assert_eq!(tool.risk_level(&json!({})), RiskLevel::Safe);
@@ -1517,6 +2168,82 @@ mod tests {
         assert_eq!(agent["role"], "researcher");
         assert_eq!(agent["title"], "调研登录");
         assert_eq!(agent["capabilities"], json!(["web", "docs"]));
+
+        let read = tool
+            .execute(
+                with_sid(op("profile", json!({})), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.output["read_only"], true);
+        assert_eq!(read.output["role"], "researcher");
+        assert_eq!(read.output["capabilities"], json!(["web", "docs"]));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_control_is_child_scoped_and_uses_controller() {
+        let (_dir, bus, _unused) = test_tools();
+        bus.register_with_profile(
+            "ses-child000000000000000000000001",
+            &[],
+            Some("child"),
+            None,
+            Some("ses-a"),
+        )
+        .unwrap();
+        bus.register("ses-other", &[]).unwrap();
+        let controller = new_agent_controller_slot();
+        *controller.write().await = Some(Arc::new(|request: AgentControlRequest| {
+            Box::pin(async move {
+                Ok(AgentControlResult {
+                    session_id: request.target_session_id,
+                    status: match request.operation {
+                        AgentControlOperation::Status => "running".into(),
+                        AgentControlOperation::Wait | AgentControlOperation::Stop => {
+                            "completed".into()
+                        }
+                    },
+                    terminal: matches!(
+                        request.operation,
+                        AgentControlOperation::Wait | AgentControlOperation::Stop
+                    ),
+                    timed_out: false,
+                    title: Some("child".into()),
+                })
+            })
+        }));
+        let tool = AgentTool::new(
+            Arc::new(MessagingService::new(bus.clone())),
+            new_agent_spawner_slot(),
+        )
+        .with_controller(controller);
+
+        let status = tool
+            .execute(
+                with_sid(
+                    op(
+                        "status",
+                        json!({"target": "ses-child000000000000000000000001"}),
+                    ),
+                    "ses-a",
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.output["status"], "running");
+        assert_eq!(status.output["terminal"], false);
+
+        let err = tool
+            .execute(
+                with_sid(op("status", json!({"target": "ses-other"})), "ses-a"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("descendants"), "{err}");
     }
 
     #[tokio::test]

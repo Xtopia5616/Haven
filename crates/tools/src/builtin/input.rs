@@ -71,6 +71,12 @@ pub struct InputParams {
     /// Optional window title substring for UI Automation element operations.
     #[serde(default)]
     pub title: Option<String>,
+    /// Stable HWND-derived identity returned by `window.list`/`foreground`.
+    #[serde(default)]
+    pub window_id: Option<String>,
+    /// Stable UI Automation element token returned by `window.ui_tree`.
+    #[serde(default)]
+    pub element_token: Option<String>,
     /// UI Automation control name for element operations.
     #[serde(default)]
     pub name: Option<String>,
@@ -216,7 +222,16 @@ fn element_query(params: &InputParams) -> anyhow::Result<crate::builtin::window:
         .name
         .as_deref()
         .filter(|name| !name.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("name is required for element input operations"))?;
+        .map(ToOwned::to_owned);
+    let element_token = params
+        .element_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned);
+    if name.is_none() && element_token.is_none() {
+        anyhow::bail!("name or element_token is required for element input operations");
+    }
     let control_type = params
         .control_type
         .as_deref()
@@ -229,15 +244,17 @@ fn element_query(params: &InputParams) -> anyhow::Result<crate::builtin::window:
         anyhow::bail!("control_type must be one of the supported UI Automation control type names");
     }
     Ok(crate::builtin::window::UiElementQuery {
+        window_id: params.window_id.clone(),
         title: params
             .title
             .as_deref()
             .map(str::trim)
             .filter(|title| !title.is_empty())
             .map(ToOwned::to_owned),
-        name: name.to_owned(),
+        name: name.unwrap_or_default(),
         control_type,
         index: params.index,
+        element_token,
     })
 }
 
@@ -271,6 +288,8 @@ impl Tool for InputTool {
                 "y": { "type": "integer" },
                 "button": { "type": "string", "enum": ["left", "right", "middle"] },
                 "title": { "type": "string", "minLength": 1 },
+                "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
+                "element_token": { "type": "string", "minLength": 1 },
                 "name": { "type": "string", "minLength": 1 },
                 "control_type": { "type": "string", "enum": crate::builtin::window::UIA_CONTROL_TYPE_NAMES },
                 "index": { "type": "integer", "minimum": 0 },
@@ -286,11 +305,13 @@ impl Tool for InputTool {
                         "operation": { "const": "type_element" },
                         "text": { "type": "string", "minLength": 1, "maxLength": 20000 },
                         "title": { "type": "string", "minLength": 1 },
+                        "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
+                        "element_token": { "type": "string", "minLength": 1 },
                         "name": { "type": "string", "minLength": 1 },
                         "control_type": { "type": "string", "enum": crate::builtin::window::UIA_CONTROL_TYPE_NAMES },
                         "index": { "type": "integer", "minimum": 0 }
                     },
-                    "required": ["operation", "text", "name"]
+                    "required": ["operation", "text"]
                 },
                 { "type": "object", "additionalProperties": false, "properties": { "operation": { "const": "key" }, "key": { "type": "string", "minLength": 1, "maxLength": 128 } }, "required": ["operation", "key"] },
                 {
@@ -310,12 +331,14 @@ impl Tool for InputTool {
                     "properties": {
                         "operation": { "const": "click_element" },
                         "title": { "type": "string", "minLength": 1 },
+                        "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
+                        "element_token": { "type": "string", "minLength": 1 },
                         "name": { "type": "string", "minLength": 1 },
                         "control_type": { "type": "string", "enum": crate::builtin::window::UIA_CONTROL_TYPE_NAMES },
                         "index": { "type": "integer", "minimum": 0 },
                         "button": { "type": "string", "enum": ["left", "right", "middle"] }
                     },
-                    "required": ["operation", "name"]
+                    "required": ["operation"]
                 },
                 {
                     "type": "object",
@@ -438,6 +461,8 @@ mod tests {
                     y: None,
                     button: None,
                     title: None,
+                    window_id: None,
+                    element_token: None,
                     name: None,
                     control_type: None,
                     index: None,
@@ -470,9 +495,7 @@ mod tests {
         );
         assert!(schema["oneOf"].as_array().unwrap().iter().any(|branch| {
             branch["properties"]["operation"]["const"] == "click_element"
-                && branch["required"]
-                    .as_array()
-                    .is_some_and(|required| required.iter().any(|v| v == "name"))
+                && branch["properties"]["element_token"]["type"] == "string"
         }));
     }
 
@@ -485,7 +508,10 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("name is required"));
+        assert!(
+            err.to_string()
+                .contains("name or element_token is required")
+        );
 
         let err = InputTool
             .execute(

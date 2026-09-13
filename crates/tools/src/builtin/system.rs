@@ -3,7 +3,7 @@ use haven_common::types::RiskLevel;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::env::{EnvOperation, EnvParams, EnvTool};
+use super::env::{EnvOperation, EnvParams, EnvScope, EnvTool};
 use super::power::{PowerOperation, PowerParams, PowerTool};
 use super::registry::{RegistryOperation, RegistryParams, RegistryTool};
 use crate::{Tool, ToolConcurrency, ToolResult};
@@ -48,6 +48,9 @@ pub struct SystemParams {
     /// Registry value type.
     #[serde(default, rename = "type")]
     pub value_type: Option<String>,
+    /// Environment persistence scope when `scope=env`; defaults to process.
+    #[serde(default)]
+    pub env_scope: Option<EnvScope>,
 }
 
 impl SystemTool {
@@ -85,6 +88,7 @@ impl SystemTool {
                         operation: Some(op),
                         name: params.name,
                         value: params.value,
+                        scope: params.env_scope,
                     },
                     cancel,
                 )
@@ -166,7 +170,8 @@ fn parse_registry_op(op: Option<&str>) -> anyhow::Result<RegistryOperation> {
     match op.unwrap_or("list") {
         "get" => Ok(RegistryOperation::Get),
         "set" => Ok(RegistryOperation::Set),
-        "delete" => Ok(RegistryOperation::Delete),
+        "delete_value" => Ok(RegistryOperation::DeleteValue),
+        "delete_key" => Ok(RegistryOperation::DeleteKey),
         "list" => Ok(RegistryOperation::List),
         other => anyhow::bail!("unknown registry operation '{}'", other),
     }
@@ -205,7 +210,8 @@ impl Tool for SystemTool {
                 _ => RiskLevel::Low,
             },
             "registry" => match op {
-                "set" | "delete" => RiskLevel::High,
+                "set" | "delete_value" => RiskLevel::High,
+                "delete_key" => RiskLevel::Critical,
                 _ => RiskLevel::Medium,
             },
             "power" => match op {
@@ -254,6 +260,7 @@ impl Tool for SystemTool {
                 "value": { "type": "string" },
                 "path": { "type": "string" },
                 "type": { "type": "string", "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"] }
+                ,"env_scope": { "type": "string", "enum": ["process", "user", "machine"] }
             },
             "oneOf": [
                 {
@@ -285,22 +292,22 @@ impl Tool for SystemTool {
                     "oneOf": [
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "list" }, "name": { "type": "string", "minLength": 1 } },
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "list" }, "name": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
                             "required": ["scope"]
                         },
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "get" }, "name": { "type": "string", "minLength": 1 } },
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "get" }, "name": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
                             "required": ["scope", "operation", "name"]
                         },
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "set" }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } },
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "set" }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
                             "required": ["scope", "operation", "name", "value"]
                         },
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "unset" }, "name": { "type": "string", "minLength": 1 } },
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "unset" }, "name": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
                             "required": ["scope", "operation", "name"]
                         }
                     ]
@@ -325,7 +332,12 @@ impl Tool for SystemTool {
                         },
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "delete" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 } },
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "delete_value" }, "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 } },
+                            "required": ["scope", "operation", "path", "name"]
+                        },
+                        {
+                            "additionalProperties": false,
+                            "properties": { "scope": { "const": "registry" }, "operation": { "const": "delete_key" }, "path": { "type": "string", "minLength": 1 } },
                             "required": ["scope", "operation", "path"]
                         }
                     ]
@@ -851,6 +863,28 @@ mod tests {
         assert!(cats.iter().any(|v| v == "locale"));
     }
 
+    #[test]
+    fn registry_delete_requires_a_value_name() {
+        let tool = SystemTool::default();
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "scope": "registry",
+                "operation": "delete_value",
+                "path": "HKCU\\Software\\Haven"
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "scope": "registry",
+                "operation": "delete_value",
+                "path": "HKCU\\Software\\Haven",
+                "name": "LastSession"
+            }))
+            .is_ok()
+        );
+    }
+
     #[tokio::test]
     async fn test_system_execute_os() {
         let result = SystemTool::default()
@@ -959,6 +993,7 @@ mod tests {
                     value: None,
                     path: None,
                     value_type: None,
+                    env_scope: None,
                 },
                 CancellationToken::new(),
             )

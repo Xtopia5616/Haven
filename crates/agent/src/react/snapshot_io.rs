@@ -76,6 +76,8 @@ struct SnapshotView<'a> {
     /// Explicit confirm-awaiting batch (Phase 5 / E3); see `ReActSnapshot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     awaiting_confirm: Option<&'a crate::types::ConfirmPending>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    interactions: Vec<crate::interaction::InteractionRequest>,
     /// Per-run step budget for observability (R4); see `ReActSnapshot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_budget: Option<&'a crate::types::RunBudget>,
@@ -517,6 +519,17 @@ impl ReActEngine {
             self.executor.get_awaiting_confirm(session_id).await
         };
         let run_budget = self.current_run_budget(session_id);
+        let mut interactions = Vec::new();
+        if let Some(pending) = awaiting.as_ref() {
+            interactions.push(crate::interaction::InteractionRequest::from_ask(
+                session_id, pending,
+            ));
+        }
+        if let Some(pending) = awaiting_confirm.as_ref() {
+            interactions.push(crate::interaction::InteractionRequest::from_confirm(
+                session_id, pending,
+            ));
+        }
         let last_ingress_seq = match self
             .db
             .clone()
@@ -544,6 +557,7 @@ impl ReActEngine {
             error_partial_message_ids,
             awaiting_answer: awaiting.as_ref(),
             awaiting_confirm: awaiting_confirm.as_ref(),
+            interactions,
             run_budget: run_budget.as_ref(),
         };
         // Serialize into the session's own buffer inside a scoped block so the

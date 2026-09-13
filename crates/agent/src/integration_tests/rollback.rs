@@ -24,6 +24,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -126,6 +127,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -224,6 +226,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -312,6 +315,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -501,6 +505,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -628,6 +633,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };

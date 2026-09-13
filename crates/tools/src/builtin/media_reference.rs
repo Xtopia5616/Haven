@@ -183,6 +183,7 @@ pub(crate) fn operation_name(operation: MediaOperation) -> &'static str {
         MediaOperation::Ocr => "ocr",
         MediaOperation::Transcribe => "transcribe",
         MediaOperation::Extract => "extract",
+        MediaOperation::Render => "render",
         MediaOperation::Generate => "generate",
         MediaOperation::Record => "record",
         MediaOperation::Play => "play",

@@ -91,6 +91,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
             step_ids: vec!["step-ask".into()],
         }),
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -1312,6 +1313,7 @@ async fn continue_session_resumes_errored_session() {
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -1407,6 +1409,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         error_partial_message_ids: None,
         awaiting_answer: None,
         awaiting_confirm: None,
+        interactions: Vec::new(),
         run_budget: None,
     };
     agent

@@ -118,7 +118,10 @@ async fn test_action_result_persisted_to_db() {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let row = loop {
         let rows = db.list_actions(Some("background")).unwrap();
-        if let Some(row) = rows.iter().find(|r| r.id == id) {
+        if let Some(row) = rows
+            .iter()
+            .find(|r| r.id == id && r.status.as_deref() == Some("completed"))
+        {
             break row.clone();
         }
         assert!(

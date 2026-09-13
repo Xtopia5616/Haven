@@ -34,6 +34,7 @@ pub trait MessageTransport: std::fmt::Debug + Send + Sync {
         parent: Option<&str>,
     ) -> anyhow::Result<()>;
     fn unregister(&self, name: &str) -> anyhow::Result<()>;
+    fn mark_offline(&self, name: &str) -> anyhow::Result<()>;
     fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>>;
     fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>>;
     fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>>;
@@ -84,6 +85,10 @@ impl MessageTransport for InboxBus {
 
     fn unregister(&self, name: &str) -> anyhow::Result<()> {
         InboxBus::unregister(self, name)
+    }
+
+    fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
+        InboxBus::mark_offline(self, name)
     }
 
     fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
@@ -198,6 +203,13 @@ impl MessagingService {
         self.transport.unregister(name)
     }
 
+    /// Retain a peer entry and make its liveness explicitly stale. Keeping
+    /// the parent link after a child finishes lets a parent perform a final
+    /// lifecycle lookup without racing asynchronous registry cleanup.
+    pub fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
+        self.transport.mark_offline(name)
+    }
+
     pub fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
         self.transport.list_agents()
     }
@@ -306,6 +318,32 @@ impl MessageClaim {
             .collect();
         transport.ack(&recipient, &ids)?;
         Ok(transport.send_receipts(&recipient, &envelopes))
+    }
+
+    /// Acknowledge only the selected ids from this claim. Unselected messages
+    /// remain in the durable processing file and are eligible for redelivery.
+    /// This is the primitive used by the explicit `agent.ack` operation so a
+    /// newly-arrived message cannot be acknowledged accidentally with an old
+    /// batch.
+    pub fn complete_selected(self, selected_ids: &[String]) -> anyhow::Result<Vec<SendOutcome>> {
+        let MessageClaim {
+            transport,
+            recipient,
+            envelopes,
+        } = self;
+        let selected: Vec<Envelope> = envelopes
+            .into_iter()
+            .filter(|envelope| selected_ids.iter().any(|id| id == &envelope.id))
+            .collect();
+        let ids: Vec<String> = selected
+            .iter()
+            .map(|envelope| envelope.id.clone())
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        transport.ack(&recipient, &ids)?;
+        Ok(transport.send_receipts(&recipient, &selected))
     }
 
     /// Explicitly abandon the claim. This is equivalent to dropping it and

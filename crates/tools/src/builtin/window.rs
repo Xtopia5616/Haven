@@ -64,14 +64,18 @@ pub(crate) const UIA_CONTROL_TYPE_NAMES: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub(crate) struct UiElementQuery {
+    pub window_id: Option<String>,
     pub title: Option<String>,
     pub name: String,
     pub control_type: Option<String>,
     pub index: Option<usize>,
+    pub element_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct UiElementTarget {
+    pub window_id: String,
+    pub element_token: String,
     pub name: String,
     pub control_type: String,
     pub index: usize,
@@ -89,6 +93,25 @@ pub(crate) fn resolve_ui_element(query: &UiElementQuery) -> anyhow::Result<UiEle
 
 pub(crate) fn focus_ui_element(query: &UiElementQuery) -> anyhow::Result<UiElementTarget> {
     imp::focus_ui_element(query)
+}
+
+pub(crate) fn invoke_ui_element(query: &UiElementQuery) -> anyhow::Result<UiElementTarget> {
+    imp::invoke_ui_element(query)
+}
+
+pub(crate) fn set_ui_element_value(
+    query: &UiElementQuery,
+    value: &str,
+) -> anyhow::Result<UiElementTarget> {
+    imp::set_ui_element_value(query, value)
+}
+
+pub(crate) fn toggle_ui_element(query: &UiElementQuery) -> anyhow::Result<UiElementTarget> {
+    imp::toggle_ui_element(query)
+}
+
+pub(crate) fn select_ui_element(query: &UiElementQuery) -> anyhow::Result<UiElementTarget> {
+    imp::select_ui_element(query)
 }
 
 struct ManagedCapture {
@@ -115,6 +138,11 @@ pub enum WindowOperation {
     Screenshot,
     Ocr,
     UiTree,
+    Observe,
+    Invoke,
+    SetValue,
+    Toggle,
+    Select,
     Wait,
 }
 
@@ -137,6 +165,9 @@ pub struct WindowParams {
     /// Window title to match (substring, used for focus/close/ui_tree).
     #[serde(default)]
     pub title: Option<String>,
+    /// Stable HWND-derived identity returned by `window.list`/`foreground`.
+    #[serde(default)]
+    pub window_id: Option<String>,
     /// Filter windows by PID.
     #[serde(default)]
     pub pid: Option<i64>,
@@ -149,6 +180,23 @@ pub struct WindowParams {
     /// Wait timeout in seconds (default 10, max 120).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// UI Automation element token returned by `ui_tree`/`observe`.
+    #[serde(default)]
+    pub element_token: Option<String>,
+    /// UI Automation element name (fallback when no token is available).
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub control_type: Option<String>,
+    #[serde(default)]
+    pub index: Option<usize>,
+    /// Value for `set_value`; desired boolean for `toggle` is optional and
+    /// currently means toggle once when omitted.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Include OCR in `observe` when the dedicated OCR capability exists.
+    #[serde(default)]
+    pub ocr: Option<bool>,
     /// Private runtime context injected by `ToolsManager`; never part of the
     /// LLM-facing schema.
     #[serde(rename = "_session_id", default, skip_serializing)]
@@ -223,19 +271,29 @@ impl WindowTool {
             }
             WindowOperation::Focus => {
                 let target = title.as_deref().filter(|t| !t.trim().is_empty());
-                if target.is_none() && filter_pid.is_none() {
+                if params.window_id.is_none() && target.is_none() && filter_pid.is_none() {
                     anyhow::bail!("title or pid is required for focus");
                 }
-                imp::focus_window(target, filter_pid)?;
-                Ok(window_target_result("focus", target, filter_pid))
+                imp::focus_window(params.window_id.as_deref(), target, filter_pid)?;
+                Ok(window_target_result(
+                    "focus",
+                    params.window_id.as_deref(),
+                    target,
+                    filter_pid,
+                ))
             }
             WindowOperation::Close => {
                 let target = title.as_deref().filter(|t| !t.trim().is_empty());
-                if target.is_none() && filter_pid.is_none() {
+                if params.window_id.is_none() && target.is_none() && filter_pid.is_none() {
                     anyhow::bail!("title or pid is required for close");
                 }
-                imp::close_window(target, filter_pid)?;
-                Ok(window_target_result("close", target, filter_pid))
+                imp::close_window(params.window_id.as_deref(), target, filter_pid)?;
+                Ok(window_target_result(
+                    "close",
+                    params.window_id.as_deref(),
+                    target,
+                    filter_pid,
+                ))
             }
             WindowOperation::Screenshot => {
                 let capture = self
@@ -259,8 +317,9 @@ impl WindowTool {
             WindowOperation::Ocr => self.ocr(params.session_id.as_deref(), cancel).await,
             WindowOperation::UiTree => {
                 let title_owned = title;
+                let window_id = params.window_id.clone();
                 let elements = tokio::task::spawn_blocking(move || {
-                    imp::enumerate_ui_tree(title_owned.as_deref())
+                    imp::enumerate_ui_tree(window_id.as_deref(), title_owned.as_deref())
                 })
                 .await??;
                 let count = elements.len();
@@ -275,8 +334,108 @@ impl WindowTool {
                     truncated,
                 ))
             }
+            WindowOperation::Observe => self.observe(params, cancel).await,
+            WindowOperation::Invoke
+            | WindowOperation::SetValue
+            | WindowOperation::Toggle
+            | WindowOperation::Select => {
+                let operation = params.operation.expect("matched semantic operation");
+                let query = window_element_query(&params)?;
+                let value = params.value.clone();
+                let target = tokio::task::spawn_blocking(move || match operation {
+                    WindowOperation::Invoke => invoke_ui_element(&query),
+                    WindowOperation::SetValue => set_ui_element_value(
+                        &query,
+                        value
+                            .as_deref()
+                            .ok_or_else(|| anyhow::anyhow!("value is required for set_value"))?,
+                    ),
+                    WindowOperation::Toggle => toggle_ui_element(&query),
+                    WindowOperation::Select => select_ui_element(&query),
+                    _ => unreachable!(),
+                })
+                .await??;
+                Ok(ToolResult::ok(serde_json::json!({
+                    "operation": operation,
+                    "window_id": target.window_id,
+                    "element_token": target.element_token,
+                    "name": target.name,
+                    "control_type": target.control_type,
+                    "index": target.index,
+                    "changed": true,
+                })))
+            }
             WindowOperation::Wait => self.wait(params, cancel).await,
         }
+    }
+
+    async fn observe(
+        &self,
+        params: WindowParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let window_id = params.window_id.clone();
+        let title = params.title.clone();
+        let elements = tokio::task::spawn_blocking(move || {
+            imp::enumerate_ui_tree(window_id.as_deref(), title.as_deref())
+        })
+        .await??;
+        let count = elements.len();
+        let resolved_window_id = elements
+            .first()
+            .and_then(|element| element.get("window_id"))
+            .cloned()
+            .or_else(|| params.window_id.clone().map(Value::String));
+        let resolved_title = elements
+            .first()
+            .and_then(|element| element.get("window_title"))
+            .cloned()
+            .or_else(|| params.title.clone().map(Value::String));
+        let capture = self
+            .capture_screen(params.session_id.as_deref(), cancel.clone())
+            .await?;
+        let media_tool = self
+            .media_tool
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?;
+        let mut output = serde_json::json!({
+            "operation": "observe",
+            "window": {
+                "window_id": resolved_window_id,
+                "title": resolved_title,
+                "pid": params.pid,
+            },
+            "elements": elements,
+            "count": count,
+        });
+        output["screenshot"] = media_tool.media_result_output_named(
+            "screenshot",
+            Some(&capture.asset),
+            Some(haven_common::media::MediaRepresentationKind::ManagedFileRef),
+            None,
+        );
+        if params.ocr.unwrap_or(false) {
+            let ocr = media_tool
+                .run(
+                    MediaParams {
+                        operation: MediaOperation::Ocr,
+                        asset_id: Some(capture.asset.asset_id.clone()),
+                        focus: None,
+                        prompt: None,
+                        page_index: None,
+                        file_path: None,
+                        text: None,
+                        duration: None,
+                        volume: None,
+                        muted: None,
+                        session_id: params.session_id,
+                    },
+                    cancel,
+                )
+                .await?;
+            output["ocr"] = ocr.output;
+        }
+        Ok(ToolResult::ok(output))
     }
 
     async fn capture_screen(
@@ -451,8 +610,54 @@ impl WindowTool {
     }
 }
 
-fn window_target_result(operation: &str, title: Option<&str>, pid: Option<u32>) -> ToolResult {
+fn window_element_query(params: &WindowParams) -> anyhow::Result<UiElementQuery> {
+    let element_token = params
+        .element_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let name = params
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_owned();
+    if element_token.is_none() && name.is_empty() {
+        anyhow::bail!("element_token or name is required for UI Automation operations");
+    }
+    let control_type = params
+        .control_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    if let Some(control_type) = control_type.as_deref()
+        && !is_known_ui_control_type(control_type)
+    {
+        anyhow::bail!("control_type must be one of the supported UI Automation control type names");
+    }
+    Ok(UiElementQuery {
+        window_id: params.window_id.clone(),
+        title: params.title.clone(),
+        name,
+        control_type,
+        index: params.index,
+        element_token,
+    })
+}
+
+fn window_target_result(
+    operation: &str,
+    window_id: Option<&str>,
+    title: Option<&str>,
+    pid: Option<u32>,
+) -> ToolResult {
     let mut output = serde_json::json!({"operation": operation});
+    if let Some(window_id) = window_id {
+        output["window_id"] = serde_json::json!(window_id);
+    }
     if let Some(title) = title {
         output[if operation == "focus" {
             "focused"
@@ -487,8 +692,12 @@ impl Tool for WindowTool {
             Some("close") => RiskLevel::High,
             // OCR uploads a full-screen capture to the vision model.
             Some("ocr") => RiskLevel::High,
+            Some("observe") if input["ocr"].as_bool() == Some(true) => RiskLevel::High,
             Some("focus") => RiskLevel::Medium,
-            Some("ui_tree") | Some("wait") => RiskLevel::Low,
+            Some("ui_tree") | Some("observe") | Some("wait") => RiskLevel::Low,
+            Some("invoke") | Some("set_value") | Some("toggle") | Some("select") => {
+                RiskLevel::Medium
+            }
             _ => RiskLevel::Low,
         }
     }
@@ -511,9 +720,8 @@ impl Tool for WindowTool {
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         match input["operation"].as_str() {
-            Some("list") | Some("foreground") | Some("ui_tree") | Some("wait") => {
-                ToolConcurrency::SharedResource("desktop".into())
-            }
+            Some("list") | Some("foreground") | Some("ui_tree") | Some("observe")
+            | Some("wait") => ToolConcurrency::SharedResource("desktop".into()),
             _ => ToolConcurrency::Resource("desktop".into()),
         }
     }
@@ -522,15 +730,63 @@ impl Tool for WindowTool {
         let mut schema = serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close", "screenshot", "ocr", "ui_tree", "wait"] },
+                "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close", "screenshot", "ocr", "ui_tree", "observe", "invoke", "set_value", "toggle", "select", "wait"] },
                 "title": { "type": "string" },
+                "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
                 "pid": { "type": "integer", "minimum": 1 },
                 "condition": { "type": "string", "enum": ["title_contains", "foreground_contains", "ui_text"] },
                 "text": { "type": "string", "minLength": 1 },
-                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120 }
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 120 },
+                "element_token": { "type": "string", "minLength": 1 },
+                "name": { "type": "string", "minLength": 1 },
+                "control_type": { "type": "string", "enum": UIA_CONTROL_TYPE_NAMES },
+                "index": { "type": "integer", "minimum": 0 },
+                "value": { "type": "string", "maxLength": 20000 },
+                "ocr": { "type": "boolean" }
             },
             "required": ["operation"],
             "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "observe" },
+                        "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
+                        "title": { "type": "string", "minLength": 1 },
+                        "pid": { "type": "integer", "minimum": 1 },
+                        "ocr": { "type": "boolean" }
+                    },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "enum": ["invoke", "toggle", "select"] },
+                        "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
+                        "title": { "type": "string", "minLength": 1 },
+                        "element_token": { "type": "string", "minLength": 1 },
+                        "name": { "type": "string", "minLength": 1 },
+                        "control_type": { "type": "string", "enum": UIA_CONTROL_TYPE_NAMES },
+                        "index": { "type": "integer", "minimum": 0 }
+                    },
+                    "required": ["operation"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operation": { "const": "set_value" },
+                        "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" },
+                        "title": { "type": "string", "minLength": 1 },
+                        "element_token": { "type": "string", "minLength": 1 },
+                        "name": { "type": "string", "minLength": 1 },
+                        "control_type": { "type": "string", "enum": UIA_CONTROL_TYPE_NAMES },
+                        "index": { "type": "integer", "minimum": 0 },
+                        "value": { "type": "string", "maxLength": 20000 }
+                    },
+                    "required": ["operation", "value"]
+                },
                 {
                     "type": "object",
                     "additionalProperties": false,
@@ -549,7 +805,7 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "focus" }, "title": { "type": "string", "minLength": 1 } },
+                    "properties": { "operation": { "const": "focus" }, "title": { "type": "string", "minLength": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
                     "required": ["operation", "title"]
                 },
                 {
@@ -561,13 +817,19 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "focus" }, "pid": { "type": "integer", "minimum": 1 } },
+                    "properties": { "operation": { "const": "focus" }, "pid": { "type": "integer", "minimum": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
                     "required": ["operation", "pid"]
                 },
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "close" }, "title": { "type": "string", "minLength": 1 } },
+                    "properties": { "operation": { "const": "focus" }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
+                    "required": ["operation", "window_id"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "close" }, "title": { "type": "string", "minLength": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
                     "required": ["operation", "title"]
                 },
                 {
@@ -579,8 +841,14 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "close" }, "pid": { "type": "integer", "minimum": 1 } },
+                    "properties": { "operation": { "const": "close" }, "pid": { "type": "integer", "minimum": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
                     "required": ["operation", "pid"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "operation": { "const": "close" }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
+                    "required": ["operation", "window_id"]
                 },
                 {
                     "type": "object",
@@ -597,7 +865,7 @@ impl Tool for WindowTool {
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "ui_tree" }, "title": { "type": "string", "minLength": 1 } },
+                    "properties": { "operation": { "const": "ui_tree" }, "title": { "type": "string", "minLength": 1 }, "window_id": { "type": "string", "pattern": "^hwnd:[0-9a-f]+$" } },
                     "required": ["operation"]
                 },
                 {
@@ -651,6 +919,22 @@ mod imp {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     use windows_sys::core::BOOL;
 
+    fn window_id(hwnd: HWND) -> String {
+        format!("hwnd:{:x}", hwnd as usize)
+    }
+
+    fn hwnd_from_window_id(id: &str) -> anyhow::Result<HWND> {
+        let value = id
+            .strip_prefix("hwnd:")
+            .ok_or_else(|| anyhow::anyhow!("window_id must have the form hwnd:<hex>"))?;
+        let raw = usize::from_str_radix(value, 16)
+            .map_err(|_| anyhow::anyhow!("window_id contains an invalid handle"))?;
+        if raw == 0 {
+            anyhow::bail!("window_id must not be zero");
+        }
+        Ok(raw as HWND)
+    }
+
     /// Read a window's visible title text, or None if the window is not
     /// visible or has no title. Shared by window enumeration and search.
     /// Callers must be inside an `unsafe` context.
@@ -687,6 +971,7 @@ mod imp {
                 GetWindowThreadProcessId(hwnd, &mut pid);
 
                 windows.push(serde_json::json!({
+                    "window_id": window_id(hwnd),
                     "hwnd": hwnd as usize,
                     "title": title,
                     "pid": pid,
@@ -729,6 +1014,7 @@ mod imp {
             let mut pid: u32 = 0;
             GetWindowThreadProcessId(hwnd, &mut pid);
             Ok(serde_json::json!({
+                "window_id": window_id(hwnd),
                 "hwnd": hwnd as usize,
                 "title": title,
                 "pid": pid,
@@ -736,52 +1022,94 @@ mod imp {
         }
     }
 
-    pub fn focus_window(title: Option<&str>, pid: Option<u32>) -> anyhow::Result<()> {
-        let hwnd = find_window(title, pid)?.ok_or_else(|| window_not_found(title, pid))?;
+    pub fn focus_window(
+        window_id: Option<&str>,
+        title: Option<&str>,
+        pid: Option<u32>,
+    ) -> anyhow::Result<()> {
+        let hwnd = find_window(window_id, title, pid)?
+            .ok_or_else(|| window_not_found(window_id, title, pid))?;
         unsafe {
             SetForegroundWindow(hwnd);
         }
         Ok(())
     }
 
-    pub fn close_window(title: Option<&str>, pid: Option<u32>) -> anyhow::Result<()> {
-        let hwnd = find_window(title, pid)?.ok_or_else(|| window_not_found(title, pid))?;
+    pub fn close_window(
+        window_id: Option<&str>,
+        title: Option<&str>,
+        pid: Option<u32>,
+    ) -> anyhow::Result<()> {
+        let hwnd = find_window(window_id, title, pid)?
+            .ok_or_else(|| window_not_found(window_id, title, pid))?;
         unsafe {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
         Ok(())
     }
 
-    fn find_window(title: Option<&str>, pid: Option<u32>) -> anyhow::Result<Option<HWND>> {
+    fn find_window(
+        window_id: Option<&str>,
+        title: Option<&str>,
+        pid: Option<u32>,
+    ) -> anyhow::Result<Option<HWND>> {
+        if let Some(window_id) = window_id {
+            let hwnd = hwnd_from_window_id(window_id)?;
+            let windows = enumerate_windows(pid)?;
+            return Ok(windows
+                .iter()
+                .any(|window| window["window_id"].as_str() == Some(window_id))
+                .then_some(hwnd));
+        }
         let windows = enumerate_windows(pid)?;
-        let window = windows.iter().find(|window| {
-            title
-                .map(|needle| {
-                    window["title"]
-                        .as_str()
-                        .map(|value| value.contains(needle))
-                        .unwrap_or(false)
-                })
-                .unwrap_or(true)
-        });
-        Ok(window
+        let matches: Vec<&Value> = windows
+            .iter()
+            .filter(|window| {
+                title
+                    .map(|needle| {
+                        window["title"]
+                            .as_str()
+                            .map(|value| value.contains(needle))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true)
+            })
+            .collect();
+        if matches.len() > 1 {
+            anyhow::bail!(
+                "title '{}' matched {} windows; provide window_id or pid",
+                title.unwrap_or(""),
+                matches.len()
+            );
+        }
+        Ok(matches
+            .first()
+            .copied()
             .and_then(|window| window["hwnd"].as_u64())
             .map(|hwnd| hwnd as usize as HWND))
     }
 
-    fn window_not_found(title: Option<&str>, pid: Option<u32>) -> anyhow::Error {
-        match (title, pid) {
-            (Some(title), Some(pid)) => {
+    fn window_not_found(
+        window_id: Option<&str>,
+        title: Option<&str>,
+        pid: Option<u32>,
+    ) -> anyhow::Error {
+        match (window_id, title, pid) {
+            (Some(window_id), _, _) => {
+                anyhow::anyhow!("no window found for window_id '{}'", window_id)
+            }
+            (_, Some(title), Some(pid)) => {
                 anyhow::anyhow!("no window found matching title '{}' for pid {}", title, pid)
             }
-            (Some(title), None) => anyhow::anyhow!("no window found matching '{}'", title),
-            (None, Some(pid)) => anyhow::anyhow!("no window found for pid {}", pid),
-            (None, None) => anyhow::anyhow!("a title or pid is required"),
+            (_, Some(title), None) => anyhow::anyhow!("no window found matching '{}'", title),
+            (_, None, Some(pid)) => anyhow::anyhow!("no window found for pid {}", pid),
+            (_, None, None) => anyhow::anyhow!("a title or pid is required"),
         }
     }
 
     fn find_window_by_title(title: &str) -> anyhow::Result<HWND> {
-        find_window(Some(title), None)?.ok_or_else(|| window_not_found(Some(title), None))
+        find_window(None, Some(title), None)?
+            .ok_or_else(|| window_not_found(None, Some(title), None))
     }
 
     pub fn any_title_contains(needle: &str) -> anyhow::Result<bool> {
@@ -1049,8 +1377,13 @@ mod imp {
         .contains(&id)
     }
 
-    fn ui_automation_target_hwnd(title: Option<&str>) -> anyhow::Result<HWND> {
-        let target_hwnd = if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
+    fn ui_automation_target_hwnd(
+        window_id: Option<&str>,
+        title: Option<&str>,
+    ) -> anyhow::Result<HWND> {
+        let target_hwnd = if let Some(window_id) = window_id.filter(|s| !s.trim().is_empty()) {
+            hwnd_from_window_id(window_id)?
+        } else if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
             let hwnd = find_window_by_title(t.trim())?;
             if hwnd.is_null() {
                 anyhow::bail!("no window found matching '{}'", t);
@@ -1063,6 +1396,25 @@ mod imp {
             anyhow::bail!("no target window available for UI Automation");
         }
         Ok(target_hwnd)
+    }
+
+    fn element_token(
+        hwnd: HWND,
+        automation_id: &str,
+        name: &str,
+        control_type: &str,
+        tree_index: usize,
+    ) -> String {
+        let prefix = window_id(hwnd);
+        if automation_id.trim().is_empty() {
+            // Include descriptive identity as well as the ordinal. The
+            // ordinal disambiguates duplicate controls; the name/type guard
+            // makes a stale token fail instead of silently clicking a new
+            // control that moved into the same position.
+            format!("uia:{prefix}:index:{tree_index}:type:{control_type}:name:{name}")
+        } else {
+            format!("uia:{prefix}:automation:{}", automation_id.trim())
+        }
     }
 
     fn ui_automation_element(
@@ -1084,7 +1436,8 @@ mod imp {
         }
 
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let target_hwnd = ui_automation_target_hwnd(query.title.as_deref())?;
+        let target_hwnd =
+            ui_automation_target_hwnd(query.window_id.as_deref(), query.title.as_deref())?;
         let automation: IUIAutomation =
             unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)? };
         let root = unsafe { automation.ElementFromHandle(WinHwnd(target_hwnd))? };
@@ -1117,7 +1470,19 @@ mod imp {
                 .ok()
                 .map(|value| value.to_string())
                 .unwrap_or_default();
-            if name != query.name {
+            let automation_id = unsafe { element.CurrentAutomationId() }
+                .ok()
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            let token = element_token(target_hwnd, &automation_id, &name, control_type_name, i);
+            if query
+                .element_token
+                .as_deref()
+                .is_some_and(|wanted| wanted != token)
+            {
+                continue;
+            }
+            if query.element_token.is_none() && name != query.name {
                 continue;
             }
             let enabled = unsafe { element.CurrentIsEnabled() }
@@ -1140,6 +1505,8 @@ mod imp {
             matches.push((
                 element,
                 super::UiElementTarget {
+                    window_id: window_id(target_hwnd),
+                    element_token: token,
                     name,
                     control_type: control_type_name.to_owned(),
                     index: matches.len(),
@@ -1214,24 +1581,78 @@ mod imp {
         Ok(target)
     }
 
+    pub fn invoke_ui_element(
+        query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        use windows::Win32::UI::Accessibility::{IUIAutomationInvokePattern, UIA_InvokePatternId};
+        let (element, target) = ui_automation_element(query)?;
+        let pattern: IUIAutomationInvokePattern =
+            unsafe { element.GetCurrentPatternAs(UIA_InvokePatternId)? };
+        unsafe { pattern.Invoke()? };
+        Ok(target)
+    }
+
+    pub fn set_ui_element_value(
+        query: &super::UiElementQuery,
+        value: &str,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        use windows::Win32::UI::Accessibility::{IUIAutomationValuePattern, UIA_ValuePatternId};
+        let (element, target) = ui_automation_element(query)?;
+        let pattern: IUIAutomationValuePattern =
+            unsafe { element.GetCurrentPatternAs(UIA_ValuePatternId)? };
+        let value = windows::core::BSTR::from(value);
+        unsafe { pattern.SetValue(&value)? };
+        Ok(target)
+    }
+
+    pub fn toggle_ui_element(
+        query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        use windows::Win32::UI::Accessibility::{IUIAutomationTogglePattern, UIA_TogglePatternId};
+        let (element, target) = ui_automation_element(query)?;
+        let pattern: IUIAutomationTogglePattern =
+            unsafe { element.GetCurrentPatternAs(UIA_TogglePatternId)? };
+        unsafe { pattern.Toggle()? };
+        Ok(target)
+    }
+
+    pub fn select_ui_element(
+        query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        use windows::Win32::UI::Accessibility::{
+            IUIAutomationSelectionItemPattern, UIA_SelectionItemPatternId,
+        };
+        let (element, target) = ui_automation_element(query)?;
+        let pattern: IUIAutomationSelectionItemPattern =
+            unsafe { element.GetCurrentPatternAs(UIA_SelectionItemPatternId)? };
+        unsafe { pattern.Select()? };
+        Ok(target)
+    }
+
     /// Enumerate interactive UI Automation elements for the foreground window
     /// (or the first window whose title contains `title`).
-    pub fn enumerate_ui_tree(title: Option<&str>) -> anyhow::Result<Vec<Value>> {
+    pub fn enumerate_ui_tree(
+        target_window_id: Option<&str>,
+        title: Option<&str>,
+    ) -> anyhow::Result<Vec<Value>> {
         use windows::Win32::Foundation::HWND as WinHwnd;
         use windows::Win32::System::Com::*;
         use windows::Win32::UI::Accessibility::*;
 
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 
-        let target_hwnd: HWND = if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
-            let hwnd = find_window_by_title(t.trim())?;
-            if hwnd.is_null() {
-                anyhow::bail!("no window found matching '{}'", t);
-            }
-            hwnd
-        } else {
-            unsafe { GetForegroundWindow() }
-        };
+        let target_hwnd: HWND =
+            if let Some(window_id) = target_window_id.filter(|s| !s.trim().is_empty()) {
+                hwnd_from_window_id(window_id)?
+            } else if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
+                let hwnd = find_window_by_title(t.trim())?;
+                if hwnd.is_null() {
+                    anyhow::bail!("no window found matching '{}'", t);
+                }
+                hwnd
+            } else {
+                unsafe { GetForegroundWindow() }
+            };
         if target_hwnd.is_null() {
             anyhow::bail!("no target window for ui_tree");
         }
@@ -1242,6 +1663,7 @@ mod imp {
         let condition = unsafe { automation.CreateTrueCondition()? };
         let array = unsafe { element.FindAll(TreeScope_Descendants, &condition)? };
         let len = unsafe { array.Length()? }.max(0) as usize;
+        let target_title = visible_window_title(target_hwnd).unwrap_or_default();
 
         let mut out = Vec::new();
         for i in 0..len {
@@ -1263,6 +1685,12 @@ mod imp {
                 .ok()
                 .map(|b| b.to_string())
                 .unwrap_or_default();
+            let automation_id = unsafe { el.CurrentAutomationId() }
+                .ok()
+                .map(|b| b.to_string())
+                .unwrap_or_default();
+            let control_name = control_type_name(control_type);
+            let token = element_token(target_hwnd, &automation_id, &name, control_name, i);
             let enabled = unsafe { el.CurrentIsEnabled() }
                 .ok()
                 .map(|b| b.as_bool())
@@ -1280,8 +1708,12 @@ mod imp {
                 }),
             };
             out.push(serde_json::json!({
+                "window_id": window_id(target_hwnd),
+                "window_title": target_title,
+                "element_token": token,
+                "automation_id": automation_id,
                 "name": name,
-                "control_type": control_type_name(control_type),
+                "control_type": control_name,
                 "bounds": bounds_json,
                 "enabled": enabled,
             }));
@@ -1353,11 +1785,19 @@ mod imp {
         Ok(serde_json::json!({"available": false, "note": "window operations require Windows"}))
     }
 
-    pub fn focus_window(_title: Option<&str>, _pid: Option<u32>) -> anyhow::Result<()> {
+    pub fn focus_window(
+        _window_id: Option<&str>,
+        _title: Option<&str>,
+        _pid: Option<u32>,
+    ) -> anyhow::Result<()> {
         anyhow::bail!("window operations require Windows")
     }
 
-    pub fn close_window(_title: Option<&str>, _pid: Option<u32>) -> anyhow::Result<()> {
+    pub fn close_window(
+        _window_id: Option<&str>,
+        _title: Option<&str>,
+        _pid: Option<u32>,
+    ) -> anyhow::Result<()> {
         anyhow::bail!("window operations require Windows")
     }
 
@@ -1373,7 +1813,10 @@ mod imp {
         Ok(false)
     }
 
-    pub fn enumerate_ui_tree(_title: Option<&str>) -> anyhow::Result<Vec<Value>> {
+    pub fn enumerate_ui_tree(
+        _window_id: Option<&str>,
+        _title: Option<&str>,
+    ) -> anyhow::Result<Vec<Value>> {
         anyhow::bail!("ui_tree requires Windows")
     }
 
@@ -1384,6 +1827,31 @@ mod imp {
     }
 
     pub fn focus_ui_element(
+        _query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        anyhow::bail!("UI Automation element input requires Windows")
+    }
+
+    pub fn invoke_ui_element(
+        _query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        anyhow::bail!("UI Automation element input requires Windows")
+    }
+
+    pub fn set_ui_element_value(
+        _query: &super::UiElementQuery,
+        _value: &str,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        anyhow::bail!("UI Automation element input requires Windows")
+    }
+
+    pub fn toggle_ui_element(
+        _query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        anyhow::bail!("UI Automation element input requires Windows")
+    }
+
+    pub fn select_ui_element(
         _query: &super::UiElementQuery,
     ) -> anyhow::Result<super::UiElementTarget> {
         anyhow::bail!("UI Automation element input requires Windows")
@@ -1450,8 +1918,12 @@ mod tests {
             "focus",
             "close",
             "screenshot",
-            "ocr",
             "ui_tree",
+            "observe",
+            "invoke",
+            "set_value",
+            "toggle",
+            "select",
             "wait",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
@@ -1602,10 +2074,17 @@ mod tests {
                 WindowParams {
                     operation: Some(WindowOperation::Focus),
                     title: Some("haven-test-no-such-window-xyz".into()),
+                    window_id: None,
                     pid: None,
                     condition: None,
                     text: None,
                     timeout_secs: None,
+                    element_token: None,
+                    name: None,
+                    control_type: None,
+                    index: None,
+                    value: None,
+                    ocr: None,
                     session_id: None,
                 },
                 CancellationToken::new(),

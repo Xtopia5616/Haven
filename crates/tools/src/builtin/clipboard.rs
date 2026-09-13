@@ -1,12 +1,18 @@
 use async_trait::async_trait;
+use haven_common::config::default_generated_media_dir;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolConcurrency, ToolResult};
+use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
+
+const MAX_CLIPBOARD_FILES: usize = 32;
+const MAX_CLIPBOARD_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// One clipboard history entry.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -86,6 +92,8 @@ pub struct ClipboardTool {
     max_history_limit: usize,
     /// Per-entry content truncation for history dumps.
     entry_max_chars: usize,
+    /// Managed assets available for image/file clipboard transfers.
+    managed_assets: ManagedAssetRegistry,
 }
 
 /// Clipboard operation.
@@ -95,6 +103,17 @@ pub enum ClipboardOperation {
     Read,
     Write,
     History,
+}
+
+/// Native clipboard representation to read or write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardFormat {
+    Auto,
+    Text,
+    Html,
+    Image,
+    Files,
 }
 
 /// Typed parameters for `ClipboardTool`. Entry ① (native `run`) and entry ②
@@ -110,6 +129,19 @@ pub struct ClipboardParams {
     /// Entry limit for the history operation (clamped to the tool cap).
     #[serde(default)]
     pub limit: Option<u64>,
+    /// Representation to read/write. `auto` prefers text and falls back to
+    /// image or file-list data.
+    #[serde(default)]
+    pub format: Option<ClipboardFormat>,
+    /// HTML payload for a rich write.
+    #[serde(default)]
+    pub html: Option<String>,
+    /// Managed image asset to place on the native clipboard.
+    #[serde(default)]
+    pub asset_id: Option<String>,
+    /// File paths to place on the native clipboard.
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
 }
 
 impl ClipboardTool {
@@ -126,7 +158,13 @@ impl ClipboardTool {
             default_limit,
             max_history_limit,
             entry_max_chars,
+            managed_assets: ManagedAssetRegistry::default(),
         }
+    }
+
+    pub(crate) fn with_managed_assets(mut self, managed_assets: ManagedAssetRegistry) -> Self {
+        self.managed_assets = managed_assets;
+        self
     }
 }
 
@@ -158,21 +196,75 @@ impl Tool for ClipboardTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "history"] }
+                "operation": { "type": "string", "enum": ["read", "write", "history"] },
+                "format": { "type": "string", "enum": ["auto", "text", "html", "image", "files"] },
+                "content": { "type": "string" },
+                "html": { "type": "string" },
+                "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$" },
+                "files": { "type": "array", "minItems": 1, "maxItems": MAX_CLIPBOARD_FILES, "items": { "type": "string", "minLength": 1 } },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
             },
             "required": ["operation"],
             "oneOf": [
                 {
                     "type": "object",
                     "additionalProperties": false,
-                    "properties": { "operation": { "const": "read" } },
+                    "properties": { "operation": { "const": "read" }, "format": { "type": "string", "enum": ["auto", "text", "html", "image", "files"] } },
                     "required": ["operation"]
                 },
                 {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": { "operation": { "const": "write" }, "content": { "type": "string" } },
-                    "required": ["operation", "content"]
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "operation": { "const": "write" },
+                                "content": { "type": "string" }
+                            },
+                            "required": ["operation", "content"]
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "operation": { "const": "write" },
+                                "format": { "const": "text" },
+                                "content": { "type": "string" }
+                            },
+                            "required": ["operation", "format", "content"]
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "operation": { "const": "write" },
+                                "format": { "const": "html" },
+                                "content": { "type": "string" },
+                                "html": { "type": "string" }
+                            },
+                            "required": ["operation", "format", "html"]
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "operation": { "const": "write" },
+                                "format": { "const": "image" },
+                                "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$" }
+                            },
+                            "required": ["operation", "format", "asset_id"]
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "operation": { "const": "write" },
+                                "format": { "const": "files" },
+                                "files": { "type": "array", "minItems": 1, "maxItems": MAX_CLIPBOARD_FILES, "items": { "type": "string", "minLength": 1 } }
+                            },
+                            "required": ["operation", "format", "files"]
+                        }
+                    ]
                 },
                 {
                     "type": "object",
@@ -209,46 +301,74 @@ impl ClipboardTool {
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
-                let text = tokio::task::spawn_blocking(|| -> anyhow::Result<String> {
-                    let mut cb = arboard::Clipboard::new()?;
-                    cb.get_text()
-                        .map_err(|e| anyhow::anyhow!("clipboard read failed: {}", e))
-                })
-                .await??;
+                let format = params.format.unwrap_or(ClipboardFormat::Auto);
+                let read = tokio::task::spawn_blocking(move || read_clipboard(format)).await??;
 
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
-                self.history.record(text.clone());
-                let max_chars = self.max_output_chars;
-                let (text, truncated) = haven_common::encoding::truncate_output(&text, max_chars);
-                let mut result = serde_json::json!({"operation": "read", "content": text});
-                if truncated {
-                    result["truncated"] = serde_json::Value::Bool(true);
+                match read {
+                    ClipboardRead::Text(text) => {
+                        self.history.record(text.clone());
+                        let (text, truncated) =
+                            haven_common::encoding::truncate_output(&text, self.max_output_chars);
+                        let mut result = serde_json::json!({"operation": "read", "format": "text", "content": text});
+                        if truncated {
+                            result["truncated"] = serde_json::Value::Bool(true);
+                        }
+                        Ok(ToolResult::from_output(result, truncated))
+                    }
+                    ClipboardRead::Html(html) => {
+                        let (html, truncated) =
+                            haven_common::encoding::truncate_output(&html, self.max_output_chars);
+                        Ok(ToolResult::from_output(
+                            serde_json::json!({ "operation": "read", "format": "html", "html": html }),
+                            truncated,
+                        ))
+                    }
+                    ClipboardRead::Image(image) => {
+                        let asset = save_image_asset(&self.managed_assets, image)?;
+                        Ok(ToolResult::ok(serde_json::json!({
+                            "operation": "read", "format": "image", "asset_id": asset.asset_id,
+                            "media_type": asset.media_type, "size_bytes": asset.size_bytes,
+                        })))
+                    }
+                    ClipboardRead::Files(paths) => {
+                        let assets = copy_file_assets(&self.managed_assets, paths)?;
+                        Ok(ToolResult::ok(serde_json::json!({
+                            "operation": "read", "format": "files",
+                            "asset_ids": assets.iter().map(|asset| asset.asset_id.clone()).collect::<Vec<_>>(),
+                            "files": assets.iter().map(|asset| serde_json::json!({"asset_id": asset.asset_id, "filename": asset.filename, "media_type": asset.media_type, "size_bytes": asset.size_bytes})).collect::<Vec<_>>(),
+                        })))
+                    }
                 }
-                Ok(ToolResult::from_output(result, truncated))
             }
             ClipboardOperation::Write => {
-                let content = params
-                    .content
-                    .ok_or_else(|| anyhow::anyhow!("'content' is required for write operation"))?;
-
-                tokio::task::spawn_blocking({
-                    let content = content.clone();
-                    move || -> anyhow::Result<()> {
-                        let mut cb = arboard::Clipboard::new()?;
-                        cb.set_text(content)
-                            .map_err(|e| anyhow::anyhow!("clipboard write failed: {}", e))
+                let format = params.format.unwrap_or_else(|| {
+                    if params.html.is_some() {
+                        ClipboardFormat::Html
+                    } else {
+                        ClipboardFormat::Text
                     }
+                });
+                let content = params.content.clone();
+                let html = params.html.clone();
+                let asset_id = params.asset_id.clone();
+                let files = params.files.clone();
+                let registry = self.managed_assets.clone();
+                tokio::task::spawn_blocking(move || {
+                    write_clipboard(format, content, html, asset_id, files, registry)
                 })
                 .await??;
 
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
-                self.history.record(content);
+                if let Some(content) = params.content.filter(|content| !content.is_empty()) {
+                    self.history.record(content);
+                }
                 Ok(ToolResult::ok(
-                    serde_json::json!({"operation": "write", "written": true}),
+                    serde_json::json!({"operation": "write", "format": format, "written": true}),
                 ))
             }
             ClipboardOperation::History => {
@@ -281,6 +401,251 @@ impl ClipboardTool {
             }
         }
     }
+}
+
+enum ClipboardRead {
+    Text(String),
+    Html(String),
+    Image(arboard::ImageData<'static>),
+    Files(Vec<PathBuf>),
+}
+
+fn read_clipboard(format: ClipboardFormat) -> anyhow::Result<ClipboardRead> {
+    match format {
+        ClipboardFormat::Text => {
+            let mut clipboard = arboard::Clipboard::new()?;
+            Ok(ClipboardRead::Text(clipboard.get_text()?))
+        }
+        ClipboardFormat::Html => read_html(),
+        ClipboardFormat::Image => {
+            let mut clipboard = arboard::Clipboard::new()?;
+            Ok(ClipboardRead::Image(clipboard.get_image()?))
+        }
+        ClipboardFormat::Files => read_files(),
+        ClipboardFormat::Auto => {
+            let text_result =
+                arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text());
+            if let Ok(text) = text_result {
+                return Ok(ClipboardRead::Text(text));
+            }
+            if let Ok(html) = read_html() {
+                return Ok(html);
+            }
+            let image_result =
+                arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_image());
+            if let Ok(image) = image_result {
+                return Ok(ClipboardRead::Image(image));
+            }
+            read_files()
+        }
+    }
+}
+
+fn write_clipboard(
+    format: ClipboardFormat,
+    content: Option<String>,
+    html: Option<String>,
+    asset_id: Option<String>,
+    files: Option<Vec<String>>,
+    registry: ManagedAssetRegistry,
+) -> anyhow::Result<()> {
+    match format {
+        ClipboardFormat::Text | ClipboardFormat::Auto => {
+            let content = content
+                .ok_or_else(|| anyhow::anyhow!("content is required for text clipboard writes"))?;
+            let mut clipboard = arboard::Clipboard::new()?;
+            clipboard.set_text(content)?;
+        }
+        ClipboardFormat::Html => {
+            let html =
+                html.ok_or_else(|| anyhow::anyhow!("html is required for HTML clipboard writes"))?;
+            let alt = content.unwrap_or_default();
+            set_html(&html, &alt)?;
+        }
+        ClipboardFormat::Image => {
+            let asset_id = asset_id.ok_or_else(|| {
+                anyhow::anyhow!("asset_id is required for image clipboard writes")
+            })?;
+            let asset = registry
+                .resolve(&asset_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown managed asset '{asset_id}'"))?;
+            let decoded = image::open(&asset.path)?.to_rgba8();
+            let image = arboard::ImageData {
+                width: decoded.width() as usize,
+                height: decoded.height() as usize,
+                bytes: Cow::Owned(decoded.into_raw()),
+            };
+            arboard::Clipboard::new()?.set_image(image)?;
+        }
+        ClipboardFormat::Files => {
+            let files = validate_file_paths(files.ok_or_else(|| {
+                anyhow::anyhow!("files is required for file-list clipboard writes")
+            })?)?;
+            set_files(&files)?;
+        }
+    }
+    Ok(())
+}
+
+fn save_image_asset(
+    registry: &ManagedAssetRegistry,
+    image: arboard::ImageData<'static>,
+) -> anyhow::Result<ManagedAsset> {
+    let root = default_generated_media_dir();
+    std::fs::create_dir_all(&root)?;
+    let path = root.join(format!("{}.png", haven_common::types::new_id("file")));
+    let rgba = image::RgbaImage::from_raw(
+        image.width as u32,
+        image.height as u32,
+        image.bytes.into_owned(),
+    )
+    .ok_or_else(|| anyhow::anyhow!("clipboard image dimensions do not match pixel data"))?;
+    let mut file = std::fs::File::create(&path)?;
+    image::DynamicImage::ImageRgba8(rgba).write_to(&mut file, image::ImageFormat::Png)?;
+    super::media::register_generated_asset(
+        registry,
+        None,
+        &root,
+        path,
+        Some("clipboard.png".into()),
+        "image/png",
+        file.metadata()?.len(),
+    )
+}
+
+fn copy_file_assets(
+    registry: &ManagedAssetRegistry,
+    paths: Vec<PathBuf>,
+) -> anyhow::Result<Vec<ManagedAsset>> {
+    let paths = validate_file_paths(
+        paths
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+    )?;
+    let root = default_generated_media_dir();
+    std::fs::create_dir_all(&root)?;
+    let mut assets = Vec::with_capacity(paths.len());
+    for source in paths {
+        let metadata = std::fs::metadata(&source)?;
+        if metadata.len() > MAX_CLIPBOARD_FILE_BYTES {
+            anyhow::bail!(
+                "clipboard file exceeds {} byte limit",
+                MAX_CLIPBOARD_FILE_BYTES
+            );
+        }
+        let filename = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("clipboard.bin");
+        let destination = root.join(format!(
+            "{}-{}",
+            haven_common::types::new_id("file"),
+            filename
+        ));
+        std::fs::copy(&source, &destination)?;
+        let media_type = mime_from_path(&source);
+        assets.push(super::media::register_generated_asset(
+            registry,
+            None,
+            &root,
+            destination,
+            Some(filename.to_string()),
+            media_type,
+            metadata.len(),
+        )?);
+    }
+    Ok(assets)
+}
+
+fn validate_file_paths(paths: Vec<String>) -> anyhow::Result<Vec<PathBuf>> {
+    if paths.is_empty() || paths.len() > MAX_CLIPBOARD_FILES {
+        anyhow::bail!("files must contain 1..={MAX_CLIPBOARD_FILES} entries");
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let path = PathBuf::from(path);
+            let metadata = std::fs::metadata(&path)?;
+            if !metadata.is_file() {
+                anyhow::bail!("clipboard path is not a file: {}", path.display());
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+fn mime_from_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "pdf" => "application/pdf",
+        "txt" | "md" | "csv" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+#[cfg(windows)]
+fn read_html() -> anyhow::Result<ClipboardRead> {
+    use clipboard_win::formats::Html;
+    let html = clipboard_win::get_clipboard(
+        Html::new().ok_or_else(|| anyhow::anyhow!("HTML clipboard format is unavailable"))?,
+    )?;
+    Ok(ClipboardRead::Html(html))
+}
+
+#[cfg(not(windows))]
+fn read_html() -> anyhow::Result<ClipboardRead> {
+    anyhow::bail!("HTML clipboard access is only available on Windows")
+}
+
+#[cfg(windows)]
+fn read_files() -> anyhow::Result<ClipboardRead> {
+    use clipboard_win::formats::FileList;
+    Ok(ClipboardRead::Files(clipboard_win::get_clipboard(
+        FileList,
+    )?))
+}
+
+#[cfg(not(windows))]
+fn read_files() -> anyhow::Result<ClipboardRead> {
+    anyhow::bail!("file-list clipboard access is only available on Windows")
+}
+
+#[cfg(windows)]
+fn set_html(html: &str, alt: &str) -> anyhow::Result<()> {
+    let mut clipboard = arboard::Clipboard::new()?;
+    clipboard.set_html(html, Some(alt))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_html(_html: &str, _alt: &str) -> anyhow::Result<()> {
+    anyhow::bail!("HTML clipboard access is only available on Windows")
+}
+
+#[cfg(windows)]
+fn set_files(files: &[PathBuf]) -> anyhow::Result<()> {
+    use clipboard_win::{Setter, formats::FileList};
+    let _clipboard = clipboard_win::Clipboard::new_attempts(10)?;
+    let values: Vec<String> = files
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    FileList.write_clipboard(values.as_slice())?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_files(_files: &[PathBuf]) -> anyhow::Result<()> {
+    anyhow::bail!("file-list clipboard access is only available on Windows")
 }
 
 #[cfg(test)]
@@ -471,6 +836,10 @@ mod tests {
                     operation: Some(ClipboardOperation::History),
                     content: None,
                     limit: Some(10),
+                    format: None,
+                    html: None,
+                    asset_id: None,
+                    files: None,
                 },
                 CancellationToken::new(),
             )

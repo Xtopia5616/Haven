@@ -171,6 +171,10 @@ InteractionRequest {
 
 这项重构还应明确“回答是对哪个 request 的回复”，禁止再根据当前是否 paused、文本内容或 tool observation 猜测输入归属。
 
+第一阶段已落地 `haven-agent::interaction::InteractionRequest` 作为快照中的规范化投影，保留旧
+`awaiting_answer`/`awaiting_confirm` 字段以兼容已有快照；后续数据库/事件 schema 重置时再删除旧字段，
+并将 UI 的 ask/confirm store 合并到同一 request id 生命周期。
+
 ### D. P1：把 background action 与 scheduled action 合并成真正的 `ActionService`
 
 数据库已经用 `actions.kind` 区分 `background` / `scheduled`，但运行时仍是 [`crates/tools/src/background_actions.rs`](../crates/tools/src/background_actions.rs) 的 `BackgroundActions` 加上 [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) 的 `ScheduledActionCenter` 两套状态机；它们再通过 `set_actions`、DB setter、事件 sink、agent consumer 和 fired/completion channel 互相接线。
@@ -184,6 +188,10 @@ Pending → Running → Succeeded | Failed | Cancelled | Expired
 ```
 
 shell 后台执行、定时触发、等待另一个 action、完成后唤醒会话都只是不同的 `ActionSpec` / worker，不再是两套 registry。`actions` 表成为状态权威，内存 worker 只是执行句柄和短期输出缓存。这样可以统一重启恢复、取消、权限、历史、通知和 UI action board，也能消除 `session_id=None`/`prompt` 回退等旧语义。
+
+第一阶段已提供 `haven-tools::ActionService` 门面，并让 `actions.*` 与 app action board 使用统一的规范化
+task row、session-scoped status 和 cancel 路径。两个 worker 的持久化状态机合并、重启恢复和事件通道收敛
+仍属于后续阶段，完成后应删除本门面中的双 registry 适配代码。
 
 ### E. P1：收窄 `ToolsManager`，删除 callback service locator
 
