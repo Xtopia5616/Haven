@@ -111,6 +111,8 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("media.mute_set", "media.mute_set", Medium),
     security_case!("http", "request", Medium),
     security_case!("notify", "notify", Safe),
+    security_case!("load_builtin", "load", Safe),
+    security_case!("load_skill", "load", Safe),
     security_case!("agent.list", "agent.list", Safe),
     security_case!("agent.send", "agent.send", Safe),
     security_case!("agent.inbox", "agent.inbox", Safe),
@@ -1633,6 +1635,7 @@ mod tests {
                 "shell" => "execute".into(),
                 "http" => "request".into(),
                 "notify" => "notify".into(),
+                "load_builtin" | "load_skill" => "load".into(),
                 "load_mcp" => "load".into(),
                 other => other.to_string(),
             })
@@ -1644,7 +1647,7 @@ mod tests {
         }
         match case.tool_name {
             name if name.contains('.') => serde_json::json!({}),
-            "ask" | "shell" | "http" | "notify" | "load_mcp" => {
+            "ask" | "shell" | "http" | "notify" | "load_builtin" | "load_skill" | "load_mcp" => {
                 serde_json::json!({})
             }
             _ => serde_json::json!({"operation": case.operation}),
@@ -1673,7 +1676,22 @@ mod tests {
             })
             .await;
 
-        let tools = manager.registry.list().await;
+        let mut tools = manager.registry.list().await;
+        // Deferred builtins are intentionally absent from the model-facing
+        // registry, but they still need the same security-contract coverage.
+        // Resolve them through the control-plane lookup so this test covers
+        // both the eager and lazy portions of the builtin catalog.
+        let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
+        for def in manager.list_enabled_builtin_defs().await {
+            if !registry_names.contains(&def.name) {
+                tools.push(
+                    manager
+                        .get_tool(&def.name)
+                        .await
+                        .unwrap_or_else(|| panic!("missing deferred builtin {}", def.name)),
+                );
+            }
+        }
         let matrix_names: HashSet<_> = LOCAL_TOOL_SECURITY_MATRIX
             .iter()
             .map(|case| case.tool_name)
@@ -1759,13 +1777,14 @@ mod tests {
             ("media.record", "media.record"),
             ("media.speak", "media.speak"),
             ("window.ocr", "window.ocr"),
+            ("load_skill", "load"),
             ("load_mcp", "load"),
         ];
         for case in LOCAL_TOOL_SECURITY_MATRIX {
             if !seen.contains(&(case.tool_name.to_string(), case.operation.to_string())) {
                 assert!(
                     optional_routes.contains(&(case.tool_name, case.operation)),
-                    "matrix row is not advertised by the builtin registry: {}:{}",
+                    "matrix row is not advertised by the builtin catalog: {}:{}",
                     case.tool_name,
                     case.operation
                 );

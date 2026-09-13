@@ -22,7 +22,8 @@
 use crate::AgentLayer;
 use crate::react::{ReActState, RunInput};
 use crate::resume_support::{
-    load_mcp_tool_names, merge_recovery_candidates, reconcile_dangling_tool_call,
+    load_builtin_selection, load_mcp_tool_names, load_skill_names, merge_recovery_candidates,
+    reconcile_dangling_tool_call,
 };
 use crate::rollback_support::trim_dangling_tool_call;
 
@@ -664,6 +665,20 @@ impl AgentLayer {
                     tools
                         .register_mcp_for_session(session_id, name, tool_names.as_deref())
                         .await;
+                } else if tool.action.tool_name.as_str() == "load_builtin" {
+                    let (operations, roots) = load_builtin_selection(&tool.action.tool_input);
+                    if operations.as_ref().is_some_and(|values| !values.is_empty())
+                        || roots.as_ref().is_some_and(|values| !values.is_empty())
+                    {
+                        tools
+                            .load_builtin_for_session(session_id, operations, roots)
+                            .await;
+                    }
+                } else if tool.action.tool_name.as_str() == "load_skill" {
+                    let names = load_skill_names(&tool.action.tool_input);
+                    if !names.is_empty() {
+                        tools.load_skill_for_session(session_id, names).await;
+                    }
                 }
             }
         }

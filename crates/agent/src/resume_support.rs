@@ -3,7 +3,7 @@
 //! The resume driver owns lifecycle transitions and ReAct execution. This
 //! module owns the small pieces that must remain deterministic and independent
 //! of that orchestration: merging durable recovery candidates and decoding the
-//! saved `load_mcp` selection.
+//! saved lazy-capability selections.
 
 use std::collections::HashSet;
 
@@ -56,6 +56,48 @@ pub(crate) fn load_mcp_tool_names(input: &Value) -> Option<Vec<String>> {
         }
     }
     Some(names)
+}
+
+/// Decode the saved built-in lazy-load request. Missing arrays remain `None`
+/// so a malformed historical action cannot widen a selection during resume.
+pub(crate) fn load_builtin_selection(input: &Value) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    fn names(input: &Value, key: &str) -> Option<Vec<String>> {
+        let array = input.get(key)?.as_array()?;
+        let mut values = Vec::new();
+        let mut seen = HashSet::new();
+        for value in array {
+            let Some(name) = value.as_str() else {
+                continue;
+            };
+            let name = name.trim();
+            if !name.is_empty() && seen.insert(name.to_string()) {
+                values.push(name.to_string());
+            }
+        }
+        Some(values)
+    }
+
+    (names(input, "operations"), names(input, "roots"))
+}
+
+/// Decode the saved Skill names without allowing malformed input to turn into
+/// an implicit load-all request.
+pub(crate) fn load_skill_names(input: &Value) -> Vec<String> {
+    let Some(array) = input.get("skill_names").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    for value in array {
+        let Some(name) = value.as_str() else {
+            continue;
+        };
+        let name = name.trim().trim_start_matches("skill__");
+        if !name.is_empty() && seen.insert(name.to_string()) {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 /// Reconcile a snapshot whose last event is an assistant tool call with the
@@ -187,6 +229,28 @@ mod tests {
             load_mcp_tool_names(&serde_json::json!({"tool_names": []})),
             Some(Vec::new())
         );
+    }
+
+    #[test]
+    fn lazy_loader_selections_deduplicate_without_widening() {
+        assert_eq!(
+            load_builtin_selection(&serde_json::json!({
+                "operations": [" files.read ", "files.read", 7],
+                "roots": ["system", "system"]
+            })),
+            (Some(vec!["files.read".into()]), Some(vec!["system".into()]))
+        );
+        assert_eq!(
+            load_builtin_selection(&serde_json::json!({"operations": "files.read"})),
+            (None, None)
+        );
+        assert_eq!(
+            load_skill_names(&serde_json::json!({
+                "skill_names": [" echo ", "skill__echo", "", 4, "writer"]
+            })),
+            ["echo", "writer"]
+        );
+        assert!(load_skill_names(&serde_json::json!({"skill_names": "echo"})).is_empty());
     }
 
     fn dangling_call() -> TranscriptRecord {

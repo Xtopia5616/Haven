@@ -257,8 +257,16 @@ impl LoadMcpTool {
 
         let mut tool_schemas = Vec::with_capacity(tools.len());
         for info in tools {
+            let tool_name = info.name.clone();
+            let description = truncate_description(&info.description);
             let adapter = McpToolAdapter::new(client.clone(), server_name, info);
-            tool_schemas.push(adapter.tool_def().json());
+            // The next provider request receives the full schema through
+            // `tools[]`; returning it here would duplicate the schema inside
+            // the conversation transcript and inflate every later request.
+            tool_schemas.push(serde_json::json!({
+                "name": tool_name,
+                "description": description,
+            }));
             entry.insert(adapter.name(), Arc::new(adapter));
         }
         drop(map);
@@ -346,6 +354,14 @@ fn catalog_entries(tools: &[haven_mcp::McpToolInfo]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+fn truncate_description(description: &str) -> String {
+    let description = description.trim();
+    if description.chars().count() <= 160 {
+        return description.into();
+    }
+    format!("{}...", description.chars().take(157).collect::<String>())
 }
 
 #[async_trait]

@@ -44,6 +44,25 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
         .unwrap_or(true)
 }
 
+/// The always-visible provider surface is deliberately small. These tools
+/// support clarification, narrow source inspection, and activation of deeper
+/// capability layers; all other enabled builtins and Skills are loaded into a
+/// session only when requested by the model.
+fn is_core_model_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "ask"
+            | "notify"
+            | "load_builtin"
+            | "load_skill"
+            | "load_mcp"
+            | "files.read"
+            | "files.outline"
+            | "files.search"
+            | "system.info"
+    )
+}
+
 #[derive(Debug, Clone, Default)]
 enum CatalogRebuildScope {
     #[default]
@@ -105,7 +124,7 @@ pub use output::{
     sanitize_shell_output, summarize_error,
 };
 pub(crate) use process::{read_stream_capped, take_tail_if_changed};
-pub use registry::{RegistryProbe, SessionCatalog, ToolRegistry};
+pub use registry::{DeferredToolCatalog, RegistryProbe, SessionCatalog, ToolRegistry};
 pub use security::{
     AuthorizationEngine, ConfirmationReceipt, ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX,
     LocalToolSecurityCase, is_safe_local_path, permission_prompt_summary,
@@ -342,6 +361,9 @@ pub struct ToolsManager {
     /// re-enable disabled tools even though they are excluded from the
     /// registry snapshot used by the agent.
     all_builtin_tools: RwLock<Vec<ToolBox>>,
+    /// Enabled non-core builtin and Skill implementations. They are kept out
+    /// of the global provider catalog until a session explicitly loads them.
+    deferred_catalog: DeferredToolCatalog,
     /// Per-session MCP overlays and their catalog version clocks.
     session_catalog: SessionCatalog,
     tool_circuits: ToolCircuitRegistry,
@@ -417,6 +439,7 @@ impl ToolsManager {
             context_limits: RwLock::new(ContextLimitsConfig::default()),
             default_shell: RwLock::new(ShellChoice::default()),
             all_builtin_tools: RwLock::new(Vec::new()),
+            deferred_catalog: DeferredToolCatalog::new(),
             session_catalog: SessionCatalog::new(),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
@@ -896,6 +919,7 @@ impl ToolsManager {
                 server_configs: self.mcp_server_configs.clone(),
                 registry: self.registry.clone(),
                 session_catalog: self.session_catalog.clone(),
+                deferred_catalog: self.deferred_catalog.clone(),
                 settings: settings.clone(),
                 limits: limits.clone(),
                 default_shell: *self.default_shell.read().await,
@@ -941,13 +965,18 @@ impl ToolsManager {
             .collect();
         drop(settings);
 
-        if let Err(error) = self.registry.rebuild(enabled_tools).await {
+        let (active_tools, deferred_tools): (Vec<_>, Vec<_>) = enabled_tools
+            .iter()
+            .cloned()
+            .partition(|tool| is_core_model_tool(&tool.name()));
+        if let Err(error) = self.registry.rebuild(active_tools).await {
             // Keep the previous atomic snapshot on a construction conflict.
             // A partial catalog is more dangerous than a stale one because it
             // can make authorization and execution disagree about a name.
             tracing::error!(error = %error, "builtin catalog rebuild rejected");
             return;
         }
+        self.deferred_catalog.replace(deferred_tools).await;
         *self.all_builtin_tools.write().await = all_tools;
         *self.admin_surface.write().await = self_tool_arc;
         self.session_catalog.bump_global_version();
@@ -957,6 +986,77 @@ impl ToolsManager {
     /// Does NOT modify the global registry.
     pub async fn register_for_session(&self, session_id: &str, tool: ToolBox) {
         self.session_catalog.register(session_id, tool).await;
+    }
+
+    /// Rehydrate a saved built-in selection during resume without exposing the
+    /// loader's private session field to transcript or provider input.
+    pub async fn load_builtin_for_session(
+        &self,
+        session_id: &str,
+        operations: Option<Vec<String>>,
+        roots: Option<Vec<String>>,
+    ) -> bool {
+        let loader = builtin::load_builtin::LoadBuiltinTool {
+            deferred_catalog: self.deferred_catalog.clone(),
+            registry: self.registry.clone(),
+            session_catalog: self.session_catalog.clone(),
+            max_tools_per_request: self
+                .context_limits
+                .read()
+                .await
+                .max_tools_per_request
+                .max(1),
+        };
+        match loader
+            .run(
+                builtin::load_builtin::LoadBuiltinParams {
+                    operations,
+                    roots,
+                    session_id: Some(session_id.into()),
+                },
+                CancellationToken::new(),
+            )
+            .await
+        {
+            Ok(result) => result.success,
+            Err(error) => {
+                tracing::warn!(session_id, error = %error, "failed to restore built-in tool selection");
+                false
+            }
+        }
+    }
+
+    /// Rehydrate saved Skill selections during resume. A missing or disabled
+    /// Skill is a soft restore failure; the session continues with the skills
+    /// that are still available.
+    pub async fn load_skill_for_session(&self, session_id: &str, names: Vec<String>) -> bool {
+        let loader = builtin::load_skill::LoadSkillTool {
+            deferred_catalog: self.deferred_catalog.clone(),
+            registry: self.registry.clone(),
+            session_catalog: self.session_catalog.clone(),
+            max_tools_per_request: self
+                .context_limits
+                .read()
+                .await
+                .max_tools_per_request
+                .max(1),
+        };
+        match loader
+            .run(
+                builtin::load_skill::LoadSkillParams {
+                    skill_names: names,
+                    session_id: Some(session_id.into()),
+                },
+                CancellationToken::new(),
+            )
+            .await
+        {
+            Ok(result) => result.success,
+            Err(error) => {
+                tracing::warn!(session_id, error = %error, "failed to restore Skill selection");
+                false
+            }
+        }
     }
 
     /// Remove all per-session tool registrations for a given session.
@@ -1091,9 +1191,12 @@ impl ToolsManager {
             } else {
                 format!("MCP server '{safe_name}'; tools: {}", tool_names.join(", "))
             };
+            let tool_count = tool_names.len();
             entries.push(serde_json::json!({
                 "name": safe_name,
                 "description": description,
+                "tool_names": tool_names,
+                "tool_count": tool_count,
             }));
         }
         // Deterministic ordering for a stable prompt.
@@ -1106,14 +1209,16 @@ impl ToolsManager {
         entries
     }
 
-    /// Structured tool definitions for a session: the global registry merged
-    /// with per-session registered skill/MCP adapters. This is the canonical
+    /// Structured tool definitions for a session: the eager core registry
+    /// merged with per-session registered builtin/Skill/MCP adapters. Deferred
+    /// builtin and Skill implementations are intentionally absent until a
+    /// loader registers them. This is the canonical
     /// surface the ReAct loop turns into provider tool definitions and the
     /// schema listing is derived from — no loose JSON assembly in consumers.
     ///
     /// Capped at `context_limits.max_tools_per_request` with deterministic
     /// source-aware selection. Core builtin operation views are kept before
-    /// explicitly loaded session tools and globally enabled skills. A
+    /// explicitly loaded session tools. A
     /// successful MCP load still uses the all-or-nothing admission check in
     /// `register_mcp_for_session`; this method only handles defensive
     /// selection if the catalog later grows beyond the provider limit.
@@ -1262,6 +1367,23 @@ impl ToolsManager {
                 json
             })
             .collect()
+    }
+
+    /// Prompt-facing catalog of every enabled builtin, including deferred
+    /// operation views. This intentionally returns structured definitions only
+    /// to the agent prompt builder; provider `tools[]` still uses the smaller
+    /// core + session-loaded surface from `list_defs_for_session`.
+    pub async fn list_enabled_builtin_defs(&self) -> Vec<ToolDef> {
+        let tools = self.all_builtin_tools.read().await;
+        let settings = self.tool_settings.read().await;
+        let mut defs: Vec<_> = tools
+            .iter()
+            .filter(|tool| !tool.name().starts_with("skill__"))
+            .filter(|tool| tool_config_enabled(&settings, &tool.name()))
+            .map(|tool| tool.tool_def())
+            .collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs
     }
 }
 
@@ -1466,7 +1588,10 @@ impl ToolsManager {
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
-        self.registry.get(name).await
+        if let Some(tool) = self.registry.get(name).await {
+            return Some(tool);
+        }
+        self.deferred_catalog.get(name).await
     }
 
     pub async fn get_risk_level(
@@ -1796,12 +1921,12 @@ mod tests {
         let mgr = ToolsManager::new();
         mgr.rebuild_catalog().await;
         let ask_before = mgr.registry.get("ask").await.unwrap();
-        let shell_before = mgr.registry.get("shell").await.unwrap();
+        let shell_before = mgr.get_tool("shell").await.unwrap();
 
         mgr.set_default_shell(ShellChoice::default()).await;
 
         let ask_after = mgr.registry.get("ask").await.unwrap();
-        let shell_after = mgr.registry.get("shell").await.unwrap();
+        let shell_after = mgr.get_tool("shell").await.unwrap();
         assert!(Arc::ptr_eq(&ask_before, &ask_after));
         assert!(!Arc::ptr_eq(&shell_before, &shell_after));
     }
@@ -2623,6 +2748,37 @@ mod tests {
                 .any(|s| { s["name"].as_str().unwrap_or("").starts_with("mcp__") }),
             "MCP tools must not be pre-registered globally"
         );
+    }
+
+    #[tokio::test]
+    async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+
+        assert!(mgr.registry.get("shell").await.is_none());
+        assert!(mgr.get_tool("shell").await.is_some());
+        assert!(
+            mgr.list_defs_for_session("ses-lazy-builtin")
+                .await
+                .iter()
+                .all(|def| def.name != "shell")
+        );
+
+        let result = mgr
+            .execute_tool(
+                Some("ses-lazy-builtin"),
+                "load_builtin",
+                serde_json::json!({"operations": ["shell"]}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("load_builtin should be executable from the core surface");
+        assert!(result.success, "loader failed: {:?}", result.error);
+        assert_eq!(result.output["status"], "loaded");
+        assert!(result.output.get("input_schema").is_none());
+
+        let loaded = mgr.list_defs_for_session("ses-lazy-builtin").await;
+        assert!(loaded.iter().any(|def| def.name == "shell"));
     }
 
     #[tokio::test]

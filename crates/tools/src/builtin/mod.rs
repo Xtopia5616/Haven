@@ -10,7 +10,9 @@ pub mod file_search;
 pub mod files;
 pub mod http;
 pub mod input;
+pub mod load_builtin;
 pub mod load_mcp;
+pub mod load_skill;
 pub mod media;
 mod media_audio;
 pub mod memory;
@@ -38,7 +40,7 @@ use crate::operation_view::{
     split_scope_operation_schema,
 };
 use crate::prompts as tool_prompts;
-use crate::registry::SessionCatalog;
+use crate::registry::{DeferredToolCatalog, SessionCatalog};
 use crate::skill_runner::SkillRunner;
 use crate::{
     ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolBox, ToolConcurrency,
@@ -145,6 +147,7 @@ pub struct BuiltinContext {
     pub server_configs: Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     pub registry: ToolRegistry,
     pub session_catalog: SessionCatalog,
+    pub deferred_catalog: DeferredToolCatalog,
     pub settings: HashMap<String, haven_common::config::ToolConfig>,
     pub limits: haven_common::config::ContextLimitsConfig,
     pub default_shell: haven_common::types::ShellChoice,
@@ -168,6 +171,7 @@ pub async fn register_builtin_tools(
         server_configs,
         registry,
         session_catalog,
+        deferred_catalog,
         settings,
         limits,
         default_shell,
@@ -214,6 +218,12 @@ pub async fn register_builtin_tools(
         .values()
         .any(|server| server.enabled);
     tools.push(Arc::new(ask::typed_adapter()));
+    tools.push(Arc::new(load_builtin::LoadBuiltinTool {
+        deferred_catalog: deferred_catalog.clone(),
+        registry: registry.clone(),
+        session_catalog: session_catalog.clone(),
+        max_tools_per_request: limits.max_tools_per_request.max(1),
+    }));
     // One media runtime serves every producer/consumer boundary. `files` and
     // `window` only create assets; interpretation and generation always land
     // in this same instance and therefore share provider routing, limits,
@@ -337,22 +347,29 @@ pub async fn register_builtin_tools(
     let agent_tool: ToolBox = Arc::new(messaging::AgentTool::new(messaging_service, agent_spawner));
     add_operation_views(tools, agent_tool, settings, AGENT_OPERATION_VIEWS);
     let max_tools = limits.max_tools_per_request.max(1);
-    // Skills are ordinary independent tools. The old progressive loader made
-    // the model spend an extra turn activating a capability that is already
-    // enabled in the user's catalog, and it also required resume-specific
-    // name matching. Rebuilding the catalog now reflects the live skills
-    // index directly.
+    // Skills are executable adapters in the deferred catalog. They become
+    // provider-visible only after the model explicitly loads one or more.
     let skill_runner = skill_runner.read().await.clone();
+    let mut has_enabled_skill = false;
     for skill in skills_engine
         .list_skills()
         .await
         .into_iter()
         .filter(|skill| skill.enabled())
     {
+        has_enabled_skill = true;
         tools.push(Arc::new(crate::SkillToolAdapter::new(
             Arc::new(skill),
             skill_runner.clone(),
         )));
+    }
+    if has_enabled_skill {
+        tools.push(Arc::new(load_skill::LoadSkillTool {
+            deferred_catalog: deferred_catalog.clone(),
+            registry: registry.clone(),
+            session_catalog: session_catalog.clone(),
+            max_tools_per_request: max_tools,
+        }));
     }
     if has_enabled_mcp {
         tools.push(Arc::new(load_mcp::LoadMcpTool {

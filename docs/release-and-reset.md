@@ -16,7 +16,9 @@ capability 入口会触发备份并以默认配置启动。当前模型入口统
 `files.*`、`system.*`、`process.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、
 `actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`；这些名称同时作为
 权限 key 与 UI renderer 的正式名称。聚合实现仍可供 native/Tauri 使用，但不再作为模型入口。
-启用 Skill 直接注册为 `skill__...`，`load_skill` 已删除；MCP 继续使用 `load_mcp` 按需加载。
+启用 Skill 只出现在紧凑能力索引中，由模型调用 `load_skill` 按名称加载为当前 session 的
+`skill__...`；内置 operation 可由 `load_builtin` 按 operation/root 加载，MCP 继续使用
+`load_mcp` 按服务器加载。完整工具 schema 只在加载成功后的后续 provider 请求中出现。
 已删除的 `haven_session_diagnostics` 及其 operation 权限也不再迁移；升级时会触发同样的备份与配置重置。
 Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 vendor/preset 值
 （例如 `deepseek-responses`）不会再作为 wire style 解释，检测到后同样备份并重置配置。

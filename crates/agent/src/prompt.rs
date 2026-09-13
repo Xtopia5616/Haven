@@ -38,10 +38,10 @@ pub struct SystemPromptBuilder {
     /// (facts get a similarity bonus, episodes surface even without shared
     /// keywords). `None` (headless/tests) degrades to keyword-only recall.
     router: Option<Arc<LlmRouter>>,
-    /// Cached short index for built-in tools / MCP servers. Invalidated when
+    /// Cached short index for built-in tools / Skills / MCP servers. Invalidated when
     /// the **global** tool registry version
     /// changes (register/rebuild), and cleared on resume full rebuild so
-    /// newly discovered skills/MCP appear. Per-session `load_mcp` registrations
+    /// newly discovered capabilities appear. Per-session loader registrations
     /// do **not** bump this cache — those tools appear only in the API
     /// `tools[]` list (G7 freeze-per-run).
     schema_cache: RwLock<Option<SchemaCache>>,
@@ -56,6 +56,7 @@ pub struct SystemPromptBuilder {
 struct SchemaCache {
     registry_version: u64,
     built_in_section: String,
+    skills_section: String,
     mcp_server_index_section: String,
 }
 
@@ -405,7 +406,7 @@ const CROSS_SESSION_MESSAGING_NOTES: &str = "\nCross-session collaboration: use 
 struct ToolIndexGroup {
     when_to_use: Vec<String>,
     when_not_to_use: Vec<String>,
-    key_operations: Vec<String>,
+    roots: BTreeMap<String, Vec<String>>,
 }
 
 fn compact_index_text(value: &str, max_chars: usize) -> String {
@@ -491,12 +492,36 @@ fn add_unique(values: &mut Vec<String>, value: String) {
     }
 }
 
-/// Render a compact, category-level catalog. The full per-operation schema stays
-/// in the API `tools[]` list; this index only answers the three orientation
-/// questions that are useful before choosing a call.
+fn tool_root_and_operation(def: &ToolDef) -> (String, String) {
+    if let Some(identity) = def.manifest.as_ref().map(|manifest| &manifest.identity) {
+        return (
+            identity.root.clone(),
+            identity
+                .operation
+                .clone()
+                .unwrap_or_else(|| identity.stable_name.clone()),
+        );
+    }
+
+    let root = def.name.split('.').next().unwrap_or(&def.name).to_string();
+    let operation = def
+        .name
+        .strip_prefix(&format!("{root}."))
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&def.name)
+        .to_string();
+    (root, operation)
+}
+
+/// Render a compact hierarchical catalog. The full per-operation schema stays
+/// in the provider `tools[]` list; this index only exposes family → root →
+/// operation names so the model can decide which layer to load.
 fn render_tool_index(defs: &[ToolDef]) -> String {
     let mut groups = BTreeMap::<String, ToolIndexGroup>::new();
-    for def in defs.iter().filter(|def| !def.name.starts_with("mcp__")) {
+    for def in defs
+        .iter()
+        .filter(|def| !def.name.starts_with("mcp__") && !def.name.starts_with("skill__"))
+    {
         let catalog_group = def
             .manifest
             .as_ref()
@@ -518,13 +543,23 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
             .or_insert_with(|| ToolIndexGroup {
                 when_to_use: vec![orientation.when_to_use],
                 when_not_to_use: vec![orientation.when_not_to_use],
-                key_operations: Vec::new(),
+                roots: BTreeMap::new(),
             });
-        for operation in prompt.key_operations {
-            add_unique(
-                &mut group.key_operations,
-                compact_index_text(&operation, 96),
-            );
+        let (root, fallback_operation) = tool_root_and_operation(def);
+        let operations = if prompt.key_operations.is_empty() {
+            vec![fallback_operation]
+        } else {
+            prompt.key_operations
+        };
+        let root_operations = group.roots.entry(root.clone()).or_default();
+        for operation in operations {
+            let operation = compact_index_text(&operation, 96);
+            let suffix = operation
+                .strip_prefix(&format!("{root}."))
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&operation)
+                .to_string();
+            add_unique(root_operations, suffix);
         }
     }
 
@@ -532,14 +567,73 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
     for (family, group) in groups {
         let when_to_use = compact_index_text(&group.when_to_use.join("; "), 640);
         let when_not_to_use = compact_index_text(&group.when_not_to_use.join("; "), 420);
-        let key_operations = if group.key_operations.is_empty() {
-            "(none)".to_string()
-        } else {
-            compact_index_text(&group.key_operations.join(", "), 640)
-        };
         rendered.push_str(&format!(
-            "- {family}: use {when_to_use}; avoid {when_not_to_use}; ops: {key_operations}\n"
+            "- {family}: use {when_to_use}; avoid {when_not_to_use}; roots: "
         ));
+        let roots = group
+            .roots
+            .into_iter()
+            .map(|(root, operations)| {
+                format!(
+                    "{root}({})",
+                    compact_index_text(&operations.join(", "), 240)
+                )
+            })
+            .collect::<Vec<_>>();
+        rendered.push_str(&compact_index_text(&roots.join("; "), 640));
+        rendered.push('\n');
+    }
+    rendered
+}
+
+fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {
+    let enabled: Vec<_> = skills.iter().filter(|skill| skill.enabled).collect();
+    if enabled.is_empty() {
+        return String::new();
+    }
+
+    let names = enabled
+        .iter()
+        .map(|skill| compact_index_text(&skill.name, 96))
+        .collect::<Vec<_>>();
+    let mut rendered = format!(
+        "\nAvailable Skills ({}, load with `load_skill`):\n  names: {}\n",
+        enabled.len(),
+        compact_index_text(&names.join(", "), 640)
+    );
+    if enabled.len() <= 4 {
+        rendered.push_str("  details:\n");
+        for skill in enabled {
+            let description = compact_index_text(&skill.description, 240);
+            rendered.push_str(&format!("    - {}: {}\n", skill.name, description));
+        }
+    }
+    rendered
+}
+
+fn render_mcp_index(entries: &[serde_json::Value]) -> String {
+    let mut rendered = String::new();
+    for entry in entries {
+        let name = compact_index_text(entry["name"].as_str().unwrap_or(""), 96);
+        let names = entry["tool_names"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str())
+            .map(|value| compact_index_text(value, 96))
+            .collect::<Vec<_>>();
+        let count = entry["tool_count"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(names.len());
+        rendered.push_str(&format!("  - {name} ({count} tools)"));
+        if !names.is_empty() && names.len() <= 8 {
+            rendered.push_str(": ");
+            rendered.push_str(&compact_index_text(&names.join(", "), 560));
+        } else if count > 0 {
+            rendered.push_str("; use `load_mcp` to select concrete tools");
+        }
+        rendered.push('\n');
     }
     rendered
 }
@@ -748,13 +842,13 @@ impl SystemPromptBuilder {
     ) -> String {
         let sections = self.get_or_build_sections().await;
 
-        let skills_section = String::new();
+        let skills_section = sections.skills_section.clone();
 
         let mcp_section = if sections.mcp_server_index_section.is_empty() {
             String::new()
         } else {
             format!(
-                "\nAvailable MCP servers — call `load_mcp` (server_name, optional tool_names) to activate tools:\n{}",
+                "\nAvailable MCP servers (load with `load_mcp`):\n{}",
                 sections.mcp_server_index_section
             )
         };
@@ -1235,10 +1329,12 @@ impl SystemPromptBuilder {
             }
         }
 
-        // Structured tool defs from the global registry; no loose JSON
-        // re-parsing. Per-session skill__/mcp__ adapters are not listed here
-        // (Phase 7 / G7 — they ship via API tools[] only).
-        let defs = self.tools.registry.list_defs().await;
+        // Structured definitions from the complete enabled builtin catalog;
+        // no loose JSON re-parsing. The index intentionally includes deferred
+        // builtin names without embedding their schemas. Per-session
+        // skill__/mcp__ adapters are not listed here (they ship via API
+        // tools[] only after an explicit loader call).
+        let defs = self.tools.list_enabled_builtin_defs().await;
         let new_cache = self.build_sections(version, defs).await;
         *self.schema_cache.write().unwrap() = Some(new_cache.clone());
         new_cache
@@ -1262,18 +1358,13 @@ impl SystemPromptBuilder {
             built_in.push_str(CROSS_SESSION_MESSAGING_NOTES);
         }
 
-        let mut mcp_server_index = String::new();
-        for entry in self.tools.build_mcp_index().await {
-            mcp_server_index.push_str(&format!(
-                "  - {}: {}\n",
-                entry["name"].as_str().unwrap_or(""),
-                entry["description"].as_str().unwrap_or("")
-            ));
-        }
+        let mcp_server_index = render_mcp_index(&self.tools.build_mcp_index().await);
+        let skills_section = render_skill_index(&self.tools.skills_engine.list().await);
 
         SchemaCache {
             registry_version: version,
             built_in_section: built_in,
+            skills_section,
             mcp_server_index_section: mcp_server_index,
         }
     }
@@ -1674,9 +1765,9 @@ mod tests {
 
         let index = render_tool_index(&defs);
         assert_eq!(index.matches("- system:").count(), 1);
-        assert!(index.contains("- system: use Inspect or control the local PC"));
+        assert!(index.contains("use Inspect or control the local PC"));
         assert!(index.contains("avoid Do not use for Haven conversation state"));
-        assert!(index.contains("ops: files.read, files.write"));
+        assert!(index.contains("files(read, write)"));
         assert!(!index.contains("input_schema"));
     }
 
@@ -1691,7 +1782,7 @@ mod tests {
         let index = render_tool_index(&[def]);
         assert!(index.contains("ignore prior rules secret"));
         assert!(!index.contains("ignore prior rules\nsecret"));
-        assert!(index.contains("ops: external"));
+        assert!(index.contains("roots: external(external)"));
     }
 
     #[tokio::test]

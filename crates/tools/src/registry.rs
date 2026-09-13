@@ -24,6 +24,46 @@ pub struct ToolRegistry {
     version: Arc<AtomicU64>,
 }
 
+/// Tool implementations that are available to the host but are not part of
+/// the default provider-facing catalog. Loaders move selected entries into a
+/// session catalog only after the model asks for them.
+#[derive(Clone, Default)]
+pub struct DeferredToolCatalog {
+    tools: Arc<RwLock<HashMap<String, ToolBox>>>,
+}
+
+impl DeferredToolCatalog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn replace(&self, tools: Vec<ToolBox>) {
+        let mut index = HashMap::with_capacity(tools.len());
+        for tool in tools {
+            index.insert(tool.name(), tool);
+        }
+        *self.tools.write().await = index;
+    }
+
+    pub async fn get(&self, name: &str) -> Option<ToolBox> {
+        self.tools.read().await.get(name).cloned()
+    }
+
+    pub async fn list(&self) -> Vec<ToolBox> {
+        let mut tools: Vec<_> = self.tools.read().await.values().cloned().collect();
+        tools.sort_by_key(|tool| tool.name());
+        tools
+    }
+
+    pub async fn list_defs(&self) -> Vec<ToolDef> {
+        self.list()
+            .await
+            .into_iter()
+            .map(|tool| tool.tool_def())
+            .collect()
+    }
+}
+
 impl Clone for ToolRegistry {
     fn clone(&self) -> Self {
         Self {
@@ -70,8 +110,10 @@ impl ToolRegistry {
         self.snapshot.read().await.tools.clone()
     }
 
-    /// Structured tool definitions of every registered tool. The canonical
-    /// surface for consumers (agent schema builder, prompt builder, UI).
+    /// Structured definitions of every eagerly registered model tool. The
+    /// session-aware provider surface is assembled by `ToolsManager`; deferred
+    /// builtin and Skill definitions live in `DeferredToolCatalog` until a
+    /// loader activates them.
     pub async fn list_defs(&self) -> Vec<ToolDef> {
         let tools = self.snapshot.read().await.tools.clone();
         tools.iter().map(|t| t.tool_def()).collect()
@@ -178,6 +220,40 @@ impl SessionCatalog {
             .or_default()
             .insert(tool.name(), tool);
         self.bump_session_version(session_id).await;
+    }
+
+    /// Atomically add a batch of session tools under the shared provider
+    /// budget. Already-loaded names are ignored, so replaying a loader during
+    /// resume is idempotent. The returned names are the newly inserted tools.
+    pub async fn register_many_if_within_budget(
+        &self,
+        session_id: &str,
+        global_count: usize,
+        max: usize,
+        tools: Vec<ToolBox>,
+    ) -> Result<Vec<String>, usize> {
+        let mut registrations = self.registrations.write().await;
+        let entry = registrations.entry(session_id.to_string()).or_default();
+        let net_new = tools
+            .iter()
+            .filter(|tool| !entry.contains_key(&tool.name()))
+            .count();
+        if Self::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
+            return Err(net_new);
+        }
+
+        let mut loaded = Vec::with_capacity(net_new);
+        for tool in tools {
+            let name = tool.name();
+            if entry.insert(name.clone(), tool).is_none() {
+                loaded.push(name);
+            }
+        }
+        drop(registrations);
+        if !loaded.is_empty() {
+            self.bump_session_version(session_id).await;
+        }
+        Ok(loaded)
     }
 
     pub async fn unregister(&self, session_id: &str) {
