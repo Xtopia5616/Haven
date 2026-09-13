@@ -135,3 +135,4 @@
 - [0140：工具 Schema 与 Prompt 目录收敛](0140-tool-schema-and-prompt-catalog.md)
 - [0141：统一工具目录分类](0141-unified-tool-catalog-groups.md)
 - [0142：工具 Manifest、OperationSpec 与统一结果元数据](0142-tool-manifest-operation-policy.md)
+- [0143：工具目录预算与高层交互能力](0143-tool-ergonomic-capabilities.md)

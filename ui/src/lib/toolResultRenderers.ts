@@ -16,7 +16,7 @@ import ToolScheduleResult from './ToolScheduleResult.svelte';
 import ToolSystemResult from './ToolSystemResult.svelte';
 import ToolWebSearchResult from './ToolWebSearchResult.svelte';
 import ToolWindowResult from './ToolWindowResult.svelte';
-import { toolRootName } from './toolManifest.ts';
+import { toolRendererName, toolRootName } from './toolManifest.ts';
 
 const renderers = {
 	shell: ToolShellResult,
@@ -39,24 +39,34 @@ export function getToolResultRenderer(
 ) {
 	// The event/catalog discriminator is authoritative for new calls. The
 	// payload-shape branches below remain only for legacy/resumed messages.
-	if (kind === 'custom' && resultRenderer === 'files.search') return ToolFileSearchResult;
-	const rootToolName = resultRenderer || toolRootName(toolName);
+	const rendererName = resultRenderer || toolRendererName(toolName);
+	const rootToolName = toolRootName(toolName);
+	const selectedRenderer = rendererName || rootToolName;
+	if (kind === 'custom' && selectedRenderer === 'files.search') return ToolFileSearchResult;
 	if (
 		kind === 'custom' &&
 		isMediaOperationResult(_data) &&
-		rootToolName !== 'media'
+		rootToolName !== 'media' &&
+		selectedRenderer !== 'media'
 	)
 		return ToolMediaResult;
-	if (kind === 'custom' && rootToolName === 'agent') return ToolAgentResult;
-	if (kind === 'custom' && rootToolName === 'process') return ToolProcessResult;
-	if (kind === 'custom' && rootToolName === 'clipboard') return ToolClipboardResult;
-	if (kind === 'custom' && rootToolName === 'input') return ToolInputResult;
-	if (kind === 'custom' && rootToolName === 'window') return ToolWindowResult;
-	if (kind === 'custom' && rootToolName === 'actions') return ToolActionResult;
-	if (kind === 'custom' && rootToolName === 'schedule') return ToolScheduleResult;
+	if (kind === 'custom' && (selectedRenderer === 'agent' || rootToolName === 'agent'))
+		return ToolAgentResult;
+	if (kind === 'custom' && (selectedRenderer === 'process' || rootToolName === 'process'))
+		return ToolProcessResult;
+	if (kind === 'custom' && (selectedRenderer === 'clipboard' || rootToolName === 'clipboard'))
+		return ToolClipboardResult;
+	if (kind === 'custom' && (selectedRenderer === 'input' || rootToolName === 'input'))
+		return ToolInputResult;
+	if (kind === 'custom' && (selectedRenderer === 'window' || rootToolName === 'window'))
+		return ToolWindowResult;
+	if (kind === 'custom' && (selectedRenderer === 'actions' || rootToolName === 'actions'))
+		return ToolActionResult;
+	if (kind === 'custom' && (selectedRenderer === 'schedule' || rootToolName === 'schedule'))
+		return ToolScheduleResult;
 	if (
 		kind === 'custom' &&
-		rootToolName === 'files' &&
+		(rootToolName === 'files' || selectedRenderer === 'files') &&
 		typeof _data === 'object' &&
 		_data !== null &&
 		'media' in _data
@@ -64,7 +74,7 @@ export function getToolResultRenderer(
 		return ToolMediaResult;
 	if (
 		kind === 'custom' &&
-		rootToolName === 'files' &&
+		(rootToolName === 'files' || selectedRenderer === 'files') &&
 		typeof _data === 'object' &&
 		_data !== null &&
 		!('results' in _data)
@@ -72,14 +82,14 @@ export function getToolResultRenderer(
 		return ToolFileResult;
 	if (
 		kind === 'custom' &&
-		rootToolName === 'files' &&
+		(rootToolName === 'files' || selectedRenderer === 'files') &&
 		typeof _data === 'object' &&
 		_data !== null &&
 		'results' in _data &&
 		Array.isArray(_data.results)
 	)
 		return ToolFileSearchResult;
-	if (kind === 'custom' && rootToolName === 'system') {
+	if (kind === 'custom' && (rootToolName === 'system' || selectedRenderer === 'system')) {
 		const scope =
 			typeof _data === 'object' && _data !== null && 'scope' in _data
 				? (_data as { scope?: unknown }).scope
@@ -90,7 +100,13 @@ export function getToolResultRenderer(
 		if (scope === 'input') return ToolInputResult;
 		return ToolSystemResult;
 	}
-	if (kind === 'custom' && rootToolName === 'haven') {
+	if (
+		kind === 'custom' &&
+		(rootToolName === 'haven' ||
+			selectedRenderer === 'haven' ||
+			selectedRenderer === 'admin' ||
+			selectedRenderer === 'settings')
+	) {
 		const operation =
 			typeof _data === 'object' && _data !== null && 'operation' in _data
 				? (_data as { operation?: unknown }).operation
@@ -110,11 +126,15 @@ export function getToolResultRenderer(
 		)
 	)
 		return ToolAdminResult;
-	if (kind === 'custom' && rootToolName === 'http') return ToolHttpResult;
-	if (kind === 'custom' && rootToolName === 'web_search') return ToolWebSearchResult;
-	if (kind === 'custom' && rootToolName === 'memory') return ToolMemoryResult;
-	if (kind === 'custom' && rootToolName === 'media') return ToolMediaResult;
-	return kind ? renderers[kind as keyof typeof renderers] ?? null : null;
+	if (kind === 'custom' && (rootToolName === 'http' || selectedRenderer === 'http'))
+		return ToolHttpResult;
+	if (kind === 'custom' && (rootToolName === 'web_search' || selectedRenderer === 'web_search'))
+		return ToolWebSearchResult;
+	if (kind === 'custom' && (rootToolName === 'memory' || selectedRenderer === 'memory'))
+		return ToolMemoryResult;
+	if (kind === 'custom' && (rootToolName === 'media' || selectedRenderer === 'media'))
+		return ToolMediaResult;
+	return kind ? (renderers[kind as keyof typeof renderers] ?? null) : null;
 }
 
 function isMediaOperationResult(value: unknown): boolean {
@@ -122,7 +142,22 @@ function isMediaOperationResult(value: unknown): boolean {
 	const data = value as { operation?: unknown; asset_id?: unknown; media?: unknown };
 	return (
 		typeof data.operation === 'string' &&
-		['inspect', 'describe', 'ocr', 'transcribe', 'extract', 'generate', 'record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) &&
-		(typeof data.asset_id === 'string' || (typeof data.media === 'object' && data.media !== null))
+		[
+			'inspect',
+			'describe',
+			'ocr',
+			'transcribe',
+			'extract',
+			'generate',
+			'record',
+			'play',
+			'speak',
+			'volume_get',
+			'volume_set',
+			'mute_get',
+			'mute_set',
+		].includes(data.operation) &&
+		(typeof data.asset_id === 'string' ||
+			(typeof data.media === 'object' && data.media !== null))
 	);
 }

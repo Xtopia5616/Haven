@@ -142,11 +142,10 @@
 	let toolDataUsage = $derived(
 		type === 'tool' ? estimateToolDataTokens(toolName, toolArgs, displayContent) : null,
 	);
+	let resultRenderer = $derived(renderer || toolRendererName(toolName));
 
 	let parsed = $derived(
-		type === 'tool'
-			? parseToolResult(toolName, displayContent, renderer || toolRendererName(toolName))
-			: null,
+		type === 'tool' ? parseToolResult(toolName, displayContent, resultRenderer) : null,
 	);
 
 	// Keep live output visible while a tool is running, then collapse the card
@@ -180,8 +179,10 @@
 			return 'cpu';
 		}
 		if (rootToolName === 'haven') {
-			if (typeof data.operation === 'string' && data.operation.startsWith('actions_')) return 'clock';
-			if (typeof data.operation === 'string' && data.operation.startsWith('schedule_')) return 'bell';
+			if (typeof data.operation === 'string' && data.operation.startsWith('actions_'))
+				return 'clock';
+			if (typeof data.operation === 'string' && data.operation.startsWith('schedule_'))
+				return 'bell';
 			return 'settings';
 		}
 		if (rootToolName === 'files') return 'file';
@@ -191,9 +192,7 @@
 		if (rootToolName === 'media') return 'image';
 		return 'tools';
 	});
-	let BodyRenderer = $derived(
-		getToolResultRenderer(kind, toolName, data, renderer || toolRendererName(toolName)),
-	);
+	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data, resultRenderer));
 	const toolStateLabels = /** @type {Record<string, string>} */ ({
 		running: '执行中',
 		completed: '完成',

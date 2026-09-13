@@ -28,19 +28,22 @@ export type ToolManifest = {
 	};
 };
 
-const manifests = new Map<string, ToolManifest>();
+let manifests = new Map<string, ToolManifest>();
 
 /** Replace the live catalog snapshot received from the backend. */
 export function setToolManifests(entries: unknown): void {
-	if (!Array.isArray(entries)) return;
-	for (const entry of entries) {
-		const candidate =
-			entry && typeof entry === 'object' && 'manifest' in entry
-				? (entry as { manifest?: unknown }).manifest
-				: entry;
-		if (!isToolManifest(candidate)) continue;
-		manifests.set(candidate.identity.stable_name, candidate);
+	const next = new Map<string, ToolManifest>();
+	if (Array.isArray(entries)) {
+		for (const entry of entries) {
+			const candidate =
+				entry && typeof entry === 'object' && 'manifest' in entry
+					? (entry as { manifest?: unknown }).manifest
+					: entry;
+			if (!isToolManifest(candidate)) continue;
+			next.set(candidate.identity.stable_name, candidate);
+		}
 	}
+	manifests = next;
 }
 
 export function getToolManifest(toolName: string): ToolManifest | null {
@@ -51,10 +54,10 @@ export function toolRendererName(toolName: string): string | null {
 	return getToolManifest(toolName)?.presentation.renderer ?? null;
 }
 
-/** Renderer root, with a compatibility fallback for old persisted messages. */
+/** Tool family/group root, with a compatibility fallback for old messages. */
 export function toolRootName(toolName: string): string {
 	const manifest = getToolManifest(toolName);
-	return manifest?.presentation.renderer || manifest?.identity.root || legacyRootName(toolName);
+	return manifest?.identity.root || legacyRootName(toolName);
 }
 
 export function toolIconName(toolName: string): string | null {

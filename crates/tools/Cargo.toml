@@ -35,6 +35,7 @@ haven-llm = { path = "../llm" }
 haven-input = { path = "../input" }
 futures-util.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
+encoding_rs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

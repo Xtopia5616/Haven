@@ -36,7 +36,12 @@ export function parseToolResult(
 	content: string,
 	resultRenderer: string | null = null,
 ): ParsedToolResult | null {
-	const rootToolName = resultRenderer || toolRootName(toolName);
+	// Root identifies the tool family and stays independent from the renderer
+	// component. A renderer such as `files.search` or `settings` must never
+	// change the family used for result-shape detection. The renderer argument
+	// remains part of this API for event compatibility; component selection is
+	// handled by `toolResultRenderers.ts`.
+	const rootToolName = toolRootName(toolName);
 	// Empty content is still a shell card while streaming / waiting for the
 	// first live-output chunk (or a background action bind).
 	if (!content) {
@@ -67,9 +72,7 @@ export function parseToolResult(
 		// JSON arrays / primitives — pretty-printed in the raw card.
 		return { kind: 'raw', data };
 	}
-	return customShape(rootToolName === 'files.search' ? 'files' : rootToolName, data)
-		? { kind: 'custom', data }
-		: { kind: 'generic', data };
+	return customShape(rootToolName, data) ? { kind: 'custom', data } : { kind: 'generic', data };
 }
 
 /** Match a JSON observation against a dedicated renderer shape. */
@@ -140,8 +143,23 @@ function customShape(toolName: string, data: ToolResultObject): ToolResultObject
 			return data;
 		case 'media':
 			return typeof data.operation === 'string' &&
-				(['inspect', 'describe', 'ocr', 'transcribe', 'extract', 'generate', 'record', 'play', 'speak', 'volume_get', 'volume_set', 'mute_get', 'mute_set'].includes(data.operation) ||
-					typeof data.asset_id === 'string' || isObject(data.media))
+				([
+					'inspect',
+					'describe',
+					'ocr',
+					'transcribe',
+					'extract',
+					'generate',
+					'record',
+					'play',
+					'speak',
+					'volume_get',
+					'volume_set',
+					'mute_get',
+					'mute_set',
+				].includes(data.operation) ||
+					typeof data.asset_id === 'string' ||
+					isObject(data.media))
 				? data
 				: null;
 		case 'haven':

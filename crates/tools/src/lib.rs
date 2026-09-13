@@ -190,6 +190,136 @@ fn sanitize_index_field(s: &str) -> String {
     haven_common::text::sanitize_prompt_field(s, 256)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ToolBudgetPriority {
+    /// Builtin operation views are the stable core surface. They must be
+    /// considered before any user-extensible source.
+    Builtin = 0,
+    /// A tool explicitly loaded into this session (normally an MCP tool) is
+    /// preferred over globally enabled optional tools. This preserves the
+    /// meaning of a successful explicit load without changing its admission
+    /// check in `register_mcp_for_session`.
+    Session = 1,
+    /// Globally enabled skills are useful, but must not displace the core
+    /// operation views when the provider budget is tight.
+    Optional = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolBudgetOrigin {
+    Global,
+    Session,
+}
+
+#[derive(Debug)]
+struct ToolBudgetCandidate {
+    def: ToolDef,
+    origin: ToolBudgetOrigin,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ToolBudgetSelection {
+    selected: Vec<ToolDef>,
+    omitted: Vec<String>,
+    omitted_core: usize,
+}
+
+impl ToolBudgetCandidate {
+    fn source(&self) -> Option<ToolSource> {
+        self.def
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.identity.source)
+            .or_else(|| {
+                // ToolDef is the shared contract, but keep the selector
+                // defensive for legacy/custom definitions that predate the
+                // manifest field. The name prefixes are the same canonical
+                // boundaries used by the adapters.
+                if self.def.name.starts_with("skill__") {
+                    Some(ToolSource::Skill)
+                } else if self.def.name.starts_with("mcp__") {
+                    Some(ToolSource::Mcp)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn priority(&self) -> ToolBudgetPriority {
+        if self.origin == ToolBudgetOrigin::Session {
+            // Registration location is authoritative here. A custom tool
+            // created through the default Tool implementation may carry a
+            // Builtin source in its inferred manifest, but it is still an
+            // explicit session overlay rather than part of the core catalog.
+            return ToolBudgetPriority::Session;
+        }
+        match self.source() {
+            Some(ToolSource::Builtin) => ToolBudgetPriority::Builtin,
+            Some(ToolSource::Skill | ToolSource::Mcp) | None => ToolBudgetPriority::Optional,
+        }
+    }
+}
+
+/// Select a stable provider-facing tool surface under the per-request budget.
+///
+/// The registry order is an implementation detail and must not decide which
+/// capabilities survive a tight provider limit. Builtins are always selected
+/// before optional sources; explicitly registered session tools (including
+/// MCP tools admitted by `register_mcp_for_session`) come next; globally
+/// enabled skills are last. Every bucket is sorted by stable tool name so the
+/// result does not depend on HashMap iteration or skill discovery order.
+///
+/// The returned omitted names are intentionally kept separate from the
+/// provider definitions. The current public API returns only `Vec<ToolDef>`,
+/// so `list_defs_for_session` logs this explanation without changing the
+/// cross-crate contract.
+fn select_tool_defs_for_budget(
+    global: Vec<ToolDef>,
+    session: Vec<ToolDef>,
+    max: usize,
+) -> ToolBudgetSelection {
+    let mut candidates: Vec<_> = global
+        .into_iter()
+        .map(|def| ToolBudgetCandidate {
+            def,
+            origin: ToolBudgetOrigin::Global,
+        })
+        .chain(session.into_iter().map(|def| ToolBudgetCandidate {
+            def,
+            origin: ToolBudgetOrigin::Session,
+        }))
+        .collect();
+
+    candidates.sort_by(|a, b| {
+        a.priority()
+            .cmp(&b.priority())
+            .then_with(|| a.def.name.cmp(&b.def.name))
+    });
+
+    let selected_len = max.max(1).min(candidates.len());
+    let omitted_core = candidates
+        .iter()
+        .skip(selected_len)
+        .filter(|candidate| candidate.priority() == ToolBudgetPriority::Builtin)
+        .count();
+    let omitted = candidates
+        .iter()
+        .skip(selected_len)
+        .map(|candidate| candidate.def.name.clone())
+        .collect();
+    let selected = candidates
+        .into_iter()
+        .take(selected_len)
+        .map(|candidate| candidate.def)
+        .collect();
+
+    ToolBudgetSelection {
+        selected,
+        omitted,
+        omitted_core,
+    }
+}
+
 pub struct ToolsManager {
     pub registry: ToolRegistry,
     pub mcp_manager: McpManager,
@@ -980,9 +1110,12 @@ impl ToolsManager {
     /// surface the ReAct loop turns into provider tool definitions and the
     /// schema listing is derived from — no loose JSON assembly in consumers.
     ///
-    /// Capped at `context_limits.max_tools_per_request`: builtins are kept
-    /// first; session overlays are sorted by name and truncated to fit so a
-    /// runaway `load_mcp` history cannot 400 the provider.
+    /// Capped at `context_limits.max_tools_per_request` with deterministic
+    /// source-aware selection. Core builtin operation views are kept before
+    /// explicitly loaded session tools and globally enabled skills. A
+    /// successful MCP load still uses the all-or-nothing admission check in
+    /// `register_mcp_for_session`; this method only handles defensive
+    /// selection if the catalog later grows beyond the provider limit.
     pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
         let max = self
             .context_limits
@@ -990,22 +1123,26 @@ impl ToolsManager {
             .await
             .max_tools_per_request
             .max(1);
-        let mut defs = self.registry.list_defs().await;
-        let global_len = defs.len();
-        defs.extend(self.session_catalog.list_defs(session_id).await);
-        if defs.len() > max {
+        let global_defs = self.registry.list_defs().await;
+        let global_len = global_defs.len();
+        let session_defs = self.session_catalog.list_defs(session_id).await;
+        let total = global_len + session_defs.len();
+        let selection = select_tool_defs_for_budget(global_defs, session_defs, max);
+        if !selection.omitted.is_empty() {
+            let omitted_tools = selection.omitted.join(", ");
             tracing::warn!(
                 session_id,
-                total = defs.len(),
+                total,
                 max,
                 global = global_len,
-                "list_defs_for_session: truncating tools to max_tools_per_request (builtins kept first)"
+                selected = selection.selected.len(),
+                omitted = selection.omitted.len(),
+                omitted_core = selection.omitted_core,
+                omitted_tools = %omitted_tools,
+                "list_defs_for_session: omitted tools from max_tools_per_request budget; core builtins are selected before optional sources"
             );
-            // Prefer builtins: if they alone exceed max, truncate them; else
-            // drop the overflow from the (already sorted) session tail.
-            defs.truncate(max);
         }
-        defs
+        selection.selected
     }
 
     /// Return tool schemas for a session: global registry schemas derived
@@ -1553,6 +1690,97 @@ mod tests {
         assert_eq!(second.len(), 64);
         assert!(first.starts_with("mcp__"));
         assert_ne!(first, second);
+    }
+
+    fn budget_test_def(name: &str, source: ToolSource) -> ToolDef {
+        ToolDef::new(
+            name,
+            format!("test tool {name}"),
+            json!({"type": "object"}),
+            RiskLevel::Safe,
+        )
+        .with_manifest(ToolManifest {
+            identity: ToolIdentity {
+                source,
+                catalog_group: haven_common::tools::ToolCatalogGroup::Other,
+                root: name.split('.').next().unwrap_or(name).into(),
+                operation: None,
+                stable_name: name.into(),
+            },
+            model: ToolModel {
+                name: name.into(),
+                description: format!("test tool {name}"),
+                input_schema: json!({"type": "object"}),
+            },
+            policy: ToolPolicy {
+                risk_level: RiskLevel::Safe,
+                permission_key: String::new(),
+                confirmation: "none".into(),
+                idempotency: "safe".into(),
+                scope: "session".into(),
+                concurrency: "exclusive".into(),
+            },
+            presentation: ToolPresentation {
+                label: name.into(),
+                renderer: "tools".into(),
+                icon: "tools".into(),
+            },
+            prompt: haven_common::tools::ToolPrompt {
+                when_to_use: "test".into(),
+                when_not_to_use: "never".into(),
+                key_operations: vec![name.into()],
+            },
+            availability: ToolAvailability::default(),
+        })
+    }
+
+    #[test]
+    fn tool_budget_selection_is_source_aware_and_deterministic() {
+        let selection = select_tool_defs_for_budget(
+            vec![
+                budget_test_def("skill__z", ToolSource::Skill),
+                budget_test_def("core.z", ToolSource::Builtin),
+                budget_test_def("skill__a", ToolSource::Skill),
+                budget_test_def("core.a", ToolSource::Builtin),
+            ],
+            vec![
+                budget_test_def("mcp__z", ToolSource::Mcp),
+                budget_test_def("mcp__a", ToolSource::Mcp),
+            ],
+            4,
+        );
+
+        let selected: Vec<_> = selection
+            .selected
+            .iter()
+            .map(|def| def.name.as_str())
+            .collect();
+        assert_eq!(selected, ["core.a", "core.z", "mcp__a", "mcp__z"]);
+        assert_eq!(selection.omitted, ["skill__a", "skill__z"]);
+        assert_eq!(selection.omitted_core, 0);
+    }
+
+    #[test]
+    fn tool_budget_selection_reports_core_omissions_when_core_exceeds_limit() {
+        let selection = select_tool_defs_for_budget(
+            vec![
+                budget_test_def("core.c", ToolSource::Builtin),
+                budget_test_def("skill__a", ToolSource::Skill),
+                budget_test_def("core.a", ToolSource::Builtin),
+                budget_test_def("core.b", ToolSource::Builtin),
+            ],
+            Vec::new(),
+            2,
+        );
+
+        let selected: Vec<_> = selection
+            .selected
+            .iter()
+            .map(|def| def.name.as_str())
+            .collect();
+        assert_eq!(selected, ["core.a", "core.b"]);
+        assert_eq!(selection.omitted, ["core.c", "skill__a"]);
+        assert_eq!(selection.omitted_core, 1);
     }
 
     #[tokio::test]

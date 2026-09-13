@@ -16,6 +16,81 @@ const UI_TREE_CAP: usize = 100;
 const WAIT_POLL_MS: u64 = 200;
 const WAIT_UI_POLL_MS: u64 = 500;
 
+/// Canonical UI Automation control type names accepted by element input.
+/// These names intentionally mirror the existing `window.ui_tree` output and
+/// are matched case-sensitively so a request cannot silently broaden its
+/// target.
+pub(crate) const UIA_CONTROL_TYPE_NAMES: &[&str] = &[
+    "Button",
+    "Calendar",
+    "CheckBox",
+    "ComboBox",
+    "Edit",
+    "Hyperlink",
+    "Image",
+    "ListItem",
+    "List",
+    "Menu",
+    "MenuBar",
+    "MenuItem",
+    "ProgressBar",
+    "RadioButton",
+    "ScrollBar",
+    "Slider",
+    "Spinner",
+    "StatusBar",
+    "Tab",
+    "TabItem",
+    "Text",
+    "ToolBar",
+    "ToolTip",
+    "Tree",
+    "TreeItem",
+    "Custom",
+    "Group",
+    "Thumb",
+    "DataGrid",
+    "DataItem",
+    "Document",
+    "SplitButton",
+    "Window",
+    "Pane",
+    "Header",
+    "HeaderItem",
+    "Table",
+    "TitleBar",
+    "Separator",
+];
+
+#[derive(Debug, Clone)]
+pub(crate) struct UiElementQuery {
+    pub title: Option<String>,
+    pub name: String,
+    pub control_type: Option<String>,
+    pub index: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UiElementTarget {
+    pub name: String,
+    pub control_type: String,
+    pub index: usize,
+    pub center_x: i64,
+    pub center_y: i64,
+}
+
+pub(crate) fn is_known_ui_control_type(control_type: &str) -> bool {
+    UIA_CONTROL_TYPE_NAMES.contains(&control_type)
+}
+
+pub(crate) fn resolve_ui_element(query: &UiElementQuery) -> anyhow::Result<UiElementTarget> {
+    imp::resolve_ui_element(query)
+}
+
+pub(crate) fn focus_ui_element(query: &UiElementQuery) -> anyhow::Result<UiElementTarget> {
+    imp::focus_ui_element(query)
+}
+
 struct ManagedCapture {
     asset: ManagedAsset,
     width: u64,
@@ -979,6 +1054,171 @@ mod imp {
         .contains(&id)
     }
 
+    fn ui_automation_target_hwnd(title: Option<&str>) -> anyhow::Result<HWND> {
+        let target_hwnd = if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
+            let hwnd = find_window_by_title(t.trim())?;
+            if hwnd.is_null() {
+                anyhow::bail!("no window found matching '{}'", t);
+            }
+            hwnd
+        } else {
+            unsafe { GetForegroundWindow() }
+        };
+        if target_hwnd.is_null() {
+            anyhow::bail!("no target window available for UI Automation");
+        }
+        Ok(target_hwnd)
+    }
+
+    fn ui_automation_element(
+        query: &super::UiElementQuery,
+    ) -> anyhow::Result<(
+        windows::Win32::UI::Accessibility::IUIAutomationElement,
+        super::UiElementTarget,
+    )> {
+        use windows::Win32::Foundation::HWND as WinHwnd;
+        use windows::Win32::System::Com::*;
+        use windows::Win32::UI::Accessibility::*;
+
+        if let Some(control_type) = query.control_type.as_deref()
+            && !super::is_known_ui_control_type(control_type)
+        {
+            anyhow::bail!(
+                "control_type must be one of the supported UI Automation control type names"
+            );
+        }
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let target_hwnd = ui_automation_target_hwnd(query.title.as_deref())?;
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)? };
+        let root = unsafe { automation.ElementFromHandle(WinHwnd(target_hwnd))? };
+        let condition = unsafe { automation.CreateTrueCondition()? };
+        let array = unsafe { root.FindAll(TreeScope_Descendants, &condition)? };
+        let len = unsafe { array.Length()? }.max(0) as usize;
+
+        let mut matches = Vec::new();
+        for i in 0..len {
+            let element = match unsafe { array.GetElement(i as i32) } {
+                Ok(element) => element,
+                Err(_) => continue,
+            };
+            let control_type = match unsafe { element.CurrentControlType() } {
+                Ok(control_type) => control_type.0,
+                Err(_) => continue,
+            };
+            if !is_interactive_control(control_type) {
+                continue;
+            }
+            let control_type_name = control_type_name(control_type);
+            if query
+                .control_type
+                .as_deref()
+                .is_some_and(|wanted| wanted != control_type_name)
+            {
+                continue;
+            }
+            let name = unsafe { element.CurrentName() }
+                .ok()
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            if name != query.name {
+                continue;
+            }
+            let enabled = unsafe { element.CurrentIsEnabled() }
+                .ok()
+                .map(|value| value.as_bool())
+                .unwrap_or(false);
+            let bounds = unsafe { element.CurrentBoundingRectangle() }.ok();
+            let bounds_valid = bounds
+                .as_ref()
+                .is_some_and(|bounds| bounds.right > bounds.left && bounds.bottom > bounds.top);
+            let (center_x, center_y) = bounds
+                .filter(|bounds| bounds.right > bounds.left && bounds.bottom > bounds.top)
+                .map(|bounds| {
+                    (
+                        i64::from(bounds.left) + i64::from(bounds.right - bounds.left) / 2,
+                        i64::from(bounds.top) + i64::from(bounds.bottom - bounds.top) / 2,
+                    )
+                })
+                .unwrap_or((0, 0));
+            matches.push((
+                element,
+                super::UiElementTarget {
+                    name,
+                    control_type: control_type_name.to_owned(),
+                    index: matches.len(),
+                    center_x,
+                    center_y,
+                },
+                enabled,
+                bounds_valid,
+            ));
+        }
+
+        if matches.is_empty() {
+            let type_hint = query
+                .control_type
+                .as_deref()
+                .map(|value| format!(" with control_type '{value}'"))
+                .unwrap_or_default();
+            anyhow::bail!(
+                "no UI Automation control named '{}'{} was found",
+                query.name,
+                type_hint
+            );
+        }
+
+        let selected_index = match query.index {
+            Some(index) if index >= matches.len() => {
+                anyhow::bail!(
+                    "UI Automation control '{}' has {} matches; index {} is out of range",
+                    query.name,
+                    matches.len(),
+                    index
+                )
+            }
+            Some(index) => index,
+            None if matches.len() == 1 => 0,
+            None => {
+                anyhow::bail!(
+                    "UI Automation control '{}' matched {} elements; provide control_type or a zero-based index",
+                    query.name,
+                    matches.len()
+                )
+            }
+        };
+
+        let (element, target, enabled, has_bounds) = matches.swap_remove(selected_index);
+        if !enabled {
+            anyhow::bail!(
+                "UI Automation control '{}' is disabled and cannot receive input",
+                query.name
+            );
+        }
+        if !has_bounds {
+            anyhow::bail!(
+                "UI Automation control '{}' has no usable screen bounds",
+                query.name
+            );
+        }
+        Ok((element, target))
+    }
+
+    pub fn resolve_ui_element(
+        query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        ui_automation_element(query).map(|(_, target)| target)
+    }
+
+    pub fn focus_ui_element(
+        query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        let (element, target) = ui_automation_element(query)?;
+        unsafe { element.SetFocus()? };
+        Ok(target)
+    }
+
     /// Enumerate interactive UI Automation elements for the foreground window
     /// (or the first window whose title contains `title`).
     pub fn enumerate_ui_tree(title: Option<&str>) -> anyhow::Result<Vec<Value>> {
@@ -1140,6 +1380,18 @@ mod imp {
 
     pub fn enumerate_ui_tree(_title: Option<&str>) -> anyhow::Result<Vec<Value>> {
         anyhow::bail!("ui_tree requires Windows")
+    }
+
+    pub fn resolve_ui_element(
+        _query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        anyhow::bail!("UI Automation element input requires Windows")
+    }
+
+    pub fn focus_ui_element(
+        _query: &super::UiElementQuery,
+    ) -> anyhow::Result<super::UiElementTarget> {
+        anyhow::bail!("UI Automation element input requires Windows")
     }
 
     pub fn any_ui_name_contains(_title: Option<&str>, _needle: &str) -> anyhow::Result<bool> {

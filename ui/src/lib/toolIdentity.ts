@@ -88,9 +88,9 @@ export function toolDisplayName(
 	labels: Record<string, string> = TOOL_LABELS,
 ): string {
 	const name = String(toolName || '');
-	if (labels[name]) return labels[name];
 	const manifestLabel = toolLabel(name);
 	if (manifestLabel) return manifestLabel;
+	if (labels[name]) return labels[name];
 	const stripped = stripToolPrefix(name, 'mcp__') ?? stripToolPrefix(name, 'skill__');
 	return stripped ?? name;
 }

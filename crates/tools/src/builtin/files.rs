@@ -29,6 +29,8 @@ mod file_media_handoff;
 const MAX_SUMMARY_FOCUS_CHARS: usize = 2_000;
 const UNTRUSTED_DOCUMENT_START: &str = "【附件派生内容开始";
 const UNTRUSTED_DOCUMENT_END: &str = "【附件派生内容结束】";
+const MAX_PATCH_EDITS: usize = 64;
+const MAX_PATCH_INPUT_BYTES: usize = 256 * 1024;
 
 fn sanitize_path(path: &str) -> anyhow::Result<String> {
     let normalized = Path::new(path).components().collect::<std::path::PathBuf>();
@@ -567,6 +569,7 @@ pub enum FilesOperation {
     Write,
     CreateDir,
     Edit,
+    Patch,
     Copy,
     Move,
     Delete,
@@ -574,6 +577,31 @@ pub enum FilesOperation {
     Summary,
     Search,
     Outline,
+}
+
+/// One exact replacement in a `files.patch` request.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct FilesPatchEdit {
+    /// Text that must occur in the original file.
+    pub old_string: String,
+    /// Replacement text. An empty string deletes the matched text.
+    pub new_string: String,
+    /// Required match count; defaults to exactly one.
+    #[serde(default)]
+    pub expected_matches: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct PatchReplacement {
+    start: usize,
+    end: usize,
+    edit_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PatchEditSummary {
+    lines: Vec<usize>,
+    matches: usize,
 }
 
 /// Typed parameters for `FilesTool`. Entry ① (native `run`) and entry ②
@@ -602,6 +630,9 @@ pub struct FilesParams {
     /// Replacement text (edit operation).
     #[serde(default)]
     pub new_string: Option<String>,
+    /// Exact replacements (patch operation).
+    #[serde(default)]
+    pub edits: Option<Vec<FilesPatchEdit>>,
     /// Byte offset to start reading from (bytes mode).
     #[serde(default)]
     pub offset: Option<u64>,
@@ -922,6 +953,55 @@ impl FilesTool {
                     serde_json::json!({"edited": true, "path": path, "line": line}),
                 ))
             }
+            FilesOperation::Patch => {
+                let edits = params
+                    .edits
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("'edits' is required for patch operation"))?;
+                let meta = tokio::fs::metadata(&path).await?;
+                if meta.len() > self.max_read_chars {
+                    anyhow::bail!(
+                        "file is {} bytes, above the {} byte patch limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
+                        meta.len(),
+                        self.max_read_chars
+                    );
+                }
+                let bytes = tokio::fs::read(&path).await?;
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                let decoded = haven_common::encoding::decode_with_encoding(&bytes);
+                if looks_like_binary(&bytes) && !matches!(decoded.encoding, "utf-16le" | "utf-16be")
+                {
+                    anyhow::bail!(
+                        "file encoding is unsupported for patching '{}'; patch only supports text files",
+                        path
+                    );
+                }
+                let (result, summaries) =
+                    apply_patch_edits(&decoded.text, edits, self.max_read_chars, cancel.clone())?;
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                // Keep the transaction in memory until every edit has been
+                // validated. This is the sole write performed by patch.
+                let encoded = encode_patched_text(&result, decoded.encoding)?;
+                tokio::fs::write(&path, encoded).await?;
+                Ok(ToolResult::ok(serde_json::json!({
+                    "patched": true,
+                    "path": path,
+                    "edits": summaries.len(),
+                    "replacements": summaries
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, summary)| serde_json::json!({
+                            "edit": index,
+                            "matches": summary.matches,
+                            "lines": summary.lines,
+                        }))
+                        .collect::<Vec<_>>(),
+                })))
+            }
             FilesOperation::Copy => {
                 let dest = resolve_workspace_path(&params.destination.unwrap_or_default())?;
                 tokio::fs::copy(&path, &dest).await?;
@@ -1060,7 +1140,7 @@ impl Tool for FilesTool {
         "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, create directories, edit, copy, move, delete, list, outline, summarize, or search files. Managed images, audio, PDFs, and Office documents are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
+        "Read, write, create directories, edit, patch, copy, move, delete, list, outline, summarize, or search files. Managed images, audio, PDFs, and Office documents are routed to the canonical media tool; use media(asset_id) directly for multimodal operations.".into()
     }
 
     fn requires_session_id(&self) -> bool {
@@ -1070,9 +1150,8 @@ impl Tool for FilesTool {
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("delete") => RiskLevel::High,
-            Some("edit") | Some("copy") | Some("write") | Some("create_dir") | Some("move") => {
-                RiskLevel::Medium
-            }
+            Some("edit") | Some("patch") | Some("copy") | Some("write") | Some("create_dir")
+            | Some("move") => RiskLevel::Medium,
             Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
             _ => RiskLevel::Low,
         }
@@ -1083,8 +1162,8 @@ impl Tool for FilesTool {
             Some("read") | Some("list") | Some("outline") | Some("summary") | Some("search") => {
                 OperationIdempotency::Idempotent
             }
-            Some("write") | Some("create_dir") | Some("edit") | Some("copy") | Some("move")
-            | Some("delete") => OperationIdempotency::NonIdempotent,
+            Some("write") | Some("create_dir") | Some("edit") | Some("patch") | Some("copy")
+            | Some("move") | Some("delete") => OperationIdempotency::NonIdempotent,
             _ => OperationIdempotency::Unknown,
         }
     }
@@ -1117,7 +1196,7 @@ impl Tool for FilesTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; read/summary may use asset_id instead of path; outline returns headings/declarations with line numbers; other operations use path." },
+                "operation": { "type": "string", "enum": ["read", "write", "create_dir", "edit", "patch", "copy", "move", "delete", "list", "outline", "summary", "search"], "description": "Choose exactly one operation. Search uses root/pattern; read/summary may use asset_id instead of path; outline returns headings/declarations with line numbers; other operations use path." },
                 "asset_id": { "type": "string", "minLength": 1, "description": "Opaque id of a user attachment; use this instead of guessing a local path" }
             },
             "required": ["operation"],
@@ -1183,6 +1262,31 @@ impl Tool for FilesTool {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
+                        "operation": { "const": "patch" },
+                        "path": { "type": "string", "minLength": 1, "description": "Text file path to patch" },
+                        "edits": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": MAX_PATCH_EDITS,
+                            "description": "Exact replacements validated against the original file before one write",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "old_string": { "type": "string", "minLength": 1, "maxLength": MAX_PATCH_INPUT_BYTES, "description": "Existing text; must match exactly once unless expected_matches is provided" },
+                                    "new_string": { "type": "string", "maxLength": MAX_PATCH_INPUT_BYTES, "description": "Replacement text; an empty string deletes the match" },
+                                    "expected_matches": { "type": "integer", "minimum": 1, "description": "Expected non-overlapping match count; defaults to 1" }
+                                },
+                                "required": ["old_string", "new_string"]
+                            }
+                        }
+                    },
+                    "required": ["operation", "path", "edits"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
                         "operation": { "enum": ["copy", "move"] },
                         "path": { "type": "string", "minLength": 1, "description": "Source file path" },
                         "destination": { "type": "string", "minLength": 1, "description": "Destination file path" }
@@ -1239,6 +1343,159 @@ impl Tool for FilesTool {
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params = crate::tool_contract::parse_tool_input::<FilesParams>(&self.name(), input)?;
         self.run(params, cancel).await
+    }
+}
+
+/// Validate and apply every patch against the original in-memory content.
+/// No filesystem mutation is performed here; callers can therefore treat an
+/// error or cancellation as a transaction rollback.
+fn apply_patch_edits(
+    content: &str,
+    edits: &[FilesPatchEdit],
+    max_result_bytes: u64,
+    cancel: CancellationToken,
+) -> anyhow::Result<(String, Vec<PatchEditSummary>)> {
+    if edits.is_empty() {
+        anyhow::bail!("'edits' must contain at least one edit");
+    }
+    if edits.len() > MAX_PATCH_EDITS {
+        anyhow::bail!(
+            "too many patch edits: {}; the maximum is {}",
+            edits.len(),
+            MAX_PATCH_EDITS
+        );
+    }
+
+    let input_limit = max_result_bytes.min(MAX_PATCH_INPUT_BYTES as u64) as usize;
+    let input_bytes = edits.iter().try_fold(0usize, |total, edit| {
+        total
+            .checked_add(edit.old_string.len())
+            .and_then(|total| total.checked_add(edit.new_string.len()))
+            .ok_or_else(|| anyhow::anyhow!("patch edit input is too large"))
+    })?;
+    if input_bytes > input_limit {
+        anyhow::bail!(
+            "patch edit text is {} bytes, above the {} byte patch input limit",
+            input_bytes,
+            input_limit
+        );
+    }
+
+    let mut replacements = Vec::new();
+    let mut summaries = Vec::with_capacity(edits.len());
+    for (edit_index, edit) in edits.iter().enumerate() {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        if edit.old_string.is_empty() {
+            anyhow::bail!("patch edit {} has an empty old_string", edit_index);
+        }
+        let expected_matches = edit.expected_matches.unwrap_or(1);
+        if expected_matches == 0 {
+            anyhow::bail!(
+                "patch edit {} expected_matches must be at least 1",
+                edit_index
+            );
+        }
+
+        let positions: Vec<usize> = content
+            .match_indices(&edit.old_string)
+            .map(|(position, _)| position)
+            .collect();
+        if positions.len() != expected_matches {
+            anyhow::bail!(
+                "patch edit {} expected {} matches, found {}",
+                edit_index,
+                expected_matches,
+                positions.len()
+            );
+        }
+
+        let lines = positions
+            .iter()
+            .map(|&position| content[..position].matches('\n').count() + 1)
+            .collect::<Vec<_>>();
+        for &position in &positions {
+            replacements.push(PatchReplacement {
+                start: position,
+                end: position + edit.old_string.len(),
+                edit_index,
+            });
+        }
+        summaries.push(PatchEditSummary {
+            lines,
+            matches: positions.len(),
+        });
+    }
+
+    replacements.sort_unstable_by_key(|replacement| (replacement.start, replacement.end));
+    for pair in replacements.windows(2) {
+        if pair[1].start < pair[0].end {
+            anyhow::bail!(
+                "patch edits {} and {} overlap or target the same text",
+                pair[0].edit_index,
+                pair[1].edit_index
+            );
+        }
+    }
+
+    let mut result_len = content.len();
+    for replacement in &replacements {
+        let edit = &edits[replacement.edit_index];
+        result_len = result_len
+            .checked_sub(replacement.end - replacement.start)
+            .and_then(|length| length.checked_add(edit.new_string.len()))
+            .ok_or_else(|| anyhow::anyhow!("patched file size overflowed"))?;
+    }
+    if u64::try_from(result_len).unwrap_or(u64::MAX) > max_result_bytes {
+        anyhow::bail!(
+            "patched file would be {} bytes, above the {} byte patch limit",
+            result_len,
+            max_result_bytes
+        );
+    }
+
+    let mut result = String::with_capacity(result_len);
+    let mut cursor = 0;
+    for replacement in replacements {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        result.push_str(&content[cursor..replacement.start]);
+        result.push_str(&edits[replacement.edit_index].new_string);
+        cursor = replacement.end;
+    }
+    result.push_str(&content[cursor..]);
+    Ok((result, summaries))
+}
+
+fn encode_patched_text(text: &str, encoding: &str) -> anyhow::Result<Vec<u8>> {
+    match encoding {
+        "empty" | "utf-8" => Ok(text.as_bytes().to_vec()),
+        "utf-8-bom" => {
+            let mut bytes = Vec::with_capacity(3 + text.len());
+            bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            bytes.extend_from_slice(text.as_bytes());
+            Ok(bytes)
+        }
+        "utf-16le" => {
+            let mut bytes = Vec::with_capacity(2 + text.len() * 2);
+            bytes.extend_from_slice(&[0xFF, 0xFE]);
+            for unit in text.encode_utf16() {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+            Ok(bytes)
+        }
+        "utf-16be" => {
+            let mut bytes = Vec::with_capacity(2 + text.len() * 2);
+            bytes.extend_from_slice(&[0xFE, 0xFF]);
+            for unit in text.encode_utf16() {
+                bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+            Ok(bytes)
+        }
+        "gbk" => Ok(encoding_rs::GBK.encode(text).0.into_owned()),
+        other => anyhow::bail!("unsupported text encoding for patch: {other}"),
     }
 }
 
@@ -1560,6 +1817,10 @@ mod tests {
             tool.idempotency(&json!({"operation": "write"})),
             OperationIdempotency::NonIdempotent
         );
+        assert_eq!(
+            tool.idempotency(&json!({"operation": "patch"})),
+            OperationIdempotency::NonIdempotent
+        );
         assert_eq!(tool.idempotency(&json!({})), OperationIdempotency::Unknown);
     }
 
@@ -1807,6 +2068,10 @@ mod tests {
             RiskLevel::Medium
         );
         assert_eq!(
+            FilesTool::default().risk_level(&json!({"operation": "patch"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(
             FilesTool::default().risk_level(&json!({"operation": "move"})),
             RiskLevel::Medium
         );
@@ -1847,13 +2112,14 @@ mod tests {
         assert!(ops.contains(&"write"));
         assert!(ops.contains(&"create_dir"));
         assert!(ops.contains(&"edit"));
+        assert!(ops.contains(&"patch"));
         assert!(ops.contains(&"copy"));
         assert!(ops.contains(&"move"));
         assert!(ops.contains(&"delete"));
         assert!(ops.contains(&"list"));
         assert!(ops.contains(&"outline"));
         assert!(ops.contains(&"search"));
-        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 9);
+        assert_eq!(schema["oneOf"].as_array().unwrap().len(), 10);
     }
 
     #[test]
@@ -2299,6 +2565,259 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_file_execute_patch_applies_multiple_exact_replacements_once() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch.txt");
+        tokio::fs::write(&file, "alpha\nbeta\ngamma\n")
+            .await
+            .unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [
+                        {"old_string": "alpha", "new_string": "ALPHA"},
+                        {"old_string": "gamma", "new_string": "GAMMA"}
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["patched"], true);
+        assert_eq!(result.output["edits"], 2);
+        assert_eq!(result.output["replacements"][0]["matches"], 1);
+        assert_eq!(result.output["replacements"][0]["lines"], json!([1]));
+        assert_eq!(result.output["replacements"][1]["lines"], json!([3]));
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "ALPHA\nbeta\nGAMMA\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_allows_explicit_repeated_match_count() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-repeated.txt");
+        tokio::fs::write(&file, "foo\nfoo\n").await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{
+                        "old_string": "foo",
+                        "new_string": "bar",
+                        "expected_matches": 2
+                    }]
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["replacements"][0]["matches"], 2);
+        assert_eq!(result.output["replacements"][0]["lines"], json!([1, 2]));
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "bar\nbar\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_is_transactional_when_one_edit_fails() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-transaction.txt");
+        let original = "alpha\nbeta\n";
+        tokio::fs::write(&file, original).await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [
+                        {"old_string": "alpha", "new_string": "ALPHA"},
+                        {"old_string": "missing", "new_string": "MISSING"}
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_rejects_repeated_or_overlapping_targets() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-overlap.txt");
+        let original = "abcdef\n";
+        tokio::fs::write(&file, original).await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [
+                        {"old_string": "abcdef", "new_string": "whole"},
+                        {"old_string": "cde", "new_string": "middle"}
+                    ]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_rejects_empty_input_and_empty_old_string() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-empty.txt");
+        let original = "content\n";
+        tokio::fs::write(&file, original).await.unwrap();
+        let path = file.to_string_lossy().to_string();
+
+        let empty = FilesTool::default()
+            .execute(
+                json!({"operation": "patch", "path": path, "edits": []}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(empty.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+
+        let empty_old = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "", "new_string": "x"}]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(empty_old.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_rejects_limits_without_writing() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-limits.txt");
+        let original = "abc";
+        tokio::fs::write(&file, original).await.unwrap();
+        let path = file.to_string_lossy().to_string();
+
+        let too_many = (0..=MAX_PATCH_EDITS)
+            .map(|index| json!({"old_string": format!("old-{index}"), "new_string": "x"}))
+            .collect::<Vec<_>>();
+        let result = FilesTool::default()
+            .execute(
+                json!({"operation": "patch", "path": path, "edits": too_many}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+
+        let mut tool = FilesTool::default();
+        tool.max_read_chars = 10;
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "a", "new_string": "01234567890"}]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[test]
+    fn patch_preserves_supported_text_encoding_when_writing() {
+        let original = "你好\n";
+        let edit = FilesPatchEdit {
+            old_string: "你好".into(),
+            new_string: "世界".into(),
+            expected_matches: None,
+        };
+        for encoding in ["utf-8", "utf-8-bom", "utf-16le", "utf-16be", "gbk"] {
+            let encoded = encode_patched_text(original, encoding).unwrap();
+            let decoded = haven_common::encoding::decode_with_encoding(&encoded);
+            let (patched, _) = apply_patch_edits(
+                &decoded.text,
+                std::slice::from_ref(&edit),
+                1024,
+                CancellationToken::new(),
+            )
+            .unwrap();
+            let written = encode_patched_text(&patched, decoded.encoding).unwrap();
+            let roundtrip = haven_common::encoding::decode_with_encoding(&written);
+            assert_eq!(roundtrip.text, "世界\n", "encoding={encoding}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_cancelled_before_write() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-cancelled.txt");
+        let original = "alpha\n";
+        tokio::fs::write(&file, original).await.unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "alpha", "new_string": "ALPHA"}]
+                }),
+                cancel,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_patch_rejects_unsupported_binary_without_writing() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("patch-binary.bin");
+        let original = b"text\0binary";
+        tokio::fs::write(&file, original).await.unwrap();
+
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "patch",
+                    "path": file.to_string_lossy(),
+                    "edits": [{"old_string": "text", "new_string": "TEXT"}]
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read(&file).await.unwrap(), original);
+    }
+
+    #[tokio::test]
     async fn test_file_execute_copy() {
         let tmp = TempDir::new().unwrap();
         let src = tmp.path().join("source.txt");
@@ -2672,6 +3191,7 @@ mod tests {
                     content: Some("native content".into()),
                     old_string: None,
                     new_string: None,
+                    edits: None,
                     offset: None,
                     limit: None,
                     start_line: None,

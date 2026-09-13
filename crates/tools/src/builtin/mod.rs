@@ -665,6 +665,14 @@ const FILE_OPERATION_VIEWS: &[SplitOperationSpec] = &[
         "Edit a text file by replacing one exact match."
     ),
     split_spec!(
+        "files.patch",
+        "patch",
+        "Apply multiple exact text replacements atomically.",
+        "files",
+        "edit",
+        "Use for several precise edits to one text file; all matches are validated before one write."
+    ),
+    split_spec!(
         "files.copy",
         "copy",
         "Copy a file to a destination path.",
@@ -754,6 +762,14 @@ const INPUT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
         "Type text into the focused application."
     ),
     split_spec!(
+        "input.type_element",
+        "type_element",
+        "Type text into a uniquely identified UI Automation control.",
+        "input",
+        "keyboard",
+        "Re-query the control by name, focus it, then type without echoing the content."
+    ),
+    split_spec!(
         "input.key",
         "key",
         "Press a keyboard key or shortcut.",
@@ -768,6 +784,14 @@ const INPUT_OPERATION_VIEWS: &[SplitOperationSpec] = &[
         "input",
         "mouse",
         "Click the specified screen coordinates."
+    ),
+    split_spec!(
+        "input.click_element",
+        "click_element",
+        "Click a uniquely identified UI Automation control.",
+        "input",
+        "mouse",
+        "Re-query the control by name and click the center of its current bounds; do not choose the first duplicate without an index."
     ),
     split_spec!(
         "input.move",
@@ -1534,6 +1558,7 @@ fn operation_label(name: &str) -> String {
         "files.write" => "写入文件",
         "files.create_dir" => "创建目录",
         "files.edit" => "编辑文件",
+        "files.patch" => "批量精确编辑文件",
         "files.copy" => "复制文件",
         "files.move" => "移动文件",
         "files.delete" => "删除文件",
@@ -1544,8 +1569,10 @@ fn operation_label(name: &str) -> String {
         "clipboard.write" => "写入剪贴板",
         "clipboard.history" => "剪贴板历史",
         "input.type" => "输入文字",
+        "input.type_element" => "向控件输入文字",
         "input.key" => "按键",
         "input.click" => "点击",
+        "input.click_element" => "点击控件",
         "input.move" => "移动鼠标",
         "input.scroll" => "滚动",
         "window.list" => "列出窗口",
