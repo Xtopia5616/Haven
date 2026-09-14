@@ -199,7 +199,7 @@ Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界�
 DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 `ui/src/lib/contracts/app.ts`、`ui/src/lib/contracts/agent.ts`，只能通过
 `appEventListeners` / `agentEventListeners` 进入路由。`scripts/check-ipc-events.ps1`
-会比较两侧的全部 39 个 channel，防止新增事件只改一侧。
+会比较两侧的全部 40 个 channel，防止新增事件只改一侧。
 
 | 事件 | Rust DTO（wire） | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|
@@ -217,6 +217,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:stream_stalled` | `AgentStreamStalledEvent` | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
 | `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 通过 `seq` 排序，丢失 chunk 时由完整消息投影兜底。 |
 | `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |
+| `agent:media_plan` | `AgentMediaPlanEvent { session_id, step_number, run_id, role, strategy, projections, notices }` | 聊天页媒体计划卡 | 按 `session_id + step_number + run_id + role` 归并；展示实际媒体表示和能力降级原因，不携带原始媒体 bytes。 |
 | `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。 |
 | `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 run/step 顺序消费；只发送补充上下文，不发送快照内部对象。 |
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id? }` | 聊天页 | 按事件顺序消费；`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |

@@ -9,7 +9,7 @@
 | 域 | 路径 |
 |---|---|
 | 后端 tracing 初始化 / 命令错误日志 | `crates/app-binary/src/logging.rs`（`init_tracing`、`log_err`） |
-| 事件发射（channel / payload） | `crates/app-binary/src/lib.rs`（`TauriEmitter`） |
+| 事件发射（channel / payload） | `crates/app-binary/src/event_bridge.rs`（`TauriEmitter`） |
 | Windows 桌面通知 | `crates/app-binary/src/notification.rs`（`DesktopNotifications`） |
 | 通知配置 | `crates/common/src/config/misc.rs`（`NotificationConfig` / `NotifyChannels`） |
 | 前端日志 | `ui/src/lib/logger.ts` + `ui/src/lib/errorHandling.ts` |
@@ -233,7 +233,7 @@ session_created / session_completed / session_paused / session_resumed / session
 
 ### 2.6 新增通知事件流程模板
 
-1. 若属 `AgentEvent`：加变体 → `TauriEmitter::channel` / `payload` /（可选）`maybe_show_toast` / `trace_event` → 补 `lib.rs` 单测。
+1. 若属 `AgentEvent`：加变体 → `TauriEmitter::channel` / `payload` /（可选）`maybe_show_toast` / `trace_event` → 补 `event_bridge.rs` 或对应模块单测。
 2. 若属任务事件：在 `haven_tools` emit，前端 `actionStore` 归一化。
 3. 前端在 `+layout.svelte` 的 `registerListeners` 增加 handler；需要用户开关则接 `notifyCfg`。
 4. 需要设置项时扩展 `NotificationConfig` + Settings 网格。

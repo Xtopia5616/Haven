@@ -2,7 +2,9 @@
 
 ## 状态
 
-已接受（2026-09-13）
+已接受（2026-09-13）。其中“启用 Skill 直接注册、删除 `load_skill`”的模型目录部分已由
+[ADR 0145](0145-layered-capability-loading.md) supersede；本 ADR 的 operation view、权限 key
+和 UI renderer 决定仍然有效。
 
 ## 背景
 

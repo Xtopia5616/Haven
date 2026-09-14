@@ -19,7 +19,7 @@ Haven 的 Tauri 命令分布在多个 app command module，过去只有会话、
    `scripts/check-ipc-contracts.ps1` 比较 handler、`generate_handler!`、Rust 目录、
    前端目录和 `docs/ipc-contracts.md`。任何缺失、重复或多余命令都阻断 CI。
    事件则由 `crates/app-binary/src/events.rs` 与前端各域 contract 组成完整目录，
-   `scripts/check-ipc-events.ps1` 校验两侧的 39 个 channel 集合。
+   `scripts/check-ipc-events.ps1` 校验两侧的 40 个 channel 集合。
 4. 对稳定业务响应移除无必要的 `serde_json::Value` 外壳：MCP/skill 执行结果、
    工具列表、记忆召回、模型发现和转写结果使用命名 DTO；provider 原始载荷、
    动态工具 schema 和工具输出仍可使用 `Value`。

@@ -3,6 +3,8 @@
 > 用途：把当前代码审计结果交给后续 agent，按稳定职责拆分大文件；允许破坏性结构重构，但保持行为、IPC、持久化和安全契约不变。
 >
 > 本文是执行计划，不授权新增功能或顺手清理无关代码。每个目标应独立完成、独立验证、独立提交。
+>
+> 状态（2026-09-14）：机械拆分阶段 A–F 已完成；阶段 G 与第 2.3–2.5 节战略性重构仍是后续路线。本文件中的规模数字以本日期审计为准，历史完成记录保留原始日期。
 
 ## 1. 执行前必须阅读
 
@@ -33,6 +35,25 @@
 最大的非代码文件是 `assets/models/silero_vad.onnx`（约 2.7 MB），它是模型文件，不进行代码拆分。
 
 结论：当前优先做文件级拆分，不把 `agent`、`tools` 或 `llm` 直接拆成新 crate。它们已经按领域拥有较多子模块；贸然拆 crate 会扩大依赖、公共 API 和测试迁移范围。
+
+### 2.0 当前热点快照（2026-09-14）
+
+阶段 A–F 的原始拆分目标已完成，但部分拆分后的模块仍然较大；这不表示机械拆分失败，而是后续战略边界仍未落地。当前规模（含注释和空行）如下：
+
+| 区域 | 当前规模 | 状态 / 后续动作 |
+|---|---:|---|
+| Agent 集成测试 | 入口 `integration_tests.rs` 31 行；8 个测试模块合计约 5,002 行 | 阶段 A 已完成；保持测试入口和共享 support 稳定 |
+| MCP 拆分模块 | `protocol` 265、`transport` 390、`client` 792、`manager` 433、`sse` 163，合计约 2,055 行 | 阶段 B 已完成；`client.rs` 接近热点阈值，后续仅在职责继续增长时拆分 |
+| Tools shell/background | `shell_runtime` 207、`background_actions` 959、`output` 390、`process` 128，合计约 1,684 行 | 阶段 C 已完成；ActionService 的状态机统一仍属于战略后续 |
+| Tool contract / registry / security | 1,737 / 434 / 1,912 行，合计约 4,083 行 | 阶段 D 的边界拆分已完成；`tool_contract` 与 `security` 仍由 TypedToolOperation / SafetyGateway 后续任务继续收窄 |
+| app-binary 组合根拆分模块 | `event_bridge` 581、`handlers` 242、`bootstrap` 737、`lib` 21，合计约 1,581 行 | 阶段 E 已完成；`event_bridge` 是当前唯一事件映射边界 |
+| UI 视图 | `SettingsView` 1,118、`ModelSettings` 916、`MemoryView` 767 行 | 阶段 F 已完成；ModelSettings 的 provider discovery/CRUD 边界仍有意保留 |
+| SelfTool | 1,623 行 | 阶段 G 未完成；待 admin domain typed migration 后删除，而非继续机械拆 dispatcher |
+
+本次复查还发现原阶段表没有覆盖的当前热点：`crates/tools/src/builtin/files.rs` 约 3,385 行、
+`crates/tools/src/builtin/window.rs` 约 2,035 行、`crates/tools/src/lib.rs` 约 2,923 行、
+`ui/src/routes/+page.svelte` 约 1,685 行。前两者应另立文件级拆分任务；ToolsManager 和聊天页分别由
+第 2.3 节 E/H 的战略重构覆盖，不能仅通过继续拆文件宣布完成。
 
 ## 2.1 兼容层原则
 
@@ -517,7 +538,7 @@ TypedToolAdapter 退化成新的万能 dispatcher。
 
 目标：[crates/agent/src/integration_tests.rs](../crates/agent/src/integration_tests.rs)
 
-- 规模：约 5,185 行，全部是测试。
+- 当前规模：入口 31 行；8 个拆分后的测试模块合计约 5,002 行，全部是测试。
 - 按职责拆成多个测试模块，建议至少分为：
   - 生命周期、消息持久化与 resume/rollback
   - 工具参数验证与 confirmation 恢复
@@ -542,7 +563,7 @@ cargo test --locked -p haven-agent
 
 目标：[crates/mcp/src/lib.rs](../crates/mcp/src/lib.rs)
 
-- 规模：约 2,241 行，其中约 1,891 行是生产代码。
+- 当前规模：拆分后的 MCP 模块合计约 2,055 行，其中 `client.rs` 约 792 行。
 - 当前混合了四类职责：
   - MCP/JSON-RPC DTO、请求构造和 content block 提取
   - stdio 与 Streamable HTTP transport、SSE 读取和进程启动
@@ -569,7 +590,7 @@ cargo test --locked -p haven-tools --test mcp_integration
 
 目标：[crates/tools/src/background_actions.rs](../crates/tools/src/background_actions.rs)
 
-- 规模：约 2,658 行，其中约 1,682 行是生产代码。
+- 当前规模：拆分后的 shell/background/process 模块合计约 1,684 行，其中 `background_actions.rs` 约 959 行。
 - 建议按以下边界拆分：
   - `shell_runtime.rs`：shell 命令构造、PowerShell 编码、代理探测、输出日志路径
   - `background_actions.rs`：`BackgroundActions`、状态机、action registry、事件 sink
@@ -598,7 +619,7 @@ cargo clippy --workspace --locked -- -D warnings
 [`crates/tools/src/registry.rs`](../crates/tools/src/registry.rs)、
 [`crates/tools/src/security.rs`](../crates/tools/src/security.rs)
 
-- 规模：约 2,237 行，其中约 1,287 行是生产代码。
+- 当前规模：`tool_contract.rs`、`registry.rs`、`security.rs` 分别约 1,737、434、1,912 行，合计约 4,083 行。
 - 当前混合了：
   - `Tool`、`ToolResult`、`ToolSignals`、`ToolExecutionOutcome`、重试/并发契约
   - `ToolRegistry` 和 session catalog
@@ -629,7 +650,7 @@ cargo clippy --workspace --locked -- -D warnings
 
 目标：[crates/app-binary/src/lib.rs](../crates/app-binary/src/lib.rs)
 
-- 规模：约 1,925 行，其中约 1,368 行是生产代码。
+- 当前规模：`event_bridge.rs`、`handlers.rs`、`bootstrap.rs` 与 `lib.rs` 合计约 1,581 行。
 - 当前混合了：
   - `TauriEmitter` 与 AgentEvent → IPC payload/channel 映射
   - `HavenShellHandler`、`HavenInputHandler` 宿主适配
@@ -662,7 +683,7 @@ Tauri 启动、后台初始化、托盘、全局快捷键、单实例和退出�
 
 目标：[ui/src/lib/views/SettingsView.svelte](../ui/src/lib/views/SettingsView.svelte)
 
-- 规模：约 1,705 行，script 部分约 1,041 行。
+- 当前规模：约 1,118 行；阶段 F 已完成，父视图仍有意保留离开保存守卫的状态边界。
 - 建议拆为设置页外壳/离开保存流程、General 设置、Limits 设置；模型和媒体设置继续由已有 `ModelSettings.svelte` 承担。
 - 配置 snapshot、dirty 检测、远端默认模型 reconcile 和保存流程应集中在一个明确的状态边界，不要在多个组件双写。
 
@@ -670,7 +691,7 @@ Tauri 启动、后台初始化、托盘、全局快捷键、单实例和退出�
 
 目标：[ui/src/lib/views/ModelSettings.svelte](../ui/src/lib/views/ModelSettings.svelte)
 
-- 规模：约 1,480 行。
+- 当前规模：约 916 行；provider discovery 与 provider CRUD 仍因共享模型缓存和引用迁移而暂时合并。
 - 将 provider/model role 配置与 STT/OCR/TTS/image generation 媒体配置拆成两个视图或子组件。
 - 保持模型发现、api style、key 状态、默认模型同步和能力灰显行为不变。
 
@@ -678,7 +699,7 @@ Tauri 启动、后台初始化、托盘、全局快捷键、单实例和退出�
 
 目标：[ui/src/lib/views/MemoryView.svelte](../ui/src/lib/views/MemoryView.svelte)
 
-- 规模：约 1,293 行。
+- 当前规模：约 767 行；阶段 F 已完成，不再把它作为当前未拆分热点。
 - 按现有 tab 拆为 session history、long-term facts、memory recall 三个子视图。
 - 保持分页/搜索/删除/导出、事实来源筛选、resume，以及 session message/usage store 的单一写入路径。
 
@@ -709,7 +730,7 @@ provider discovery 与 provider CRUD（两者共享同一模型缓存和引用�
 
 目标：[crates/tools/src/builtin/self_tool.rs](../crates/tools/src/builtin/self_tool.rs)
 
-- 规模：约 2,787 行，其中约 1,420 行是生产代码。
+- 当前规模：约 1,623 行；阶段 G 仍未完成，最终目标是删除 SelfTool dispatcher，而不是只移动 handler。
 - `SelfOperation` 同时覆盖 config、skills、tools、MCP、logs、sessions/errors。
 - 如果只是执行本阶段的低风险文件拆分，可以先按 config/skills、MCP、diagnostics/history 拆 handler 模块；但保留 dispatcher 仅是过渡，不能作为最终架构。
 - 真正的目标和删除条件见第 2.5 节 N：迁移到受限 admin surface 后删除超级 `self` dispatcher 和任意配置写入口。
@@ -719,7 +740,7 @@ provider discovery 与 provider CRUD（两者共享同一模型缓存和引用�
 
 - 不把 `haven-agent`、`haven-tools`、`haven-llm` 直接拆成多个 crate。
 - 不因为 `openai.rs`、`openai_responses.rs`、`anthropic.rs` 各约 2.5k 行就立即拆 provider crate；每个文件约一半是协议测试，先考虑把测试按 provider 移到独立测试模块。
-- 不拆 `memory/src/repositories/facts.rs` 的生产 facade；它总计约 2,080 行，但生产代码约 507 行，图谱写入、查询和维护已经分别位于其他模块。
+- 不拆 `memory/src/repositories/facts.rs` 的生产 facade；当前总计约 1,963 行，图谱写入、查询和维护已经分别位于其他模块。
 - 机械拆分阶段不修改 ReAct X12 写路径、`ReActSnapshot.events` 恢复权威、消息/步骤投影、rollback 双时钟或任何数据库 schema；进入第 2.3/2.4/2.5 的明确重构任务后，按对应 ADR 处理这些边界。
 - 机械拆分阶段不借机修改 provider wire payload、工具重试、安全确认、IPC event shape 或 UI 交互；provider adapter、SafetyGateway、Tauri bridge、ConfigService 和 ToolOperation 的概念级调整必须在各自任务中单独验收。
 

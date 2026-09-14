@@ -1,4 +1,6 @@
-# ADR 0084：删除 Balanced Model 与模型级 fallback
+# ADR 0149：删除 Balanced Model 与模型级 fallback
+
+> 历史编号：0084。原编号与 UI 语义化按钮迁移 ADR 冲突；本次仅修复 ADR 唯一标识，不改变原决定。
 
 ## 背景
 
