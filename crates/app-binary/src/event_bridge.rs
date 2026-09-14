@@ -454,11 +454,11 @@ impl TauriEmitter {
                 ..
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_thought: session={} step={} run={} len={}",
-                    session_id,
-                    step_number,
-                    run_id,
-                    thought.len()
+                    session_id = %session_id,
+                    step_number = %step_number,
+                    run_id = %run_id,
+                    thought_len = thought.len(),
+                    "TauriEmitter::on_thought"
                 );
             }
             AgentEvent::Action {
@@ -469,11 +469,11 @@ impl TauriEmitter {
                 ..
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_action: session={} tool={} step={} run={}",
-                    session_id,
-                    tool_name,
-                    step_number,
-                    run_id
+                    session_id = %session_id,
+                    tool_name = %tool_name,
+                    step_number = %step_number,
+                    run_id = %run_id,
+                    "TauriEmitter::on_action"
                 );
             }
             AgentEvent::Observation {
@@ -485,38 +485,38 @@ impl TauriEmitter {
                 ..
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_observation: session={} tool={} step={} run={} silent={}",
-                    session_id,
-                    tool_name,
-                    step_number,
-                    run_id,
-                    silent
+                    session_id = %session_id,
+                    tool_name = %tool_name,
+                    step_number = %step_number,
+                    run_id = %run_id,
+                    silent = *silent,
+                    "TauriEmitter::on_observation"
                 );
             }
             AgentEvent::SessionCreated(session) => {
                 tracing::info!(
-                    "TauriEmitter::on_session_created: session_id={} status={}",
-                    session.id,
-                    session.status.as_str()
+                    session_id = %session.id,
+                    status = %session.status.as_str(),
+                    "TauriEmitter::on_session_created"
                 );
             }
             AgentEvent::SessionCompleted { session_id, title } => {
                 tracing::info!(
-                    "TauriEmitter::on_session_completed: session={} title={}",
-                    session_id,
-                    title
+                    session_id = %session_id,
+                    title = %title,
+                    "TauriEmitter::on_session_completed"
                 );
             }
             AgentEvent::SessionUpdated { session_id, status } => {
                 tracing::info!(
-                    "TauriEmitter::on_session_updated: session={} status={}",
-                    session_id,
-                    status
+                    session_id = %session_id,
+                    status = %status,
+                    "TauriEmitter::on_session_updated"
                 );
                 if status == "paused" || status == "paused_awaiting_answer" {
                     tracing::warn!(
-                        "TauriEmitter emitting session:updated with paused status for session {}",
-                        session_id
+                        session_id = %session_id,
+                        "TauriEmitter emitting session:updated with paused status"
                     );
                 }
             }
@@ -526,10 +526,10 @@ impl TauriEmitter {
                 body,
             } => {
                 tracing::info!(
-                    "TauriEmitter::on_notification: session={} title={} body={}",
-                    session_id,
-                    title,
-                    body
+                    session_id = %session_id,
+                    title = %title,
+                    body = %body,
+                    "TauriEmitter::on_notification"
                 );
             }
             AgentEvent::Compaction {
@@ -539,10 +539,10 @@ impl TauriEmitter {
                 ..
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_compaction: session={} tokens {}→{}",
-                    session_id,
+                    session_id = %session_id,
                     tokens_before,
-                    tokens_after
+                    tokens_after,
+                    "TauriEmitter::on_compaction"
                 );
             }
             _ => {}
