@@ -89,7 +89,7 @@
 		{
 			value: 'default',
 			label: '默认',
-			detail: '只读操作自动完成，编辑、命令与外部操作先询问',
+			detail: '普通只读操作自动完成；敏感读取、出网和编辑等操作按边界询问',
 		},
 		{
 			value: 'plan',
@@ -99,7 +99,7 @@
 		{
 			value: 'auto_edit',
 			label: '自动编辑',
-			detail: '自动接受安全编辑，命令、网络和较高风险操作仍需确认',
+			detail: '仅自动接受明确的工作区文件编辑；命令、网络、界面和高风险操作仍需确认',
 		},
 		{
 			value: 'autonomous',
@@ -393,7 +393,7 @@
 			></textarea>
 		</SettingsField>
 		<p class="model-hint">
-			沙箱与确认是两道独立边界：只读沙箱会直接拦截写入，禁止网络会拦截 HTTP、MCP 与技能网络入口。
+			沙箱与确认是两道独立边界：只读沙箱会直接拦截修改，工作区可写模式会拦截无法隔离的命令、MCP 与技能子进程；受限网络会拦截无法检查目的地的出网。
 		</p>
 		<div class="permission-callout">
 			<div class="permission-callout-icon" aria-hidden="true">✓</div>

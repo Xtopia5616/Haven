@@ -1,6 +1,7 @@
 use crate::protocol::{REQUEST_TIMEOUT_SECS, jsonrpc_notification, jsonrpc_request};
 use crate::sse::SseParser;
 use futures_util::StreamExt;
+use haven_common::process_containment::ProcessContainment;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 /// and stdout pipes.
 pub(crate) struct StdioInner {
     pub(crate) child: Child,
+    pub(crate) _containment: ProcessContainment,
     pub(crate) stdin: ChildStdin,
     pub(crate) stdout: BufReader<ChildStdout>,
     pub(crate) notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,

@@ -39,8 +39,8 @@ pub struct SystemPromptBuilder {
     /// keywords). `None` (headless/tests) degrades to keyword-only recall.
     router: Option<Arc<LlmRouter>>,
     /// Cached short index for built-in tools / Skills / MCP servers. Invalidated when
-    /// the **global** tool registry version
-    /// changes (register/rebuild), and cleared on resume full rebuild so
+    /// the builtin registry or independent MCP catalog version changes, and
+    /// cleared on resume full rebuild so
     /// newly discovered capabilities appear. Per-session loader registrations
     /// do **not** bump this cache — those tools appear only in the API
     /// `tools[]` list (G7 freeze-per-run).
@@ -55,6 +55,7 @@ pub struct SystemPromptBuilder {
 #[derive(Clone)]
 struct SchemaCache {
     registry_version: u64,
+    mcp_catalog_version: u64,
     built_in_section: String,
     skills_section: String,
     mcp_server_index_section: String,
@@ -412,6 +413,25 @@ struct ToolIndexGroup {
 fn compact_index_text(value: &str, max_chars: usize) -> String {
     let sanitized = haven_common::text::sanitize_prompt_field(value.trim(), max_chars);
     truncate_chars(&sanitized, max_chars)
+}
+
+const BUILTIN_INDEX_CHAR_BUDGET: usize = 4096;
+const SKILL_INDEX_CHAR_BUDGET: usize = 1024;
+const MCP_INDEX_CHAR_BUDGET: usize = 2048;
+const CAPABILITY_INDEX_TOTAL_CHAR_BUDGET: usize =
+    BUILTIN_INDEX_CHAR_BUDGET + SKILL_INDEX_CHAR_BUDGET + MCP_INDEX_CHAR_BUDGET;
+
+fn cap_capability_index(value: String, budget: usize, hint: &str) -> String {
+    if value.chars().count() <= budget {
+        return value;
+    }
+    let suffix = format!("\n… {hint}");
+    let head_budget = budget.saturating_sub(suffix.chars().count());
+    format!(
+        "{}{}",
+        truncate_chars(value.trim_end(), head_budget),
+        suffix
+    )
 }
 
 fn catalog_group_prompt(group: ToolCatalogGroup) -> ToolPrompt {
@@ -1236,14 +1256,16 @@ impl SystemPromptBuilder {
     }
 
     async fn get_or_build_sections(&self) -> SchemaCache {
-        // The registry version is the authority for this frozen global index.
-        // Per-session registrations do not enter the index and therefore do
-        // not invalidate it.
+        // The builtin registry and MCP tools/list clocks are both authorities
+        // for this frozen global index. Per-session registrations do not enter
+        // the index and therefore do not invalidate it.
         let version = self.tools.registry.version();
+        let mcp_catalog_version = self.tools.mcp_catalog_version();
         {
             let cache = self.schema_cache.read().unwrap();
             if let Some(c) = cache.as_ref()
                 && c.registry_version == version
+                && c.mcp_catalog_version == mcp_catalog_version
             {
                 return c.clone();
             }
@@ -1262,12 +1284,19 @@ impl SystemPromptBuilder {
         if defs.is_empty() {
             defs = self.tools.registry.list_defs().await;
         }
-        let new_cache = self.build_sections(version, defs).await;
+        let new_cache = self
+            .build_sections(version, mcp_catalog_version, defs)
+            .await;
         *self.schema_cache.write().unwrap() = Some(new_cache.clone());
         new_cache
     }
 
-    async fn build_sections(&self, version: u64, defs: Vec<ToolDef>) -> SchemaCache {
+    async fn build_sections(
+        &self,
+        version: u64,
+        mcp_catalog_version: u64,
+        defs: Vec<ToolDef>,
+    ) -> SchemaCache {
         // Per-session mcp__ tools are never in the global registry, so they
         // won't appear here — intentional: prompt holds a short orientation
         // index; schemas come from the API tools[] list after load_mcp.
@@ -1285,11 +1314,33 @@ impl SystemPromptBuilder {
             built_in.push_str(CROSS_SESSION_MESSAGING_NOTES);
         }
 
-        let mcp_server_index = render_mcp_index(&self.tools.build_mcp_index().await);
-        let skills_section = render_skill_index(&self.tools.skills_engine.list().await);
+        let built_in = cap_capability_index(
+            built_in,
+            BUILTIN_INDEX_CHAR_BUDGET,
+            "use `tool_catalog` for the complete capability list",
+        );
+        let mcp_server_index = cap_capability_index(
+            render_mcp_index(&self.tools.build_mcp_index().await),
+            MCP_INDEX_CHAR_BUDGET,
+            "use `load_mcp` or `tool_catalog` for details",
+        );
+        let skills_section = cap_capability_index(
+            render_skill_index(&self.tools.skills_engine.list().await),
+            SKILL_INDEX_CHAR_BUDGET,
+            "use `load_skill` or `tool_catalog` for details",
+        );
+        debug_assert!(
+            built_in
+                .chars()
+                .count()
+                .saturating_add(skills_section.chars().count())
+                .saturating_add(mcp_server_index.chars().count())
+                <= CAPABILITY_INDEX_TOTAL_CHAR_BUDGET
+        );
 
         SchemaCache {
             registry_version: version,
+            mcp_catalog_version,
             built_in_section: built_in,
             skills_section,
             mcp_server_index_section: mcp_server_index,
@@ -1738,6 +1789,14 @@ mod tests {
         assert!(index.contains("files(40 operations)"));
         assert!(!index.contains("operation_00"));
         assert!(!index.contains("operation_39"));
+    }
+
+    #[test]
+    fn capability_index_has_a_hard_budget_and_recovery_hint() {
+        let rendered = cap_capability_index("x".repeat(10_000), 128, "use catalog");
+        assert!(rendered.chars().count() <= 128);
+        assert!(rendered.ends_with("… use catalog"));
+        assert_eq!(CAPABILITY_INDEX_TOTAL_CHAR_BUDGET, 7168);
     }
 
     #[tokio::test]

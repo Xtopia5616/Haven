@@ -1,4 +1,8 @@
-use crate::{ConfirmationRequirement, OperationPolicy, ToolConcurrency};
+#[cfg(test)]
+use crate::ToolConcurrency;
+use crate::{
+    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationPolicy,
+};
 use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
     NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel, SandboxMode,
@@ -206,7 +210,8 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
 
 /// Check an absolute local path without applying a tool-specific allowlist.
 /// This is for native app entry points such as “open skills directory” and
-/// “open external path”; the normal tool path goes through `check`, which adds
+/// “open external path”; the normal tool path goes through
+/// `check_with_policy`, which adds
 /// configured `allowed_paths` on top of this reparse-point check.
 pub fn is_safe_local_path(path: &Path) -> bool {
     if !path.is_absolute() || is_unc_or_device_path(path) {
@@ -301,7 +306,8 @@ pub enum ConfirmationResult {
     RequiresConfirmation {
         tool_name: String,
         risk_level: RiskLevel,
-        /// Stable key used for grant matching (`tool` / `tool:op`).
+        /// Stable dotted operation-view key used for grant matching; root
+        /// grants remain supported as aggregate parents.
         permission_key: String,
         receipt: ConfirmationReceipt,
     },
@@ -343,8 +349,8 @@ struct SafetyConfig {
 /// The engine owns policy evaluation; callers never decide based on a
 /// frontend-provided `confirmed` flag. Hard safety boundaries run before
 /// grants, deny rules always win, and a policy change invalidates session
-/// trust. The historical `SafetyGateway` name is intentionally gone so the
-/// API describes authorization rather than a vague security perimeter.
+/// trust. The API describes authorization rather than a vague security
+/// perimeter.
 pub struct AuthorizationEngine {
     config: RwLock<SafetyConfig>,
 }
@@ -446,31 +452,6 @@ impl AuthorizationEngine {
         effective_risk_from(&cfg, tool_name, reported)
     }
 
-    pub async fn check(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        params: &Value,
-        risk_level: RiskLevel,
-    ) -> ConfirmationResult {
-        let policy = OperationPolicy {
-            risk_level,
-            permission_key: permission_key(tool_name, params),
-            confirmation: if risk_level >= RiskLevel::Critical {
-                ConfirmationRequirement::Required
-            } else if risk_level == RiskLevel::Safe {
-                ConfirmationRequirement::None
-            } else {
-                ConfirmationRequirement::SecurityPolicy
-            },
-            idempotency: crate::OperationIdempotency::Unknown,
-            scope: crate::ToolOperationScope::Session,
-            concurrency: ToolConcurrency::Exclusive,
-        };
-        self.check_with_policy(session_id, tool_name, params, &policy)
-            .await
-    }
-
     /// Evaluate a concrete operation contract. The caller supplies the same
     /// policy object that produced the tool manifest, so authorization cannot
     /// silently downgrade an operation by re-deriving risk from a tool name.
@@ -493,7 +474,9 @@ impl AuthorizationEngine {
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
             return ConfirmationResult::Blocked { reason };
         }
-        if let Some(reason) = network_policy_block(cfg.network_policy, tool_name) {
+        if let Some(reason) =
+            network_policy_block(cfg.network_policy, cfg.sandbox_mode, tool_name, policy)
+        {
             return ConfirmationResult::Blocked { reason };
         }
         if let Some(reason) = path_sandbox_block(
@@ -505,6 +488,15 @@ impl AuthorizationEngine {
             policy,
         ) {
             return ConfirmationResult::Blocked { reason };
+        }
+
+        // Plan is a capability boundary, not a prompting preference. It must
+        // run before permanent/session allows so an old Always grant cannot
+        // silently turn Plan back into an execution mode.
+        if matches!(cfg.permission_mode, PermissionMode::Plan) && !policy.is_read_only() {
+            return ConfirmationResult::Blocked {
+                reason: "plan mode only permits read-only operations".into(),
+            };
         }
 
         // Deny always wins over Allow (permanent deny → session deny →
@@ -541,26 +533,26 @@ impl AuthorizationEngine {
         }
 
         let needs_prompt = match cfg.permission_mode {
-            PermissionMode::Plan => hard_confirmation || !policy.is_read_only(),
+            PermissionMode::Plan => hard_confirmation || policy.requires_disclosure_confirmation(),
             PermissionMode::Default => {
                 hard_confirmation
+                    || policy.requires_disclosure_confirmation()
                     || (!policy.is_read_only()
                         && (risk > RiskLevel::Safe
                             || policy.confirmation != ConfirmationRequirement::None))
             }
             PermissionMode::AutoEdit => {
                 hard_confirmation
+                    || policy.requires_disclosure_confirmation()
                     || (!policy.is_read_only()
-                        && (!is_edit_operation(&key) || risk >= RiskLevel::High))
+                        && (!is_auto_edit_safe(&key, policy) || risk >= RiskLevel::High))
             }
-            PermissionMode::Autonomous => hard_confirmation || risk >= RiskLevel::High,
+            PermissionMode::Autonomous => {
+                hard_confirmation
+                    || policy.requires_disclosure_confirmation()
+                    || risk >= RiskLevel::High
+            }
         };
-
-        if matches!(cfg.permission_mode, PermissionMode::Plan) && needs_prompt {
-            return ConfirmationResult::Blocked {
-                reason: "plan mode only permits read-only operations".into(),
-            };
-        }
 
         if !needs_prompt {
             return ConfirmationResult::AutoApproved;
@@ -580,29 +572,6 @@ impl AuthorizationEngine {
             permission_key: key,
             receipt,
         }
-    }
-
-    /// Verify a receipt immediately before execution. This check is separate
-    /// from `check` so a paused confirmation cannot become an unbound boolean
-    /// bypass when policy or tool risk changes during the pause.
-    pub async fn verify_receipt(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        params: &Value,
-        reported_risk: RiskLevel,
-        receipt: &ConfirmationReceipt,
-    ) -> Result<(), String> {
-        let policy = OperationPolicy {
-            risk_level: reported_risk,
-            permission_key: permission_key(tool_name, params),
-            confirmation: ConfirmationRequirement::SecurityPolicy,
-            idempotency: crate::OperationIdempotency::Unknown,
-            scope: crate::ToolOperationScope::Session,
-            concurrency: ToolConcurrency::Exclusive,
-        };
-        self.verify_receipt_with_policy(session_id, tool_name, params, &policy, receipt)
-            .await
     }
 
     /// Verify a receipt against the concrete operation contract used to
@@ -647,7 +616,9 @@ impl AuthorizationEngine {
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
             return Err(reason);
         }
-        if let Some(reason) = network_policy_block(cfg.network_policy, tool_name) {
+        if let Some(reason) =
+            network_policy_block(cfg.network_policy, cfg.sandbox_mode, tool_name, policy)
+        {
             return Err(reason);
         }
         let mut effective_policy = policy.clone();
@@ -836,40 +807,77 @@ fn canonicalize_json(value: &Value) -> Value {
     }
 }
 
-fn is_edit_operation(key: &str) -> bool {
-    const EDIT_PREFIXES: &[&str] = &[
-        "files.write",
-        "files.edit",
-        "files.patch",
-        "files.create_dir",
-        "files.delete",
-        "files.move",
-        "files.copy",
-        "process.",
-        "shell",
-        "input.",
-        "clipboard.write",
-        "media.speak",
-        "window.",
-        "actions.",
-        "schedule.",
-        "mcp::",
-        "skill::",
-    ];
-    EDIT_PREFIXES
-        .iter()
-        .any(|prefix| key == *prefix || key.starts_with(prefix))
+fn is_auto_edit_safe(key: &str, policy: &OperationPolicy) -> bool {
+    // AutoEdit is intentionally a narrow convenience mode for ordinary
+    // workspace mutations. UI effects, scheduling, subprocesses, network
+    // calls and destructive deletes must never inherit edit auto-approval.
+    matches!(
+        key,
+        "files.write"
+            | "files.edit"
+            | "files.patch"
+            | "files.create_dir"
+            | "files.copy"
+            | "files.move"
+    ) && matches!(policy.effect, OperationEffect::WorkspaceWrite)
+        && matches!(policy.data_sensitivity, DataSensitivity::None)
+        && matches!(policy.network_access, NetworkAccess::None)
 }
 
-fn is_network_capable_tool(tool_name: &str) -> bool {
-    tool_name == "http" || tool_name.starts_with("mcp::") || tool_name.starts_with("skill::")
+fn is_legacy_network_tool(tool_name: &str) -> bool {
+    tool_name == "http"
+        || matches!(
+            tool_name,
+            "haven.mcp.mcp_connect"
+                | "haven.mcp.mcp_add"
+                | "haven.mcp.mcp_update"
+                | "haven.mcp.mcp_toggle"
+                | "haven.mcp.mcp_reload"
+        )
+        || tool_name.starts_with("mcp::")
+        || tool_name.starts_with("mcp__")
+        || tool_name.starts_with("skill::")
+        || tool_name.starts_with("skill__")
 }
 
-fn network_policy_block(policy: NetworkPolicy, tool_name: &str) -> Option<String> {
-    if matches!(policy, NetworkPolicy::Deny) && is_network_capable_tool(tool_name) {
-        Some(format!("network access is disabled for tool '{tool_name}'"))
+fn network_policy_block(
+    network_policy: NetworkPolicy,
+    sandbox_mode: SandboxMode,
+    tool_name: &str,
+    operation: &OperationPolicy,
+) -> Option<String> {
+    let access = if matches!(operation.network_access, NetworkAccess::None)
+        && is_legacy_network_tool(tool_name)
+    {
+        NetworkAccess::Opaque
     } else {
-        None
+        operation.network_access
+    };
+    match (network_policy, access) {
+        (NetworkPolicy::Deny, NetworkAccess::None) => None,
+        (NetworkPolicy::Deny, _) => {
+            Some(format!("network access is disabled for tool '{tool_name}'"))
+        }
+        // A restricted policy only permits destinations that Haven can inspect
+        // and validate. Opaque child processes/adapters cannot satisfy that
+        // contract, even if they are currently configured as read-only.
+        (NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
+            "restricted network policy cannot authorize opaque network access from '{tool_name}'"
+        )),
+        _ => {
+            // WorkspaceWrite cannot safely constrain an arbitrary child
+            // process to writable_roots. Keep this check adjacent to network
+            // handling so an opaque process cannot become a policy hole.
+            if matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
+                && matches!(access, NetworkAccess::Opaque)
+            {
+                Some(format!(
+                    "workspace-write sandbox cannot safely constrain opaque process '{tool_name}'"
+                ))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -1151,19 +1159,82 @@ mod tests {
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
 
-    // Keep the historical threshold fixtures terse while production tests use
-    // the new policy API. The wrapper only preserves the old test fixture's
-    // threshold semantics; all decisions still run through AuthorizationEngine.
-    struct SafetyGateway {
+    // Test-only fixture for legacy threshold cases. Production callers must
+    // provide the concrete operation contract through `check_with_policy` and
+    // `verify_receipt_with_policy`; this helper is intentionally unavailable
+    // from the compiled runtime API.
+    impl AuthorizationEngine {
+        async fn check(
+            &self,
+            session_id: Option<&str>,
+            tool_name: &str,
+            params: &Value,
+            risk_level: RiskLevel,
+        ) -> ConfirmationResult {
+            let policy = OperationPolicy {
+                risk_level,
+                permission_key: permission_key(tool_name, params),
+                confirmation: if risk_level >= RiskLevel::Critical {
+                    ConfirmationRequirement::Required
+                } else if risk_level == RiskLevel::Safe {
+                    ConfirmationRequirement::None
+                } else {
+                    ConfirmationRequirement::SecurityPolicy
+                },
+                idempotency: crate::OperationIdempotency::Unknown,
+                scope: crate::ToolOperationScope::Session,
+                concurrency: ToolConcurrency::Exclusive,
+                effect: OperationEffect::ExternalEffect,
+                data_sensitivity: DataSensitivity::None,
+                network_access: NetworkAccess::None,
+            };
+            self.check_with_policy(session_id, tool_name, params, &policy)
+                .await
+        }
+
+        async fn verify_receipt(
+            &self,
+            session_id: Option<&str>,
+            tool_name: &str,
+            params: &Value,
+            reported_risk: RiskLevel,
+            receipt: &ConfirmationReceipt,
+        ) -> Result<(), String> {
+            let policy = OperationPolicy {
+                risk_level: reported_risk,
+                permission_key: permission_key(tool_name, params),
+                confirmation: ConfirmationRequirement::SecurityPolicy,
+                idempotency: crate::OperationIdempotency::Unknown,
+                scope: crate::ToolOperationScope::Session,
+                concurrency: ToolConcurrency::Exclusive,
+                effect: OperationEffect::ExternalEffect,
+                data_sensitivity: DataSensitivity::None,
+                network_access: NetworkAccess::None,
+            };
+            self.verify_receipt_with_policy(session_id, tool_name, params, &policy, receipt)
+                .await
+        }
+    }
+
+    // Keep threshold fixtures terse while production tests use the new policy
+    // API. The wrapper only preserves the fixture's threshold semantics; all
+    // decisions still run through AuthorizationEngine.
+    struct ThresholdFixture {
         engine: AuthorizationEngine,
         threshold: RiskLevel,
     }
-    impl SafetyGateway {
+    impl ThresholdFixture {
         fn new(threshold: RiskLevel) -> Self {
-            Self {
-                engine: AuthorizationEngine::new(),
-                threshold,
-            }
+            let engine = AuthorizationEngine::new();
+            // Historical threshold fixtures are about confirmation floors,
+            // not transport policy. Keep them on an explicitly open network
+            // boundary; dedicated network tests use the real Restricted/Deny
+            // defaults instead.
+            let mut config = engine.config.try_write().unwrap();
+            config.network_policy = NetworkPolicy::Open;
+            config.sandbox_mode = SandboxMode::FullAccess;
+            drop(config);
+            Self { engine, threshold }
         }
 
         async fn check(
@@ -1186,7 +1257,7 @@ mod tests {
             }
         }
     }
-    impl std::ops::Deref for SafetyGateway {
+    impl std::ops::Deref for ThresholdFixture {
         type Target = AuthorizationEngine;
 
         fn deref(&self) -> &Self::Target {
@@ -1194,8 +1265,8 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn test_safety_gateway_new_default_threshold() {
-        let gw = SafetyGateway::new(RiskLevel::Low);
+    async fn test_authorization_default_threshold() {
+        let gw = ThresholdFixture::new(RiskLevel::Low);
         // Safe is below Low → auto approved
         let result = gw.check(None, "tool1", &json!({}), RiskLevel::Safe).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
@@ -1274,6 +1345,9 @@ mod tests {
             idempotency: crate::OperationIdempotency::Idempotent,
             scope: crate::ToolOperationScope::Session,
             concurrency: ToolConcurrency::ReadOnly,
+            effect: OperationEffect::ReadOnly,
+            data_sensitivity: DataSensitivity::UserData,
+            network_access: NetworkAccess::None,
         };
         assert!(matches!(
             gateway
@@ -1290,6 +1364,9 @@ mod tests {
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
             concurrency: ToolConcurrency::Exclusive,
+            effect: OperationEffect::WorkspaceWrite,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
         };
         assert!(matches!(
             gateway
@@ -1304,6 +1381,133 @@ mod tests {
                 .check_with_policy(None, "files.write", &json!({}), &write_policy)
                 .await,
             ConfirmationResult::AutoApproved
+        ));
+    }
+
+    #[tokio::test]
+    async fn plan_mode_cannot_be_bypassed_by_permanent_allow() {
+        let gateway = AuthorizationEngine::new();
+        let write_policy = OperationPolicy {
+            risk_level: RiskLevel::Medium,
+            permission_key: "files.write".into(),
+            confirmation: ConfirmationRequirement::SecurityPolicy,
+            idempotency: crate::OperationIdempotency::NonIdempotent,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+            effect: OperationEffect::WorkspaceWrite,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
+        };
+        gateway
+            .grant(
+                None,
+                "files.write",
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+            )
+            .await;
+        gateway.set_permission_mode(PermissionMode::Plan).await;
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "files.write", &json!({}), &write_policy)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn sensitive_read_and_network_access_are_not_safe_just_because_read_only() {
+        let gateway = AuthorizationEngine::new();
+        let sensitive_policy = OperationPolicy {
+            risk_level: RiskLevel::Low,
+            permission_key: "system.env.get".into(),
+            confirmation: ConfirmationRequirement::None,
+            idempotency: crate::OperationIdempotency::Idempotent,
+            scope: crate::ToolOperationScope::Global,
+            concurrency: ToolConcurrency::ReadOnly,
+            effect: OperationEffect::ReadOnly,
+            data_sensitivity: DataSensitivity::Sensitive,
+            network_access: NetworkAccess::None,
+        };
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "system.env.get", &json!({}), &sensitive_policy)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+
+        let network_policy = OperationPolicy {
+            permission_key: "http".into(),
+            network_access: NetworkAccess::Public,
+            ..sensitive_policy.clone()
+        };
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "http", &json!({}), &network_policy)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn auto_edit_does_not_auto_approve_ui_schedule_or_process_effects() {
+        let gateway = AuthorizationEngine::new();
+        gateway.set_permission_mode(PermissionMode::AutoEdit).await;
+        gateway
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        for (tool_name, effect) in [
+            ("window.focus", OperationEffect::ExternalEffect),
+            ("schedule.set", OperationEffect::ExternalEffect),
+            ("shell", OperationEffect::ExternalEffect),
+        ] {
+            let policy = OperationPolicy {
+                risk_level: RiskLevel::Medium,
+                permission_key: tool_name.into(),
+                confirmation: ConfirmationRequirement::SecurityPolicy,
+                idempotency: crate::OperationIdempotency::Unknown,
+                scope: crate::ToolOperationScope::Session,
+                concurrency: ToolConcurrency::Exclusive,
+                effect,
+                data_sensitivity: DataSensitivity::None,
+                network_access: if tool_name == "shell" {
+                    NetworkAccess::Opaque
+                } else {
+                    NetworkAccess::None
+                },
+            };
+            assert!(matches!(
+                gateway
+                    .check_with_policy(None, tool_name, &json!({}), &policy)
+                    .await,
+                ConfirmationResult::RequiresConfirmation { .. }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_write_rejects_opaque_processes_until_full_access_is_explicit() {
+        let gateway = AuthorizationEngine::new();
+        let policy = OperationPolicy::native(
+            "shell",
+            "shell".into(),
+            RiskLevel::High,
+            NetworkAccess::Opaque,
+        );
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "shell", &json!({}), &policy)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        gateway
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "shell", &json!({}), &policy)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
 
@@ -1329,6 +1533,29 @@ mod tests {
         assert!(matches!(
             gateway
                 .check(None, "mcp::remote::search", &json!({}), RiskLevel::High)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            gateway
+                .check(None, "mcp__remote__search", &json!({}), RiskLevel::High)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            gateway
+                .check(None, "skill__echo", &json!({}), RiskLevel::High)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            gateway
+                .check(
+                    None,
+                    "haven.mcp.mcp_add",
+                    &json!({"operation": "mcp_add"}),
+                    RiskLevel::High
+                )
                 .await,
             ConfirmationResult::Blocked { .. }
         ));
@@ -1369,6 +1596,9 @@ mod tests {
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
             concurrency: ToolConcurrency::Exclusive,
+            effect: OperationEffect::WorkspaceWrite,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
         };
         let outside = std::env::temp_dir().join("haven-permission-outside.txt");
         assert!(matches!(
@@ -1480,16 +1710,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_below_threshold_auto_approved() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_below_threshold_auto_approved() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         // Low is below Medium → auto approved
         let result = gw.check(None, "tool1", &json!({}), RiskLevel::Low).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_at_threshold_requires_confirmation() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_at_threshold_requires_confirmation() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         // Medium is at the threshold → requires confirmation
         let result = gw.check(None, "tool1", &json!({}), RiskLevel::Medium).await;
         assert!(matches!(
@@ -1499,8 +1729,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_above_threshold_requires_confirmation() {
-        let gw = SafetyGateway::new(RiskLevel::Low);
+    async fn test_authorization_above_threshold_requires_confirmation() {
+        let gw = ThresholdFixture::new(RiskLevel::Low);
         // High is above Low → requires confirmation
         let result = gw.check(None, "tool1", &json!({}), RiskLevel::High).await;
         assert!(matches!(
@@ -1510,8 +1740,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_session_allow_tool_key() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_session_allow_tool_key() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-a"),
             "tool1",
@@ -1526,8 +1756,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_session_allow_is_per_session_and_per_tool() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_session_allow_is_per_session_and_per_tool() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-a"),
             "tool1",
@@ -1557,8 +1787,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_permanent_deny_blocks() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_permanent_deny_blocks() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
             "shell",
@@ -1571,8 +1801,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_parent_key_matches_operation() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_parent_key_matches_operation() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-a"),
             "files",
@@ -1592,8 +1822,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_clear_session_trust() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_clear_session_trust() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-a"),
             "tool1",
@@ -1660,8 +1890,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_set_mode_clears_session_grants() {
-        let gw = SafetyGateway::new(RiskLevel::Low);
+    async fn test_authorization_set_mode_clears_session_grants() {
+        let gw = ThresholdFixture::new(RiskLevel::Low);
         gw.grant(
             Some("ses-a"),
             "tool1",
@@ -1689,8 +1919,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_disabled_operation_blocks() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_disabled_operation_blocks() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         let mut settings = HashMap::new();
         settings.insert(
             "files".into(),
@@ -1713,7 +1943,7 @@ mod tests {
 
     #[tokio::test]
     async fn operation_view_inherits_aggregate_tool_safety_settings() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         let mut settings = HashMap::new();
         settings.insert(
             "files".into(),
@@ -1736,7 +1966,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_autonomous_mode_skips_prompt_except_critical() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         let security = SecurityConfig {
             permission_mode: PermissionMode::Autonomous,
             ..SecurityConfig::default()
@@ -1759,8 +1989,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_session_deny_overrides_permanent_allow() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_session_deny_overrides_permanent_allow() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
             "files",
@@ -1788,8 +2018,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_child_allow_cannot_bypass_parent_deny() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_child_allow_cannot_bypass_parent_deny() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
             "files",
@@ -1813,8 +2043,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_child_deny_cannot_be_bypassed_by_parent_allow() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_child_deny_cannot_be_bypassed_by_parent_allow() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
             "files",
@@ -1843,8 +2073,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_session_parent_deny_beats_session_child_allow() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_session_parent_deny_beats_session_child_allow() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-a"),
             "system:power",
@@ -1873,8 +2103,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_permanent_deny_beats_session_allow() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+    async fn test_authorization_permanent_deny_beats_session_allow() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
             "shell",
@@ -1899,7 +2129,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_tool_security_matrix_gates_every_risk_bearing_case() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         for case in LOCAL_TOOL_SECURITY_MATRIX {
             let input = matrix_input(case);
             let result = gw
@@ -2077,7 +2307,7 @@ mod tests {
             "security matrix must cover every currently registered builtin route"
         );
 
-        let gateway = SafetyGateway::new(RiskLevel::Medium);
+        let gateway = ThresholdFixture::new(RiskLevel::Medium);
         let mut seen = HashSet::new();
         for tool in tools {
             let name = tool.name();
@@ -2116,8 +2346,8 @@ mod tests {
                     "empty permission key for {name}:{operation}"
                 );
                 assert_eq!(
-                    permission_key_candidates(&key).last().copied(),
-                    Some(name.as_str()),
+                    haven_common::types::permission_tool_root(&key),
+                    haven_common::types::permission_tool_root(&name),
                     "permission key must remain rooted at the registered tool"
                 );
                 assert_eq!(
@@ -2173,7 +2403,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_adapter_authorization_is_shared_but_session_scoped() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         let mcp_name = crate::McpToolAdapter::qualified_name_of("calendar", "create_event");
         let skill_name = crate::SkillToolAdapter::qualified_name_of("calendar");
 
@@ -2281,7 +2511,7 @@ mod tests {
                 ..ToolConfig::default()
             },
         );
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.set_tool_settings(settings).await;
 
         let result = gw
@@ -2311,7 +2541,7 @@ mod tests {
                 ..ToolConfig::default()
             },
         );
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.set_tool_settings(settings).await;
 
         let result = gw
@@ -2330,7 +2560,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_path_sandbox_rejects_parent_escape() {
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         let mut settings = HashMap::new();
         settings.insert(
             "files".into(),
@@ -2363,7 +2593,7 @@ mod tests {
                 ..ToolConfig::default()
             },
         );
-        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.set_tool_settings(settings).await;
 
         let result = gw

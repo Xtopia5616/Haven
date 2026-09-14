@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolIdentity, ToolManifest, ToolModel, ToolPresentation,
-    ToolPrompt,
+    ToolPrompt, ToolRootPresentation, ToolSource,
 };
 use haven_common::types::RiskLevel;
 use serde_json::Value;
@@ -144,6 +144,12 @@ impl Tool for McpToolAdapter {
                 label: name.clone(),
                 renderer: self.server_name.clone(),
                 icon: "tools".into(),
+                represented_source: ToolSource::Mcp,
+            },
+            root_presentation: ToolRootPresentation {
+                label: self.server_name.clone(),
+                description: format!("{} MCP 能力", self.server_name),
+                icon: "network".into(),
             },
             prompt: ToolPrompt {
                 when_to_use: self.description(),
@@ -220,6 +226,10 @@ impl Tool for SkillToolAdapter {
 
     fn catalog_group(&self) -> ToolCatalogGroup {
         ToolCatalogGroup::Skills
+    }
+
+    fn represented_source(&self) -> ToolSource {
+        ToolSource::Skill
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

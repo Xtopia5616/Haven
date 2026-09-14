@@ -1,6 +1,11 @@
 /** Shared tool-name → source / label helpers for chat tool cards. */
 
-import { getToolManifest, toolLabel, toolRootName } from './toolManifest.ts';
+import {
+	getToolManifest,
+	toolLabel,
+	toolRepresentedSource,
+	toolRootName,
+} from './toolManifest.ts';
 
 export type ToolSource = 'builtin' | 'skill' | 'mcp';
 
@@ -38,7 +43,7 @@ export { toolRootName };
 /** Return the fixed operation for a model-facing operation view. */
 export function toolOperationName(toolName: string): string | null {
 	const manifest = getToolManifest(toolName);
-	return manifest?.identity.operation ? manifest.identity.stable_name : null;
+	return manifest?.identity.operation ?? null;
 }
 
 /** Strip the provider-safe namespace prefix from a dynamic tool name. */
@@ -51,10 +56,10 @@ function stripToolPrefix(name: string, prefix: string): string | null {
 /** Classify a wire tool name into builtin / skill / MCP. */
 export function classifyToolSource(toolName: string): ToolSource {
 	const name = String(toolName || '');
-	const manifest = getToolManifest(name);
-	if (manifest?.identity.source === 'mcp') return 'mcp';
-	if (manifest?.identity.source === 'skill') return 'skill';
-	if (manifest?.identity.source === 'builtin') return 'builtin';
+	const representedSource = toolRepresentedSource(name);
+	if (representedSource === 'mcp') return 'mcp';
+	if (representedSource === 'skill') return 'skill';
+	if (representedSource === 'builtin') return 'builtin';
 	// The activation tools are implemented by Haven, but their card represents
 	// the capability being activated, so keep them visually consistent with the
 	// dynamic tools they expose.

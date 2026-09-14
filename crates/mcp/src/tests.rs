@@ -220,6 +220,60 @@ async fn mcp_manager_add_client_invalidates_catalog_revision() {
     );
 }
 
+#[tokio::test]
+async fn mcp_manager_network_deny_removes_clients_and_blocks_connections() {
+    let mgr = McpManager::new();
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "blocked".into(),
+            command: "echo".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+    mgr.add_client(client).await;
+
+    mgr.set_network_policy(haven_common::types::NetworkPolicy::Deny)
+        .await;
+    assert!(mgr.list_clients().await.is_empty());
+    assert!(
+        mgr.connect_server(&McpServerConfig {
+            name: "new-blocked".into(),
+            command: "echo".into(),
+            ..Default::default()
+        })
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn mcp_stdio_requires_open_network_policy() {
+    let client = McpClient::new(
+        &McpServerConfig {
+            name: "restricted-stdio".into(),
+            command: "echo".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    );
+    client
+        .set_network_policy(haven_common::types::NetworkPolicy::Restricted)
+        .await;
+
+    let error = client
+        .connect()
+        .await
+        .expect_err("restricted stdio must be blocked");
+    assert!(error.to_string().contains("network policy"));
+    assert!(matches!(
+        client.status().await,
+        McpClientStatus::Offline { .. }
+    ));
+}
+
 #[test]
 fn extract_mcp_content_plain_text() {
     let content = json!([

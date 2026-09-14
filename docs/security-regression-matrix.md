@@ -33,7 +33,7 @@
 | MCP 适配器 | `mcp__server__tool` 使用 adapter 的 high 风险和同一授权 key | UI 预览与 Agent 调用共享 permanent grant；session grant 不泄漏到无 session 入口 |
 | skill 适配器 | `skill__name` 使用 adapter 的 high 风险和同一授权 key | skill 脚本不能由 `confirmed` 参数绕过 deny/path gate |
 | UI MCP/skill 命令 | `mcp_tool_call` / `execute_skill` 先检查 gateway | 被拒绝时不创建 client call/runner call |
-| 自身设置入口 | Tauri 设置命令复用 native admin surface | UI 与模型 capability 使用同一 typed 写路径；native façade 为临时迁移边界 |
+| 自身设置入口 | Tauri 设置命令复用 native admin surface，并先经过 AuthorizationEngine | UI 与模型 capability 使用同一 typed 写路径；确认恢复仍绑定 receipt，native façade 为临时迁移边界 |
 
 ## 负向回归矩阵
 

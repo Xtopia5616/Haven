@@ -179,9 +179,10 @@ pub enum PermissionMode {
 
 /// Technical file-system boundary applied by the authorization gateway.
 ///
-/// `WorkspaceWrite` is a policy boundary for path-bearing builtin tools. A
-/// future OS-level job sandbox may enforce the same boundary for arbitrary
-/// child processes; it must not be inferred from this enum alone.
+/// `WorkspaceWrite` is a policy boundary for path-bearing builtin tools. Opaque
+/// child processes are blocked there because Windows Job Objects contain the
+/// process tree but cannot enforce filesystem/network roots; `FullAccess` is
+/// the explicit escape hatch for such processes.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
@@ -202,7 +203,8 @@ pub enum NetworkPolicy {
     /// No network-capable tool may run.
     Deny,
     /// Public destinations are allowed subject to each tool's SSRF and
-    /// allowlist checks.
+    /// allowlist checks. Opaque child-process network access is blocked because
+    /// Haven cannot validate its destination.
     #[default]
     Restricted,
     /// Do not add a global network restriction. Tool-level checks still run.
@@ -293,21 +295,26 @@ pub fn permission_key(tool_name: &str, params: &serde_json::Value) -> String {
     parts.join(":")
 }
 
-/// Tool root of a permission key (`system:power:lock` → `system`).
+/// Tool root of a permission key (`system:power:lock` or
+/// `system.power.lock` → `system`).
 pub fn permission_tool_root(key: &str) -> &str {
-    key.split_once(':').map(|(root, _)| root).unwrap_or(key)
+    key.find([':', '.']).map_or(key, |index| &key[..index])
 }
 
 /// Ancestor keys for grant matching: exact key first, then parents.
 ///
 /// `files:delete` → `["files:delete", "files"]`
 /// `system:power:lock` → `["system:power:lock", "system:power", "system"]`
+///
+/// Operation-view keys use the canonical dotted form, and legacy aggregate
+/// keys may still reach this helper while a config is being inspected, so
+/// both separators are understood at the matching boundary.
 pub fn permission_key_candidates(key: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut end = key.len();
     loop {
         out.push(&key[..end]);
-        match key[..end].rfind(':') {
+        match key[..end].rfind([':', '.']) {
             Some(i) => end = i,
             None => break,
         }
@@ -1441,6 +1448,10 @@ mod tests {
         assert_eq!(
             permission_key_candidates("system:power:lock"),
             vec!["system:power:lock", "system:power", "system"]
+        );
+        assert_eq!(
+            permission_key_candidates("system.power.lock"),
+            vec!["system.power.lock", "system.power", "system"]
         );
         assert_eq!(permission_key_candidates("shell"), vec!["shell"]);
     }

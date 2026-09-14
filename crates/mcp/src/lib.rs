@@ -1,5 +1,6 @@
 mod client;
 mod manager;
+mod network;
 mod protocol;
 mod sse;
 mod transport;

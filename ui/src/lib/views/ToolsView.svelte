@@ -33,10 +33,11 @@
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import {
+		builtinToolEntryFromManifest,
 		filterBuiltinToolCard,
 		groupBuiltinTools,
 	} from '$lib/builtinToolPresentation.ts';
-	import { setToolManifests } from '$lib/toolManifest.ts';
+	import { parseToolManifest, setToolManifests } from '$lib/toolManifest.ts';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -104,24 +105,9 @@
 				const tools = /** @type {Array<any>} */ (result.tools);
 				setToolManifests(tools);
 				builtinTools = tools
-					.map((t) => {
-						const identity = t.manifest?.identity;
-						const name = identity?.stable_name || t.name || 'unknown';
-						return {
-							name,
-							label: t.manifest?.presentation?.label || name,
-							desc: t.manifest?.model?.description || t.description || '',
-							risk: t.manifest?.policy?.risk_level || t.risk_level || 'unknown',
-							category: identity?.catalog_group || t.catalog_group || 'other',
-							root: identity?.root || name.split('.')[0] || name,
-							operation: identity?.operation ?? null,
-							schema: t.manifest?.model?.input_schema || t.input_schema || {},
-							enabled: t.manifest?.availability?.enabled ?? t.enabled !== false,
-							available: t.manifest?.availability?.available ?? true,
-							availabilityReason: t.manifest?.availability?.availability_reason || null,
-							manifest: t.manifest || null,
-						};
-					})
+					.map(parseToolManifest)
+					.filter((manifest) => manifest !== null)
+					.map(builtinToolEntryFromManifest)
 					.sort((a, b) => a.name.localeCompare(b.name));
 			}
 		} catch (e) {

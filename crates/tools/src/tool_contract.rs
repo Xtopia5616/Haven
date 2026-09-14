@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolDef, ToolIdentity, ToolManifest, ToolModel, ToolPolicy,
-    ToolPresentation, ToolPrompt, ToolSource,
+    ToolPresentation, ToolPrompt, ToolRootPresentation, ToolSource,
 };
 
 /// The durable meaning of a tool invocation's terminal state.
@@ -217,6 +217,63 @@ impl ConfirmationRequirement {
     }
 }
 
+/// What the operation does. This deliberately does not reuse concurrency:
+/// read-only work can still disclose sensitive data, use the network, or
+/// create an internal artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationEffect {
+    ReadOnly,
+    WorkspaceWrite,
+    ExternalEffect,
+}
+
+impl OperationEffect {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::ExternalEffect => "external_effect",
+        }
+    }
+}
+
+/// How much user-controlled information the operation may disclose or expose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataSensitivity {
+    None,
+    UserData,
+    Sensitive,
+}
+
+impl DataSensitivity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::UserData => "user_data",
+            Self::Sensitive => "sensitive",
+        }
+    }
+}
+
+/// Network capability of the concrete operation. `Opaque` means an external
+/// process or adapter may choose destinations that Haven cannot inspect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkAccess {
+    None,
+    Public,
+    Opaque,
+}
+
+impl NetworkAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Public => "public",
+            Self::Opaque => "opaque",
+        }
+    }
+}
+
 /// Single runtime policy returned by every tool implementation. The manifest
 /// is derived from this value, while the authorization gateway consumes the
 /// same risk and permission identity for the actual call.
@@ -228,14 +285,52 @@ pub struct OperationPolicy {
     pub idempotency: OperationIdempotency,
     pub scope: ToolOperationScope,
     pub concurrency: ToolConcurrency,
+    pub effect: OperationEffect,
+    pub data_sensitivity: DataSensitivity,
+    pub network_access: NetworkAccess,
 }
 
 impl OperationPolicy {
+    /// Build a contract for a native/UI entry point that does not have a
+    /// registered `Tool` object. Callers must still provide the same stable
+    /// permission key and explicitly declare the network capability.
+    pub fn native(
+        tool_name: &str,
+        permission_key: String,
+        risk_level: RiskLevel,
+        network_access: NetworkAccess,
+    ) -> Self {
+        let (effect, data_sensitivity, _) =
+            operation_attributes(tool_name, ToolConcurrency::Exclusive);
+        Self {
+            risk_level,
+            permission_key,
+            confirmation: if risk_level >= RiskLevel::Critical {
+                ConfirmationRequirement::Required
+            } else if risk_level == RiskLevel::Safe {
+                ConfirmationRequirement::None
+            } else {
+                ConfirmationRequirement::SecurityPolicy
+            },
+            idempotency: OperationIdempotency::Unknown,
+            scope: ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+            effect,
+            data_sensitivity,
+            network_access,
+        }
+    }
+
     /// Whether the operation is explicitly declared read-only by its
     /// executable scheduling contract. Risk alone is not enough: a Safe
     /// operation can still have an external effect (for example speech).
     pub fn is_read_only(&self) -> bool {
-        matches!(self.concurrency, ToolConcurrency::ReadOnly)
+        matches!(self.effect, OperationEffect::ReadOnly)
+    }
+
+    pub fn requires_disclosure_confirmation(&self) -> bool {
+        matches!(self.data_sensitivity, DataSensitivity::Sensitive)
+            || !matches!(self.network_access, NetworkAccess::None)
     }
 
     pub fn to_catalog_policy(&self) -> ToolPolicy {
@@ -252,8 +347,81 @@ impl OperationPolicy {
             idempotency: self.idempotency.as_str().into(),
             scope: self.scope.as_str().into(),
             concurrency,
+            effect: self.effect.as_str().into(),
+            data_sensitivity: self.data_sensitivity.as_str().into(),
+            network_access: self.network_access.as_str().into(),
         }
     }
+}
+
+/// Conservative operation attributes shared by the default Tool contract and
+/// the operation-view catalog. Unknown operations inherit only their explicit
+/// concurrency declaration; they never inherit a permissive network or data
+/// classification.
+pub(crate) fn operation_attributes(
+    name: &str,
+    concurrency: ToolConcurrency,
+) -> (OperationEffect, DataSensitivity, NetworkAccess) {
+    let effect = if matches!(concurrency, ToolConcurrency::ReadOnly) {
+        OperationEffect::ReadOnly
+    } else {
+        OperationEffect::ExternalEffect
+    };
+    let effect = match name {
+        "files.write" | "files.edit" | "files.patch" | "files.create_dir" | "files.copy"
+        | "files.move" => OperationEffect::WorkspaceWrite,
+        _ => effect,
+    };
+    let data = match name {
+        "system.env.list"
+        | "system.env.get"
+        | "system.registry.list"
+        | "system.registry.get"
+        | "clipboard.read"
+        | "clipboard.history" => DataSensitivity::Sensitive,
+        name if name.starts_with("files.")
+            || name.starts_with("media.")
+            || name.starts_with("window.")
+            || name.starts_with("memory.") =>
+        {
+            DataSensitivity::UserData
+        }
+        _ => DataSensitivity::None,
+    };
+    let network = match name {
+        "http" | "files.summary" | "media.describe" | "media.ocr" | "media.transcribe"
+        | "media.generate" | "window.ocr" => NetworkAccess::Public,
+        "shell" | "load_mcp" | "load_skill" => NetworkAccess::Opaque,
+        name if name.starts_with("mcp__")
+            || name.starts_with("mcp::")
+            || name.starts_with("skill__")
+            || name.starts_with("skill::") =>
+        {
+            NetworkAccess::Opaque
+        }
+        _ => NetworkAccess::None,
+    };
+    (effect, data, network)
+}
+
+pub(crate) fn operation_attributes_for_input(
+    name: &str,
+    input: &Value,
+    concurrency: ToolConcurrency,
+) -> (OperationEffect, DataSensitivity, NetworkAccess) {
+    let operation = input.get("operation").and_then(Value::as_str);
+    let scope = input.get("scope").and_then(Value::as_str);
+    let derived = match (scope, operation) {
+        (Some(scope), Some(operation)) if !scope.is_empty() && !operation.is_empty() => {
+            Some(format!("{name}.{scope}.{operation}"))
+        }
+        (None, Some(operation)) if !operation.is_empty() => Some(format!("{name}.{operation}")),
+        _ => None,
+    };
+    derived
+        .as_deref()
+        .map(|candidate| operation_attributes(candidate, concurrency.clone()))
+        .unwrap_or_else(|| operation_attributes(name, concurrency))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -991,6 +1159,118 @@ pub fn is_silent_action(tool_name: &str, input: &Value) -> bool {
             .unwrap_or(false)
 }
 
+fn tool_source_for_name(name: &str) -> ToolSource {
+    if name.starts_with("skill__") {
+        ToolSource::Skill
+    } else if name.starts_with("mcp__") {
+        ToolSource::Mcp
+    } else {
+        ToolSource::Builtin
+    }
+}
+
+fn display_source_for_name(name: &str) -> ToolSource {
+    match name {
+        "load_skill" => ToolSource::Skill,
+        "load_mcp" => ToolSource::Mcp,
+        _ => tool_source_for_name(name),
+    }
+}
+
+fn default_tool_root(name: &str, represented_source: ToolSource) -> String {
+    match represented_source {
+        ToolSource::Skill => "skills".into(),
+        ToolSource::Mcp => "mcp".into(),
+        ToolSource::Builtin => name.split('.').next().unwrap_or(name).into(),
+    }
+}
+
+fn default_tool_operation(
+    name: &str,
+    root: &str,
+    represented_source: ToolSource,
+) -> Option<String> {
+    match represented_source {
+        ToolSource::Skill => name
+            .strip_prefix("skill__")
+            .or_else(|| (name == "load_skill").then_some("load"))
+            .map(ToString::to_string),
+        ToolSource::Mcp => name
+            .strip_prefix("mcp__")
+            .or_else(|| (name == "load_mcp").then_some("load"))
+            .map(ToString::to_string),
+        ToolSource::Builtin => name
+            .strip_prefix(&format!("{root}."))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+    }
+}
+
+fn default_tool_label(name: &str) -> String {
+    let label = match name {
+        "ask" => "询问用户",
+        "notify" => "发送通知",
+        "load_builtin" => "加载内置工具",
+        "load_skill" => "加载 Skill",
+        "load_mcp" => "加载 MCP",
+        "tool_catalog" => "工具目录",
+        "files" => "文件与搜索",
+        "media" => "媒体",
+        "http" => "HTTP 请求",
+        "system" => "系统与桌面",
+        "shell" => "终端输出",
+        "haven" => "Haven 管理与会话工具",
+        "memory" => "记忆",
+        "agent" => "Agent 协作",
+        "process" => "进程",
+        "clipboard" => "剪贴板",
+        "input" => "输入控制",
+        "window" => "窗口与屏幕",
+        "preferences" => "会话偏好",
+        "checklist" => "检查清单",
+        "actions" => "后台任务",
+        "schedule" => "定时任务",
+        "web_search" => "联网搜索",
+        _ => name
+            .strip_prefix("skill__")
+            .or_else(|| name.strip_prefix("mcp__"))
+            .unwrap_or(name),
+    };
+    label.into()
+}
+
+pub(crate) fn default_root_presentation(
+    root: &str,
+    represented_source: ToolSource,
+) -> ToolRootPresentation {
+    let (label, icon) = match represented_source {
+        ToolSource::Skill => ("Skills", "sparkles"),
+        ToolSource::Mcp => ("MCP", "network"),
+        ToolSource::Builtin => match root {
+            "files" => ("文件", "folder"),
+            "media" => ("媒体", "image"),
+            "system" => ("系统", "settings"),
+            "process" => ("进程", "activity"),
+            "clipboard" => ("剪贴板", "clipboard"),
+            "input" => ("输入控制", "keyboard"),
+            "window" => ("窗口与屏幕", "monitor"),
+            "memory" => ("记忆", "memory"),
+            "agent" => ("Agent 协作", "users"),
+            "actions" => ("后台任务", "clock"),
+            "schedule" => ("定时任务", "bell"),
+            "preferences" => ("会话偏好", "settings"),
+            "checklist" => ("检查清单", "checklist"),
+            "haven" => ("Haven", "settings"),
+            _ => (root, "tools"),
+        },
+    };
+    ToolRootPresentation {
+        label: label.into(),
+        description: format!("{label}相关能力"),
+        icon: icon.into(),
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> String;
@@ -1003,6 +1283,9 @@ pub trait Tool: Send + Sync {
     fn operation_policy(&self, input: &Value) -> OperationPolicy {
         let name = self.name();
         let risk_level = self.risk_level(input);
+        let concurrency = self.concurrency(input);
+        let (effect, data_sensitivity, network_access) =
+            operation_attributes_for_input(&name, input, concurrency.clone());
         OperationPolicy {
             risk_level,
             permission_key: permission_key(&name, &self.authorization_input(input)),
@@ -1015,7 +1298,10 @@ pub trait Tool: Send + Sync {
             },
             idempotency: self.idempotency(input),
             scope: self.operation_scope(input),
-            concurrency: self.concurrency(input),
+            concurrency,
+            effect,
+            data_sensitivity,
+            network_access,
         }
     }
 
@@ -1023,22 +1309,15 @@ pub trait Tool: Send + Sync {
     /// serialized into provider-facing tool definitions.
     fn tool_manifest(&self) -> ToolManifest {
         let name = self.name();
-        let root = name.split('.').next().unwrap_or(&name).to_string();
-        let operation = name
-            .strip_prefix(&format!("{root}."))
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string);
+        let source = tool_source_for_name(&name);
+        let represented_source = self.represented_source();
+        let root = default_tool_root(&name, represented_source);
+        let operation = default_tool_operation(&name, &root, represented_source);
         let description = self.description();
         let policy = self.operation_policy(&Value::Object(Default::default()));
         ToolManifest {
             identity: ToolIdentity {
-                source: if name.starts_with("skill__") {
-                    ToolSource::Skill
-                } else if name.starts_with("mcp__") {
-                    ToolSource::Mcp
-                } else {
-                    ToolSource::Builtin
-                },
+                source,
                 catalog_group: self.catalog_group(),
                 root: root.clone(),
                 operation,
@@ -1055,16 +1334,24 @@ pub trait Tool: Send + Sync {
             },
             policy: policy.to_catalog_policy(),
             presentation: ToolPresentation {
-                label: name.clone(),
-                renderer: root,
+                label: default_tool_label(&name),
+                renderer: root.clone(),
                 icon: "tools".into(),
+                represented_source,
             },
+            root_presentation: default_root_presentation(&root, represented_source),
             prompt: ToolPrompt {
                 when_to_use: description,
                 when_not_to_use: "Use a narrower operation when one is available.".into(),
                 key_operations: vec![name],
             },
         }
+    }
+
+    /// Source represented by the UI card. Activation tools execute in Haven
+    /// but represent the capability family they make available.
+    fn represented_source(&self) -> ToolSource {
+        display_source_for_name(&self.name())
     }
 
     /// Canonical input used by the authorization layer. Operation views add
@@ -1895,5 +2182,13 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(result.outcome, ToolExecutionOutcome::Cancelled);
         assert!(!result.success);
+    }
+
+    #[test]
+    fn manifest_separates_loader_execution_and_display_sources() {
+        let manifest = MockTool::new("load_mcp").tool_manifest();
+        assert_eq!(manifest.identity.source, ToolSource::Builtin);
+        assert_eq!(manifest.presentation.represented_source, ToolSource::Mcp);
+        assert_eq!(manifest.presentation.label, "加载 MCP");
     }
 }

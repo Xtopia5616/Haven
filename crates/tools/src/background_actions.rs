@@ -511,6 +511,13 @@ impl BackgroundActions {
             std_cmd.current_dir(cwd);
         }
 
+        let containment = match haven_common::process_containment::ProcessContainment::new() {
+            Ok(containment) => containment,
+            Err(error) => {
+                self.actions.write().await.remove(&id);
+                return Err(error.into());
+            }
+        };
         let mut child = match tokio::process::Command::from(std_cmd)
             .kill_on_drop(true)
             .spawn()
@@ -532,6 +539,17 @@ impl BackgroundActions {
                 return Err(e.into());
             }
         };
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("background shell child did not expose a process id"))?;
+        if let Err(error) = containment.attach(pid) {
+            let _ = child.kill().await;
+            self.actions.write().await.remove(&id);
+            return Err(anyhow::anyhow!(
+                "failed to attach background shell to process containment: {}",
+                haven_common::error::sanitize_error_text(&error.to_string())
+            ));
+        }
 
         let me = self.clone();
         let action_id = id.clone();
@@ -558,6 +576,10 @@ impl BackgroundActions {
         let runner_tail = tail.clone();
         let emit_action_id = action_id.clone();
         tokio::spawn(async move {
+            // Keep the Job Object alive for the entire action. Its
+            // kill-on-close flag then cleans up descendants on cancellation
+            // or application shutdown.
+            let _containment = containment;
             // The action outlives this session: when `run` is dropped (kill signal
             // received), kill_on_drop terminates the child.
             let max_collect = collect_byte_cap(max_chars);

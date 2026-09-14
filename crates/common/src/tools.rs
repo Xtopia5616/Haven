@@ -100,6 +100,16 @@ pub struct ToolPolicy {
     pub idempotency: String,
     pub scope: String,
     pub concurrency: String,
+    /// Runtime effect class. This is separate from concurrency: a read-only
+    /// operation may still disclose sensitive data or contact a network.
+    #[serde(default)]
+    pub effect: String,
+    /// Data disclosure class for non-mutating operations.
+    #[serde(default)]
+    pub data_sensitivity: String,
+    /// Network capability required by the concrete operation.
+    #[serde(default)]
+    pub network_access: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +117,27 @@ pub struct ToolPresentation {
     pub label: String,
     pub renderer: String,
     pub icon: String,
+    /// Source represented by this card in the UI. This may differ from the
+    /// execution source for activation tools such as `load_mcp`/`load_skill`.
+    #[serde(default)]
+    pub represented_source: ToolSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolRootPresentation {
+    pub label: String,
+    pub description: String,
+    pub icon: String,
+}
+
+impl Default for ToolRootPresentation {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            description: String::new(),
+            icon: "tools".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +171,8 @@ pub struct ToolManifest {
     pub model: ToolModel,
     pub policy: ToolPolicy,
     pub presentation: ToolPresentation,
+    #[serde(default)]
+    pub root_presentation: ToolRootPresentation,
     pub prompt: ToolPrompt,
     pub availability: ToolAvailability,
 }

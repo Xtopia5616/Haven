@@ -144,9 +144,20 @@ impl ShellTool {
             }
         }
 
+        let containment = haven_common::process_containment::ProcessContainment::new()?;
         let mut child = tokio::process::Command::from(std_cmd)
             .kill_on_drop(true)
             .spawn()?;
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("shell child did not expose a process id"))?;
+        if let Err(error) = containment.attach(pid) {
+            let _ = child.kill().await;
+            return Err(anyhow::anyhow!(
+                "failed to attach shell child to process containment: {}",
+                haven_common::error::sanitize_error_text(&error.to_string())
+            ));
+        }
 
         if cancel.is_cancelled() {
             // kill_on_drop ensures the child is terminated when `child` drops,

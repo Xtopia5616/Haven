@@ -1,9 +1,14 @@
+import type { ToolManifest } from './toolManifest.ts';
+
 export type BuiltinToolEntry = {
 	name: string;
 	desc: string;
 	risk: string;
 	category?: string;
 	root?: string;
+	rootLabel?: string;
+	rootDescription?: string;
+	rootIcon?: string;
 	operation?: string | null;
 	schema: Record<string, unknown>;
 	enabled: boolean;
@@ -14,6 +19,8 @@ export type BuiltinToolRootCard = {
 	kind: 'root-group';
 	name: string;
 	label: string;
+	description?: string;
+	icon?: string;
 	operations: BuiltinToolEntry[];
 };
 
@@ -25,6 +32,27 @@ export type BuiltinToolCard = {
 };
 
 export type BuiltinEnabledFilter = 'all' | 'enabled' | 'disabled';
+
+/** Project one canonical manifest into the view model used by the settings UI. */
+export function builtinToolEntryFromManifest(manifest: ToolManifest): BuiltinToolEntry {
+	return {
+		name: manifest.identity.stableName,
+		label: manifest.presentation.label,
+		desc: manifest.model.description,
+		risk: manifest.policy.riskLevel,
+		category: manifest.identity.catalogGroup,
+		root: manifest.identity.root,
+		rootLabel: manifest.rootPresentation.label,
+		rootDescription: manifest.rootPresentation.description,
+		rootIcon: manifest.rootPresentation.icon,
+		operation: manifest.identity.operation,
+		schema: (manifest.model.inputSchema || {}) as Record<string, unknown>,
+		enabled: manifest.availability.enabled,
+		available: manifest.availability.available,
+		availabilityReason: manifest.availability.availabilityReason,
+		manifest,
+	};
+}
 
 /**
  * Collapse all builtin tools into one UI card per backend-owned catalog group.
@@ -53,7 +81,9 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 			root = {
 				kind: 'root-group',
 				name: rootName,
-				label: rootName,
+				label: tool.rootLabel || rootName,
+				description: tool.rootDescription || '',
+				icon: tool.rootIcon || 'tools',
 				operations: [],
 			};
 			group.roots.push(root);

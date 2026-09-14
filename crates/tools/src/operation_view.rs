@@ -319,7 +319,7 @@ impl Tool for OperationViewTool {
             identity: ToolIdentity {
                 source: ToolSource::Builtin,
                 catalog_group: self.spec.catalog_group,
-                root,
+                root: root.clone(),
                 operation,
                 stable_name: name.clone(),
             },
@@ -330,6 +330,10 @@ impl Tool for OperationViewTool {
             },
             policy: manifest_policy.to_catalog_policy(),
             presentation: self.spec.presentation.clone(),
+            root_presentation: crate::tool_contract::default_root_presentation(
+                &root,
+                ToolSource::Builtin,
+            ),
             prompt: self.spec.prompt.clone(),
             availability: ToolAvailability {
                 requires_permission: manifest_policy.risk_level >= RiskLevel::Medium,
@@ -405,6 +409,9 @@ mod tests {
                     idempotency: OperationIdempotency::Idempotent,
                     scope: ToolOperationScope::Session,
                     concurrency: ToolConcurrency::ReadOnly,
+                    effect: crate::OperationEffect::ReadOnly,
+                    data_sensitivity: crate::DataSensitivity::UserData,
+                    network_access: crate::NetworkAccess::None,
                 },
                 risk_rule: None,
                 catalog_group: ToolCatalogGroup::System,
@@ -412,6 +419,7 @@ mod tests {
                     label: "读取文件".into(),
                     renderer: "files".into(),
                     icon: "file".into(),
+                    represented_source: ToolSource::Builtin,
                 },
                 prompt: ToolPrompt {
                     when_to_use: "Read text.".into(),
@@ -429,6 +437,7 @@ mod tests {
         assert_eq!(manifest.identity.stable_name, "files.read");
         assert_eq!(manifest.presentation.renderer, "files");
         assert_eq!(manifest.presentation.label, "读取文件");
+        assert_eq!(manifest.root_presentation.label, "文件");
         assert!(def.json().get("manifest").is_none());
     }
 

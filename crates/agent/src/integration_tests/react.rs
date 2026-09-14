@@ -311,6 +311,18 @@ async fn media_tool_usage_flows_to_event_and_database() {
         .authorization
         .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
         .await;
+    // `media.describe` delegates to a configured vision provider, so the
+    // external-network disclosure gate still applies in Autonomous mode.
+    // This test exercises usage propagation after that explicit approval.
+    tools
+        .authorization
+        .grant(
+            None,
+            "media:describe",
+            haven_common::types::PermissionEffect::Allow,
+            haven_common::types::PermissionScope::Always,
+        )
+        .await;
     tools.registry.register(media_tool).await.unwrap();
     let main_client = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {

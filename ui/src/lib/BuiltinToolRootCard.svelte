@@ -3,6 +3,7 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
 	/** @typedef {import('./builtinToolPresentation.ts').BuiltinToolRootCard} BuiltinToolRootCard */
@@ -73,7 +74,13 @@
 
 <ExpandableContextCard cardKind="builtin-root" {contextMenuItems} showActions={false}>
 	{#snippet header()}
-		<div class="card-name">{root.label}</div>
+		<div class="card-title-row">
+			<Icon name={root.icon || 'tools'} size={20} />
+			<div class="card-title">
+				<div class="card-name">{root.label}</div>
+				<div class="card-subtitle" title={root.description}>{root.name}</div>
+			</div>
+		</div>
 		<div class="card-meta">
 			<StatusBadge label={`${operations.length} 个操作`} tone="neutral" />
 			<StatusBadge label={statusLabel} tone={statusTone} />
@@ -144,6 +151,18 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	.card-title-row {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--md-sys-space-sm);
+	}
+	.card-title-row :global(.icon) {
+		color: var(--md-sys-color-primary);
+		margin-top: 1px;
+	}
+	.card-title {
+		min-width: 0;
+	}
 	.card-meta {
 		display: flex;
 		gap: var(--md-sys-space-sm);
@@ -151,6 +170,12 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		flex-wrap: wrap;
+	}
+	.card-subtitle {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-label-small-size);
+		color: var(--md-sys-color-on-surface-variant);
+		margin-bottom: var(--md-sys-space-xs);
 	}
 	.operation-list {
 		display: flex;

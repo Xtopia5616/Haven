@@ -45,7 +45,7 @@
 | Agent 集成测试 | 入口 `integration_tests.rs` 31 行；8 个测试模块合计约 5,002 行 | 阶段 A 已完成；保持测试入口和共享 support 稳定 |
 | MCP 拆分模块 | `protocol` 265、`transport` 390、`client` 792、`manager` 433、`sse` 163，合计约 2,055 行 | 阶段 B 已完成；`client.rs` 接近热点阈值，后续仅在职责继续增长时拆分 |
 | Tools shell/background | `shell_runtime` 207、`background_actions` 959、`output` 390、`process` 128，合计约 1,684 行 | 阶段 C 已完成；ActionService 的状态机统一仍属于战略后续 |
-| Tool contract / registry / security | 1,737 / 434 / 1,912 行，合计约 4,083 行 | 阶段 D 的边界拆分已完成；`tool_contract` 与 `security` 仍由 TypedToolOperation / SafetyGateway 后续任务继续收窄 |
+| Tool contract / registry / security | 1,737 / 434 / 1,912 行，合计约 4,083 行 | 阶段 D 的边界拆分已完成；`tool_contract` 与 `security` 仍由 TypedToolOperation / AuthorizationEngine 后续任务继续收窄 |
 | app-binary 组合根拆分模块 | `event_bridge` 581、`handlers` 242、`bootstrap` 737、`lib` 21，合计约 1,581 行 | 阶段 E 已完成；`event_bridge` 是当前唯一事件映射边界 |
 | UI 视图 | `SettingsView` 1,118、`ModelSettings` 916、`MemoryView` 767 行 | 阶段 F 已完成；ModelSettings 的 provider discovery/CRUD 边界仍有意保留 |
 | SelfTool | 1,623 行 | 阶段 G 未完成；待 admin domain typed migration 后删除，而非继续机械拆 dispatcher |
@@ -71,7 +71,7 @@
 | 优先级 | 位置 | 当前妥协 | 目标动作 |
 |---|---|---|---|
 | P0 | [`crates/common/src/types.rs`](../crates/common/src/types.rs)、[`crates/agent/src/session/queues.rs`](../crates/agent/src/session/queues.rs)、[`crates/agent/src/session/mod.rs`](../crates/agent/src/session/mod.rs) | **已完成（2026-09-12）**：`FollowUp` 是唯一类型和队列 API，旧 `Supplement` 类型别名、旧队列方法和双重 re-export 已删除。`AgentEvent::Supplement` / `ProcessResult::Supplemented` 仍是已登记的跨端 wire 名称，不再作为内部入口。 | 保留跨端事件名作为独立 IPC 契约；内部代码只使用 `FollowUp`。 |
-| P0 | [`crates/app-binary/src/commands/skills.rs`](../crates/app-binary/src/commands/skills.rs) | **已完成（2026-09-12）**：`execute_skill` 不再接收被忽略的 `confirmed` 参数，安全授权只有 SafetyGateway。 | 保持 SafetyGateway 为唯一授权入口。 |
+| P0 | [`crates/app-binary/src/commands/skills.rs`](../crates/app-binary/src/commands/skills.rs) | **已完成（2026-09-12）**：`execute_skill` 不再接收被忽略的 `confirmed` 参数，安全授权只有 AuthorizationEngine。 | 保持 AuthorizationEngine 为唯一授权入口。 |
 | P0 | [`crates/app-binary/src/commands/session.rs`](../crates/app-binary/src/commands/session.rs)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | **已完成（2026-09-12）**：confirmation IPC 只接受必填 `effect` + `scope`，`trust_session` / `trustSession` bridge 和缺字段猜测已删除。 | 保持 typed permission decision 契约。 |
 | P1 | [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) | `ReActSnapshot.upgrade_tool_rounds` 只为进程内测试 fixture 保留，生产解析和 resume 不使用。 | **已完成（2026-09-05，ADR 0082）**：删除字段和所有测试 fixture 填充。 |
 | P1 | [`ui/src/lib/ToolResultCard.svelte`](../ui/src/lib/ToolResultCard.svelte) | **已完成（2026-09-12）**：`ToolResultCard` 只消费 `toolResultParsing.ts`，不再 re-export 解析函数。 | 保留 `ToolResultCard` 作为卡片壳，不保留旧模块路径兼容。 |
@@ -270,7 +270,7 @@ task row、session-scoped status 和 cancel 路径。两个 worker 的持久化�
 以下内容当前看起来是合理的稳定边界，除非新的证据证明其实现有功能错误，不建议为了“彻底重构”而重写：
 
 - `haven-llm` provider adapter 的外部协议映射、SSE/JSONL framing、厂商差异和 failover；
-- `SafetyGateway` 的 deny-first 授权原则、路径/进程安全检查和负向测试矩阵；
+- `AuthorizationEngine` 的 deny-first 授权原则、路径/进程安全检查和负向测试矩阵；
 - `haven-input` 的 CPAL/VAD/录音生命周期与 `haven-llm` 的 provider 实现分离；
 - SQLite WAL、schema version/migration 和 Windows 编码/进程树终止等平台故障处理；
 - Tauri DTO 的单一事件映射点，以及已有的命名边界。
@@ -350,7 +350,7 @@ task row、session-scoped status 和 cancel 路径。两个 worker 的持久化�
 
 以下四项可以删除当前实现、重建新模型；每项必须独立写 ADR、先建立行为/负向测试，再迁移一条完整调用链，最后删除旧实现和旧测试入口。
 
-1. **安全授权：`SafetyGateway`**
+1. **安全授权：`AuthorizationEngine`**
    - 目标：用 typed `AuthorizationRequest` / `AuthorizationDecision` / capability scope 取代分散的字符串 permission key、旧 confirmation 字段和多入口猜测。
    - 必须保留：deny-first、永久/会话授权、路径和进程安全检查、TOCTOU 防护、scheduled/MCP/skill/Tauri 统一过闸。
    - 完成标志：所有副作用入口只有一个授权决策入口，前端不能通过 `confirmed` 或旧字段绕过它。
@@ -374,7 +374,7 @@ task row、session-scoped status 和 cancel 路径。两个 worker 的持久化�
 
 不要把四项放在一个“大重写”任务中。建议拆成以下独立任务，并在每项结束时删除旧链路：
 
-1. `refactor(security)`: `SafetyGateway` typed authorization model；
+1. `refactor(security)`: `AuthorizationEngine` typed authorization model；
 2. `refactor(store)`: `SessionEventStore` / domain store / Memory boundaries；
 3. `refactor(media)`: `MediaService` / input artifact / capability jobs；
 4. `refactor(process)`: Windows process runtime / output pipeline / `ActionService` integration。
@@ -389,7 +389,7 @@ task row、session-scoped status 和 cancel 路径。两个 worker 的持久化�
 
 ### L. P1：把配置更新重做为 `ConfigService` 与版本化运行时快照
 
-当前 [`crates/common/src/config/loader.rs`](../crates/common/src/config/loader.rs) 的 `ConfigLoader` 同时承担配置模型、TOML 读写、密钥保留和设置合并；而 [`crates/app-binary/src/commands/settings.rs`](../crates/app-binary/src/commands/settings.rs) 的 `update_settings` 保存后，又分别更新 LLM router、STT/media、Tools、Agent、MCP、SafetyGateway、日志和 hotkey。`hot_swap_router` 还在 [`crates/app-binary/src/commands/mod.rs`](../crates/app-binary/src/commands/mod.rs) 中单独重建 router 相关运行时。
+当前 [`crates/common/src/config/loader.rs`](../crates/common/src/config/loader.rs) 的 `ConfigLoader` 同时承担配置模型、TOML 读写、密钥保留和设置合并；而 [`crates/app-binary/src/commands/settings.rs`](../crates/app-binary/src/commands/settings.rs) 的 `update_settings` 保存后，又分别更新 LLM router、STT/media、Tools、Agent、MCP、AuthorizationEngine、日志和 hotkey。`hot_swap_router` 还在 [`crates/app-binary/src/commands/mod.rs`](../crates/app-binary/src/commands/mod.rs) 中单独重建 router 相关运行时。
 
 当前代码已经需要在保存前重新从磁盘加载 MCP、skills 和 tool settings，以防 settings form 的不完整 payload 覆盖专用命令刚写入的内容。这些保护测试是必要的，但也说明配置权威和运行时应用逻辑已经分散：一次变更可能出现磁盘已写入、部分服务已替换、后续服务应用失败的半完成状态。
 
@@ -467,12 +467,12 @@ McpAdmin             （MCP 配置、连接和健康状态）
 目标和边界：
 
 - 读操作和写操作分离；默认模型工具目录只暴露必要的窄工具，不能让一个 dispatcher 获得整个应用的管理权限。
-- 删除普通模型路径上的任意 `config_set`，改成 allowlisted typed admin commands；高风险变更统一经过 `SafetyGateway` 和 `ConfigService`。
+- 删除普通模型路径上的任意 `config_set`，改成 allowlisted typed admin commands；高风险变更统一经过 `AuthorizationEngine` 和 `ConfigService`。
 - 将 MCP、skills、日志和 session 诊断的持久化/运行时变更交还给各自 domain service，admin surface 只负责鉴权、调用和结果整形。
 - 每个管理操作必须声明 capability、风险等级、是否可在 session 内执行、是否需要用户确认和是否允许重试。
 - 保留诊断能力，但敏感配置、API key、完整 prompt、完整命令输出和隐私内容不得进入工具结果或普通日志。
 
-收益是把“模型管理应用自身”的能力从一个高耦合、高权限工具变成可审计的 capability surface；也能让第 2.3 节 E 的 ToolsManager 收回 service locator 职责，并让第 2.4 节的 `SafetyGateway` 成为所有管理副作用的统一入口。机械拆分 `self_tool.rs` 可以作为过渡，但最终完成标准不是“dispatcher 还在，只是 handler 分文件”，而是旧超级工具和任意配置写入口被删除。
+收益是把“模型管理应用自身”的能力从一个高耦合、高权限工具变成可审计的 capability surface；也能让第 2.3 节 E 的 ToolsManager 收回 service locator 职责，并让第 2.4 节的 `AuthorizationEngine` 成为所有管理副作用的统一入口。机械拆分 `self_tool.rs` 可以作为过渡，但最终完成标准不是“dispatcher 还在，只是 handler 分文件”，而是旧超级工具和任意配置写入口被删除。
 
 2026-09-02 已完成第一条受限 surface 切片：模型目录改为六个 capability-scoped
 工具，旧 broad `haven` 不再注册；任意 dotted `config_set` 已删除，skills/tool/MCP/log
@@ -507,7 +507,7 @@ TypedToolOperation
 - 每一个能力操作都拥有明确的 args、output、错误类型和 metadata；dispatcher 负责选择 operation，不负责解释一大串 JSON 分支。
 - `ToolRegistry` 可以继续按领域把多个 operation 分组成少量 LLM-facing tools，避免模型工具数量失控；但授权、执行、重试和 UI contract 必须解析 typed operation，而不是裸字符串。
 - `serde_json::Value` 只保留在 provider 原始载荷、真正动态的 MCP 扩展点或明确声明的扩展边界；稳定业务参数默认使用 Rust 类型。
-- capability、risk、idempotency 和 side-effect scope 与 operation 一起注册，使 `SafetyGateway`、ActionService、审计日志和 UI 能复用同一份 metadata。
+- capability、risk、idempotency 和 side-effect scope 与 operation 一起注册，使 `AuthorizationEngine`、ActionService、审计日志和 UI 能复用同一份 metadata。
 - 每个 operation 都要有成功、缺参、错误类型、取消、超时、重复调用、越权和未知字段测试；删除旧 operation alias 和旧 dispatcher 分支后才算完成。
 
 这项不是要求把每一个 operation 都暴露成独立的 provider tool，而是要求“模型分组”和“运行时契约”分层。它应作为第 2.3 节 E `ToolsManager/tool-core` 重构的独立子任务；收益是让工具授权和行为契约按 capability 组织，而不是继续按字符串和调用方约定组织。
@@ -528,9 +528,9 @@ TypedToolAdapter 退化成新的万能 dispatcher。
 3. `refactor(self-admin)`: Diagnostics/Config/Skill/MCP admin surface，删除超级 `self` dispatcher；
 4. `refactor(tool-contract)`: typed `ToolOperation`、capability metadata 和 operation contract tests。
 
-建议依赖顺序为：先定义 `ConfigService` 和 `ToolOperation` 的边界，再接入 `SafetyGateway`；`MessagingService` 在 `SessionActor`/`SessionSupervisor` 的 mailbox 方向确定后迁移；`self-admin` 最后迁移，因为它同时依赖配置、工具注册、MCP、skills、诊断和安全授权。`tool-contract` 可以与 `ToolsManager` 并行设计，但必须在 `self-admin` 完成前提供新的管理操作注册方式。
+建议依赖顺序为：先定义 `ConfigService` 和 `ToolOperation` 的边界，再接入 `AuthorizationEngine`；`MessagingService` 在 `SessionActor`/`SessionSupervisor` 的 mailbox 方向确定后迁移；`self-admin` 最后迁移，因为它同时依赖配置、工具注册、MCP、skills、诊断和安全授权。`tool-contract` 可以与 `ToolsManager` 并行设计，但必须在 `self-admin` 完成前提供新的管理操作注册方式。
 
-这四项与第 2.3 节已有候选的关系如下：`ConfigService` 为 `ApplicationRuntime` 提供运行时配置入口；`MessagingService` 接入 `SessionActor`；`self-admin` 收窄 `ToolsManager` 的管理面；`ToolOperation` 是 `ToolsManager`/`SafetyGateway` 的 typed 执行契约。它们不是重复计数，而是补齐原有目标架构中配置、通信、管理和工具协议四个横切边界。
+这四项与第 2.3 节已有候选的关系如下：`ConfigService` 为 `ApplicationRuntime` 提供运行时配置入口；`MessagingService` 接入 `SessionActor`；`self-admin` 收窄 `ToolsManager` 的管理面；`ToolOperation` 是 `ToolsManager`/`AuthorizationEngine` 的 typed 执行契约。它们不是重复计数，而是补齐原有目标架构中配置、通信、管理和工具协议四个横切边界。
 
 ## 3. 执行顺序
 
@@ -623,7 +623,7 @@ cargo clippy --workspace --locked -- -D warnings
 - 当前混合了：
   - `Tool`、`ToolResult`、`ToolSignals`、`ToolExecutionOutcome`、重试/并发契约
   - `ToolRegistry` 和 session catalog
-  - `SafetyGateway`、权限继承、disabled operation、路径沙箱和 reparse point 检查
+  - `AuthorizationEngine`、权限继承、disabled operation、路径沙箱和 reparse point 检查
 - 建议拆为 `tool_contract.rs`、`registry.rs`、`security.rs`；workspace 内部调用方直接迁移到新模块。只有确实属于外部稳定 API 的导出才保留，不能为旧内部路径长期维护薄 facade。
 - 安全模块拆分时必须先建立目标接口，再迁移完整调用链；不能把安全检查复制到各 builtin。
 - 不改变 deny 优先级、权限继承、路径规范化、UNC/device path 拒绝、超时未知终态和操作幂等性语义。
@@ -631,7 +631,7 @@ cargo clippy --workspace --locked -- -D warnings
 
 2026-09-02 已完成阶段 D：`tool_contract.rs` 收口 Tool/ToolResult、typed
 `ToolOperation`、重试/并发/取消/超时契约和注册声明；`registry.rs` 收口全局注册表、
-`SessionCatalog`、版本快照和 `RegistryProbe`；`security.rs` 收口 `SafetyGateway`、权限继承、disabled
+`SessionCatalog`、版本快照和 `RegistryProbe`；`security.rs` 收口 `AuthorizationEngine`、权限继承、disabled
 operation、路径沙箱及 UNC/device/reparse-point fail-closed 检查。workspace 调用点已
 直接迁移到新模块，删除旧 `tool.rs`，不保留内部路径 facade；`LOCAL_TOOL_SECURITY_MATRIX`
 仍只有 `security.rs` 一个权威来源。原有 contract、registry、安全拒绝/权限继承、路径
@@ -742,13 +742,13 @@ provider discovery 与 provider CRUD（两者共享同一模型缓存和引用�
 - 不因为 `openai.rs`、`openai_responses.rs`、`anthropic.rs` 各约 2.5k 行就立即拆 provider crate；每个文件约一半是协议测试，先考虑把测试按 provider 移到独立测试模块。
 - 不拆 `memory/src/repositories/facts.rs` 的生产 facade；当前总计约 1,963 行，图谱写入、查询和维护已经分别位于其他模块。
 - 机械拆分阶段不修改 ReAct X12 写路径、`ReActSnapshot.events` 恢复权威、消息/步骤投影、rollback 双时钟或任何数据库 schema；进入第 2.3/2.4/2.5 的明确重构任务后，按对应 ADR 处理这些边界。
-- 机械拆分阶段不借机修改 provider wire payload、工具重试、安全确认、IPC event shape 或 UI 交互；provider adapter、SafetyGateway、Tauri bridge、ConfigService 和 ToolOperation 的概念级调整必须在各自任务中单独验收。
+- 机械拆分阶段不借机修改 provider wire payload、工具重试、安全确认、IPC event shape 或 UI 交互；provider adapter、AuthorizationEngine、Tauri bridge、ConfigService 和 ToolOperation 的概念级调整必须在各自任务中单独验收。
 
 ## 5. 可选的 crate 级后续方向
 
 如果完成上述文件拆分后仍需要降低 `haven-tools` 的跨域耦合，可以另立任务评估 `haven-tool-core`：
 
-- 放置稳定的 `Tool`、`ToolResult`、`ToolExecutionOutcome`、`ToolConcurrency`、`ToolRegistry`、`SafetyGateway` 契约。
+- 放置稳定的 `Tool`、`ToolResult`、`ToolExecutionOutcome`、`ToolConcurrency`、`ToolRegistry`、`AuthorizationEngine` 契约。
 - `haven-tools` 保留 builtin、background action、MCP/skill adapter 和具体执行逻辑。
 - 这是独立的 crate/API 重构，必须单独写 ADR、迁移调用方并跑完整 workspace 门禁；不要和本计划的文件拆分混在一个提交中。
 

@@ -18,6 +18,7 @@ mod media_audio;
 pub mod memory;
 pub mod messaging;
 pub mod notify;
+mod operation_contract;
 mod power;
 pub mod preferences;
 pub mod process;
@@ -34,6 +35,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use self::operation_contract::operation_contract;
 use crate::ActionService;
 use crate::BackgroundActions;
 use crate::ToolRegistry;
@@ -520,6 +522,67 @@ fn system_info_schema() -> serde_json::Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn operation_spec(
+    inner: &ToolBox,
+    name: &'static str,
+    description: &'static str,
+    fixed: Vec<(String, Value)>,
+    schema: Value,
+    renderer: &'static str,
+    icon: &'static str,
+    prompt: &'static str,
+) -> OperationSpec {
+    let metadata = operation_contract(name);
+    let policy_input = Value::Object(fixed.iter().cloned().collect());
+    let mut policy = inner.operation_policy(&policy_input);
+    // Operation views are stable permission identities even though execution
+    // is delegated to an aggregate builtin implementation.
+    policy.permission_key = name.into();
+    if metadata.read_only {
+        policy.concurrency = ToolConcurrency::ReadOnly;
+        if policy.risk_level < RiskLevel::Critical {
+            policy.confirmation = ConfirmationRequirement::None;
+        }
+    }
+    if let Some(risk_level) = metadata.risk_override {
+        policy.risk_level = risk_level;
+        policy.confirmation = if risk_level >= RiskLevel::Critical {
+            ConfirmationRequirement::Required
+        } else if risk_level == RiskLevel::Safe {
+            ConfirmationRequirement::None
+        } else {
+            ConfirmationRequirement::SecurityPolicy
+        };
+    }
+    let (effect, data_sensitivity, network_access) =
+        crate::tool_contract::operation_attributes(name, policy.concurrency.clone());
+    policy.effect = effect;
+    policy.data_sensitivity = data_sensitivity;
+    policy.network_access = network_access;
+    OperationSpec {
+        name,
+        description,
+        fixed,
+        schema,
+        policy,
+        risk_rule: None,
+        catalog_group: metadata.catalog_group,
+        presentation: ToolPresentation {
+            label: metadata.label.into(),
+            renderer: renderer.into(),
+            icon: icon.into(),
+            represented_source: haven_common::tools::ToolSource::Builtin,
+        },
+        prompt: ToolPrompt {
+            when_to_use: prompt.into(),
+            when_not_to_use:
+                "Use only for this named operation; its operation/scope fields are fixed.".into(),
+            key_operations: vec![name.into()],
+        },
+    }
+}
+
 /// The operation-view catalog is the backend source of truth for the model
 /// schema, execution policy and the cross-boundary UI/prompt identifiers.
 fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
@@ -536,13 +599,17 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
                 concurrency: ToolConcurrency::ReadOnly,
+                effect: crate::OperationEffect::ReadOnly,
+                data_sensitivity: crate::DataSensitivity::UserData,
+                network_access: crate::NetworkAccess::None,
             },
             risk_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
-                label: "读取文件".into(),
+                label: operation_contract("files.read").label.into(),
                 renderer: "files".into(),
                 icon: "file".into(),
+                represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
                 when_to_use: tool_prompts::operation_text("files.read").when_to_use.into(),
@@ -562,13 +629,17 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
                 concurrency: ToolConcurrency::ReadOnly,
+                effect: crate::OperationEffect::ReadOnly,
+                data_sensitivity: crate::DataSensitivity::UserData,
+                network_access: crate::NetworkAccess::None,
             },
             risk_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
-                label: "文件大纲".into(),
+                label: operation_contract("files.outline").label.into(),
                 renderer: "files".into(),
                 icon: "fileSearch".into(),
+                represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
                 when_to_use: tool_prompts::operation_text("files.outline").when_to_use.into(),
@@ -588,13 +659,17 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
                 concurrency: ToolConcurrency::ReadOnly,
+                effect: crate::OperationEffect::ReadOnly,
+                data_sensitivity: crate::DataSensitivity::UserData,
+                network_access: crate::NetworkAccess::Public,
             },
             risk_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
-                label: "文件摘要".into(),
+                label: operation_contract("files.summary").label.into(),
                 renderer: "files".into(),
                 icon: "file".into(),
+                represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
                 when_to_use: tool_prompts::operation_text("files.summary").when_to_use.into(),
@@ -614,13 +689,17 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
                 concurrency: ToolConcurrency::ReadOnly,
+                effect: crate::OperationEffect::ReadOnly,
+                data_sensitivity: crate::DataSensitivity::UserData,
+                network_access: crate::NetworkAccess::None,
             },
             risk_rule: Some(OperationViewRiskRule::ContentSearchMedium),
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
-                label: "搜索文件".into(),
+                label: operation_contract("files.search").label.into(),
                 renderer: "files.search".into(),
                 icon: "search".into(),
+                represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
                 when_to_use: tool_prompts::operation_text("files.search").when_to_use.into(),
@@ -640,13 +719,17 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Global,
                 concurrency: ToolConcurrency::ReadOnly,
+                effect: crate::OperationEffect::ReadOnly,
+                data_sensitivity: crate::DataSensitivity::None,
+                network_access: crate::NetworkAccess::None,
             },
             risk_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
-                label: "系统信息".into(),
+                label: operation_contract("system.info").label.into(),
                 renderer: "system".into(),
                 icon: "cpu".into(),
+                represented_source: haven_common::tools::ToolSource::Builtin,
             },
             prompt: ToolPrompt {
                 when_to_use: tool_prompts::operation_text("system.info").when_to_use.into(),
@@ -995,263 +1078,6 @@ const ADMIN_OPERATION_VIEWS: &[(&str, &str, &str, &str, &str)] = &[
     ),
 ];
 
-fn admin_operation_risk(name: &str) -> RiskLevel {
-    match name {
-        "haven.config.logs_level"
-        | "haven.skills.skill_enable"
-        | "haven.skills.skill_disable"
-        | "haven.tools.tool_enable"
-        | "haven.tools.tool_disable"
-        | "haven.mcp.mcp_connect"
-        | "haven.mcp.mcp_disconnect"
-        | "haven.mcp.mcp_reload" => RiskLevel::Medium,
-        "haven.skills.skill_create"
-        | "haven.mcp.mcp_add"
-        | "haven.mcp.mcp_update"
-        | "haven.mcp.mcp_toggle"
-        | "haven.mcp.mcp_remove" => RiskLevel::High,
-        _ => RiskLevel::Low,
-    }
-}
-
-/// Single taxonomy for all model-facing builtin operation views. Tool names
-/// remain stable provider/permission identifiers; this only controls catalog
-/// presentation in the Agent prompt and the UI.
-fn catalog_group_for_operation(name: &str) -> ToolCatalogGroup {
-    if name.starts_with("agent.") {
-        ToolCatalogGroup::Agent
-    } else if name.starts_with("memory.")
-        || name.starts_with("actions.")
-        || name.starts_with("schedule.")
-        || name.starts_with("preferences.")
-        || name.starts_with("checklist.")
-        || name.starts_with("haven.")
-    {
-        ToolCatalogGroup::Haven
-    } else {
-        ToolCatalogGroup::System
-    }
-}
-
-/// Explicit read-only declarations used by the permission engine's plan and
-/// default modes. Names are stable operation identities, not user-controlled
-/// input, so a new operation must opt in here instead of inheriting a risky
-/// guess from its tool family.
-fn is_read_only_operation(name: &str) -> bool {
-    matches!(
-        name,
-        "files.read"
-            | "files.inspect"
-            | "files.stat"
-            | "files.hash"
-            | "files.outline"
-            | "files.summary"
-            | "files.search"
-            | "files.list"
-            | "process.list"
-            | "clipboard.read"
-            | "clipboard.history"
-            | "window.list"
-            | "window.foreground"
-            | "window.screenshot"
-            | "window.ui_tree"
-            | "window.observe"
-            | "window.wait"
-            | "media.inspect"
-            | "media.describe"
-            | "media.ocr"
-            | "media.transcribe"
-            | "media.extract"
-            | "media.render"
-            | "media.volume_get"
-            | "media.mute_get"
-            | "memory.search"
-            | "memory.list"
-            | "memory.recall"
-            | "agent.list"
-            | "agent.children"
-            | "agent.history"
-            | "agent.inbox"
-            | "agent.profile"
-            | "agent.status"
-            | "agent.wait"
-            | "agent.collect"
-            | "actions.list"
-            | "actions.inspect"
-            | "schedule.list"
-            | "preferences.get"
-            | "preferences.list"
-            | "checklist.list"
-            | "system.info"
-            | "system.display"
-            | "system.env.list"
-            | "system.env.get"
-            | "system.registry.list"
-            | "system.registry.get"
-            | "system.power.status"
-            | "haven.diagnostics.status"
-            | "haven.diagnostics.logs_tail"
-            | "haven.diagnostics.sessions"
-            | "haven.diagnostics.errors"
-            | "haven.tools.tool_list"
-            | "haven.mcp.mcp_list"
-            | "haven.skills.skills_list"
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn operation_spec(
-    inner: &ToolBox,
-    name: &'static str,
-    description: &'static str,
-    fixed: Vec<(String, Value)>,
-    schema: Value,
-    renderer: &'static str,
-    icon: &'static str,
-    prompt: &'static str,
-) -> OperationSpec {
-    let policy_input = Value::Object(fixed.iter().cloned().collect());
-    let mut policy = inner.operation_policy(&policy_input);
-    // Operation views are stable permission identities even though execution
-    // is delegated to an aggregate builtin implementation.
-    policy.permission_key = name.into();
-    if is_read_only_operation(name) {
-        policy.concurrency = ToolConcurrency::ReadOnly;
-        if policy.risk_level < RiskLevel::Critical {
-            policy.confirmation = ConfirmationRequirement::None;
-        }
-    }
-    OperationSpec {
-        name,
-        description,
-        fixed,
-        schema,
-        policy,
-        risk_rule: None,
-        catalog_group: catalog_group_for_operation(name),
-        presentation: ToolPresentation {
-            label: operation_label(name),
-            renderer: renderer.into(),
-            icon: icon.into(),
-        },
-        prompt: ToolPrompt {
-            when_to_use: prompt.into(),
-            when_not_to_use:
-                "Use only for this named operation; its operation/scope fields are fixed.".into(),
-            key_operations: vec![name.into()],
-        },
-    }
-}
-
-/// User-facing labels belong to the backend manifest, next to the stable
-/// operation registration. Unknown/new operations remain readable without a
-/// second frontend registry.
-fn operation_label(name: &str) -> String {
-    match name {
-        "files.inspect" => "检查文件元数据",
-        "files.stat" => "读取文件状态",
-        "files.hash" => "计算文件哈希",
-        "files.write" => "写入文件",
-        "files.create_dir" => "创建目录",
-        "files.edit" => "编辑文件",
-        "files.patch" => "批量精确编辑文件",
-        "files.copy" => "复制文件",
-        "files.move" => "移动文件",
-        "files.delete" => "删除文件",
-        "files.list" => "列出文件",
-        "process.list" => "列出进程",
-        "process.kill" => "终止进程",
-        "clipboard.read" => "读取剪贴板",
-        "clipboard.write" => "写入剪贴板",
-        "clipboard.history" => "剪贴板历史",
-        "input.type" => "输入文字",
-        "input.type_element" => "向控件输入文字",
-        "input.key" => "按键",
-        "input.click" => "点击",
-        "input.click_element" => "点击控件",
-        "input.move" => "移动鼠标",
-        "input.scroll" => "滚动",
-        "window.list" => "列出窗口",
-        "window.foreground" => "前台窗口",
-        "window.focus" => "聚焦窗口",
-        "window.close" => "关闭窗口",
-        "window.screenshot" => "窗口截图",
-        "window.ocr" => "窗口 OCR",
-        "window.ui_tree" => "窗口 UI 树",
-        "window.observe" => "观察窗口",
-        "window.invoke" => "调用界面元素",
-        "window.set_value" => "设置界面值",
-        "window.toggle" => "切换界面控件",
-        "window.select" => "选择界面元素",
-        "window.wait" => "等待窗口",
-        "media.inspect" => "检查媒体",
-        "media.describe" => "描述图像",
-        "media.ocr" => "媒体 OCR",
-        "media.transcribe" => "转录音频",
-        "media.extract" => "提取文档",
-        "media.render" => "渲染文档页",
-        "media.generate" => "生成图像",
-        "media.record" => "录音",
-        "media.play" => "播放音频",
-        "media.speak" => "语音朗读",
-        "media.volume_get" => "读取音量",
-        "media.volume_set" => "设置音量",
-        "media.mute_get" => "读取静音状态",
-        "media.mute_set" => "设置静音",
-        "memory.search" => "搜索记忆",
-        "memory.list" => "列出记忆",
-        "memory.remember" => "记住信息",
-        "memory.forget" => "忘记信息",
-        "memory.recall" => "召回记忆",
-        "agent.list" => "列出 Agent",
-        "agent.children" => "列出子 Agent",
-        "agent.history" => "Agent 消息历史",
-        "agent.inbox" => "读取 Agent 消息",
-        "agent.ack" => "确认 Agent 消息",
-        "agent.send" => "发送 Agent 消息",
-        "agent.reply" => "回复 Agent",
-        "agent.profile" => "Agent 资料",
-        "agent.request" => "请求 Agent",
-        "agent.spawn" => "创建 Agent",
-        "agent.status" => "Agent 状态",
-        "agent.join" => "等待 Agent 完成",
-        "agent.wait" => "等待 Agent",
-        "agent.stop" => "停止 Agent",
-        "agent.collect" => "收集 Agent 结果",
-        "actions.list" => "后台任务列表",
-        "actions.inspect" => "查看后台任务",
-        "actions.cancel" => "取消后台任务",
-        "schedule.set" => "设置定时任务",
-        "schedule.list" => "定时任务列表",
-        "schedule.cancel" => "取消定时任务",
-        "preferences.get" => "读取偏好",
-        "preferences.set" => "设置偏好",
-        "preferences.clear" => "清除偏好",
-        "preferences.list" => "偏好列表",
-        "checklist.list" => "检查清单",
-        "checklist.add" => "添加清单项",
-        "checklist.update" => "更新清单项",
-        "checklist.remove" => "移除清单项",
-        "checklist.clear" => "清空检查清单",
-        "system.display" => "显示器信息",
-        "system.env.list" => "列出环境变量",
-        "system.env.get" => "读取环境变量",
-        "system.env.set" => "设置环境变量",
-        "system.env.unset" => "删除环境变量",
-        "system.registry.list" => "列出注册表",
-        "system.registry.get" => "读取注册表",
-        "system.registry.set" => "设置注册表",
-        "system.registry.delete_value" => "删除注册表值",
-        "system.registry.delete_key" => "删除注册表键",
-        "system.power.status" => "电源状态",
-        "system.power.lock" => "锁定电脑",
-        "system.power.sleep" => "睡眠",
-        "system.power.hibernate" => "休眠",
-        _ => name,
-    }
-    .into()
-}
-
 fn add_operation_views(
     tools: &mut Vec<ToolBox>,
     inner: ToolBox,
@@ -1347,7 +1173,7 @@ fn add_admin_operation_views(
             continue;
         };
         let text = tool_prompts::operation_text(name);
-        let mut contract = operation_spec(
+        let contract = operation_spec(
             &inner,
             name,
             text.description,
@@ -1357,14 +1183,6 @@ fn add_admin_operation_views(
             icon,
             text.when_to_use,
         );
-        contract.policy.risk_level = admin_operation_risk(name);
-        contract.policy.confirmation = if contract.policy.risk_level >= RiskLevel::Critical {
-            ConfirmationRequirement::Required
-        } else if contract.policy.risk_level == RiskLevel::Safe {
-            ConfirmationRequirement::None
-        } else {
-            ConfirmationRequirement::SecurityPolicy
-        };
         tools.push(OperationViewTool::new(inner.clone(), contract));
     }
 }

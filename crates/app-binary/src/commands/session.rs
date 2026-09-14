@@ -6,11 +6,14 @@ use crate::events::{
     SessionTitleUpdatedEvent,
 };
 use crate::logging::sanitize_error_text;
+use haven_common::types::permission_key;
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use haven_memory::repositories::sessions::Session;
+use haven_tools::{NetworkAccess, OperationPolicy};
 use serde::Serialize;
 use std::sync::Arc;
+use tauri::AppHandle;
 use tauri::State;
 
 #[tauri::command]
@@ -95,6 +98,7 @@ pub async fn interrupt_session(
 #[tauri::command]
 pub async fn resolve_confirmation(
     state: State<'_, Arc<AppState>>,
+    app: AppHandle,
     step_id: String,
     effect: String,
     scope: String,
@@ -116,7 +120,7 @@ pub async fn resolve_confirmation(
         let Some(pending) = pending else {
             return Err("Confirmation request is stale or already resolved".into());
         };
-        return resolve_ui_confirmation(&state, pending, perm_effect, perm_scope).await;
+        return resolve_ui_confirmation(&state, &app, pending, perm_effect, perm_scope).await;
     };
 
     // Once-scope (or no grant) — nothing to record beyond the one-shot resolve.
@@ -152,6 +156,7 @@ pub async fn resolve_confirmation(
 
 async fn resolve_ui_confirmation(
     state: &AppState,
+    app: &AppHandle,
     pending: UiConfirmationPending,
     perm_effect: haven_common::types::PermissionEffect,
     perm_scope: haven_common::types::PermissionScope,
@@ -163,18 +168,34 @@ async fn resolve_ui_confirmation(
         "resolving renderer-triggered confirmation"
     );
     if matches!(perm_effect, haven_common::types::PermissionEffect::Allow) {
-        let (tool_name, input) = match &pending.action {
-            UiConfirmationAction::Mcp { args, .. } => (&pending.tool_name, args),
-            UiConfirmationAction::Skill { params, .. } => (&pending.tool_name, params),
+        let input = match &pending.action {
+            UiConfirmationAction::Mcp { args, .. } => args.clone(),
+            UiConfirmationAction::Skill { params, .. } => params.clone(),
+            UiConfirmationAction::Admin { params } => serde_json::to_value(params)
+                .map_err(|error| log_err("resolve_ui_confirmation admin input", error))?,
         };
+        let network_access = if pending.tool_name.starts_with("mcp__")
+            || pending.tool_name.starts_with("skill__")
+            || pending.tool_name.starts_with("haven.mcp.")
+        {
+            NetworkAccess::Opaque
+        } else {
+            NetworkAccess::None
+        };
+        let policy = OperationPolicy::native(
+            &pending.tool_name,
+            permission_key(&pending.tool_name, &input),
+            pending.risk_level,
+            network_access,
+        );
         state
             .tools
             .authorization
-            .verify_receipt(
+            .verify_receipt_with_policy(
                 Some(&pending.session_id),
-                tool_name,
-                input,
-                pending.risk_level,
+                &pending.tool_name,
+                &input,
+                &policy,
                 &pending.receipt,
             )
             .await
@@ -209,6 +230,15 @@ async fn resolve_ui_confirmation(
                     .execute(&skill, params, tokio_util::sync::CancellationToken::new())
                     .await
                     .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
+            }
+            UiConfirmationAction::Admin { params } => {
+                crate::commands::execute_admin_surface(
+                    state,
+                    "resolve_ui_confirmation admin",
+                    params.as_ref().clone(),
+                )
+                .await?;
+                crate::commands::finalize_admin_ui_operation(state, app, params).await?;
             }
         }
     }

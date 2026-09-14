@@ -1,12 +1,12 @@
 use crate::app_state::{AppState, UiConfirmationAction};
-use crate::commands::contracts::{SkillExecutionResponse, ToolInfoResponse, ToolListResponse};
+use crate::commands::contracts::{SkillExecutionResponse, ToolListResponse};
 use crate::commands::log_err;
 use crate::commands::{emit_event_logged, queue_ui_confirmation};
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent};
-use haven_common::types::RiskLevel;
-use haven_tools::{ConfirmationResult, SkillInfo};
-use serde_json::Value;
+use haven_common::types::{RiskLevel, permission_key};
+use haven_tools::{ConfirmationResult, NetworkAccess, OperationPolicy, SkillInfo};
 use std::sync::Arc;
+use tauri::AppHandle;
 use tauri::State;
 
 #[tauri::command]
@@ -45,6 +45,7 @@ pub async fn set_skill_enabled(
     state: State<'_, Arc<AppState>>,
     name: String,
     enabled: bool,
+    app: AppHandle,
 ) -> Result<(), String> {
     // Route through the native admin surface: one implementation for
     // the UI toggle and the LLM's skill_enable / skill_disable ops. The op
@@ -52,6 +53,7 @@ pub async fn set_skill_enabled(
     // via ConfigService.
     crate::commands::run_admin_op(
         &state,
+        &app,
         "set_skill_enabled",
         haven_tools::SelfParams {
             operation: if enabled {
@@ -76,6 +78,7 @@ pub async fn set_tool_enabled(
     state: State<'_, Arc<AppState>>,
     name: String,
     enabled: bool,
+    app: AppHandle,
 ) -> Result<(), String> {
     // Route through the native admin surface: one implementation for
     // the UI switch and the LLM's tool_enable / tool_disable ops. The op
@@ -84,6 +87,7 @@ pub async fn set_tool_enabled(
     // ToolsManager, so the toggle takes effect in the Reasoner immediately.
     crate::commands::run_admin_op(
         &state,
+        &app,
         "set_tool_enabled",
         haven_tools::SelfParams {
             operation: if enabled {
@@ -108,10 +112,17 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
             "skills directory contains an unsafe reparse point or cannot be resolved".into(),
         );
     }
+    let params = serde_json::json!({"target": root});
+    let policy = OperationPolicy::native(
+        "open_skills_dir",
+        permission_key("open_skills_dir", &params),
+        RiskLevel::Low,
+        NetworkAccess::None,
+    );
     match state
         .tools
         .authorization
-        .check(None, "open_skills_dir", &Value::Null, RiskLevel::Low)
+        .check_with_policy(None, "open_skills_dir", &params, &policy)
         .await
     {
         ConfirmationResult::AutoApproved => {}
@@ -175,10 +186,16 @@ pub async fn execute_skill(
     // Always grants from agent confirms apply to UI preview.
     let tool_key = haven_tools::SkillToolAdapter::qualified_name_of(&name);
     let risk_level = RiskLevel::High;
+    let policy = OperationPolicy::native(
+        &tool_key,
+        permission_key(&tool_key, &params),
+        risk_level,
+        NetworkAccess::Opaque,
+    );
     match state
         .tools
         .authorization
-        .check(Some("ui"), &tool_key, &params, risk_level)
+        .check_with_policy(Some("ui"), &tool_key, &params, &policy)
         .await
     {
         ConfirmationResult::AutoApproved => {}
@@ -235,14 +252,7 @@ pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListRespon
     // List ALL builtin tools (enabled and disabled) with their enabled state
     // so the UI can toggle them. Disabled tools are excluded from the
     // registry the agent sees (see ToolsManager::rebuild_catalog).
-    let tools = state
-        .tools
-        .list_builtin_tools()
-        .await
-        .into_iter()
-        .map(serde_json::from_value::<ToolInfoResponse>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| log_err("get_tools", e))?;
+    let tools = state.tools.list_builtin_manifests().await;
     Ok(ToolListResponse { tools })
 }
 

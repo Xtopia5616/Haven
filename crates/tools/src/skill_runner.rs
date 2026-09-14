@@ -2,6 +2,7 @@ use crate::tool_contract::ToolResult;
 use haven_common::config::SkillsExecConfig;
 use haven_common::encoding;
 use haven_common::error::sanitize_error_text;
+use haven_common::process_containment::ProcessContainment;
 use haven_skills::{Skill, VenvManager};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
@@ -86,6 +87,13 @@ impl SkillRunner {
             cmd.env("COMSPEC", std::env::var("COMSPEC").unwrap_or_default());
         }
 
+        let containment = ProcessContainment::new().map_err(|error| {
+            anyhow::anyhow!(
+                "failed to create process containment for skill '{}': {}",
+                pid_label,
+                sanitize_error_text(&error.to_string())
+            )
+        })?;
         let mut child = cmd.kill_on_drop(true).spawn().map_err(|e| {
             anyhow::anyhow!(
                 "failed to spawn skill '{}': {}",
@@ -93,6 +101,17 @@ impl SkillRunner {
                 sanitize_error_text(&e.to_string())
             )
         })?;
+        let pid = child.id().ok_or_else(|| {
+            anyhow::anyhow!("skill '{}' did not expose a child process id", pid_label)
+        })?;
+        if let Err(error) = containment.attach(pid) {
+            let _ = child.kill().await;
+            anyhow::bail!(
+                "failed to attach skill '{}' to process containment: {}",
+                pid_label,
+                sanitize_error_text(&error.to_string())
+            );
+        }
 
         // Write params as JSON to stdin, then close it.
         if let Some(mut stdin) = child.stdin.take() {

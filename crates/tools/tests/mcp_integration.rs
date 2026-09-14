@@ -166,6 +166,9 @@ async fn create_client() -> (Arc<McpClient>, TestMcpServer) {
         2 * 1024 * 1024,
         2 * 1024 * 1024,
     ));
+    client
+        .set_network_policy(haven_common::types::NetworkPolicy::Open)
+        .await;
     client.connect().await.unwrap();
     (client, server)
 }

@@ -1,4 +1,4 @@
-import { toolRootName } from './toolManifest.ts';
+import { toolRendererName, toolRootName } from './toolManifest.ts';
 
 type ToolResultObject = Record<string, any>;
 
@@ -71,6 +71,12 @@ export function parseToolResult(
 	if (!isObject(data)) {
 		// JSON arrays / primitives — pretty-printed in the raw card.
 		return { kind: 'raw', data };
+	}
+	// A hydrated manifest/event renderer is authoritative for new tool calls.
+	// Shape detection below exists only for legacy or resumed messages that do
+	// not carry the backend renderer contract.
+	if (resultRenderer || toolRendererName(toolName)) {
+		return { kind: 'custom', data };
 	}
 	return customShape(rootToolName, data) ? { kind: 'custom', data } : { kind: 'generic', data };
 }

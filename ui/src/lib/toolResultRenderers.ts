@@ -134,6 +134,7 @@ export function getToolResultRenderer(
 		return ToolMemoryResult;
 	if (kind === 'custom' && (rootToolName === 'media' || selectedRenderer === 'media'))
 		return ToolMediaResult;
+	if (kind === 'custom') return ToolJsonResult;
 	return kind ? (renderers[kind as keyof typeof renderers] ?? null) : null;
 }
 

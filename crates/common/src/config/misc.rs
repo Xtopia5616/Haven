@@ -331,7 +331,9 @@ impl Default for MemoryConfig {
 /// One permanent (Always-scope) permission grant stored in config.toml.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredPermission {
-    /// Permission key: `tool` or `tool:operation` (see `permission_key`).
+    /// Permission key: a dotted operation view such as `files.search`, or a
+    /// root aggregate key for broad grants. Legacy colon keys are accepted
+    /// only at the matching boundary and trigger config reset on load.
     pub key: String,
     pub effect: crate::types::PermissionEffect,
 }

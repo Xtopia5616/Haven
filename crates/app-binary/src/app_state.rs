@@ -38,6 +38,9 @@ pub(crate) enum UiConfirmationAction {
         name: String,
         params: serde_json::Value,
     },
+    Admin {
+        params: Box<haven_tools::builtin::SelfParams>,
+    },
 }
 
 pub(crate) struct UiConfirmationPending {

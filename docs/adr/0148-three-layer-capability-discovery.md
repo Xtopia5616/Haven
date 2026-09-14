@@ -35,10 +35,15 @@ Haven 的内置工具数量持续增加。把每个 operation 的名称、描述
 
 目录的唯一元数据来源是 `ToolManifest`：`identity`（`source`、`catalog_group`、
 `root`、`operation`、`stable_name`）、`model`（名称、描述、schema）、`policy`（风险、
-权限键、确认、幂等性、作用域、并发）、`presentation` 和 `availability`。Builtin 和 Skill
+权限键、确认、幂等性、作用域、并发）、`presentation`（包含 UI 所代表的来源）、
+`root_presentation`（根能力的 label/description/icon）和 `availability`。Builtin 和 Skill
 通过 `ToolDef` 生成 manifest；MCP 将 `McpToolInfo` 映射到同一字段语义，使用
 `mcp__...` 的稳定 provider 名称。manifest 是 host/UI/权限目录模型，不直接塞进 provider
 `tools[]`；provider schema 只由当前 session 的 `ToolDef` surface 生成。
+
+Builtin operation view 的稳定元数据由 `builtin/operation_contract.rs` 统一登记：label、
+catalog group、只读声明和风险覆盖与操作 identity 同处一份 contract；运行时 schema 仍可
+根据上下文限制动态生成，执行则继续委托给 aggregate implementation。
 
 状态严格按以下单向链路变化：
 
@@ -59,7 +64,8 @@ core registry 或该 session overlay 查找，deferred catalog 不是可调用�
 目录 list 返回 `catalog_revision`（builtin/session/MCP 三个单调时钟的组合）。继续使用
 `next_cursor` 时必须回传该 revision；配置、builtin/Skill rebuild、session load 或 MCP
 `tools/list_changed` 使旧 cursor 返回 `stale_cursor`，调用方从 0 重新分页。prompt 的
-第一层缓存按 global registry 版本失效，MCP/Skill 变化在下一次 resume 重建；provider
+第一层缓存按 `(global registry version, MCP catalog version)` 失效，Skill rebuild 仍通过
+registry version 失效；provider
 schema 缓存按 `(global_version, session_version)` 失效，不让一个 session 的 load 影响其它
 session。
 
@@ -91,10 +97,17 @@ Builtin/Skill/MCP 的完整实现仍分别由 `DeferredToolCatalog`、Skill cata
 
 工具管理页不是模型的 session provider surface，因此继续使用 `get_tools` 的全量 builtin
 投影（包含已禁用项），而不是调用要求 session context 的 `tool_catalog`。UI 按同一份
-`ToolManifest.identity` 渲染三级树：`catalog_group` 为第一层 family，`root` 为第二层根能力，
-`stable_name`/`operation` 为第三层 operation；搜索和启用状态筛选在树上逐层裁剪，操作级
+`ToolManifest.identity` 渲染三级树：`catalog_group` 为第一层 family，`root` 与
+`root_presentation` 为第二层根能力，`stable_name`/`operation` 为第三层 operation；搜索和
+启用状态筛选在树上逐层裁剪，操作级
 Schema、风险和开关仍保持独立。MCP 与 Skill 仍分别在资源页维护，不把它们的执行配置混入
 builtin 管理树。
+
+`get_tools` 直接返回 manifest 列表，不再把同一份 name/description/schema/risk 复制成前端
+平面真源；Tauri payload 保持 snake_case，`toolManifest.ts` 是唯一 snake_case → camelCase
+转换点。manifest 的 `presentation.represented_source` 允许 `load_mcp`/`load_skill` 这类
+Haven 执行工具在 UI 中代表其实际激活的 MCP/Skill 来源。结果卡片优先使用 manifest/event
+renderer，只有旧消息缺少 renderer 时才使用 root/payload shape fallback。
 
 复核三层目录的版本失效链路时发现，MCP 的渐进式 `connect_server` 路径没有安装与启动路径
 相同的 `tools/list_changed` 目录版本监听，且直接插入 client 时没有递增 MCP 目录时钟。现已

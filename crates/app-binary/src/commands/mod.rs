@@ -79,12 +79,11 @@ pub struct SessionListResponse {
 /// Re-export: command error logging lives in `crate::logging` (conventions §1).
 pub(crate) use crate::logging::log_err;
 
-/// Run one native admin operation through the structured entry (entry ① of the
-/// builtin two-entry contract). Settings-modifying Tauri commands route
-/// through here so the config mutation lives in ONE implementation shared by
-/// native commands and the capability-scoped model adapters. Errors
-/// surface as the tool's `error` message (or the operation error directly).
-pub(crate) async fn run_admin_op(
+/// Execute one native admin operation through the structured entry (entry ①
+/// of the builtin two-entry contract). This helper is intentionally separate
+/// from authorization so a queued UI confirmation can resume the exact same
+/// operation without recursively creating another confirmation.
+pub(crate) async fn execute_admin_surface(
     state: &AppState,
     ctx: &str,
     params: haven_tools::builtin::SelfParams,
@@ -108,6 +107,129 @@ pub(crate) async fn run_admin_op(
         ));
     }
     Ok(result)
+}
+
+/// Run one native admin operation through AuthorizationEngine and then the
+/// structured entry. Settings-modifying Tauri commands route through here so
+/// the config mutation lives in ONE implementation shared by native commands
+/// and capability-scoped model adapters. A confirmation request stores the
+/// typed parameters backend-only and is resumed by `resolve_confirmation`.
+pub(crate) async fn run_admin_op(
+    state: &AppState,
+    app: &AppHandle,
+    ctx: &str,
+    params: haven_tools::builtin::SelfParams,
+) -> Result<haven_tools::ToolResult, String> {
+    let tool_name = params.operation.model_tool_name().to_string();
+    let risk_level = params.operation.risk_level();
+    let input = serde_json::to_value(&params).map_err(|error| log_err(ctx, error))?;
+    let network_access = if tool_name.starts_with("haven.mcp.") {
+        haven_tools::NetworkAccess::Opaque
+    } else {
+        haven_tools::NetworkAccess::None
+    };
+    let policy = haven_tools::OperationPolicy::native(
+        &tool_name,
+        tool_name.clone(),
+        risk_level,
+        network_access,
+    );
+    match state
+        .tools
+        .authorization
+        .check_with_policy(Some("ui"), &tool_name, &input, &policy)
+        .await
+    {
+        haven_tools::ConfirmationResult::AutoApproved => {
+            execute_admin_surface(state, ctx, params).await
+        }
+        haven_tools::ConfirmationResult::RequiresConfirmation {
+            tool_name,
+            risk_level,
+            receipt,
+            ..
+        } => Err(queue_ui_confirmation(
+            state,
+            app,
+            tool_name,
+            input,
+            risk_level,
+            receipt,
+            UiConfirmationAction::Admin {
+                params: Box::new(params),
+            },
+        )
+        .await?),
+        haven_tools::ConfirmationResult::Blocked { reason } => Err(format!(
+            "native admin operation blocked by security policy ({reason})"
+        )),
+    }
+}
+
+/// Apply the app-shell side effects that normally follow a native admin
+/// command after a queued confirmation resumes it. The structured admin
+/// operation owns persistence and live state; this bridge owns catalog/event
+/// refresh so a delayed confirmation updates the same UI surfaces as an
+/// immediately approved command.
+pub(crate) async fn finalize_admin_ui_operation(
+    state: &AppState,
+    app: &AppHandle,
+    params: &haven_tools::builtin::SelfParams,
+) -> Result<(), String> {
+    use haven_tools::builtin::SelfOperation;
+
+    match params.operation {
+        SelfOperation::SkillEnable | SelfOperation::SkillDisable => {
+            state.tools.rebuild_catalog().await;
+            emit_event_logged(
+                app,
+                crate::events::SKILLS_STATUS_CHANGED_EVENT,
+                crate::events::SkillsStatusChangedEvent {
+                    op: "toggle".into(),
+                },
+                "resolve_ui_confirmation skill",
+            );
+        }
+        SelfOperation::ToolEnable | SelfOperation::ToolDisable => {
+            state.tools.rebuild_catalog().await;
+        }
+        SelfOperation::McpAdd
+        | SelfOperation::McpUpdate
+        | SelfOperation::McpToggle
+        | SelfOperation::McpConnect => {
+            if let Some(name) = params.name.as_deref() {
+                crate::commands::mcp::spawn_monitor_if_client(state, name).await?;
+                state.tools.rebuild_catalog().await;
+                let connected = state.tools.mcp_manager.get_client(name).await.is_some();
+                crate::commands::mcp::emit_mcp_status(
+                    app,
+                    name.to_string(),
+                    if connected {
+                        haven_tools::McpClientStatus::Connected
+                    } else {
+                        haven_tools::McpClientStatus::Disconnected
+                    },
+                    "resolve_ui_confirmation mcp",
+                );
+            }
+        }
+        SelfOperation::McpDisconnect | SelfOperation::McpRemove => {
+            state.tools.rebuild_catalog().await;
+            if let Some(name) = params.name.as_deref() {
+                crate::commands::mcp::emit_mcp_status(
+                    app,
+                    name.to_string(),
+                    haven_tools::McpClientStatus::Disconnected,
+                    "resolve_ui_confirmation mcp",
+                );
+            }
+        }
+        SelfOperation::McpReload => {
+            state.tools.rebuild_catalog().await;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Register a renderer-triggered MCP/skill invocation and expose only the
@@ -273,6 +395,13 @@ pub(crate) async fn connect_and_monitor(
     config: &McpServerConfig,
     ctx: &str,
 ) -> Result<Arc<haven_tools::McpClient>, String> {
+    if matches!(
+        state.tools.mcp_manager.network_policy().await,
+        haven_common::types::NetworkPolicy::Deny
+    ) && config.enabled
+    {
+        return Err("MCP connection blocked by network policy".into());
+    }
     let limits = state
         .config_service
         .snapshot()
@@ -285,6 +414,9 @@ pub(crate) async fn connect_and_monitor(
         limits.mcp_max_binary_payload_bytes,
         limits.mcp_max_sse_buffer_bytes,
     ));
+    client
+        .set_network_policy(state.tools.mcp_manager.network_policy().await)
+        .await;
     if config.enabled {
         client.connect().await.map_err(|e| log_err(ctx, e))?;
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);

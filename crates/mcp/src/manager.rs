@@ -35,6 +35,7 @@ pub struct McpManager {
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
+    network_policy: Arc<tokio::sync::RwLock<haven_common::types::NetworkPolicy>>,
     /// Changes whenever the configured server set or a server's tools/list
     /// cache changes. Consumers use this as a cheap catalog invalidation
     /// clock; it is not a durable protocol version.
@@ -48,6 +49,7 @@ impl Clone for McpManager {
             status_tx: self.status_tx.clone(),
             discovery_config: self.discovery_config.clone(),
             limits: self.limits.clone(),
+            network_policy: self.network_policy.clone(),
             catalog_version: self.catalog_version.clone(),
         }
     }
@@ -64,6 +66,12 @@ impl McpManager {
             )),
             limits: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::ContextLimitsConfig::default(),
+            )),
+            network_policy: Arc::new(tokio::sync::RwLock::new(
+                // Fail closed until the desktop shell applies its
+                // SecurityConfig snapshot. Tests that intentionally exercise
+                // a local server must opt into Open explicitly.
+                haven_common::types::NetworkPolicy::Restricted,
             )),
             catalog_version: Arc::new(AtomicU64::new(0)),
         }
@@ -94,6 +102,37 @@ impl McpManager {
     /// used when creating MCP clients from config.
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
         *self.limits.write().await = limits.clone();
+    }
+
+    /// Apply the process-wide MCP connection boundary. Any policy other than
+    /// Open tears down existing clients so health monitors cannot reconnect
+    /// behind a boundary whose destination validation is no longer known.
+    /// Re-enabling network access does not auto-connect servers; the next
+    /// discovery/refresh explicitly owns that side effect.
+    pub async fn set_network_policy(&self, policy: haven_common::types::NetworkPolicy) {
+        *self.network_policy.write().await = policy;
+        let clients: Vec<_> = self
+            .clients
+            .lock()
+            .await
+            .iter()
+            .map(|(name, client)| (name.clone(), client.clone()))
+            .collect();
+        for (_, client) in &clients {
+            client.set_network_policy(policy).await;
+        }
+        if !matches!(policy, haven_common::types::NetworkPolicy::Open) {
+            // Existing HTTP clients may have been created with a different
+            // DNS resolution/pinning decision. Tear them down too; callers
+            // must explicitly rediscover after a boundary change.
+            for (name, _) in clients {
+                self.remove_client(&name).await;
+            }
+        }
+    }
+
+    pub async fn network_policy(&self) -> haven_common::types::NetworkPolicy {
+        *self.network_policy.read().await
     }
 
     pub fn status_tx(&self) -> tokio::sync::broadcast::Sender<McpStatusChangeEvent> {
@@ -189,6 +228,14 @@ impl McpManager {
             });
         }
 
+        if matches!(
+            self.network_policy().await,
+            haven_common::types::NetworkPolicy::Deny
+        ) {
+            tracing::info!("MCP discovery skipped because the network policy denies connections");
+            return;
+        }
+
         let mut pending = tokio::task::JoinSet::new();
 
         for server in reconcile
@@ -211,6 +258,7 @@ impl McpManager {
                 limits.mcp_max_binary_payload_bytes,
                 limits.mcp_max_sse_buffer_bytes,
             ));
+            client.set_network_policy(self.network_policy().await).await;
             let name = client.name().to_string();
             self.clients
                 .lock()
@@ -286,6 +334,12 @@ impl McpManager {
         config: &haven_common::McpServerConfig,
     ) -> anyhow::Result<()> {
         let name = &config.name;
+        if matches!(
+            self.network_policy().await,
+            haven_common::types::NetworkPolicy::Deny
+        ) {
+            anyhow::bail!("MCP connection blocked by network policy")
+        }
         {
             let clients = self.clients.lock().await;
             if clients.contains_key(name) {
@@ -299,6 +353,7 @@ impl McpManager {
             limits.mcp_max_binary_payload_bytes,
             limits.mcp_max_sse_buffer_bytes,
         ));
+        client.set_network_policy(self.network_policy().await).await;
 
         self.start_catalog_listener(client.clone());
 
@@ -339,6 +394,12 @@ impl McpManager {
     /// Also stores the discovery config for later use by `connect_server`.
     pub async fn start_monitors(&self, config: &haven_common::config::McpDiscoveryConfig) {
         *self.discovery_config.write().await = config.clone();
+        if matches!(
+            self.network_policy().await,
+            haven_common::types::NetworkPolicy::Deny
+        ) {
+            return;
+        }
         let health_interval = Duration::from_secs(config.health_interval_secs);
         let initial_backoff = Duration::from_millis(config.reconnect_initial_ms);
         let max_backoff = Duration::from_millis(config.reconnect_max_ms);
@@ -393,6 +454,12 @@ impl McpManager {
     /// After a successful reconnect the caller should restart the health
     /// monitor (see `start_monitors`).
     pub async fn reconnect(&self, name: &str) -> anyhow::Result<()> {
+        if matches!(
+            self.network_policy().await,
+            haven_common::types::NetworkPolicy::Deny
+        ) {
+            anyhow::bail!("MCP reconnect blocked by network policy")
+        }
         let clients = self.clients.lock().await;
         match clients.get(name) {
             Some(client) => {

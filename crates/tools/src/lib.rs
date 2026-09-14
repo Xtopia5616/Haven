@@ -144,11 +144,12 @@ pub use shell_runtime::{
 };
 pub use skill_runner::SkillRunner;
 pub use tool_contract::{
-    ConfirmationRequirement, OperationIdempotency, OperationPolicy, StructuredToolError, Tool,
-    ToolAvailability, ToolBox, ToolCancellationPolicy, ToolConcurrency, ToolDef, ToolErrorClass,
-    ToolErrorMetadata, ToolExecutionOutcome, ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel,
-    ToolOperationMetadata, ToolOperationScope, ToolPolicy, ToolPresentation, ToolRegistration,
-    ToolResult, ToolResultEnvelope, ToolRetryability, ToolSignals, ToolSource, TypedToolAdapter,
+    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationIdempotency,
+    OperationPolicy, StructuredToolError, Tool, ToolAvailability, ToolBox, ToolCancellationPolicy,
+    ToolConcurrency, ToolDef, ToolErrorClass, ToolErrorMetadata, ToolExecutionOutcome,
+    ToolIdentity, ToolLlmUsage, ToolManifest, ToolModel, ToolOperationMetadata, ToolOperationScope,
+    ToolPolicy, ToolPresentation, ToolRegistration, ToolResult, ToolResultEnvelope,
+    ToolRetryability, ToolRootPresentation, ToolSignals, ToolSource, TypedToolAdapter,
     TypedToolOperation, extract_ask_signal, extract_notify_signal, is_silent_action,
     parse_tool_input,
 };
@@ -171,8 +172,9 @@ pub struct StartupWiring {
     pub admin_context: builtin::SelfToolContext,
 }
 
-/// Convert a qualified tool name (`mcp::server::tool`, `skill::name`) into a
-/// form accepted by tool-calling LLM APIs. OpenAI-compatible providers
+/// Convert an internal qualified tool name (`mcp::server::tool`, `skill::name`)
+/// into a provider-safe form (`mcp__server__tool`, `skill__name`) accepted by
+/// tool-calling LLM APIs. OpenAI-compatible providers
 /// restrict tool names to `^[a-zA-Z0-9_-]+$` (DeepSeek rejects the `::`
 /// namespace separator with a 400, which permanently errors the session after a
 /// successful `load_mcp`); Anthropic additionally caps the length at 64.
@@ -627,6 +629,12 @@ impl ToolsManager {
         self.session_catalog.global_version()
     }
 
+    /// MCP has its own tools/list change clock and therefore must participate
+    /// in prompt-index cache keys independently of the builtin registry.
+    pub fn mcp_catalog_version(&self) -> u64 {
+        self.mcp_manager.catalog_version()
+    }
+
     /// Version pair for a session's complete tool-definition view. The first
     /// component covers global registry changes; the second covers only that
     /// session's progressive MCP overlay.
@@ -693,7 +701,7 @@ impl ToolsManager {
         self.live_outputs.set_limits(&context_limits).await;
         self.scheduled_actions.set_limits(&context_limits).await;
         *self.context_limits.write().await = context_limits;
-        self.authorization.apply_security(&security).await;
+        self.apply_security(&security).await;
         self.authorization.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
         *self.media_config.write().await = media_config;
@@ -710,6 +718,17 @@ impl ToolsManager {
             .await;
         *self.self_context.write().await = Some(admin_context);
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+    }
+
+    /// Apply the security configuration to every runtime boundary that needs
+    /// the same snapshot. The authorization engine protects tool execution;
+    /// the MCP manager additionally protects startup, refresh, reconnect, and
+    /// health-monitor connection paths.
+    pub async fn apply_security(&self, security: &SecurityConfig) {
+        self.authorization.apply_security(security).await;
+        self.mcp_manager
+            .set_network_policy(security.network_policy)
+            .await;
     }
 
     /// Wire the app-level context for the native admin surface. Called by the
@@ -1402,6 +1421,24 @@ impl ToolsManager {
             .collect()
     }
 
+    /// Canonical UI catalog projection. Unlike `list_builtin_tools`, this
+    /// does not merge provider-facing fields into a second flat DTO: the
+    /// manifest is the only source the frontend should hydrate.
+    pub async fn list_builtin_manifests(&self) -> Vec<ToolManifest> {
+        let tools = self.all_builtin_tools.read().await;
+        let settings = self.tool_settings.read().await;
+        tools
+            .iter()
+            .filter(|tool| !tool.name().starts_with("skill__"))
+            .map(|tool| {
+                let def = tool.tool_def();
+                let mut manifest = def.manifest.clone().unwrap_or_else(|| tool.tool_manifest());
+                manifest.availability.enabled = tool_config_enabled(&settings, &tool.name());
+                manifest
+            })
+            .collect()
+    }
+
     /// Prompt-facing catalog of every enabled builtin, including deferred
     /// operation views. This intentionally returns structured definitions only
     /// to the agent prompt builder; provider `tools[]` still uses the smaller
@@ -1660,6 +1697,9 @@ impl ToolsManager {
                 idempotency: OperationIdempotency::Unknown,
                 scope: ToolOperationScope::Session,
                 concurrency: ToolConcurrency::Exclusive,
+                effect: OperationEffect::ExternalEffect,
+                data_sensitivity: DataSensitivity::None,
+                network_access: NetworkAccess::None,
             })
     }
 
@@ -1878,10 +1918,19 @@ mod tests {
                 idempotency: "safe".into(),
                 scope: "session".into(),
                 concurrency: "exclusive".into(),
+                effect: "read_only".into(),
+                data_sensitivity: "none".into(),
+                network_access: "none".into(),
             },
             presentation: ToolPresentation {
                 label: name.into(),
                 renderer: "tools".into(),
+                icon: "tools".into(),
+                represented_source: ToolSource::Builtin,
+            },
+            root_presentation: haven_common::tools::ToolRootPresentation {
+                label: name.split('.').next().unwrap_or(name).into(),
+                description: format!("{} test capabilities", name),
                 icon: "tools".into(),
             },
             prompt: haven_common::tools::ToolPrompt {

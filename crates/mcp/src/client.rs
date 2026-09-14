@@ -5,14 +5,14 @@ use crate::protocol::{
 use crate::transport::{
     HttpInner, HttpShared, McpClientInner, StdioInner, http_is_alive, spawn_sse_listener,
 };
-use haven_common::McpTransportType;
+use haven_common::{McpTransportType, types::NetworkPolicy};
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::BufReader;
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 pub struct McpClient {
@@ -42,6 +42,10 @@ pub struct McpClient {
     pub(crate) max_binary_payload: usize,
     /// Single buffered (incomplete) SSE line/event cap for the HTTP transport.
     pub(crate) max_sse_buffer: usize,
+    /// Runtime network boundary. Direct clients fail closed at construction;
+    /// the manager overwrites it from SecurityConfig before a configured
+    /// connection is started.
+    pub(crate) network_policy: Arc<RwLock<NetworkPolicy>>,
 }
 
 pub(crate) struct RateLimiter {
@@ -189,6 +193,7 @@ impl McpClient {
             notification_rx: Arc::new(Mutex::new(None)),
             max_binary_payload,
             max_sse_buffer,
+            network_policy: Arc::new(RwLock::new(NetworkPolicy::Restricted)),
         }
     }
 
@@ -198,6 +203,14 @@ impl McpClient {
 
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
+    }
+
+    pub async fn set_network_policy(&self, policy: NetworkPolicy) {
+        *self.network_policy.write().await = policy;
+    }
+
+    pub async fn network_policy(&self) -> NetworkPolicy {
+        *self.network_policy.read().await
     }
 
     /// Whether the live client was spawned from the given persisted config.
@@ -319,6 +332,21 @@ impl McpClient {
                     hint
                 )
             })?;
+        let containment =
+            haven_common::process_containment::ProcessContainment::new().map_err(|error| {
+                anyhow::anyhow!("failed to contain MCP server '{}': {error}", self.name)
+            })?;
+        let pid = child.id().ok_or_else(|| {
+            anyhow::anyhow!("MCP server '{}' did not expose a process id", self.name)
+        })?;
+        if let Err(error) = containment.attach(pid) {
+            let _ = child.start_kill();
+            anyhow::bail!(
+                "failed to attach MCP server '{}' to process containment: {}",
+                self.name,
+                haven_common::error::sanitize_error_text(&error.to_string())
+            );
+        }
 
         let stdin = child
             .stdin
@@ -331,6 +359,7 @@ impl McpClient {
 
         Ok(StdioInner {
             child,
+            _containment: containment,
             stdin,
             stdout: BufReader::new(stdout),
             notification_tx,
@@ -360,13 +389,11 @@ impl McpClient {
         // and reqwest only strips the fixed auth-header list on cross-host
         // redirects. Following a redirect would leak those to an unverified
         // host, so refuse to follow any.
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))?;
+        let policy = *self.network_policy.read().await;
+        let (http, endpoint) = crate::network::build_http_client(&self.url, policy).await?;
         let shared = Arc::new(HttpShared {
             http,
-            url: self.url.clone(),
+            url: endpoint.to_string(),
             headers,
             session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
             cancel: self.cancel_token.lock().await.clone(),
@@ -384,6 +411,19 @@ impl McpClient {
     /// handshake level, so the caller can tell "server down" from "client
     /// and server are incompatible".
     pub async fn connect(&self) -> anyhow::Result<()> {
+        let network_policy = *self.network_policy.read().await;
+        if matches!(self.transport, McpTransportType::Stdio)
+            && !matches!(network_policy, NetworkPolicy::Open)
+        {
+            let error = anyhow::anyhow!(
+                "MCP stdio server '{}' is blocked because its network use is opaque; set network policy to Open explicitly",
+                self.name
+            );
+            *self.status.lock().await = McpClientStatus::Offline {
+                error: error.to_string(),
+            };
+            return Err(error);
+        }
         *self.status.lock().await = McpClientStatus::Connecting;
         *self.last_diagnostic.lock().await = None;
         // A new connection must repopulate this cache from the new server.

@@ -3,7 +3,7 @@ use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -258,6 +258,12 @@ async fn execute_once(
         .timeout(Duration::from_secs(timeout_secs))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("Haven/1.0");
+    let (validated_url, pinned_address) = resolve_validated_network_url(url, &policy).await?;
+    if let Some(address) = pinned_address
+        && let Some(host) = validated_url.host_str()
+    {
+        builder = builder.resolve(host, address);
+    }
     // Route through a locally detected proxy so international requests work
     // when the user runs one (e.g. 127.0.0.1:10808) — same detection as the
     // shell tool's spawned commands. User-set env vars already short-circuit
@@ -302,7 +308,7 @@ async fn execute_once_with(
     let mut current_url = validate_network_url(url, policy).await?;
     let mut current_method = method.to_string();
     let mut current_body = body.map(str::to_owned);
-    let mut current_headers = headers.to_vec();
+    let current_headers = headers.to_vec();
     let mut redirect_hops = 0usize;
     let response = loop {
         let mut req = match current_method.as_str() {
@@ -347,7 +353,7 @@ async fn execute_once_with(
             current_body = None;
         }
         if !same_origin(&current_url, &next_url) {
-            current_headers.retain(|(key, _)| !is_sensitive_request_header(key));
+            anyhow::bail!("cross-origin HTTP redirects are not allowed");
         }
         current_url = next_url;
     };
@@ -414,6 +420,13 @@ async fn validate_network_url(
     raw_url: &str,
     policy: &NetworkPolicy,
 ) -> anyhow::Result<reqwest::Url> {
+    Ok(resolve_validated_network_url(raw_url, policy).await?.0)
+}
+
+async fn resolve_validated_network_url(
+    raw_url: &str,
+    policy: &NetworkPolicy,
+) -> anyhow::Result<(reqwest::Url, Option<SocketAddr>)> {
     let url = reqwest::Url::parse(raw_url)
         .map_err(|error| anyhow::anyhow!("invalid HTTP URL: {}", error))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -443,23 +456,23 @@ async fn validate_network_url(
         if is_blocked_ip(ip, policy.allow_loopback) {
             anyhow::bail!("HTTP destination resolves to a blocked local or private address");
         }
-        return Ok(url);
+        return Ok((url, None));
     }
 
     let addresses = tokio::net::lookup_host((normalized_host.as_str(), port))
         .await
         .map_err(|error| anyhow::anyhow!("failed to resolve HTTP host: {}", error))?;
-    let mut saw_address = false;
+    let mut validated_addresses = Vec::new();
     for address in addresses {
-        saw_address = true;
         if is_blocked_ip(address.ip(), policy.allow_loopback) {
             anyhow::bail!("HTTP host resolves to a blocked local or private address");
         }
+        validated_addresses.push(address);
     }
-    if !saw_address {
+    let Some(pinned_address) = validated_addresses.first().copied() else {
         anyhow::bail!("HTTP host did not resolve to an address");
-    }
-    Ok(url)
+    };
+    Ok((url, Some(pinned_address)))
 }
 
 fn normalize_host(host: &str) -> String {
@@ -527,13 +540,6 @@ fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
     left.scheme() == right.scheme()
         && left.host_str().map(normalize_host) == right.host_str().map(normalize_host)
         && left.port_or_known_default() == right.port_or_known_default()
-}
-
-fn is_sensitive_request_header(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "authorization" | "cookie" | "proxy-authorization"
-    )
 }
 
 /// Read at most `byte_cap` bytes (bounded by `max_body_bytes`) of the response

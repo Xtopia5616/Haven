@@ -182,28 +182,28 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "McpServerConfig",
         response: "()",
         boundary: CommandBoundary::Execute,
-        security: "shared self operation validates and persists config",
+        security: "AuthorizationEngine; shared native admin operation validates and persists config",
     },
     CommandContract {
         name: "update_mcp_server",
         request: "UpdateMcpServerRequest",
         response: "()",
         boundary: CommandBoundary::Execute,
-        security: "shared self operation validates and reconnects safely",
+        security: "AuthorizationEngine; shared native admin operation validates and reconnects safely",
     },
     CommandContract {
         name: "remove_mcp_server",
         request: "McpNameRequest",
         response: "()",
         boundary: CommandBoundary::Execute,
-        security: "shared self operation removes client and config",
+        security: "AuthorizationEngine; shared native admin operation removes client and config",
     },
     CommandContract {
         name: "toggle_mcp_server",
         request: "ToggleMcpServerRequest",
         response: "()",
         boundary: CommandBoundary::Execute,
-        security: "shared self operation connects before enabling",
+        security: "AuthorizationEngine; shared native admin operation connects before enabling",
     },
     // memory
     CommandContract {
@@ -503,14 +503,14 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "SetEnabledRequest",
         response: "()",
         boundary: CommandBoundary::Mutate,
-        security: "shared self operation persists the toggle",
+        security: "AuthorizationEngine; shared native admin operation persists the toggle",
     },
     CommandContract {
         name: "set_tool_enabled",
         request: "SetEnabledRequest",
         response: "()",
         boundary: CommandBoundary::Mutate,
-        security: "shared self operation persists the toggle",
+        security: "AuthorizationEngine; shared native admin operation persists the toggle",
     },
     CommandContract {
         name: "open_skills_dir",
@@ -580,24 +580,9 @@ impl From<haven_memory::MemoryHit> for MemoryRecallItem {
     }
 }
 
-/// The fixed part of a builtin tool listing. `input_schema` is intentionally
-/// dynamic JSON because it is the tool/provider extension point.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolInfoResponse {
-    pub name: String,
-    pub description: String,
-    pub input_schema: serde_json::Value,
-    pub risk_level: haven_common::types::RiskLevel,
-    #[serde(default)]
-    pub catalog_group: haven_common::tools::ToolCatalogGroup,
-    pub enabled: bool,
-    #[serde(default)]
-    pub manifest: Option<haven_common::tools::ToolManifest>,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolListResponse {
-    pub tools: Vec<ToolInfoResponse>,
+    pub tools: Vec<haven_common::tools::ToolManifest>,
 }
 
 #[cfg(test)]

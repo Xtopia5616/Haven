@@ -1,8 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
-use haven_common::types::RiskLevel;
-use haven_tools::ConfirmationResult;
-use serde_json::Value;
+use haven_common::types::{RiskLevel, permission_key};
+use haven_tools::{ConfirmationResult, NetworkAccess, OperationPolicy};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -20,10 +19,25 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
         return Err("empty target".into());
     }
 
+    let params = serde_json::json!({"target": value});
+    let network_access = if looks_like_http_url(value) {
+        // The default browser owns DNS, redirects, cookies, and any follow-up
+        // requests, so Haven cannot validate this destination like its own
+        // HTTP tool. Treat it as opaque and require an explicit open boundary.
+        NetworkAccess::Opaque
+    } else {
+        NetworkAccess::None
+    };
+    let policy = OperationPolicy::native(
+        "open_external",
+        permission_key("open_external", &params),
+        RiskLevel::Low,
+        network_access,
+    );
     match state
         .tools
         .authorization
-        .check(None, "open_external", &Value::Null, RiskLevel::Low)
+        .check_with_policy(None, "open_external", &params, &policy)
         .await
     {
         ConfirmationResult::AutoApproved => {}

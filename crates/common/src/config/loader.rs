@@ -78,11 +78,73 @@ fn timestamped_backup_path(path: &Path) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    static BACKUP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = BACKUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let base = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("config");
-    path.with_file_name(format!("{base}.toml.{ts}.bak"))
+    let pid = std::process::id();
+    let mut backup = path.with_file_name(format!("{base}.toml.{ts}.{pid}.{sequence}.bak"));
+    // The process id + sequence makes repeated parse failures in the same
+    // second independent recovery points. Keep the existence check as a
+    // final guard for unusual process-id reuse or a pre-existing file.
+    while backup.exists() {
+        let next = BACKUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        backup = path.with_file_name(format!("{base}.toml.{ts}.{pid}.{next}.bak"));
+    }
+    backup
+}
+
+const MAX_AUTOMATIC_CONFIG_BACKUPS: usize = 10;
+
+fn automatic_backup_timestamp(path: &Path, config_path: &Path) -> Option<(u64, u32, u64)> {
+    let base = config_path.file_stem()?.to_str()?;
+    let file_name = path.file_name()?.to_str()?;
+    let middle = file_name
+        .strip_prefix(&format!("{base}.toml."))?
+        .strip_suffix(".bak")?;
+    let parts: Vec<_> = middle.split('.').collect();
+    match parts.as_slice() {
+        // Backwards-compatible with the pre-retention backup format.
+        [timestamp] => Some((timestamp.parse().ok()?, 0, 0)),
+        // Current format: timestamp, process id, per-process sequence.
+        [timestamp, pid, sequence] => Some((
+            timestamp.parse().ok()?,
+            pid.parse().ok()?,
+            sequence.parse().ok()?,
+        )),
+        _ => None,
+    }
+}
+
+/// Keep only the newest automatic recovery copies for this config. Manual
+/// backups and unrelated files are deliberately excluded by the strict name
+/// parser above.
+fn prune_timestamped_backups(config_path: &Path) {
+    let Some(parent) = config_path.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut backups: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            automatic_backup_timestamp(&path, config_path).map(|stamp| (stamp, path))
+        })
+        .collect();
+    backups.sort_by_key(|backup| std::cmp::Reverse(backup.0));
+    for (_, backup) in backups.into_iter().skip(MAX_AUTOMATIC_CONFIG_BACKUPS) {
+        if let Err(error) = std::fs::remove_file(&backup) {
+            tracing::warn!(
+                path = %backup.display(),
+                error = %error,
+                "failed to prune old automatic config backup"
+            );
+        }
+    }
 }
 
 fn backup_unparsable_config(path: &Path, err: &str) {
@@ -91,11 +153,14 @@ fn backup_unparsable_config(path: &Path, err: &str) {
     // unparsable file so it can be recovered, then continue with defaults.
     let backup = timestamped_backup_path(path);
     match std::fs::copy(path, &backup) {
-        Ok(_) => tracing::error!(
-            "config parse error at {}; original backed up to {}: {err}",
-            path.display(),
-            backup.display()
-        ),
+        Ok(_) => {
+            prune_timestamped_backups(path);
+            tracing::error!(
+                "config parse error at {}; original backed up to {}: {err}",
+                path.display(),
+                backup.display()
+            )
+        }
         Err(be) => tracing::error!(
             "config parse error at {} (backup to {} failed: {}): {err}",
             path.display(),
@@ -207,6 +272,11 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         .and_then(toml::Value::as_table)
         .and_then(|security| security.get("permissions"))
         .and_then(toml::Value::as_array)?;
+    // Operation-view permissions are dotted (`files.search`,
+    // `system.env.list`). A colon inside one of these roots is the old
+    // aggregate-tool spelling and cannot safely be reinterpreted: the old
+    // key may have a different scope or operation meaning. Treat it as a
+    // reset boundary and preserve the source in an automatic backup.
     let legacy_roots = [
         "file",
         "file_search",
@@ -216,12 +286,35 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
         "haven",
         "load_skill",
     ];
+    let operation_view_roots = [
+        "files",
+        "system",
+        "process",
+        "clipboard",
+        "input",
+        "window",
+        "media",
+        "memory",
+        "agent",
+        "actions",
+        "schedule",
+        "preferences",
+        "checklist",
+        "mcp",
+        "skill",
+    ];
     permissions.iter().find_map(|permission| {
         let key = permission.get("key").and_then(toml::Value::as_str)?;
         let root = key.split_once(':').map_or(key, |(root, _)| root);
         legacy_roots
             .contains(&root)
             .then_some("removed legacy tool permission key")
+            .or_else(|| {
+                key.contains(':')
+                    .then_some(root)
+                    .filter(|root| operation_view_roots.contains(root))
+                    .map(|_| "legacy aggregate permission key; use dotted operation-view name")
+            })
     })
 }
 
@@ -401,7 +494,8 @@ impl AppConfig {
         // Permanent permissions are mutated by resolve_confirmation /
         // revoke_permission, not the settings form. The form may hold a stale
         // snapshot (Always grant while Settings was open) — overwriting would
-        // wipe live grants. Keep on-disk permissions; apply mode/threshold.
+        // wipe live grants. Keep on-disk permissions; apply the selected
+        // security boundaries and confirmation mode.
         let prev_permissions = self.security.permissions.clone();
         let prev_encrypt = self.security.encrypt_sensitive;
         self.security = settings.security.clone();
@@ -1135,6 +1229,40 @@ vad_threshold = 0.25
     }
 
     #[test]
+    fn load_backs_up_colon_operation_permission_names_without_migrating_them() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[security.permissions]]
+key = "files:search"
+effect = "allow"
+
+[[security.permissions]]
+key = "system:env:list"
+effect = "allow"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config(), &AppConfig::default());
+        let backups = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().into_string().unwrap();
+                automatic_backup_timestamp(&entry.path(), &path).is_some() && name.ends_with(".bak")
+            })
+            .count();
+        assert_eq!(backups, 1, "colon operation keys must require reset");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_backs_up_removed_audio_tool_settings() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1322,6 +1450,37 @@ base_url = "https://api.deepgram.com"
         );
         // Sanity: the file itself is untouched until a save happens.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn automatic_backup_retention_keeps_newest_and_ignores_manual_backups() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        for timestamp in 1..=12 {
+            std::fs::write(
+                dir.join(format!("config.toml.{timestamp}.bak")),
+                timestamp.to_string(),
+            )
+            .unwrap();
+        }
+        let manual = dir.join("config.toml.manual-migration-20260914.bak");
+        std::fs::write(&manual, "manual recovery copy").unwrap();
+
+        prune_timestamped_backups(&path);
+
+        let automatic: Vec<_> = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| automatic_backup_timestamp(&entry.path(), &path))
+            .collect();
+        assert_eq!(automatic.len(), MAX_AUTOMATIC_CONFIG_BACKUPS);
+        assert!(dir.join("config.toml.12.bak").exists());
+        assert!(dir.join("config.toml.3.bak").exists());
+        assert!(!dir.join("config.toml.2.bak").exists());
+        assert!(manual.exists(), "manual migration backup must be preserved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

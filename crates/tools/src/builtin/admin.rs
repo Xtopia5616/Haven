@@ -3,7 +3,8 @@
 //! The implementation of the admin services is still shared with the native
 //! app commands through [`SelfTool`]. This module is the important boundary:
 //! the model never receives that broad dispatcher. Each registered tool gets
-//! one capability and an allowlisted operation schema, so the safety gateway
+//! one capability and an allowlisted operation schema, so the authorization
+//! engine
 //! sees a stable tool/capability key before any side effect can run.
 
 use super::admin_support::{mask_sensitive_config, value_at};
@@ -604,6 +605,33 @@ pub fn new_config_admin_tool(context: ConfigAdminContext) -> ConfigAdminTool {
 }
 
 impl SelfOperation {
+    /// Stable model-facing operation-view name used by the authorization
+    /// engine for both LLM and native UI entry points.
+    pub fn model_tool_name(self) -> &'static str {
+        match self {
+            Self::Status => "haven.diagnostics.status",
+            Self::ConfigGet => "haven.config.config_get",
+            Self::SkillsList => "haven.skills.skills_list",
+            Self::SkillEnable => "haven.skills.skill_enable",
+            Self::SkillDisable => "haven.skills.skill_disable",
+            Self::SkillCreate => "haven.skills.skill_create",
+            Self::ToolEnable => "haven.tools.tool_enable",
+            Self::ToolDisable => "haven.tools.tool_disable",
+            Self::McpList => "haven.mcp.mcp_list",
+            Self::McpConnect => "haven.mcp.mcp_connect",
+            Self::McpDisconnect => "haven.mcp.mcp_disconnect",
+            Self::McpAdd => "haven.mcp.mcp_add",
+            Self::McpUpdate => "haven.mcp.mcp_update",
+            Self::McpToggle => "haven.mcp.mcp_toggle",
+            Self::McpRemove => "haven.mcp.mcp_remove",
+            Self::McpReload => "haven.mcp.mcp_reload",
+            Self::LogsTail => "haven.diagnostics.logs_tail",
+            Self::LogsLevel => "haven.config.logs_level",
+            Self::Sessions => "haven.diagnostics.sessions",
+            Self::Errors => "haven.diagnostics.errors",
+        }
+    }
+
     fn is_read_only(self) -> bool {
         matches!(
             self,
@@ -617,7 +645,7 @@ impl SelfOperation {
         )
     }
 
-    fn risk_level(self) -> RiskLevel {
+    pub fn risk_level(self) -> RiskLevel {
         match self {
             Self::Status
             | Self::ConfigGet

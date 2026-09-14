@@ -6,8 +6,10 @@ use crate::commands::queue_ui_confirmation;
 use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
-use haven_common::types::RiskLevel;
-use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot};
+use haven_common::types::{RiskLevel, permission_key};
+use haven_tools::{
+    ConfirmationResult, McpClientStatus, McpServerSnapshot, NetworkAccess, OperationPolicy,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -76,7 +78,12 @@ fn redact_mcp_snapshot(snapshot: &mut McpServerSnapshot) {
         .collect();
 }
 
-fn emit_mcp_status(app: &tauri::AppHandle, name: String, status: McpClientStatus, context: &str) {
+pub(crate) fn emit_mcp_status(
+    app: &tauri::AppHandle,
+    name: String,
+    status: McpClientStatus,
+    context: &str,
+) {
     if let Err(error) = app.emit(
         MCP_STATUS_CHANGED_EVENT,
         McpStatusChangedEvent { name, status },
@@ -260,10 +267,16 @@ pub async fn mcp_tool_call(
     // Use the short-lived UI session so session-scope decisions made from a
     // direct invocation apply to subsequent direct invocations in this run.
     let tool_key = haven_tools::McpToolAdapter::qualified_name_of(&client, &tool);
+    let policy = OperationPolicy::native(
+        &tool_key,
+        permission_key(&tool_key, &args),
+        RiskLevel::High,
+        NetworkAccess::Opaque,
+    );
     match state
         .tools
         .authorization
-        .check(Some("ui"), &tool_key, &args, RiskLevel::High)
+        .check_with_policy(Some("ui"), &tool_key, &args, &policy)
         .await
     {
         ConfirmationResult::AutoApproved => {}
@@ -314,7 +327,7 @@ pub async fn mcp_tool_call(
 /// mcp_add/update/toggle ops connect clients without a monitor (the LLM path
 /// does not need one), so the app commands re-attach it after routing through
 /// the tool — same wiring as `reconnect_mcp`.
-async fn spawn_monitor_if_client(state: &AppState, name: &str) -> Result<(), String> {
+pub(crate) async fn spawn_monitor_if_client(state: &AppState, name: &str) -> Result<(), String> {
     let Some(client) = state.tools.mcp_manager.get_client(name).await else {
         return Ok(());
     };
@@ -350,6 +363,7 @@ pub async fn add_mcp_server(
     // connects when enabled (UI always adds enabled servers).
     crate::commands::run_admin_op(
         &state,
+        &app,
         "add_mcp_server",
         haven_tools::SelfParams {
             operation: haven_tools::SelfOperation::McpAdd,
@@ -402,6 +416,7 @@ pub async fn update_mcp_server(
     // persist-then-connect order).
     crate::commands::run_admin_op(
         &state,
+        &app,
         "update_mcp_server",
         haven_tools::SelfParams {
             operation: haven_tools::SelfOperation::McpUpdate,
@@ -446,6 +461,7 @@ pub async fn remove_mcp_server(
     // and drops it from the in-memory index.
     crate::commands::run_admin_op(
         &state,
+        &app,
         "remove_mcp_server",
         haven_tools::SelfParams {
             operation: haven_tools::SelfOperation::McpRemove,
@@ -479,6 +495,7 @@ pub async fn toggle_mcp_server(
     // failed connect) and shuts the live client down when disabling.
     crate::commands::run_admin_op(
         &state,
+        &app,
         "toggle_mcp_server",
         haven_tools::SelfParams {
             operation: haven_tools::SelfOperation::McpToggle,

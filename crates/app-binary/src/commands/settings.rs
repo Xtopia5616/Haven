@@ -110,6 +110,14 @@ pub async fn update_settings(
         tick("set_context_limits");
     }
 
+    // Apply the new security boundary before any config reload can start a
+    // connection. A single settings update may change both MCP definitions
+    // and network policy; the stricter policy must win during that transition.
+    if plan.contains(RuntimeConfigTarget::Security) {
+        state.tools.apply_security(&config.security).await;
+        tick("apply_security");
+    }
+
     // Reload MCP servers from config
     if plan.contains(RuntimeConfigTarget::Mcp) {
         state.tools.load_mcp_from_config(&config.mcp_servers).await;
@@ -146,13 +154,6 @@ pub async fn update_settings(
             .set_max_concurrent(config.session.max_concurrent);
     }
 
-    if plan.contains(RuntimeConfigTarget::Security) {
-        state
-            .tools
-            .authorization
-            .apply_security(&config.security)
-            .await;
-    }
     if plan.contains(RuntimeConfigTarget::ToolSettings) {
         state
             .tools
