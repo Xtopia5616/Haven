@@ -257,9 +257,6 @@ impl SessionSupervisor {
         }
         self.tools.authorization.clear_all_trust().await;
         self.actors.lock().await.clear();
-        if let Ok(mut actors) = self.local_actors.write() {
-            actors.clear();
-        }
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
     }

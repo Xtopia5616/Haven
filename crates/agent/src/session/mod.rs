@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Semaphore, broadcast, watch};
 use tokio_util::sync::CancellationToken;
@@ -182,9 +182,6 @@ pub struct SessionSupervisor {
     /// The sole cross-session registry. A session's mutable runtime state is
     /// owned by its actor and is never protected by a shared per-session lock.
     actors: Arc<Mutex<HashMap<String, actor::SessionActorHandle>>>,
-    /// Synchronous view of actor handles for the blocking messaging mailbox
-    /// boundary. Session state remains owned by the actors.
-    local_actors: Arc<StdRwLock<HashMap<String, actor::SessionActorHandle>>>,
     semaphore: Arc<Semaphore>,
     /// Current configured session concurrency ceiling. Kept separate from the
     /// semaphore's live permit count so `set_max_concurrent` can compute the
@@ -241,7 +238,6 @@ impl SessionSupervisor {
             db,
             tools,
             actors: Arc::new(Mutex::new(HashMap::new())),
-            local_actors: Arc::new(StdRwLock::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: std::sync::atomic::AtomicUsize::new(max_concurrent.max(1)),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -267,16 +263,10 @@ impl SessionSupervisor {
             .lock()
             .await
             .insert(handle.id.clone(), handle.clone());
-        if let Ok(mut actors) = self.local_actors.write() {
-            actors.insert(handle.id.clone(), handle.clone());
-        }
         handle
     }
 
     pub(crate) async fn remove_actor(&self, session_id: &str) -> Option<actor::SessionActorHandle> {
-        if let Ok(mut actors) = self.local_actors.write() {
-            actors.remove(session_id);
-        }
         self.actors.lock().await.remove(session_id)
     }
 
@@ -334,11 +324,7 @@ impl haven_tools::SessionMailbox for SessionSupervisor {
         to: &str,
         envelope: &haven_tools::inbox::Envelope,
     ) -> anyhow::Result<Option<haven_tools::inbox::SendOutcome>> {
-        let actor = self
-            .local_actors
-            .read()
-            .ok()
-            .and_then(|actors| actors.get(to).cloned());
+        let actor = self.actors.blocking_lock().get(to).cloned();
         let Some(actor) = actor else {
             return Ok(None);
         };
@@ -352,20 +338,12 @@ impl haven_tools::SessionMailbox for SessionSupervisor {
     }
 
     fn claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<haven_tools::inbox::Envelope>>> {
-        let actor = self
-            .local_actors
-            .read()
-            .ok()
-            .and_then(|actors| actors.get(recipient).cloned());
+        let actor = self.actors.blocking_lock().get(recipient).cloned();
         Ok(actor.map(|actor| actor.claim_messages()))
     }
 
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>> {
-        let actor = self
-            .local_actors
-            .read()
-            .ok()
-            .and_then(|actors| actors.get(recipient).cloned());
+        let actor = self.actors.blocking_lock().get(recipient).cloned();
         let Some(actor) = actor else {
             return Ok(None);
         };
@@ -377,11 +355,7 @@ impl haven_tools::SessionMailbox for SessionSupervisor {
         &self,
         name: &str,
     ) -> anyhow::Result<Option<Option<haven_tools::inbox::Envelope>>> {
-        let actor = self
-            .local_actors
-            .read()
-            .ok()
-            .and_then(|actors| actors.get(name).cloned());
+        let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| actor.last_received_message()))
     }
 
@@ -390,11 +364,7 @@ impl haven_tools::SessionMailbox for SessionSupervisor {
         name: &str,
         id: &str,
     ) -> anyhow::Result<Option<Option<haven_tools::inbox::Envelope>>> {
-        let actor = self
-            .local_actors
-            .read()
-            .ok()
-            .and_then(|actors| actors.get(name).cloned());
+        let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| actor.find_message_by_id(id.to_string())))
     }
 
@@ -404,11 +374,7 @@ impl haven_tools::SessionMailbox for SessionSupervisor {
         in_reply_to: &str,
         expected_from: &str,
     ) -> anyhow::Result<Option<Vec<haven_tools::inbox::Envelope>>> {
-        let actor = self
-            .local_actors
-            .read()
-            .ok()
-            .and_then(|actors| actors.get(name).cloned());
+        let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| {
             actor.take_matching_replies_blocking(in_reply_to.to_string(), expected_from.to_string())
         }))
@@ -419,11 +385,7 @@ impl haven_tools::SessionMailbox for SessionSupervisor {
         name: &str,
         limit: usize,
     ) -> anyhow::Result<Option<Vec<haven_tools::inbox::Envelope>>> {
-        let actor = self
-            .local_actors
-            .read()
-            .ok()
-            .and_then(|actors| actors.get(name).cloned());
+        let actor = self.actors.blocking_lock().get(name).cloned();
         Ok(actor.map(|actor| actor.history_blocking(limit)))
     }
 }
