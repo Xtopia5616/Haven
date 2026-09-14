@@ -296,9 +296,10 @@ Temp（全局约束）。
 | `input` | 键鼠 type / key / click / move / scroll | move/scroll=Low；其它=Medium |
 | `window` | 窗口 list / foreground / focus / close / screenshot / OCR / UI tree / observe / invoke / set_value / toggle / select / wait | 读/观察=Low；语义操作/focus=Medium；close/OCR=High |
 
-`ActionService`（`haven-tools/src/action_service.rs`）是后台与定时任务的统一查询/状态/取消门面；
-`BackgroundActions` 和 `ScheduledActionCenter` 当前仍是内部 worker，但 model-facing `actions.*` 和
-app action board 都只读取规范化 task row。`InteractionRequest`（`haven-agent/src/interaction.rs`）
+`ActionService`（`haven-tools/src/action_service.rs`）是后台与定时任务的唯一运行时状态机；
+shell 进程、定时器和 action dependency 共享一个 action map、一个生命周期 sink 和一个
+completion bus。model-facing `actions.*` 和 app action board 都直接读取规范化 task row。
+`InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照保留旧字段用于兼容读取，新的交互状态以
 `Pending → Resolved | Expired | Cancelled` 表达。
 

@@ -76,11 +76,8 @@ pub async fn cancel_action(
     action_id: String,
     kind: ActionKind,
 ) -> Result<bool, String> {
-    let cancelled = if matches!(kind, ActionKind::Scheduled) {
-        state.tools.scheduled_actions.cancel(&action_id).await
-    } else {
-        state.tools.background_actions.cancel(&action_id).await
-    };
+    let _ = kind;
+    let cancelled = state.tools.action_service.cancel(&action_id).await;
     if !cancelled {
         tracing::warn!("cancel_action: not found or not cancellable: {}", action_id);
     }

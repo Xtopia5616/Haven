@@ -321,9 +321,12 @@ impl AgentLayer {
         // is still buffered and delivered as context once the user resumes.
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.background_actions.take_completion_receiver() {
+        if let Some(mut rx) = tools.action_service.take_action_receiver() {
             tokio::spawn(async move {
-                while let Some(comp) = rx.recv().await {
+                while let Some(event) = rx.recv().await {
+                    let haven_tools::ActionCompletion::Background(comp) = event else {
+                        continue;
+                    };
                     // Skip cancellations: a cancelled action was killed
                     // intentionally (end_session/rollback), so notifying would
                     // risk resurrecting an ended session.
@@ -461,9 +464,12 @@ impl AgentLayer {
         //   without a session id is an error (no fallback).
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.scheduled_actions.take_fired_receiver() {
+        if let Some(mut rx) = tools.action_service.take_action_receiver() {
             tokio::spawn(async move {
-                while let Some(fired) = rx.recv().await {
+                while let Some(event) = rx.recv().await {
+                    let haven_tools::ActionCompletion::Scheduled(fired) = event else {
+                        continue;
+                    };
                     // Per-scheduled-action span so fire logs carry the scheduled action and
                     // its owning session; parallel scheduled-action fires stay distinct.
                     let fire_span = tracing::info_span!(
@@ -701,17 +707,13 @@ impl AgentLayer {
         // app), so persisted action history never shows stale live work.
         let restore_tools = self.executor.get_tools();
         tokio::spawn(async move {
-            let overdue = restore_tools.scheduled_actions.restore_pending().await;
+            let (overdue, interrupted) = restore_tools.action_service.restore().await;
             if overdue > 0 {
                 tracing::info!(
                     "restored {} overdue scheduled action(s) from previous run",
                     overdue
                 );
             }
-            let interrupted = restore_tools
-                .background_actions
-                .restore_after_restart()
-                .await;
             if interrupted > 0 {
                 tracing::info!(
                     "marked {} interrupted background action(s) as failed",

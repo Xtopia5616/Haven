@@ -761,17 +761,13 @@ impl SessionExecutor {
         &self.db
     }
 
-    /// Cancel and drop all background actions owned by a session, and cancel its
-    /// pending scheduled_actions. Called when the session ends, is removed, or is
+    /// Cancel and drop every action owned by a session. Called when the session
+    /// ends, is removed, or is
     /// rolled back so child processes cannot leak past their session and no
     /// scheduled action fires against a session that no longer exists.
     pub async fn cancel_session_actions(&self, session_id: &str) {
         self.tools
-            .background_actions
-            .cancel_owned_by_session(session_id)
-            .await;
-        self.tools
-            .scheduled_actions
+            .action_service
             .cancel_owned_by_session(session_id)
             .await;
     }

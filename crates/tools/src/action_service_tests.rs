@@ -4,7 +4,7 @@ use super::*;
 use std::time::Duration;
 
 /// Poll `status` until it is no longer "running" (or timeout).
-async fn wait_terminal(actions: &BackgroundActions, id: &str, timeout_secs: u64) -> Value {
+async fn wait_terminal(actions: &ActionService, id: &str, timeout_secs: u64) -> Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         let v = actions.status(id).await;
@@ -14,9 +14,18 @@ async fn wait_terminal(actions: &BackgroundActions, id: &str, timeout_secs: u64)
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+async fn recv_background(rx: &mut ActionCompletionReceiver) -> BackgroundActionCompletion {
+    loop {
+        match rx.recv().await {
+            Some(ActionCompletion::Background(completion)) => return completion,
+            Some(ActionCompletion::Scheduled(_)) => continue,
+            None => panic!("action completion channel closed"),
+        }
+    }
+}
 /// Spawn the two fixture echo actions (`action-a` / `action-b`) and attach them to
 /// `ses-1` / `ses-2`. Shared by the board and scoped-list tests.
-async fn spawn_two_echo_actions(actions: &Arc<BackgroundActions>) -> (String, String) {
+async fn spawn_two_echo_actions(actions: &Arc<ActionService>) -> (String, String) {
     let id_a = actions
         .spawn_shell("echo action-a", "cmd", 20_000, None)
         .await
@@ -33,10 +42,8 @@ async fn spawn_two_echo_actions(actions: &Arc<BackgroundActions>) -> (String, St
 #[cfg(windows)]
 #[tokio::test]
 async fn test_completion_notified_on_finish() {
-    let actions = Arc::new(BackgroundActions::new());
-    let mut rx = actions
-        .take_completion_receiver()
-        .expect("receiver available");
+    let actions = Arc::new(ActionService::new());
+    let mut rx = actions.take_action_receiver().expect("receiver available");
     // Attach the session BEFORE the action finishes (normal path): the
     // completion must carry the session_id.
     let id = actions
@@ -46,10 +53,9 @@ async fn test_completion_notified_on_finish() {
     actions.attach_session(&id, "ses-A").await;
     let v = wait_terminal(&actions, &id, 10).await;
     assert_eq!(v["status"], "completed");
-    let comp = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+    let comp = tokio::time::timeout(Duration::from_secs(2), recv_background(&mut rx))
         .await
-        .expect("completion received")
-        .expect("channel open");
+        .expect("completion received");
     assert_eq!(comp.action_id, id);
     assert_eq!(comp.status, "completed");
     assert_eq!(comp.session_id.as_deref(), Some("ses-A"));
@@ -64,19 +70,16 @@ async fn test_completion_notified_on_finish() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_spawn_for_session_binds_owner_before_completion() {
-    let actions = Arc::new(BackgroundActions::new());
-    let mut rx = actions
-        .take_completion_receiver()
-        .expect("receiver available");
+    let actions = Arc::new(ActionService::new());
+    let mut rx = actions.take_action_receiver().expect("receiver available");
     let id = actions
         .spawn_shell_for_session("echo prebound", "cmd", 20_000, None, Some("ses-owner"))
         .await
         .unwrap();
 
-    let completion = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+    let completion = tokio::time::timeout(Duration::from_secs(10), recv_background(&mut rx))
         .await
-        .expect("completion received")
-        .expect("channel open");
+        .expect("completion received");
     assert_eq!(completion.action_id, id);
     assert_eq!(completion.session_id.as_deref(), Some("ses-owner"));
     assert_eq!(
@@ -85,7 +88,7 @@ async fn test_spawn_for_session_binds_owner_before_completion() {
     );
     actions.attach_session(&id, "ses-owner").await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), rx.recv())
+        tokio::time::timeout(Duration::from_millis(100), recv_background(&mut rx))
             .await
             .is_err()
     );
@@ -96,7 +99,7 @@ async fn test_spawn_for_session_binds_owner_before_completion() {
 async fn test_action_result_persisted_to_db() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     actions.set_db(Some(db.clone())).await;
 
     let id = actions
@@ -144,10 +147,8 @@ async fn test_completion_refired_after_late_attach() {
     // Race path: the action finishes before attach_session is called. The
     // completion first fires with session_id=None; attach_session must re-fire
     // with the session_id so the owning session still gets notified.
-    let actions = Arc::new(BackgroundActions::new());
-    let mut rx = actions
-        .take_completion_receiver()
-        .expect("receiver available");
+    let actions = Arc::new(ActionService::new());
+    let mut rx = actions.take_action_receiver().expect("receiver available");
     let id = actions
         .spawn_shell("echo fast", "cmd", 20_000, None)
         .await
@@ -156,25 +157,22 @@ async fn test_completion_refired_after_late_attach() {
     let v = wait_terminal(&actions, &id, 10).await;
     assert_eq!(v["status"], "completed");
     // Drain the session_id=None completion fired by mark_finished.
-    let none_comp = rx.recv().await.expect("first completion");
+    let none_comp = recv_background(&mut rx).await;
     assert!(none_comp.session_id.is_none());
     // Now attach: should re-fire with the session_id.
     actions.attach_session(&id, "ses-B").await;
-    let comp = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+    let comp = tokio::time::timeout(Duration::from_secs(2), recv_background(&mut rx))
         .await
-        .expect("refired completion received")
-        .expect("channel open");
+        .expect("refired completion received");
     assert_eq!(comp.session_id.as_deref(), Some("ses-B"));
     assert_eq!(comp.status, "completed");
 }
 
 #[tokio::test]
 async fn test_completion_skipped_for_running() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     // No actions → no completion. Just confirm the receiver is taken.
-    let _rx = actions
-        .take_completion_receiver()
-        .expect("receiver available");
+    let _rx = actions.take_action_receiver().expect("receiver available");
     // status on not_found doesn't notify.
     assert_eq!(actions.status("nope").await["status"], "not_found");
 }
@@ -182,7 +180,7 @@ async fn test_completion_skipped_for_running() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_spawn_shell_completes_with_output() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let id = actions
         .spawn_shell("echo bg-hello", "cmd", 20_000, None)
         .await
@@ -196,7 +194,7 @@ async fn test_spawn_shell_completes_with_output() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_running_status_includes_command_and_live_output() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let id = actions
         .spawn_shell(
             "echo live-line & ping -n 3 127.0.0.1 >nul",
@@ -240,7 +238,7 @@ async fn test_running_status_includes_command_and_live_output() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_spawn_shell_failure_reported() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let id = actions
         .spawn_shell("exit 7", "cmd", 20_000, None)
         .await
@@ -252,7 +250,7 @@ async fn test_spawn_shell_failure_reported() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_spawn_shell_stderr_captured() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let id = actions
         .spawn_shell("echo err-msg 1>&2", "cmd", 20_000, None)
         .await
@@ -265,7 +263,7 @@ async fn test_spawn_shell_stderr_captured() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_spawn_shell_cancelled() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let id = actions
         .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
         .await
@@ -279,7 +277,7 @@ async fn test_spawn_shell_cancelled() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_cancel_for_session_cleans_up() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
     actions.set_event_sink(Arc::new(move |name, payload| {
@@ -304,19 +302,19 @@ async fn test_cancel_for_session_cleans_up() {
 
 #[tokio::test]
 async fn test_status_not_found() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     assert_eq!(actions.status("action-nope").await["status"], "not_found");
 }
 
 #[tokio::test]
 async fn test_cancel_unknown_action() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     assert!(!actions.cancel("action-nope").await);
 }
 
 #[tokio::test]
 async fn test_spawn_empty_command_rejected() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     assert!(
         actions
             .spawn_shell("  ", "cmd", 20_000, None)
@@ -411,14 +409,15 @@ fn test_take_tail_if_changed_detects_sliding_window() {
 #[test]
 fn test_terminal_entry_stale_ttl() {
     let now = chrono::Utc::now();
-    let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| BackgroundAction {
+    let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| ActionEntry {
+        kind: ActionKind::Background,
         session_id: None,
         state: if running {
-            BackgroundActionState::Running {
+            ActionState::Running {
                 started_at: now.to_rfc3339(),
             }
         } else {
-            BackgroundActionState::Completed {
+            ActionState::Completed {
                 output: String::new(),
                 exit_code: None,
                 truncated: false,
@@ -431,6 +430,7 @@ fn test_terminal_entry_stale_ttl() {
         tail: None,
         command: String::new(),
         shell: "cmd".into(),
+        scheduled: None,
     };
     assert!(
         terminal_entry_stale(
@@ -457,7 +457,7 @@ fn test_terminal_entry_stale_ttl() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_event_sink_receives_lifecycle() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
     actions.set_event_sink(Arc::new(move |name, payload| {
@@ -493,7 +493,7 @@ async fn test_event_sink_receives_lifecycle() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_board_lists_all_jobs_with_session() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let (id_a, id_b) = spawn_two_echo_actions(&actions).await;
     wait_terminal(&actions, &id_a, 10).await;
     wait_terminal(&actions, &id_b, 10).await;
@@ -519,7 +519,7 @@ async fn test_board_lists_all_jobs_with_session() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_action_output_preview_emitted() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
     actions.set_event_sink(Arc::new(move |name, payload| {
@@ -559,7 +559,7 @@ async fn test_action_output_preview_emitted() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_list_for_session_scopes_to_owning_session() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let (id_a, id_b) = spawn_two_echo_actions(&actions).await;
     wait_terminal(&actions, &id_a, 10).await;
     wait_terminal(&actions, &id_b, 10).await;
@@ -581,7 +581,7 @@ async fn test_list_for_session_scopes_to_owning_session() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_failed_action_reports_exit_code_and_reason() {
-    let actions = Arc::new(BackgroundActions::new());
+    let actions = Arc::new(ActionService::new());
     let id = actions
         .spawn_shell("echo progress... && exit 42", "cmd", 20_000, None)
         .await
@@ -593,4 +593,72 @@ async fn test_failed_action_reports_exit_code_and_reason() {
         v["error_reason"].as_str().is_some_and(|s| !s.is_empty()),
         "error_reason must be present, got: {v}"
     );
+}
+
+#[tokio::test]
+async fn test_unified_service_owns_scheduled_state_and_cancel() {
+    let service = Arc::new(ActionService::new());
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Unified".into(),
+            body: "still waiting".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            session_id: Some("ses-unified".into()),
+            tool_name: None,
+            tool_args: None,
+            prompt: Some("continue later".into()),
+        })
+        .await
+        .unwrap();
+
+    let board = service.board().await;
+    assert_eq!(board.len(), 1);
+    assert_eq!(board[0]["action_id"], id);
+    assert_eq!(board[0]["kind"], "scheduled");
+    assert_eq!(board[0]["status"], "scheduled");
+    assert_eq!(
+        service.status_for_session(&id, "ses-unified").await["status"],
+        "scheduled"
+    );
+
+    assert!(!service.cancel_for_session(&id, "ses-other").await);
+    assert!(service.cancel_for_session(&id, "ses-unified").await);
+    assert!(service.board().await.is_empty());
+    assert_eq!(service.status(&id).await["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_unified_completion_bus_emits_scheduled_transition() {
+    let service = Arc::new(ActionService::new());
+    let mut rx = service
+        .take_action_receiver()
+        .expect("unified receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "Bus".into(),
+            body: "fire".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("scheduled event received")
+        .expect("unified bus open");
+    match event {
+        ActionCompletion::Scheduled(fired) => assert_eq!(fired.action_id, id),
+        ActionCompletion::Background(_) => panic!("scheduled fire used the background variant"),
+    }
+    assert_eq!(service.status(&id).await["status"], "completed");
 }

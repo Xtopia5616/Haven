@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::live_output::LiveOutputHub;
 use crate::{
-    BackgroundActions, append_windows_diagnostics, build_shell_command_silent, collect_byte_cap,
+    ActionService, append_windows_diagnostics, build_shell_command_silent, collect_byte_cap,
     is_progress_clixml, read_stream_capped, sanitize_shell_output, summarize_error,
     write_output_log,
 };
@@ -16,7 +16,7 @@ use crate::{Tool, ToolExecutionOutcome, ToolResult};
 
 pub struct ShellTool {
     /// Registry of background actions for `background: true` invocations.
-    pub actions: Arc<BackgroundActions>,
+    pub actions: Arc<ActionService>,
     /// Live stdout/stderr previews for foreground shell tool cards.
     pub live_outputs: Arc<LiveOutputHub>,
     /// Output cap (chars) for command output.
@@ -29,7 +29,7 @@ pub struct ShellTool {
 impl Default for ShellTool {
     fn default() -> Self {
         Self {
-            actions: Arc::new(BackgroundActions::new()),
+            actions: Arc::new(ActionService::new()),
             live_outputs: Arc::new(LiveOutputHub::new()),
             max_output_chars: 20_000,
             #[cfg(windows)]

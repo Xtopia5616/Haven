@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ActionService, BackgroundActions, Tool, ToolConcurrency, ToolResult};
+use crate::{ActionService, Tool, ToolConcurrency, ToolResult};
 
 /// Explicit mutating operation supported by the unified task board.
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize)]
@@ -19,8 +19,7 @@ pub enum ActionsOperation {
 /// - With `action_id`: return that single action's status (results are also
 ///   pushed back automatically on completion — prefer not polling).
 pub struct ActionsTool {
-    pub actions: Arc<BackgroundActions>,
-    pub service: Option<Arc<ActionService>>,
+    pub actions: Arc<ActionService>,
 }
 
 /// Typed parameters for `ActionsTool`. Entry ① (native `run`) and entry ②
@@ -65,13 +64,10 @@ impl ActionsTool {
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
-            let cancelled = if let Some(service) = &self.service {
-                service.cancel_for_session(action_id, &session_id).await
-            } else {
-                self.actions
-                    .cancel_for_session(action_id, &session_id)
-                    .await
-            };
+            let cancelled = self
+                .actions
+                .cancel_for_session(action_id, &session_id)
+                .await;
             return Ok(ToolResult::ok(serde_json::json!({
                 "operation": "cancel",
                 "action_id": action_id,
@@ -85,13 +81,10 @@ impl ActionsTool {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
         {
-            let status = if let Some(service) = &self.service {
-                service.status_for_session(action_id, &session_id).await
-            } else {
-                self.actions
-                    .status_for_session(action_id, &session_id)
-                    .await
-            };
+            let status = self
+                .actions
+                .status_for_session(action_id, &session_id)
+                .await;
             let mut output = status;
             if let Some(object) = output.as_object_mut() {
                 object.insert("operation".into(), serde_json::json!("inspect"));
@@ -101,11 +94,7 @@ impl ActionsTool {
         }
 
         let filter = params.status;
-        let mut rows = if let Some(service) = &self.service {
-            service.list_for_session(&session_id).await
-        } else {
-            self.actions.list_for_session(&session_id).await
-        };
+        let mut rows = self.actions.list_for_session(&session_id).await;
         if let Some(f) = filter.as_deref() {
             rows.retain(|r| r["status"].as_str() == Some(f));
         }
@@ -221,8 +210,7 @@ mod tests {
     fn test_actions_tool_name() {
         assert_eq!(
             ActionsTool {
-                actions: Arc::new(BackgroundActions::new()),
-                service: None,
+                actions: Arc::new(ActionService::new()),
             }
             .name(),
             "actions"
@@ -232,8 +220,7 @@ mod tests {
     #[test]
     fn test_actions_tool_risk_level() {
         let tool = ActionsTool {
-            actions: Arc::new(BackgroundActions::new()),
-            service: None,
+            actions: Arc::new(ActionService::new()),
         };
         assert_eq!(tool.risk_level(&json!({})), RiskLevel::Safe);
         assert_eq!(
@@ -245,8 +232,7 @@ mod tests {
     #[test]
     fn test_actions_tool_schema() {
         let tool = ActionsTool {
-            actions: Arc::new(BackgroundActions::new()),
-            service: None,
+            actions: Arc::new(ActionService::new()),
         };
         let schema = tool.input_schema();
         assert!(schema["properties"]["action_id"].is_object());
@@ -258,8 +244,7 @@ mod tests {
     #[tokio::test]
     async fn test_actions_tool_requires_session_context() {
         let tool = ActionsTool {
-            actions: Arc::new(BackgroundActions::new()),
-            service: None,
+            actions: Arc::new(ActionService::new()),
         };
         let result = tool.execute(json!({}), CancellationToken::new()).await;
         assert!(
@@ -270,11 +255,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_actions_tool_lists_session_actions() {
-        let actions = Arc::new(BackgroundActions::new());
-        let tool = ActionsTool {
-            actions,
-            service: None,
-        };
+        let actions = Arc::new(ActionService::new());
+        let tool = ActionsTool { actions };
         let result = tool
             .execute(json!({"_session_id": "ses-x"}), CancellationToken::new())
             .await
@@ -286,8 +268,7 @@ mod tests {
     #[tokio::test]
     async fn test_actions_tool_single_action_status() {
         let tool = ActionsTool {
-            actions: Arc::new(BackgroundActions::new()),
-            service: None,
+            actions: Arc::new(ActionService::new()),
         };
         let result = tool
             .execute(
@@ -305,8 +286,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let tool = ActionsTool {
-            actions: Arc::new(BackgroundActions::new()),
-            service: None,
+            actions: Arc::new(ActionService::new()),
         };
         let result = tool.execute(json!({"_session_id": "ses-x"}), cancel).await;
         assert!(result.is_err());
@@ -315,8 +295,7 @@ mod tests {
     #[tokio::test]
     async fn test_actions_tool_native_entry_lands_in_run() {
         let tool = ActionsTool {
-            actions: Arc::new(BackgroundActions::new()),
-            service: None,
+            actions: Arc::new(ActionService::new()),
         };
         let result = tool
             .run(
@@ -336,11 +315,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_actions_tool_cancels_only_owned_running_action() {
-        let actions = Arc::new(BackgroundActions::new());
-        let tool = ActionsTool {
-            actions,
-            service: None,
-        };
+        let actions = Arc::new(ActionService::new());
+        let tool = ActionsTool { actions };
         let result = tool
             .execute(
                 json!({

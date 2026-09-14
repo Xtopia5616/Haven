@@ -1,15 +1,11 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
-use haven_memory::Database;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::sync::RwLock;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::ActionService;
 use crate::registry::RegistryProbe;
-use crate::{ActionLifecycle, BackgroundActions, EventSink};
 use crate::{Tool, ToolConcurrency, ToolResult};
 
 /// What happens when a scheduled_action fires.
@@ -45,26 +41,9 @@ impl ScheduleMode {
     }
 }
 
-/// A scheduled_action that fired; delivered to the app layer so it can run a tool
-/// (`Tool`, including `notify` for a message) or resume the scheduling session
-/// (`Continue`).
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ScheduledActionFired {
-    pub action_id: String,
-    pub title: String,
-    pub body: String,
-    pub mode: ScheduleMode,
-    /// Session that scheduled the scheduled_action —resume target for `Continue` mode,
-    /// tool-context scope for `Tool` mode. It is absent when the task is not
-    /// associated with a session.
-    pub session_id: Option<String>,
-    /// `Tool` mode: tool to call when the scheduled_action fires.
-    pub tool_name: Option<String>,
-    /// `Tool` mode: arguments for the tool call.
-    pub tool_args: Option<Value>,
-    /// `Continue` mode: required continuation message delivered to the session.
-    pub prompt: Option<String>,
-}
+/// Typed payload published by the unified [`crate::ActionService`] completion
+/// bus when a scheduled action enters its fire transition.
+pub use crate::action_service::ScheduledActionFired;
 
 /// Everything needed to schedule one scheduled_action.
 pub struct ScheduledActionSpec {
@@ -94,730 +73,6 @@ pub struct ScheduledActionSpec {
     pub prompt: Option<String>,
 }
 
-/// Lifetime cap on scheduled_actions per process. Fired scheduled_actions are reaped on the
-/// next `set`, so this bounds concurrent pending timers, not history.
-/// Upper bound on a `due_at`-scheduled scheduled_action (365 days) — guards against
-/// typos like a swapped year. Delay-based scheduled_actions are capped separately.
-#[derive(Clone)]
-struct ScheduledActionEntry {
-    title: String,
-    body: String,
-    due_at: String,
-    mode: ScheduleMode,
-    session_id: Option<String>,
-    tool_name: Option<String>,
-    tool_args: Option<Value>,
-    prompt: Option<String>,
-    /// Background action this scheduled_action waits for (empty for timer-based
-    /// scheduled_actions). Fires when the action reaches a terminal state.
-    watch_action_id: Option<String>,
-    fired: bool,
-}
-
-/// Registry of in-process timers for the `scheduled_action` tool, with a persistent
-/// backing store: every `set` is written to the database so scheduled_actions
-/// survive app restarts. On startup the agent layer calls `restore_pending`:
-/// overdue scheduled_actions fire immediately (missed while the app was off), the
-/// rest are re-armed with their remaining delay. The in-memory timer is the
-/// delivery mechanism while the app runs; the DB is the source of truth.
-pub struct ScheduledActionCenter {
-    scheduled_actions: RwLock<HashMap<String, ScheduledActionEntry>>,
-    /// Serializes schedule mutations so cap checks, persistence, firing and
-    /// cancellation form one ordering without holding the map lock across I/O.
-    mutation_gate: tokio::sync::Mutex<()>,
-    fired_tx: tokio::sync::mpsc::UnboundedSender<ScheduledActionFired>,
-    fired_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ScheduledActionFired>>>,
-    /// Persistent store; `None` in headless/test builds (in-memory only).
-    db: RwLock<Option<Arc<Database>>>,
-    /// Lifetime cap on pending scheduled_actions (from context limits).
-    max_scheduled_actions: RwLock<usize>,
-    max_due_horizon_secs: RwLock<i64>,
-    /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
-    /// to forward lifecycle events as Tauri events.
-    event_sink: ActionLifecycle,
-    /// Background-action registry for `watch_action_id` scheduled_actions (polled for a
-    /// terminal state). Wired by the tools manager; `None` in headless/test
-    /// builds where action-watch scheduled_actions are rejected.
-    actions: Mutex<Option<Arc<BackgroundActions>>>,
-}
-
-impl Default for ScheduledActionCenter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ScheduledActionCenter {
-    pub fn new() -> Self {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        Self {
-            scheduled_actions: RwLock::new(HashMap::new()),
-            mutation_gate: tokio::sync::Mutex::new(()),
-            fired_tx: tx,
-            fired_rx: Mutex::new(Some(rx)),
-            db: RwLock::new(None),
-            max_scheduled_actions: RwLock::new(32),
-            max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
-            event_sink: ActionLifecycle::default(),
-            actions: Mutex::new(None),
-        }
-    }
-
-    /// Attach the background-action registry so `watch_action_id` scheduled_actions can
-    /// wait for a action to finish. Wired once by the tools manager.
-    pub fn set_actions(&self, actions: Option<Arc<BackgroundActions>>) {
-        *self.actions.lock().unwrap() = actions;
-    }
-
-    /// Install the UI event sink (called once by the desktop shell).
-    pub fn set_event_sink(&self, sink: EventSink) {
-        self.event_sink.set_event_sink(sink);
-    }
-
-    /// Forward a lifecycle event to the installed sink (no-op without one).
-    fn emit(&self, event: &str, payload: Value) {
-        self.event_sink.emit(event, payload);
-    }
-
-    /// Emit the `action:finished` event for a scheduled_action (delivered alongside
-    /// the `ScheduledActionFired` channel message so the UI can drop it from the
-    /// pending list and surface its own toast).
-    fn emit_fired(&self, id: &str, entry: &ScheduledActionEntry) {
-        self.emit(
-            "action:finished",
-            serde_json::json!({
-                "id": id,
-                "title": entry.title,
-                "body": entry.body,
-                "mode": entry.mode.as_str(),
-                "session_id": entry.session_id.clone(),
-                "due_at": entry.due_at,
-            }),
-        );
-    }
-
-    /// Replace the unified context limits (scheduled_action caps).
-    pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
-        *self.max_scheduled_actions.write().await = limits.scheduled_actions_max;
-        *self.max_due_horizon_secs.write().await = limits.scheduled_actions_due_horizon_secs;
-    }
-
-    /// Attach the database used for persistence. Wired by the desktop shell
-    /// (same handle the `self` tool receives); headless tests skip it.
-    pub async fn set_db(&self, db: Option<Arc<Database>>) {
-        *self.db.write().await = db;
-    }
-
-    /// Take the fired-scheduled_action receiver exactly once (consumed by the agent
-    /// layer, which emits Notification events). Returns `None` if already
-    /// taken.
-    pub fn take_fired_receiver(
-        &self,
-    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<ScheduledActionFired>> {
-        self.fired_rx.lock().unwrap().take()
-    }
-
-    /// Mark a scheduled_action fired, emit its `action:finished` event, deliver the
-    /// `ScheduledActionFired` payload, and persist the fired flag. Shared by the
-    /// overdue re-arm path (`restore_pending`) and the action-watch timer.
-    async fn fire_entry(self: &Arc<Self>, id: &str) {
-        let _mutation = self.mutation_gate.lock().await;
-        let entry = {
-            let scheduled_actions = self.scheduled_actions.read().await;
-            let Some(entry) = scheduled_actions.get(id) else {
-                return;
-            };
-            if entry.fired {
-                return;
-            }
-            entry.clone()
-        };
-
-        let payload = ScheduledActionFired {
-            action_id: id.to_string(),
-            title: entry.title.clone(),
-            body: entry.body.clone(),
-            mode: entry.mode,
-            session_id: entry.session_id.clone(),
-            tool_name: entry.tool_name.clone(),
-            tool_args: entry.tool_args.clone(),
-            prompt: entry.prompt.clone(),
-        };
-        if let Err(error) = self.fired_tx.send(payload) {
-            tracing::error!(
-                action_id = %id,
-                error = %error,
-                "scheduled action completion channel is closed; keeping action pending"
-            );
-            return;
-        }
-        if let Some(current) = self.scheduled_actions.write().await.get_mut(id) {
-            current.fired = true;
-        }
-        drop(_mutation);
-        self.emit_fired(id, &entry);
-        if let Some(db) = self.db.read().await.clone() {
-            let action_id = id.to_string();
-            if let Err(e) = db
-                .run_blocking(move |db| db.mark_scheduled_action_fired(&action_id))
-                .await
-            {
-                tracing::warn!(action_id = %id, "failed to persist scheduled action fired state: {e}");
-            }
-        }
-    }
-
-    /// Re-arm all pending scheduled_actions from the database after a restart.
-    ///
-    /// - ScheduledActions whose due time already passed (the app was off when they
-    ///   expired) fire immediately and are marked fired.
-    /// - Future scheduled_actions are re-armed in memory with their remaining delay.
-    ///
-    /// Returns the number of scheduled_actions fired as overdue. Called once from the
-    /// agent layer startup; safe to call again (idempotent —in-memory
-    /// entries are skipped).
-    pub async fn restore_pending(self: &Arc<Self>) -> usize {
-        let Some(db) = self.db.read().await.clone() else {
-            return 0;
-        };
-        let rows = match db
-            .run_blocking(|db| db.list_pending_scheduled_actions())
-            .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::warn!("restore_pending: failed to load scheduled actions: {e}");
-                return 0;
-            }
-        };
-        let _mutation = self.mutation_gate.lock().await;
-        let now = chrono::Utc::now();
-        let mut overdue = 0usize;
-        for row in rows {
-            // Idempotency: skip entries the in-memory map already holds
-            // (restore was already run, or the scheduled_action was re-set live).
-            if self.scheduled_actions.read().await.contains_key(&row.id) {
-                continue;
-            }
-            let due = match chrono::DateTime::parse_from_rfc3339(&row.due_at) {
-                Ok(due) => due.with_timezone(&chrono::Utc),
-                Err(error) => {
-                    tracing::error!(
-                        action_id = %row.id,
-                        error = %error,
-                        "skipping scheduled action with invalid due_at"
-                    );
-                    continue;
-                }
-            };
-            let remaining = (due - now).num_seconds();
-            let mode = match ScheduleMode::parse(&row.mode) {
-                Some(mode) => mode,
-                None => {
-                    tracing::error!(
-                        action_id = %row.id,
-                        mode = %row.mode,
-                        "skipping scheduled action with invalid mode"
-                    );
-                    continue;
-                }
-            };
-            let tool_name = row.tool_name.clone();
-            let tool_args = match row.tool_args.as_deref() {
-                Some(args) => match serde_json::from_str(args) {
-                    Ok(args) => Some(args),
-                    Err(error) => {
-                        tracing::error!(
-                            action_id = %row.id,
-                            error = %error,
-                            "skipping scheduled action with invalid tool arguments"
-                        );
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            let valid_payload = match mode {
-                ScheduleMode::Tool => tool_name
-                    .as_deref()
-                    .is_some_and(|name| !name.trim().is_empty()),
-                ScheduleMode::Continue => {
-                    row.session_id
-                        .as_deref()
-                        .is_some_and(|session_id| !session_id.trim().is_empty())
-                        && row
-                            .prompt
-                            .as_deref()
-                            .is_some_and(|prompt| !prompt.trim().is_empty())
-                }
-            };
-            if !valid_payload {
-                tracing::error!(
-                    action_id = %row.id,
-                    mode = %mode.as_str(),
-                    "skipping scheduled action with missing mode-specific parameters"
-                );
-                continue;
-            }
-            let fired_payload = ScheduledActionFired {
-                action_id: row.id.clone(),
-                title: row.title.clone(),
-                body: row.body.clone(),
-                mode,
-                session_id: row.session_id.clone(),
-                tool_name: tool_name.clone(),
-                tool_args: tool_args.clone(),
-                prompt: row.prompt.clone(),
-            };
-            if remaining <= 0 {
-                // Overdue while the app was closed: fire now.
-                let entry = ScheduledActionEntry {
-                    title: row.title.clone(),
-                    body: row.body.clone(),
-                    due_at: row.due_at.clone(),
-                    mode,
-                    session_id: row.session_id.clone(),
-                    tool_name: tool_name.clone(),
-                    tool_args: tool_args.clone(),
-                    prompt: row.prompt.clone(),
-                    watch_action_id: None,
-                    fired: true,
-                };
-                if let Err(error) = self.fired_tx.send(fired_payload) {
-                    tracing::error!(
-                        action_id = %row.id,
-                        error = %error,
-                        "scheduled action completion channel is closed; keeping overdue action pending"
-                    );
-                    continue;
-                }
-                self.scheduled_actions
-                    .write()
-                    .await
-                    .insert(row.id.clone(), entry.clone());
-                self.emit_fired(&row.id, &entry);
-                let action_id = row.id.clone();
-                if let Err(e) = db
-                    .run_blocking(move |db| db.mark_scheduled_action_fired(&action_id))
-                    .await
-                {
-                    tracing::warn!(action_id = %row.id, "restore_pending: failed to persist fired state: {e}");
-                }
-                overdue += 1;
-            } else {
-                let center = self.clone();
-                let id = row.id.clone();
-                self.scheduled_actions.write().await.insert(
-                    id.clone(),
-                    ScheduledActionEntry {
-                        title: row.title.clone(),
-                        body: row.body.clone(),
-                        due_at: row.due_at.clone(),
-                        mode,
-                        session_id: row.session_id.clone(),
-                        tool_name: tool_name.clone(),
-                        tool_args: tool_args.clone(),
-                        prompt: row.prompt.clone(),
-                        watch_action_id: None,
-                        fired: false,
-                    },
-                );
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(remaining as u64)).await;
-                    center.fire_entry(&id).await;
-                });
-            }
-        }
-        overdue
-    }
-
-    /// Schedule a scheduled_action to fire at an absolute time, after a delay, or
-    /// when a background action reaches a terminal state. Exactly one of
-    /// `spec.due_at` (RFC3339, local time accepted), `spec.delay_secs` or
-    /// `spec.watch_action_id` must be given. `spec.mode` selects what happens
-    /// at fire time (see [`ScheduleMode`]).
-    ///
-    /// Returns the scheduled_action id; the timer (or action watcher) runs detached from
-    /// the ReAct loop and delivers a `ScheduledActionFired` on the channel when it
-    /// expires. Action-watch scheduled_actions are in-memory only: the watched action
-    /// cannot survive a restart, so they are not persisted.
-    pub async fn set(self: &Arc<Self>, spec: ScheduledActionSpec) -> anyhow::Result<String> {
-        let ScheduledActionSpec {
-            due_at,
-            delay_secs,
-            watch_action_id,
-            title,
-            body,
-            mode,
-            session_id,
-            tool_name,
-            tool_args,
-            prompt,
-        } = spec;
-        let watch_action_id = watch_action_id
-            .map(|w| w.trim().to_string())
-            .filter(|w| !w.is_empty());
-        if watch_action_id.is_some() && (due_at.is_some() || delay_secs.is_some()) {
-            anyhow::bail!("watch_action_id cannot be combined with due_at or delay_secs");
-        }
-        // Resolve when the scheduled_action fires. Exactly one of `due_at` /
-        // `delay_secs` / `watch_action_id` must be given; passing two timing
-        // styles is an error (silently preferring one would hide the mistake
-        // until the scheduled_action fires at the wrong time).
-        let now = chrono::Utc::now();
-        let (due, remaining) = if watch_action_id.is_some() {
-            if self.actions.lock().unwrap().is_none() {
-                anyhow::bail!(
-                    "watch_action_id requires the background-actions registry (internal error)"
-                );
-            }
-            (None::<chrono::DateTime<chrono::Utc>>, 0)
-        } else {
-            match (due_at.as_deref(), delay_secs) {
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("use exactly one of due_at or delay_secs, not both")
-                }
-                (Some(due_at), None) => {
-                    let parsed = chrono::DateTime::parse_from_rfc3339(due_at.trim())
-                        .map_err(|_| {
-                            anyhow::anyhow!(
-                                "due_at must be an ISO 8601 timestamp, e.g. 2026-08-05T15:00:00+08:00 (got '{}')",
-                                due_at
-                            )
-                        })?
-                        .with_timezone(&chrono::Utc);
-                    let remaining = (parsed - now).num_seconds();
-                    if remaining <= 0 {
-                        anyhow::bail!("due_at must be in the future");
-                    }
-                    if remaining > *self.max_due_horizon_secs.read().await {
-                        anyhow::bail!("due_at is more than 365 days in the future");
-                    }
-                    (Some(parsed), remaining)
-                }
-                (None, Some(delay)) => {
-                    if delay == 0 || delay > 86_400 {
-                        anyhow::bail!("delay_secs must be between 1 and 86400");
-                    }
-                    (
-                        Some(now + chrono::Duration::seconds(delay as i64)),
-                        delay as i64,
-                    )
-                }
-                (None, None) => {
-                    anyhow::bail!("either due_at, delay_secs or watch_action_id is required")
-                }
-            }
-        };
-        let body = body.trim().to_string();
-        if body.is_empty() {
-            anyhow::bail!("body is required");
-        }
-        let title = title.trim().to_string();
-        let title = if title.is_empty() {
-            "Haven".to_string()
-        } else {
-            title
-        };
-        let prompt = prompt
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty());
-        let tool_name = tool_name
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty());
-        if mode == ScheduleMode::Tool && tool_name.is_none() {
-            anyhow::bail!("tool_name is required when mode is 'tool'");
-        }
-
-        let id = haven_common::types::new_id("act");
-        let due_at_rfc = due.map(|d| d.to_rfc3339()).unwrap_or_default();
-        let _mutation = self.mutation_gate.lock().await;
-        let max_scheduled_actions = *self.max_scheduled_actions.read().await;
-        {
-            let mut scheduled_actions = self.scheduled_actions.write().await;
-            // Reap fired entries so they never occupy the cap.
-            scheduled_actions.retain(|_, e| !e.fired);
-            if scheduled_actions.len() >= max_scheduled_actions {
-                anyhow::bail!(
-                    "too many pending scheduled tasks (limit {}); cancel some first",
-                    max_scheduled_actions
-                );
-            }
-        }
-        // Persist BEFORE inserting into memory so a failed DB write aborts the
-        // whole `set` with an explicit error. The mutation gate keeps the cap
-        // check and insert ordered with concurrent set/cancel/fire operations;
-        // the map lock itself is not held across SQLite I/O.
-        // Action-watch scheduled_actions skip the DB entirely: the watched action
-        // cannot survive a restart, so persisting them would just leave dangling
-        // rows that restore_pending could never satisfy.
-        if watch_action_id.is_none()
-            && let Some(db) = self.db.read().await.clone()
-        {
-            let action_id = id.clone();
-            let due_at = due_at_rfc.clone();
-            let title_for_db = title.clone();
-            let body_for_db = body.clone();
-            let mode = mode.as_str().to_string();
-            let session_id = session_id.clone();
-            let tool_name = tool_name.clone();
-            let args_json = tool_args.as_ref().map(|v| v.to_string());
-            let prompt = prompt.clone();
-            db.run_blocking(move |db| {
-                db.save_scheduled_action(
-                    &action_id,
-                    &due_at,
-                    &title_for_db,
-                    &body_for_db,
-                    &mode,
-                    session_id.as_deref(),
-                    tool_name.as_deref(),
-                    args_json.as_deref(),
-                    prompt.as_deref(),
-                )
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to persist scheduled task '{}': {e}", id))?;
-        }
-        {
-            let mut scheduled_actions = self.scheduled_actions.write().await;
-            scheduled_actions.insert(
-                id.clone(),
-                ScheduledActionEntry {
-                    title: title.clone(),
-                    body: body.clone(),
-                    due_at: due_at_rfc.clone(),
-                    mode,
-                    session_id: session_id.clone(),
-                    tool_name: tool_name.clone(),
-                    tool_args: tool_args.clone(),
-                    prompt: prompt.clone(),
-                    watch_action_id: watch_action_id.clone(),
-                    fired: false,
-                },
-            );
-        }
-        self.emit(
-            "action:created",
-            serde_json::json!({
-                "id": id,
-                "title": title,
-                "body": body,
-                "mode": mode.as_str(),
-                "session_id": session_id,
-                "tool_name": tool_name,
-                "watch_action_id": watch_action_id,
-                "due_at": due_at_rfc,
-            }),
-        );
-
-        let center = self.clone();
-        let fired_id = id.clone();
-        if let Some(action_id) = watch_action_id {
-            // Condition-based wake: poll the watched action until it reaches a
-            // terminal state, then fire. Decoupled from the single completion
-            // channel the agent layer consumes.
-            tokio::spawn(async move {
-                center.watch_action_timer(fired_id, &action_id).await;
-            });
-        } else {
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(remaining.max(0) as u64)).await;
-                center.fire_entry(&fired_id).await;
-            });
-        }
-
-        Ok(id)
-    }
-
-    /// Poll the watched background action until it reaches a terminal state,
-    /// then fire the scheduled_action: the session is resumed with the action's result
-    /// (mirroring `continue`-mode payloads). `not_found` is treated as
-    /// terminal (the action finished long ago and was reaped, or never existed)
-    /// so a action-watch scheduled_action can never hang forever.
-    async fn watch_action_timer(self: &Arc<Self>, id: String, action_id: &str) {
-        let poll = Duration::from_millis(1000);
-        loop {
-            tokio::time::sleep(poll).await;
-            let Some(actions) = self.actions.lock().unwrap().clone() else {
-                return;
-            };
-            let status = actions.status(action_id).await;
-            if status["status"].as_str() == Some("running") {
-                continue;
-            }
-            let prompt = action_finished_prompt(action_id, &status);
-            let mutation = self.mutation_gate.lock().await;
-            let entry = {
-                let scheduled_actions = self.scheduled_actions.read().await;
-                let Some(entry) = scheduled_actions.get(&id) else {
-                    return;
-                };
-                if entry.fired {
-                    return;
-                }
-                entry.clone()
-            };
-            let payload = ScheduledActionFired {
-                action_id: id.clone(),
-                title: entry.title.clone(),
-                body: entry.body.clone(),
-                mode: entry.mode,
-                session_id: entry.session_id.clone(),
-                tool_name: None,
-                tool_args: None,
-                prompt: Some(prompt),
-            };
-            if let Err(error) = self.fired_tx.send(payload) {
-                tracing::error!(
-                    action_id = %id,
-                    error = %error,
-                    "watched scheduled action completion channel is closed; keeping action pending"
-                );
-                return;
-            }
-            if let Some(current) = self.scheduled_actions.write().await.get_mut(&id) {
-                current.fired = true;
-            }
-            drop(mutation);
-            self.emit_fired(&id, &entry);
-            return;
-        }
-    }
-
-    /// List pending (not yet fired) scheduled_actions, newest first.
-    pub async fn list(&self) -> Vec<Value> {
-        self.list_scoped(None).await
-    }
-
-    /// List pending scheduled actions belonging to one session. Agent-facing
-    /// callers must not see another session's prompt or tool arguments.
-    pub async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
-        self.list_scoped(Some(session_id)).await
-    }
-
-    async fn list_scoped(&self, owner: Option<&str>) -> Vec<Value> {
-        let scheduled_actions = self.scheduled_actions.read().await;
-        let mut rows: Vec<Value> = scheduled_actions
-            .iter()
-            .filter(|(_, e)| {
-                !e.fired
-                    && owner.is_none_or(|session_id| e.session_id.as_deref() == Some(session_id))
-            })
-            .map(|(id, e)| {
-                serde_json::json!({
-                    "id": id,
-                    "title": e.title,
-                    "body": e.body,
-                    "mode": e.mode.as_str(),
-                    "session_id": e.session_id,
-                    "tool_name": e.tool_name,
-                    "tool_args": e.tool_args,
-                    "prompt": e.prompt,
-                    "watch_action_id": e.watch_action_id,
-                    "due_at": e.due_at,
-                })
-            })
-            .collect();
-        rows.sort_by(|a, b| b["due_at"].as_str().cmp(&a["due_at"].as_str()));
-        rows
-    }
-
-    /// Cancel a pending scheduled_action (no-op if already fired or unknown).
-    pub async fn cancel(&self, id: &str) -> bool {
-        self.cancel_scoped(id, None).await
-    }
-
-    /// Cancel a scheduled action only when it belongs to `session_id`.
-    pub async fn cancel_for_session(&self, id: &str, session_id: &str) -> bool {
-        self.cancel_scoped(id, Some(session_id)).await
-    }
-
-    async fn cancel_scoped(&self, id: &str, owner: Option<&str>) -> bool {
-        let _mutation = self.mutation_gate.lock().await;
-        let cancelled = {
-            let mut scheduled_actions = self.scheduled_actions.write().await;
-            match scheduled_actions.get_mut(id) {
-                Some(entry)
-                    if !entry.fired
-                        && owner.is_none_or(|session_id| {
-                            entry.session_id.as_deref() == Some(session_id)
-                        }) =>
-                {
-                    entry.fired = true;
-                    true
-                }
-                _ => false,
-            }
-        };
-        if cancelled {
-            self.emit("action:updated", serde_json::json!({ "id": id }));
-            if let Some(db) = self.db.read().await.clone() {
-                let action_id = id.to_string();
-                if let Err(e) = db
-                    .run_blocking(move |db| db.delete_scheduled_action(&action_id))
-                    .await
-                {
-                    tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation: {e}");
-                }
-            }
-        }
-        cancelled
-    }
-
-    /// Cancel every pending scheduled_action owned by `session_id`. Called when the
-    /// session ends, is removed, or is rolled back so its scheduled_actions cannot
-    /// fire against a session that no longer exists.
-    pub async fn cancel_owned_by_session(&self, session_id: &str) {
-        let _mutation = self.mutation_gate.lock().await;
-        let ids: Vec<String> = {
-            let mut scheduled_actions = self.scheduled_actions.write().await;
-            let ids: Vec<String> = scheduled_actions
-                .iter()
-                .filter(|(_, e)| !e.fired && e.session_id.as_deref() == Some(session_id))
-                .map(|(id, _)| id.clone())
-                .collect();
-            for id in &ids {
-                if let Some(entry) = scheduled_actions.get_mut(id) {
-                    entry.fired = true;
-                }
-            }
-            ids
-        };
-        let db = self.db.read().await.clone();
-        for id in ids {
-            self.emit("action:updated", serde_json::json!({ "id": id }));
-            if let Some(db) = db.clone() {
-                let action_id = id.clone();
-                if let Err(e) = db
-                    .run_blocking(move |db| db.delete_scheduled_action(&action_id))
-                    .await
-                {
-                    tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation: {e}");
-                }
-            }
-        }
-    }
-}
-
-/// Build the continuation message for a fired action-watch scheduled_action: the action's
-/// terminal status and its result payload, so the resumed session continues
-/// from the actual outcome instead of a generic wake text.
-fn action_finished_prompt(action_id: &str, status: &Value) -> String {
-    let st = status["status"].as_str().unwrap_or("unknown");
-    if st == "not_found" {
-        return format!(
-            "Background action {action_id} not found (it may have finished long ago and been cleaned up, or never existed)."
-        );
-    }
-    let payload = status["output"]
-        .as_str()
-        .or_else(|| status["error_reason"].as_str())
-        .or_else(|| status["error"].as_str())
-        .unwrap_or_default();
-    format!("Background action {action_id} {st}.\nOutput:\n{payload}")
-}
-
 /// Schedule in-app scheduled_actions: set a timer that fires an action after a
 /// delay, list pending ones, or cancel one. Timers run detached from the
 /// ReAct loop, so the agent can schedule and continue working.
@@ -828,7 +83,7 @@ fn action_finished_prompt(action_id: &str, status: &Value) -> String {
 /// - `continue`: resume the session that scheduled the scheduled_action, delivering
 ///   `prompt` as the continuation instruction in the same conversation.
 pub struct ScheduledActionTool {
-    pub center: Arc<ScheduledActionCenter>,
+    pub service: Arc<ActionService>,
     /// Weak probe into the tool registry so `set` can reject unknown
     /// `tool_name` values and report the scheduled tool's risk level at
     /// schedule time. `None` in headless/test builds (checks skipped).
@@ -1007,7 +262,7 @@ impl ScheduledActionTool {
                 };
                 let prompt = params.prompt.map(|prompt| prompt.trim().to_string());
                 let id = self
-                    .center
+                    .service
                     .set(ScheduledActionSpec {
                         due_at: due_at.clone(),
                         delay_secs: delay.map(|d| d as u64),
@@ -1065,7 +320,7 @@ impl ScheduledActionTool {
                     .session_id
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("schedule list requires a session context"))?;
-                let rows = self.center.list_for_session(session_id).await;
+                let rows = self.service.list_scheduled_for_session(session_id).await;
                 Ok(ToolResult::ok(
                     serde_json::json!({ "operation": "list", "scheduled_actions": rows }),
                 ))
@@ -1078,7 +333,7 @@ impl ScheduledActionTool {
                 let id = params
                     .action_id
                     .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
-                if self.center.cancel_for_session(&id, session_id).await {
+                if self.service.cancel_for_session(&id, session_id).await {
                     Ok(ToolResult::ok(
                         serde_json::json!({ "operation": "cancel", "cancelled": id }),
                     ))
@@ -1219,12 +474,25 @@ impl Tool for ScheduledActionTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Tool, ToolRegistry};
+    use crate::{ActionCompletion, ActionCompletionReceiver, Tool, ToolRegistry};
+    use haven_memory::Database;
     use serde_json::json;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    async fn recv_scheduled(rx: &mut ActionCompletionReceiver) -> ScheduledActionFired {
+        loop {
+            match rx.recv().await {
+                Some(ActionCompletion::Scheduled(fired)) => return fired,
+                Some(ActionCompletion::Background(_)) => continue,
+                None => panic!("action completion channel closed"),
+            }
+        }
+    }
 
     fn make_tool() -> ScheduledActionTool {
         ScheduledActionTool {
-            center: Arc::new(ScheduledActionCenter::new()),
+            service: Arc::new(ActionService::new()),
             registry: None,
         }
     }
@@ -1423,7 +691,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_center_set_rejects_both_delay_and_due_at() {
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         let err = center
             .set(ScheduledActionSpec {
                 due_at: Some((chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339()),
@@ -1503,11 +771,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watch_requires_jobs_registry() {
-        // No actions registry wired (headless/test build): watch scheduled_actions fail
-        // fast instead of never firing.
-        let center = Arc::new(ScheduledActionCenter::new());
-        let err = center
+    async fn test_watch_uses_the_unified_action_service() {
+        // A dependency is owned by the same ActionService as its producer.
+        // Unknown producers are retained as an in-memory dependency and resolve
+        // to a not_found result rather than hanging forever.
+        let center = Arc::new(ActionService::new());
+        let id = center
             .set(ScheduledActionSpec {
                 due_at: None,
                 delay_secs: None,
@@ -1520,25 +789,19 @@ mod tests {
                 tool_args: None,
                 prompt: None,
             })
-            .await;
-        assert!(err.is_err());
-        let msg = format!("{}", err.unwrap_err());
-        assert!(
-            msg.contains("requires the background-actions registry"),
-            "unexpected error: {msg}"
-        );
+            .await
+            .expect("unified service accepts a dependency action");
+        assert_eq!(center.list().await[0]["watch_action_id"], "action-1");
+        assert!(id.starts_with("act-"));
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_watch_action_fires_with_result_when_action_finishes() {
-        use crate::BackgroundActions;
-        let actions = Arc::new(BackgroundActions::new());
-        let center = Arc::new(ScheduledActionCenter::new());
-        center.set_actions(Some(actions.clone()));
-        let mut rx = center.take_fired_receiver().expect("receiver available");
+        let center = Arc::new(ActionService::new());
+        let mut rx = center.take_action_receiver().expect("receiver available");
 
-        let action_id = actions
+        let action_id = center
             .spawn_shell("echo action-watch-result", "cmd", 20_000, None)
             .await
             .unwrap();
@@ -1559,10 +822,9 @@ mod tests {
             .unwrap();
 
         // Fires once the action completes, resuming the session with the result.
-        let fired = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        let fired = tokio::time::timeout(Duration::from_secs(15), recv_scheduled(&mut rx))
             .await
-            .expect("timed out waiting for action-watch fire")
-            .expect("channel closed");
+            .expect("timed out waiting for action-watch fire");
         assert_eq!(fired.action_id, id);
         assert_eq!(fired.mode, ScheduleMode::Continue);
         assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
@@ -1582,10 +844,8 @@ mod tests {
     #[tokio::test]
     async fn test_watch_action_not_persisted_to_db() {
         let (db, _dir) = test_db();
-        let actions = Arc::new(crate::BackgroundActions::new());
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         center.set_db(Some(db.clone())).await;
-        center.set_actions(Some(actions));
         center
             .set(ScheduledActionSpec {
                 due_at: None,
@@ -1648,7 +908,7 @@ mod tests {
             .await
             .unwrap();
         let tool = ScheduledActionTool {
-            center: Arc::new(ScheduledActionCenter::new()),
+            service: Arc::new(ActionService::new()),
             registry: Some(registry.probe()),
         };
         // A typo'd tool name fails at schedule time instead of at fire time.
@@ -1705,7 +965,7 @@ mod tests {
             .await
             .unwrap();
         let tool = ScheduledActionTool {
-            center: Arc::new(ScheduledActionCenter::new()),
+            service: Arc::new(ActionService::new()),
             registry: Some(registry.probe()),
         };
         // High-risk scheduled tool: flagged so the user knows the fire-time
@@ -1748,9 +1008,9 @@ mod tests {
     #[tokio::test]
     async fn test_set_with_due_at_and_prompt() {
         let (db, _dir) = test_db();
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         center.set_db(Some(db.clone())).await;
-        let mut rx = center.take_fired_receiver().expect("receiver available");
+        let mut rx = center.take_action_receiver().expect("receiver available");
 
         // Absolute time 2s out, continue mode with a wake prompt.
         let due = (chrono::Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
@@ -1778,10 +1038,9 @@ mod tests {
         assert_eq!(pending[0].prompt.as_deref(), Some("check the weather"));
 
         // Fires with the payload attached.
-        let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
-            .expect("timed out waiting for scheduled_action")
-            .expect("channel closed");
+            .expect("timed out waiting for scheduled_action");
         assert_eq!(fired.action_id, id);
         assert_eq!(fired.mode, ScheduleMode::Continue);
         assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
@@ -1793,9 +1052,9 @@ mod tests {
     #[tokio::test]
     async fn test_set_tool_mode_records_call_and_fires() {
         let (db, _dir) = test_db();
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         center.set_db(Some(db.clone())).await;
-        let mut rx = center.take_fired_receiver().expect("receiver available");
+        let mut rx = center.take_action_receiver().expect("receiver available");
 
         let id = center
             .set(ScheduledActionSpec {
@@ -1820,10 +1079,9 @@ mod tests {
         assert!(pending[0].tool_args.as_deref().unwrap().contains("C:/x"));
 
         // Fires with the payload attached.
-        let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
-            .expect("timed out waiting for scheduled_action")
-            .expect("channel closed");
+            .expect("timed out waiting for scheduled_action");
         assert_eq!(fired.action_id, id);
         assert_eq!(fired.mode, ScheduleMode::Tool);
         assert_eq!(fired.tool_name.as_deref(), Some("files"));
@@ -1939,17 +1197,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_fires_and_delivers() {
-        let center = Arc::new(ScheduledActionCenter::new());
-        let mut rx = center.take_fired_receiver().expect("receiver available");
+        let center = Arc::new(ActionService::new());
+        let mut rx = center.take_action_receiver().expect("receiver available");
         let tool = ScheduledActionTool {
-            center: center.clone(),
+            service: center.clone(),
             registry: None,
         };
         let id = center.set(tool_spec(1, "Test", "fire now")).await.unwrap();
-        let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
-            .expect("timed out waiting for scheduled_action")
-            .expect("channel closed");
+            .expect("timed out waiting for scheduled_action");
         assert_eq!(fired.action_id, id);
         assert_eq!(fired.mode, ScheduleMode::Tool);
         assert_eq!(fired.tool_name.as_deref(), Some("notify"));
@@ -1974,9 +1231,9 @@ mod tests {
     #[tokio::test]
     async fn test_restore_pending_rearms_and_fires_overdue() {
         let (db, _dir) = test_db();
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         center.set_db(Some(db.clone())).await;
-        let mut rx = center.take_fired_receiver().expect("receiver available");
+        let mut rx = center.take_action_receiver().expect("receiver available");
 
         // A future scheduled_action (5s out) and an overdue one (already past).
         let future_id = center.set(tool_spec(5, "Future", "later")).await.unwrap();
@@ -1995,17 +1252,16 @@ mod tests {
         .unwrap();
 
         // A fresh center (simulating app restart) restores from the DB.
-        let restored = Arc::new(ScheduledActionCenter::new());
+        let restored = Arc::new(ActionService::new());
         restored.set_db(Some(db.clone())).await;
-        let mut rx2 = restored.take_fired_receiver().expect("receiver available");
+        let mut rx2 = restored.take_action_receiver().expect("receiver available");
         let overdue_count = restored.restore_pending().await;
         assert_eq!(overdue_count, 1, "exactly one scheduled_action was overdue");
 
         // Overdue scheduled_action fired immediately with its mode payload.
-        let fired = tokio::time::timeout(Duration::from_secs(5), rx2.recv())
+        let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx2))
             .await
-            .expect("timed out waiting for overdue fire")
-            .expect("channel closed");
+            .expect("timed out waiting for overdue fire");
         assert_eq!(fired.action_id, overdue_id);
         assert_eq!(fired.title, "Overdue");
         assert_eq!(fired.mode, ScheduleMode::Continue);
@@ -2013,10 +1269,9 @@ mod tests {
         assert_eq!(fired.prompt.as_deref(), Some("keep going"));
 
         // Future scheduled_action re-armed and fires after its remaining delay.
-        let fired = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        let fired = tokio::time::timeout(Duration::from_secs(10), recv_scheduled(&mut rx))
             .await
-            .expect("timed out waiting for future fire")
-            .expect("channel closed");
+            .expect("timed out waiting for future fire");
         assert_eq!(fired.action_id, future_id);
 
         // Both are marked fired in the DB; pending list is empty.
@@ -2026,7 +1281,7 @@ mod tests {
     #[tokio::test]
     async fn test_restore_pending_skips_corrupt_rows_without_defaults() {
         let (db, _dir) = test_db();
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         center.set_db(Some(db.clone())).await;
 
         db.save_scheduled_action(
@@ -2074,7 +1329,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_set_persists_to_db() {
         let (db, _dir) = test_db();
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         center.set_db(Some(db.clone())).await;
         let id = center.set(tool_spec(3600, "Drink", "water")).await.unwrap();
         let pending = db.list_pending_scheduled_actions().unwrap();
@@ -2099,13 +1354,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_sink_receives_set_fire_cancel() {
-        let center = Arc::new(ScheduledActionCenter::new());
+        let center = Arc::new(ActionService::new());
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink_events = events.clone();
         center.set_event_sink(Arc::new(move |name, payload| {
             sink_events.lock().unwrap().push((name, payload));
         }));
-        let mut rx = center.take_fired_receiver().expect("receiver available");
+        let mut rx = center.take_action_receiver().expect("receiver available");
 
         // set -> action:created event with the payload.
         let id = center.set(tool_spec(1, "Evt", "fire me")).await.unwrap();
@@ -2121,10 +1376,9 @@ mod tests {
         }
 
         // Fire -> action:finished event.
-        let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
-            .expect("timed out waiting for fire")
-            .expect("channel closed");
+            .expect("timed out waiting for fire");
         assert_eq!(fired.action_id, id);
         {
             let evs = events.lock().unwrap();

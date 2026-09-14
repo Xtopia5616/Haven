@@ -211,28 +211,13 @@ pub(crate) fn run() {
             // actions use one stable `id` field and never expose dynamic tool
             // args, continuation prompts, or output-log paths.
             let action_sink_handle = handle.clone();
-            state.tools.background_actions.set_event_sink(Arc::new(
+            state.tools.action_service.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
-                    emit_action_event(
-                        &action_sink_handle,
-                        ActionKind::Background,
-                        &event,
-                        &payload,
-                    );
-                },
-            ));
-
-            // Same for scheduled_actions, so the pending list in the action panel
-            // stays live and fired scheduled_actions can be acknowledged.
-            let reminder_sink_handle = handle.clone();
-            state.tools.scheduled_actions.set_event_sink(Arc::new(
-                move |event: String, payload: serde_json::Value| {
-                    emit_action_event(
-                        &reminder_sink_handle,
-                        ActionKind::Scheduled,
-                        &event,
-                        &payload,
-                    );
+                    let kind = match payload.get("kind").and_then(|value| value.as_str()) {
+                        Some("scheduled") => ActionKind::Scheduled,
+                        _ => ActionKind::Background,
+                    };
+                    emit_action_event(&action_sink_handle, kind, &event, &payload);
                 },
             ));
 

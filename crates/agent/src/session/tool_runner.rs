@@ -613,7 +613,7 @@ impl SessionExecutor {
         for reg in &registrations {
             if let haven_tools::ToolRegistration::Action(action_id) = reg {
                 self.tools
-                    .background_actions
+                    .action_service
                     .attach_session(action_id, session_id)
                     .await;
             }

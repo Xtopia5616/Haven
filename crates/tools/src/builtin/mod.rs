@@ -37,7 +37,6 @@ use tokio::sync::RwLock;
 
 use self::operation_contract::operation_contract;
 use crate::ActionService;
-use crate::BackgroundActions;
 use crate::ToolRegistry;
 use crate::operation_view::{
     OperationSpec, OperationViewRiskRule, OperationViewTool, split_operation_schema,
@@ -99,9 +98,7 @@ pub use messaging::{
     AgentControllerSlot, AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot,
     new_agent_controller_slot, new_agent_spawner_slot,
 };
-pub use scheduled_action::{
-    ScheduleMode, ScheduledActionCenter, ScheduledActionFired, ScheduledActionTool,
-};
+pub use scheduled_action::{ScheduleMode, ScheduledActionFired, ScheduledActionTool};
 pub use self_tool::{SelfOperation, SelfParams, SelfTool, SelfToolContext};
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
@@ -135,12 +132,10 @@ pub struct MediaDeps {
 }
 
 /// Long-running action dependencies. Background processes and scheduled
-/// timers intentionally remain separate implementations, but share their
-/// registries and event/output plumbing through this group.
+/// timers are admitted and transitioned by the same ActionService state
+/// machine; only their short-lived workers differ.
 pub struct ActionDeps {
-    pub background: Arc<BackgroundActions>,
     pub live_outputs: Arc<crate::live_output::LiveOutputHub>,
-    pub scheduled: Arc<ScheduledActionCenter>,
     pub service: Arc<ActionService>,
 }
 
@@ -201,9 +196,7 @@ pub async fn register_builtin_tools(
             },
         actions:
             ActionDeps {
-                background: background_actions,
                 live_outputs,
-                scheduled: scheduled_actions,
                 service: action_service,
             },
     } = context;
@@ -307,18 +300,17 @@ pub async fn register_builtin_tools(
         .with_managed_assets(managed_assets.clone()),
     );
     tools.push(Arc::new(shell::ShellTool {
-        actions: background_actions.clone(),
+        actions: action_service.clone(),
         live_outputs,
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
     }));
     let actions_tool: ToolBox = Arc::new(actions::ActionsTool {
-        actions: background_actions,
-        service: Some(action_service),
+        actions: action_service.clone(),
     });
     let input_tool: ToolBox = Arc::new(input::InputTool);
     let schedule_tool: ToolBox = Arc::new(scheduled_action::ScheduledActionTool {
-        center: scheduled_actions,
+        service: action_service,
         // Weak registry probe so `set` can validate tool_name / risk at
         // schedule time; taken before `registry` is moved into SelfTool.
         registry: Some(registry.probe()),
@@ -1273,7 +1265,7 @@ mod tests {
         let system = system::SystemTool::default();
         let window = window::WindowTool::new(crate::ManagedAssetRegistry::default());
         let schedule = scheduled_action::ScheduledActionTool {
-            center: Arc::new(scheduled_action::ScheduledActionCenter::new()),
+            service: Arc::new(ActionService::new()),
             registry: None,
         };
         let cases: Vec<(&dyn Tool, serde_json::Value, serde_json::Value)> = vec![

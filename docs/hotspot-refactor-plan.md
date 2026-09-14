@@ -44,7 +44,7 @@
 |---|---:|---|
 | Agent 集成测试 | 入口 `integration_tests.rs` 31 行；8 个测试模块合计约 5,002 行 | 阶段 A 已完成；保持测试入口和共享 support 稳定 |
 | MCP 拆分模块 | `protocol` 265、`transport` 390、`client` 792、`manager` 433、`sse` 163，合计约 2,055 行 | 阶段 B 已完成；`client.rs` 接近热点阈值，后续仅在职责继续增长时拆分 |
-| Tools shell/background | `shell_runtime` 207、`background_actions` 959、`output` 390、`process` 128，合计约 1,684 行 | 阶段 C 已完成；ActionService 的状态机统一仍属于战略后续 |
+| Tools shell/background | `shell_runtime` 207、`action_service` 1,895、`output` 390、`process` 128，合计约 2,620 行 | 阶段 C 已完成；ActionService 状态机统一已完成，后续只收窄内部 worker 边界 |
 | Tool contract / registry / security | 1,737 / 434 / 1,912 行，合计约 4,083 行 | 阶段 D 的边界拆分已完成；`tool_contract` 与 `security` 仍由 TypedToolOperation / AuthorizationEngine 后续任务继续收窄 |
 | app-binary 组合根拆分模块 | `event_bridge` 581、`handlers` 242、`bootstrap` 737、`lib` 21，合计约 1,581 行 | 阶段 E 已完成；`event_bridge` 是当前唯一事件映射边界 |
 | UI 视图 | `SettingsView` 1,118、`ModelSettings` 916、`MemoryView` 767 行 | 阶段 F 已完成；ModelSettings 的 provider discovery/CRUD 边界仍有意保留 |
@@ -198,7 +198,7 @@ InteractionRequest {
 
 ### D. P1：把 background action 与 scheduled action 合并成真正的 `ActionService`
 
-数据库已经用 `actions.kind` 区分 `background` / `scheduled`，但运行时仍是 [`crates/tools/src/background_actions.rs`](../crates/tools/src/background_actions.rs) 的 `BackgroundActions` 加上 [`crates/tools/src/builtin/scheduled_action.rs`](../crates/tools/src/builtin/scheduled_action.rs) 的 `ScheduledActionCenter` 两套状态机；它们再通过 `set_actions`、DB setter、事件 sink、agent consumer 和 fired/completion channel 互相接线。
+数据库已经用 `actions.kind` 区分 `background` / `scheduled`。运行时已收敛到 [`crates/tools/src/action_service.rs`](../crates/tools/src/action_service.rs) 的单一 `ActionService` 状态机；shell 进程、定时器和 action dependency 共用一个 action map、生命周期 sink 与 completion bus。
 
 建议把 action 统一成一个持久化状态机：
 
@@ -210,9 +210,9 @@ Pending → Running → Succeeded | Failed | Cancelled | Expired
 
 shell 后台执行、定时触发、等待另一个 action、完成后唤醒会话都只是不同的 `ActionSpec` / worker，不再是两套 registry。`actions` 表成为状态权威，内存 worker 只是执行句柄和短期输出缓存。这样可以统一重启恢复、取消、权限、历史、通知和 UI action board，也能消除 `session_id=None`/`prompt` 回退等旧语义。
 
-第一阶段已提供 `haven-tools::ActionService` 门面，并让 `actions.*` 与 app action board 使用统一的规范化
-task row、session-scoped status 和 cancel 路径。两个 worker 的持久化状态机合并、重启恢复和事件通道收敛
-仍属于后续阶段，完成后应删除本门面中的双 registry 适配代码。
+该项已完成：`actions.*`、app action board、agent completion、session cleanup 和重启恢复都通过
+`ActionService` 的统一 row/status/cancel/restore 入口；`BackgroundActions` 与
+`ScheduledActionCenter` 的旧 registry 实现已删除。
 
 ### E. P1：收窄 `ToolsManager`，删除 callback service locator
 
@@ -366,8 +366,8 @@ task row、session-scoped status 和 cancel 路径。两个 worker 的持久化�
    - 必须保留：数据版本边界、可验证 migration/reset、事务一致性、敏感记忆过滤、embedding 生命周期和用户可见数据删除语义。
 
 4. **Windows shell/process：shell runtime 与后台进程生命周期**
-   - 目标：可以重做 command plan、process handle、输出流、取消/终止、超时和 action 状态机，最终与统一 `ActionService` 对接；不把“后台 shell”继续当成一套特殊的内存 registry。
-   - 可以删除：当前 `BackgroundActions` 的内部状态组织、事件 sink/channel 交叉接线和与 scheduled action 分离的运行时模型。
+   - 目标：可以继续收窄 command plan、process handle、输出流、取消/终止和超时 worker；动作生命周期已经由统一 `ActionService` 承担，不把“后台 shell”当成一套特殊的内存 registry。
+   - 已删除：`BackgroundActions` 的内部状态组织、事件 sink/channel 交叉接线和与 scheduled action 分离的运行时模型。
    - 必须保留：`CREATE_NO_WINDOW`、PowerShell 编码、GBK/CLIXML 解码、输出上限、进程树终止、取消竞态、超时未知终态和 Windows 负向测试。
 
 ### 后续任务拆分建议
@@ -588,12 +588,12 @@ cargo test --locked -p haven-tools --test mcp_integration
 
 ### 阶段 C：拆后台任务与 shell 辅助模块
 
-目标：[crates/tools/src/background_actions.rs](../crates/tools/src/background_actions.rs)
+目标：[crates/tools/src/action_service.rs](../crates/tools/src/action_service.rs)
 
-- 当前规模：拆分后的 shell/background/process 模块合计约 1,684 行，其中 `background_actions.rs` 约 959 行。
+- 当前规模：拆分后的 shell/action/output/process 模块合计约 2,620 行，其中 `action_service.rs` 约 1,895 行。
 - 建议按以下边界拆分：
   - `shell_runtime.rs`：shell 命令构造、PowerShell 编码、代理探测、输出日志路径
-  - `background_actions.rs`：`BackgroundActions`、状态机、action registry、事件 sink
+  - `action_service.rs`：统一 `ActionService`、动作状态机、action registry、事件 sink 与 completion bus
   - `output.rs`：输出收集、UTF-8/GBK 处理、CLIXML/ANSI 清洗、错误摘要和 Windows 诊断
   - 必要时再把进程树终止和 live tail 读取放到 `process.rs`
 - 旧 `bg.rs` facade 已删除；workspace 调用方直接依赖拆分后的模块或 crate-root 导出，不再新增兼容路径。
@@ -608,10 +608,12 @@ cargo test --locked -p haven-tools
 cargo clippy --workspace --locked -- -D warnings
 ```
 
-2026-09-02 已完成阶段 C 的拆分：shell runtime、background actions、output 清洗和进程/流处理
-分别迁入 `shell_runtime.rs`、`background_actions.rs`、`output.rs`、`process.rs`，原有
+2026-09-02 已完成阶段 C 的拆分：shell runtime、action service、output 清洗和进程/流处理
+分别位于 `shell_runtime.rs`、`action_service.rs`、`output.rs`、`process.rs`，原有
 测试按职责拆分且数量保持不变。workspace 内调用点已全部离开 `crate::bg`。
 2026-09-05 完成阶段 C 收尾：旧公共路径薄 re-export facade 已删除，不再保留过渡模块（ADR 0082）。
+2026-09-14 完成动作生命周期统一：`BackgroundActions` 与 `ScheduledActionCenter` 已删除，
+所有 action kind 共用 `ActionService` 的 map、状态转移、持久化、取消、恢复和 completion bus。
 
 ### 阶段 D：拆 Tool contract、registry 和安全网关
 

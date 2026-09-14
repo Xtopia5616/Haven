@@ -2,7 +2,6 @@ mod action_lifecycle;
 mod action_service;
 pub mod adapters;
 mod asset_registry;
-mod background_actions;
 pub mod builtin;
 pub mod circuit;
 mod document;
@@ -108,9 +107,12 @@ pub struct RuntimeCapabilities {
 
 pub(crate) use action_lifecycle::{ActionLifecycle, EventSinkState};
 pub use action_service::ActionService;
+pub use action_service::{
+    ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, EventSink,
+    ScheduledActionFired,
+};
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
-pub use background_actions::{BackgroundActionCompletion, BackgroundActions, EventSink};
 pub use builtin::{
     AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentControlOperation,
     AgentControlRequest, AgentControlResult, AgentController, AgentControllerSlot,
@@ -380,16 +382,10 @@ pub struct ToolsManager {
     /// summarization uses the SmallModel role, image understanding uses the
     /// ImageModel role; the router handles retries for the selected endpoint.
     router: RwLock<Option<Arc<LlmRouter>>>,
-    /// Registry of background actions (shell with background: true).
-    pub background_actions: Arc<BackgroundActions>,
+    /// Unified owner of background processes and scheduled/dependency actions.
+    pub action_service: Arc<ActionService>,
     /// Live stdout/stderr previews for foreground tools (shell).
     pub live_outputs: Arc<live_output::LiveOutputHub>,
-    /// Registry of in-process scheduled actions (the `schedule` tool). The fired
-    /// channel is consumed by the agent layer, which notifies, runs the
-    /// scheduled tool, or resumes the scheduling session (see `ScheduleMode`).
-    pub scheduled_actions: Arc<builtin::scheduled_action::ScheduledActionCenter>,
-    /// Unified model-facing task query/control facade.
-    pub action_service: Arc<ActionService>,
     /// App-level dependencies for the native admin surface (config loader,
     /// DB, router, log file). Wired in by the desktop shell; `None` in
     /// headless tests so the admin capabilities are not registered.
@@ -430,16 +426,8 @@ impl ToolsManager {
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
         let registry = ToolRegistry::new();
-        let background_actions = Arc::new(BackgroundActions::new());
         let live_outputs = Arc::new(live_output::LiveOutputHub::new());
-        let scheduled_actions = Arc::new(builtin::scheduled_action::ScheduledActionCenter::new());
-        let action_service = Arc::new(ActionService::new(
-            background_actions.clone(),
-            scheduled_actions.clone(),
-        ));
-        // Wire the background-action registry into the scheduled_action center so
-        // `watch_action_id` scheduled_actions can wait for a action to finish.
-        scheduled_actions.set_actions(Some(background_actions.clone()));
+        let action_service = Arc::new(ActionService::new());
         Self {
             registry,
             mcp_manager: McpManager::new(),
@@ -459,9 +447,7 @@ impl ToolsManager {
             session_catalog: SessionCatalog::new(),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
-            background_actions,
             live_outputs,
-            scheduled_actions,
             action_service,
             self_context: RwLock::new(None),
             admin_surface: RwLock::new(None),
@@ -697,9 +683,8 @@ impl ToolsManager {
         *self.default_shell.write().await = default_shell;
         self.mcp_manager.set_limits(&context_limits).await;
         self.skills_engine.set_limits(&context_limits).await;
-        self.background_actions.set_limits(&context_limits).await;
+        self.action_service.set_limits(&context_limits).await;
         self.live_outputs.set_limits(&context_limits).await;
-        self.scheduled_actions.set_limits(&context_limits).await;
         *self.context_limits.write().await = context_limits;
         self.apply_security(&security).await;
         self.authorization.set_tool_settings(tool_settings).await;
@@ -710,12 +695,7 @@ impl ToolsManager {
         *self.ocr_client.write().await = ocr_client;
         *self.image_gen_client.write().await = image_gen_client;
         *self.tts_client.write().await = tts_client;
-        self.scheduled_actions
-            .set_db(admin_context.db.clone())
-            .await;
-        self.background_actions
-            .set_db(admin_context.db.clone())
-            .await;
+        self.action_service.set_db(admin_context.db.clone()).await;
         *self.self_context.write().await = Some(admin_context);
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
@@ -734,11 +714,10 @@ impl ToolsManager {
     /// Wire the app-level context for the native admin surface. Called by the
     /// desktop shell after the config loader exists; later catalog rebuilds
     /// keep the capability-scoped adapters registered. Also hands the DB to
-    /// the scheduled-action registry and the background-action registry so scheduled_actions and
-    /// action results persist across restarts.
+    /// the unified action state machine so timer and process action results
+    /// persist across restarts.
     pub async fn set_admin_context(&self, ctx: builtin::SelfToolContext) {
-        self.scheduled_actions.set_db(ctx.db.clone()).await;
-        self.background_actions.set_db(ctx.db.clone()).await;
+        self.action_service.set_db(ctx.db.clone()).await;
         *self.self_context.write().await = Some(ctx);
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
@@ -792,9 +771,8 @@ impl ToolsManager {
     pub async fn set_context_limits(&self, limits: ContextLimitsConfig) {
         self.mcp_manager.set_limits(&limits).await;
         self.skills_engine.set_limits(&limits).await;
-        self.background_actions.set_limits(&limits).await;
+        self.action_service.set_limits(&limits).await;
         self.live_outputs.set_limits(&limits).await;
-        self.scheduled_actions.set_limits(&limits).await;
         *self.context_limits.write().await = limits;
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
@@ -983,9 +961,7 @@ impl ToolsManager {
                     config: media_config,
                 },
                 actions: builtin::ActionDeps {
-                    background: self.background_actions.clone(),
                     live_outputs: self.live_outputs.clone(),
-                    scheduled: self.scheduled_actions.clone(),
                     service: self.action_service.clone(),
                 },
             },

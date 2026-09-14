@@ -1,167 +1,1752 @@
-//! Unified task facade for background and scheduled actions.
-//!
-//! The two runtimes intentionally keep their own execution mechanics, but
-//! callers must not need to know which state machine owns an `act-*` id.  This
-//! facade is the single model-facing query/control boundary.
-
-use crate::BackgroundActions;
-use crate::builtin::ScheduledActionCenter;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+use tokio::sync::{RwLock, broadcast, oneshot};
+use tracing::Instrument;
 
-#[derive(Clone)]
+use crate::ActionLifecycle;
+
+fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        tracing::error!(
+            lock = name,
+            "background action lock poisoned; recovering state"
+        );
+        poisoned.into_inner()
+    })
+}
+
+use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
+use crate::process::{kill_process_tree, read_stream_capped, take_tail_if_changed};
+use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_log};
+use haven_memory::Database;
+
+/// A background action that has reached a terminal state, surfaced to a consumer
+/// (the agent layer) so the owning session can be auto-notified of the result
+/// instead of the model having to poll `status`.
+#[derive(Clone, Debug)]
+pub struct BackgroundActionCompletion {
+    pub action_id: String,
+    pub session_id: Option<String>,
+    /// Terminal status string: "completed", "failed", or "cancelled".
+    pub status: String,
+    /// The action's status JSON (same shape `status()` returns for terminal
+    /// states), carrying the output/error payload.
+    pub status_json: Value,
+}
+
+/// A scheduled action that reached its fire transition.  The agent consumes
+/// this through the same bus as process completions, so timer delivery cannot
+/// bypass the action state machine.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ScheduledActionFired {
+    pub action_id: String,
+    pub title: String,
+    pub body: String,
+    pub mode: crate::builtin::scheduled_action::ScheduleMode,
+    pub session_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_args: Option<Value>,
+    pub prompt: Option<String>,
+}
+
+/// One completion stream for every action kind.
+#[derive(Clone, Debug)]
+pub enum ActionCompletion {
+    Background(BackgroundActionCompletion),
+    Scheduled(ScheduledActionFired),
+}
+
+/// Receiver for the unified action completion stream.
+pub struct ActionCompletionReceiver {
+    rx: broadcast::Receiver<ActionCompletion>,
+}
+
+impl ActionCompletionReceiver {
+    pub async fn recv(&mut self) -> Option<ActionCompletion> {
+        loop {
+            match self.rx.recv().await {
+                Ok(event) => return Some(event),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "action completion receiver lagged")
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
+/// Optional sink for action lifecycle events surfaced to the UI. The
+/// sink is called with `(event, payload)` where event is one of:
+/// - `action:created`  — a action was spawned
+///   `{ action_id, status: "running", kind: "background", started_at }`
+/// - `action:updated`  — the action was bound to a session `{ action_id, session_id }`
+/// - `action:output`   — live output preview while the action runs
+///   `{ action_id, status: "running", output }` (bounded tail, emitted periodically)
+/// - `action:finished` — the action reached a terminal state (full status
+///   JSON, which already carries `action_id`, `status`, and the output/error
+///   payload)
+///
+/// Scheduled actions use the same callback shape and sink.
+pub use crate::action_lifecycle::EventSink;
+
+#[derive(Clone, Debug)]
+enum ActionState {
+    /// A timer/dependency action is admitted but has not started its fire
+    /// transition yet.
+    Waiting {
+        due_at: String,
+    },
+    Running {
+        started_at: String,
+    },
+    Completed {
+        output: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+        /// Path to the full-output log file (written when output was capped).
+        log_path: Option<String>,
+        started_at: String,
+        finished_at: String,
+    },
+    Failed {
+        error: String,
+        error_reason: String,
+        /// Path to the full-output log file (always written for failures so
+        /// the root cause survives the condensed `error_reason`).
+        log_path: Option<String>,
+        exit_code: Option<i32>,
+        started_at: String,
+        finished_at: String,
+    },
+    Cancelled {
+        started_at: String,
+        finished_at: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionKind {
+    Background,
+    Scheduled,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScheduledActionEntry {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) due_at: String,
+    pub(crate) mode: crate::builtin::scheduled_action::ScheduleMode,
+    pub(crate) session_id: Option<String>,
+    pub(crate) tool_name: Option<String>,
+    pub(crate) tool_args: Option<Value>,
+    pub(crate) prompt: Option<String>,
+    pub(crate) watch_action_id: Option<String>,
+    pub(crate) fired: bool,
+}
+
+impl ActionState {
+    fn is_terminal(&self) -> bool {
+        !matches!(
+            self,
+            ActionState::Running { .. } | ActionState::Waiting { .. }
+        )
+    }
+}
+
+struct ActionEntry {
+    kind: ActionKind,
+    session_id: Option<String>,
+    state: ActionState,
+    /// Kill signal for the running child process.
+    kill: Option<oneshot::Sender<()>>,
+    /// Bounded tail of the combined live output, for `action:output` preview
+    /// events while the action runs. `None` for terminal entries.
+    tail: Option<Arc<Mutex<String>>>,
+    /// The shell command this action is executing (surfaced in running status so
+    /// the agent can see what the action is doing right now).
+    command: String,
+    /// Interpreter the command runs under ("cmd", "powershell", "bash", ...).
+    shell: String,
+    /// Timer/dependency spec for scheduled actions.  Both process and timer
+    /// actions live in the same map; only their worker-specific spec differs.
+    scheduled: Option<ScheduledActionEntry>,
+}
+
+/// True when a terminal entry has outlived the configured terminal-action TTL
+/// (running entries are never stale). Entries with an unparseable
+/// `finished_at` are kept (never wrongly reaped).
+fn terminal_entry_stale(entry: &ActionEntry, ttl: Duration) -> bool {
+    let finished = match &entry.state {
+        ActionState::Completed { finished_at, .. }
+        | ActionState::Failed { finished_at, .. }
+        | ActionState::Cancelled { finished_at, .. } => finished_at,
+        ActionState::Running { .. } | ActionState::Waiting { .. } => return false,
+    };
+    let finished_ts = match chrono::DateTime::parse_from_rfc3339(finished) {
+        Ok(t) => t.with_timezone(&chrono::Utc),
+        Err(e) => {
+            tracing::warn!(
+                "terminal_entry_stale: unparseable finished_at '{}': {}",
+                finished,
+                e
+            );
+            return false;
+        }
+    };
+    let Ok(ttl) = chrono::Duration::from_std(ttl) else {
+        // An unrepresentable duration is effectively infinite from the
+        // action registry's perspective; retain the entry rather than panic
+        // during cleanup.
+        return false;
+    };
+    chrono::Utc::now() - finished_ts > ttl
+}
+
+/// Unified state machine and runtime registry for every action kind.
+///
+/// A process action is spawned with `spawn_shell`, runs detached from the ReAct
+/// loop, and is polled with `status`. Timer and dependency actions enter the
+/// same map in `Waiting`, then use the same cancellation, ownership, lifecycle
+/// and completion paths.
+///
+/// When an action reaches a terminal state, its typed completion is sent on the
+/// unified completion bus so the agent layer can auto-inject the result into
+/// the owning session's context without model polling.
 pub struct ActionService {
-    background: Arc<BackgroundActions>,
-    scheduled: Arc<ScheduledActionCenter>,
+    actions: RwLock<HashMap<String, ActionEntry>>,
+    /// Serializes spawn admission and durable registration. An action is not
+    /// visible to cancellation until its `running` row is durable, avoiding
+    /// orphaned DB rows or processes across the spawn failure window.
+    spawn_gate: tokio::sync::Mutex<()>,
+    /// One bus for process completions and timer fires. Consumers may filter
+    /// their subscription by variant, but no action kind owns a second bus.
+    completion_tx: broadcast::Sender<ActionCompletion>,
+    /// Max concurrent *running* actions (from `context_limits.background_max_actions`).
+    max_actions: RwLock<usize>,
+    /// Live-output tail cap (chars) for `action:output` preview events (from
+    /// `context_limits.background_job_tail_max_chars`).
+    job_tail_max_chars: RwLock<usize>,
+    /// Cadence of `action:output` events while a action produces output (from
+    /// `context_limits.background_job_output_emit_interval_ms`).
+    job_output_emit_interval: RwLock<Duration>,
+    /// Terminal actions stay on the board this long, then are reaped (from
+    /// `context_limits.terminal_job_ttl_secs`).
+    terminal_job_ttl: RwLock<Duration>,
+    /// Max pending timer/dependency actions.
+    max_scheduled_actions: RwLock<usize>,
+    /// Upper bound for absolute timer schedules.
+    max_due_horizon_secs: RwLock<i64>,
+    /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
+    /// to forward lifecycle events as Tauri events.
+    event_sink: ActionLifecycle,
+    /// Persistent store; `None` in headless/test builds (in-memory only).
+    /// Terminal action rows stay here as history even after the in-memory board
+    /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
+    db: RwLock<Option<Arc<Database>>>,
+}
+
+impl Default for ActionService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ActionService {
-    pub fn new(background: Arc<BackgroundActions>, scheduled: Arc<ScheduledActionCenter>) -> Self {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(256);
         Self {
-            background,
-            scheduled,
+            actions: RwLock::new(HashMap::new()),
+            spawn_gate: tokio::sync::Mutex::new(()),
+            completion_tx: tx,
+            max_actions: RwLock::new(64),
+            job_tail_max_chars: RwLock::new(2000),
+            job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
+            terminal_job_ttl: RwLock::new(Duration::from_secs(600)),
+            max_scheduled_actions: RwLock::new(32),
+            max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
+            event_sink: ActionLifecycle::default(),
+            db: RwLock::new(None),
         }
     }
 
-    pub fn background(&self) -> &Arc<BackgroundActions> {
-        &self.background
+    /// Unified completion receiver consumed by the agent layer.
+    pub fn take_action_receiver(&self) -> Option<ActionCompletionReceiver> {
+        Some(ActionCompletionReceiver {
+            rx: self.completion_tx.subscribe(),
+        })
     }
 
-    pub fn scheduled(&self) -> &Arc<ScheduledActionCenter> {
-        &self.scheduled
+    /// Install the UI event sink (called once by the desktop shell).
+    pub fn set_event_sink(&self, sink: EventSink) {
+        self.event_sink.set_event_sink(sink);
     }
 
-    /// Return the normalized task board used by the app shell.
-    ///
-    /// This is intentionally broader than `list_for_session`: the desktop
-    /// task panel is allowed to see the complete local board, while model
-    /// callers must use the session-scoped method below.
+    /// Forward a lifecycle event to the installed sink (no-op without one).
+    fn emit(&self, event: &str, payload: Value) {
+        self.event_sink.emit(event, payload);
+    }
+
+    /// Replace the unified context limits (background action concurrency cap,
+    /// live-output tail size, output-event cadence, terminal-action TTL).
+    pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
+        *self.max_actions.write().await = limits.background_max_actions;
+        *self.job_tail_max_chars.write().await = limits.background_job_tail_max_chars;
+        *self.job_output_emit_interval.write().await =
+            Duration::from_millis(limits.background_job_output_emit_interval_ms);
+        *self.terminal_job_ttl.write().await = Duration::from_secs(limits.terminal_job_ttl_secs);
+        *self.max_scheduled_actions.write().await = limits.scheduled_actions_max;
+        *self.max_due_horizon_secs.write().await = limits.scheduled_actions_due_horizon_secs;
+    }
+
+    /// Attach the database used for persistence. Wired by the desktop shell;
+    /// headless tests skip it.
+    pub async fn set_db(&self, db: Option<Arc<Database>>) {
+        *self.db.write().await = db;
+    }
+
+    /// Post-restart cleanup: action rows a previous process left `running` are
+    /// stale (their child processes died with the app), so mark them failed.
+    /// Called once from the agent layer startup. Returns the number of rows
+    /// marked. Idempotent.
+    pub async fn restore_after_restart(&self) -> usize {
+        let Some(db) = self.db.read().await.clone() else {
+            return 0;
+        };
+        db.run_blocking(|db| db.mark_interrupted_actions())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("restore_after_restart: failed to mark interrupted actions: {e}");
+                0
+            })
+    }
+
+    /// Persist a terminal action row (its status payload + owning session) so the
+    /// result survives the in-memory board's TTL and app restarts. No-op
+    /// without a database. Must run outside the `actions` lock is not required
+    /// (the DB is a separate lock); callers may hold either.
+    async fn persist_terminal(&self, action_id: &str, state: &ActionState) {
+        let Some(db) = self.db.read().await.clone() else {
+            return;
+        };
+        let (status, output, error, error_reason, log_path, exit_code, finished_at) = match state {
+            ActionState::Completed {
+                output,
+                exit_code,
+                log_path,
+                finished_at,
+                ..
+            } => (
+                "completed",
+                Some(output.as_str()),
+                None,
+                None,
+                log_path.as_deref(),
+                *exit_code,
+                finished_at.as_str(),
+            ),
+            ActionState::Failed {
+                error,
+                error_reason,
+                log_path,
+                exit_code,
+                finished_at,
+                ..
+            } => (
+                "failed",
+                None,
+                Some(error.as_str()),
+                Some(error_reason.as_str()),
+                log_path.as_deref(),
+                *exit_code,
+                finished_at.as_str(),
+            ),
+            ActionState::Cancelled { finished_at, .. } => (
+                "cancelled",
+                None,
+                None,
+                None,
+                None,
+                None,
+                finished_at.as_str(),
+            ),
+            ActionState::Running { .. } | ActionState::Waiting { .. } => return,
+        };
+        let action_id = action_id.to_string();
+        let status = status.to_string();
+        let output = output.map(str::to_string);
+        let error = error.map(str::to_string);
+        let error_reason = error_reason.map(str::to_string);
+        let log_path = log_path.map(str::to_string);
+        let finished_at = finished_at.to_string();
+        let action_id_for_db = action_id.clone();
+        if let Err(e) = db
+            .run_blocking(move |db| {
+                db.finish_action(
+                    &action_id_for_db,
+                    &status,
+                    output.as_deref(),
+                    error.as_deref(),
+                    error_reason.as_deref(),
+                    log_path.as_deref(),
+                    exit_code,
+                    &finished_at,
+                )
+            })
+            .await
+        {
+            tracing::warn!(action_id = %action_id, "failed to persist action result: {e}");
+        }
+    }
+
+    /// Emit a completion notification for a action (if it has a terminal state),
+    /// reading the owning session_id from the entry. Called from `mark_finished`,
+    /// `mark_cancelled`, and `attach_session` (the latter to close the race where
+    /// a action finishes before its session binding is recorded). Also persists the
+    /// terminal row so the result survives restarts.
+    async fn notify_completion(
+        &self,
+        action_id: &str,
+        state: ActionState,
+        session_id: Option<String>,
+    ) {
+        if !state.is_terminal() {
+            return;
+        }
+        let status = match &state {
+            ActionState::Completed { .. } => "completed",
+            ActionState::Failed { .. } => "failed",
+            ActionState::Cancelled { .. } => "cancelled",
+            ActionState::Running { .. } | ActionState::Waiting { .. } => return,
+        };
+        self.persist_terminal(action_id, &state).await;
+        let status_json = render_status_json(action_id, &state);
+        self.emit("action:finished", status_json.clone());
+        if let Err(error) =
+            self.completion_tx
+                .send(ActionCompletion::Background(BackgroundActionCompletion {
+                    action_id: action_id.to_string(),
+                    session_id,
+                    status: status.to_string(),
+                    status_json,
+                }))
+        {
+            tracing::debug!(
+                action_id = %action_id,
+                error = %error,
+                "no action completion subscriber is currently attached"
+            );
+        }
+    }
+
+    /// Board view of every action: one entry per action with status, timestamps,
+    /// owning session id, and a bounded output/error preview. Surfaces the full
+    /// action set to the UI (the per-session variant `list_for_session` serves the
+    /// agent). Order: oldest first.
     pub async fn board(&self) -> Vec<Value> {
-        let mut rows = self.background.board().await;
-        for row in &mut rows {
-            let action_id = row
-                .get("action_id")
-                .and_then(Value::as_str)
-                .or_else(|| row.get("id").and_then(Value::as_str))
-                .map(str::to_owned);
-            row["kind"] = json!("background");
-            if let Some(action_id) = action_id {
-                row["action_id"] = json!(action_id);
+        let actions = self.actions.read().await;
+        let mut rows = Vec::new();
+        for (id, entry) in actions.iter() {
+            if entry.kind != ActionKind::Background {
+                if let Some(schedule) = &entry.scheduled
+                    && !schedule.fired
+                {
+                    rows.push(scheduled_status_json(id, schedule, None));
+                }
+                continue;
             }
-        }
-
-        for mut row in self.scheduled.list().await {
-            let action_id = row
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            row["action_id"] = json!(action_id);
-            row["kind"] = json!("scheduled");
-            row["status"] = json!("scheduled");
+            let mut row = match &entry.state {
+                ActionState::Running { .. } => running_status_json(id, entry),
+                _ => render_status_json(id, &entry.state),
+            };
+            if let Some(tid) = &entry.session_id {
+                row["session_id"] = json!(tid);
+            }
+            row["kind"] = json!("background");
+            attach_preview(&mut row);
             rows.push(row);
         }
-
-        rows.sort_by(|left, right| {
-            let left_time = left
-                .get("started_at")
-                .or_else(|| left.get("due_at"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let right_time = right
-                .get("started_at")
-                .or_else(|| right.get("due_at"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            left_time.cmp(right_time)
-        });
+        rows.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
         rows
     }
 
-    /// Return one normalized task row for every task owned by a session.
+    /// Board view of every action owned by `session_id`: one entry per action with
+    /// status, timestamps, and a bounded output/error preview. Lets the model
+    /// see all background work of a session in a single call instead of polling
+    /// `status` action by action. Order: oldest first.
     pub async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
-        let mut rows = self.background.list_for_session(session_id).await;
-        for row in &mut rows {
-            let action_id = row
-                .get("action_id")
-                .and_then(Value::as_str)
-                .or_else(|| row.get("id").and_then(Value::as_str))
-                .map(str::to_owned);
-            row["kind"] = json!("background");
-            if let Some(action_id) = action_id {
-                row["action_id"] = json!(action_id);
+        let actions = self.actions.read().await;
+        let mut rows = Vec::new();
+        for (id, entry) in actions.iter() {
+            if entry.kind != ActionKind::Background {
+                if let Some(schedule) = &entry.scheduled
+                    && !schedule.fired
+                    && schedule.session_id.as_deref() == Some(session_id)
+                {
+                    rows.push(scheduled_status_json(id, schedule, Some(session_id)));
+                }
+                continue;
             }
-        }
-
-        for mut row in self.scheduled.list_for_session(session_id).await {
-            let action_id = row
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            row["action_id"] = json!(action_id);
-            row["kind"] = json!("scheduled");
-            row["status"] = json!("scheduled");
+            if entry.session_id.as_deref() != Some(session_id) {
+                continue;
+            }
+            let mut row = match &entry.state {
+                ActionState::Running { .. } => running_status_json(id, entry),
+                _ => render_status_json(id, &entry.state),
+            };
+            if let Some(tid) = &entry.session_id {
+                row["session_id"] = json!(tid);
+            }
+            row["kind"] = json!("background");
+            attach_preview(&mut row);
             rows.push(row);
         }
-
-        rows.sort_by(|left, right| {
-            let left_time = left
-                .get("started_at")
-                .or_else(|| left.get("due_at"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let right_time = right
-                .get("started_at")
-                .or_else(|| right.get("due_at"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            left_time.cmp(right_time)
-        });
+        rows.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
         rows
     }
 
-    /// Look up an action without leaking another session's output or schedule.
-    pub async fn status_for_session(&self, action_id: &str, session_id: &str) -> Value {
-        let background = self
-            .background
-            .status_for_session(action_id, session_id)
-            .await;
-        if background.get("status").and_then(Value::as_str) != Some("not_found") {
-            let mut result = background;
-            result["kind"] = json!("background");
-            result["action_id"] = json!(action_id);
-            return result;
-        }
-
-        if let Some(row) = self
-            .scheduled
-            .list_for_session(session_id)
+    /// Spawn a shell command as a background action. Returns the action id; the
+    /// command keeps running after this function returns. `cwd` overrides the
+    /// default Temp working directory when provided.
+    pub async fn spawn_shell(
+        self: &Arc<Self>,
+        command: &str,
+        shell: &str,
+        max_chars: usize,
+        cwd: Option<std::path::PathBuf>,
+    ) -> anyhow::Result<String> {
+        self.spawn_shell_for_session(command, shell, max_chars, cwd, None)
             .await
-            .into_iter()
-            .find(|row| row.get("id").and_then(Value::as_str) == Some(action_id))
-        {
-            let mut result = row;
-            result["action_id"] = json!(action_id);
-            result["kind"] = json!("scheduled");
-            result["status"] = json!("scheduled");
-            return result;
-        }
-
-        json!({ "action_id": action_id, "status": "not_found" })
     }
 
-    /// Cancel only an action owned by the requesting session.
-    pub async fn cancel_for_session(&self, action_id: &str, session_id: &str) -> bool {
-        if self
-            .background
-            .cancel_for_session(action_id, session_id)
-            .await
+    /// Spawn a background action with its owner bound before the process is
+    /// published. Agent calls should use this variant so session shutdown can
+    /// cancel a process even if it exits during the tool-result projection.
+    pub async fn spawn_shell_for_session(
+        self: &Arc<Self>,
+        command: &str,
+        shell: &str,
+        max_chars: usize,
+        cwd: Option<std::path::PathBuf>,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        if command.trim().is_empty() {
+            anyhow::bail!("command is required");
+        }
+        // Unpredictable action id: a sequential counter would let any
+        // session's agent enumerate and read other sessions' background outputs
+        // through status (which is RiskLevel::Safe).
+        let id = haven_common::types::new_id("act");
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let (kill_tx, kill_rx) = oneshot::channel();
+        let tail = Arc::new(Mutex::new(String::new()));
+        let tail_max_chars = *self.job_tail_max_chars.read().await;
+        let emit_interval = *self.job_output_emit_interval.read().await;
+        let terminal_ttl = *self.terminal_job_ttl.read().await;
+        let max_actions = *self.max_actions.read().await;
+        let _spawn_gate = self.spawn_gate.lock().await;
         {
+            let mut actions = self.actions.write().await;
+            // Reap terminal entries first: their results were already
+            // delivered via the completion channel, so they must not occupy
+            // the cap forever (64 lifetime actions would otherwise brick the
+            // feature for long-lived sessions). Terminal entries older than
+            // the configured terminal-action TTL are dropped the same way (the
+            // UI panel and the persisted log files remain the record after
+            // that).
+            actions.retain(|_, e| !terminal_entry_stale(e, terminal_ttl));
+            let running = actions
+                .values()
+                .filter(|e| matches!(e.state, ActionState::Running { .. }))
+                .count();
+            if running >= max_actions {
+                anyhow::bail!(
+                    "too many running background actions (limit {})",
+                    max_actions
+                );
+            }
+        }
+
+        // Persist before publishing the action to the in-memory board or
+        // starting a process. A failed database write therefore cannot leave a
+        // process that restore_after_restart does not know how to clean up.
+        if let Some(db) = self.db.read().await.clone() {
+            let action_id = id.clone();
+            let command_for_db = command.to_string();
+            let started_at_for_db = started_at.clone();
+            let session_id_for_db = session_id.map(str::to_owned);
+            if let Err(error) = db
+                .run_blocking(move |db| {
+                    db.save_action(
+                        &action_id,
+                        session_id_for_db.as_deref(),
+                        &command_for_db,
+                        &started_at_for_db,
+                    )
+                })
+                .await
+            {
+                tracing::warn!(action_id = %id, "failed to persist action spawn: {error}");
+                return Err(error);
+            }
+        }
+
+        self.actions.write().await.insert(
+            id.clone(),
+            ActionEntry {
+                kind: ActionKind::Background,
+                session_id: session_id.map(str::to_owned),
+                state: ActionState::Running {
+                    started_at: started_at.clone(),
+                },
+                kill: Some(kill_tx),
+                tail: Some(tail.clone()),
+                command: command.to_string(),
+                shell: shell.to_string(),
+                scheduled: None,
+            },
+        );
+
+        let mut std_cmd = build_shell_command(shell, command);
+        if let Some(cwd) = cwd {
+            std_cmd.current_dir(cwd);
+        }
+
+        let containment = match haven_common::process_containment::ProcessContainment::new() {
+            Ok(containment) => containment,
+            Err(error) => {
+                self.actions.write().await.remove(&id);
+                return Err(error.into());
+            }
+        };
+        let mut child = match tokio::process::Command::from(std_cmd)
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                // Spawn failed: remove the entry so the action is not left
+                // dangling as "running".
+                self.actions.write().await.remove(&id);
+                if let Some(db) = self.db.read().await.clone() {
+                    let action_id = id.clone();
+                    if let Err(error) = db
+                        .run_blocking(move |db| db.delete_action(&action_id))
+                        .await
+                    {
+                        tracing::warn!(action_id = %id, "failed to remove action row after spawn failure: {error}");
+                    }
+                }
+                return Err(e.into());
+            }
+        };
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("background shell child did not expose a process id"))?;
+        if let Err(error) = containment.attach(pid) {
+            let _ = child.kill().await;
+            self.actions.write().await.remove(&id);
+            return Err(anyhow::anyhow!(
+                "failed to attach background shell to process containment: {}",
+                haven_common::error::sanitize_error_text(&error.to_string())
+            ));
+        }
+
+        let me = self.clone();
+        let action_id = id.clone();
+        let shell_owned = shell.to_string();
+        let command_owned = command.to_string();
+        self.emit(
+            "action:created",
+            json!({
+                "action_id": action_id,
+                "kind": "background",
+                "status": "running",
+                "started_at": started_at,
+            }),
+        );
+        // The direct child pid is captured before `run` moves `child`; on
+        // Windows, cancelling must kill the whole process tree, not just the
+        // cmd.exe/powershell.exe wrapper.
+        let child_pid = child.id();
+        // The action runner outlives its spawner: give it a action-level span so
+        // every log line emitted while the action runs/cancels (output-log
+        // writes, completion) carries the action id — parallel background actions
+        // stay distinguishable in logs.
+        let action_span = tracing::info_span!("bg_action", action_id = %action_id);
+        let runner_tail = tail.clone();
+        let emit_action_id = action_id.clone();
+        tokio::spawn(async move {
+            // Keep the Job Object alive for the entire action. Its
+            // kill-on-close flag then cleans up descendants on cancellation
+            // or application shutdown.
+            let _containment = containment;
+            // The action outlives this session: when `run` is dropped (kill signal
+            // received), kill_on_drop terminates the child.
+            let max_collect = collect_byte_cap(max_chars);
+            let stdout_tail = runner_tail.clone();
+            let stderr_tail = runner_tail.clone();
+            let stdout_fut = read_stream_capped(
+                child.stdout.take(),
+                max_collect,
+                Some(stdout_tail),
+                tail_max_chars,
+            );
+            let stderr_fut = read_stream_capped(
+                child.stderr.take(),
+                max_collect,
+                Some(stderr_tail),
+                tail_max_chars,
+            );
+            let run = async {
+                let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
+                    tokio::join!(stdout_fut, stderr_fut);
+                let status = child.wait().await;
+                let mut combined = stdout;
+                if !stderr.is_empty() {
+                    if !combined.is_empty() {
+                        combined.push('\n');
+                    }
+                    combined.push_str(&stderr);
+                }
+                // Strip PowerShell's NativeCommandError/CLIXML formatting so
+                // the payload carries the real message, not the noise.
+                combined = sanitize_shell_output(&combined, &shell_owned);
+                let exit_code = status.as_ref().ok().and_then(|s| s.code());
+                let success = matches!(status, Ok(s) if s.success());
+                let truncated = stdout_overflow || stderr_overflow;
+                (combined, success, exit_code, truncated)
+            };
+            tokio::pin!(run);
+            tokio::select! {
+                _ = kill_rx => {
+                    // Dropping `run` drops the pipes and the child
+                    // (kill_on_drop), terminating the command.
+                    if let Some(pid) = child_pid {
+                        kill_process_tree(pid).await;
+                    }
+                    me.mark_cancelled(&action_id, &started_at).await;
+                }
+                (combined, success, exit_code, truncated) = &mut run => {
+                    me.mark_finished(&action_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
+                }
+            }
+        }.instrument(action_span));
+
+        // Live-output preview: emit `action:output` when the bounded tail
+        // changes (by value — length alone freezes once the window is full).
+        let emit_me = self.clone();
+        let emit_tail = tail;
+        tokio::spawn(async move {
+            let mut last_output = String::new();
+            loop {
+                tokio::time::sleep(emit_interval).await;
+                if emit_me.status(&emit_action_id).await["status"].as_str() != Some("running") {
+                    return;
+                }
+                if take_tail_if_changed(&emit_tail, &mut last_output) {
+                    emit_me.emit(
+                        "action:output",
+                        json!({
+                            "action_id": emit_action_id,
+                            "status": "running",
+                            "output": last_output.as_str(),
+                        }),
+                    );
+                }
+            }
+        });
+
+        Ok(id)
+    }
+
+    /// Report the current status of a action as JSON.
+    pub async fn status(&self, action_id: &str) -> Value {
+        let actions = self.actions.read().await;
+        let Some(entry) = actions.get(action_id) else {
+            return json!({"action_id": action_id, "status": "not_found"});
+        };
+        if entry.kind == ActionKind::Scheduled {
+            return entry
+                .scheduled
+                .as_ref()
+                .map(|schedule| {
+                    if schedule.fired {
+                        let status = match &entry.state {
+                            ActionState::Cancelled { .. } => "cancelled",
+                            _ => "completed",
+                        };
+                        json!({"action_id": action_id, "status": status})
+                    } else {
+                        scheduled_status_json(action_id, schedule, None)
+                    }
+                })
+                .unwrap_or_else(|| json!({"action_id": action_id, "status": "not_found"}));
+        }
+        Self::render_action_status(action_id, entry)
+    }
+
+    /// Status lookup scoped to the owning session. Agent-facing callers must
+    /// never be able to enumerate another session's action by guessing its id.
+    pub async fn status_for_session(&self, action_id: &str, session_id: &str) -> Value {
+        let actions = self.actions.read().await;
+        let Some(entry) = actions.get(action_id) else {
+            return json!({"action_id": action_id, "status": "not_found"});
+        };
+        if entry.kind == ActionKind::Scheduled {
+            let Some(schedule) = entry.scheduled.as_ref() else {
+                return json!({"action_id": action_id, "status": "not_found"});
+            };
+            if schedule.session_id.as_deref() != Some(session_id) || schedule.fired {
+                return json!({"action_id": action_id, "status": "not_found"});
+            }
+            return scheduled_status_json(action_id, schedule, Some(session_id));
+        }
+        if entry.session_id.as_deref() != Some(session_id) {
+            return json!({"action_id": action_id, "status": "not_found"});
+        }
+        Self::render_action_status(action_id, entry)
+    }
+
+    fn render_action_status(action_id: &str, entry: &ActionEntry) -> Value {
+        match &entry.state {
+            ActionState::Running { .. } => {
+                let body = running_status_json(action_id, entry);
+                let mut ordered = haven_common::tools::background_wait_object(
+                    "The action is still running. END YOUR TURN if you have nothing else useful to do — do not poll. The result is auto-pushed and the session is auto-woken when it finishes.",
+                );
+                // Move fields (including the live output tail) — do not clone
+                // the potentially large `output` string just to reorder keys.
+                if let Value::Object(obj) = body {
+                    for (k, val) in obj {
+                        ordered.insert(k, val);
+                    }
+                }
+                Value::Object(ordered)
+            }
+            _ => render_status_json(action_id, &entry.state),
+        }
+    }
+
+    /// Associate a action with its owning session. Called by the session executor
+    /// after a background tool call so `cancel_for_session` can clean it up.
+    ///
+    /// Also closes a race: a short-lived action may finish (and call
+    /// `mark_finished`/`mark_cancelled`) before this binding is recorded, in
+    /// which case the completion notification carried `session_id: None` and was
+    /// dropped by the consumer. If the action is already terminal here, re-fire
+    /// the notification with the now-known session_id so the owning session still
+    /// receives the result.
+    pub async fn attach_session(&self, action_id: &str, session_id: &str) {
+        let (terminal_state, session_id) = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(action_id) else {
+                return;
+            };
+            if entry.kind != ActionKind::Background {
+                return;
+            }
+            if let Some(existing) = entry.session_id.as_deref() {
+                if existing == session_id {
+                    return;
+                }
+                tracing::warn!(
+                    action_id,
+                    existing_session_id = existing,
+                    requested_session_id = session_id,
+                    "refusing to rebind background action to another session"
+                );
+                return;
+            }
+            entry.session_id = Some(session_id.to_string());
+            (
+                entry.state.is_terminal().then(|| entry.state.clone()),
+                session_id.to_string(),
+            )
+        };
+        self.emit(
+            "action:updated",
+            json!({
+                "action_id": action_id,
+                "session_id": session_id,
+            }),
+        );
+        // Record the owning session in the persisted row too, so terminal
+        // history keeps its owner (spawn rows start with session_id NULL).
+        if let Some(db) = self.db.read().await.clone() {
+            let action_id = action_id.to_string();
+            let action_id_for_db = action_id.clone();
+            let session_id_for_db = session_id.clone();
+            if let Err(e) = db
+                .run_blocking(move |db| {
+                    db.update_action_session(&action_id_for_db, &session_id_for_db)
+                })
+                .await
+            {
+                tracing::warn!(action_id = %action_id, "failed to persist action session binding: {e}");
+            }
+        }
+        if let Some(state) = terminal_state {
+            self.notify_completion(action_id, state, Some(session_id))
+                .await;
+        }
+    }
+
+    /// Cancel a single running action (kept for inspection afterwards).
+    /// Returns false when the action does not exist or is not running.
+    pub async fn cancel(&self, action_id: &str) -> bool {
+        let mut actions = self.actions.write().await;
+        let Some(entry) = actions.get_mut(action_id) else {
+            return false;
+        };
+        if entry.kind == ActionKind::Scheduled {
+            let Some(schedule) = entry.scheduled.as_mut() else {
+                return false;
+            };
+            if schedule.fired {
+                return false;
+            }
+            schedule.fired = true;
+            let due_at = schedule.due_at.clone();
+            entry.state = ActionState::Cancelled {
+                started_at: due_at,
+                finished_at: chrono::Utc::now().to_rfc3339(),
+            };
+            drop(actions);
+            self.finish_scheduled_cancel(action_id).await;
             return true;
         }
-        self.scheduled
-            .cancel_for_session(action_id, session_id)
-            .await
+        if !matches!(entry.state, ActionState::Running { .. }) {
+            return false;
+        }
+        if let Some(tx) = entry.kill.take() {
+            let _ = tx.send(());
+        }
+        true
+    }
+
+    /// Cancel a single action only when it belongs to `session_id`.
+    pub async fn cancel_for_session(&self, action_id: &str, session_id: &str) -> bool {
+        let mut actions = self.actions.write().await;
+        let Some(entry) = actions.get_mut(action_id) else {
+            return false;
+        };
+        if entry.kind == ActionKind::Scheduled {
+            let Some(schedule) = entry.scheduled.as_mut() else {
+                return false;
+            };
+            if schedule.fired || schedule.session_id.as_deref() != Some(session_id) {
+                return false;
+            }
+            schedule.fired = true;
+            let due_at = schedule.due_at.clone();
+            entry.state = ActionState::Cancelled {
+                started_at: due_at,
+                finished_at: chrono::Utc::now().to_rfc3339(),
+            };
+            drop(actions);
+            self.finish_scheduled_cancel(action_id).await;
+            return true;
+        }
+        if entry.session_id.as_deref() != Some(session_id)
+            || !matches!(entry.state, ActionState::Running { .. })
+        {
+            return false;
+        }
+        if let Some(tx) = entry.kill.take() {
+            let _ = tx.send(());
+        }
+        true
+    }
+
+    /// Cancel and drop every action owned by `session_id`. Called when a session
+    /// ends, is removed, or is rolled back.
+    ///
+    /// Running actions are killed, marked cancelled, persisted, and surfaced to
+    /// the UI via `action:finished` before leaving the board — otherwise the
+    /// titlebar panel keeps a ghost "running" row that cannot be stopped.
+    pub async fn cancel_owned_by_session(&self, session_id: &str) {
+        let ids: Vec<String> = {
+            let actions = self.actions.read().await;
+            actions
+                .iter()
+                .filter(|(_, e)| {
+                    e.kind == ActionKind::Background && e.session_id.as_deref() == Some(session_id)
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for id in ids {
+            let Some(mut entry) = self.actions.write().await.remove(&id) else {
+                continue;
+            };
+            if let Some(tx) = entry.kill.take() {
+                let _ = tx.send(());
+            }
+            entry.tail = None;
+            if let ActionState::Running { started_at } = &entry.state {
+                entry.state = ActionState::Cancelled {
+                    started_at: started_at.clone(),
+                    finished_at: chrono::Utc::now().to_rfc3339(),
+                };
+                self.notify_completion(&id, entry.state.clone(), entry.session_id.clone())
+                    .await;
+            } else if entry.state.is_terminal() {
+                // UI-only: the board is dropping a row whose agent completion
+                // already fired (or never needed one). Re-sending completion_tx
+                // would risk duplicate inject on an ending session.
+                let mut status_json = render_status_json(&id, &entry.state);
+                if let Some(tid) = &entry.session_id {
+                    status_json["session_id"] = json!(tid);
+                }
+                self.emit("action:finished", status_json);
+            }
+        }
+        self.cancel_owned_scheduled_by_session(session_id).await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn mark_finished(
+        &self,
+        id: &str,
+        started_at: &str,
+        shell: &str,
+        command: &str,
+        combined: String,
+        success: bool,
+        exit_code: Option<i32>,
+        truncated: bool,
+    ) {
+        let (state, session_id) = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(id) else {
+                return;
+            };
+            entry.kill = None;
+            entry.tail = None;
+            let finished_at = chrono::Utc::now().to_rfc3339();
+            entry.state = if success {
+                ActionState::Completed {
+                    output: combined.clone(),
+                    exit_code,
+                    truncated,
+                    // When the collected output was capped, the log file keeps
+                    // the full transcript for inspection.
+                    log_path: truncated.then(|| {
+                        write_output_log("action-logs", id, &combined)
+                            .to_string_lossy()
+                            .into_owned()
+                    }),
+                    started_at: started_at.to_string(),
+                    finished_at,
+                }
+            } else {
+                // The failure payload must not drown the model (or the user) in
+                // progress-bar spam: `error` keeps the sanitized output for full
+                // inspection, `error_reason` carries a short tail of the most
+                // likely error lines plus a Windows-trap hint when one matches.
+                // The full output always lands in a log file so the root cause
+                // is recoverable even when the summary misses it.
+                let diagnosed = append_windows_diagnostics(shell, command, &combined);
+                ActionState::Failed {
+                    error: combined.clone(),
+                    error_reason: summarize_error(&diagnosed, 1200),
+                    log_path: Some(
+                        write_output_log("action-logs", id, &combined)
+                            .to_string_lossy()
+                            .into_owned(),
+                    ),
+                    exit_code,
+                    started_at: started_at.to_string(),
+                    finished_at,
+                }
+            };
+            (entry.state.clone(), entry.session_id.clone())
+        };
+        self.notify_completion(id, state, session_id).await;
+    }
+
+    async fn mark_cancelled(&self, id: &str, started_at: &str) {
+        let (state, session_id) = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(id) else {
+                return;
+            };
+            entry.kill = None;
+            entry.tail = None;
+            entry.state = ActionState::Cancelled {
+                started_at: started_at.to_string(),
+                finished_at: chrono::Utc::now().to_rfc3339(),
+            };
+            (entry.state.clone(), entry.session_id.clone())
+        };
+        self.notify_completion(id, state, session_id).await;
     }
 }
+
+impl ActionService {
+    /// Schedule a timer or an action dependency in the same state map as
+    /// background processes. `Pending` is represented by `fired = false`; fire
+    /// is one idempotent transition that publishes the continuation payload
+    /// and updates durable history.
+    pub async fn set(
+        self: &Arc<Self>,
+        spec: crate::builtin::scheduled_action::ScheduledActionSpec,
+    ) -> anyhow::Result<String> {
+        use crate::builtin::scheduled_action::ScheduleMode;
+
+        let crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at,
+            delay_secs,
+            watch_action_id,
+            title,
+            body,
+            mode,
+            session_id,
+            tool_name,
+            tool_args,
+            prompt,
+        } = spec;
+        let watch_action_id = watch_action_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if watch_action_id.is_some() && (due_at.is_some() || delay_secs.is_some()) {
+            anyhow::bail!("watch_action_id cannot be combined with due_at or delay_secs");
+        }
+
+        let now = chrono::Utc::now();
+        let (due, remaining) = if watch_action_id.is_some() {
+            // Keep the dependency pending even if the producer is not in this
+            // process anymore. The watcher resolves that case as `not_found`
+            // instead of leaving a durable schedule that can never fire.
+            (None, 0_i64)
+        } else {
+            match (due_at.as_deref(), delay_secs) {
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("use exactly one of due_at or delay_secs, not both")
+                }
+                (Some(value), None) => {
+                    let parsed = chrono::DateTime::parse_from_rfc3339(value.trim())
+                        .map_err(|_| anyhow::anyhow!("due_at must be an ISO 8601 timestamp"))?
+                        .with_timezone(&chrono::Utc);
+                    let remaining = (parsed - now).num_seconds();
+                    if remaining <= 0 {
+                        anyhow::bail!("due_at must be in the future");
+                    }
+                    if remaining > *self.max_due_horizon_secs.read().await {
+                        anyhow::bail!("due_at is more than 365 days in the future");
+                    }
+                    (Some(parsed), remaining)
+                }
+                (None, Some(delay)) if (1..=86_400).contains(&delay) => (
+                    Some(now + chrono::Duration::seconds(delay as i64)),
+                    delay as i64,
+                ),
+                (None, Some(_)) => anyhow::bail!("delay_secs must be between 1 and 86400"),
+                (None, None) => {
+                    anyhow::bail!("either due_at, delay_secs or watch_action_id is required")
+                }
+            }
+        };
+
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            anyhow::bail!("body is required");
+        }
+        let title = match title.trim() {
+            "" => "Haven".to_string(),
+            value => value.to_string(),
+        };
+        let tool_name = tool_name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let prompt = prompt
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if mode == ScheduleMode::Tool && tool_name.is_none() {
+            anyhow::bail!("tool_name is required when mode is 'tool'");
+        }
+        if mode == ScheduleMode::Continue && prompt.is_none() && watch_action_id.is_none() {
+            anyhow::bail!("prompt is required when mode is 'continue'");
+        }
+        if let Some(args) = &tool_args
+            && !args.is_object()
+        {
+            anyhow::bail!("tool_args must be a JSON object");
+        }
+        if mode != ScheduleMode::Tool && (tool_name.is_some() || tool_args.is_some()) {
+            anyhow::bail!("tool_name and tool_args require mode 'tool'");
+        }
+
+        let id = haven_common::types::new_id("act");
+        let due_at = due.map(|value| value.to_rfc3339()).unwrap_or_default();
+        let _mutation = self.spawn_gate.lock().await;
+        let max_pending = *self.max_scheduled_actions.read().await;
+        let mut actions = self.actions.write().await;
+        // Fired schedules are already durable history and must not consume
+        // the in-memory pending budget. Reap them at the next admission just
+        // like terminal process entries are reaped by the process worker.
+        actions.retain(|_, entry| {
+            !(entry.kind == ActionKind::Scheduled
+                && entry.scheduled.as_ref().is_some_and(|item| item.fired))
+        });
+        let pending = actions
+            .values()
+            .filter(|entry| {
+                entry.kind == ActionKind::Scheduled
+                    && entry.scheduled.as_ref().is_some_and(|item| !item.fired)
+            })
+            .count();
+        drop(actions);
+        if pending >= max_pending {
+            anyhow::bail!(
+                "too many pending scheduled tasks (limit {}); cancel some first",
+                max_pending
+            );
+        }
+
+        if watch_action_id.is_none()
+            && let Some(db) = self.db.read().await.clone()
+        {
+            let args_json = tool_args.as_ref().map(Value::to_string);
+            let id_for_db = id.clone();
+            let due_for_db = due_at.clone();
+            let mode_for_db = mode.as_str().to_string();
+            let title_for_db = title.clone();
+            let body_for_db = body.clone();
+            let session_for_db = session_id.clone();
+            let tool_for_db = tool_name.clone();
+            let prompt_for_db = prompt.clone();
+            db.run_blocking(move |db| {
+                db.save_scheduled_action(
+                    &id_for_db,
+                    &due_for_db,
+                    &title_for_db,
+                    &body_for_db,
+                    &mode_for_db,
+                    session_for_db.as_deref(),
+                    tool_for_db.as_deref(),
+                    args_json.as_deref(),
+                    prompt_for_db.as_deref(),
+                )
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("failed to persist scheduled task '{}': {error}", id)
+            })?;
+        }
+
+        let entry = ScheduledActionEntry {
+            title: title.clone(),
+            body: body.clone(),
+            due_at: due_at.clone(),
+            mode,
+            session_id: session_id.clone(),
+            tool_name: tool_name.clone(),
+            tool_args: tool_args.clone(),
+            prompt: prompt.clone(),
+            watch_action_id: watch_action_id.clone(),
+            fired: false,
+        };
+        self.actions.write().await.insert(
+            id.clone(),
+            ActionEntry {
+                kind: ActionKind::Scheduled,
+                session_id: session_id.clone(),
+                // The schedule-specific state is authoritative for timer
+                // actions; this placeholder keeps the worker fields uniform.
+                state: ActionState::Waiting {
+                    due_at: due_at.clone(),
+                },
+                kill: None,
+                tail: None,
+                command: String::new(),
+                shell: String::new(),
+                scheduled: Some(entry),
+            },
+        );
+        self.emit(
+            "action:created",
+            json!({
+                "id": id,
+                "action_id": id,
+                "kind": "scheduled",
+                "status": "scheduled",
+                "title": title,
+                "body": body,
+                "mode": mode.as_str(),
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "watch_action_id": watch_action_id,
+                "due_at": due_at,
+            }),
+        );
+
+        let service = self.clone();
+        let fired_id = id.clone();
+        if let Some(watched_id) = watch_action_id {
+            tokio::spawn(async move {
+                service.watch_action_timer(fired_id, watched_id).await;
+            });
+        } else {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(remaining.max(0) as u64)).await;
+                service.fire_scheduled(&fired_id).await;
+            });
+        }
+        Ok(id)
+    }
+
+    pub async fn list(&self) -> Vec<Value> {
+        self.list_scheduled_scoped(None).await
+    }
+
+    pub async fn list_scheduled_for_session(&self, session_id: &str) -> Vec<Value> {
+        self.list_scheduled_scoped(Some(session_id)).await
+    }
+
+    async fn list_scheduled_scoped(&self, owner: Option<&str>) -> Vec<Value> {
+        let actions = self.actions.read().await;
+        let mut rows: Vec<_> = actions
+            .iter()
+            .filter_map(|(id, entry)| {
+                let schedule = entry.scheduled.as_ref()?;
+                if entry.kind != ActionKind::Scheduled
+                    || schedule.fired
+                    || owner.is_some_and(|value| schedule.session_id.as_deref() != Some(value))
+                {
+                    return None;
+                }
+                Some(scheduled_status_json(id, schedule, owner))
+            })
+            .collect();
+        rows.sort_by(|left, right| right["due_at"].as_str().cmp(&left["due_at"].as_str()));
+        rows
+    }
+
+    async fn fire_scheduled(self: &Arc<Self>, id: &str) {
+        let _mutation = self.spawn_gate.lock().await;
+        let (entry, payload) = {
+            let mut actions = self.actions.write().await;
+            let Some(action) = actions.get_mut(id) else {
+                return;
+            };
+            let Some(schedule) = action.scheduled.as_mut() else {
+                return;
+            };
+            if schedule.fired {
+                return;
+            }
+            schedule.fired = true;
+            action.state = ActionState::Completed {
+                output: String::new(),
+                exit_code: None,
+                truncated: false,
+                log_path: None,
+                started_at: schedule.due_at.clone(),
+                finished_at: chrono::Utc::now().to_rfc3339(),
+            };
+            let payload = ScheduledActionFired {
+                action_id: id.to_string(),
+                title: schedule.title.clone(),
+                body: schedule.body.clone(),
+                mode: schedule.mode,
+                session_id: schedule.session_id.clone(),
+                tool_name: schedule.tool_name.clone(),
+                tool_args: schedule.tool_args.clone(),
+                prompt: schedule.prompt.clone(),
+            };
+            (schedule.clone(), payload)
+        };
+        let _ = self
+            .completion_tx
+            .send(ActionCompletion::Scheduled(payload));
+        self.emit_scheduled_finished(id, &entry);
+        self.persist_scheduled_fired(id).await;
+    }
+
+    async fn watch_action_timer(self: &Arc<Self>, id: String, watched_id: String) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            let status = self.status(&watched_id).await;
+            if status["status"] == "running" {
+                continue;
+            }
+            let prompt = action_finished_prompt(&watched_id, &status);
+            let _mutation = self.spawn_gate.lock().await;
+            let (entry, payload) = {
+                let mut actions = self.actions.write().await;
+                let Some(action) = actions.get_mut(&id) else {
+                    return;
+                };
+                let Some(schedule) = action.scheduled.as_mut() else {
+                    return;
+                };
+                if schedule.fired {
+                    return;
+                }
+                schedule.fired = true;
+                schedule.prompt = Some(prompt);
+                action.state = ActionState::Completed {
+                    output: String::new(),
+                    exit_code: None,
+                    truncated: false,
+                    log_path: None,
+                    started_at: schedule.due_at.clone(),
+                    finished_at: chrono::Utc::now().to_rfc3339(),
+                };
+                let payload = ScheduledActionFired {
+                    action_id: id.clone(),
+                    title: schedule.title.clone(),
+                    body: schedule.body.clone(),
+                    mode: schedule.mode,
+                    session_id: schedule.session_id.clone(),
+                    tool_name: None,
+                    tool_args: None,
+                    prompt: schedule.prompt.clone(),
+                };
+                (schedule.clone(), payload)
+            };
+            let _ = self
+                .completion_tx
+                .send(ActionCompletion::Scheduled(payload));
+            self.emit_scheduled_finished(&id, &entry);
+            return;
+        }
+    }
+
+    async fn persist_scheduled_fired(&self, id: &str) {
+        if let Some(db) = self.db.read().await.clone() {
+            let id = id.to_string();
+            let id_for_db = id.clone();
+            if let Err(error) = db
+                .run_blocking(move |db| db.mark_scheduled_action_fired(&id_for_db))
+                .await
+            {
+                tracing::warn!(action_id = %id, "failed to persist scheduled action fired state: {error}");
+            }
+        }
+    }
+
+    fn emit_scheduled_finished(&self, id: &str, entry: &ScheduledActionEntry) {
+        self.emit(
+            "action:finished",
+            json!({
+                "id": id,
+                "action_id": id,
+                "kind": "scheduled",
+                "status": "completed",
+                "title": entry.title,
+                "body": entry.body,
+                "mode": entry.mode.as_str(),
+                "session_id": entry.session_id,
+                "due_at": entry.due_at,
+            }),
+        );
+    }
+
+    async fn finish_scheduled_cancel(&self, id: &str) {
+        self.emit(
+            "action:updated",
+            json!({"id": id, "action_id": id, "kind": "scheduled", "status": "cancelled"}),
+        );
+        if let Some(db) = self.db.read().await.clone() {
+            let id = id.to_string();
+            let id_for_db = id.clone();
+            if let Err(error) = db
+                .run_blocking(move |db| db.delete_scheduled_action(&id_for_db))
+                .await
+            {
+                tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation: {error}");
+            }
+        }
+    }
+
+    async fn cancel_owned_scheduled_by_session(&self, session_id: &str) {
+        let ids: Vec<_> = {
+            let mut actions = self.actions.write().await;
+            actions
+                .iter_mut()
+                .filter_map(|(id, entry)| {
+                    let schedule = entry.scheduled.as_mut()?;
+                    if entry.kind == ActionKind::Scheduled
+                        && !schedule.fired
+                        && schedule.session_id.as_deref() == Some(session_id)
+                    {
+                        schedule.fired = true;
+                        entry.state = ActionState::Cancelled {
+                            started_at: schedule.due_at.clone(),
+                            finished_at: chrono::Utc::now().to_rfc3339(),
+                        };
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for id in ids {
+            self.finish_scheduled_cancel(&id).await;
+        }
+    }
+
+    /// Restore every persisted action family through one entry point.
+    pub async fn restore(self: &Arc<Self>) -> (usize, usize) {
+        let scheduled = Arc::clone(self).restore_pending().await;
+        let interrupted = self.restore_after_restart().await;
+        (scheduled, interrupted)
+    }
+
+    /// Re-arm persisted timers. Process rows are restored by
+    /// [`restore_after_restart`], but both are deliberately exposed through
+    /// this service rather than separate registries.
+    pub async fn restore_pending(self: &Arc<Self>) -> usize {
+        let Some(db) = self.db.read().await.clone() else {
+            return 0;
+        };
+        let rows = match db
+            .run_blocking(|db| db.list_pending_scheduled_actions())
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!("restore_pending: failed to load scheduled actions: {error}");
+                return 0;
+            }
+        };
+        let now = chrono::Utc::now();
+        let mut overdue = 0;
+        for row in rows {
+            if self.actions.read().await.contains_key(&row.id) {
+                continue;
+            }
+            let due = match chrono::DateTime::parse_from_rfc3339(&row.due_at) {
+                Ok(value) => value.with_timezone(&chrono::Utc),
+                Err(error) => {
+                    tracing::warn!(action_id = %row.id, "skipping scheduled action with invalid due_at: {error}");
+                    continue;
+                }
+            };
+            let Some(mode) = crate::builtin::scheduled_action::ScheduleMode::parse(&row.mode)
+            else {
+                tracing::warn!(action_id = %row.id, "skipping scheduled action with invalid mode");
+                continue;
+            };
+            let tool_args = match row.tool_args.as_deref() {
+                Some(value) => match serde_json::from_str(value) {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        tracing::warn!(action_id = %row.id, "skipping scheduled action with invalid tool_args: {error}");
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            let valid_payload = match mode {
+                crate::builtin::scheduled_action::ScheduleMode::Tool => row
+                    .tool_name
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                crate::builtin::scheduled_action::ScheduleMode::Continue => {
+                    row.session_id
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                        && row
+                            .prompt
+                            .as_deref()
+                            .is_some_and(|value| !value.trim().is_empty())
+                }
+            };
+            if !valid_payload {
+                tracing::warn!(
+                    action_id = %row.id,
+                    mode = %row.mode,
+                    "skipping scheduled action with missing mode-specific payload"
+                );
+                continue;
+            }
+            let entry = ScheduledActionEntry {
+                title: row.title,
+                body: row.body,
+                due_at: row.due_at,
+                mode,
+                session_id: row.session_id,
+                tool_name: row.tool_name,
+                tool_args,
+                prompt: row.prompt,
+                watch_action_id: None,
+                fired: false,
+            };
+            let id = row.id;
+            self.actions.write().await.insert(
+                id.clone(),
+                ActionEntry {
+                    kind: ActionKind::Scheduled,
+                    session_id: entry.session_id.clone(),
+                    state: ActionState::Waiting {
+                        due_at: entry.due_at.clone(),
+                    },
+                    kill: None,
+                    tail: None,
+                    command: String::new(),
+                    shell: String::new(),
+                    scheduled: Some(entry),
+                },
+            );
+            let remaining = (due - now).num_seconds();
+            if remaining <= 0 {
+                self.fire_scheduled(&id).await;
+                overdue += 1;
+            } else {
+                let service = Arc::clone(self);
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(remaining as u64)).await;
+                    service.fire_scheduled(&id).await;
+                });
+            }
+        }
+        overdue
+    }
+}
+
+fn scheduled_status_json(id: &str, entry: &ScheduledActionEntry, _owner: Option<&str>) -> Value {
+    json!({
+        "id": id,
+        "action_id": id,
+        "kind": "scheduled",
+        "status": "scheduled",
+        "title": entry.title,
+        "body": entry.body,
+        "mode": entry.mode.as_str(),
+        "session_id": entry.session_id,
+        "tool_name": entry.tool_name,
+        "tool_args": entry.tool_args,
+        "prompt": entry.prompt,
+        "watch_action_id": entry.watch_action_id,
+        "due_at": entry.due_at,
+    })
+}
+
+fn action_finished_prompt(action_id: &str, status: &Value) -> String {
+    let state = status["status"].as_str().unwrap_or("unknown");
+    if state == "not_found" {
+        return format!("Background action {action_id} not found.");
+    }
+    let payload = status["output"]
+        .as_str()
+        .or_else(|| status["error_reason"].as_str())
+        .or_else(|| status["error"].as_str())
+        .unwrap_or_default();
+    format!("Background action {action_id} {state}.\nOutput:\n{payload}")
+}
+
+/// Attach a bounded `preview` (first 200 chars of output, else error) to a
+/// status row. Shared by the board and scoped-list views.
+fn attach_preview(row: &mut Value) {
+    let preview = row
+        .get("output")
+        .and_then(|v| v.as_str())
+        .or_else(|| row.get("error").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    row["preview"] = json!(preview.chars().take(200).collect::<String>());
+}
+
+/// Render the running-state row for a action: the command line it is executing
+/// and the bounded live-output tail, so the agent sees what the action is doing
+/// right now instead of only "running". `output` is omitted while empty (the
+/// command has not produced anything yet).
+fn running_status_json(action_id: &str, entry: &ActionEntry) -> Value {
+    let mut v = json!({
+        "action_id": action_id,
+        "status": "running",
+        "command": entry.command,
+        "shell": entry.shell,
+    });
+    if let ActionState::Running { started_at } = &entry.state {
+        v["started_at"] = json!(started_at);
+    }
+    if let Some(tail) = &entry.tail {
+        let out = lock_or_recover(tail, "action_output_tail");
+        if !out.is_empty() {
+            v["output"] = json!(out.as_str());
+        }
+    }
+    v
+}
+
+/// Render the terminal status JSON for a action (mirrors `status()` output for
+/// completed/failed/cancelled states), used in completion notifications.
+fn render_status_json(action_id: &str, state: &ActionState) -> Value {
+    match state {
+        ActionState::Completed {
+            output,
+            exit_code,
+            truncated,
+            log_path,
+            started_at,
+            finished_at,
+        } => {
+            let mut v = json!({
+                "action_id": action_id,
+                "status": "completed",
+                "output": output,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            });
+            if let Some(code) = exit_code {
+                v["exit_code"] = json!(code);
+            }
+            if *truncated {
+                v["truncated"] = json!(true);
+            }
+            if let Some(p) = log_path {
+                v["log_path"] = json!(p);
+            }
+            v
+        }
+        ActionState::Failed {
+            error,
+            error_reason,
+            log_path,
+            exit_code,
+            started_at,
+            finished_at,
+        } => {
+            let mut v = json!({
+                "action_id": action_id,
+                "status": "failed",
+                "error": error,
+                "error_reason": error_reason,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            });
+            if let Some(code) = exit_code {
+                v["exit_code"] = json!(code);
+            }
+            if let Some(p) = log_path {
+                v["log_path"] = json!(p);
+            }
+            v
+        }
+        ActionState::Cancelled {
+            started_at,
+            finished_at,
+        } => json!({
+            "action_id": action_id,
+            "status": "cancelled",
+            "started_at": started_at,
+            "finished_at": finished_at,
+        }),
+        ActionState::Waiting { due_at } => {
+            json!({ "action_id": action_id, "status": "scheduled", "due_at": due_at })
+        }
+        ActionState::Running { .. } => {
+            json!({ "action_id": action_id, "status": "running" })
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "action_service_tests.rs"]
+mod tests;
