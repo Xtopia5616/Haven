@@ -41,16 +41,24 @@ impl MediaTool {
             return Ok(ToolResult::ok(output));
         };
         if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
+            return Ok(ToolResult::cancelled("image generation cancelled"));
         }
-        let image = tokio::time::timeout(
-            Duration::from_secs(self.timeout_secs),
-            client.generate(&prompt),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!("image generation timed out after {}s", self.timeout_secs)
-        })??;
+        let timeout_secs = self.timeout_secs.max(1);
+        let image = tokio::select! {
+            _ = cancel.cancelled() => {
+                return Ok(ToolResult::cancelled("image generation cancelled"));
+            }
+            result = tokio::time::timeout(
+                Duration::from_secs(timeout_secs),
+                client.generate(&prompt),
+            ) => result
+                .map_err(|_| {
+                    anyhow::anyhow!("image generation timed out after {}s", timeout_secs)
+                })??,
+        };
+        if cancel.is_cancelled() {
+            return Ok(ToolResult::cancelled("image generation cancelled"));
+        }
         if image.data.is_empty() {
             anyhow::bail!("image generation returned empty media");
         }
@@ -62,6 +70,9 @@ impl MediaTool {
         }
         let root = default_generated_media_dir();
         tokio::fs::create_dir_all(&root).await?;
+        if cancel.is_cancelled() {
+            return Ok(ToolResult::cancelled("image generation cancelled"));
+        }
         let extension = extension_for_media_type(&image.media_type);
         let path = root.join(format!(
             "{}.{}",
@@ -84,7 +95,15 @@ impl MediaTool {
             Ok(())
         })
         .await??;
+        if cancel.is_cancelled() {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(ToolResult::cancelled("image generation cancelled"));
+        }
         let size = tokio::fs::metadata(&path).await?.len();
+        if cancel.is_cancelled() {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(ToolResult::cancelled("image generation cancelled"));
+        }
         let asset = match register_generated_asset(
             &self.managed_assets,
             params.session_id.as_deref(),

@@ -68,7 +68,10 @@
 	data-surface="outlined"
 	aria-label="Agent 工作过程"
 >
-	<MaterialCollapsible bind:open lazy>
+	<!-- Keep child disclosure components mounted. The outer summary is a
+	     second, independent disclosure; lazy-unmounting it reset the manual
+	     open/closed state of the nested reasoning and tool-result cards. -->
+	<MaterialCollapsible bind:open>
 		{#snippet header()}
 			<span class="activity-status" aria-hidden="true">
 				{#if streaming}

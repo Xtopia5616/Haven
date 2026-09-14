@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::media_reference::model_media_reference_with_capabilities;
@@ -45,6 +46,10 @@ impl haven_llm::OcrClient for DedicatedOcrClient {
 
 struct DummyImageGenClient;
 
+struct BlockingImageGenClient {
+    started: Arc<Notify>,
+}
+
 #[async_trait]
 impl haven_llm::ImageGenClient for DummyImageGenClient {
     async fn generate(&self, _prompt: &str) -> anyhow::Result<haven_llm::GeneratedImage> {
@@ -52,6 +57,14 @@ impl haven_llm::ImageGenClient for DummyImageGenClient {
             media_type: "image/png".into(),
             data: b"png".to_vec(),
         })
+    }
+}
+
+#[async_trait]
+impl haven_llm::ImageGenClient for BlockingImageGenClient {
+    async fn generate(&self, _prompt: &str) -> anyhow::Result<haven_llm::GeneratedImage> {
+        self.started.notify_one();
+        std::future::pending().await
     }
 }
 
@@ -219,6 +232,50 @@ async fn inspect_supports_video_assets_and_uses_typed_representation() {
     assert_eq!(result.output["modality"], "video");
     assert_eq!(result.output["representation"], "managed_file_ref");
     assert!(result.output.get("path").is_none());
+}
+
+#[tokio::test]
+async fn generation_cancellation_interrupts_an_in_flight_provider_call() {
+    let started = Arc::new(Notify::new());
+    let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 60, 2_000)
+        .with_image_gen_client(Some(Arc::new(BlockingImageGenClient {
+            started: started.clone(),
+        })));
+    let cancel = CancellationToken::new();
+    let task = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            tool.run(
+                MediaParams {
+                    operation: MediaOperation::Generate,
+                    asset_id: None,
+                    focus: None,
+                    prompt: Some("a red fox".into()),
+                    page_index: None,
+                    file_path: None,
+                    text: None,
+                    duration: None,
+                    volume: None,
+                    muted: None,
+                    session_id: None,
+                },
+                cancel,
+            )
+            .await
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), started.notified())
+        .await
+        .expect("provider call should start");
+    cancel.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .expect("cancellation should finish the tool")
+        .expect("generation task should not panic")
+        .expect("generation should return a structured result");
+    assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
 }
 
 #[test]

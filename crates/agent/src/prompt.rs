@@ -514,8 +514,8 @@ fn tool_root_and_operation(def: &ToolDef) -> (String, String) {
 }
 
 /// Render a compact hierarchical catalog. The full per-operation schema stays
-/// in the provider `tools[]` list; this index only exposes family → root →
-/// operation names so the model can decide which layer to load.
+/// in the provider `tools[]` list; this index exposes every enabled family →
+/// root → operation name so the model can decide which layer to load.
 fn render_tool_index(defs: &[ToolDef]) -> String {
     let mut groups = BTreeMap::<String, ToolIndexGroup>::new();
     for def in defs
@@ -570,17 +570,23 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
         rendered.push_str(&format!(
             "- {family}: use {when_to_use}; avoid {when_not_to_use}; roots: "
         ));
+        // Do not truncate this list as a whole. The catalog is the only place
+        // where deferred builtin names are advertised; truncating at a fixed
+        // character count silently made later operations impossible to load
+        // even though they were enabled and executable.
         let roots = group
             .roots
             .into_iter()
             .map(|(root, operations)| {
-                format!(
-                    "{root}({})",
-                    compact_index_text(&operations.join(", "), 240)
-                )
+                let root = compact_index_text(&root, 96);
+                let operations = operations
+                    .into_iter()
+                    .map(|operation| compact_index_text(&operation, 96))
+                    .collect::<Vec<_>>();
+                format!("{root}({})", operations.join(", "))
             })
             .collect::<Vec<_>>();
-        rendered.push_str(&compact_index_text(&roots.join("; "), 640));
+        rendered.push_str(&roots.join("; "));
         rendered.push('\n');
     }
     rendered
@@ -1790,6 +1796,32 @@ mod tests {
         assert!(index.contains("ignore prior rules secret"));
         assert!(!index.contains("ignore prior rules\nsecret"));
         assert!(index.contains("roots: external(external)"));
+    }
+
+    #[test]
+    fn tool_index_keeps_late_operations_visible_for_deferred_loading() {
+        let defs = (0..40)
+            .map(|index| {
+                let name = format!("files.operation_{index:02}");
+                ToolDef::new(
+                    name.clone(),
+                    "operation",
+                    json!({"type": "object"}),
+                    RiskLevel::Low,
+                )
+                .with_catalog_group(ToolCatalogGroup::System)
+                .with_prompt(ToolPrompt {
+                    when_to_use: "use it".into(),
+                    when_not_to_use: "do not misuse it".into(),
+                    key_operations: vec![name],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let index = render_tool_index(&defs);
+        assert!(index.contains("files(operation_00"));
+        assert!(index.contains("operation_39"));
+        assert_eq!(index.matches("operation_").count(), 40);
     }
 
     #[tokio::test]

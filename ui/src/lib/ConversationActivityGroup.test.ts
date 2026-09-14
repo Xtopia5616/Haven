@@ -42,6 +42,54 @@ describe('ConversationActivityGroup', () => {
 		expect(container.textContent).toContain('已检查完成');
 	});
 
+	it('preserves each nested disclosure when the activity summary is toggled', async () => {
+		const entries = [
+			{
+				message: {
+					id: 'reasoning-1',
+					role: 'assistant',
+					content: '思考完成',
+					type: 'reasoning',
+					streaming: false,
+				},
+				index: 0,
+			},
+			{
+				message: {
+					id: 'tool-1',
+					role: 'assistant',
+					content: '工具完成',
+					type: 'tool',
+					toolName: 'shell',
+					streaming: false,
+				},
+				index: 1,
+			},
+		];
+		const { container } = render(ConversationActivityGroup, {
+			entries,
+			streaming: false,
+			toolCount: 1,
+			stepCount: 2,
+			allMessages: entries.map((entry) => entry.message),
+		});
+		const headers = () =>
+			Array.from(container.querySelectorAll('.md-collapsible-header')) as HTMLButtonElement[];
+		const outer = headers()[0];
+
+		expect(headers()).toHaveLength(3);
+		await fireEvent.click(outer);
+		await fireEvent.click(headers()[1]);
+		await fireEvent.click(headers()[2]);
+		expect(headers()[1].getAttribute('aria-expanded')).toBe('true');
+		expect(headers()[2].getAttribute('aria-expanded')).toBe('true');
+
+		await fireEvent.click(outer);
+		await fireEvent.click(outer);
+		expect(headers()[1].getAttribute('aria-expanded')).toBe('true');
+		expect(headers()[2].getAttribute('aria-expanded')).toBe('true');
+	});
+
 	it('keeps the collapsible work surface outlined around nested work entries', () => {
 		const toolMessage = {
 			...entry(false).message,
