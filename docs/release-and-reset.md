@@ -4,10 +4,12 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
-本版本将安全策略改为单一的 `security.permission_mode`；有效值为
-`balanced`、`careful`、`manual`、`autonomous`。旧的 `confirmation_mode` / `min_risk_level`
-组合不再自动解释，`[security]` 中的未知字段会使配置解析失败；原配置会被备份为
-`config.toml.*.bak` 并以默认配置启动。请按下文完整重置或仅手工重建新的 `[security]` 段。
+本版本将安全策略重构为互相独立的确认、文件沙箱和网络策略；`security.permission_mode` 有效值为
+`plan`、`default`、`auto_edit`、`autonomous`，另有 `sandbox_mode = "read_only" | "workspace_write" | "full_access"`、
+可选的绝对路径数组 `writable_roots` 和 `network_policy = "deny" | "restricted" | "open"`。旧的
+`balanced`、`careful`、`manual` 以及
+`confirmation_mode` / `min_risk_level` 组合不再自动解释，`[security]` 中的未知字段会使配置解析失败；
+原配置会被备份为 `config.toml.*.bak` 并以默认配置启动。请按下文完整重置或仅手工重建新的 `[security]` 段。
 
 本版本同样不再迁移顶层 `[audio]`、旧的 `[tool_settings.audio]` 或已删除的 `[tool_settings.*]` 名称；这几类配置会备份后以默认值启动。
 旧工具名称不再迁移或兼容：`[tool_settings.file]`、`file[:operation]`、

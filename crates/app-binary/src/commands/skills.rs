@@ -184,7 +184,6 @@ pub async fn execute_skill(
         ConfirmationResult::AutoApproved => {}
         ConfirmationResult::RequiresConfirmation {
             tool_name,
-            params,
             risk_level,
             receipt,
             ..

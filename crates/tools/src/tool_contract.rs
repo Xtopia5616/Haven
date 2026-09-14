@@ -231,6 +231,13 @@ pub struct OperationPolicy {
 }
 
 impl OperationPolicy {
+    /// Whether the operation is explicitly declared read-only by its
+    /// executable scheduling contract. Risk alone is not enough: a Safe
+    /// operation can still have an external effect (for example speech).
+    pub fn is_read_only(&self) -> bool {
+        matches!(self.concurrency, ToolConcurrency::ReadOnly)
+    }
+
     pub fn to_catalog_policy(&self) -> ToolPolicy {
         let concurrency = match self.concurrency {
             ToolConcurrency::ReadOnly => "read_only".to_string(),

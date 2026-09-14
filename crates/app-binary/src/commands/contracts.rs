@@ -432,7 +432,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "Settings",
         response: "()",
         boundary: CommandBoundary::Mutate,
-        security: "shared loader preserves masked secrets and tool sections",
+        security: "shared loader preserves masked secrets, tool sections, and permission rules",
     },
     CommandContract {
         name: "list_permissions",

@@ -121,8 +121,14 @@
 	});
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
 	let memoryMaintenance = $state({ running: false, lastCount: null });
-	/** @type {{ permission_mode: string, permissions: any[] }} */
-	let security = $state({ permission_mode: 'balanced', permissions: [] });
+	/** @type {{ permission_mode: string, sandbox_mode: string, network_policy: string, writable_roots: string[], permissions: any[] }} */
+	let security = $state({
+		permission_mode: 'default',
+		sandbox_mode: 'workspace_write',
+		network_policy: 'restricted',
+		writable_roots: [],
+		permissions: [],
+	});
 	let stt = $state({
 		provider: 'llm',
 		mcp_server: '',
@@ -251,7 +257,10 @@
 			},
 			security: {
 				permission_mode: security.permission_mode,
-				permissions: [],
+				sandbox_mode: security.sandbox_mode,
+				network_policy: security.network_policy,
+				writable_roots: security.writable_roots,
+				permissions: security.permissions,
 			},
 			context_limits: contextLimits,
 			media: {
@@ -584,7 +593,12 @@
 				contextLimits = settings.context_limits || contextLimits;
 				memory = settings.memory || memory;
 				security = {
-					permission_mode: settings.security?.permission_mode || 'balanced',
+					permission_mode: settings.security?.permission_mode || 'default',
+					sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
+					network_policy: settings.security?.network_policy || 'restricted',
+					writable_roots: Array.isArray(settings.security?.writable_roots)
+						? settings.security.writable_roots
+						: [],
 					permissions: Array.isArray(settings.security?.permissions)
 						? settings.security.permissions
 						: [],
@@ -742,7 +756,10 @@
 					},
 					security: {
 						permission_mode: security.permission_mode,
-						permissions: [],
+						sandbox_mode: security.sandbox_mode,
+						network_policy: security.network_policy,
+						writable_roots: security.writable_roots,
+						permissions: security.permissions,
 					},
 					context_limits: contextLimits,
 					media: {

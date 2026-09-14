@@ -532,10 +532,10 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
                 permission_key: "files.read".into(),
-                confirmation: ConfirmationRequirement::SecurityPolicy,
+                confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::SharedResource("files".into()),
+                concurrency: ToolConcurrency::ReadOnly,
             },
             risk_rule: None,
             catalog_group: ToolCatalogGroup::System,
@@ -558,10 +558,10 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
                 permission_key: "files.outline".into(),
-                confirmation: ConfirmationRequirement::SecurityPolicy,
+                confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::SharedResource("files".into()),
+                concurrency: ToolConcurrency::ReadOnly,
             },
             risk_rule: None,
             catalog_group: ToolCatalogGroup::System,
@@ -584,10 +584,10 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
                 permission_key: "files.summary".into(),
-                confirmation: ConfirmationRequirement::SecurityPolicy,
+                confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::SharedResource("files".into()),
+                concurrency: ToolConcurrency::ReadOnly,
             },
             risk_rule: None,
             catalog_group: ToolCatalogGroup::System,
@@ -610,10 +610,10 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
                 permission_key: "files.search".into(),
-                confirmation: ConfirmationRequirement::SecurityPolicy,
+                confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::SharedResource("files".into()),
+                concurrency: ToolConcurrency::ReadOnly,
             },
             risk_rule: Some(OperationViewRiskRule::ContentSearchMedium),
             catalog_group: ToolCatalogGroup::System,
@@ -1033,6 +1033,72 @@ fn catalog_group_for_operation(name: &str) -> ToolCatalogGroup {
     }
 }
 
+/// Explicit read-only declarations used by the permission engine's plan and
+/// default modes. Names are stable operation identities, not user-controlled
+/// input, so a new operation must opt in here instead of inheriting a risky
+/// guess from its tool family.
+fn is_read_only_operation(name: &str) -> bool {
+    matches!(
+        name,
+        "files.read"
+            | "files.inspect"
+            | "files.stat"
+            | "files.hash"
+            | "files.outline"
+            | "files.summary"
+            | "files.search"
+            | "files.list"
+            | "process.list"
+            | "clipboard.read"
+            | "clipboard.history"
+            | "window.list"
+            | "window.foreground"
+            | "window.screenshot"
+            | "window.ui_tree"
+            | "window.observe"
+            | "window.wait"
+            | "media.inspect"
+            | "media.describe"
+            | "media.ocr"
+            | "media.transcribe"
+            | "media.extract"
+            | "media.render"
+            | "media.volume_get"
+            | "media.mute_get"
+            | "memory.search"
+            | "memory.list"
+            | "memory.recall"
+            | "agent.list"
+            | "agent.children"
+            | "agent.history"
+            | "agent.inbox"
+            | "agent.profile"
+            | "agent.status"
+            | "agent.wait"
+            | "agent.collect"
+            | "actions.list"
+            | "actions.inspect"
+            | "schedule.list"
+            | "preferences.get"
+            | "preferences.list"
+            | "checklist.list"
+            | "system.info"
+            | "system.display"
+            | "system.env.list"
+            | "system.env.get"
+            | "system.registry.list"
+            | "system.registry.get"
+            | "system.power.status"
+            | "haven.diagnostics.status"
+            | "haven.diagnostics.logs_tail"
+            | "haven.diagnostics.sessions"
+            | "haven.diagnostics.errors"
+            | "haven.tools.tool_list"
+            | "haven.mcp.mcp_list"
+            | "haven.skills.skills_list"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn operation_spec(
     inner: &ToolBox,
@@ -1049,6 +1115,12 @@ fn operation_spec(
     // Operation views are stable permission identities even though execution
     // is delegated to an aggregate builtin implementation.
     policy.permission_key = name.into();
+    if is_read_only_operation(name) {
+        policy.concurrency = ToolConcurrency::ReadOnly;
+        if policy.risk_level < RiskLevel::Critical {
+            policy.confirmation = ConfirmationRequirement::None;
+        }
+    }
     OperationSpec {
         name,
         description,

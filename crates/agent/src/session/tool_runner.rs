@@ -682,6 +682,10 @@ impl SessionExecutor {
             .tools
             .get_risk_level(session_id, tool_name, &input)
             .await;
+        let operation_policy = self
+            .tools
+            .get_operation_policy(session_id, tool_name, &input)
+            .await;
         let policy_input = self
             .tools
             .get_authorization_input(session_id, tool_name, &input)
@@ -691,7 +695,13 @@ impl SessionExecutor {
             && let Err(reason) = self
                 .tools
                 .authorization
-                .verify_receipt(session_id, tool_name, &policy_input, risk_level, receipt)
+                .verify_receipt_with_policy(
+                    session_id,
+                    tool_name,
+                    &policy_input,
+                    &operation_policy,
+                    receipt,
+                )
                 .await
         {
             tracing::warn!(
@@ -723,7 +733,7 @@ impl SessionExecutor {
         match self
             .tools
             .authorization
-            .check(session_id, tool_name, &policy_input, risk_level)
+            .check_with_policy(session_id, tool_name, &policy_input, &operation_policy)
             .await
         {
             ConfirmationResult::AutoApproved => {}
@@ -957,9 +967,9 @@ impl SessionExecutor {
         tool_name: &str,
         input: &Value,
     ) -> ConfirmationResult {
-        let risk_level = self
+        let operation_policy = self
             .tools
-            .get_risk_level(Some(session_id), tool_name, input)
+            .get_operation_policy(Some(session_id), tool_name, input)
             .await;
         let policy_input = self
             .tools
@@ -967,7 +977,12 @@ impl SessionExecutor {
             .await;
         self.tools
             .authorization
-            .check(Some(session_id), tool_name, &policy_input, risk_level)
+            .check_with_policy(
+                Some(session_id),
+                tool_name,
+                &policy_input,
+                &operation_policy,
+            )
             .await
     }
 

@@ -341,6 +341,14 @@ pub struct StoredPermission {
 pub struct SecurityConfig {
     /// Single source of truth for when an agent action needs approval.
     pub permission_mode: PermissionMode,
+    /// File-system boundary evaluated independently from prompting mode.
+    pub sandbox_mode: SandboxMode,
+    /// Optional absolute roots that writable operations must remain inside.
+    /// Empty preserves the per-tool path policy and builtin workspace rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable_roots: Vec<String>,
+    /// Network boundary evaluated before a network-capable tool executes.
+    pub network_policy: NetworkPolicy,
     pub encrypt_sensitive: bool,
     /// Permanent allow/deny grants (Always scope). Session grants live only
     /// in the in-memory AuthorizationEngine.
@@ -351,7 +359,10 @@ pub struct SecurityConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            permission_mode: PermissionMode::Balanced,
+            permission_mode: PermissionMode::Default,
+            sandbox_mode: SandboxMode::WorkspaceWrite,
+            writable_roots: Vec::new(),
+            network_policy: NetworkPolicy::Restricted,
             encrypt_sensitive: true,
             permissions: Vec::new(),
         }
@@ -474,7 +485,9 @@ pub struct ToolConfig {
     /// rejects local/private/link-local destinations.
     pub allowed_domains: Vec<String>,
     pub disabled_operations: Vec<String>,
-    pub risk_override: Option<String>,
+    /// Optional floor that can only make an operation require more approval;
+    /// the typed enum rejects misspelled values during config loading.
+    pub risk_override: Option<RiskLevel>,
 }
 
 fn default_true() -> bool {

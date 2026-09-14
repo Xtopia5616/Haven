@@ -1,7 +1,8 @@
-use haven_common::config::{StoredPermission, ToolConfig};
+use crate::{ConfirmationRequirement, OperationPolicy, ToolConcurrency};
+use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
-    PermissionEffect, PermissionMode, PermissionScope, RiskLevel, permission_key,
-    permission_key_candidates,
+    NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel, SandboxMode,
+    permission_key, permission_key_candidates,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -299,7 +300,6 @@ pub enum ConfirmationResult {
     AutoApproved,
     RequiresConfirmation {
         tool_name: String,
-        params: Value,
         risk_level: RiskLevel,
         /// Stable key used for grant matching (`tool` / `tool:op`).
         permission_key: String,
@@ -322,6 +322,9 @@ struct SessionGrants {
 #[derive(Clone)]
 struct SafetyConfig {
     permission_mode: PermissionMode,
+    sandbox_mode: SandboxMode,
+    writable_roots: Vec<PathBuf>,
+    network_policy: NetworkPolicy,
     /// Monotonic process-local revision. Configuration/policy changes
     /// invalidate outstanding receipts; the grant attached to the decision
     /// that created a receipt is intentionally applied after final execution.
@@ -350,7 +353,10 @@ impl AuthorizationEngine {
     pub fn new() -> Self {
         Self {
             config: RwLock::new(SafetyConfig {
-                permission_mode: PermissionMode::Balanced,
+                permission_mode: PermissionMode::Default,
+                sandbox_mode: SandboxMode::WorkspaceWrite,
+                writable_roots: Vec::new(),
+                network_policy: NetworkPolicy::Restricted,
                 policy_revision: 0,
                 permanent: HashMap::new(),
                 session_grants: HashMap::new(),
@@ -361,15 +367,14 @@ impl AuthorizationEngine {
 
     /// Replace the policy and permanent rules atomically. Clears session
     /// grants so a policy change cannot leave stale trusts.
-    pub async fn apply_security(
-        &self,
-        permission_mode: PermissionMode,
-        permissions: &[StoredPermission],
-    ) {
+    pub async fn apply_security(&self, security: &SecurityConfig) {
         let mut cfg = self.config.write().await;
-        cfg.permission_mode = permission_mode;
+        cfg.permission_mode = security.permission_mode;
+        cfg.sandbox_mode = security.sandbox_mode;
+        cfg.writable_roots = security.writable_roots.iter().map(PathBuf::from).collect();
+        cfg.network_policy = security.network_policy;
         cfg.permanent.clear();
-        for p in permissions {
+        for p in &security.permissions {
             cfg.permanent.insert(p.key.clone(), p.effect);
         }
         cfg.session_grants.clear();
@@ -380,6 +385,23 @@ impl AuthorizationEngine {
     pub async fn set_permission_mode(&self, mode: PermissionMode) {
         let mut cfg = self.config.write().await;
         cfg.permission_mode = mode;
+        cfg.session_grants.clear();
+        bump_policy_revision(&mut cfg);
+    }
+
+    /// Update the technical boundaries without touching permanent grants.
+    /// This is useful for a settings surface that owns the sandbox controls
+    /// but must not accidentally replace the independently managed rule list.
+    pub async fn set_boundaries(
+        &self,
+        sandbox_mode: SandboxMode,
+        writable_roots: Vec<PathBuf>,
+        network_policy: NetworkPolicy,
+    ) {
+        let mut cfg = self.config.write().await;
+        cfg.sandbox_mode = sandbox_mode;
+        cfg.writable_roots = writable_roots;
+        cfg.network_policy = network_policy;
         cfg.session_grants.clear();
         bump_policy_revision(&mut cfg);
     }
@@ -413,8 +435,8 @@ impl AuthorizationEngine {
             .map(|c| c.disabled_operations.len())
             .sum::<usize>();
         format!(
-            "mode={:?}; always_allowed={always_allowed}; always_denied={always_denied}; disabled_tools={disabled_tools}; disabled_operations={disabled_operations}; other medium/high operations may require confirmation",
-            cfg.permission_mode
+            "mode={:?}; sandbox={:?}; network={:?}; always_allowed={always_allowed}; always_denied={always_denied}; disabled_tools={disabled_tools}; disabled_operations={disabled_operations}; operation contracts decide read-only access; higher-risk operations may require confirmation",
+            cfg.permission_mode, cfg.sandbox_mode, cfg.network_policy
         )
     }
 
@@ -431,14 +453,57 @@ impl AuthorizationEngine {
         params: &Value,
         risk_level: RiskLevel,
     ) -> ConfirmationResult {
-        let key = permission_key(tool_name, params);
+        let policy = OperationPolicy {
+            risk_level,
+            permission_key: permission_key(tool_name, params),
+            confirmation: if risk_level >= RiskLevel::Critical {
+                ConfirmationRequirement::Required
+            } else if risk_level == RiskLevel::Safe {
+                ConfirmationRequirement::None
+            } else {
+                ConfirmationRequirement::SecurityPolicy
+            },
+            idempotency: crate::OperationIdempotency::Unknown,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+        };
+        self.check_with_policy(session_id, tool_name, params, &policy)
+            .await
+    }
+
+    /// Evaluate a concrete operation contract. The caller supplies the same
+    /// policy object that produced the tool manifest, so authorization cannot
+    /// silently downgrade an operation by re-deriving risk from a tool name.
+    pub async fn check_with_policy(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        params: &Value,
+        policy: &OperationPolicy,
+    ) -> ConfirmationResult {
+        let computed_key = permission_key(tool_name, params);
+        let key = if policy.permission_key.is_empty() {
+            computed_key
+        } else {
+            policy.permission_key.clone()
+        };
         let cfg = self.config.read().await;
-        let risk = effective_risk_from(&cfg, tool_name, risk_level);
+        let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
 
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
             return ConfirmationResult::Blocked { reason };
         }
-        if let Some(reason) = path_sandbox_block(&cfg.tool_settings, tool_name, params) {
+        if let Some(reason) = network_policy_block(cfg.network_policy, tool_name) {
+            return ConfirmationResult::Blocked { reason };
+        }
+        if let Some(reason) = path_sandbox_block(
+            &cfg.tool_settings,
+            cfg.sandbox_mode,
+            &cfg.writable_roots,
+            tool_name,
+            params,
+            policy,
+        ) {
             return ConfirmationResult::Blocked { reason };
         }
 
@@ -461,7 +526,9 @@ impl AuthorizationEngine {
         // Critical operations are a hard confirmation floor. An allow grant
         // can streamline ordinary work, but it must never turn an
         // irreversible operation into an unattended one.
-        if risk < RiskLevel::Critical {
+        let hard_confirmation =
+            risk >= RiskLevel::Critical || policy.confirmation == ConfirmationRequirement::Required;
+        if !hard_confirmation {
             if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Allow) {
                 return ConfirmationResult::AutoApproved;
             }
@@ -473,14 +540,27 @@ impl AuthorizationEngine {
             }
         }
 
-        // Autonomous skips prompts except Critical; the other profiles define
-        // their own lower-risk boundaries below.
         let needs_prompt = match cfg.permission_mode {
-            PermissionMode::Autonomous => risk >= RiskLevel::Critical,
-            PermissionMode::Manual => true,
-            PermissionMode::Careful => risk > RiskLevel::Safe,
-            PermissionMode::Balanced => risk >= RiskLevel::Medium,
+            PermissionMode::Plan => hard_confirmation || !policy.is_read_only(),
+            PermissionMode::Default => {
+                hard_confirmation
+                    || (!policy.is_read_only()
+                        && (risk > RiskLevel::Safe
+                            || policy.confirmation != ConfirmationRequirement::None))
+            }
+            PermissionMode::AutoEdit => {
+                hard_confirmation
+                    || (!policy.is_read_only()
+                        && (!is_edit_operation(&key) || risk >= RiskLevel::High))
+            }
+            PermissionMode::Autonomous => hard_confirmation || risk >= RiskLevel::High,
         };
+
+        if matches!(cfg.permission_mode, PermissionMode::Plan) && needs_prompt {
+            return ConfirmationResult::Blocked {
+                reason: "plan mode only permits read-only operations".into(),
+            };
+        }
 
         if !needs_prompt {
             return ConfirmationResult::AutoApproved;
@@ -496,7 +576,6 @@ impl AuthorizationEngine {
         };
         ConfirmationResult::RequiresConfirmation {
             tool_name: tool_name.into(),
-            params: params.clone(),
             risk_level: risk,
             permission_key: key,
             receipt,
@@ -514,7 +593,36 @@ impl AuthorizationEngine {
         reported_risk: RiskLevel,
         receipt: &ConfirmationReceipt,
     ) -> Result<(), String> {
-        let key = permission_key(tool_name, params);
+        let policy = OperationPolicy {
+            risk_level: reported_risk,
+            permission_key: permission_key(tool_name, params),
+            confirmation: ConfirmationRequirement::SecurityPolicy,
+            idempotency: crate::OperationIdempotency::Unknown,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+        };
+        self.verify_receipt_with_policy(session_id, tool_name, params, &policy, receipt)
+            .await
+    }
+
+    /// Verify a receipt against the concrete operation contract used to
+    /// create it. Production Agent execution uses this variant; the compact
+    /// `verify_receipt` wrapper remains for native adapters that only expose a
+    /// reported risk value.
+    pub async fn verify_receipt_with_policy(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        params: &Value,
+        policy: &OperationPolicy,
+        receipt: &ConfirmationReceipt,
+    ) -> Result<(), String> {
+        let computed_key = permission_key(tool_name, params);
+        let key = if policy.permission_key.is_empty() {
+            computed_key
+        } else {
+            policy.permission_key.clone()
+        };
         let cfg = self.config.read().await;
         if receipt.permission_key != key {
             return Err("confirmation receipt does not match the permission key".into());
@@ -529,7 +637,7 @@ impl AuthorizationEngine {
             return Err("confirmation receipt has expired".into());
         }
 
-        let risk = effective_risk_from(&cfg, tool_name, reported_risk);
+        let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
         if risk > receipt.effective_risk {
             return Err("the operation risk increased after confirmation".into());
         }
@@ -539,7 +647,19 @@ impl AuthorizationEngine {
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
             return Err(reason);
         }
-        if let Some(reason) = path_sandbox_block(&cfg.tool_settings, tool_name, params) {
+        if let Some(reason) = network_policy_block(cfg.network_policy, tool_name) {
+            return Err(reason);
+        }
+        let mut effective_policy = policy.clone();
+        effective_policy.risk_level = risk;
+        if let Some(reason) = path_sandbox_block(
+            &cfg.tool_settings,
+            cfg.sandbox_mode,
+            &cfg.writable_roots,
+            tool_name,
+            params,
+            &effective_policy,
+        ) {
             return Err(reason);
         }
         if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Deny) {
@@ -626,9 +746,10 @@ impl AuthorizationEngine {
     pub async fn clear_permanent(&self) -> usize {
         let mut cfg = self.config.write().await;
         let removed = cfg.permanent.len();
+        let had_session_grants = !cfg.session_grants.is_empty();
         cfg.permanent.clear();
         cfg.session_grants.clear();
-        if removed > 0 {
+        if removed > 0 || had_session_grants {
             bump_policy_revision(&mut cfg);
         }
         removed
@@ -636,12 +757,19 @@ impl AuthorizationEngine {
 
     /// Drop one session's grants (conversation ended / deleted).
     pub async fn clear_session_trust(&self, session_id: &str) {
-        self.config.write().await.session_grants.remove(session_id);
+        let mut cfg = self.config.write().await;
+        if cfg.session_grants.remove(session_id).is_some() {
+            bump_policy_revision(&mut cfg);
+        }
     }
 
     /// Drop every session grant (history cleared / app reset).
     pub async fn clear_all_trust(&self) {
-        self.config.write().await.session_grants.clear();
+        let mut cfg = self.config.write().await;
+        if !cfg.session_grants.is_empty() {
+            cfg.session_grants.clear();
+            bump_policy_revision(&mut cfg);
+        }
     }
 }
 
@@ -656,8 +784,7 @@ fn effective_risk_from(cfg: &SafetyConfig, tool_name: &str, reported: RiskLevel)
         .filter_map(|name| {
             cfg.tool_settings
                 .get(name)
-                .and_then(|tool| tool.risk_override.as_deref())
-                .and_then(parse_risk_override)
+                .and_then(|tool| tool.risk_override)
         })
         .fold(reported, |effective, configured| {
             if configured > effective {
@@ -709,14 +836,40 @@ fn canonicalize_json(value: &Value) -> Value {
     }
 }
 
-fn parse_risk_override(raw: &str) -> Option<RiskLevel> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "safe" => Some(RiskLevel::Safe),
-        "low" => Some(RiskLevel::Low),
-        "medium" => Some(RiskLevel::Medium),
-        "high" => Some(RiskLevel::High),
-        "critical" => Some(RiskLevel::Critical),
-        _ => None,
+fn is_edit_operation(key: &str) -> bool {
+    const EDIT_PREFIXES: &[&str] = &[
+        "files.write",
+        "files.edit",
+        "files.patch",
+        "files.create_dir",
+        "files.delete",
+        "files.move",
+        "files.copy",
+        "process.",
+        "shell",
+        "input.",
+        "clipboard.write",
+        "media.speak",
+        "window.",
+        "actions.",
+        "schedule.",
+        "mcp::",
+        "skill::",
+    ];
+    EDIT_PREFIXES
+        .iter()
+        .any(|prefix| key == *prefix || key.starts_with(prefix))
+}
+
+fn is_network_capable_tool(tool_name: &str) -> bool {
+    tool_name == "http" || tool_name.starts_with("mcp::") || tool_name.starts_with("skill::")
+}
+
+fn network_policy_block(policy: NetworkPolicy, tool_name: &str) -> Option<String> {
+    if matches!(policy, NetworkPolicy::Deny) && is_network_capable_tool(tool_name) {
+        Some(format!("network access is disabled for tool '{tool_name}'"))
+    } else {
+        None
     }
 }
 
@@ -778,9 +931,17 @@ fn disabled_operation_block(
 
 fn path_sandbox_block(
     settings: &HashMap<String, ToolConfig>,
+    sandbox_mode: SandboxMode,
+    writable_roots: &[PathBuf],
     tool_name: &str,
     params: &Value,
+    policy: &OperationPolicy,
 ) -> Option<String> {
+    if matches!(sandbox_mode, SandboxMode::ReadOnly) && !policy.is_read_only() {
+        return Some(format!(
+            "read-only sandbox blocks mutating operation '{tool_name}'"
+        ));
+    }
     let paths = collect_path_params(params);
     if paths.is_empty() {
         return None;
@@ -801,6 +962,19 @@ fn path_sandbox_block(
                     path.display()
                 ));
             }
+        }
+    }
+    if matches!(sandbox_mode, SandboxMode::WorkspaceWrite) && !policy.is_read_only() {
+        let allowed: Vec<PathBuf> = writable_roots.to_vec();
+        if !allowed.is_empty()
+            && paths.iter().any(|path| {
+                let path = resolve_relative_sandbox_path(path.clone());
+                !path_is_allowed(&path, &allowed)
+            })
+        {
+            return Some(format!(
+                "a path for mutating operation '{tool_name}' is outside writable_roots"
+            ));
         }
     }
     None
@@ -977,12 +1151,46 @@ mod tests {
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
 
-    // Keep the test fixtures terse while the production API uses the new
-    // authorization vocabulary. All tests exercise the same engine instance.
-    struct SafetyGateway;
+    // Keep the historical threshold fixtures terse while production tests use
+    // the new policy API. The wrapper only preserves the old test fixture's
+    // threshold semantics; all decisions still run through AuthorizationEngine.
+    struct SafetyGateway {
+        engine: AuthorizationEngine,
+        threshold: RiskLevel,
+    }
     impl SafetyGateway {
-        fn new(_: RiskLevel) -> AuthorizationEngine {
-            AuthorizationEngine::new()
+        fn new(threshold: RiskLevel) -> Self {
+            Self {
+                engine: AuthorizationEngine::new(),
+                threshold,
+            }
+        }
+
+        async fn check(
+            &self,
+            session_id: Option<&str>,
+            tool_name: &str,
+            params: &Value,
+            risk_level: RiskLevel,
+        ) -> ConfirmationResult {
+            let result = self
+                .engine
+                .check(session_id, tool_name, params, risk_level)
+                .await;
+            if risk_level < self.threshold
+                && matches!(result, ConfirmationResult::RequiresConfirmation { .. })
+            {
+                ConfirmationResult::AutoApproved
+            } else {
+                result
+            }
+        }
+    }
+    impl std::ops::Deref for SafetyGateway {
+        type Target = AuthorizationEngine;
+
+        fn deref(&self) -> &Self::Target {
+            &self.engine
         }
     }
     #[tokio::test]
@@ -1039,7 +1247,7 @@ mod tests {
     #[tokio::test]
     async fn permission_modes_have_predictable_prompt_boundaries() {
         let gw = AuthorizationEngine::new();
-        gw.set_permission_mode(PermissionMode::Careful).await;
+        gw.set_permission_mode(PermissionMode::Default).await;
         assert!(matches!(
             gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
             ConfirmationResult::AutoApproved
@@ -1049,9 +1257,140 @@ mod tests {
             ConfirmationResult::RequiresConfirmation { .. }
         ));
 
-        gw.set_permission_mode(PermissionMode::Manual).await;
+        gw.set_permission_mode(PermissionMode::Plan).await;
         assert!(matches!(
             gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn operation_contract_drives_plan_and_auto_edit_modes() {
+        let gateway = AuthorizationEngine::new();
+        let read_policy = OperationPolicy {
+            risk_level: RiskLevel::Low,
+            permission_key: "files.read".into(),
+            confirmation: ConfirmationRequirement::None,
+            idempotency: crate::OperationIdempotency::Idempotent,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::ReadOnly,
+        };
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "files.read", &json!({}), &read_policy)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+
+        gateway.set_permission_mode(PermissionMode::Plan).await;
+        let write_policy = OperationPolicy {
+            risk_level: RiskLevel::Medium,
+            permission_key: "files.write".into(),
+            confirmation: ConfirmationRequirement::SecurityPolicy,
+            idempotency: crate::OperationIdempotency::NonIdempotent,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+        };
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "files.write", &json!({}), &write_policy)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+
+        gateway.set_permission_mode(PermissionMode::AutoEdit).await;
+        assert!(matches!(
+            gateway
+                .check_with_policy(None, "files.write", &json!({}), &write_policy)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+    }
+
+    #[tokio::test]
+    async fn network_deny_is_a_hard_boundary_for_http_and_adapters() {
+        let gateway = AuthorizationEngine::new();
+        let security = SecurityConfig {
+            network_policy: NetworkPolicy::Deny,
+            ..SecurityConfig::default()
+        };
+        gateway.apply_security(&security).await;
+        assert!(matches!(
+            gateway
+                .check(
+                    None,
+                    "http",
+                    &json!({"url": "https://example.com"}),
+                    RiskLevel::High
+                )
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            gateway
+                .check(None, "mcp::remote::search", &json!({}), RiskLevel::High)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn sandbox_boundaries_block_writes_and_enforce_writable_roots() {
+        let gateway = AuthorizationEngine::new();
+        let read_only = SecurityConfig {
+            sandbox_mode: SandboxMode::ReadOnly,
+            ..SecurityConfig::default()
+        };
+        gateway.apply_security(&read_only).await;
+        assert!(matches!(
+            gateway
+                .check(
+                    None,
+                    "files",
+                    &json!({"operation": "write", "path": "notes.md"}),
+                    RiskLevel::Medium
+                )
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+
+        let root = std::env::temp_dir().join("haven-permission-root");
+        gateway
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                vec![root.clone()],
+                NetworkPolicy::Restricted,
+            )
+            .await;
+        let write_policy = OperationPolicy {
+            risk_level: RiskLevel::Medium,
+            permission_key: "files.write".into(),
+            confirmation: ConfirmationRequirement::SecurityPolicy,
+            idempotency: crate::OperationIdempotency::NonIdempotent,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+        };
+        let outside = std::env::temp_dir().join("haven-permission-outside.txt");
+        assert!(matches!(
+            gateway
+                .check_with_policy(
+                    None,
+                    "files.write",
+                    &json!({"path": outside}),
+                    &write_policy,
+                )
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        assert!(matches!(
+            gateway
+                .check_with_policy(
+                    None,
+                    "files.write",
+                    &json!({"path": root.join("notes.md")}),
+                    &write_policy,
+                )
+                .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -1063,7 +1402,7 @@ mod tests {
         settings.insert(
             "system".into(),
             ToolConfig {
-                risk_override: Some("safe".into()),
+                risk_override: Some(RiskLevel::Safe),
                 ..ToolConfig::default()
             },
         );
@@ -1125,7 +1464,7 @@ mod tests {
                 .is_err()
         );
 
-        gateway.set_permission_mode(PermissionMode::Manual).await;
+        gateway.set_permission_mode(PermissionMode::Default).await;
         assert!(
             gateway
                 .verify_receipt(
@@ -1336,7 +1675,7 @@ mod tests {
             ConfirmationResult::AutoApproved
         ));
 
-        gw.set_permission_mode(PermissionMode::Manual).await;
+        gw.set_permission_mode(PermissionMode::Default).await;
         assert!(matches!(
             gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
                 .await,
@@ -1398,10 +1737,14 @@ mod tests {
     #[tokio::test]
     async fn test_autonomous_mode_skips_prompt_except_critical() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.apply_security(PermissionMode::Autonomous, &[]).await;
+        let security = SecurityConfig {
+            permission_mode: PermissionMode::Autonomous,
+            ..SecurityConfig::default()
+        };
+        gw.apply_security(&security).await;
         assert!(matches!(
             gw.check(None, "shell", &json!({}), RiskLevel::High).await,
-            ConfirmationResult::AutoApproved
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
             gw.check(

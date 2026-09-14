@@ -217,7 +217,7 @@ impl Tool for OperationViewTool {
         policy.risk_level = self.risk_level(input);
         policy.confirmation = if policy.risk_level >= RiskLevel::Critical {
             ConfirmationRequirement::Required
-        } else if policy.risk_level == RiskLevel::Safe {
+        } else if policy.is_read_only() || policy.risk_level == RiskLevel::Safe {
             ConfirmationRequirement::None
         } else {
             ConfirmationRequirement::SecurityPolicy

@@ -157,22 +157,56 @@ pub enum RiskLevel {
 
 /// User-facing authorization policy for agent actions.
 ///
-/// A single mode is the source of truth for prompting. This replaces the old
-/// pair of `confirmation_mode` and `min_risk_level` settings, which described
-/// one policy in two independent and confusing ways.
+/// Prompting mode is deliberately separate from the technical sandbox and
+/// network boundary. These values mirror the four useful states exposed by
+/// current coding agents: inspect-only planning, normal prompting, edit
+/// convenience, and explicit autonomous execution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
-    /// Safe/low operations run automatically; medium and above ask.
+    /// Read-only inspection is automatic; changes and external effects ask.
     #[default]
-    Balanced,
-    /// Ask before every non-read-only operation.
-    Careful,
-    /// Ask before every operation, including read-only operations.
-    Manual,
-    /// Run non-critical approved operations automatically; critical actions
+    Default,
+    /// Only read-only operations are allowed. Mutations are blocked.
+    Plan,
+    /// Automatically accept edits within the configured boundary; commands,
+    /// network access and higher-risk effects still ask.
+    AutoEdit,
+    /// Run non-critical operations without prompting; Critical operations
     /// still require explicit confirmation.
     Autonomous,
+}
+
+/// Technical file-system boundary applied by the authorization gateway.
+///
+/// `WorkspaceWrite` is a policy boundary for path-bearing builtin tools. A
+/// future OS-level job sandbox may enforce the same boundary for arbitrary
+/// child processes; it must not be inferred from this enum alone.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    /// No write operation is allowed through the authorization gateway.
+    ReadOnly,
+    /// Writes are allowed only where the configured tool/workspace roots
+    /// permit them.
+    #[default]
+    WorkspaceWrite,
+    /// Explicit escape hatch for trusted local operation.
+    FullAccess,
+}
+
+/// Technical network boundary for network-capable tools.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPolicy {
+    /// No network-capable tool may run.
+    Deny,
+    /// Public destinations are allowed subject to each tool's SSRF and
+    /// allowlist checks.
+    #[default]
+    Restricted,
+    /// Do not add a global network restriction. Tool-level checks still run.
+    Open,
 }
 
 /// Allow or deny a permission grant.
@@ -1315,8 +1349,8 @@ mod tests {
     #[test]
     fn permission_mode_has_only_named_profiles() {
         assert!(serde_json::from_str::<PermissionMode>("\"always\"").is_err());
-        let mode: PermissionMode = serde_json::from_str("\"balanced\"").unwrap();
-        assert_eq!(mode, PermissionMode::Balanced);
+        let mode: PermissionMode = serde_json::from_str("\"default\"").unwrap();
+        assert_eq!(mode, PermissionMode::Default);
     }
 
     #[test]

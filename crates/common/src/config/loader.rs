@@ -534,25 +534,25 @@ mod tests {
     fn security_explicit_permission_mode_uses_named_profile() {
         let parsed: SecurityConfig = toml::from_str(
             r#"
-                permission_mode = "balanced"
+                permission_mode = "default"
                 encrypt_sensitive = true
             "#,
         )
         .unwrap();
-        assert_eq!(parsed.permission_mode, PermissionMode::Balanced);
+        assert_eq!(parsed.permission_mode, PermissionMode::Default);
     }
 
     #[test]
-    fn security_explicit_careful_mode_wins() {
-        let parsed: SecurityConfig = toml::from_str(r#"permission_mode = "careful""#).unwrap();
-        assert_eq!(parsed.permission_mode, PermissionMode::Careful);
+    fn security_explicit_auto_edit_mode_wins() {
+        let parsed: SecurityConfig = toml::from_str(r#"permission_mode = "auto_edit""#).unwrap();
+        assert_eq!(parsed.permission_mode, PermissionMode::AutoEdit);
     }
 
     #[test]
-    fn security_missing_table_uses_balanced_default() {
+    fn security_missing_table_uses_default_mode() {
         assert_eq!(
             SecurityConfig::default().permission_mode,
-            PermissionMode::Balanced
+            PermissionMode::Default
         );
     }
 
@@ -937,7 +937,7 @@ provider = "test-provider"
 model = "test-model"
 
 [security]
-permission_mode = "balanced"
+permission_mode = "default"
 encrypt_sensitive = true
 "#,
         )
@@ -952,7 +952,7 @@ encrypt_sensitive = true
         );
         assert_eq!(
             loader.config().security.permission_mode,
-            PermissionMode::Balanced
+            PermissionMode::Default
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

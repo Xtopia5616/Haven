@@ -87,25 +87,37 @@
 
 	const PERMISSION_MODES = [
 		{
-			value: 'balanced',
-			label: '平衡',
-			detail: '读取自动完成，修改与外部操作先询问',
+			value: 'default',
+			label: '默认',
+			detail: '只读操作自动完成，编辑、命令与外部操作先询问',
 		},
 		{
-			value: 'careful',
-			label: '谨慎',
-			detail: '所有非只读操作都先询问',
+			value: 'plan',
+			label: '计划',
+			detail: '仅允许只读分析，任何修改或副作用都会被拦截',
 		},
 		{
-			value: 'manual',
-			label: '手动',
-			detail: '包括读取在内的每一步都需要确认',
+			value: 'auto_edit',
+			label: '自动编辑',
+			detail: '自动接受安全编辑，命令、网络和较高风险操作仍需确认',
 		},
 		{
 			value: 'autonomous',
 			label: '自动',
-			detail: '已允许的操作自动执行，但关键操作仍会询问',
+			detail: '非关键操作自动执行，高风险与关键操作仍需确认',
 		},
+	];
+
+	const SANDBOX_MODES = [
+		{ value: 'read_only', label: '只读沙箱' },
+		{ value: 'workspace_write', label: '工作区可写' },
+		{ value: 'full_access', label: '完全访问' },
+	];
+
+	const NETWORK_POLICIES = [
+		{ value: 'deny', label: '禁止网络' },
+		{ value: 'restricted', label: '受限网络' },
+		{ value: 'open', label: '开放网络' },
 	];
 
 	/** @param {string} key */
@@ -338,6 +350,51 @@
 				{PERMISSION_MODES.find((mode) => mode.value === security.permission_mode)?.detail}
 			</p>
 		{/if}
+		<div class="permission-boundary-grid">
+			<SettingsField label="文件沙箱" id="security-sandbox">
+				<MaterialSelect
+					id="security-sandbox"
+					value={security.sandbox_mode || 'workspace_write'}
+					options={SANDBOX_MODES}
+					onChange={withStringValue((v) => {
+						security.sandbox_mode = v;
+					})}
+				/>
+			</SettingsField>
+			<SettingsField label="网络策略" id="security-network">
+				<MaterialSelect
+					id="security-network"
+					value={security.network_policy || 'restricted'}
+					options={NETWORK_POLICIES}
+					onChange={withStringValue((v) => {
+						security.network_policy = v;
+					})}
+				/>
+			</SettingsField>
+		</div>
+		<SettingsField
+			label="可写根目录"
+			id="security-writable-roots"
+			description="可选；每行一个绝对路径，留空则使用各工具自己的路径边界。"
+			stacked
+		>
+			<textarea
+				id="security-writable-roots"
+				class="security-roots"
+				rows="3"
+				value={(security.writable_roots || []).join('\n')}
+				placeholder="例如：C:\\Users\\me\\Projects\\haven"
+				oninput={(event) => {
+					security.writable_roots = inputElementValue(event)
+						.split(/\r?\n/)
+						.map((value) => value.trim())
+						.filter(Boolean);
+				}}
+			></textarea>
+		</SettingsField>
+		<p class="model-hint">
+			沙箱与确认是两道独立边界：只读沙箱会直接拦截写入，禁止网络会拦截 HTTP、MCP 与技能网络入口。
+		</p>
 		<div class="permission-callout">
 			<div class="permission-callout-icon" aria-hidden="true">✓</div>
 			<div>
@@ -538,6 +595,33 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.permission-boundary-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: var(--md-sys-space-md);
+		margin-bottom: var(--md-sys-space-sm);
+	}
+	.security-roots {
+		box-sizing: border-box;
+		width: min(100%, var(--md-comp-settings-control-width));
+		min-height: 76px;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container-lowest);
+		color: var(--md-sys-color-on-surface);
+		font: var(--md-sys-typescale-code-size) var(--md-sys-typescale-mono);
+		resize: vertical;
+	}
+	.security-roots:focus {
+		outline: none;
+		border-color: var(--md-sys-color-primary);
+	}
+	@media (max-width: 720px) {
+		.permission-boundary-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 	.permission-callout {
 		display: flex;

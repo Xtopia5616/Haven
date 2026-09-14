@@ -156,3 +156,4 @@
 - [0149：删除 Balanced Model 与模型级 fallback](0149-remove-balanced-model-fallback.md)
 - [0150：受管资产读取时再次验证路径](0150-managed-asset-read-time-revalidation.md)
 - [0151：内置工具结果与边界契约加固](0151-builtin-tool-contract-hardening.md)
+- [0152：Agent 权限边界重构](0152-agent-permission-boundary-refactor.md)

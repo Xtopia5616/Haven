@@ -41,14 +41,17 @@ pub async fn update_settings(
         last = now;
     };
     let state = app.state::<Arc<AppState>>();
-    let old_hotkey = state
+    let current_config = state
         .config_service
         .snapshot()
         .map_err(|e| log_err("update_settings", e))?
-        .config
-        .hotkey
-        .key_binding
-        .clone();
+        .config;
+    let old_hotkey = current_config.hotkey.key_binding.clone();
+    // Permission grants have their own revoke/reset lifecycle. The broad
+    // settings form does not own that list, so never let a stale form payload
+    // erase or replace it while saving an unrelated setting.
+    let mut settings = settings;
+    settings.security.permissions = current_config.security.permissions.clone();
     let update = state
         .config_service
         .apply_patch(haven_common::config::ConfigPatch::Settings(Box::new(
@@ -147,10 +150,7 @@ pub async fn update_settings(
         state
             .tools
             .authorization
-            .apply_security(
-                config.security.permission_mode,
-                &config.security.permissions,
-            )
+            .apply_security(&config.security)
             .await;
     }
     if plan.contains(RuntimeConfigTarget::ToolSettings) {

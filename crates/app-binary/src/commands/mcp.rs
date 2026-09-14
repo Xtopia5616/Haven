@@ -269,17 +269,16 @@ pub async fn mcp_tool_call(
         ConfirmationResult::AutoApproved => {}
         ConfirmationResult::RequiresConfirmation {
             tool_name,
-            params,
             risk_level,
             receipt,
             ..
         } => {
-            let action_args = params.clone();
+            let action_args = args.clone();
             return Err(queue_ui_confirmation(
                 &state,
                 &app,
                 tool_name,
-                params,
+                args,
                 risk_level,
                 receipt,
                 UiConfirmationAction::Mcp {

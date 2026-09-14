@@ -326,18 +326,24 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 
 决策顺序（fail-closed）：
 
-1. `tool_settings.disabled_operations` / `allowed_paths` → **Blocked**
-2. 永久拒绝（`SecurityConfig.permissions`，Always）→ **Blocked**
-3. 会话拒绝 → **Blocked**
-4. 永久允许 / 会话允许 → **AutoApproved**
-5. `PermissionMode`：`Balanced`（Medium+）/ `Careful`（Low+）/ `Manual`（所有操作）/ `Autonomous`（仅 Critical 弹窗）
-6. 否则 → `RequiresConfirmation`（事件只带后端生成的安全摘要 + `permission_key`）
+1. `NetworkPolicy` / `SandboxMode` / `tool_settings.disabled_operations` / `allowed_paths` → **Blocked**
+2. 操作契约的 `Required` 或 `Critical` → 保留强制确认底线
+3. 永久拒绝（`SecurityConfig.permissions`，Always）→ **Blocked**
+4. 会话拒绝 → **Blocked**
+5. 永久允许 / 会话允许 → **AutoApproved**（但不能越过强制确认底线）
+6. `PermissionMode`：`Plan`（仅显式只读操作）/ `Default`（编辑、命令和外部效果询问）/
+   `AutoEdit`（安全编辑自动执行）/ `Autonomous`（High/Critical 仍询问）
+7. 否则 → `RequiresConfirmation`（事件只带后端生成的安全摘要 + `permission_key`）
 
 决策细化：永久拒绝 → 会话拒绝 → 永久允许 → 会话允许。拒绝授权写工具根键（覆盖同工具全部子操作）；允许写精确键。
 
 权限键：`permission_key(tool, params)` → `tool` / `tool:op` / `system:power:lock`；授予父键可覆盖子操作。
+操作 view 的 `OperationPolicy.permission_key` 是权威身份，`concurrency=ReadOnly` 是只读声明，不能由
+风险等级或前端字段推断。`SecurityConfig` 另外保存 `sandbox_mode`（`read_only` /
+`workspace_write` / `full_access`，可选 `writable_roots`）与 `network_policy`（`deny` / `restricted` / `open`）；
+前者先用于路径型内置工具，后者先用于 HTTP/MCP/Skill 入口，HTTP 自身仍逐跳执行 SSRF 检查。
 
-确认 UI：拒绝 / 仅本次 / 本对话允许 / 始终允许；拒绝菜单含本对话拒绝、始终拒绝。永久授权写入 `config.toml`，设置页可按工具查看、撤销或一键清除。原始 shell、网络、文件和扩展参数不进入 renderer。
+确认 UI：拒绝 / 仅本次 / 本对话允许 / 始终允许；拒绝菜单含本对话拒绝、始终拒绝。永久授权写入 `config.toml`，设置页可按工具查看、撤销或一键清除。确认收据绑定规范化输入 hash、权限 key、策略 revision、风险和过期时间，执行前再次验证；原始 shell、网络、文件和扩展参数不进入 renderer。普通全量设置保存不拥有权限规则，避免 stale form 清空授权。
 
 ### 2.5.4 Admin Surface
 

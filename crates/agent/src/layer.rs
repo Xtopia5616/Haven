@@ -500,16 +500,29 @@ impl AgentLayer {
                             // R2: never block the sequential fired consumer.
                             // Pre-check the gate; RequiresConfirmation → queue
                             // pending + emit UI, then continue draining.
-                            let risk_level = agent
-                                .executor
-                                .get_tools()
-                                .get_risk_level(fired.session_id.as_deref(), &tool_name, &args)
+                            let tools = agent.executor.get_tools();
+                            let operation_policy = tools
+                                .get_operation_policy(
+                                    fired.session_id.as_deref(),
+                                    &tool_name,
+                                    &args,
+                                )
                                 .await;
-                            let gate = agent
-                                .executor
-                                .get_tools()
+                            let policy_input = tools
+                                .get_authorization_input(
+                                    fired.session_id.as_deref(),
+                                    &tool_name,
+                                    &args,
+                                )
+                                .await;
+                            let gate = tools
                                 .authorization
-                                .check(fired.session_id.as_deref(), &tool_name, &args, risk_level)
+                                .check_with_policy(
+                                    fired.session_id.as_deref(),
+                                    &tool_name,
+                                    &policy_input,
+                                    &operation_policy,
+                                )
                                 .await;
                             match gate {
                                 haven_tools::ConfirmationResult::Blocked { reason } => {

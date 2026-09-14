@@ -71,7 +71,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_last_conversation: { request: '-', response: 'SessionResumeResponse | null', boundary: 'read', security: 'most recent persisted session only' },
 	get_settings: { request: '-', response: 'Settings', boundary: 'read', security: 'config response masks credentials' },
 	get_bootstrap_status: { request: '-', response: 'string', boundary: 'read', security: 'status enum only' },
-	update_settings: { request: 'Settings', response: 'void', boundary: 'mutate', security: 'shared loader preserves masked secrets and tool sections' },
+	update_settings: { request: 'Settings', response: 'void', boundary: 'mutate', security: 'shared loader preserves masked secrets, tool sections, and permission rules' },
 	list_permissions: { request: '-', response: 'StoredPermission[]', boundary: 'read', security: 'permission keys/effects only' },
 	revoke_permission: { request: 'RevokePermissionRequest', response: 'void', boundary: 'mutate', security: 'non-empty exact key; persisted atomically' },
 	reset_permissions: { request: '-', response: 'void', boundary: 'mutate', security: 'clears permanent and session rules; keeps selected default policy' },

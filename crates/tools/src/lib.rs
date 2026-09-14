@@ -22,8 +22,10 @@ pub(crate) mod tool_contract;
 pub mod util;
 
 use chrono::{DateTime, Utc};
-use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
-use haven_common::types::{MessageAttachment, PermissionMode, RiskLevel, ShellChoice};
+use haven_common::config::{
+    ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
+};
+use haven_common::types::{MessageAttachment, RiskLevel, ShellChoice};
 use haven_llm::{EndpointRole, LlmRouter};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -158,8 +160,7 @@ pub struct StartupWiring {
     pub tool_settings: HashMap<String, ToolConfig>,
     pub default_shell: ShellChoice,
     pub context_limits: ContextLimitsConfig,
-    pub permission_mode: PermissionMode,
-    pub security_permissions: Vec<haven_common::config::StoredPermission>,
+    pub security: SecurityConfig,
     pub router: Arc<LlmRouter>,
     pub media_config: haven_common::config::MediaConfig,
     pub audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
@@ -674,8 +675,7 @@ impl ToolsManager {
             tool_settings,
             default_shell,
             context_limits,
-            permission_mode,
-            security_permissions,
+            security,
             router,
             media_config,
             audio_pipeline,
@@ -693,9 +693,7 @@ impl ToolsManager {
         self.live_outputs.set_limits(&context_limits).await;
         self.scheduled_actions.set_limits(&context_limits).await;
         *self.context_limits.write().await = context_limits;
-        self.authorization
-            .apply_security(permission_mode, &security_permissions)
-            .await;
+        self.authorization.apply_security(&security).await;
         self.authorization.set_tool_settings(tool_settings).await;
         *self.router.write().await = Some(router);
         *self.media_config.write().await = media_config;
