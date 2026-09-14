@@ -6,15 +6,16 @@ import type {
 import type { TauriEvent } from './contracts/session.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { updateSessionMessages } from './sessionMessages.ts';
+import type { SessionAction } from './sessionReducer.ts';
 
 interface ChatSessionEventContext {
 	getActiveSessionId: () => string | null;
 	isFreshSessionIntent: () => boolean;
 	adoptDraftMessages: (sessionId: string) => boolean;
-	setActiveSessionId: (sessionId: string) => void;
+	dispatchSession: (action: SessionAction) => void;
 	getSessionErrorId: () => string | null;
-	clearSessionError: () => void;
-	showSessionError: (sessionId: string, reason: string) => void;
+	rememberSessionError: (sessionId: string, reason: string) => void;
+	forgetSessionError: (sessionId: string) => void;
 	clearAskAwaiting: (sessionId: string) => void;
 	evictTerminalSessionMemory: (sessionId: string) => void;
 	clearStepBlockIds: (sessionId: string) => void;
@@ -37,10 +38,10 @@ export function createChatSessionEventHandlers({
 	getActiveSessionId,
 	isFreshSessionIntent,
 	adoptDraftMessages,
-	setActiveSessionId,
+	dispatchSession,
 	getSessionErrorId,
-	clearSessionError,
-	showSessionError,
+	rememberSessionError,
+	forgetSessionError,
 	clearAskAwaiting,
 	evictTerminalSessionMemory,
 	clearStepBlockIds,
@@ -78,7 +79,12 @@ export function createChatSessionEventHandlers({
 				// event adopts the pending draft, however, it is the submission's own
 				// session and must be selected immediately: a fast response can emit
 				// session:completed before process_transcript resolves.
-				if (!isFreshSessionIntent() || adoptedDraft) setActiveSessionId(sessionId);
+				dispatchSession({
+					type: 'session/created',
+					sessionId,
+					freshStart: isFreshSessionIntent(),
+					adoptedDraft,
+				});
 			}
 			loadSessions();
 		},
@@ -86,13 +92,20 @@ export function createChatSessionEventHandlers({
 			const data = event.payload;
 			const activeSessionId = getActiveSessionId();
 			const isActive = !!activeSessionId && data.sessionId === activeSessionId;
+			const shouldForgetError =
+				getSessionErrorId() === data.sessionId && isBusyStatus(data.status);
 			// A resume (pending) means the user's answer was received. The ask
 			// pause itself is reported as paused and must not clear the indicator.
 			if (isActive && data.status === 'pending') {
 				clearAskAwaiting(data.sessionId);
 			}
-			if (getSessionErrorId() === data.sessionId && isBusyStatus(data.status)) {
-				clearSessionError();
+			dispatchSession({
+				type: 'session/status-updated',
+				sessionId: data.sessionId,
+				status: data.status,
+			});
+			if (shouldForgetError) {
+				forgetSessionError(data.sessionId);
 			}
 			if (isPausedStatus(data.status)) {
 				// Pausing or interrupting preserves the partial text for resume, but
@@ -120,8 +133,9 @@ export function createChatSessionEventHandlers({
 		},
 		'session:error': (event) => {
 			const { sessionId, error } = event.payload;
+			dispatchSession({ type: 'session/error-shown', sessionId, reason: error });
+			rememberSessionError(sessionId, error);
 			if (sessionId === getActiveSessionId()) {
-				showSessionError(sessionId, error);
 				clearAskAwaiting(sessionId);
 				finalizeLiveMessages(sessionId);
 			}

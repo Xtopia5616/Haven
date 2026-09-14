@@ -383,6 +383,13 @@ Tauri command 的 structured surface，未直接注册进模型目录；`haven` 
   skills / memory / settings / log）。
 - `desktop.rs` / `events.rs` / `autostart.rs`。
 
+聊天 UI 的会话状态位于 `ui/src/lib/sessionReducer.ts`：`+page.svelte` 负责视图、滚动和
+副作用编排，`SessionReducer` 统一处理会话列表、当前会话、fresh-start 选择和错误恢复；
+`chatSessionEventHandlers.ts` 只做事件适配及消息/流式终态清理。`sessionMessages.ts`、
+`sessionUsage.ts` 与 `streamAggregator.ts` 继续分别拥有消息、用量和流式归并状态。
+`ModelSettings.svelte` 当前保留模型角色、Provider CRUD 与 discovery 的页面编排，已补
+组件行为测试，后续再按 discovery / mutation 边界拆分。
+
 **判定标准**：唯一能同时看到所有 crate 的地方；负责把事件桥到前端、把前端命令调到后端，
 不承载业务逻辑。
 
@@ -469,6 +476,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-14 | §2.5 Tools / UI / MCP：工具页按 `ToolManifest.identity` 实现 family/root/operation 三级树；复核并统一 MCP 渐进连接的目录版本监听，保证 `tools/list_changed` 使分页 cursor 失效（ADR 0148） |
 | 2026-09-13 | §2.6 UI：工具页将同一 operation root 收束为一张可展开卡片，保留每个 operation 的独立 Schema、风险和启用状态（ADR 0139） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
+| 2026-09-14 | §2.6 UI：聊天页会话列表、选择和错误恢复通过 `SessionReducer` 单一迁移入口；事件适配层仅保留消息/流式清理与其它副作用，ModelSettings 补齐拆分前组件测试（ADR 0154） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
 | 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |

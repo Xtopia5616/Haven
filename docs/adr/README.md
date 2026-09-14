@@ -157,3 +157,5 @@
 - [0150：受管资产读取时再次验证路径](0150-managed-asset-read-time-revalidation.md)
 - [0151：内置工具结果与边界契约加固](0151-builtin-tool-contract-hardening.md)
 - [0152：Agent 权限边界重构](0152-agent-permission-boundary-refactor.md)
+- [0153：权限边界的操作契约、网络覆盖与进程约束](0153-permission-boundary-hardening.md)
+- [0154：聊天页会话状态使用 SessionReducer](0154-ui-session-reducer.md)

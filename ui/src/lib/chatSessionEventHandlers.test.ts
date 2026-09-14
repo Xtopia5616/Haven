@@ -7,18 +7,17 @@ function handlers(options: {
 	fresh?: boolean;
 	adoptedDraft?: boolean;
 	activeSessionId?: string | null;
-	setActiveSessionId?: (sessionId: string) => void;
+	dispatchSession?: (action: import('./sessionReducer.ts').SessionAction) => void;
 	flushChunksNow?: () => void;
-	showSessionError?: (sessionId: string, reason: string) => void;
 }) {
 	return createChatSessionEventHandlers({
 		getActiveSessionId: () => options.activeSessionId ?? null,
 		isFreshSessionIntent: () => options.fresh ?? false,
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
-		setActiveSessionId: options.setActiveSessionId ?? vi.fn(),
+		dispatchSession: options.dispatchSession ?? vi.fn(),
 		getSessionErrorId: () => null,
-		clearSessionError: vi.fn(),
-		showSessionError: options.showSessionError ?? vi.fn(),
+		rememberSessionError: vi.fn(),
+		forgetSessionError: vi.fn(),
 		clearAskAwaiting: vi.fn(),
 		evictTerminalSessionMemory: vi.fn(),
 		clearStepBlockIds: vi.fn(),
@@ -71,39 +70,53 @@ describe('chat session lifecycle handlers', () => {
 	);
 
 	it('selects a fresh session when it adopts the pending draft', () => {
-		const setActiveSessionId = vi.fn();
+		const dispatchSession = vi.fn();
 		const eventHandlers = handlers({
 			fresh: true,
 			adoptedDraft: true,
-			setActiveSessionId,
+			dispatchSession,
 		});
 
 		eventHandlers['session:created']({
 			payload: { sessionId: 'ses-fast', status: 'pending', title: null },
 		} as never);
 
-		expect(setActiveSessionId).toHaveBeenCalledWith('ses-fast');
+		expect(dispatchSession).toHaveBeenCalledWith({
+			type: 'session/created',
+			sessionId: 'ses-fast',
+			freshStart: true,
+			adoptedDraft: true,
+		});
 	});
 
 	it('does not select an unrelated session while a fresh draft is pending', () => {
-		const setActiveSessionId = vi.fn();
-		const eventHandlers = handlers({ fresh: true, adoptedDraft: false, setActiveSessionId });
+		const dispatchSession = vi.fn();
+		const eventHandlers = handlers({ fresh: true, adoptedDraft: false, dispatchSession });
 
 		eventHandlers['session:created']({
 			payload: { sessionId: 'ses-background', status: 'pending', title: null },
 		} as never);
 
-		expect(setActiveSessionId).not.toHaveBeenCalled();
+		expect(dispatchSession).toHaveBeenCalledWith({
+			type: 'session/created',
+			sessionId: 'ses-background',
+			freshStart: true,
+			adoptedDraft: false,
+		});
 	});
 
 	it('passes the failure reason to the active-session error handler', () => {
-		const showSessionError = vi.fn();
-		const eventHandlers = handlers({ activeSessionId: 'ses-error', showSessionError });
+		const dispatchSession = vi.fn();
+		const eventHandlers = handlers({ activeSessionId: 'ses-error', dispatchSession });
 
 		eventHandlers['session:error']({
 			payload: { sessionId: 'ses-error', error: '网络请求超时' },
 		} as never);
 
-		expect(showSessionError).toHaveBeenCalledWith('ses-error', '网络请求超时');
+		expect(dispatchSession).toHaveBeenCalledWith({
+			type: 'session/error-shown',
+			sessionId: 'ses-error',
+			reason: '网络请求超时',
+		});
 	});
 });

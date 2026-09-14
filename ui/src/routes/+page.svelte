@@ -21,6 +21,7 @@
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
+	import { SessionReducer } from '$lib/sessionReducer.ts';
 	import {
 		buildTokenUsageDetails,
 		buildTokenUsageTooltip,
@@ -119,7 +120,23 @@
 		),
 	);
 	let initialLoading = $state(true);
-	let sessions = /** @type {Array<any>} */ ($state([]));
+	const sessionReducer = new SessionReducer();
+	let sessionState = $state(sessionReducer.getState());
+
+	/** Dispatch the only session state mutation path and mirror its public stores. */
+	/** @param {import('$lib/sessionReducer.ts').SessionAction} action */
+	function dispatchSession(action) {
+		const previous = sessionState;
+		const next = sessionReducer.dispatch(action);
+		sessionState = next;
+		if (next.sessions !== previous.sessions) sessionStore.set(next.sessions);
+		if (next.activeSessionId !== previous.activeSessionId) {
+			activeSessionIdStore.set(next.activeSessionId);
+		}
+	}
+
+	const sessions = $derived(sessionState.sessions);
+	const activeSessionId = $derived(sessionState.activeSessionId);
 	// Pending security confirmations not yet shown, in arrival order. A
 	// batched ReAct step can fire several gated tool calls at once; each one
 	// must wait for its own user answer, so they are queued and displayed one
@@ -145,7 +162,6 @@
 				deadlineAt: null,
 			})
 		);
-	let activeSessionId = $state(get(activeSessionIdStore));
 	let rollbackDialog = $state({
 		open: false,
 		stepNumber: null,
@@ -599,8 +615,7 @@
 		// previous conversation.
 		newSessionIntentStore.set(true);
 		if (browser) localStorage.setItem(NEW_ACTION_INTENT_KEY, '1');
-		activeSessionId = null;
-		activeSessionIdStore.set(null);
+		dispatchSession({ type: 'session/cleared' });
 		sessionMenuOpen = false;
 	}
 
@@ -647,8 +662,7 @@
 			// on the next app launch).
 			newSessionIntentStore.set(false);
 			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
-			activeSessionId = sessionId;
-			activeSessionIdStore.set(sessionId);
+			dispatchSession({ type: 'session/selected', sessionId });
 			// Reclaim the deactivated session's memory when it is terminal.
 			// `get_sessions` lists only the executor's in-memory working set
 			// and terminal sessions are REMOVED from it, so a completed/errored
@@ -691,8 +705,7 @@
 			reportError(e, { context: '+page', message: '结束会话失败', log: false });
 			return;
 		}
-		activeSessionId = null;
-		activeSessionIdStore.set(null);
+		dispatchSession({ type: 'session/cleared' });
 		newSessionIntentStore.set(false);
 	}
 
@@ -729,8 +742,7 @@
 			// message below is accepted instead of being dropped as a
 			// terminal-state supplement.
 			await invoke('continue_session', { sessionId: tid });
-			sessionErrorId = null;
-			activeSessionError = false;
+			dispatchSession({ type: 'session/error-cleared', sessionId: tid });
 			// Re-sync from the authoritative post-continue DB state. Any retry
 			// stream that won the race with this request has a fresh id and is
 			// retained; stale pre-continue UI entries cannot leak back in.
@@ -811,9 +823,11 @@
 		}
 	});
 
-	let activeSessionError = $state(false);
-	let sessionErrorId = /** @type {string | null} */ ($state(null));
-	let sessionErrorReason = $state('');
+	const activeSessionError = $derived(
+		!!activeSessionId && sessionState.error?.sessionId === activeSessionId,
+	);
+	const sessionErrorId = $derived(sessionState.error?.sessionId || null);
+	const sessionErrorReason = $derived(sessionState.error?.reason || '');
 	let continuePending = $state(false);
 	const showContinueButton = $derived(
 		!!activeSessionId && shouldShowContinueButton(messages, activeSessionError),
@@ -829,9 +843,7 @@
 	$effect(() => {
 		const _ = activeSessionId;
 		if (sessionErrorId && activeSessionId !== sessionErrorId) {
-			sessionErrorId = null;
-			activeSessionError = false;
-			sessionErrorReason = '';
+			dispatchSession({ type: 'session/error-cleared', sessionId: sessionErrorId });
 		}
 	});
 
@@ -851,11 +863,6 @@
 		scrollToBottom();
 	});
 
-	// Persist activeSessionId across page navigations via store.
-	$effect(() => {
-		activeSessionIdStore.set(activeSessionId);
-	});
-
 	// Follow external store writes back into the local state. The effect
 	// above mirrors state → store only; submit.ts writes the store directly
 	// when a submission creates a fresh session (its `SessionCreated` result never
@@ -868,14 +875,15 @@
 	$effect(() =>
 		syncStore(activeSessionIdStore, (id) => {
 			if (id) {
-				if (!activeSessionId && !get(newSessionIntentStore)) activeSessionId = id;
+				if (!activeSessionId && !get(newSessionIntentStore))
+					dispatchSession({ type: 'session/selected', sessionId: id });
 			} else if (activeSessionId) {
 				// An external writer nulled the store — the only path is the
 				// history page deleting/clearing the session that was active.
 				// Follow it so the chat never keeps pointing at a session that
 				// no longer exists (the +page's own writers always set the
 				// local state first, so this can never clobber a live view).
-				activeSessionId = null;
+				dispatchSession({ type: 'session/cleared' });
 			}
 		}),
 	);
@@ -1002,24 +1010,16 @@
 	/** @param {any} resumeTarget */
 	function retainErroredSession(resumeTarget) {
 		if (!resumeTarget?.sessionId) return;
-		const existing = sessions.find((session) => session.id === resumeTarget.sessionId);
-		if (existing) {
-			sessions = sessions.map((session) =>
-				session.id === resumeTarget.sessionId ? { ...session, status: 'error' } : session,
-			);
-		} else {
-			sessions = [
-				...sessions,
-				{
-					id: resumeTarget.sessionId,
-					input: resumeTarget.summary || '',
-					input_text: resumeTarget.summary || '',
-					title: resumeTarget.title || null,
-					status: 'error',
-				},
-			];
-		}
-		sessionStore.set(sessions);
+		dispatchSession({
+			type: 'session/retained-error',
+			session: {
+				id: resumeTarget.sessionId,
+				input: resumeTarget.summary || '',
+				input_text: resumeTarget.summary || '',
+				title: resumeTarget.title || null,
+				status: 'error',
+			},
+		});
 	}
 
 	/** @param {any} resumeTarget */
@@ -1030,8 +1030,7 @@
 			newSessionIntentStore.set(false);
 			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			const prevActive = activeSessionId;
-			activeSessionId = resumeTarget.sessionId;
-			activeSessionIdStore.set(activeSessionId);
+			dispatchSession({ type: 'session/selected', sessionId: resumeTarget.sessionId });
 			// The session being left: if it is terminal (or has dropped out of
 			// the executor's working set, which only happens for terminal
 			// sessions), reclaim its in-memory messages/token stats — they are
@@ -1052,12 +1051,14 @@
 			// Opening an errored session is read-only. Preserve the error state and
 			// show the reason instead of silently converting it to Paused.
 			if (resumeTarget.wasError) {
-				sessionErrorId = resumeTarget.sessionId;
-				activeSessionError = true;
-				sessionErrorReason =
-					resumeTarget.errorReason ||
-					getSessionErrorReason(resumeTarget.sessionId) ||
-					'本次会话因错误停止，暂未收到更具体的原因。';
+				dispatchSession({
+					type: 'session/error-shown',
+					sessionId: resumeTarget.sessionId,
+					reason:
+						resumeTarget.errorReason ||
+						getSessionErrorReason(resumeTarget.sessionId) ||
+						'本次会话因错误停止，暂未收到更具体的原因。',
+				});
 				retainErroredSession(resumeTarget);
 			}
 			// Defer clearing so it survives rapid remounts during init.
@@ -1128,24 +1129,10 @@
 						getActiveSessionId: () => activeSessionId,
 						isFreshSessionIntent: () => get(newSessionIntentStore),
 						adoptDraftMessages,
-						setActiveSessionId: (sessionId) => {
-							activeSessionId = sessionId;
-							activeSessionIdStore.set(sessionId);
-						},
+						dispatchSession,
 						getSessionErrorId: () => sessionErrorId,
-						clearSessionError: () => {
-							const previousErrorId = sessionErrorId;
-							sessionErrorId = null;
-							activeSessionError = false;
-							sessionErrorReason = '';
-							if (previousErrorId) forgetSessionError(previousErrorId);
-						},
-						showSessionError: (sessionId, reason) => {
-							sessionErrorId = sessionId;
-							activeSessionError = true;
-							sessionErrorReason = reason;
-							rememberSessionError(sessionId, reason);
-						},
+						rememberSessionError,
+						forgetSessionError,
 						clearAskAwaiting,
 						evictTerminalSessionMemory,
 						clearStepBlockIds,
@@ -1153,10 +1140,13 @@
 						updateSessionTitle: (sessionId, title) => {
 							const index = sessions.findIndex((session) => session.id === sessionId);
 							if (index >= 0) {
-								sessions[index] = { ...sessions[index], title };
+								dispatchSession({
+									type: 'session/title-updated',
+									sessionId,
+									title,
+								});
 								// Keep the shell's task/status view in sync with the chat
 								// header as soon as the generated title arrives.
-								sessionStore.set(sessions);
 							} else {
 								// A title event can win the race with the initial session
 								// list load. The persisted title will be picked up here.
@@ -1203,8 +1193,10 @@
 				...appEventListeners(
 					createChatConfirmationEventHandlers({
 						getSessionTitle: (sessionId) =>
-							sessions.find((session) => session.id === sessionId)?.title ||
-							sessionId,
+							String(
+								sessions.find((session) => session.id === sessionId)?.title ||
+									sessionId,
+							),
 						enqueueConfirmation: (entry) => {
 							confirmQueue = [...confirmQueue, entry];
 						},
@@ -1300,18 +1292,7 @@
 			// Stale response guard: a newer loadSessions call superseded this one.
 			if (seq !== loadSessionsSeq) return;
 			if (result && result.sessions) {
-				const preservedErrorSession =
-					activeSessionError && activeSessionId
-						? sessions.find((session) => session.id === activeSessionId)
-						: null;
-				sessions = result.sessions;
-				if (
-					preservedErrorSession &&
-					!sessions.some((session) => session.id === activeSessionId)
-				) {
-					sessions = [...sessions, { ...preservedErrorSession, status: 'error' }];
-				}
-				sessionStore.set(sessions);
+				dispatchSession({ type: 'sessions/loaded', sessions: result.sessions });
 				// The active session can be ended (removed from the executor) while
 				// this page is open — e.g. a follow-up message targeting a
 				// terminal session is dropped server-side. Drop the stale pointer
@@ -1322,8 +1303,7 @@
 					!sessions.some((t) => t.id === activeSessionId) &&
 					!activeSessionError
 				) {
-					activeSessionId = null;
-					activeSessionIdStore.set(null);
+					dispatchSession({ type: 'session/cleared' });
 				}
 				if (!activeSessionId && !get(newSessionIntentStore)) {
 					// Only auto-assign a session whose messages are actually in
@@ -1338,9 +1318,8 @@
 							(isBusyStatus(t.status) || isPausedStatus(t.status)) &&
 							(get(sessionMessagesStore)[t.id] || []).length > 0,
 					);
-					if (firstActive) {
-						activeSessionId = firstActive.id;
-					}
+					if (firstActive)
+						dispatchSession({ type: 'session/selected', sessionId: firstActive.id });
 				}
 			}
 			// Session lifecycle changes may have reaped background actions (a session
@@ -1376,8 +1355,7 @@
 		// running/paused session auto-assigned by loadSessions wins over the restore.
 		await loadSessionsSettled;
 		if (activeSessionId && !sessions.some((t) => t.id === activeSessionId)) {
-			activeSessionId = null;
-			activeSessionIdStore.set(null);
+			dispatchSession({ type: 'session/cleared' });
 		}
 		if (activeSessionId) return;
 		let last;
@@ -1403,14 +1381,15 @@
 		);
 		restoreSessionTokenStats(last.session.id, last.usage);
 		restoreSessionLlmUsage(last.session.id, last.llm_usage);
-		activeSessionId = last.session.id;
-		activeSessionIdStore.set(activeSessionId);
+		dispatchSession({ type: 'session/selected', sessionId: last.session.id });
 		if (wasError) {
-			sessionErrorId = last.session.id;
-			activeSessionError = true;
-			sessionErrorReason =
-				getSessionErrorReason(last.session.id) ||
-				'本次会话因错误停止，暂未收到更具体的原因。';
+			dispatchSession({
+				type: 'session/error-shown',
+				sessionId: last.session.id,
+				reason:
+					getSessionErrorReason(last.session.id) ||
+					'本次会话因错误停止，暂未收到更具体的原因。',
+			});
 			retainErroredSession({
 				sessionId: last.session.id,
 				summary: last.session.input_text,
@@ -1434,8 +1413,7 @@
 			const result = await submitTranscript(text, { images, files });
 			const createdId = processResultSessionId(result);
 			if (createdId) {
-				activeSessionId = createdId;
-				activeSessionIdStore.set(activeSessionId);
+				dispatchSession({ type: 'session/selected', sessionId: createdId });
 				// The submission itself created the session (submitTranscript
 				// already cleared the intent store): nothing to do here.
 			}
@@ -1560,7 +1538,9 @@
 	const activeSession = $derived(
 		activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null,
 	);
-	const sessionHeaderTitle = $derived(activeSession?.title || activeSession?.input || '新会话');
+	const sessionHeaderTitle = $derived(
+		String(activeSession?.title || activeSession?.input || '新会话'),
+	);
 	const activeConversationStatus = $derived(
 		activeSession ? sessionStatusLabel(activeSession) : '就绪',
 	);
