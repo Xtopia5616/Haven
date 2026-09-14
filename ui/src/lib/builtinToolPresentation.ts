@@ -3,16 +3,25 @@ export type BuiltinToolEntry = {
 	desc: string;
 	risk: string;
 	category?: string;
+	root?: string;
+	operation?: string | null;
 	schema: Record<string, unknown>;
 	enabled: boolean;
 	[key: string]: any;
 };
 
-export type BuiltinToolCard = {
-	kind: 'category-group';
+export type BuiltinToolRootCard = {
+	kind: 'root-group';
 	name: string;
 	label: string;
 	operations: BuiltinToolEntry[];
+};
+
+export type BuiltinToolCard = {
+	kind: 'family-group';
+	name: string;
+	label: string;
+	roots: BuiltinToolRootCard[];
 };
 
 export type BuiltinEnabledFilter = 'all' | 'enabled' | 'disabled';
@@ -23,21 +32,42 @@ export type BuiltinEnabledFilter = 'all' | 'enabled' | 'disabled';
  * and enabled flags for the operation-level controls.
  */
 export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] {
-	const groups = new Map<string, Extract<BuiltinToolCard, { kind: 'category-group' }>>();
+	const groups = new Map<string, BuiltinToolCard>();
 
 	for (const tool of tools) {
 		const category = tool.category || 'other';
 		let group = groups.get(category);
 		if (!group) {
 			group = {
-				kind: 'category-group',
+				kind: 'family-group',
 				name: category,
 				label: categoryLabel(category),
-				operations: [],
+				roots: [],
 			};
 			groups.set(category, group);
 		}
-		group.operations.push(tool);
+
+		const rootName = tool.root || legacyRootName(tool.name);
+		let root = group.roots.find((candidate) => candidate.name === rootName);
+		if (!root) {
+			root = {
+				kind: 'root-group',
+				name: rootName,
+				label: rootName,
+				operations: [],
+			};
+			group.roots.push(root);
+		}
+		root.operations.push(tool);
+	}
+
+	for (const group of groups.values()) {
+		group.roots.sort(
+			(a, b) => a.name.localeCompare(b.name),
+		);
+		for (const root of group.roots) {
+			root.operations.sort((a, b) => a.name.localeCompare(b.name));
+		}
 	}
 
 	return [...groups.values()].sort(
@@ -60,8 +90,58 @@ function categoryLabel(category: string): string {
 	}[category] || category;
 }
 
-function cardTools(card: BuiltinToolCard): BuiltinToolEntry[] {
-	return card.operations;
+function normalizedQuery(query: string): string {
+	return query.trim().toLocaleLowerCase();
+}
+
+function matchesStatus(tool: BuiltinToolEntry, enabledFilter: string): boolean {
+	if (enabledFilter === 'enabled') return tool.enabled;
+	if (enabledFilter === 'disabled') return !tool.enabled;
+	return true;
+}
+
+function matchesText(text: string, query: string): boolean {
+	return Boolean(query && text.toLocaleLowerCase().includes(query));
+}
+
+function rootMatches(root: BuiltinToolRootCard, query: string): boolean {
+	return matchesText(root.name, query) || matchesText(root.label, query);
+}
+
+function operationMatches(operation: BuiltinToolEntry, query: string): boolean {
+	return (
+		matchesText(operation.name, query) ||
+		matchesText(operation.desc, query) ||
+		matchesText(operation.operation || '', query)
+	);
+}
+
+/**
+ * Return a filtered copy of a family card while preserving the three-level
+ * shape. A query matching a family/root keeps all of that node's operations;
+ * otherwise only matching operations are retained.
+ */
+export function filterBuiltinToolCard(
+	card: BuiltinToolCard,
+	query: string,
+	enabledFilter: string,
+): BuiltinToolCard | null {
+	const normalized = normalizedQuery(query);
+	const familyMatches =
+		!normalized || matchesText(card.name, normalized) || matchesText(card.label, normalized);
+	const roots = card.roots
+		.map((root) => {
+			const rootMatchesQuery = familyMatches || !normalized || rootMatches(root, normalized);
+			const operations = root.operations.filter(
+				(operation) =>
+					matchesStatus(operation, enabledFilter) &&
+					(rootMatchesQuery || operationMatches(operation, normalized)),
+			);
+			return operations.length > 0 ? { ...root, operations } : null;
+		})
+		.filter((root): root is BuiltinToolRootCard => root !== null);
+
+	return roots.length > 0 ? { ...card, roots } : null;
 }
 
 /**
@@ -74,20 +154,9 @@ export function matchesBuiltinToolCard(
 	query: string,
 	enabledFilter: string,
 ): boolean {
-	const tools = cardTools(card);
-	if (enabledFilter === 'enabled' && !tools.some((tool) => tool.enabled)) return false;
-	if (enabledFilter === 'disabled' && !tools.some((tool) => !tool.enabled)) return false;
+	return filterBuiltinToolCard(card, query, enabledFilter) !== null;
+}
 
-	const normalizedQuery = query.trim().toLocaleLowerCase();
-	if (!normalizedQuery) return true;
-
-	const text = [
-		card.name,
-		card.label,
-		...tools.flatMap((tool) => [tool.name, tool.desc]),
-	]
-		.filter(Boolean)
-		.join(' ')
-		.toLocaleLowerCase();
-	return text.includes(normalizedQuery);
+function legacyRootName(toolName: string): string {
+	return toolName.split('.')[0] || toolName;
 }

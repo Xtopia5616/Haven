@@ -78,6 +78,18 @@ impl McpManager {
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Install the tools/list_changed listener for every connection path.
+    /// Startup and progressive `load_mcp` connections must invalidate the same
+    /// catalog clock; otherwise a paged capability discovery can keep using a
+    /// cursor created before the server changed its tools.
+    fn start_catalog_listener(&self, client: Arc<McpClient>) {
+        let catalog_version = self.catalog_version.clone();
+        client.start_notification_listener(move |server_name: &str| {
+            tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
+            catalog_version.fetch_add(1, Ordering::Relaxed);
+        });
+    }
+
     /// Replace the unified context limits (binary payload / SSE buffer caps)
     /// used when creating MCP clients from config.
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
@@ -205,12 +217,7 @@ impl McpManager {
                 .await
                 .insert(name.clone(), client.clone());
 
-            let listener_client = client.clone();
-            let catalog_version = self.catalog_version.clone();
-            listener_client.start_notification_listener(move |server_name: &str| {
-                tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
-                catalog_version.fetch_add(1, Ordering::Relaxed);
-            });
+            self.start_catalog_listener(client.clone());
 
             // Set authoritative client status AND broadcast before the connect
             // task so ToolsView's list_mcp_tools snapshot shows Connecting
@@ -293,10 +300,7 @@ impl McpManager {
             limits.mcp_max_sse_buffer_bytes,
         ));
 
-        let listener_client = client.clone();
-        listener_client.start_notification_listener(move |server_name: &str| {
-            tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
-        });
+        self.start_catalog_listener(client.clone());
 
         client
             .connect()
@@ -318,7 +322,11 @@ impl McpManager {
             status_tx,
         );
 
-        self.clients.lock().await.insert(name.clone(), client);
+        // Keep the progressive-load path on the same mutation boundary as
+        // startup/reconcile. `add_client` advances the MCP catalog clock so
+        // other sessions invalidate outstanding capability cursors as soon as
+        // this server becomes discoverable.
+        self.add_client(client).await;
         let _ = self.status_tx.send(McpStatusChangeEvent {
             name: name.clone(),
             status: McpClientStatus::Connected,

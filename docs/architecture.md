@@ -458,6 +458,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-13 | §2.5 Tools / Agent / UI / Security：模型与 UI 统一使用 `root.operation` 点号 view；files/system/haven/media 及其它 operation-based builtin 不再以聚合根注册，启用 Skill 直接注册，删除 `load_skill`（ADR 0137） |
 | 2026-09-14 | §2.5 Tools / Agent：将 provider-facing 工具定义改为核心常驻 + builtin/Skill/MCP 按 session 分层加载；新增 `load_builtin` / `load_skill`，保留 `load_mcp`，完整 schema 只进入当前 session（ADR 0145） |
 | 2026-09-14 | §2.5 Tools / Agent：提示词只保留 `system` / `agent` / `haven` 等第一层 family/root 摘要；新增 `tool_catalog` 提供分页的 family/root/operation 发现与精确 schema 查询（ADR 0148） |
+| 2026-09-14 | §2.5 Tools / UI / MCP：工具页按 `ToolManifest.identity` 实现 family/root/operation 三级树；复核并统一 MCP 渐进连接的目录版本监听，保证 `tools/list_changed` 使分页 cursor 失效（ADR 0148） |
 | 2026-09-13 | §2.6 UI：工具页将同一 operation root 收束为一张可展开卡片，保留每个 operation 的独立 Schema、风险和启用状态（ADR 0139） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |

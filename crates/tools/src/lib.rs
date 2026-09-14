@@ -1374,14 +1374,18 @@ impl ToolsManager {
             .filter(|t| !t.name().starts_with("skill__"))
             .map(|t| {
                 let def = t.tool_def();
-                let mut manifest = t.tool_manifest();
+                // ToolDef is the canonical catalog projection. Rebuilding a
+                // second manifest directly from the runtime adapter here can
+                // drift from custom/operation-view metadata (root, policy or
+                // presentation) that the definition already carries.
+                let mut manifest = def.manifest.clone().unwrap_or_else(|| t.tool_manifest());
                 manifest.availability.enabled = tool_config_enabled(&settings, &t.name());
                 let mut json = def.json();
                 json.as_object_mut()
                     .expect("ToolDef::json returns an object")
                     .insert(
                         "catalog_group".into(),
-                        Value::String(def.catalog_group.as_str().into()),
+                        Value::String(manifest.identity.catalog_group.as_str().into()),
                     );
                 json.as_object_mut()
                     .expect("ToolDef::json returns an object")
@@ -2184,6 +2188,11 @@ mod tests {
                 listed["manifest"]["identity"]["stable_name"].as_str(),
                 Some(name),
                 "manifest identity drift for {name}"
+            );
+            assert_eq!(
+                listed["manifest"]["identity"]["root"].as_str(),
+                Some(name.split('.').next().unwrap_or(name)),
+                "manifest root drift for {name}"
             );
             assert!(listed["manifest"]["presentation"]["renderer"].is_string());
         }

@@ -89,7 +89,7 @@ describe('ToolsView toolbar actions', () => {
 		expect(resourceToolbar()?.querySelector('.count-chip')?.textContent).toBe('共 2 项');
 	});
 
-	it('collapses operation views into one card while keeping operation controls', async () => {
+	it('renders builtin tools as family, root, and operation levels', async () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'get_tools') {
 				return {
@@ -129,11 +129,16 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByText('共 1 项')).toBeTruthy());
-		expect(document.querySelectorAll('[data-card-kind="builtin-tool"]')).toHaveLength(1);
+		expect(document.querySelectorAll('[data-card-kind="builtin-family"]')).toHaveLength(1);
 		expect(screen.getByText('System')).toBeTruthy();
 		expect(screen.queryByText('files.read')).toBeNull();
 
 		await fireEvent.click(screen.getByRole('button', { name: /System/ }));
+		expect(document.querySelectorAll('[data-card-kind="builtin-root"]')).toHaveLength(2);
+		expect(screen.getByRole('button', { name: /files/ })).toBeTruthy();
+		expect(screen.queryByText('files.read')).toBeNull();
+
+		await fireEvent.click(screen.getByRole('button', { name: /files/ }));
 		expect(screen.getByText('files.read')).toBeTruthy();
 		expect(screen.getByText('files.search')).toBeTruthy();
 		expect(screen.queryByText('读取文件')).toBeNull();

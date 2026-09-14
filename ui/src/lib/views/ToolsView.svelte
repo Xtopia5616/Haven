@@ -32,7 +32,10 @@
 	import CountChip from '$lib/CountChip.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
-	import { groupBuiltinTools, matchesBuiltinToolCard } from '$lib/builtinToolPresentation.ts';
+	import {
+		filterBuiltinToolCard,
+		groupBuiltinTools,
+	} from '$lib/builtinToolPresentation.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
 
 	/** @type {{ dispose: () => void }} */
@@ -69,7 +72,9 @@
 
 	const builtinToolCards = $derived(groupBuiltinTools(builtinTools));
 	const visibleBuiltinTools = $derived(
-		builtinToolCards.filter((card) => matchesBuiltinToolCard(card, searchQuery, enabledFilter)),
+		builtinToolCards
+			.map((card) => filterBuiltinToolCard(card, searchQuery, enabledFilter))
+			.filter((card) => card !== null),
 	);
 	const visibleMcpServers = $derived(mcpServers.filter(matchesResource));
 	const visibleSkills = $derived(skills.filter(matchesResource));
@@ -99,18 +104,24 @@
 				const tools = /** @type {Array<any>} */ (result.tools);
 				setToolManifests(tools);
 				builtinTools = tools
-					.map((t) => ({
-						name: t.name || 'unknown',
-						label: t.manifest?.presentation?.label || t.name || 'unknown',
-						desc: t.manifest?.model?.description || t.description || '',
-						risk: t.manifest?.policy?.risk_level || t.risk_level || 'unknown',
-						category: t.manifest?.identity?.catalog_group || t.catalog_group || 'other',
-						schema: t.manifest?.model?.input_schema || t.input_schema || {},
-						enabled: t.manifest?.availability?.enabled ?? t.enabled !== false,
-						available: t.manifest?.availability?.available ?? true,
-						availabilityReason: t.manifest?.availability?.availability_reason || null,
-						manifest: t.manifest || null,
-					}))
+					.map((t) => {
+						const identity = t.manifest?.identity;
+						const name = identity?.stable_name || t.name || 'unknown';
+						return {
+							name,
+							label: t.manifest?.presentation?.label || name,
+							desc: t.manifest?.model?.description || t.description || '',
+							risk: t.manifest?.policy?.risk_level || t.risk_level || 'unknown',
+							category: identity?.catalog_group || t.catalog_group || 'other',
+							root: identity?.root || name.split('.')[0] || name,
+							operation: identity?.operation ?? null,
+							schema: t.manifest?.model?.input_schema || t.input_schema || {},
+							enabled: t.manifest?.availability?.enabled ?? t.enabled !== false,
+							available: t.manifest?.availability?.available ?? true,
+							availabilityReason: t.manifest?.availability?.availability_reason || null,
+							manifest: t.manifest || null,
+						};
+					})
 					.sort((a, b) => a.name.localeCompare(b.name));
 			}
 		} catch (e) {
@@ -426,7 +437,7 @@
 		<section class="resource-panel motion-surface-enter" aria-label="内置工具">
 			<WorkspaceSectionHeader
 				title="内置工具"
-				description="Haven 自带的可调用能力；按 Haven、系统和 Agent 分类收纳，可展开后分别启停。"
+				description="Haven 自带的可调用能力；按能力族、根能力和具体操作三级收纳，可展开后分别启停。"
 			>
 				{#snippet children()}
 					<div class="toolbar-actions toolbar-actions--paired">

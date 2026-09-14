@@ -87,6 +87,20 @@ Builtin/Skill/MCP 的完整实现仍分别由 `DeferredToolCatalog`、Skill cata
 只有当前 session 已激活的能力才进入 provider `tools[]`，该结构化 surface 仍是实际调用 schema
 的唯一权威来源。
 
+## UI 投影与复核修正
+
+工具管理页不是模型的 session provider surface，因此继续使用 `get_tools` 的全量 builtin
+投影（包含已禁用项），而不是调用要求 session context 的 `tool_catalog`。UI 按同一份
+`ToolManifest.identity` 渲染三级树：`catalog_group` 为第一层 family，`root` 为第二层根能力，
+`stable_name`/`operation` 为第三层 operation；搜索和启用状态筛选在树上逐层裁剪，操作级
+Schema、风险和开关仍保持独立。MCP 与 Skill 仍分别在资源页维护，不把它们的执行配置混入
+builtin 管理树。
+
+复核三层目录的版本失效链路时发现，MCP 的渐进式 `connect_server` 路径没有安装与启动路径
+相同的 `tools/list_changed` 目录版本监听，且直接插入 client 时没有递增 MCP 目录时钟。现已
+收口为共享监听/注册边界；服务端新增或删除工具后，已有分页 cursor 会按既有
+`stale_cursor` 契约失效。该修正不改变 wire shape、权限或加载语义。
+
 ## 未采用的方案
 
 - **提示词平铺所有 operation**：实现简单，但上下文和记忆负担随安装能力增长。
@@ -108,7 +122,10 @@ Builtin/Skill/MCP 的完整实现仍分别由 `DeferredToolCatalog`、Skill cata
 ## 验证
 
 - `cargo fmt --all -- --check`
+- `corepack pnpm --dir ui run check`
+- `corepack pnpm --dir ui run test:run`
 - `cargo test --locked -p haven-tools`
+- `cargo test --locked -p haven-mcp`
 - `cargo test --locked -p haven-agent`
 - `cargo clippy --workspace --locked -- -D warnings`
 

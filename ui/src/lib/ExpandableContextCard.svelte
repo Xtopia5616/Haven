@@ -36,6 +36,10 @@
 
 	/** @param {MouseEvent} event */
 	function handleContextMenu(event) {
+		// Cards can be nested (e.g. builtin family -> root). The nearest card
+		// owns the context menu for the point that was clicked; do not let the
+		// event bubble and open the outer card's menu as well.
+		event.stopPropagation();
 		openContextMenu(event, contextMenuItems);
 	}
 

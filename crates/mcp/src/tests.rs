@@ -7,6 +7,7 @@ use crate::protocol::{
 use base64::Engine;
 use haven_common::McpServerConfig;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -193,6 +194,30 @@ async fn mcp_manager_default() {
     let mgr = McpManager::default();
     let clients = mgr.clients.lock().await;
     assert!(clients.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_manager_add_client_invalidates_catalog_revision() {
+    let mgr = McpManager::new();
+    let before = mgr.catalog_version();
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "progressive".into(),
+            command: "echo".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+
+    mgr.add_client(client).await;
+
+    assert!(mgr.catalog_version() > before);
+    assert!(
+        mgr.list_clients()
+            .await
+            .contains(&"progressive".to_string())
+    );
 }
 
 #[test]
