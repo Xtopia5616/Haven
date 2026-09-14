@@ -93,11 +93,13 @@ view，不把聚合根作为模型入口。
 Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.read`、`files.outline`、
 `files.summary`、`files.search`、`system.info`、`system.env.get`、`haven.config.config_get`
 和 `media.inspect`。`files`、`system`、`haven`、`media` 以及其它聚合模块仍作为 native/Tauri
-和内部执行边界；模型只接收对应的窄 schema。provider-facing surface 分层维护：核心工具和
-紧凑的 capability index 常驻，未选中的 builtin operation 保留在 host-owned deferred catalog，
-由 `load_builtin` 按 operation/root 原子加载到当前 session；启用 Skill 只进入紧凑索引，
-由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`；MCP 服务器索引保持紧凑，仍由
-`load_mcp` 按服务器加载并在 session catalog 中注册（ADR 0127、0131、0137、0145）。
+和内部执行边界；模型只接收对应的窄 schema。provider-facing surface 分层维护：提示词只常驻
+第一层 family/root 摘要（例如 `system`、`agent`、`haven`），`tool_catalog` 按需提供第二层
+root 和第三层 operation 的名称、描述与精确 schema；未选中的 builtin operation 保留在
+host-owned deferred catalog，由 `load_builtin` 按 operation/root 原子加载到当前 session；
+启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`；
+MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并在 session catalog 中注册
+（ADR 0127、0131、0137、0145、0148）。
 模型可见 observation 对结构化结果优先保留错误、路径、hint 与续读游标；工具定义和失败结果
 分别暴露静态/具体 retry safety，仓库会话的 shell/files 相对路径默认对齐 workspace root，
 同时保留 Temp sandbox fallback（ADR 0128）。
@@ -455,6 +457,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-12 | §2.5 Tools / LLM / Agent / UI：完成 P1 operation view、搜索/outline 结构化模型视图、文档页游标、原生视频 ContentPart、session-scoped 偏好/清单和 memory 空结果诊断；按测试版 reset 边界删除 FollowUp/confirmation/ask/rollback/provider-style 内部兼容层（ADR 0131） |
 | 2026-09-13 | §2.5 Tools / Agent / UI / Security：模型与 UI 统一使用 `root.operation` 点号 view；files/system/haven/media 及其它 operation-based builtin 不再以聚合根注册，启用 Skill 直接注册，删除 `load_skill`（ADR 0137） |
 | 2026-09-14 | §2.5 Tools / Agent：将 provider-facing 工具定义改为核心常驻 + builtin/Skill/MCP 按 session 分层加载；新增 `load_builtin` / `load_skill`，保留 `load_mcp`，完整 schema 只进入当前 session（ADR 0145） |
+| 2026-09-14 | §2.5 Tools / Agent：提示词只保留 `system` / `agent` / `haven` 等第一层 family/root 摘要；新增 `tool_catalog` 提供分页的 family/root/operation 发现与精确 schema 查询（ADR 0148） |
 | 2026-09-13 | §2.6 UI：工具页将同一 operation root 收束为一张可展开卡片，保留每个 operation 的独立 Schema、风险和启用状态（ADR 0139） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |

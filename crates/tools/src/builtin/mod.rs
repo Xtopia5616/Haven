@@ -26,6 +26,7 @@ pub mod scheduled_action;
 pub mod self_tool;
 pub mod shell;
 pub mod system;
+pub mod tool_catalog;
 pub mod window;
 
 use serde_json::Value;
@@ -230,6 +231,13 @@ pub async fn register_builtin_tools(
         registry: registry.clone(),
         session_catalog: session_catalog.clone(),
         max_tools_per_request: limits.max_tools_per_request.max(1),
+    }));
+    tools.push(Arc::new(tool_catalog::ToolCatalogTool {
+        deferred_catalog: deferred_catalog.clone(),
+        registry: registry.clone(),
+        session_catalog: session_catalog.clone(),
+        mcp_manager: mcp_manager.clone(),
+        server_configs: server_configs.clone(),
     }));
     // One media runtime serves every producer/consumer boundary. `files` and
     // `window` only create assets; interpretation and generation always land

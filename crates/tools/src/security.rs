@@ -130,6 +130,7 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("http", "request", Medium),
     security_case!("notify", "notify", Safe),
     security_case!("load_builtin", "load", Safe),
+    security_case!("tool_catalog", "tool_catalog", Safe),
     security_case!("load_skill", "load", Safe),
     security_case!("agent.list", "agent.list", Safe),
     security_case!("agent.children", "agent.children", Safe),
@@ -1663,6 +1664,7 @@ mod tests {
                 "http" => "request".into(),
                 "notify" => "notify".into(),
                 "load_builtin" | "load_skill" => "load".into(),
+                "tool_catalog" => "tool_catalog".into(),
                 "load_mcp" => "load".into(),
                 other => other.to_string(),
             })
@@ -1677,6 +1679,7 @@ mod tests {
             "ask" | "shell" | "http" | "notify" | "load_builtin" | "load_skill" | "load_mcp" => {
                 serde_json::json!({})
             }
+            "tool_catalog" => serde_json::json!({"action": "list"}),
             _ => serde_json::json!({"operation": case.operation}),
         }
     }

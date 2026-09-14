@@ -69,7 +69,7 @@
 - 新功能、删改契约、跨 crate 改动、安全语义、数据库变更必须附简短 ADR：背景、决定、替代方案、影响、验证与回滚/重置。
 - README 应覆盖项目用途、开发环境、启动、测试、数据重置、故障报告和发布；`AGENTS.md` 不替代面向开发者的入口文档。
 - 提交采用 `feat`、`fix`、`refactor`、`docs`、`test`、`build`、`chore` 前缀；每次提交只表达一个可审查目的。
-- 内置工具名、权限 key、`ToolConfig`、UI renderer 与历史配置迁移必须共享同一正式名称；模型可见的内置能力统一使用 `root.operation` 视图（例如 `files.read`、`system.env.get`、`haven.diagnostics.status`、`media.inspect`），聚合实现只作为内部/native 执行边界。模型只接收核心工具和紧凑能力索引；其它内置 operation 由 `load_builtin` 按 operation/root 在当前 session 原子加载，Skill 由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，MCP 由 `load_mcp` 按服务器加载为 `mcp__...`。完整 schema 只能出现在当前 session 已加载的 provider surface，不能把 deferred catalog 当作模型可直接调用的注册表。删除或重命名旧入口时，必须同时删除无调用的 UI/测试分支，并为旧配置定义一次性迁移或明确重置边界。
+- 内置工具名、权限 key、`ToolConfig`、UI renderer 与历史配置迁移必须共享同一正式名称；模型可见的内置能力统一使用 `root.operation` 视图（例如 `files.read`、`system.env.get`、`haven.diagnostics.status`、`media.inspect`），聚合实现只作为内部/native 执行边界。模型只接收核心工具和三层紧凑能力目录的第一层（`system`、`agent`、`haven` 等 family 及其 root 摘要）；需要深入时通过 Safe 的 `tool_catalog` 依次列出 family/root/operation，或精确描述一个 operation。其它内置 operation 由 `load_builtin` 按 operation/root 在当前 session 原子加载，Skill 由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，MCP 由 `load_mcp` 按服务器加载为 `mcp__...`。完整 schema 只能出现在当前 session 已加载的 provider surface，不能把 deferred catalog 当作模型可直接调用的注册表。删除或重命名旧入口时，必须同时删除无调用的 UI/测试分支，并为旧配置定义一次性迁移或明确重置边界。
 - Git 的分支、暂存、验证和提交节奏遵循 [Git 提交流程](git-workflow.md)；每轮逻辑改动完成且适用门禁通过后应主动提交。
 - 合并前的定义完成（DoD）：代码、测试、相关规范/ADR、风险评估、验收命令与用户可见变更说明均已更新。
 

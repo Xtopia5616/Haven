@@ -6,6 +6,9 @@
 `load_skill`”的模型目录部分；点号 operation view、权限 key 和 UI renderer 的正式名称
 仍保持不变。
 
+提示词目录的可见粒度由 [ADR 0148](0148-three-layer-capability-discovery.md) 进一步收窄：
+本 ADR 的 loader、session 隔离与 provider schema 边界仍然有效。
+
 ## 背景
 
 Builtin operation、Skill 和 MCP 的完整 JSON schema 都放进每次 provider 请求，会让系统
@@ -20,8 +23,8 @@ Haven 采用三层模型-facing capability surface：
 1. **核心常驻层**：只保留轻量、路由性质或高频的工具，例如 `ask`、`notify`、加载器以及
    少量基础读取 operation。它们在 global `ToolRegistry` 中注册，每次请求都可以使用。
 2. **延迟 builtin / Skill 层**：完整实现和 schema 保留在 host-owned `DeferredToolCatalog`，
-   但不进入 provider `tools[]`。模型先从分层 capability index 看到 family/root/operation 或
-   Skill 名称，再调用 `load_builtin` 或 `load_skill`。loader 在当前 `SessionCatalog` 中以
+   但不进入 provider `tools[]`。模型先从第一层 family/root 索引和 `tool_catalog` 查询看到
+   operation，再调用 `load_builtin` 或 `load_skill`。loader 在当前 `SessionCatalog` 中以
    原子批次注册选中的工具，并受 `max_tools_per_request` 限制。
 3. **MCP 层**：模型只看到服务器名、描述和工具数量/短名称索引；`load_mcp` 仍按服务器发现
    并把结果注册到当前 session。服务器加载结果只返回紧凑摘要，完整 MCP schema 在下一次请求

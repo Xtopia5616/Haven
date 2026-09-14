@@ -138,3 +138,4 @@
 - [0143：工具目录预算与高层交互能力](0143-tool-ergonomic-capabilities.md)
 - [0146：Agent 协作生命周期与可恢复消息契约](0146-agent-collaboration-lifecycle.md)
 - [0147：工具契约加固与任务/交互生命周期统一](0147-tool-contract-hardening-and-lifecycle-unification.md)
+- [0148：三层能力发现与按需工具详情](0148-three-layer-capability-discovery.md)

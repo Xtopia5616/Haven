@@ -55,6 +55,7 @@ fn is_core_model_tool(name: &str) -> bool {
         "ask"
             | "notify"
             | "load_builtin"
+            | "tool_catalog"
             | "load_skill"
             | "load_mcp"
             | "files.read"
@@ -2249,6 +2250,126 @@ mod tests {
         );
         assert!(mgr.get_tool("haven").await.is_none());
         assert!(mgr.get_tool("load_skill").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        let session_id = "ses-0123456789abcdef0123456789abcdef";
+
+        let families = mgr
+            .execute_tool(
+                Some(session_id),
+                "tool_catalog",
+                json!({"action": "list"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let family_items = families.output["items"].as_array().unwrap();
+        for family in ["agent", "haven", "system"] {
+            assert!(
+                family_items.iter().any(|item| item["name"] == family),
+                "layer 1 should expose the {family} family"
+            );
+        }
+        assert!(
+            family_items
+                .iter()
+                .all(|item| item.get("input_schema").is_none())
+        );
+
+        let roots = mgr
+            .execute_tool(
+                Some(session_id),
+                "tool_catalog",
+                json!({"action": "list", "level": "tools"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let window = roots.output["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == "window")
+            .expect("layer 2 should expose the window root");
+        assert!(window["operation_count"].as_u64().unwrap() >= 10);
+        assert!(window.get("input_schema").is_none());
+        assert!(
+            mgr.list_defs_for_session(session_id)
+                .await
+                .iter()
+                .all(|def| def.name != "window.screenshot")
+        );
+
+        let window_detail = mgr
+            .execute_tool(
+                Some(session_id),
+                "tool_catalog",
+                json!({"action": "describe", "name": "window"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let operations = window_detail.output["operations"].as_array().unwrap();
+        assert!(
+            operations
+                .iter()
+                .any(|item| item["name"] == "window.screenshot")
+        );
+        assert!(
+            operations
+                .iter()
+                .all(|item| item.get("input_schema").is_none())
+        );
+
+        let operation_page = mgr
+            .execute_tool(
+                Some(session_id),
+                "tool_catalog",
+                json!({
+                    "action": "list",
+                    "level": "operations",
+                    "root": "window",
+                    "limit": 1
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(operation_page.output["items"].as_array().unwrap().len(), 1);
+        assert_eq!(operation_page.output["next_cursor"], 1);
+
+        let screenshot_detail = mgr
+            .execute_tool(
+                Some(session_id),
+                "tool_catalog",
+                json!({"action": "describe", "name": "window.screenshot"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(screenshot_detail.output["loaded"], false);
+        assert!(screenshot_detail.output["input_schema"].is_object());
+        assert_eq!(screenshot_detail.output["load"]["tool"], "load_builtin");
+
+        let loaded = mgr
+            .execute_tool(
+                Some(session_id),
+                "load_builtin",
+                json!({"operations": ["window.screenshot"]}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(loaded.success);
+        assert!(
+            mgr.get_tool_for_session(Some(session_id), "window.screenshot")
+                .await
+                .is_some()
+        );
     }
 
     #[tokio::test]

@@ -520,13 +520,14 @@ impl ReActEngine {
     /// Called each step so freshly loaded tools are immediately visible.
     ///
     /// G7 (X2 rethink) — **API `tools[]` is the schema authority.** The
-    /// system prompt only embeds a short built-in / MCP-server **index**
-    /// (names + one-line descriptions), frozen for the **current run**
-    /// (`TOOL_USAGE_NOTES` declares this). Mid-run `load_mcp` never rewrites
-    /// the index; resume fully rebuilds the system prompt (X2) so catalog
-    /// drift is picked up between runs. After `load_mcp`, new tool schemas
-    /// appear here on the next step; they are **not** spliced into the prompt
-    /// index.
+    /// system prompt only embeds a short layer-1 **capability index** (family
+    /// and root summaries), frozen for the **current run** (`TOOL_USAGE_NOTES`
+    /// declares this). The `tool_catalog` control-plane tool provides deeper
+    /// root/operation discovery and exact schemas on demand. Mid-run
+    /// `load_mcp` never rewrites the index; resume fully rebuilds the system
+    /// prompt (X2) so catalog drift is picked up between runs. After
+    /// `load_mcp`, new tool schemas appear here on the next step; they are
+    /// **not** spliced into the prompt index.
     ///
     /// The result is cached per session against both the global catalog
     /// version and that session's registration-overlay version. This keeps a
