@@ -1,13 +1,47 @@
 //! Canonical lifecycle value for every interaction that pauses an agent.
 //!
 //! Ask questions, safety confirmations, and scheduled confirmations all have
-//! the same durable shape: a request is created, waits for an external
-//! decision, then resolves, expires, or is cancelled. The legacy snapshot
-//! fields remain readable for compatibility; new checkpoints also emit this
-//! normalized projection.
+//! the same lifecycle: a request is created, waits for an external decision,
+//! then resolves, expires, or is cancelled. The request owns both the common
+//! lifecycle and the typed execution data needed to resume the operation.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Typed data carried by an interaction request.
+///
+/// This is deliberately separate from the renderer event projection. The
+/// confirm variants contain the original tool input and authorization receipt
+/// because resume must re-check and execute the exact invocation, but those
+/// fields never cross the Tauri boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum InteractionDetails {
+    /// Used only by the generic constructor and by forward-compatible callers
+    /// that need the common lifecycle before supplying typed execution data.
+    Generic,
+    Ask {
+        options: Vec<String>,
+        step_ids: Vec<String>,
+    },
+    Confirm {
+        step_number: u32,
+        tool_name: String,
+        tool_input: Value,
+        tool_call_id: String,
+        step_id: String,
+        action_index: u32,
+        risk_level: haven_common::types::RiskLevel,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<haven_tools::ConfirmationReceipt>,
+    },
+    ScheduledConfirm {
+        tool_name: String,
+        tool_input: Value,
+        receipt: haven_tools::ConfirmationReceipt,
+        title: String,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +68,7 @@ pub struct InteractionRequest {
     pub kind: InteractionKind,
     pub status: InteractionStatus,
     pub prompt: String,
+    pub details: InteractionDetails,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub correlation_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,7 +95,100 @@ impl InteractionRequest {
             kind,
             status: InteractionStatus::Pending,
             prompt: prompt.into(),
+            details: InteractionDetails::Generic,
             correlation_ids,
+            response: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
+        }
+    }
+
+    pub fn ask(
+        session_id: &str,
+        question: impl Into<String>,
+        options: Vec<String>,
+        step_ids: Vec<String>,
+    ) -> Self {
+        let step_id = step_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| haven_common::types::new_id("step"));
+        Self {
+            id: step_id,
+            session_id: session_id.to_string(),
+            kind: InteractionKind::Ask,
+            status: InteractionStatus::Pending,
+            prompt: question.into(),
+            details: InteractionDetails::Ask {
+                options,
+                step_ids: step_ids.clone(),
+            },
+            correlation_ids: step_ids,
+            response: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn confirm(
+        session_id: &str,
+        step_number: u32,
+        tool_name: String,
+        tool_input: Value,
+        tool_call_id: String,
+        step_id: String,
+        action_index: u32,
+        risk_level: haven_common::types::RiskLevel,
+        receipt: Option<haven_tools::ConfirmationReceipt>,
+    ) -> Self {
+        let id = receipt
+            .as_ref()
+            .map(|receipt| receipt.confirmation_id.to_string())
+            .unwrap_or_else(|| haven_common::types::new_id("conf").to_string());
+        Self {
+            id,
+            session_id: session_id.to_string(),
+            kind: InteractionKind::Confirm,
+            status: InteractionStatus::Pending,
+            prompt: "Waiting for confirmation".into(),
+            details: InteractionDetails::Confirm {
+                step_number,
+                tool_name,
+                tool_input,
+                tool_call_id,
+                step_id: step_id.clone(),
+                action_index,
+                risk_level,
+                receipt,
+            },
+            correlation_ids: vec![step_id],
+            response: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
+        }
+    }
+
+    pub fn scheduled_confirm(
+        session_id: &str,
+        tool_name: String,
+        tool_input: Value,
+        receipt: haven_tools::ConfirmationReceipt,
+        title: String,
+    ) -> Self {
+        Self {
+            id: receipt.confirmation_id.to_string(),
+            session_id: session_id.to_string(),
+            kind: InteractionKind::ScheduledConfirm,
+            status: InteractionStatus::Pending,
+            prompt: title.clone(),
+            details: InteractionDetails::ScheduledConfirm {
+                tool_name,
+                tool_input,
+                receipt,
+                title,
+            },
+            correlation_ids: Vec::new(),
             response: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             expires_at: None,
@@ -92,45 +220,8 @@ impl InteractionRequest {
         true
     }
 
-    pub fn from_ask(session_id: &str, pending: &crate::types::AskPending) -> Self {
-        let id = pending
-            .step_ids
-            .first()
-            .cloned()
-            .unwrap_or_else(|| haven_common::types::new_id("step"));
-        Self {
-            id,
-            session_id: session_id.to_string(),
-            kind: InteractionKind::Ask,
-            status: InteractionStatus::Pending,
-            prompt: pending.question.clone(),
-            correlation_ids: pending.step_ids.clone(),
-            response: None,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: None,
-        }
-    }
-
-    pub fn from_confirm(session_id: &str, pending: &crate::types::ConfirmPending) -> Self {
-        let ids = pending
-            .tools
-            .iter()
-            .map(|tool| tool.confirm_id.clone())
-            .collect::<Vec<_>>();
-        Self {
-            id: ids
-                .first()
-                .cloned()
-                .unwrap_or_else(|| haven_common::types::new_id("conf")),
-            session_id: session_id.to_string(),
-            kind: InteractionKind::Confirm,
-            status: InteractionStatus::Pending,
-            prompt: "Waiting for confirmation".into(),
-            correlation_ids: ids,
-            response: None,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: None,
-        }
+    pub fn decision(&self) -> Option<bool> {
+        self.response.as_ref().and_then(Value::as_bool)
     }
 }
 

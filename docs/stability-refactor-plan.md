@@ -104,7 +104,7 @@
 - 2026-08-30：P2 UI 会话用量展示边界收口：每步用量聚合、缓存命中率与 token tooltip 集中到 `ui/src/lib/sessionUsagePresentation.ts`，路由页保留响应式状态适配（ADR 0043）。
 - 2026-08-30：P2 UI Agent 事件 handler 边界收口：thought/reasoning、web search、补充输入、工具 action/output/observation 的事件到消息投影集中到 `ui/src/lib/chatAgentEventHandlers.ts`，路由页保留状态与监听器编排（ADR 0044）。
 - 2026-08-30：P2 UI Agent 用量事件边界收口：`agent:usage` 的 token/费用/调用明细投影与 `agent:compaction` 通知集中到 `ui/src/lib/chatUsageEventHandlers.ts`，路由页保留监听器编排（ADR 0045）。
-- 2026-08-30：P2 UI 安全确认事件边界收口：`confirm:requested` DTO 到确认队列项的映射集中到 `ui/src/lib/chatConfirmationEventHandlers.ts`，路由页保留队列、对话框生命周期与授权 IPC（ADR 0046）。
+- 2026-09-14：P0 人工交互生命周期收口：ask、confirm、scheduled confirm 统一为 `InteractionRequest`，session 只保留通用 `Paused`，统一事件和前端 `interactionStore` 负责投影、恢复与解析（ADR 0156）。
 - 2026-08-30：P2 UI 会话生命周期事件边界收口：session created/updated/completed/error/title-updated 的状态投影与终态清理集中到 `ui/src/lib/chatSessionEventHandlers.ts`，路由页保留响应式状态回调（ADR 0047）。
 - 2026-08-30：P2 UI 聊天消息时间线边界收口：欢迎态、消息列表、后台等待提示与错误继续按钮集中到 `ui/src/lib/ChatMessageTimeline.svelte`，路由页保留滚动容器与业务回调（ADR 0048）。
 - 2026-08-30：P2 UI ask 交互边界收口：选项选择、批量回答、忽略、恢复清理与重复提交防护集中到 `ui/src/lib/chatAskInteraction.ts`，路由页保留输入编排（ADR 0049）。

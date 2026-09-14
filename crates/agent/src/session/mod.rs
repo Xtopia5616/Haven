@@ -1,30 +1,22 @@
-use haven_common::hooks::OnceHandler;
+use crate::interaction::InteractionRequest;
 use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::repositories::sessions::Session as DbSession;
 use haven_tools::{ConfirmationResult, ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot, watch};
+use tokio::sync::{Mutex, Semaphore, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
-/// Last-resort ceiling for [`SessionExecutor::await_run_finished`]. The
+/// Last-resort ceiling for [`SessionSupervisor::await_run_finished`]. The
 /// normal path is a true oneshot join on handler exit; this bound only
 /// guards against a stuck handler so rollback cannot hang forever.
 const RUN_EXIT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// Per-session gate: created when a run is claimed, signaled when the
-/// dispatcher handler fully exits (`unmark_running` → `cleanup_session_maps`).
-/// Rollback takes the receiver so cancel→restore ordering is deterministic.
-struct RunExitGate {
-    tx: oneshot::Sender<()>,
-    rx: Option<oneshot::Receiver<()>>,
-}
 
 /// User-queue payload (steering or follow-up). Defined in `haven-common`;
 /// re-exported so session code uses the canonical queue type.
@@ -36,8 +28,6 @@ pub use haven_common::types::FollowUp;
 /// is expected to update the session status on completion/error.
 pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
-
-const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
 
 /// Absolute fail-closed ceiling for an unanswered **scheduled** confirmation
 /// (R2). The interactive UI countdown (120s) starts when the dialog is
@@ -52,17 +42,6 @@ pub enum SessionStatus {
     Pending,
     Running,
     Paused,
-    /// Paused because the `ask` tool is awaiting a human answer. Background-action
-    /// completions must NOT auto-wake this state: the model is blocked on the
-    /// user, not on action results, and resuming would let the agent continue
-    /// (and run tools) without the user's consent. Persisted distinctly as
-    /// `paused_awaiting_answer` (Phase 4 / F2) so restart restores the ask
-    /// gate without JSON heuristics.
-    PausedAwaitingAnswer,
-    /// Paused because a safety-gated tool needs user confirmation (Phase 5 / E3).
-    /// Background-action completions must NOT auto-wake — same gate as ask.
-    /// Persisted as `paused_awaiting_confirm`.
-    PausedAwaitingConfirm,
     Completed,
     Error,
 }
@@ -73,8 +52,6 @@ impl SessionStatus {
             SessionStatus::Pending => "pending",
             SessionStatus::Running => "running",
             SessionStatus::Paused => "paused",
-            SessionStatus::PausedAwaitingAnswer => "paused_awaiting_answer",
-            SessionStatus::PausedAwaitingConfirm => "paused_awaiting_confirm",
             SessionStatus::Completed => "completed",
             SessionStatus::Error => "error",
         }
@@ -85,8 +62,6 @@ impl SessionStatus {
             "pending" => SessionStatus::Pending,
             "running" => SessionStatus::Running,
             "paused" => SessionStatus::Paused,
-            "paused_awaiting_answer" => SessionStatus::PausedAwaitingAnswer,
-            "paused_awaiting_confirm" => SessionStatus::PausedAwaitingConfirm,
             "completed" => SessionStatus::Completed,
             "error" => SessionStatus::Error,
             // Unknown/corrupt DB statuses must not silently map to Pending:
@@ -102,32 +77,9 @@ impl SessionStatus {
         }
     }
 
-    /// True for every pause flavor: scheduling, ask-awaiting, confirm-awaiting.
+    /// The interaction registry carries the reason for a pause.
     pub fn is_paused(&self) -> bool {
-        matches!(
-            self,
-            SessionStatus::Paused
-                | SessionStatus::PausedAwaitingAnswer
-                | SessionStatus::PausedAwaitingConfirm
-        )
-    }
-
-    /// True when the pause is blocked on a human answer to an `ask` tool.
-    pub fn is_awaiting_answer(&self) -> bool {
-        matches!(self, SessionStatus::PausedAwaitingAnswer)
-    }
-
-    /// True when the pause is blocked on a safety confirmation (Phase 5 / E3).
-    pub fn is_awaiting_confirm(&self) -> bool {
-        matches!(self, SessionStatus::PausedAwaitingConfirm)
-    }
-
-    /// True when background-action completions must not auto-wake the session.
-    pub fn blocks_auto_wake(&self) -> bool {
-        matches!(
-            self,
-            SessionStatus::PausedAwaitingAnswer | SessionStatus::PausedAwaitingConfirm
-        )
+        matches!(self, SessionStatus::Paused)
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -161,13 +113,6 @@ pub struct SessionInfo {
     pub title: Option<String>,
     pub status: SessionStatus,
     pub steps: Vec<StepInfo>,
-    /// Follow-up queue (Phase 4 / D1): post-pause user injects and ask
-    /// answers (`is_answer`). Historical field name was `supplement_queue`.
-    pub follow_up_queue: Vec<FollowUp>,
-    /// Steering queue: mid-run user interjections injected before the next
-    /// LLM call (step boundary; tools already in flight still finish unless
-    /// cancelled — see D3).
-    pub steering_queue: Vec<FollowUp>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -185,8 +130,6 @@ impl SessionInfo {
             title: record.title.clone(),
             status: SessionStatus::from_status_str(&record.status),
             steps: Vec::new(),
-            follow_up_queue: Vec::new(),
-            steering_queue: Vec::new(),
             created_at: record.created_at.clone(),
             updated_at: record.updated_at.clone(),
         }
@@ -205,27 +148,6 @@ pub struct StepInfo {
     pub confirmed: Option<bool>,
 }
 
-type ConfirmRequestCallback = OnceHandler<
-    dyn Fn(
-            haven_common::types::ConfirmId,
-            String,
-            String,
-            RiskLevel,
-            Value,
-            Option<String>,
-            u32,
-            Option<String>,
-        ) + Send
-        + Sync,
->;
-
-/// Terminal-failure callback: invoked when the dispatcher marks a session as
-/// Error on a path that bypasses the ReAct loop's normal error emission
-/// (handler panic / abort). The app layer wires it to emit `session:error` and
-/// the `session:updated` secondary broadcast so the UI never misses a terminal
-/// transition (busy indicators, status chip, session list refresh).
-type SessionErrorCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
-
 /// Outcome of resolving a confirm request — enough for the app layer to
 /// record a permission grant (tool key + session scope).
 #[derive(Debug, Clone)]
@@ -235,32 +157,16 @@ pub struct ConfirmResolution {
     pub tool_input: Value,
 }
 
-/// Non-blocking scheduled-tool confirmation pending (R2). Keyed by `conf-*`
-/// in `SessionExecutor::scheduled_confirms`. The fired-action consumer emits
-/// `confirm:requested` and continues; `resolve_confirmation` (or the
-/// `SCHEDULED_CONFIRM_TIMEOUT` timer) later executes or skips the tool.
-struct ScheduledConfirmPending {
-    /// Owning session for trust-recording; `None` for headless fires.
-    session_id: Option<String>,
-    tool_name: String,
-    tool_args: Value,
-    receipt: haven_tools::ConfirmationReceipt,
-    /// Notification title from the scheduled action (outcome toast).
-    title: String,
+/// Typed side effects emitted by the supervisor. Consumers subscribe to this
+/// stream; no subsystem installs mutable one-shot callbacks on the runtime.
+#[derive(Debug, Clone)]
+pub enum SessionEvent {
+    InteractionRequested { request: Box<InteractionRequest> },
+    ScheduledConfirmOutcome { title: String, body: String },
+    SessionCleanup { session_id: String },
+    CascadeCompleted { session_id: String, title: String },
+    SessionError { session_id: String, reason: String },
 }
-
-/// Outcome toast for a resolved scheduled confirm (`title`, `body`).
-type ScheduledConfirmOutcomeCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
-
-/// Fired from [`SessionExecutor::cleanup_session_maps`] so sidecars (inference
-/// MEMORY dirty maps, etc.) can drop per-session state.
-type SessionCleanupCallback = OnceHandler<dyn Fn(String) + Send + Sync>;
-
-/// Cascade-ended child sessions (parent terminal path) that never go through
-/// the Tauri `end_session` command — the app layer wires this to emit
-/// `session:completed` (+ secondary `session:updated`) so busy chips / lists
-/// clear for descendants too. Args: `(session_id, title)`.
-type CascadeCompletedCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
 
 /// Result of a safety-gated tool execution: the tool result plus the
 /// risk level and confirmation state recorded for the step.
@@ -270,29 +176,20 @@ pub struct ToolExecution {
     pub confirmed: Option<bool>,
 }
 
-pub struct SessionExecutor {
+pub struct SessionSupervisor {
     db: Arc<Database>,
     tools: Arc<ToolsManager>,
-    /// Per-session working set. Keyed by session id; each entry is behind its own
-    /// mutex so a slow transition of one session (DB write under the entry lock)
-    /// never serializes the other sessions' operations on a global lock. The map
-    /// lock itself is only held for lookup/insert/remove (never while
-    /// awaiting an entry lock), keeping the lock order acyclic.
-    sessions: Arc<Mutex<HashMap<String, Arc<Mutex<SessionInfo>>>>>,
-    running_sessions: Arc<Mutex<HashSet<String>>>,
-    /// Completion gates for in-flight dispatcher runs. Inserted in
-    /// `try_claim_pending` (covers the claim→spawn window) and signaled from
-    /// `cleanup_session_maps` when the handler releases the running slot.
-    run_exit: Arc<Mutex<HashMap<String, RunExitGate>>>,
+    /// The sole cross-session registry. A session's mutable runtime state is
+    /// owned by its actor and is never protected by a shared per-session lock.
+    actors: Arc<Mutex<HashMap<String, actor::SessionActorHandle>>>,
+    /// Synchronous view of actor handles for the blocking messaging mailbox
+    /// boundary. Session state remains owned by the actors.
+    local_actors: Arc<StdRwLock<HashMap<String, actor::SessionActorHandle>>>,
     semaphore: Arc<Semaphore>,
     /// Current configured session concurrency ceiling. Kept separate from the
     /// semaphore's live permit count so `set_max_concurrent` can compute the
     /// delta when the user changes the setting at runtime.
     max_concurrent: std::sync::atomic::AtomicUsize,
-    /// Tracks the semaphore permit held by each running session's handler.
-    /// When a session is paused, its permit is dropped so the dispatcher slot
-    /// is freed. On resume the dispatcher re-acquires a permit.
-    session_permits: Arc<Mutex<HashMap<String, OwnedSemaphorePermit>>>,
     /// FIFO dispatch queue: session ids in the order they became `Pending`
     /// (insertion order ≈ creation order for fresh sessions). The dispatcher
     /// claims from the front, so queued sessions run in submission order instead
@@ -300,93 +197,104 @@ pub struct SessionExecutor {
     /// produce. Entries are (re-)enqueued on every transition to Pending and
     /// removed on terminal states / claims / explicit removal.
     pending_queue: Arc<Mutex<VecDeque<String>>>,
-    /// Cancellation tokens for each session, used to abort in-flight LLM calls.
-    session_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
-    /// Per-session level-triggered status watchers: the ReAct loop blocks on the
-    /// receiver (`subscribe_status`) instead of polling, and a transition
-    /// that lands between a state read and the wait is never lost (unlike the
-    /// edge-triggered Notify it replaced, the stored value makes `changed()`
-    /// resolve immediately when the value moved).
-    status_tx: Arc<Mutex<HashMap<String, watch::Sender<SessionStatus>>>>,
     /// Dispatch wake counter: incremented on every transition to Pending.
     /// The dispatcher waits on a receiver of this watch, so a session that
     /// becomes Pending right after a failed claim still wakes it (no missed
     /// notification, no polling fallback).
     dispatch_tx: watch::Sender<u64>,
-    /// Per-session buffer of completed background-action results (system
-    /// inject / action_results — not a user queue). Delivered to the ReAct
-    /// loop as context at the next step start.
-    action_completions: Arc<Mutex<HashMap<String, Vec<String>>>>,
-    /// Explicit ask-awaiting flag per session (Phase 4 / C5). Mirrored into
-    /// `ReActSnapshot.awaiting_answer` on pause and restored on resume.
-    awaiting_answer: Arc<Mutex<HashMap<String, crate::types::AskPending>>>,
-    /// Explicit confirm-awaiting batch per session (Phase 5 / E3). Mirrored
-    /// into `ReActSnapshot.awaiting_confirm` on pause and restored on resume.
-    awaiting_confirm: Arc<Mutex<HashMap<String, crate::types::ConfirmPending>>>,
-    /// Pending scheduled-tool confirmations (R2), keyed by the `conf-*` id
-    /// reported in `confirm:requested`. ReAct sessions use `awaiting_confirm`
-    /// (pause/continue) instead — tool futures never block.
-    scheduled_confirms:
-        Arc<Mutex<HashMap<haven_common::types::ConfirmId, ScheduledConfirmPending>>>,
+    /// Scheduled confirmations are not session state (some are headless), so
+    /// they use a small owner-local list rather than another session map.
+    scheduled_confirms: Arc<Mutex<Vec<InteractionRequest>>>,
     /// Coordinated lifecycle for checkpointed stream text (checkpoint /
     /// promote / discard), shared with the agent loop and the end/rollback
     /// paths.
     pub partials: Arc<crate::partial::PartialStore>,
-    pub on_confirm_request: ConfirmRequestCallback,
-    /// Wired by [`crate::layer::AgentLayer::start`] to surface scheduled
-    /// confirm outcomes as notifications.
-    pub on_scheduled_confirm_outcome: ScheduledConfirmOutcomeCallback,
-    /// Wired by [`crate::layer::AgentLayer::start`] to clear inference
-    /// mid-run MEMORY bookkeeping when a session leaves the working set.
-    pub on_session_cleanup: SessionCleanupCallback,
-    /// Wired by [`crate::layer::AgentLayer::start`] for cascade child ends.
-    pub on_cascade_completed: CascadeCompletedCallback,
-    /// Session ids that have successfully spawned at least one peer child in
-    /// this process. Used to skip inbox registry I/O on terminal cleanup for
-    /// the common leaf-session path.
-    sessions_with_children: Mutex<HashSet<String>>,
+    event_tx: broadcast::Sender<SessionEvent>,
+    message_tx: watch::Sender<u64>,
     /// Notification body truncation for scheduled-tool outcomes (matches
     /// `ContextLimitsConfig::notification_summary_chars`).
     pub notification_summary_chars: AtomicUsize,
-    pub on_session_error: SessionErrorCallback,
 }
 
+/// Test-only compatibility name kept inside the legacy unit-test module while
+/// production callers use [`SessionSupervisor`] directly.
+#[cfg(test)]
+pub(crate) type SessionExecutor = SessionSupervisor;
+
+mod actor;
 mod dispatcher;
 mod queues;
+mod run_engine;
 mod status;
 mod tool_runner;
+pub(crate) use actor::SessionActorHandle;
 pub(crate) use tool_runner::ActionStepPersistenceError;
 
 pub(crate) use queues::ReactContextBatch;
+pub use run_engine::RunEngine;
 
-impl SessionExecutor {
+impl SessionSupervisor {
     pub fn new(db: Arc<Database>, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
+        let (event_tx, _) = broadcast::channel(256);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(db.clone())),
             db,
             tools,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            running_sessions: Arc::new(Mutex::new(HashSet::new())),
-            run_exit: Arc::new(Mutex::new(HashMap::new())),
-            semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            max_concurrent: std::sync::atomic::AtomicUsize::new(max_concurrent),
+            actors: Arc::new(Mutex::new(HashMap::new())),
+            local_actors: Arc::new(StdRwLock::new(HashMap::new())),
+            semaphore: Arc::new(Semaphore::new(max_concurrent.max(1))),
+            max_concurrent: std::sync::atomic::AtomicUsize::new(max_concurrent.max(1)),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
-            session_permits: Arc::new(Mutex::new(HashMap::new())),
-            session_cancellations: Arc::new(Mutex::new(HashMap::new())),
-            status_tx: Arc::new(Mutex::new(HashMap::new())),
             dispatch_tx: watch::channel(0).0,
-            action_completions: Arc::new(Mutex::new(HashMap::new())),
-            awaiting_answer: Arc::new(Mutex::new(HashMap::new())),
-            awaiting_confirm: Arc::new(Mutex::new(HashMap::new())),
-            scheduled_confirms: Arc::new(Mutex::new(HashMap::new())),
-            on_confirm_request: OnceHandler::new(),
-            on_scheduled_confirm_outcome: OnceHandler::new(),
-            on_session_cleanup: OnceHandler::new(),
-            on_cascade_completed: OnceHandler::new(),
-            sessions_with_children: Mutex::new(HashSet::new()),
+            scheduled_confirms: Arc::new(Mutex::new(Vec::new())),
+            event_tx,
+            message_tx: watch::channel(0).0,
             notification_summary_chars: AtomicUsize::new(800),
-            on_session_error: OnceHandler::new(),
         }
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<SessionEvent> {
+        self.event_tx.subscribe()
+    }
+
+    pub(crate) async fn actor_for(&self, session_id: &str) -> Option<actor::SessionActorHandle> {
+        self.actors.lock().await.get(session_id).cloned()
+    }
+
+    async fn install_actor(&self, info: SessionInfo) -> actor::SessionActorHandle {
+        let handle = actor::spawn(self.db.clone(), info);
+        self.actors
+            .lock()
+            .await
+            .insert(handle.id.clone(), handle.clone());
+        if let Ok(mut actors) = self.local_actors.write() {
+            actors.insert(handle.id.clone(), handle.clone());
+        }
+        handle
+    }
+
+    pub(crate) async fn remove_actor(&self, session_id: &str) -> Option<actor::SessionActorHandle> {
+        if let Ok(mut actors) = self.local_actors.write() {
+            actors.remove(session_id);
+        }
+        self.actors.lock().await.remove(session_id)
+    }
+
+    /// Return the in-process mailbox port used by `MessagingService`.
+    pub(crate) fn messaging_mailbox(self: &Arc<Self>) -> Arc<dyn haven_tools::SessionMailbox> {
+        self.clone()
+    }
+
+    /// A service view for the ReAct inbox. It shares this supervisor's actor
+    /// registry while retaining the JSONL fallback for external processes.
+    pub(crate) fn messaging_service(self: &Arc<Self>) -> Arc<haven_tools::MessagingService> {
+        Arc::new(haven_tools::MessagingService::with_session_mailbox(
+            self.messaging_mailbox(),
+        ))
+    }
+
+    pub(crate) fn emit_event(&self, event: SessionEvent) {
+        let _ = self.event_tx.send(event);
     }
 
     pub fn set_notification_summary_chars(&self, chars: usize) {
@@ -397,27 +305,133 @@ impl SessionExecutor {
     /// Record that `parent_session_id` spawned a peer child (in-process hint
     /// for cascade skip).
     pub async fn mark_has_children(&self, parent_session_id: &str) {
-        self.sessions_with_children
-            .lock()
-            .await
-            .insert(parent_session_id.to_string());
+        if let Some(actor) = self.actor_for(parent_session_id).await {
+            actor.set_has_children(true).await;
+        }
     }
 
     async fn may_have_children(&self, session_id: &str) -> bool {
-        self.sessions_with_children
-            .lock()
-            .await
-            .contains(session_id)
+        match self.actor_for(session_id).await {
+            Some(actor) => actor.has_children().await,
+            None => false,
+        }
     }
 
     async fn clear_has_children(&self, session_id: &str) {
-        self.sessions_with_children.lock().await.remove(session_id);
+        if let Some(actor) = self.actor_for(session_id).await {
+            actor.set_has_children(false).await;
+        }
+    }
+}
+
+impl haven_tools::SessionMailbox for SessionSupervisor {
+    fn subscribe(&self) -> watch::Receiver<u64> {
+        self.message_tx.subscribe()
+    }
+
+    fn deliver(
+        &self,
+        to: &str,
+        envelope: &haven_tools::inbox::Envelope,
+    ) -> anyhow::Result<Option<haven_tools::inbox::SendOutcome>> {
+        let actor = self
+            .local_actors
+            .read()
+            .ok()
+            .and_then(|actors| actors.get(to).cloned());
+        let Some(actor) = actor else {
+            return Ok(None);
+        };
+        actor.deliver_message(envelope.clone())?;
+        self.message_tx.send_modify(|counter| *counter += 1);
+        Ok(Some(haven_tools::inbox::SendOutcome {
+            to: to.to_string(),
+            delivered: true,
+            status: haven_tools::inbox::AgentStatus::Online,
+        }))
+    }
+
+    fn claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<haven_tools::inbox::Envelope>>> {
+        let actor = self
+            .local_actors
+            .read()
+            .ok()
+            .and_then(|actors| actors.get(recipient).cloned());
+        Ok(actor.map(|actor| actor.claim_messages()))
+    }
+
+    fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>> {
+        let actor = self
+            .local_actors
+            .read()
+            .ok()
+            .and_then(|actors| actors.get(recipient).cloned());
+        let Some(actor) = actor else {
+            return Ok(None);
+        };
+        actor.ack_messages(ids.to_vec());
+        Ok(Some(()))
+    }
+
+    fn last_received(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<Option<haven_tools::inbox::Envelope>>> {
+        let actor = self
+            .local_actors
+            .read()
+            .ok()
+            .and_then(|actors| actors.get(name).cloned());
+        Ok(actor.map(|actor| actor.last_received_message()))
+    }
+
+    fn find_message(
+        &self,
+        name: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<Option<haven_tools::inbox::Envelope>>> {
+        let actor = self
+            .local_actors
+            .read()
+            .ok()
+            .and_then(|actors| actors.get(name).cloned());
+        Ok(actor.map(|actor| actor.find_message_by_id(id.to_string())))
+    }
+
+    fn take_matching_replies(
+        &self,
+        name: &str,
+        in_reply_to: &str,
+        expected_from: &str,
+    ) -> anyhow::Result<Option<Vec<haven_tools::inbox::Envelope>>> {
+        let actor = self
+            .local_actors
+            .read()
+            .ok()
+            .and_then(|actors| actors.get(name).cloned());
+        Ok(actor.map(|actor| {
+            actor.take_matching_replies_blocking(in_reply_to.to_string(), expected_from.to_string())
+        }))
+    }
+
+    fn history(
+        &self,
+        name: &str,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<haven_tools::inbox::Envelope>>> {
+        let actor = self
+            .local_actors
+            .read()
+            .ok()
+            .and_then(|actors| actors.get(name).cloned());
+        Ok(actor.map(|actor| actor.history_blocking(limit)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_tools::inbox::MessageType;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -445,20 +459,7 @@ mod tests {
         let exec = make_executor(1);
         let session = exec.create_session("t1").await.unwrap();
 
-        // The panic path bypasses the ReAct loop's event emission, so the
-        // wired on_session_error callback must fire — otherwise the UI would
-        // never learn about the terminal transition.
-        //
-        // A `std::sync::Mutex` (not a tokio mutex) so the synchronous
-        // callback can lock it directly; `try_lock().unwrap()` on a tokio
-        // mutex panicked whenever the poll loop below happened to hold the
-        // lock while the dispatcher fired the callback.
-        let notified = Arc::new(std::sync::Mutex::new(None::<(String, String)>));
-        let nt = notified.clone();
-        exec.on_session_error
-            .set(Arc::new(move |session_id: String, reason: String| {
-                *nt.lock().unwrap() = Some((session_id, reason));
-            }));
+        let mut events = exec.subscribe_events();
 
         let handler: RunHandler = Arc::new(move |_id: String| {
             Box::pin(async move {
@@ -496,7 +497,7 @@ mod tests {
         // immediately (this test flaked under `cargo test --workspace`).
         let mut released = false;
         for _ in 0..100 {
-            if !exec.running_sessions.lock().await.contains(&session.id)
+            if !exec.is_run_in_flight(&session.id).await
                 && exec.get_session_state(&session.id).await.is_none()
             {
                 released = true;
@@ -505,19 +506,18 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(released, "running slot / working set must be released");
-        // The wired failure callback fired with the session id and a panic
-        // reason (the UI clears its busy set from this signal). Poll: the
-        // callback runs right after the DB write in the dispatcher's spawned
-        // session.
+        // The typed failure event fires right after the DB write in the
+        // dispatcher's spawned session.
         let mut seen = None;
         for _ in 0..100 {
-            seen = notified.lock().unwrap().clone();
-            if seen.is_some() {
+            if let Ok(Ok(SessionEvent::SessionError { session_id, reason })) =
+                tokio::time::timeout(std::time::Duration::from_millis(10), events.recv()).await
+            {
+                seen = Some((session_id, reason));
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let (seen_id, seen_reason) = seen.expect("on_session_error callback must fire");
+        let (seen_id, seen_reason) = seen.expect("session error event must fire");
         assert_eq!(seen_id, session.id);
         assert!(seen_reason.contains("panicked"), "reason: {seen_reason}");
     }
@@ -558,9 +558,7 @@ mod tests {
 
         let mut seen = false;
         for _ in 0..100 {
-            if in_handler.load(Ordering::SeqCst) == 1
-                && exec.running_sessions.lock().await.contains(&session.id)
-            {
+            if in_handler.load(Ordering::SeqCst) == 1 && exec.is_run_in_flight(&session.id).await {
                 seen = true;
                 break;
             }
@@ -588,7 +586,7 @@ mod tests {
             .expect("await_run_finished should resolve after handler exit")
             .expect("wait task join");
         assert_eq!(exited.load(Ordering::SeqCst), 1);
-        assert!(!exec.running_sessions.lock().await.contains(&session.id));
+        assert!(!exec.is_run_in_flight(&session.id).await);
     }
 
     /// `await_run_finished` is a no-op when the session was never claimed.
@@ -672,7 +670,7 @@ mod tests {
 
         let state = exec.get_session_state(&session.id).await;
         assert_eq!(state, Some(SessionStatus::Running));
-        assert!(exec.running_sessions.lock().await.contains(&session.id));
+        assert!(exec.is_run_in_flight(&session.id).await);
         let db_status = exec
             .db
             .get_session(&session.id)
@@ -685,26 +683,23 @@ mod tests {
         assert!(exec.try_claim_pending().await.is_none());
     }
 
-    /// A Pending session already present in `running_sessions` (claim→spawn
-    /// window) must not be claimed again — otherwise the dispatcher spawns a
-    /// duplicate ReAct loop. The stale queue entry is consumed on the skip; a
-    /// later Pending transition re-enqueues the session once the handler
-    /// exits and `unmark_running` clears the set (pause is exit-based).
+    /// A claimed session cannot be claimed again until its run finishes.
     #[tokio::test]
     async fn try_claim_pending_skips_session_already_in_running_set() {
         let exec = make_executor(2);
         let session = exec.create_session("t1").await.unwrap();
-        exec.running_sessions
-            .lock()
+        assert_eq!(
+            exec.try_claim_pending().await.as_deref(),
+            Some(session.id.as_str())
+        );
+        assert!(exec.is_run_in_flight(&session.id).await);
+        exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
-            .insert(session.id.clone());
-
-        assert!(exec.try_claim_pending().await.is_none());
-
-        // Once the handler releases the slot, the session only becomes claimable
-        // again after it re-enters the FIFO queue (a fresh Pending transition).
-        exec.running_sessions.lock().await.remove(&session.id);
-        assert!(exec.try_claim_pending().await.is_none());
+            .unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Pending)
+            .await
+            .unwrap();
+        exec.end_direct_run(&session.id).await;
         exec.enqueue_pending(&session.id).await;
         let claimed = exec.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
@@ -784,7 +779,7 @@ mod tests {
         assert_eq!(status, SessionStatus::Completed);
 
         assert!(exec.try_claim_pending().await.is_none());
-        assert!(!exec.running_sessions.lock().await.contains(&session.id));
+        assert!(!exec.is_run_in_flight(&session.id).await);
     }
 
     // ─── Data-layer tests (no dispatcher required) ───
@@ -793,6 +788,134 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
         Arc::new(Database::open(&p).unwrap())
+    }
+
+    #[tokio::test]
+    async fn messaging_service_routes_full_lifecycle_through_actor_mailboxes() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = Arc::new(SessionExecutor::new(db, tools, 2));
+        let sender = exec.create_session("sender").await.unwrap();
+        let receiver = exec.create_session("receiver").await.unwrap();
+        let service = exec.messaging_service();
+
+        let request = {
+            let service = service.clone();
+            let from = sender.id.clone();
+            let to = receiver.id.clone();
+            tokio::task::spawn_blocking(move || {
+                service
+                    .request(&from, &to, "请处理", None, None, None)
+                    .unwrap()
+            })
+            .await
+            .unwrap()
+        };
+
+        let first_claim = {
+            let service = service.clone();
+            let recipient = receiver.id.clone();
+            tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
+                .await
+                .unwrap()
+        };
+        assert_eq!(first_claim.envelopes()[0].id, request.envelope.id);
+        assert_eq!(first_claim.envelopes()[0].delivery_attempt, 1);
+        tokio::task::spawn_blocking(move || first_claim.retry())
+            .await
+            .unwrap();
+
+        let second_claim = {
+            let service = service.clone();
+            let recipient = receiver.id.clone();
+            tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
+                .await
+                .unwrap()
+        };
+        assert_eq!(second_claim.envelopes()[0].delivery_attempt, 2);
+        tokio::task::spawn_blocking(move || second_claim.complete().unwrap())
+            .await
+            .unwrap();
+
+        let receipt_claim = {
+            let service = service.clone();
+            let recipient = sender.id.clone();
+            tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
+                .await
+                .unwrap()
+        };
+        assert_eq!(receipt_claim.envelopes().len(), 1);
+        assert_eq!(receipt_claim.envelopes()[0].r#type, MessageType::Receipt);
+        tokio::task::spawn_blocking(move || receipt_claim.complete().unwrap())
+            .await
+            .unwrap();
+
+        let reply_service = service.clone();
+        let reply_to = request.envelope.id.clone();
+        let from = receiver.id.clone();
+        let to = sender.id.clone();
+        let reply_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::task::spawn_blocking(move || {
+                reply_service
+                    .reply(&from, &to, &reply_to, "已完成", None, None, None)
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+        });
+        let reply = service
+            .wait_for_reply(
+                &sender.id,
+                &request.envelope.id,
+                &receiver.id,
+                std::time::Duration::from_secs(1),
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        reply_task.await.unwrap();
+        assert_eq!(reply.text, "已完成");
+
+        let reply_receipt = {
+            let service = service.clone();
+            let recipient = receiver.id.clone();
+            tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
+                .await
+                .unwrap()
+        };
+        assert_eq!(reply_receipt.envelopes().len(), 1);
+        assert_eq!(reply_receipt.envelopes()[0].r#type, MessageType::Receipt);
+        tokio::task::spawn_blocking(move || reply_receipt.complete().unwrap())
+            .await
+            .unwrap();
+
+        let mut expired = haven_tools::inbox::Envelope::new(&sender.id, &receiver.id, "过期");
+        expired.expires_at = Some("2000-01-01T00:00:00Z".into());
+        let expired_id = expired.id.clone();
+        {
+            let service = service.clone();
+            tokio::task::spawn_blocking(move || service.send(expired).unwrap())
+                .await
+                .unwrap();
+        }
+        let expired_claim = {
+            let service = service.clone();
+            let recipient = receiver.id.clone();
+            tokio::task::spawn_blocking(move || service.claim(&recipient).unwrap())
+                .await
+                .unwrap()
+        };
+        assert!(expired_claim.is_empty());
+        let history = {
+            let service = service.clone();
+            let recipient = receiver.id.clone();
+            tokio::task::spawn_blocking(move || service.history(&recipient, 20).unwrap())
+                .await
+                .unwrap()
+        };
+        assert!(history.iter().any(|envelope| envelope.id == expired_id));
     }
 
     #[tokio::test]
@@ -839,13 +962,7 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Running)
             .await
             .unwrap();
-        // Insert a token as the dispatcher would, so end_session can trigger it
-        let real_token = CancellationToken::new();
-        let clone = real_token.clone();
-        exec.session_cancellations
-            .lock()
-            .await
-            .insert(session.id.clone(), clone);
+        let real_token = exec.cancellation_token(&session.id).await;
         assert!(!real_token.is_cancelled());
         let status = exec.end_session(&session.id).await.unwrap();
         assert_eq!(status, SessionStatus::Completed);
@@ -864,12 +981,7 @@ mod tests {
             .await
             .unwrap();
 
-        let real_token = CancellationToken::new();
-        let clone = real_token.clone();
-        exec.session_cancellations
-            .lock()
-            .await
-            .insert(session.id.clone(), clone);
+        let real_token = exec.cancellation_token(&session.id).await;
 
         assert!(exec.interrupt_session(&session.id).await.unwrap());
         assert!(real_token.is_cancelled());
@@ -1142,26 +1254,11 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionExecutor::new(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
-        exec.running_sessions
-            .lock()
-            .await
-            .insert(session.id.clone());
-        let sem = Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = sem.clone().acquire_owned().await.unwrap();
-        exec.session_permits
-            .lock()
-            .await
-            .insert(session.id.clone(), permit);
-        exec.session_cancellations
-            .lock()
-            .await
-            .insert(session.id.clone(), CancellationToken::new());
-
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
             .unwrap();
-        assert!(!exec.running_sessions.lock().await.contains(&session.id));
-        assert!(exec.session_permits.lock().await.get(&session.id).is_none());
+        assert!(!exec.is_run_in_flight(&session.id).await);
+        assert!(exec.get_session_state(&session.id).await.is_none());
     }
 
     #[tokio::test]
@@ -1257,27 +1354,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn awaiting_answer_pause_is_distinct_state() {
+    async fn paused_state_uses_interaction_registry() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
         let session = exec.create_session("ask me").await.unwrap();
 
-        // The ask pause path pauses in PausedAwaitingAnswer.
-        exec.update_session_status(&session.id, SessionStatus::PausedAwaitingAnswer)
+        exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
+        exec.request_interaction(crate::interaction::InteractionRequest::ask(
+            &session.id,
+            "which file?",
+            vec!["README.md".into()],
+            vec!["step-0123456789abcdef0123456789abcdef".into()],
+        ))
+        .await
+        .unwrap();
         assert_eq!(
             exec.get_session_state(&session.id).await,
-            Some(SessionStatus::PausedAwaitingAnswer)
+            Some(SessionStatus::Paused)
         );
-        // Both pause flavors report is_paused; only the answer variant
-        // reports is_awaiting_answer.
-        let state = exec.get_session_state(&session.id).await.unwrap();
-        assert!(state.is_paused());
-        assert!(state.is_awaiting_answer());
-        // Phase 4 / F2: awaiting persists as a distinct DB/wire status.
-        assert_eq!(state.as_str(), "paused_awaiting_answer");
+        let pending = exec
+            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].prompt, "which file?");
 
         // Reactivation (user answered → Pending) exits the awaiting state.
         exec.update_session_status(&session.id, SessionStatus::Pending)
@@ -1290,7 +1392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_pause_is_not_awaiting_answer() {
+    async fn plain_pause_has_no_interaction() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
@@ -1300,7 +1402,11 @@ mod tests {
             .unwrap();
         let state = exec.get_session_state(&session.id).await.unwrap();
         assert!(state.is_paused());
-        assert!(!state.is_awaiting_answer());
+        assert!(
+            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+                .await
+                .is_empty()
+        );
         assert_eq!(state.as_str(), "paused");
     }
 
@@ -1414,14 +1520,6 @@ mod tests {
             SessionStatus::from_status_str("paused"),
             SessionStatus::Paused
         );
-        assert_eq!(
-            SessionStatus::from_status_str("paused_awaiting_answer"),
-            SessionStatus::PausedAwaitingAnswer
-        );
-        assert_eq!(
-            SessionStatus::PausedAwaitingAnswer.as_str(),
-            "paused_awaiting_answer"
-        );
     }
 
     #[tokio::test]
@@ -1526,7 +1624,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
         let session = exec.create_session("cleanup").await.unwrap();
-        exec.update_session_status(&session.id, SessionStatus::PausedAwaitingAnswer)
+        exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
         exec.add_action_completion(&session.id, "stranded").await;

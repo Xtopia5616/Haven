@@ -663,7 +663,7 @@ impl InboxBus {
         let active: Vec<Envelope> = envs
             .iter()
             .filter(|env| {
-                !is_expired(env)
+                !crate::messaging_service::is_expired(env)
                     && seen.insert(env.id.clone())
                     // A zero-attempt envelope in a fresh mailbox whose id is
                     // already archived is a duplicate delivery. Claimed
@@ -812,7 +812,7 @@ impl InboxBus {
             }
             match serde_json::from_str::<Envelope>(trimmed) {
                 Ok(env) if is_reply_to_request(&env, in_reply_to, expected_from) => {
-                    if is_expired(&env) {
+                    if crate::messaging_service::is_expired(&env) {
                         archived_only.push(env);
                     } else {
                         matching.push(env);
@@ -856,6 +856,7 @@ impl InboxBus {
     /// from ourself get no ack. Best-effort: a failed delivery (recipient
     /// unregistered) is logged and skipped. Called by
     /// [`crate::MessageClaim::complete`].
+    #[allow(dead_code)]
     pub(crate) fn send_receipts(&self, name: &str, read: &[Envelope]) -> Vec<SendOutcome> {
         let mut outcomes = Vec::new();
         for env in read {
@@ -1036,16 +1037,6 @@ fn is_reply_to_request(env: &Envelope, in_reply_to: &str, expected_from: &str) -
 
 /// Expired when `expires_at` is set, parses, and is in the past. Unparseable
 /// or absent `expires_at` is treated as not expired.
-fn is_expired(env: &Envelope) -> bool {
-    env.expires_at
-        .as_deref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .is_some_and(|ts| {
-            let now = Local::now();
-            now.signed_duration_since(ts.with_timezone(&now.timezone())) > chrono::Duration::zero()
-        })
-}
-
 /// Read at most the last `max_bytes` of a file as UTF-8. Missing files are
 /// treated as empty because an archive/mailbox is created lazily; other I/O
 /// failures propagate so permission/disk errors cannot silently disable reply

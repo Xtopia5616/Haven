@@ -23,10 +23,11 @@ ReAct context、peer spawn 及 session 终态又各自直接访问它，消息 i
 4. ReAct inbox auto-inject、`agent` 的 `inbox`、peer spawn/cascade 和 session 注销均通过
    `MessagingService`；`agent` 的 request/reply 仍允许 selective reply consumption，但它是
    request lifecycle 的专用操作，不是第二套普通 inbox 消费模型。
-5. 现阶段保留 JSONL 文件布局，保证独立 Haven 进程可以协作；未来接入 `SessionActor` 时，替换
-   service 下的 adapter，而不是在 Actor 和 JSONL 之间复制 claim/ack 状态机。spawn 的 Agent
-   runtime 接线仍由现有 `AgentSpawner` port 提供，待 SessionSupervisor/mailbox 阶段再迁移，
-   本 ADR 不扩大为完整 Actor 重写。
+5. 保留 JSONL 文件布局，保证独立 Haven 进程可以协作；同进程 session 由
+   `SessionSupervisor` 暴露 `SessionMailbox`，`MessagingService` 优先路由到 actor，未找到本地
+   actor 时才 fallback 到 JSONL。claim/ack/retry/expiry 状态机仍只存在于 service contract，
+   不在 Actor 和 JSONL 之间复制应用侧消费模型。peer spawn 与 lifecycle 通过同一个 typed
+   `MessagingRuntime` port 接线。
 
 ## 替代方案
 

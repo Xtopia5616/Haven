@@ -22,14 +22,14 @@ Haven 将 Agent 协作收敛为以下契约：
    上限的历史读取入口，目标限定为当前 session 或其后代。
 3. `agent.list` 支持 `role`、`capability`、`parent`、`status` 和 `limit` 过滤；空参数
    的 `agent.profile` 读取当前注册信息，带更新字段时才执行 profile 更新。
-4. `agent.status`、`agent.wait`、`agent.stop` 通过 `AgentController` 回调连接 Agent
+4. `agent.status`、`agent.wait`、`agent.stop` 通过 typed `MessagingRuntime` port 连接 Agent
    运行时。status 允许查看自身，wait/stop 只允许控制后代；wait 使用有界超时和状态
    watcher，stop 复用正常会话终止路径，并保持高风险确认。
 5. peer Agent 正常结束时保留 inbox registry 的父子元数据，只标记为离线；这样历史、
    状态和未确认消息仍可定位。普通 unregister 路径仍用于没有父 Agent 的会话。
 
 `AgentTool` 仍属于 `haven-tools`，不直接依赖 `haven-agent`；宿主在组合层注入
-`AgentController`，以避免工具层与 ReAct 执行器形成循环依赖。所有新 operation 都进入
+`MessagingRuntime`，以避免工具层与 ReAct 执行器形成循环依赖。所有新 operation 都进入
 统一的 operation view、schema、prompt、风险矩阵和测试目录。
 
 ## 未采用的方案

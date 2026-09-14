@@ -310,7 +310,7 @@ impl CompletedTool {
 /// path use this helper so observation truncation and tool-owned signals
 /// cannot drift between the two paths.
 pub(super) async fn execute_tool_action(
-    executor: Arc<SessionExecutor>,
+    executor: Arc<SessionSupervisor>,
     session_id: String,
     action: Action,
     step_num: u32,
@@ -544,18 +544,18 @@ impl ReActEngine {
         state: &mut ReActState,
         step_num: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
-        pending: crate::types::AskPending,
+        pending: crate::interaction::InteractionRequest,
     ) -> anyhow::Result<ToolBatchOutcome> {
         self.executor.mark_user_queues_as_answer(session_id).await;
         let has_answer = self.executor.has_pending_context(session_id).await;
         let status = if has_answer {
-            self.executor.clear_awaiting_answer(session_id).await;
+            self.executor
+                .clear_interactions(session_id, Some(crate::interaction::InteractionKind::Ask))
+                .await;
             SessionStatus::Pending
         } else {
-            self.executor
-                .set_awaiting_answer(session_id, Some(pending.clone()))
-                .await;
-            SessionStatus::PausedAwaitingAnswer
+            self.executor.request_interaction(pending.clone()).await?;
+            SessionStatus::Paused
         };
         self.pause_turn(PauseTurnInput {
             session_id,
@@ -563,7 +563,7 @@ impl ReActEngine {
             snapshot_step: step_num + 1,
             emitter,
             status,
-            final_text: &pending.question,
+            final_text: &pending.prompt,
             branch_point_step: None,
         })
         .await?;

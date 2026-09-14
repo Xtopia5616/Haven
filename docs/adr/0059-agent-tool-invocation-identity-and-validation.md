@@ -33,7 +33,7 @@
 
 数据库 schema 升至 v12，迁移为 `session_steps` 增加 `action_index` 和 `tool_call_id`。
 旧步骤保持可读但属于 legacy fallback；正在等待确认的旧快照可能缺少完整身份，发布后
-应清除并重建。`confirm:requested` 保留用于 resolve 的确认请求 `step_id`，另加
+应清除并重建。`interaction:requested` 保留用于 resolve 的确认请求 `step_id`，另加
 `invocation_step_id`、`action_index`、`tool_call_id`，以区分两种 ID 的用途。
 
 ## 验证

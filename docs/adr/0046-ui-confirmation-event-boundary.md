@@ -1,15 +1,18 @@
-# ADR 0046：UI 安全确认事件边界
+# ADR 0046：UI 安全确认事件边界（已被 ADR 0156 取代）
+
+> 本 ADR 记录历史上的确认专用边界。统一人工交互请求后，当前契约、实现和回滚说明以
+> [ADR 0156](0156-interaction-request-unification.md) 为准。
 
 ## 背景
 
-聊天路由页直接处理 app-shell 的 `confirm:requested` 事件，并同时负责确认队列与
+聊天路由页直接处理 app-shell 的 `interaction:requested` 事件，并同时负责确认队列与
 对话框生命周期。事件 DTO 到队列项的转换属于独立的 UI 事件投影职责，继续留在路由
 页会让确认相关边界难以复用和审查。
 
 ## 决定
 
-- 新增 `ui/src/lib/chatConfirmationEventHandlers.ts`，集中把已由 app contract 转换
-  的 `confirm:requested` DTO 映射为确认队列项。
+- 新增 `ui/src/lib/chatInteractionEventHandlers.ts`，集中把已由 app contract 转换
+  的 `interaction:requested` DTO 映射为统一交互请求。
 - 路由页继续拥有确认队列、对话框状态、显示下一项以及 `resolve_confirmation` IPC
   调用；handler 通过显式回调写入队列并触发显示，不建立第二套状态或监听器。
 - 保持后台会话确认不丢弃、到达顺序、会话标题回退、风险等级和权限 key 的既有语义；
@@ -35,5 +38,5 @@ corepack pnpm --dir ui run test:run
 
 ## 回滚与重置
 
-代码回滚时删除 `chatConfirmationEventHandlers.ts`，恢复 `+page.svelte` 中的
-`confirm:requested` handler；本次不改变持久化数据、权限策略或配置，不需要用户重置。
+本 ADR 的实现已由 ADR 0156 的统一 `interactionStore` 和
+`interaction:requested` handler 取代；回滚或重置要求以 ADR 0156 及当前发布说明为准。

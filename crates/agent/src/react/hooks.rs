@@ -159,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn with_hooks_noop_skips_infer_on_before_step_and_on_pause() {
         use crate::event::AgentEventEmitter;
-        use crate::session::SessionExecutor;
+        use crate::session::SessionSupervisor;
         use async_trait::async_trait;
         use haven_llm::client::LlmClient;
         use haven_llm::router::LlmRouter;
@@ -216,7 +216,7 @@ mod tests {
         p.push(format!("haven_noop_hooks_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
         let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
@@ -302,7 +302,7 @@ mod tests {
         let action = {
             // Build a minimal engine only to satisfy the trait signature.
             use crate::event::AgentEventEmitter;
-            use crate::session::SessionExecutor;
+            use crate::session::SessionSupervisor;
             use async_trait::async_trait;
             use haven_llm::client::LlmClient;
             use haven_llm::router::LlmRouter;
@@ -357,7 +357,7 @@ mod tests {
             p.push(format!("haven_after_llm_{}.db", uuid::Uuid::new_v4()));
             let db = Arc::new(Database::open(&p).unwrap());
             let tools = Arc::new(ToolsManager::new());
-            let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+            let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
             let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
             let router = Arc::new(LlmRouter::new_with_clients(
                 client.clone(),

@@ -1,0 +1,999 @@
+//! Single-owner runtime for one session.
+//!
+//! `SessionActor` is the only component that mutates session-local runtime
+//! state.  Callers hold a cheap [`SessionActorHandle`] and send typed
+//! commands; they never acquire a lock around `SessionInfo` or one of the
+//! session's auxiliary queues.
+
+use super::{FollowUp, SessionInfo, SessionStatus, StepInfo};
+use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
+use haven_common::types::MessageAttachment;
+use haven_memory::Database;
+use haven_tools::inbox::{Envelope, MessageType};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio_util::sync::CancellationToken;
+
+const ACTOR_MAILBOX_CAPACITY: usize = 128;
+
+#[derive(Debug)]
+pub(crate) struct StatusTransition {
+    pub pending: bool,
+    pub terminal: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct RunClaim {
+    pub accepted: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct RunFinished {
+    pub pending: bool,
+    pub terminal: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct ConfirmDecision {
+    pub request: InteractionRequest,
+    pub wake_session: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum ActorCommand {
+    Snapshot {
+        reply: oneshot::Sender<SessionInfo>,
+    },
+    UpdateTitle {
+        title: String,
+    },
+    Transition {
+        status: SessionStatus,
+        persist: bool,
+        reply: oneshot::Sender<anyhow::Result<StatusTransition>>,
+    },
+    ClaimRun {
+        reply: oneshot::Sender<anyhow::Result<RunClaim>>,
+    },
+    BeginDirectRun {
+        reply: oneshot::Sender<bool>,
+    },
+    FinishRun {
+        reply: oneshot::Sender<RunFinished>,
+    },
+    /// Release a direct-run slot from a synchronous guard drop. The follow-up
+    /// `FinishRun` command still performs Pending requeue bookkeeping, but
+    /// this command makes the run-finished edge observable immediately so an
+    /// async rollback cannot wait on the guard that is already unwinding.
+    ReleaseRun,
+    IsRunning {
+        reply: oneshot::Sender<bool>,
+    },
+    QueueFollowUp {
+        text: String,
+        attachments: Vec<MessageAttachment>,
+        is_answer: bool,
+        message_id: Option<String>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    DrainFollowUps {
+        reply: oneshot::Sender<Vec<FollowUp>>,
+    },
+    QueueSteering {
+        text: String,
+        attachments: Vec<MessageAttachment>,
+        message_id: Option<String>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    DrainSteering {
+        reply: oneshot::Sender<Vec<FollowUp>>,
+    },
+    DrainContext {
+        reply: oneshot::Sender<(Vec<FollowUp>, Vec<FollowUp>, Vec<String>)>,
+    },
+    HasPendingContext {
+        reply: oneshot::Sender<bool>,
+    },
+    MarkQueuesAsAnswer,
+    AddActionCompletion {
+        text: String,
+    },
+    DrainActionCompletions {
+        reply: oneshot::Sender<Vec<String>>,
+    },
+    RequestInteraction {
+        request: Box<InteractionRequest>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    ListInteractions {
+        kind: Option<InteractionKind>,
+        pending_only: bool,
+        reply: oneshot::Sender<Vec<InteractionRequest>>,
+    },
+    ClearInteractions {
+        kind: Option<InteractionKind>,
+    },
+    ResolveInteraction {
+        request_id: String,
+        response: Value,
+        reply: oneshot::Sender<Option<ConfirmDecision>>,
+    },
+    RecordStep {
+        step: Box<StepInfo>,
+    },
+    SetHasChildren {
+        value: bool,
+    },
+    HasChildren {
+        reply: oneshot::Sender<bool>,
+    },
+    ClearRuntime,
+    DeliverMessage {
+        envelope: Box<Envelope>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    ClaimMessages {
+        reply: oneshot::Sender<Vec<Envelope>>,
+    },
+    AckMessages {
+        ids: Vec<String>,
+        reply: oneshot::Sender<()>,
+    },
+    LastReceived {
+        reply: oneshot::Sender<Option<Envelope>>,
+    },
+    FindMessage {
+        id: String,
+        reply: oneshot::Sender<Option<Envelope>>,
+    },
+    TakeMatchingReplies {
+        in_reply_to: String,
+        expected_from: String,
+        reply: oneshot::Sender<Vec<Envelope>>,
+    },
+    History {
+        limit: usize,
+        reply: oneshot::Sender<Vec<Envelope>>,
+    },
+}
+
+/// A cloneable mailbox endpoint for one session.
+#[derive(Clone)]
+pub(crate) struct SessionActorHandle {
+    pub(crate) id: String,
+    tx: mpsc::Sender<ActorCommand>,
+    cancel: CancellationToken,
+    status: watch::Sender<SessionStatus>,
+    run_state: watch::Sender<bool>,
+}
+
+impl SessionActorHandle {
+    pub(crate) fn status(&self) -> watch::Receiver<SessionStatus> {
+        self.status.subscribe()
+    }
+
+    pub(crate) fn run_state(&self) -> watch::Receiver<bool> {
+        self.run_state.subscribe()
+    }
+
+    pub(crate) fn cancel(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
+    pub(crate) async fn send(&self, command: ActorCommand) -> anyhow::Result<()> {
+        self.tx
+            .send(command)
+            .await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' has stopped", self.id))
+    }
+
+    pub(crate) async fn snapshot(&self) -> Option<SessionInfo> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::Snapshot { reply }).await.ok()?;
+        rx.await.ok()
+    }
+
+    pub(crate) async fn transition(
+        &self,
+        status: SessionStatus,
+        persist: bool,
+    ) -> anyhow::Result<StatusTransition> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::Transition {
+            status,
+            persist,
+            reply,
+        })
+        .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped transition", self.id))?
+    }
+
+    pub(crate) async fn claim_run(&self) -> anyhow::Result<RunClaim> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::ClaimRun { reply }).await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run claim", self.id))?
+    }
+
+    pub(crate) async fn begin_direct_run(&self) -> bool {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::BeginDirectRun { reply })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+
+    pub(crate) async fn finish_run(&self) -> Option<RunFinished> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::FinishRun { reply }).await.ok()?;
+        rx.await.ok()
+    }
+
+    pub(crate) fn release_run_now(&self) {
+        let command = ActorCommand::ReleaseRun;
+        match self.tx.try_send(command) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(command)) => {
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(command).await;
+                });
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {}
+        }
+    }
+
+    pub(crate) async fn is_running(&self) -> bool {
+        let (reply, rx) = oneshot::channel();
+        if self.send(ActorCommand::IsRunning { reply }).await.is_err() {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+
+    pub(crate) async fn queue_follow_up(
+        &self,
+        text: &str,
+        attachments: &[MessageAttachment],
+        is_answer: bool,
+        message_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::QueueFollowUp {
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+            is_answer,
+            message_id,
+            reply,
+        })
+        .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped follow-up", self.id))?
+    }
+
+    pub(crate) async fn drain_follow_ups(&self) -> Vec<FollowUp> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::DrainFollowUps { reply })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    pub(crate) async fn queue_steering(
+        &self,
+        text: &str,
+        attachments: &[MessageAttachment],
+        message_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::QueueSteering {
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+            message_id,
+            reply,
+        })
+        .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped steering", self.id))?
+    }
+
+    pub(crate) async fn drain_steering(&self) -> Vec<FollowUp> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::DrainSteering { reply })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    pub(crate) async fn drain_context(&self) -> (Vec<FollowUp>, Vec<FollowUp>, Vec<String>) {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::DrainContext { reply })
+            .await
+            .is_err()
+        {
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    pub(crate) async fn has_pending_context(&self) -> bool {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::HasPendingContext { reply })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+
+    pub(crate) async fn mark_queues_as_answer(&self) {
+        let _ = self.send(ActorCommand::MarkQueuesAsAnswer).await;
+    }
+
+    pub(crate) async fn add_action_completion(&self, text: String) {
+        let _ = self.send(ActorCommand::AddActionCompletion { text }).await;
+    }
+
+    pub(crate) async fn drain_action_completions(&self) -> Vec<String> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::DrainActionCompletions { reply })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    pub(crate) async fn request_interaction(
+        &self,
+        request: InteractionRequest,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::RequestInteraction {
+            request: Box::new(request),
+            reply,
+        })
+        .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction", self.id))?
+    }
+
+    pub(crate) async fn interactions(
+        &self,
+        kind: Option<InteractionKind>,
+        pending_only: bool,
+    ) -> Vec<InteractionRequest> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::ListInteractions {
+                kind,
+                pending_only,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    pub(crate) async fn clear_interactions(&self, kind: Option<InteractionKind>) {
+        let _ = self.send(ActorCommand::ClearInteractions { kind }).await;
+    }
+
+    pub(crate) async fn resolve_interaction(
+        &self,
+        request_id: String,
+        response: Value,
+    ) -> Option<ConfirmDecision> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::ResolveInteraction {
+            request_id,
+            response,
+            reply,
+        })
+        .await
+        .ok()?;
+        rx.await.ok().flatten()
+    }
+
+    pub(crate) async fn record_step(&self, step: StepInfo) {
+        let _ = self
+            .send(ActorCommand::RecordStep {
+                step: Box::new(step),
+            })
+            .await;
+    }
+
+    pub(crate) async fn set_has_children(&self, value: bool) {
+        let _ = self.send(ActorCommand::SetHasChildren { value }).await;
+    }
+
+    pub(crate) async fn has_children(&self) -> bool {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::HasChildren { reply })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+
+    pub(crate) async fn clear_runtime(&self) {
+        let _ = self.send(ActorCommand::ClearRuntime).await;
+    }
+
+    /// Synchronous mailbox operations are called from the service's blocking
+    /// transport boundary. Tokio's blocking channel/receiver methods preserve
+    /// actor serialization without exposing `ActorState`.
+    pub(crate) fn deliver_message(&self, envelope: Envelope) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .blocking_send(ActorCommand::DeliverMessage {
+                envelope: Box::new(envelope),
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("session actor '{}' has stopped", self.id))?;
+        rx.blocking_recv()
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped message delivery", self.id))?
+    }
+
+    pub(crate) fn claim_messages(&self) -> Vec<Envelope> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .blocking_send(ActorCommand::ClaimMessages { reply })
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.blocking_recv().unwrap_or_default()
+    }
+
+    pub(crate) fn ack_messages(&self, ids: Vec<String>) {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .blocking_send(ActorCommand::AckMessages { ids, reply })
+            .is_ok()
+        {
+            let _ = rx.blocking_recv();
+        }
+    }
+
+    pub(crate) fn last_received_message(&self) -> Option<Envelope> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .blocking_send(ActorCommand::LastReceived { reply })
+            .is_err()
+        {
+            return None;
+        }
+        rx.blocking_recv().ok().flatten()
+    }
+
+    pub(crate) fn find_message_by_id(&self, id: String) -> Option<Envelope> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .blocking_send(ActorCommand::FindMessage { id, reply })
+            .is_err()
+        {
+            return None;
+        }
+        rx.blocking_recv().ok().flatten()
+    }
+
+    pub(crate) fn take_matching_replies_blocking(
+        &self,
+        in_reply_to: String,
+        expected_from: String,
+    ) -> Vec<Envelope> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .blocking_send(ActorCommand::TakeMatchingReplies {
+                in_reply_to,
+                expected_from,
+                reply,
+            })
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.blocking_recv().unwrap_or_default()
+    }
+
+    pub(crate) fn history_blocking(&self, limit: usize) -> Vec<Envelope> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .blocking_send(ActorCommand::History { limit, reply })
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.blocking_recv().unwrap_or_default()
+    }
+}
+
+struct ActorState {
+    info: SessionInfo,
+    action_completions: Vec<String>,
+    interactions: Vec<InteractionRequest>,
+    follow_up_queue: Vec<FollowUp>,
+    steering_queue: Vec<FollowUp>,
+    has_children: bool,
+    running: bool,
+    inbox: VecDeque<Envelope>,
+    processing: Vec<Envelope>,
+    archive: Vec<Envelope>,
+}
+
+pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle {
+    let (tx, mut rx) = mpsc::channel(ACTOR_MAILBOX_CAPACITY);
+    let (status, _) = watch::channel(info.status.clone());
+    let (run_state, _) = watch::channel(false);
+    let cancel = CancellationToken::new();
+    let handle = SessionActorHandle {
+        id: info.id.clone(),
+        tx,
+        cancel: cancel.clone(),
+        status: status.clone(),
+        run_state: run_state.clone(),
+    };
+    tokio::spawn(async move {
+        let mut state = ActorState {
+            info,
+            action_completions: Vec::new(),
+            interactions: Vec::new(),
+            follow_up_queue: Vec::new(),
+            steering_queue: Vec::new(),
+            has_children: false,
+            running: false,
+            inbox: VecDeque::new(),
+            processing: Vec::new(),
+            archive: Vec::new(),
+        };
+        while let Some(command) = rx.recv().await {
+            match command {
+                ActorCommand::Snapshot { reply } => {
+                    let _ = reply.send(state.info.clone());
+                }
+                ActorCommand::UpdateTitle { title } => {
+                    state.info.title = Some(title);
+                }
+                ActorCommand::Transition {
+                    status: next,
+                    persist,
+                    reply,
+                } => {
+                    let result = transition(&db, &mut state, &status, next, persist).await;
+                    let _ = reply.send(result);
+                }
+                ActorCommand::ClaimRun { reply } => {
+                    let result = claim_run(&db, &mut state, &status, &run_state).await;
+                    let _ = reply.send(result);
+                }
+                ActorCommand::BeginDirectRun { reply } => {
+                    let accepted = !state.running && !state.info.status.is_terminal();
+                    if accepted {
+                        state.running = true;
+                        let _ = run_state.send(true);
+                    }
+                    let _ = reply.send(accepted);
+                }
+                ActorCommand::FinishRun { reply } => {
+                    state.running = false;
+                    let _ = run_state.send(false);
+                    let _ = reply.send(RunFinished {
+                        pending: state.info.status == SessionStatus::Pending,
+                        terminal: state.info.status.is_terminal(),
+                    });
+                }
+                ActorCommand::ReleaseRun => {
+                    state.running = false;
+                    let _ = run_state.send(false);
+                }
+                ActorCommand::IsRunning { reply } => {
+                    let _ = reply.send(state.running);
+                }
+                ActorCommand::QueueFollowUp {
+                    text,
+                    attachments,
+                    is_answer,
+                    message_id,
+                    reply,
+                } => {
+                    let result =
+                        queue_follow_up(&mut state, text, attachments, is_answer, message_id);
+                    let _ = reply.send(result);
+                }
+                ActorCommand::DrainFollowUps { reply } => {
+                    let _ = reply.send(std::mem::take(&mut state.follow_up_queue));
+                }
+                ActorCommand::QueueSteering {
+                    text,
+                    attachments,
+                    message_id,
+                    reply,
+                } => {
+                    let result = queue_steering(&mut state, text, attachments, message_id);
+                    let _ = reply.send(result);
+                }
+                ActorCommand::DrainSteering { reply } => {
+                    let _ = reply.send(std::mem::take(&mut state.steering_queue));
+                }
+                ActorCommand::DrainContext { reply } => {
+                    let steering = std::mem::take(&mut state.steering_queue);
+                    let follow_ups = if steering.is_empty() {
+                        std::mem::take(&mut state.follow_up_queue)
+                    } else {
+                        Vec::new()
+                    };
+                    let action_results = std::mem::take(&mut state.action_completions);
+                    let _ = reply.send((steering, follow_ups, action_results));
+                }
+                ActorCommand::HasPendingContext { reply } => {
+                    let _ = reply.send(
+                        !state.follow_up_queue.is_empty() || !state.steering_queue.is_empty(),
+                    );
+                }
+                ActorCommand::MarkQueuesAsAnswer => {
+                    for item in &mut state.follow_up_queue {
+                        item.is_answer = true;
+                    }
+                    for item in &mut state.steering_queue {
+                        item.is_answer = true;
+                    }
+                }
+                ActorCommand::AddActionCompletion { text } => {
+                    state.action_completions.push(text);
+                }
+                ActorCommand::DrainActionCompletions { reply } => {
+                    let _ = reply.send(std::mem::take(&mut state.action_completions));
+                }
+                ActorCommand::RequestInteraction { request, reply } => {
+                    let request = *request;
+                    state
+                        .interactions
+                        .retain(|existing| existing.id != request.id);
+                    state.interactions.push(request);
+                    let _ = reply.send(Ok(()));
+                }
+                ActorCommand::ListInteractions {
+                    kind,
+                    pending_only,
+                    reply,
+                } => {
+                    let requests = state
+                        .interactions
+                        .iter()
+                        .filter(|request| {
+                            kind.is_none_or(|wanted| request.kind == wanted)
+                                && (!pending_only || request.status == InteractionStatus::Pending)
+                        })
+                        .cloned()
+                        .collect();
+                    let _ = reply.send(requests);
+                }
+                ActorCommand::ClearInteractions { kind } => {
+                    state
+                        .interactions
+                        .retain(|request| kind.is_some_and(|wanted| request.kind != wanted));
+                }
+                ActorCommand::ResolveInteraction {
+                    request_id,
+                    response,
+                    reply,
+                } => {
+                    let result = resolve_interaction(&mut state, &request_id, response);
+                    let _ = reply.send(result);
+                }
+                ActorCommand::RecordStep { step } => {
+                    if state.running && state.info.status == SessionStatus::Running {
+                        state.info.steps.push(*step);
+                        state.info.updated_at = chrono::Utc::now().to_rfc3339();
+                    }
+                }
+                ActorCommand::SetHasChildren { value } => {
+                    state.has_children = value;
+                }
+                ActorCommand::HasChildren { reply } => {
+                    let _ = reply.send(state.has_children);
+                }
+                ActorCommand::ClearRuntime => {
+                    state.action_completions.clear();
+                    state.follow_up_queue.clear();
+                    state.steering_queue.clear();
+                    state.interactions.clear();
+                    state.has_children = false;
+                }
+                ActorCommand::DeliverMessage { envelope, reply } => {
+                    let result = if message_known(&state, &envelope.id) {
+                        Ok(())
+                    } else {
+                        state.inbox.push_back(*envelope);
+                        Ok(())
+                    };
+                    let _ = reply.send(result);
+                }
+                ActorCommand::ClaimMessages { reply } => {
+                    let _ = reply.send(claim_messages(&mut state));
+                }
+                ActorCommand::AckMessages { ids, reply } => {
+                    state
+                        .processing
+                        .retain(|envelope| !ids.iter().any(|id| id == &envelope.id));
+                    let _ = reply.send(());
+                }
+                ActorCommand::LastReceived { reply } => {
+                    let result = state
+                        .inbox
+                        .back()
+                        .cloned()
+                        .or_else(|| {
+                            state
+                                .processing
+                                .iter()
+                                .max_by_key(|env| &env.created_at)
+                                .cloned()
+                        })
+                        .or_else(|| state.archive.last().cloned());
+                    let _ = reply.send(result);
+                }
+                ActorCommand::FindMessage { id, reply } => {
+                    let result = state
+                        .inbox
+                        .iter()
+                        .find(|env| env.id == id)
+                        .cloned()
+                        .or_else(|| state.processing.iter().find(|env| env.id == id).cloned())
+                        .or_else(|| state.archive.iter().rev().find(|env| env.id == id).cloned());
+                    let _ = reply.send(result);
+                }
+                ActorCommand::TakeMatchingReplies {
+                    in_reply_to,
+                    expected_from,
+                    reply,
+                } => {
+                    let mut matching = Vec::new();
+                    let mut rest = VecDeque::new();
+                    while let Some(envelope) = state.inbox.pop_front() {
+                        if is_matching_reply(&envelope, &in_reply_to, &expected_from) {
+                            if haven_tools::is_expired(&envelope) {
+                                archive_once(&mut state.archive, envelope);
+                            } else {
+                                archive_once(&mut state.archive, envelope.clone());
+                                matching.push(envelope);
+                            }
+                        } else {
+                            rest.push_back(envelope);
+                        }
+                    }
+                    state.inbox = rest;
+                    let _ = reply.send(matching);
+                }
+                ActorCommand::History { limit, reply } => {
+                    let _ = reply.send(history(&state, limit));
+                }
+            }
+        }
+        cancel.cancel();
+        let _ = run_state.send(false);
+    });
+    handle
+}
+
+fn message_known(state: &ActorState, id: &str) -> bool {
+    state.inbox.iter().any(|env| env.id == id)
+        || state.processing.iter().any(|env| env.id == id)
+        || state.archive.iter().any(|env| env.id == id)
+}
+
+fn archive_once(archive: &mut Vec<Envelope>, envelope: Envelope) {
+    if !archive.iter().any(|existing| existing.id == envelope.id) {
+        archive.push(envelope);
+    }
+}
+
+fn claim_messages(state: &mut ActorState) -> Vec<Envelope> {
+    let mut candidates = Vec::with_capacity(state.processing.len() + state.inbox.len());
+    candidates.extend(std::mem::take(&mut state.processing));
+    candidates.extend(state.inbox.drain(..));
+
+    let mut seen = HashSet::new();
+    let mut claimed = Vec::new();
+    for mut envelope in candidates {
+        if !seen.insert(envelope.id.clone()) {
+            continue;
+        }
+        archive_once(&mut state.archive, envelope.clone());
+        if haven_tools::is_expired(&envelope) {
+            continue;
+        }
+        envelope.delivery_attempt = envelope.delivery_attempt.saturating_add(1);
+        state.processing.push(envelope.clone());
+        claimed.push(envelope);
+    }
+    claimed
+}
+
+fn is_matching_reply(envelope: &Envelope, in_reply_to: &str, expected_from: &str) -> bool {
+    envelope.from == expected_from
+        && envelope.in_reply_to.as_deref() == Some(in_reply_to)
+        && matches!(envelope.r#type, MessageType::Reply | MessageType::Message)
+}
+
+fn history(state: &ActorState, limit: usize) -> Vec<Envelope> {
+    let mut by_id = HashMap::new();
+    for envelope in &state.archive {
+        by_id.insert(envelope.id.clone(), envelope.clone());
+    }
+    for envelope in &state.processing {
+        by_id.insert(envelope.id.clone(), envelope.clone());
+    }
+    for envelope in &state.inbox {
+        by_id.insert(envelope.id.clone(), envelope.clone());
+    }
+    let mut entries: Vec<Envelope> = by_id.into_values().collect();
+    entries.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    entries.reverse();
+    entries.truncate(limit);
+    entries
+}
+
+async fn transition(
+    db: &Arc<Database>,
+    state: &mut ActorState,
+    status: &watch::Sender<SessionStatus>,
+    next: SessionStatus,
+    persist: bool,
+) -> anyhow::Result<StatusTransition> {
+    let old = state.info.status.clone();
+    if old == next {
+        return Ok(StatusTransition {
+            pending: next == SessionStatus::Pending,
+            terminal: next.is_terminal(),
+        });
+    }
+    if !super::SessionSupervisor::can_transition(&old, &next) {
+        tracing::warn!(
+            session_id = %state.info.id,
+            from = old.as_str(),
+            to = next.as_str(),
+            "rejected illegal session transition"
+        );
+        return Ok(StatusTransition {
+            pending: false,
+            terminal: false,
+        });
+    }
+    if persist {
+        super::SessionSupervisor::persist_status(db, &state.info.id, next.as_str()).await?;
+    }
+    state.info.status = next.clone();
+    state.info.updated_at = chrono::Utc::now().to_rfc3339();
+    let _ = status.send(next.clone());
+    Ok(StatusTransition {
+        pending: next == SessionStatus::Pending,
+        terminal: next.is_terminal(),
+    })
+}
+
+async fn claim_run(
+    db: &Arc<Database>,
+    state: &mut ActorState,
+    status: &watch::Sender<SessionStatus>,
+    run_state: &watch::Sender<bool>,
+) -> anyhow::Result<RunClaim> {
+    if state.info.status != SessionStatus::Pending || state.running {
+        return Ok(RunClaim { accepted: false });
+    }
+    super::SessionSupervisor::persist_status(db, &state.info.id, SessionStatus::Running.as_str())
+        .await?;
+    state.info.status = SessionStatus::Running;
+    state.info.updated_at = chrono::Utc::now().to_rfc3339();
+    state.running = true;
+    let _ = status.send(SessionStatus::Running);
+    let _ = run_state.send(true);
+    Ok(RunClaim { accepted: true })
+}
+
+fn queue_follow_up(
+    state: &mut ActorState,
+    text: String,
+    attachments: Vec<MessageAttachment>,
+    is_answer: bool,
+    message_id: Option<String>,
+) -> anyhow::Result<()> {
+    if let Some(mid) = message_id.as_deref()
+        && state
+            .follow_up_queue
+            .iter()
+            .any(|item| item.message_id.as_deref() == Some(mid))
+    {
+        return Ok(());
+    }
+    state.follow_up_queue.push(if is_answer {
+        FollowUp::answer_with_message_id(&text, attachments, message_id)
+    } else {
+        FollowUp::new_with_message_id(&text, attachments, message_id)
+    });
+    Ok(())
+}
+
+fn queue_steering(
+    state: &mut ActorState,
+    text: String,
+    attachments: Vec<MessageAttachment>,
+    message_id: Option<String>,
+) -> anyhow::Result<()> {
+    if let Some(mid) = message_id.as_deref()
+        && state
+            .steering_queue
+            .iter()
+            .any(|item| item.message_id.as_deref() == Some(mid))
+    {
+        return Ok(());
+    }
+    state
+        .steering_queue
+        .push(FollowUp::with_message_id(&text, attachments, message_id));
+    Ok(())
+}
+
+fn resolve_interaction(
+    state: &mut ActorState,
+    request_id: &str,
+    response: Value,
+) -> Option<ConfirmDecision> {
+    let index = state
+        .interactions
+        .iter()
+        .position(|request| request.id == request_id)?;
+    let resolved = {
+        let request = &mut state.interactions[index];
+        if request.status != InteractionStatus::Pending
+            || request.kind != InteractionKind::Confirm
+            || !response.is_boolean()
+            || !request.resolve(response)
+        {
+            return None;
+        }
+        request.clone()
+    };
+    let wake_session = state
+        .interactions
+        .iter()
+        .filter(|entry| entry.kind == InteractionKind::Confirm)
+        .all(|entry| entry.status != InteractionStatus::Pending);
+    Some(ConfirmDecision {
+        request: resolved,
+        wake_session,
+    })
+}

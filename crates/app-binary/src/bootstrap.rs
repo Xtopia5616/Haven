@@ -33,6 +33,76 @@ macro_rules! log_ignored_result {
     }};
 }
 
+pub(crate) fn project_interaction(
+    request: &haven_agent::InteractionRequest,
+) -> InteractionRequestedEvent {
+    let mut event = InteractionRequestedEvent {
+        id: request.id.clone(),
+        session_id: request.session_id.clone(),
+        kind: match request.kind {
+            haven_agent::InteractionKind::Ask => "ask",
+            haven_agent::InteractionKind::Confirm => "confirm",
+            haven_agent::InteractionKind::ScheduledConfirm => "scheduled_confirm",
+        }
+        .into(),
+        status: match request.status {
+            haven_agent::InteractionStatus::Pending => "pending",
+            haven_agent::InteractionStatus::Resolved => "resolved",
+            haven_agent::InteractionStatus::Expired => "expired",
+            haven_agent::InteractionStatus::Cancelled => "cancelled",
+        }
+        .into(),
+        prompt: request.prompt.clone(),
+        options: Vec::new(),
+        tool_name: None,
+        risk_level: None,
+        summary: None,
+        permission_key: None,
+        invocation_step_id: None,
+        action_index: None,
+        tool_call_id: None,
+        created_at: request.created_at.clone(),
+        expires_at: request.expires_at.clone(),
+    };
+    match &request.details {
+        haven_agent::InteractionDetails::Ask { options, .. } => {
+            event.options = options.clone();
+        }
+        haven_agent::InteractionDetails::Confirm {
+            step_id,
+            action_index,
+            tool_call_id,
+            tool_name,
+            tool_input,
+            risk_level,
+            ..
+        } => {
+            event.tool_name = Some(tool_name.clone());
+            event.risk_level = Some(*risk_level);
+            event.summary = Some(haven_tools::permission_prompt_summary(
+                tool_name, tool_input,
+            ));
+            event.permission_key = Some(haven_common::types::permission_key(tool_name, tool_input));
+            event.invocation_step_id = Some(step_id.clone());
+            event.action_index = Some(*action_index);
+            event.tool_call_id = (!tool_call_id.is_empty()).then(|| tool_call_id.clone());
+        }
+        haven_agent::InteractionDetails::ScheduledConfirm {
+            tool_name,
+            tool_input,
+            ..
+        } => {
+            event.tool_name = Some(tool_name.clone());
+            event.summary = Some(haven_tools::permission_prompt_summary(
+                tool_name, tool_input,
+            ));
+            event.permission_key = Some(haven_common::types::permission_key(tool_name, tool_input));
+        }
+        haven_agent::InteractionDetails::Generic => {}
+    }
+    event
+}
+
 pub(crate) fn run() {
     // Keep the versioned command directory live in the application binary as
     // well as in CI/docs. A drift in the source registry is a startup error,
@@ -206,10 +276,11 @@ pub(crate) fn run() {
                 });
             }
 
-            // Project tool-internal lifecycle JSON into the explicit action IPC
-            // DTO before it reaches the frontend.  Background and scheduled
-            // actions use one stable `id` field and never expose dynamic tool
-            // args, continuation prompts, or output-log paths.
+            // Project the single ActionService lifecycle stream into the
+            // explicit action IPC DTO before it reaches the frontend.
+            // Background and scheduled actions use one stable `id` field and
+            // never expose dynamic tool args, continuation prompts, or
+            // output-log paths.
             let action_sink_handle = handle.clone();
             state.tools.action_service.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
@@ -367,80 +438,60 @@ pub(crate) fn run() {
 
                 rt.block_on(shell.set_hold_mode(is_hold));
 
-                // Wire up confirm callback
+                // Consume the supervisor's typed event stream. Confirmation
+                // details stay in the backend; the renderer receives only the
+                // existing safe summary/permission projection.
                 {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
-                    rt.block_on(async {
-                        st_arc.executor.on_confirm_request.set(Arc::new(
-                            move |step_id: haven_common::types::ConfirmId,
-                                  session_id: String,
-                                  tool_name: String,
-                                  risk_level: haven_common::types::RiskLevel,
-                                  params: serde_json::Value,
-                                  invocation_step_id: Option<String>,
-                                  action_index: u32,
-                                  tool_call_id: Option<String>| {
-                                let permission_key =
-                                    haven_common::types::permission_key(&tool_name, &params);
-                                let summary =
-                                    haven_tools::permission_prompt_summary(&tool_name, &params);
-                                log_ignored_result!(
-                                    "event.confirm_requested",
-                                    app_h.emit(
-                                        CONFIRM_REQUESTED_EVENT,
-                                        ConfirmationRequestedEvent {
-                                            step_id,
-                                            invocation_step_id,
-                                            action_index,
-                                            tool_call_id,
-                                            tool_name,
-                                            risk_level,
-                                            session_id,
-                                            summary,
-                                            permission_key,
-                                        },
-                                    )
-                                );
-                            },
-                        ));
-                    });
-                }
-
-                // Wire up the terminal-failure callback: the dispatcher's
-                // panic/abort path marks the session Error without going through
-                // the ReAct loop's event emission, so the UI would never learn
-                // about the transition (stuck busy chip, stale session list).
-                // Emit both channels in the same shapes the loop uses.
-                {
-                    let app_h = handle.clone();
-                    let st_arc = state.inner().clone();
-                    rt.block_on(async {
-                        st_arc.executor.on_session_error.set(Arc::new(
-                            move |session_id: String, reason: String| {
-                                log_ignored_result!(
-                                    "event.session_error",
-                                    app_h.emit(
-                                        SESSION_ERROR_EVENT,
-                                        SessionErrorEvent {
-                                            session_id: session_id.clone(),
-                                            error: sanitize_error_text(&reason),
-                                        },
-                                    )
-                                );
-                                log_ignored_result!(
-                                    "event.session_updated",
-                                    app_h.emit(
-                                        SESSION_UPDATED_EVENT,
-                                        SessionLifecycleEvent {
-                                            session_id,
-                                            status: "error".into(),
-                                            title: Some(String::new()),
-                                        },
-                                    )
-                                );
-                            },
-                        ));
+                    rt.block_on(async move {
+                        let mut events = st_arc.executor.subscribe_events();
+                        tokio::spawn(async move {
+                            while let Ok(event) = events.recv().await {
+                                match event {
+                                    haven_agent::SessionEvent::InteractionRequested { request } => {
+                                        log_ignored_result!(
+                                            "event.interaction_requested",
+                                            app_h.emit(
+                                                INTERACTION_REQUESTED_EVENT,
+                                                project_interaction(&request),
+                                            )
+                                        );
+                                    }
+                                    haven_agent::SessionEvent::SessionError {
+                                        session_id,
+                                        reason,
+                                    } => {
+                                        log_ignored_result!(
+                                            "event.session_error",
+                                            app_h.emit(
+                                                SESSION_ERROR_EVENT,
+                                                SessionErrorEvent {
+                                                    session_id: session_id.clone(),
+                                                    error: sanitize_error_text(&reason),
+                                                },
+                                            )
+                                        );
+                                        log_ignored_result!(
+                                            "event.session_updated",
+                                            app_h.emit(
+                                                SESSION_UPDATED_EVENT,
+                                                SessionLifecycleEvent {
+                                                    session_id,
+                                                    status: "error".into(),
+                                                    title: Some(String::new()),
+                                                },
+                                            )
+                                        );
+                                    }
+                                    haven_agent::SessionEvent::ScheduledConfirmOutcome {
+                                        ..
+                                    }
+                                    | haven_agent::SessionEvent::SessionCleanup { .. }
+                                    | haven_agent::SessionEvent::CascadeCompleted { .. } => {}
+                                }
+                            }
+                        });
                     });
                 }
             });

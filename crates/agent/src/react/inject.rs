@@ -60,7 +60,10 @@ impl ReActEngine {
     ) -> anyhow::Result<bool> {
         if clears_ask {
             self.executor
-                .clear_awaiting_answer_persisted(&ctx.session_id)
+                .clear_interactions_persisted(
+                    &ctx.session_id,
+                    Some(crate::interaction::InteractionKind::Ask),
+                )
                 .await?;
         }
         let mut applied_message_ids: std::collections::HashSet<String> = state
@@ -217,7 +220,7 @@ mod pending_context_tests {
         let path =
             std::env::temp_dir().join(format!("haven_pending_context_{}.db", uuid::Uuid::new_v4()));
         let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
-        let executor = std::sync::Arc::new(crate::session::SessionExecutor::new(
+        let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new(
             db.clone(),
             std::sync::Arc::new(haven_tools::ToolsManager::new()),
             1,

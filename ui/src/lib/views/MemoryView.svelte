@@ -9,6 +9,7 @@
 		activeSessionIdStore,
 		getSessionErrorReason,
 		resumeTargetStore,
+		hydrateInteractions,
 	} from '$lib/stores.ts';
 	import {
 		clearAllSessionMessages,
@@ -278,6 +279,7 @@
 			// explicit transition when the user asks for it.
 			if (!wasError) await invoke('reopen_session', { sessionId: session.id });
 			const result = await invoke('get_session_for_resume', { sessionId: session.id });
+			hydrateInteractions(result);
 			updateSessionMessages(session.id, (existing) =>
 				mergeLiveStreaming(buildResumeMessages(result), existing),
 			);

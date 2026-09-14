@@ -42,7 +42,7 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
 #[tokio::test]
 async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
     // The model responds with text + Stop and no tool calls while an
-    // explicit `awaiting_answer` snapshot state is pending: the turn must
+    // an explicit ask interaction is pending: the turn must
     // pause and wait for the user's answer instead of completing.
     let client = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
@@ -76,7 +76,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         ),
         CanonicalMessage::tool(
             vec![ContentPart::text(
-                r#"{"ask":true,"question":"which file?","awaiting_answer":true,"options":[]}"#,
+                r#"{"ask":true,"question":"which file?","options":[]}"#,
             )],
             Some("call_ask".into()),
         ),
@@ -86,12 +86,12 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: Some(crate::types::AskPending {
-            question: "which file?".into(),
-            step_ids: vec!["step-ask".into()],
-        }),
-        awaiting_confirm: None,
-        interactions: Vec::new(),
+        interactions: vec![crate::interaction::InteractionRequest::ask(
+            &session.id,
+            "which file?",
+            Vec::new(),
+            vec!["step-ask".into()],
+        )],
         run_budget: None,
         error_partial_message_ids: None,
     };
@@ -104,15 +104,16 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
 
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer),
+        Some(SessionStatus::Paused),
         "session must pause for the pending question instead of completing"
     );
-    assert!(
+    assert_eq!(
         executor
-            .get_session_state(&session.id)
+            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
             .await
-            .is_some_and(|s| s.is_awaiting_answer()),
-        "pause must be flagged as awaiting the user's answer"
+            .len(),
+        1,
+        "pause must retain the pending ask interaction"
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
     assert_eq!(
@@ -737,7 +738,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     // Session must be paused, awaiting the user's answer.
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer),
+        Some(SessionStatus::Paused),
         "ask should pause the session"
     );
     assert!(collector.has_action("ask"));
@@ -802,7 +803,7 @@ async fn run_session_ask_resumes_after_user_answer() {
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer),
+        Some(SessionStatus::Paused),
         "ask should pause"
     );
 
@@ -899,7 +900,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer)
+        Some(SessionStatus::Paused)
     );
 
     // Turn 2: the user answers; the resumed step fails mid-stream.
@@ -1070,7 +1071,7 @@ async fn run_session_multiple_asks_surface_all_questions() {
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer),
+        Some(SessionStatus::Paused),
         "ask should pause"
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
@@ -1323,8 +1324,6 @@ async fn continue_session_resumes_errored_session() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -1419,8 +1418,6 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         error_partial_message_ids: None,
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
     };
@@ -1484,7 +1481,7 @@ async fn pause_snapshot_includes_run_budget() {
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer)
+        Some(SessionStatus::Paused)
     );
     let snap =
         ReActSnapshot::from_json(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();

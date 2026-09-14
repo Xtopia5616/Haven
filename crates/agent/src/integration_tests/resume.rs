@@ -164,7 +164,16 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::PausedAwaitingAnswer)
+        .update_session_status(&session.id, SessionStatus::Paused)
+        .await
+        .unwrap();
+    executor
+        .request_interaction(crate::interaction::InteractionRequest::ask(
+            &session.id,
+            "the answer",
+            Vec::new(),
+            vec!["step-0123456789abcdef0123456789abcdef".into()],
+        ))
         .await
         .unwrap();
 
@@ -223,8 +232,6 @@ async fn resume_rejects_legacy_conversation_prefix_snapshot() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -272,8 +279,6 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -345,8 +350,6 @@ async fn resume_keeps_repeated_same_text_turns() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: ingress_cursor,
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -430,8 +433,6 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: ingress_cursor,
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -527,8 +528,6 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -730,8 +729,6 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         step_number: 2,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,

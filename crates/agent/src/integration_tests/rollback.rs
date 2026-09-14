@@ -22,8 +22,6 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -125,8 +123,6 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         step_number: 1,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -224,8 +220,6 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         step_number: 2,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -313,8 +307,6 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         step_number: 2,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -503,8 +495,6 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         step_number: 1,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -631,8 +621,6 @@ async fn rollback_pause_matches_compacted_message_id() {
         step_number: 2,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        awaiting_answer: None,
-        awaiting_confirm: None,
         interactions: Vec::new(),
         run_budget: None,
         error_partial_message_ids: None,
@@ -682,10 +670,10 @@ async fn rollback_pause_matches_compacted_message_id() {
     );
 }
 
-/// R6 W8×O1: rollback while `PausedAwaitingAnswer` must clear the ask gate
+/// R6 W8×O1: rollback while an ask interaction is pending must clear the gate
 /// (memory + snapshot) so the next user input is not mis-routed as an answer.
 #[tokio::test]
-async fn rollback_while_ask_wait_clears_awaiting_answer_gate() {
+async fn rollback_while_ask_wait_clears_interaction_gate() {
     let tools = Arc::new(ToolsManager::new());
     tools
         .registry
@@ -716,16 +704,21 @@ async fn rollback_while_ask_wait_clears_awaiting_answer_gate() {
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer)
+        Some(SessionStatus::Paused)
     );
     assert!(
-        executor.get_awaiting_answer(&session.id).await.is_some(),
+        executor
+            .has_pending_interaction(&session.id, crate::interaction::InteractionKind::Ask)
+            .await,
         "ask gate must be set before rollback"
     );
 
     let state_json = agent.db.get_react_state(&session.id).unwrap().unwrap();
     let snap = ReActSnapshot::from_json(&state_json).unwrap();
-    assert!(snap.awaiting_answer.is_some());
+    assert!(snap.interactions.iter().any(|request| {
+        request.kind == crate::interaction::InteractionKind::Ask
+            && request.status == crate::interaction::InteractionStatus::Pending
+    }));
     let target_step = snap.step_number.max(1);
 
     agent
@@ -738,16 +731,21 @@ async fn rollback_while_ask_wait_clears_awaiting_answer_gate() {
         Some(SessionStatus::Pending)
     );
     assert!(
-        executor.get_awaiting_answer(&session.id).await.is_none(),
+        !executor
+            .has_pending_interaction(&session.id, crate::interaction::InteractionKind::Ask)
+            .await,
         "ask gate must be cleared after rollback"
     );
     let restored =
         ReActSnapshot::from_json(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
-    assert!(
-        restored.awaiting_answer.is_none(),
-        "snapshot must not resurrect awaiting_answer"
-    );
-    assert!(restored.awaiting_confirm.is_none());
+    assert!(!restored.interactions.iter().any(|request| {
+        request.status == crate::interaction::InteractionStatus::Pending
+            && matches!(
+                request.kind,
+                crate::interaction::InteractionKind::Ask
+                    | crate::interaction::InteractionKind::Confirm
+            )
+    }));
     assert!(restored.run_budget.is_none());
 }
 
@@ -903,7 +901,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
         executor.get_session_state(&session.id).await,
-        Some(SessionStatus::PausedAwaitingAnswer)
+        Some(SessionStatus::Paused)
     );
     let snap =
         ReActSnapshot::from_json(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
@@ -915,7 +913,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     assert_eq!(
         executor.get_session_state(&session.id).await,
         Some(SessionStatus::Paused),
-        "user-edit rollback must leave plain Paused, not PausedAwaitingAnswer"
+        "user-edit rollback must leave plain Paused"
     );
     assert!(
         !executor.is_ask_gated(&session.id).await,

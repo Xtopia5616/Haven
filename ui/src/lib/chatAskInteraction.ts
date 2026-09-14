@@ -1,5 +1,10 @@
 import { get } from 'svelte/store';
-import { sessionMessagesStore, updateSessionMessages } from './sessionMessages.ts';
+import { sessionMessagesStore } from './sessionMessages.ts';
+import {
+	clearSessionInteractions,
+	pendingInteractions,
+	resolveInteraction,
+} from './stores.ts';
 
 interface AskMessage {
 	id: string;
@@ -33,6 +38,10 @@ export function createAskInteractionController({
 }: AskInteractionContext) {
 	const askSelections = new Map<string, Map<string, string[]>>();
 	const resolvedAskIds = new Map<string, Set<string>>();
+	const resolvedAskResponses = new Map<
+		string,
+		Map<string, { answer?: string; ignored?: boolean }>
+	>();
 
 	const messagesFor = (sessionId: string): AskMessage[] =>
 		(get(sessionMessagesStore)[sessionId] || []) as AskMessage[];
@@ -40,13 +49,11 @@ export function createAskInteractionController({
 	function computeAskSelectionsReady() {
 		const sessionId = getActiveSessionId();
 		if (!sessionId) return false;
-		const awaiting = messagesFor(sessionId).filter(
-			(message) => message.type === 'ask' && message.awaiting,
-		);
+		const awaiting = pendingInteractions(sessionId, 'ask');
 		if (awaiting.length === 0) return false;
 		const byMessage = askSelections.get(sessionId);
 		if (!byMessage) return false;
-		return awaiting.every((message) => (byMessage.get(message.id) || []).length > 0);
+		return awaiting.every((request) => (byMessage.get(request.id) || []).length > 0);
 	}
 
 	function refreshSelectionsReady() {
@@ -59,15 +66,10 @@ export function createAskInteractionController({
 	}
 
 	function clearAskAwaiting(sessionId: string) {
-		updateSessionMessages(sessionId, (messages) =>
-			messages.map((message) =>
-				message.type === 'ask'
-					? { ...message, awaiting: false, resolved: null }
-					: message,
-			),
-		);
+		clearSessionInteractions(sessionId, 'ask');
 		// A resume/end invalidates quick-reply answers for the pending batch.
 		resolvedAskIds.delete(sessionId);
+		resolvedAskResponses.delete(sessionId);
 		clearAskSelections(sessionId);
 	}
 
@@ -90,14 +92,17 @@ export function createAskInteractionController({
 		files: unknown = [],
 	) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
-		const asks = messagesFor(sessionId).filter(
-			(message) => message.type === 'ask' && message.resolved && resolvedIds.has(message.id),
-		);
+		const messages = messagesFor(sessionId);
+		const responses = resolvedAskResponses.get(sessionId);
+		const asks = messages
+			.filter((message) => message.type === 'ask' && resolvedIds.has(message.id))
+			.map((message) => ({ message, resolved: responses?.get(message.id) }))
+			.filter((entry) => entry.resolved);
 		if (asks.length === 0) return;
 		const single = asks.length === 1;
 		let text = asks
-			.map((message, index) => {
-				const answer = message.resolved?.ignored ? '忽略' : message.resolved?.answer || '';
+			.map(({ message, resolved }, index) => {
+				const answer = resolved?.ignored ? '忽略' : resolved?.answer || '';
 				return single
 					? answer
 					: `关于「${message.content || `问题 ${index + 1}`}」：${answer}`;
@@ -119,15 +124,12 @@ export function createAskInteractionController({
 		const ids = resolvedAskIds.get(sessionId) || new Set<string>();
 		// A double-click must not compose and submit the same answer twice.
 		if (ids.has(msgId)) return;
-		updateSessionMessages(sessionId, (messages) =>
-			messages.map((message) =>
-				message.id === msgId && message.type === 'ask' && !message.resolved
-					? { ...message, awaiting: false, resolved }
-					: message,
-			),
-		);
+		resolveInteraction(msgId, resolved.ignored ? { ignored: true } : { answer: resolved.answer || '' });
 		ids.add(msgId);
 		resolvedAskIds.set(sessionId, ids);
+		const responses = resolvedAskResponses.get(sessionId) || new Map();
+		responses.set(msgId, resolved);
+		resolvedAskResponses.set(sessionId, responses);
 		const byMessage = askSelections.get(sessionId);
 		if (byMessage) {
 			byMessage.delete(msgId);
@@ -135,9 +137,7 @@ export function createAskInteractionController({
 		}
 		refreshSelectionsReady();
 		if (opts.deferSubmit) return;
-		const remaining = messagesFor(sessionId).filter(
-			(message) => message.type === 'ask' && message.awaiting,
-		);
+		const remaining = pendingInteractions(sessionId, 'ask');
 		if (remaining.length === 0) {
 			const submitted = resolvedAskIds.get(sessionId);
 			submitActionAnswers(sessionId, submitted);
@@ -150,16 +150,14 @@ export function createAskInteractionController({
 		images: unknown,
 		files: unknown,
 	) {
-		const awaiting = messagesFor(sessionId).filter(
-			(message) => message.type === 'ask' && message.awaiting,
-		);
+		const awaiting = pendingInteractions(sessionId, 'ask');
 		if (awaiting.length === 0) return false;
 		const byMessage = askSelections.get(sessionId);
 		if (!byMessage) return false;
 		if (!awaiting.every((message) => (byMessage.get(message.id) || []).length > 0)) return false;
-		for (const ask of awaiting) {
-			const selected = byMessage.get(ask.id) || [];
-			resolveAsk(ask.id, { answer: selected.join(' ') }, { deferSubmit: true });
+		for (const request of awaiting) {
+			const selected = byMessage.get(request.id) || [];
+			resolveAsk(request.id, { answer: selected.join(' ') }, { deferSubmit: true });
 		}
 		const submitted = resolvedAskIds.get(sessionId);
 		clearAskSelections(sessionId);

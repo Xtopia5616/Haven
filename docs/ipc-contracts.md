@@ -208,7 +208,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `mute:changed` | `MuteChangedEvent { muted }` | 根布局、设置页 | 最新值覆盖；只含布尔状态。 |
 | `mcp:status_change` | `McpStatusChangedEvent { name, status }` | 工具视图、根布局 | 按 server name 合并；`Offline.error` 为净化错误，不含 env。 |
 | `skills:status_change` | `SkillsStatusChangedEvent { op }` | 技能视图 | refresh 通知可丢失，消费者重新读取受管 skills root。 |
-| `confirm:requested` | `ConfirmationRequestedEvent { step_id, invocation_step_id, action_index, tool_call_id, tool_name, risk_level, session_id, summary, permission_key }` | 聊天页 | `step_id` 是确认请求 ID，用于 resolve；ReAct 工具另带稳定的 `invocation_step_id + action_index + tool_call_id`，定时/后台动作的 invocation identity 为空；必须先由后端 AuthorizationEngine 创建，renderer 只收到不含原始参数的安全摘要，决策仍由后端校验。 |
+| `interaction:requested` | `InteractionRequestedEvent { id, session_id, kind, status, prompt, options, tool_name, risk_level, summary, permission_key, invocation_step_id, action_index, tool_call_id, created_at, expires_at }` | 聊天页 | ask、confirm、scheduled confirm 共用 request id 和生命周期；confirm 的原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端按 `id` 幂等覆盖并交给统一 `interactionStore`。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `session_id + run_id + step_number` 归并；文本不得重复写入普通日志。 |

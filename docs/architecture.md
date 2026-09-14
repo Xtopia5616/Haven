@@ -226,7 +226,7 @@ provider（STT 客户端来自 `haven-llm`）。
 - **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失 snapshot 不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
-- `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
+- `session/`：`SessionSupervisor` 负责 FIFO、并发 permit 和 actor 生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态，`RunEngine` 承载一次 ReAct run；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `inference.rs` / `memory_index.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_index` 只适配 embedding provider 与索引生命周期，`prompt` 通过 typed memory recall 组装 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
@@ -262,7 +262,7 @@ Parent session                    Child session(s)
 | 服务 | `haven-tools` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait 与 receipt 生命周期 |
 | 传输 | `haven-tools` `inbox.rs` | JSONL file transport adapter：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；不向应用暴露同步 drain 语义 |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
-| 接线 | `haven-app-binary` `app_state` | 安装 `AgentSpawner` 回调（tools 不依赖 agent） |
+| 接线 | `haven-app-binary` `app_state` | 安装一个 typed `MessagingRuntime`，同时提供 SessionActor mailbox 与 peer 生命周期（tools 不依赖 agent） |
 | 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
 | 生命周期 | `session/status.rs` | 终端态/`end_session` → BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
 | 信任 / 记忆 | `inference.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
@@ -273,8 +273,8 @@ Parent session                    Child session(s)
 显式 `agent.inbox` 默认只 claim 不 ack，处理完成后由 `agent.ack(message_ids|claim_token)` 确认；
 `claim_token` 是进程内整批 receipt，崩溃后由 durable processing 状态触发 at-least-once 重投，
 而不是丢失消息。`agent.history` 为只读恢复入口。`agent.status/join/wait/stop/collect` 只允许当前 session 或其后代，
-并通过 `AgentController` 进入真实 `SessionExecutor` 状态机，`stop` 走正常取消与终端清理路径。
-当前跨进程仍使用 JSONL adapter，未来可替换为 SessionActor mailbox；子会话默认工作目录仍为
+并通过 `MessagingRuntime` 进入真实 `SessionSupervisor` / `SessionActor` 状态机，`stop` 走正常取消与终端清理路径。
+同进程 session 优先使用 SessionActor mailbox；跨进程仍使用 JSONL adapter 作为 fallback；子会话默认工作目录仍为
 Temp（全局约束）。
 
 ### 2.5.2 内置 `system` 工具（机器信息与系统控制）
@@ -300,8 +300,9 @@ Temp（全局约束）。
 shell 进程、定时器和 action dependency 共享一个 action map、一个生命周期 sink 和一个
 completion bus。model-facing `actions.*` 和 app action board 都直接读取规范化 task row。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
-是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照保留旧字段用于兼容读取，新的交互状态以
-`Pending → Resolved | Expired | Cancelled` 表达。
+是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
+请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
+表达。
 
 Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具进入；图片/文件读取先复制到受管媒体
 资产并只向模型返回 `asset_id`。`media.render` 复用有界文档表示管线按页返回结果，不新增独立的
@@ -515,7 +516,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-08-30 | §2.6 UI：将每步用量聚合、缓存命中率与 token tooltip 收口到 `ui/src/lib/sessionUsagePresentation.ts`，路由页保留响应式状态适配（ADR 0043） |
 | 2026-08-30 | §2.6 UI：将 Agent thought/reasoning、web search、补充输入、工具 action/output/observation 的事件 handler 收口到 `ui/src/lib/chatAgentEventHandlers.ts`，路由页只保留状态与监听器编排（ADR 0044） |
 | 2026-08-30 | §2.6 UI：将 Agent 用量与上下文压缩事件投影收口到 `ui/src/lib/chatUsageEventHandlers.ts`，路由页只保留监听器编排（ADR 0045） |
-| 2026-08-30 | §2.6 UI：将 `confirm:requested` 到确认队列项的安全事件投影收口到 `ui/src/lib/chatConfirmationEventHandlers.ts`，路由页保留队列与授权 IPC 编排（ADR 0046） |
+| 2026-09-14 | §2.5 Agent / §2.6 UI：ask、confirm、scheduled confirm 统一为 `InteractionRequest`；session 只保留通用 `Paused`，Tauri 使用 `interaction:requested`，前端统一由 `interactionStore` 投影与恢复（ADR 0156） |
+| 2026-09-14 | §2.5 Agent/Tools：`MessagingService` 接入 `SessionActor` mailbox；同进程优先 actor、跨进程 fallback JSONL；统一 request/reply/receipt/ack/retry/expiry，并以 typed `MessagingRuntime` 取代 spawn/lifecycle callback（ADR 0158） |
 | 2026-08-30 | §2.6 UI：将 session 生命周期事件的状态投影与终态清理收口到 `ui/src/lib/chatSessionEventHandlers.ts`，路由页保留响应式状态回调（ADR 0047） |
 | 2026-08-30 | §2.6 UI：将欢迎态、消息列表、后台等待提示与错误继续按钮收口到 `ui/src/lib/ChatMessageTimeline.svelte`，路由页保留滚动容器与业务回调（ADR 0048） |
 | 2026-08-30 | §2.6 UI：将 ask 选项选择、批量回答、忽略、恢复清理与重复提交防护收口到 `ui/src/lib/chatAskInteraction.ts`，路由页保留输入编排（ADR 0049） |

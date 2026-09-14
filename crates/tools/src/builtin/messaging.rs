@@ -23,17 +23,18 @@ use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
 use crate::inbox::InboxBus;
 use crate::inbox::{AgentStatus, Envelope, MessageType, SendOutcome, validate_agent_name};
+pub use crate::messaging_service::{
+    AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnRequest,
+    AgentSpawnResult, MessagingRuntime,
+};
 use crate::messaging_service::{MessageClaim, MessagingService};
 use crate::{OperationIdempotency, Tool, ToolResult};
 
@@ -57,105 +58,10 @@ const MAX_INBOX_ACK_IDS: usize = 100;
 /// Soft cap on concurrently discoverable children per parent (online or offline
 /// registry entries with `parent` set). Prevents unbounded spawn storms.
 const MAX_CHILDREN_PER_PARENT: usize = 8;
-/// Floor backoff after a request miss so process-wide inbox notifies
-/// cannot busy-poll the lock.
-/// Cross-process fallback when another process wrote the mailbox without
-/// bumping this process's watch channel. Kept slow so the hot path is
-/// `rx.changed()`, not a 200ms poll of the inbox lock.
-const REQUEST_WAIT_FALLBACK: Duration = Duration::from_secs(1);
-
 const OPERATIONS: &[&str] = &[
     "list", "children", "history", "send", "inbox", "ack", "reply", "profile", "request", "spawn",
     "status", "join", "wait", "stop", "collect",
 ];
-
-/// Request to spawn a peer agent session (wired from the desktop agent layer).
-#[derive(Debug, Clone)]
-pub struct AgentSpawnRequest {
-    pub parent_session_id: String,
-    pub task: String,
-    pub title: Option<String>,
-    pub role: Option<String>,
-    pub capabilities: Vec<String>,
-}
-
-/// Result of a successful peer spawn.
-#[derive(Debug, Clone)]
-pub struct AgentSpawnResult {
-    pub session_id: String,
-    pub title: Option<String>,
-    pub role: Option<String>,
-    /// True when the child was accepted but must wait for a free
-    /// `session.max_concurrent` slot before its ReAct loop starts.
-    pub queued: bool,
-    pub running_sessions: usize,
-    pub max_concurrent: usize,
-}
-
-/// Async callback the desktop shell installs so `agent` spawn can create and
-/// dispatch a real session without `haven-tools` depending on `haven-agent`.
-pub type AgentSpawner = Arc<
-    dyn Fn(
-            AgentSpawnRequest,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentSpawnResult>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// Shared slot for the spawn callback (survives catalog rebuilds).
-pub type AgentSpawnerSlot = Arc<RwLock<Option<AgentSpawner>>>;
-
-pub fn new_agent_spawner_slot() -> AgentSpawnerSlot {
-    Arc::new(RwLock::new(None))
-}
-
-/// Lifecycle operation delegated to the desktop agent runtime. The tools
-/// crate owns the model-facing contract; the runtime owns session state,
-/// cancellation, and durable status transitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentControlOperation {
-    Status,
-    Wait,
-    Stop,
-}
-
-/// Request sent across the tools/agent boundary for lifecycle operations.
-#[derive(Debug, Clone)]
-pub struct AgentControlRequest {
-    pub requester_session_id: String,
-    pub target_session_id: String,
-    pub operation: AgentControlOperation,
-    pub timeout_secs: u64,
-}
-
-/// Runtime-owned lifecycle observation returned to the tool layer.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct AgentControlResult {
-    pub session_id: String,
-    pub status: String,
-    pub terminal: bool,
-    pub timed_out: bool,
-    pub title: Option<String>,
-}
-
-/// Async callback installed by the desktop agent layer. Keeping this callback
-/// optional preserves headless/tool-unit-test behavior: lifecycle operations
-/// fail clearly when no runtime is wired, while discovery and messaging still
-/// work through the file bus.
-pub type AgentController = Arc<
-    dyn Fn(
-            AgentControlRequest,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentControlResult>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// Shared slot for the lifecycle callback, surviving catalog rebuilds.
-pub type AgentControllerSlot = Arc<RwLock<Option<AgentController>>>;
-
-pub fn new_agent_controller_slot() -> AgentControllerSlot {
-    Arc::new(RwLock::new(None))
-}
 
 /// Run a blocking messaging-service operation on the blocking pool so lock
 /// waits and file I/O never stall the async executor.
@@ -550,8 +456,6 @@ pub struct AgentParams {
 /// Unified cross-session messaging / peer-collab tool.
 pub struct AgentTool {
     inner: MessagingToolset,
-    spawner: AgentSpawnerSlot,
-    controller: AgentControllerSlot,
     /// Claims held across the `inbox` → process → `ack` calls. Dropping a
     /// claim leaves the transport's durable processing record eligible for
     /// redelivery, including after a process restart.
@@ -559,20 +463,11 @@ pub struct AgentTool {
 }
 
 impl AgentTool {
-    pub fn new(service: Arc<MessagingService>, spawner: AgentSpawnerSlot) -> Self {
+    pub fn new(service: Arc<MessagingService>) -> Self {
         Self {
             inner: MessagingToolset::new(service),
-            spawner,
-            controller: new_agent_controller_slot(),
             claims: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    /// Install the optional desktop lifecycle callback while keeping the
-    /// constructor compatible with headless callers and existing tests.
-    pub fn with_controller(mut self, controller: AgentControllerSlot) -> Self {
-        self.controller = controller;
-        self
     }
 
     /// Entry ①: structured native interface. Entry ② deserializes JSON and
@@ -774,8 +669,8 @@ impl AgentTool {
                     env.subject = subject.clone();
                     env.payload = payload.clone();
                     env.expires_at = expires_at.clone();
-                    match service.deliver(r, &env) {
-                        Ok(o) => outcomes.push(o),
+                    match service.send(env) {
+                        Ok(sent) => outcomes.push(sent.outcome),
                         Err(e) => tracing::warn!("broadcast to '{r}' failed: {e}"),
                     }
                 }
@@ -798,8 +693,8 @@ impl AgentTool {
         env.payload = payload;
         env.expires_at = expires_at;
         let message_id = env.id.clone();
-        let outcome = blocking(service, move |service| service.deliver(&to, &env)).await?;
-        Ok(send_output(&outcome, &message_id))
+        let sent = blocking(service, move |service| service.send(env)).await?;
+        Ok(send_output(&sent.outcome, &message_id))
     }
 
     async fn op_inbox(
@@ -976,16 +871,25 @@ impl AgentTool {
         })
         .await?;
 
-        let mut env = Envelope::new(&sid, &to, &text);
-        env.r#type = MessageType::Reply;
-        env.reply_address = Some(sid.clone());
-        env.in_reply_to = in_reply_to;
-        env.subject = subject;
-        env.payload = payload;
-        env.expires_at = expires_at;
-        let message_id = env.id.clone();
-        let outcome = blocking(service, move |service| service.deliver(&to, &env)).await?;
-        Ok(send_output(&outcome, &message_id))
+        let correlation = in_reply_to
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("reply requires in_reply_to"))?
+            .to_string();
+        let sid_for_send = sid.clone();
+        let to_for_send = to.clone();
+        let sent = blocking(service, move |service| {
+            service.reply(
+                &sid_for_send,
+                &to_for_send,
+                &correlation,
+                &text,
+                subject,
+                payload,
+                expires_at,
+            )
+        })
+        .await?;
+        Ok(send_output(&sent.outcome, &sent.envelope.id))
     }
 
     async fn op_profile(
@@ -1066,16 +970,6 @@ impl AgentTool {
             .await?;
         self.inner.register(&sid, &cancel).await?;
         let timeout_secs = check_timeout_secs(params.timeout_secs);
-        let controller = self.controller.read().await.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "agent {} requires the desktop agent runtime (controller not wired)",
-                match operation {
-                    AgentControlOperation::Status => "status",
-                    AgentControlOperation::Wait => "wait",
-                    AgentControlOperation::Stop => "stop",
-                }
-            )
-        })?;
         let request = AgentControlRequest {
             requester_session_id: sid,
             target_session_id: target,
@@ -1083,7 +977,7 @@ impl AgentTool {
             timeout_secs,
         };
         let result = tokio::select! {
-            result = controller(request) => result?,
+            result = self.inner.service.control_peer_session(request) => result?,
             _ = cancel.cancelled() => anyhow::bail!("cancelled"),
         };
         Ok(ToolResult::ok(json!({
@@ -1136,84 +1030,65 @@ impl AgentTool {
         let expires_at = check_expires_at(params.expires_at)?;
         let timeout_secs = check_timeout_secs(params.timeout_secs);
 
-        let mut env = Envelope::new(&sid, &to, &text);
-        env.r#type = MessageType::Request;
-        env.subject = subject;
-        env.payload = payload;
-        env.expires_at = expires_at;
-        let request_id = env.id.clone();
-        let service = self.inner.service.clone();
-        let outcome = blocking(service.clone(), {
-            let to = to.clone();
-            move |service| service.deliver(&to, &env)
+        let sid_for_send = sid.clone();
+        let to_for_send = to.clone();
+        let sent = blocking(self.inner.service.clone(), move |service| {
+            service.request(
+                &sid_for_send,
+                &to_for_send,
+                &text,
+                subject,
+                payload,
+                expires_at,
+            )
         })
         .await?;
-
-        let mut rx = self.inner.service.subscribe();
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        let expected_from = to.clone();
-        // Scan once immediately (reply may already be present), then wait on
-        // the in-process watch with a slow cross-process fallback — avoid a
-        // 200ms lock-poll that stampedes under concurrent spawn waits.
-        loop {
-            let found = {
-                let service = self.inner.service.clone();
-                let sid = sid.clone();
-                let request_id = request_id.clone();
-                let expected_from = expected_from.clone();
-                blocking(service, move |service| {
-                    service.take_matching_replies(&sid, &request_id, &expected_from)
-                })
-                .await?
-            };
-            if let Some(reply) = found.into_iter().next() {
-                return Ok(ToolResult::ok(json!({
-                    "ok": true,
-                    "timed_out": false,
-                    "message_id": request_id,
-                    "to": outcome.to,
-                    "delivered": outcome.delivered,
-                    "recipient_status": outcome.status,
-                    "reply": envelope_to_tool_json(&reply),
-                })));
-            }
-            if cancel.is_cancelled() {
-                anyhow::bail!("cancelled");
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(ToolResult {
-                    success: false,
-                    output: json!({
-                    "ok": false,
-                    "timed_out": true,
-                    "message_id": request_id,
-                    "to": outcome.to,
-                    "delivered": outcome.delivered,
-                    "recipient_status": outcome.status,
-                    "timeout_secs": timeout_secs,
-                    }),
-                    error: Some(format!(
-                        "agent request timed out after {timeout_secs}s; the request was delivered and may still receive a reply"
-                    )),
-                    error_class: Some(crate::ToolErrorClass::UnknownOutcome),
-                    retryability: crate::ToolRetryability::Unknown,
-                    truncated: false,
-                    outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
-                    attempts: 1,
-                    signals: crate::tool_contract::ToolSignals::default(),
-                    llm_usage: Vec::new(),
-                });
-            }
-            let wait = (deadline - now).min(REQUEST_WAIT_FALLBACK);
-            tokio::select! {
-                _ = cancel.cancelled() => anyhow::bail!("cancelled"),
-                _ = tokio::time::sleep(wait) => {},
-                _ = rx.changed() => {
-                    let _ = rx.borrow_and_update();
-                }
-            }
+        let request_id = sent.envelope.id.clone();
+        let outcome = sent.outcome;
+        let reply = self
+            .inner
+            .service
+            .wait_for_reply(
+                &sid,
+                &request_id,
+                &to,
+                Duration::from_secs(timeout_secs),
+                &cancel,
+            )
+            .await?;
+        if let Some(reply) = reply {
+            return Ok(ToolResult::ok(json!({
+                "ok": true,
+                "timed_out": false,
+                "message_id": request_id,
+                "to": outcome.to,
+                "delivered": outcome.delivered,
+                "recipient_status": outcome.status,
+                "reply": envelope_to_tool_json(&reply),
+            })));
         }
+        Ok(ToolResult {
+            success: false,
+            output: json!({
+                "ok": false,
+                "timed_out": true,
+                "message_id": request_id,
+                "to": outcome.to,
+                "delivered": outcome.delivered,
+                "recipient_status": outcome.status,
+                "timeout_secs": timeout_secs,
+            }),
+            error: Some(format!(
+                "agent request timed out after {timeout_secs}s; the request was delivered and may still receive a reply"
+            )),
+            error_class: Some(crate::ToolErrorClass::UnknownOutcome),
+            retryability: crate::ToolRetryability::Unknown,
+            truncated: false,
+            outcome: crate::ToolExecutionOutcome::TimedOutUnknown,
+            attempts: 1,
+            signals: crate::tool_contract::ToolSignals::default(),
+            llm_usage: Vec::new(),
+        })
     }
 
     async fn op_spawn(
@@ -1240,20 +1115,20 @@ impl AgentTool {
             );
         }
 
-        let spawner = self.spawner.read().await.clone().ok_or_else(|| {
-            anyhow::anyhow!("agent spawn requires the desktop agent runtime (spawner not wired)")
-        })?;
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let result = spawner(AgentSpawnRequest {
-            parent_session_id: sid.clone(),
-            task,
-            title: title.clone(),
-            role: role.clone(),
-            capabilities: capabilities.clone(),
-        })
-        .await?;
+        let result = self
+            .inner
+            .service
+            .spawn_peer_session(AgentSpawnRequest {
+                parent_session_id: sid.clone(),
+                task,
+                title: title.clone(),
+                role: role.clone(),
+                capabilities: capabilities.clone(),
+            })
+            .await?;
 
         let hint = if result.queued {
             format!(
@@ -1450,13 +1325,107 @@ mod tests {
     use super::*;
     use crate::Tool;
     use crate::inbox::AgentStatus;
+    use crate::messaging_service::SessionMailbox;
 
     fn test_tools() -> (tempfile::TempDir, Arc<InboxBus>, AgentTool) {
         let dir = tempfile::tempdir().unwrap();
         let bus = Arc::new(InboxBus::new(dir.path()));
         let service = Arc::new(MessagingService::new(bus.clone()));
-        let tool = AgentTool::new(service, new_agent_spawner_slot());
+        let tool = AgentTool::new(service);
         (dir, bus, tool)
+    }
+
+    struct TestMailbox;
+
+    impl SessionMailbox for TestMailbox {
+        fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+            tokio::sync::watch::channel(0).1
+        }
+
+        fn deliver(&self, _to: &str, _envelope: &Envelope) -> anyhow::Result<Option<SendOutcome>> {
+            Ok(None)
+        }
+
+        fn claim(&self, _recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
+            Ok(None)
+        }
+
+        fn ack(&self, _recipient: &str, _ids: &[String]) -> anyhow::Result<Option<()>> {
+            Ok(None)
+        }
+
+        fn last_received(&self, _name: &str) -> anyhow::Result<Option<Option<Envelope>>> {
+            Ok(None)
+        }
+
+        fn find_message(&self, _name: &str, _id: &str) -> anyhow::Result<Option<Option<Envelope>>> {
+            Ok(None)
+        }
+
+        fn take_matching_replies(
+            &self,
+            _name: &str,
+            _in_reply_to: &str,
+            _expected_from: &str,
+        ) -> anyhow::Result<Option<Vec<Envelope>>> {
+            Ok(None)
+        }
+
+        fn history(&self, _name: &str, _limit: usize) -> anyhow::Result<Option<Vec<Envelope>>> {
+            Ok(None)
+        }
+    }
+
+    struct TestRuntime {
+        bus: Arc<InboxBus>,
+    }
+
+    #[async_trait]
+    impl MessagingRuntime for TestRuntime {
+        fn mailbox(&self) -> Arc<dyn SessionMailbox> {
+            Arc::new(TestMailbox)
+        }
+
+        async fn spawn_peer_session(
+            &self,
+            request: AgentSpawnRequest,
+        ) -> anyhow::Result<AgentSpawnResult> {
+            let child = "ses-child000000000000000000000001".to_string();
+            self.bus.register_with_profile(
+                &child,
+                &request.capabilities,
+                request.title.as_deref(),
+                request.role.as_deref(),
+                Some(&request.parent_session_id),
+            )?;
+            Ok(AgentSpawnResult {
+                session_id: child,
+                title: request.title,
+                role: request.role,
+                queued: false,
+                running_sessions: 0,
+                max_concurrent: 3,
+            })
+        }
+
+        async fn control_peer_session(
+            &self,
+            request: AgentControlRequest,
+        ) -> anyhow::Result<AgentControlResult> {
+            Ok(AgentControlResult {
+                session_id: request.target_session_id,
+                status: match request.operation {
+                    AgentControlOperation::Status => "running".into(),
+                    AgentControlOperation::Wait | AgentControlOperation::Stop => "completed".into(),
+                },
+                terminal: matches!(
+                    request.operation,
+                    AgentControlOperation::Wait | AgentControlOperation::Stop
+                ),
+                timed_out: false,
+                title: Some("child".into()),
+            })
+        }
     }
 
     fn claim_and_ack(bus: &InboxBus, name: &str) -> Vec<Envelope> {
@@ -2058,10 +2027,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_requires_operation_in_schema() {
-        let tool = AgentTool::new(
-            Arc::new(MessagingService::default_root()),
-            new_agent_spawner_slot(),
-        );
+        let tool = AgentTool::new(Arc::new(MessagingService::default_root()));
         let err = tool.validate_input(&json!({})).unwrap_err().to_string();
         assert!(err.contains("operation"), "{err}");
         // The schema must not leak the private _session_id field.
@@ -2221,7 +2187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_control_is_child_scoped_and_uses_controller() {
+    async fn lifecycle_control_is_child_scoped_and_uses_runtime() {
         let (_dir, bus, _unused) = test_tools();
         bus.register_with_profile(
             "ses-child000000000000000000000001",
@@ -2232,31 +2198,9 @@ mod tests {
         )
         .unwrap();
         bus.register("ses-other", &[]).unwrap();
-        let controller = new_agent_controller_slot();
-        *controller.write().await = Some(Arc::new(|request: AgentControlRequest| {
-            Box::pin(async move {
-                Ok(AgentControlResult {
-                    session_id: request.target_session_id,
-                    status: match request.operation {
-                        AgentControlOperation::Status => "running".into(),
-                        AgentControlOperation::Wait | AgentControlOperation::Stop => {
-                            "completed".into()
-                        }
-                    },
-                    terminal: matches!(
-                        request.operation,
-                        AgentControlOperation::Wait | AgentControlOperation::Stop
-                    ),
-                    timed_out: false,
-                    title: Some("child".into()),
-                })
-            })
-        }));
-        let tool = AgentTool::new(
-            Arc::new(MessagingService::new(bus.clone())),
-            new_agent_spawner_slot(),
-        )
-        .with_controller(controller);
+        let service = Arc::new(MessagingService::new(bus.clone()));
+        service.set_runtime(Arc::new(TestRuntime { bus: bus.clone() }));
+        let tool = AgentTool::new(service);
 
         let status = tool
             .execute(
@@ -2384,32 +2328,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_spawn_uses_spawner_and_registers_child() {
+    async fn agent_spawn_uses_runtime_and_registers_child() {
         let (_dir, bus, _unused) = test_tools();
-        let slot = new_agent_spawner_slot();
-        let bus_in_spawn = bus.clone();
-        *slot.write().await = Some(Arc::new(move |req: AgentSpawnRequest| {
-            let bus = bus_in_spawn.clone();
-            Box::pin(async move {
-                let child = "ses-child000000000000000000000001".to_string();
-                bus.register_with_profile(
-                    &child,
-                    &req.capabilities,
-                    req.title.as_deref(),
-                    req.role.as_deref(),
-                    Some(&req.parent_session_id),
-                )?;
-                Ok(AgentSpawnResult {
-                    session_id: child,
-                    title: req.title,
-                    role: req.role,
-                    queued: false,
-                    running_sessions: 0,
-                    max_concurrent: 3,
-                })
-            })
-        }));
-        let spawn = AgentTool::new(Arc::new(MessagingService::new(bus.clone())), slot);
+        let service = Arc::new(MessagingService::new(bus.clone()));
+        service.set_runtime(Arc::new(TestRuntime { bus: bus.clone() }));
+        let spawn = AgentTool::new(service);
         let result = spawn
             .execute(
                 with_sid(
@@ -2445,7 +2368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_spawn_without_spawner_errors() {
+    async fn agent_spawn_without_runtime_errors() {
         let (_dir, _bus, tool) = test_tools();
         let err = tool
             .execute(
@@ -2455,7 +2378,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(err.contains("spawner not wired"), "{err}");
+        assert!(err.contains("session runtime"), "{err}");
     }
 
     #[tokio::test]

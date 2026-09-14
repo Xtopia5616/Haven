@@ -72,9 +72,8 @@ impl AgentLayer {
 
             // Phase 4 / D1 routing (+ Phase 5 / E3 confirm gate):
             //   Running                 → steering
-            //   PausedAwaitingAnswer    → follow_up (is_answer / reply_to)
-            //   PausedAwaitingConfirm   → follow_up, but do NOT wake (confirm
-            //                             dialog is the only resume path)
+            //   Paused + pending ask    → answer follow_up (is_answer / reply_to)
+            //   Paused + pending confirm → follow_up, but do NOT wake
             //   Paused / other          → follow_up
             // If the steering queue is unavailable (session vanished from
             // memory between the state read and the enqueue), fall through
@@ -109,12 +108,10 @@ impl AgentLayer {
                 // previous question" instead of generic context —otherwise
                 // the model sees the old question as still open and answers
                 // questions from long ago. The awaiting-answer flavor is
-                // carried by the status itself (`PausedAwaitingAnswer`), so
-                // it is read BEFORE set_session_status(Pending) below clears it.
-                // Prefer status, but also honor the C5 flag while status has
-                // already flipped to Pending (ask + pre-queued answer).
+                // carried by the interaction registry, so it is read BEFORE
+                // set_session_status(Pending) below clears the pause.
                 // While a confirm gate is active (including confirm+ask
-                // batches that stash awaiting_answer early), do NOT treat
+                // batches that stash an ask early), do NOT treat
                 // free-text as the ask reply — confirm must finish first.
                 let confirm_pending = self
                     .executor
@@ -172,9 +169,10 @@ impl AgentLayer {
                     // were ended on purpose and must be reopened explicitly via
                     // the resume flow — auto-converting them would resurrect a
                     // ghost session.
-                    let fresh_state = self.executor.get_session_state(session_id).await;
-                    if fresh_state == Some(SessionStatus::Completed)
-                        || fresh_state == Some(SessionStatus::Error)
+                    let fresh_state = self.executor.get_session_status(session_id).await;
+                    if fresh_state
+                        .as_ref()
+                        .is_some_and(|status| status.is_terminal())
                     {
                         tracing::warn!(
                             "process_input: session {} is terminal ({:?}) despite active_session_id; dropping supplement to avoid resurrection",

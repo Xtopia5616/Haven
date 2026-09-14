@@ -513,7 +513,7 @@ impl TauriEmitter {
                     status = %status,
                     "TauriEmitter::on_session_updated"
                 );
-                if status == "paused" || status == "paused_awaiting_answer" {
+                if status == "paused" {
                     tracing::warn!(
                         session_id = %session_id,
                         "TauriEmitter emitting session:updated with paused status"

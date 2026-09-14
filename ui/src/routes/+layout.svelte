@@ -15,6 +15,7 @@
 		sessionStore,
 		cancelAction,
 		resumeTargetStore,
+		clearSessionInteractions,
 	} from '$lib/stores.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
@@ -182,6 +183,8 @@
 	}
 
 	function startNewSessionFromTasks() {
+		const currentSessionId = get(activeSessionIdStore);
+		if (currentSessionId) clearSessionInteractions(currentSessionId);
 		activeSessionIdStore.set(null);
 		switchTab('chat');
 	}

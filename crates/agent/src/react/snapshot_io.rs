@@ -70,12 +70,6 @@ struct SnapshotView<'a> {
     last_ingress_seq: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error_partial_message_ids: Option<&'a [String]>,
-    /// Explicit ask-awaiting flag (Phase 4 / C5); see `ReActSnapshot`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    awaiting_answer: Option<&'a crate::types::AskPending>,
-    /// Explicit confirm-awaiting batch (Phase 5 / E3); see `ReActSnapshot`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    awaiting_confirm: Option<&'a crate::types::ConfirmPending>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     interactions: Vec<crate::interaction::InteractionRequest>,
     /// Per-run step budget for observability (R4); see `ReActSnapshot`.
@@ -99,7 +93,7 @@ pub(super) struct PauseTurnInput<'a> {
 /// Shared by every status-transition path (pause, budget pause, agent layer)
 /// so the pair cannot drift.
 pub(crate) async fn set_status_and_emit(
-    executor: &SessionExecutor,
+    executor: &SessionSupervisor,
     emitter: &Arc<dyn AgentEventEmitter>,
     session_id: &str,
     status: SessionStatus,
@@ -274,27 +268,24 @@ impl ReActEngine {
                     snapshot_step
                 );
             }
-            // The status itself carries the awaiting-answer flavor
-            // (`PausedAwaitingAnswer`), so the transition is atomic: a
-            // background-action completion landing concurrently reads the final
-            // state and cannot auto-wake an answer-blocked session.
-            let reason = if status.is_awaiting_answer() {
+            let reason = if self
+                .executor
+                .has_pending_interaction(session_id, crate::interaction::InteractionKind::Ask)
+                .await
+            {
                 PauseReason::Ask
-            } else if status.is_awaiting_confirm() {
+            } else if self
+                .executor
+                .has_pending_interaction(session_id, crate::interaction::InteractionKind::Confirm)
+                .await
+            {
                 PauseReason::Confirm
             } else {
                 PauseReason::TurnEnd
             };
-            // `request_confirm_batch` establishes the paused state before it
-            // emits any confirmation id. Do not write PausedAwaitingConfirm
-            // over a concurrent final decision that already woke the session
-            // to Pending; doing so would strand an all-decided gate.
-            let confirm_status_owned = status.is_awaiting_confirm()
-                && matches!(
-                    self.executor.get_session_state(session_id).await,
-                    Some(SessionStatus::PausedAwaitingConfirm | SessionStatus::Pending)
-                );
-            if !confirm_status_owned {
+            // A synchronous resolve may have already woken a confirm batch.
+            // Do not overwrite that Pending transition with a stale pause.
+            if self.executor.get_session_state(session_id).await != Some(SessionStatus::Pending) {
                 set_status_and_emit(&self.executor, emitter, session_id, status).await?;
             }
             let ctx = StepCtx {
@@ -487,7 +478,7 @@ impl ReActEngine {
 
     /// Same checkpoint as [`Self::save_snapshot_after_tool_results`], but the
     /// completed confirmation batch must not remain resumable. Writing the
-    /// result events and clearing `awaiting_confirm` in one snapshot prevents
+    /// result events and clearing confirm interactions in one snapshot prevents
     /// a crash between result projection and the in-memory gate cleanup from
     /// replaying an already executed side effect.
     pub(super) async fn save_snapshot_after_confirm_results(
@@ -510,26 +501,14 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
         error_partial_message_ids: Option<&[String]>,
-        clear_awaiting_confirm: bool,
+        clear_confirm_interactions: bool,
     ) -> bool {
-        let awaiting = self.executor.get_awaiting_answer(session_id).await;
-        let awaiting_confirm = if clear_awaiting_confirm {
-            None
-        } else {
-            self.executor.get_awaiting_confirm(session_id).await
-        };
+        let mut interactions = self.executor.interaction_requests(session_id).await;
+        if clear_confirm_interactions {
+            interactions
+                .retain(|request| request.kind != crate::interaction::InteractionKind::Confirm);
+        }
         let run_budget = self.current_run_budget(session_id);
-        let mut interactions = Vec::new();
-        if let Some(pending) = awaiting.as_ref() {
-            interactions.push(crate::interaction::InteractionRequest::from_ask(
-                session_id, pending,
-            ));
-        }
-        if let Some(pending) = awaiting_confirm.as_ref() {
-            interactions.push(crate::interaction::InteractionRequest::from_confirm(
-                session_id, pending,
-            ));
-        }
         let last_ingress_seq = match self
             .db
             .clone()
@@ -555,8 +534,6 @@ impl ReActEngine {
             branch_points: &state.branch_points,
             last_ingress_seq,
             error_partial_message_ids,
-            awaiting_answer: awaiting.as_ref(),
-            awaiting_confirm: awaiting_confirm.as_ref(),
             interactions,
             run_budget: run_budget.as_ref(),
         };

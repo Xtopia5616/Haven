@@ -530,7 +530,7 @@ mod tests {
         let router = Arc::new(haven_llm::LlmRouter::new(
             haven_common::config::RouterConfig::default(),
         ));
-        let executor = Arc::new(crate::session::SessionExecutor::new(
+        let executor = Arc::new(crate::session::SessionSupervisor::new(
             db.clone(),
             Arc::new(haven_tools::ToolsManager::new()),
             2,

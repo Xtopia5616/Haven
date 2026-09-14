@@ -27,13 +27,16 @@ pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
 pub use inference::InferenceEngine;
-pub use interaction::{InteractionKind, InteractionRequest, InteractionStatus};
+pub use interaction::{InteractionDetails, InteractionKind, InteractionRequest, InteractionStatus};
 pub use prompt::{MemorySections, SystemPromptBuilder};
 pub use react::{LoopExit, PauseReason, ReActEngine};
 pub use session::{
-    ConfirmResolution, RunHandler, SessionExecutor, SessionInfo, SessionStatus, StepInfo,
-    ToolExecution,
+    ConfirmResolution, RunEngine, RunHandler, SessionEvent, SessionInfo, SessionStatus,
+    SessionSupervisor, StepInfo, ToolExecution,
 };
+
+#[cfg(test)]
+type SessionExecutor = SessionSupervisor;
 pub use types::{
     Action, BranchPoint, ProcessResult, ReActRound, ReActSnapshot, RunBudget, ToolRecord,
     TranscriptRecord, project_transcript, project_transcript_with_strategy,
@@ -59,7 +62,7 @@ use crate::title::TitleGenerator;
 /// recovery partials. Do not reintroduce parallel assistant writers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_session_message(
-    executor: &crate::session::SessionExecutor,
+    executor: &crate::session::SessionSupervisor,
     session_id: &str,
     role: &str,
     content: &str,

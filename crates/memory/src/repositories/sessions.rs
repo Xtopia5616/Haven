@@ -463,13 +463,9 @@ impl Database {
             params.push(Box::new(p));
         }
         if let Some(s) = status {
-            // History "Paused" covers both scheduling pause and ask-awaiting
-            // (Phase 4 / F2 distinct wire status).
+            // InteractionRequest carries the reason for a paused session.
             if s == "paused" {
-                wheres.push(
-                    "status IN ('paused','paused_awaiting_answer','paused_awaiting_confirm')"
-                        .into(),
-                );
+                wheres.push("status = 'paused'".into());
             } else {
                 wheres.push("status = ?".into());
                 params.push(Box::new(s.to_owned()));

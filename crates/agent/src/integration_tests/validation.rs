@@ -288,38 +288,21 @@ async fn confirmation_recovery_matches_the_full_invocation_identity() {
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let (_agent, executor) = make_test_agent_with(client, tools);
     let session = executor.create_session("confirm").await.unwrap();
-    let pending = ConfirmPending {
-        step_number: 3,
-        tools: vec![
-            ConfirmPendingTool {
-                confirm_id: "conf-a".into(),
-                tool_name: "run_command".into(),
-                tool_input: serde_json::json!({"command":"same"}),
-                tool_call_id: "call-a".into(),
-                step_id: "step-3".into(),
-                action_index: 0,
-                risk_level: RiskLevel::High,
-                receipt: None,
-                decision: Some(true),
-            },
-            ConfirmPendingTool {
-                confirm_id: "conf-b".into(),
-                tool_name: "run_command".into(),
-                tool_input: serde_json::json!({"command":"same"}),
-                tool_call_id: "call-b".into(),
-                step_id: "step-3".into(),
-                action_index: 1,
-                risk_level: RiskLevel::High,
-                receipt: None,
-                decision: Some(false),
-            },
-        ],
-    };
-    let restored: ConfirmPending =
-        serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
-    executor
-        .set_awaiting_confirm(&session.id, Some(restored))
-        .await;
+    for (call_id, action_index, decision) in [("call-a", 0, true), ("call-b", 1, false)] {
+        let mut request = crate::interaction::InteractionRequest::confirm(
+            &session.id,
+            3,
+            "run_command".into(),
+            serde_json::json!({"command":"same"}),
+            call_id.into(),
+            "step-3".into(),
+            action_index,
+            RiskLevel::High,
+            None,
+        );
+        assert!(request.resolve(serde_json::Value::Bool(decision)));
+        executor.request_interaction(request).await.unwrap();
+    }
 
     assert_eq!(
         executor

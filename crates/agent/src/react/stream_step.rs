@@ -940,7 +940,7 @@ mod tests {
         let db_path =
             std::env::temp_dir().join(format!("haven_stream_step_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&db_path).unwrap());
-        let executor = Arc::new(SessionExecutor::new(
+        let executor = Arc::new(SessionSupervisor::new(
             db.clone(),
             Arc::new(ToolsManager::new()),
             1,

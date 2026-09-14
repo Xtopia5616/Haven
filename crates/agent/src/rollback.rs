@@ -65,11 +65,9 @@ impl AgentLayer {
         // the restored snapshot: kill them so their children cannot leak.
         self.executor.cancel_session_actions(session_id).await;
 
-        // R6: drop ask/confirm gates before restore so ingress cannot mis-route
-        // the next user input as an answer to a gate that no longer exists.
-        // The restored snapshot also clears `awaiting_*` before save below.
-        self.executor.clear_awaiting_answer(session_id).await;
-        self.executor.clear_awaiting_confirm(session_id).await;
+        // R6: drop every interaction before restore so ingress cannot route
+        // input to a request that no longer exists.
+        self.executor.clear_interactions(session_id, None).await;
 
         let state_json = self.db.get_react_state(session_id)?.ok_or_else(|| {
             anyhow::anyhow!(
@@ -251,10 +249,9 @@ impl AgentLayer {
             ));
         }
 
-        // R6: branch restore must not resurrect ask/confirm gates from the
-        // parent snapshot (continue clears them; rollback previously did not).
-        snapshot.awaiting_answer = None;
-        snapshot.awaiting_confirm = None;
+        // R6: branch restore must not resurrect interactions from the parent
+        // snapshot (continue clears them; rollback previously did not).
+        snapshot.interactions.clear();
         // Budget is per-run observability; a restored branch starts a new run.
         snapshot.run_budget = None;
 
@@ -305,7 +302,7 @@ impl AgentLayer {
         // Ensure the session is loaded in executor memory.
         self.executor.ensure_session_loaded(session_id).await?;
 
-        let state = self.executor.get_session_state(session_id).await;
+        let state = self.executor.get_session_status(session_id).await;
         // R6: lifecycle matrix owns continue allow/deny (Error|Paused* only).
         // If pause already flipped status but the handler is still unwinding,
         // join before truncating messages / flipping to Pending.
@@ -363,17 +360,12 @@ impl AgentLayer {
         // checkpoint can resurrect the row.
         self.executor.partials.discard(session_id).await;
 
-        // Skipping an ask / confirm via continue must drop the gate (status
-        // alone flipping to Pending is not enough — the loop still reads the
-        // flag).
-        if matches!(state, Some(SessionStatus::PausedAwaitingAnswer)) {
+        // Continuing explicitly cancels every pending interaction; status
+        // alone flipping to Pending is not enough because the actor owns the
+        // request lifecycle.
+        if state.is_some_and(|status| status.is_paused()) {
             self.executor
-                .clear_awaiting_answer_persisted(session_id)
-                .await?;
-        }
-        if matches!(state, Some(SessionStatus::PausedAwaitingConfirm)) {
-            self.executor
-                .clear_awaiting_confirm_persisted(session_id)
+                .clear_interactions_persisted(session_id, None)
                 .await?;
         }
 

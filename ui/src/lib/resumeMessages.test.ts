@@ -443,13 +443,11 @@ describe('buildResumeMessages', () => {
 		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
 	});
 
-	it('restores ask options and awaiting from a paused session', () => {
-		// A session paused on an ask question must rebuild the card with its
-		// quick-reply options and awaiting state, otherwise the user cannot
-		// answer from the chat view after a switch/reload. Phase 4 / F2 uses
-		// distinct `paused_awaiting_answer`; plain `paused` still works.
+	it('restores ask options without duplicating interaction state', () => {
+		// Resume rebuilds the card content/options. Pending state is hydrated
+		// separately into interactionStore from the safe interaction projection.
 		const items = buildResumeMessages({
-			session: { ...sampleSession, status: 'paused_awaiting_answer' },
+			session: { ...sampleSession, status: 'paused' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
@@ -458,7 +456,7 @@ describe('buildResumeMessages', () => {
 				{
 					id: 'step-s1',
 					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
@@ -470,7 +468,7 @@ describe('buildResumeMessages', () => {
 			type: 'ask',
 			content: '继续吗？',
 			options: ['A', 'B'],
-			awaiting: true,
+			awaiting: false,
 		});
 	});
 
@@ -485,7 +483,7 @@ describe('buildResumeMessages', () => {
 				{
 					id: 'step-s1',
 					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',

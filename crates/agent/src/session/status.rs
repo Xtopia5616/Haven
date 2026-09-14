@@ -1,10 +1,8 @@
-//! Session lifecycle, status machine, and working-set helpers.
-//!
-//! Split from `session.rs` (Phase 7 / A3 mechanical extract; behavior unchanged).
+//! Session lifecycle owned by [`SessionSupervisor`].
 
 use super::*;
 
-impl SessionExecutor {
+impl SessionSupervisor {
     pub async fn create_session(&self, input: &str) -> anyhow::Result<SessionInfo> {
         self.create_session_with_summary(input, input).await
     }
@@ -15,122 +13,63 @@ impl SessionExecutor {
         summary: &str,
     ) -> anyhow::Result<SessionInfo> {
         let record = self.db.create_session(input, input)?;
-        let mut session = SessionInfo::from_db_record(&record);
-        // The DB record was created with `input` as its transcript, but the
-        // caller may have a distinct classifier-generated summary — overlay
-        // it after construction so we keep the constructor single-purpose.
-        session.summary = summary.into();
-        let mut sessions = self.sessions.lock().await;
-        sessions.insert(session.id.clone(), Arc::new(Mutex::new(session.clone())));
-
-        // FIFO dispatch: queue the session before waking so the dispatcher's
-        // first claim finds it at the tail, in submission order.
-        self.enqueue_pending(&session.id).await;
-
-        // Wake the dispatcher so it picks up this Pending session immediately.
+        let mut info = SessionInfo::from_db_record(&record);
+        info.summary = summary.to_string();
+        self.install_actor(info.clone()).await;
+        self.enqueue_pending(&info.id).await;
         self.wake_dispatcher();
-        Ok(session)
+        Ok(info)
     }
 
-    /// Remove the session from the cross-session messaging registry (graceful
-    /// shutdown: `agents_list` no longer shows it). Mailboxes and archives
-    /// are kept, so late messages remain deliverable (reported offline) and
-    /// the history survives a later re-registration. Fire-and-forget.
-    fn unregister_from_inbox(session_id: &str) {
-        let sid = session_id.to_string();
-        let sid_err = sid.clone();
-        tokio::spawn(async move {
-            let messaging = haven_tools::MessagingService::default_root();
-            let result = tokio::task::spawn_blocking(move || {
-                let entry = messaging
-                    .list_agents()?
-                    .into_iter()
-                    .find(|agent| agent.name == sid);
-                if entry.as_ref().is_some_and(|agent| agent.parent.is_some()) {
-                    messaging.mark_offline(&sid)
-                } else {
-                    messaging.unregister(&sid)
-                }
-            })
-            .await;
-            if let Ok(Err(e)) = result {
-                tracing::debug!("messaging registry cleanup failed for {sid_err}: {e}");
-            } else if let Err(e) = result {
-                tracing::debug!("messaging registry cleanup task failed for {sid_err}: {e}");
-            }
-        });
-    }
-
-    /// Persist a session status to the DB with a small number of retries. SQLite
-    /// writes through the blocking pool can transiently fail with SQLITE_BUSY;
-    /// a short retry turns that into extra latency instead of a diverged
-    /// memory/DB state. Returns the last failure after exhausting the retries.
     pub(super) async fn persist_status(
         db: &Arc<Database>,
         session_id: &str,
         status: &str,
     ) -> anyhow::Result<()> {
-        let mut last_err = None;
+        let mut last_error = None;
         for attempt in 0..3 {
             let db = db.clone();
-            let tid = session_id.to_string();
-            let st = status.to_string();
+            let session_id = session_id.to_string();
+            let status = status.to_string();
             match db
-                .run_blocking(move |db| db.update_session_status(&tid, &st))
+                .run_blocking(move |db| db.update_session_status(&session_id, &status))
                 .await
             {
                 Ok(()) => return Ok(()),
-                Err(e) => {
-                    last_err = Some(e);
+                Err(error) => {
+                    last_error = Some(error);
                     if attempt < 2 {
                         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     }
                 }
             }
         }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("status persist failed")))
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("status persist failed")))
     }
 
-    /// End a session. Since the user explicitly asked to end it, the session is
-    /// always marked as Completed —regardless of whether it was still
-    /// Running (forced stop) or Paused (naturally finished). Clean up
-    /// resources either way. Called from the frontend "结束任务" button.
-    /// Cascades to peer children (BFS) after the parent is torn down.
     pub async fn end_session(&self, session_id: &str) -> anyhow::Result<SessionStatus> {
         self.end_session_inner(session_id, true).await
     }
 
-    /// Pause an active session without deleting it. Running sessions also get
-    /// their current provider call cancelled; the saved snapshot remains the
-    /// resume point for the next user input.
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<bool> {
         let status = self
             .get_session_state(session_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
-
         match status {
             SessionStatus::Running => {
                 let cancel = self.cancellation_token(session_id).await;
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
                 cancel.cancel();
-                Ok(matches!(
-                    self.get_session_state(session_id).await,
-                    Some(SessionStatus::Paused)
-                ))
+                Ok(self.get_session_state(session_id).await == Some(SessionStatus::Paused))
             }
             SessionStatus::Pending => {
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
-                Ok(matches!(
-                    self.get_session_state(session_id).await,
-                    Some(SessionStatus::Paused)
-                ))
+                Ok(self.get_session_state(session_id).await == Some(SessionStatus::Paused))
             }
-            SessionStatus::Paused
-            | SessionStatus::PausedAwaitingAnswer
-            | SessionStatus::PausedAwaitingConfirm => Ok(false),
+            SessionStatus::Paused => Ok(false),
             SessionStatus::Completed | SessionStatus::Error => Err(anyhow::anyhow!(
                 "session '{}' is not running (current: {})",
                 session_id,
@@ -139,103 +78,39 @@ impl SessionExecutor {
         }
     }
 
-    /// Shared end path. `cascade` controls whether peer descendants are force-
-    /// ended after this session (false when the caller already enumerated the
-    /// subtree via [`Self::cascade_end_children`]).
     async fn end_session_inner(
         &self,
         session_id: &str,
         cascade: bool,
     ) -> anyhow::Result<SessionStatus> {
-        // Cancel the running token first to interrupt any active ReAct loop.
-        // Ensure a real token exists even when the dispatcher hasn't created
-        // one yet (race window between try_claim_pending and token insertion);
-        // otherwise cancel() would fire on a default token nobody observes.
-        let cancel = {
-            let mut cancels = self.session_cancellations.lock().await;
-            cancels
-                .entry(session_id.to_string())
-                .or_insert_with(CancellationToken::new)
-                .clone()
-        };
-        cancel.cancel();
-        // Kill any background actions the session spawned; they would otherwise
-        // keep running (and leak child processes) after the session is gone.
-        self.cancel_session_actions(session_id).await;
-        // Promote checkpointed stream text into history (skip when a real
-        // message already supersedes it). Runs BEFORE the session is torn down;
-        // the PartialStore's generation bump also invalidates any in-flight
-        // checkpoint so it cannot re-create the row afterwards.
-        if let Err(e) = self.partials.promote(session_id).await {
-            tracing::warn!(
-                "end_session: failed to promote partial reply for session {}: {}",
-                session_id,
-                e
-            );
-        }
-        let entry = { self.sessions.lock().await.get(session_id).cloned() };
-        let Some(entry) = entry else {
-            // Session not in memory (e.g. after restart) —end it regardless of
-            // its DB state; the user asked to finish it.
-            if let Err(e) = Self::persist_status(&self.db, session_id, "completed").await {
-                tracing::error!(
-                    "end_session: DB persist failed for session {}: {}",
-                    session_id,
-                    e
-                );
-                return Err(e);
-            }
-            self.tools.release_managed_assets_for_session(session_id);
+        let Some(actor) = self.actor_for(session_id).await else {
+            Self::persist_status(&self.db, session_id, SessionStatus::Completed.as_str()).await?;
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
-        {
-            let mut session = entry.lock().await;
-            if let Err(e) = Self::persist_status(&self.db, session_id, "completed").await {
-                tracing::error!(
-                    "end_session: DB persist failed for session {}: {}",
-                    session_id,
-                    e
-                );
-                return Err(e);
-            }
-            session.status = SessionStatus::Completed;
-            session.updated_at = chrono::Utc::now().to_rfc3339();
+        actor.cancel().cancel();
+        self.cancel_session_actions(session_id).await;
+        if let Err(error) = self.partials.promote(session_id).await {
+            tracing::warn!(session_id = %session_id, error = %error, "failed to promote session partial");
         }
-        // Wake any ReAct-loop status waiter before tearing down the rest of
-        // the per-session state.
-        if let Some(tx) = self.status_tx.lock().await.remove(session_id) {
-            let _ = tx.send(SessionStatus::Completed);
+        self.update_session_status(session_id, SessionStatus::Completed)
+            .await?;
+        if !actor.is_running().await {
+            self.finish_ended_session(session_id, cascade).await;
+            self.remove_actor(session_id).await;
         }
-        self.dequeue_pending(session_id).await;
-        // F1 fence: if a handler is still marked running, leave
-        // `running_sessions` + permit + cancel token for that handler's
-        // post-exit `unmark_running`. Clearing them here would let the
-        // dispatcher reclaim the same id while the cancelled handler is
-        // still unwinding, and the late `unmark_running` would then drop
-        // the *new* claim's permit.
-        let still_running = self.running_sessions.lock().await.contains(session_id);
-        if !still_running {
-            self.cleanup_session_maps(session_id).await;
-        }
-        self.sessions.lock().await.remove(session_id);
-        self.finish_ended_session(session_id, cascade).await;
         Ok(SessionStatus::Completed)
     }
 
-    /// Shared post-terminal cleanup: unregister inbox, optional child cascade,
-    /// clear per-session trust. Used by both `end_session` exits and the
-    /// `update_session_status` terminal path.
     async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
         Self::unregister_from_inbox(session_id);
         self.tools.unregister_session(session_id).await;
         self.scheduled_confirms
             .lock()
             .await
-            .retain(|_, pending| pending.session_id.as_deref() != Some(session_id));
-        // Leaf sessions (never spawned peers) skip registry I/O entirely.
+            .retain(|request| request.session_id != session_id);
         if cascade && self.may_have_children(session_id).await {
-            self.cascade_end_children(session_id).await;
+            Box::pin(self.cascade_end_children(session_id)).await;
         }
         self.clear_has_children(session_id).await;
         self.tools
@@ -244,50 +119,55 @@ impl SessionExecutor {
             .await;
     }
 
-    /// Best-effort cascade: BFS-collect descendants, system-notice each, then
-    /// end them without nested cascade (descendants already listed). Emits
-    /// `on_cascade_completed` per child so the UI clears busy state.
+    fn unregister_from_inbox(session_id: &str) {
+        let session_id = session_id.to_string();
+        let log_id = session_id.clone();
+        tokio::spawn(async move {
+            let messaging = haven_tools::MessagingService::default_root();
+            let result = tokio::task::spawn_blocking(move || {
+                let entry = messaging
+                    .list_agents()?
+                    .into_iter()
+                    .find(|agent| agent.name == session_id);
+                if entry.as_ref().is_some_and(|agent| agent.parent.is_some()) {
+                    messaging.mark_offline(&session_id)
+                } else {
+                    messaging.unregister(&session_id)
+                }
+            })
+            .await;
+            if let Ok(Err(error)) = result {
+                tracing::debug!(session_id = %log_id, error = %error, "messaging registry cleanup failed");
+            }
+        });
+    }
+
     async fn cascade_end_children(&self, parent_session_id: &str) {
         let parent = parent_session_id.to_string();
         let descendants = match tokio::task::spawn_blocking({
             let parent = parent.clone();
             move || -> anyhow::Result<Vec<String>> {
                 let messaging = haven_tools::MessagingService::default_root();
-                let kids = messaging.list_descendants(&parent)?;
-                for child in &kids {
-                    if let Err(error) = messaging.deliver_system_notice(
+                let children = messaging.list_descendants(&parent)?;
+                for child in &children {
+                    let _ = messaging.deliver_system_notice(
                         &parent,
                         child,
                         "Parent session ended; stop work and finish this delegated task.",
-                    ) {
-                        tracing::warn!(
-                            parent_session_id = %parent,
-                            child_session_id = %child,
-                            error = %error,
-                            "cascade_end_children: failed to deliver stop notice"
-                        );
-                    }
+                    );
                 }
-                Ok(kids)
+                Ok(children)
             }
         })
         .await
         {
-            Ok(Ok(v)) => v,
+            Ok(Ok(children)) => children,
             Ok(Err(error)) => {
-                tracing::error!(
-                    parent_session_id = %parent,
-                    error = %error,
-                    "cascade_end_children: failed to enumerate descendants"
-                );
+                tracing::error!(parent_session_id = %parent, error = %error, "failed to enumerate descendants");
                 return;
             }
-            Err(e) => {
-                tracing::error!(
-                    parent_session_id = %parent,
-                    error = %e,
-                    "cascade_end_children: worker join failed"
-                );
+            Err(error) => {
+                tracing::error!(parent_session_id = %parent, error = %error, "descendant enumeration worker failed");
                 return;
             }
         };
@@ -298,167 +178,99 @@ impl SessionExecutor {
             let title = self
                 .get_session(&child_id)
                 .await
-                .map(|s| s.title.clone().unwrap_or(s.input))
+                .map(|session| session.title.unwrap_or(session.input))
                 .unwrap_or_default();
-            // End without re-cascading: the BFS list already includes the tree.
-            match Box::pin(self.end_session_inner(&child_id, false)).await {
-                Ok(_) => {
-                    if let Some(cb) = self.on_cascade_completed.snap() {
-                        cb(child_id, title);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        parent_session_id = %parent,
-                        child_session_id = %child_id,
-                        error = %e,
-                        "cascade_end_children: failed to end child session"
-                    );
-                }
+            if self.end_session_inner(&child_id, false).await.is_ok() {
+                self.emit_event(SessionEvent::CascadeCompleted {
+                    session_id: child_id,
+                    title,
+                });
             }
         }
     }
 
-    /// Remove a session entirely from the in-memory state.
-    /// This does NOT delete from DB —the caller handles that.
-    /// Succeeds even if the session is not in memory (e.g. after restart).
     pub async fn remove_session(&self, session_id: &str) {
-        // Cancel the token before removing the working-set entry. The ReAct
-        // loop and the active tool hold clones of this token; merely dropping
-        // the map entry cannot interrupt either one.
-        let cancel = self
-            .session_cancellations
-            .lock()
-            .await
-            .entry(session_id.to_string())
-            .or_insert_with(CancellationToken::new)
-            .clone();
-        cancel.cancel();
+        if let Some(actor) = self.actor_for(session_id).await {
+            actor.cancel().cancel();
+            self.cancel_session_actions(session_id).await;
+            self.await_run_finished(session_id).await;
+            actor.clear_runtime().await;
+        }
         self.dequeue_pending(session_id).await;
-        self.cancel_session_actions(session_id).await;
-        // Do not delete the durable row while the handler can still publish a
-        // tool result. The run gate is released only after the handler's
-        // cleanup path has finished.
-        self.await_run_finished(session_id).await;
         self.tools.unregister_session(session_id).await;
         self.tools
             .authorization
             .clear_session_trust(session_id)
             .await;
-        self.sessions.lock().await.remove(session_id);
-        self.cleanup_session_maps(session_id).await;
-        self.status_tx.lock().await.remove(session_id);
-        self.action_completions.lock().await.remove(session_id);
-        self.awaiting_answer.lock().await.remove(session_id);
-        self.awaiting_confirm.lock().await.remove(session_id);
-        // A scheduled confirmation owns a detached timer and execution task;
-        // removing the session must invalidate both before the timer can
-        // resolve it after the session has left the working set.
         self.scheduled_confirms
             .lock()
             .await
-            .retain(|_, pending| pending.session_id.as_deref() != Some(session_id));
+            .retain(|request| request.session_id != session_id);
+        self.remove_actor(session_id).await;
     }
 
     pub async fn update_session_title(&self, session_id: &str, title: &str) {
-        let entry = { self.sessions.lock().await.get(session_id).cloned() };
-        if let Some(entry) = entry {
-            entry.lock().await.title = Some(title.into());
+        if let Some(actor) = self.actor_for(session_id).await {
+            let _ = actor
+                .send(actor::ActorCommand::UpdateTitle {
+                    title: title.to_string(),
+                })
+                .await;
         }
     }
 
     pub async fn list_sessions(&self) -> Vec<SessionInfo> {
-        let entries: Vec<Arc<Mutex<SessionInfo>>> =
-            self.sessions.lock().await.values().cloned().collect();
-        let mut sessions: Vec<SessionInfo> = Vec::with_capacity(entries.len());
-        for entry in entries {
-            sessions.push(entry.lock().await.clone());
-        }
-        // Preserve the insertion-order semantics of the former Vec storage
-        // (the map itself is unordered).
-        sessions.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        sessions
-    }
-
-    /// Remove all sessions from memory and clean up running state.
-    /// Used when the user clears history —the DB is already wiped.
-    pub async fn clear_all_sessions(&self) {
-        let mut session_ids: HashSet<String> = self.sessions.lock().await.keys().cloned().collect();
-        session_ids.extend(self.running_sessions.lock().await.iter().cloned());
-        session_ids.extend(self.session_cancellations.lock().await.keys().cloned());
-        let session_ids: Vec<String> = session_ids.into_iter().collect();
-        let running_ids: Vec<String> = self.running_sessions.lock().await.iter().cloned().collect();
-        let cancellation_tokens: Vec<_> = self
-            .session_cancellations
+        let actors = self
+            .actors
             .lock()
             .await
             .values()
             .cloned()
-            .collect();
-        for cancel in cancellation_tokens {
-            cancel.cancel();
+            .collect::<Vec<_>>();
+        let mut sessions = Vec::with_capacity(actors.len());
+        for actor in actors {
+            if let Some(session) = actor.snapshot().await
+                && !session.status.is_terminal()
+            {
+                sessions.push(session);
+            }
         }
-        for session_id in &session_ids {
-            self.cancel_session_actions(session_id).await;
+        sessions.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        sessions
+    }
+
+    pub async fn clear_all_sessions(&self) {
+        let actors = self
+            .actors
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for actor in &actors {
+            actor.cancel().cancel();
+            self.cancel_session_actions(&actor.id).await;
         }
-        for session_id in running_ids {
-            self.await_run_finished(&session_id).await;
+        for actor in &actors {
+            self.await_run_finished(&actor.id).await;
+            actor.clear_runtime().await;
         }
         self.tools.authorization.clear_all_trust().await;
-        self.sessions.lock().await.clear();
+        self.actors.lock().await.clear();
+        if let Ok(mut actors) = self.local_actors.write() {
+            actors.clear();
+        }
         self.pending_queue.lock().await.clear();
-        self.running_sessions.lock().await.clear();
-        self.session_permits.lock().await.clear();
-        self.session_cancellations.lock().await.clear();
-        // Drop gates so any `await_run_finished` waiter unblocks (recv Err).
-        self.run_exit.lock().await.clear();
-        self.status_tx.lock().await.clear();
-        self.action_completions.lock().await.clear();
-        self.awaiting_answer.lock().await.clear();
-        self.awaiting_confirm.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
     }
 
-    /// Subscribe to a session's status changes. Level-triggered: the receiver
-    /// holds the CURRENT status, so a transition that happened before the
-    /// subscription is visible immediately, and `changed()` resolves as soon
-    /// as the status moves after the receiver's last observed value. Callers
-    /// must re-read the authoritative state after waking (the watch value is
-    /// a hint, not a lock-free source of truth).
     pub async fn subscribe_status(&self, session_id: &str) -> watch::Receiver<SessionStatus> {
-        // Initial value: the session's current status so a receiver created
-        // after a transition observes it; Pending when the session is absent
-        // (the caller re-checks state after waking anyway).
-        let initial = {
-            let entry = self.sessions.lock().await.get(session_id).cloned();
-            match entry {
-                Some(e) => e.lock().await.status.clone(),
-                None => SessionStatus::Pending,
-            }
-        };
-        self.status_tx
-            .lock()
+        self.actor_for(session_id)
             .await
-            .entry(session_id.to_string())
-            .or_insert_with(|| watch::channel(initial).0)
-            .subscribe()
+            .map(|actor| actor.status())
+            .unwrap_or_else(|| watch::channel(SessionStatus::Pending).1)
     }
 
-    /// Transition a session's status through the centralized state machine.
-    ///
-    /// Ordering guarantees (all under the session's own entry lock, so
-    /// transitions of different sessions never serialize on a global lock):
-    /// 1. The transition is validated against `can_transition`; illegal
-    ///    transitions (e.g. mutating a terminal state) are rejected with a
-    ///    warning and leave the state untouched.
-    /// 2. The DB write happens BEFORE the memory flip, with a short retry, so
-    ///    a persistent DB failure aborts the transition with memory/DB
-    ///    consistent (the DB is the source of truth across restarts).
-    /// 3. The status watcher is notified and, for Pending transitions, the
-    ///    dispatcher is woken — outside the entry lock.
-    /// 4. Terminal transitions run cleanup (maps, per-session tools, working
-    ///    set) after the wake so a waiter observing the terminal status
-    ///    always sees the session still resolvable.
     pub async fn update_session_status(
         &self,
         session_id: &str,
@@ -467,14 +279,6 @@ impl SessionExecutor {
         self.update_session_status_inner(session_id, status, true)
             .await
     }
-
-    /// Transition a session's status in MEMORY ONLY, without persisting it to
-    /// the DB. Used by the history-resume reopen flow: a merely VIEWED
-    /// completed/errored session must be made resumable for the current run
-    /// (Paused) without resurrecting it in the DB — otherwise the ended
-    /// conversation would be auto-restored on every app start and shown as an
-    /// active conversation everywhere. Once the user actually continues it,
-    /// the normal transitions persist again.
     pub async fn update_session_status_memory_only(
         &self,
         session_id: &str,
@@ -490,151 +294,53 @@ impl SessionExecutor {
         status: SessionStatus,
         persist: bool,
     ) -> anyhow::Result<()> {
-        let entry = { self.sessions.lock().await.get(session_id).cloned() };
-        let Some(entry) = entry else {
-            // Session not in memory (e.g. already removed): status updates are
-            // idempotent once the runtime entry no longer exists.
+        let Some(actor) = self.actor_for(session_id).await else {
             return Ok(());
         };
-        let mut session = entry.lock().await;
-        let old_status = session.status.clone();
-        if old_status == status {
-            // Same-status refresh: still wake the dispatcher so a session
-            // re-registered as Pending (e.g. `create_session_with_first_message`)
-            // is picked up even though its status did not change.
-            if status == SessionStatus::Pending {
-                self.enqueue_pending(session_id).await;
-                self.wake_dispatcher();
-            }
-            return Ok(());
-        }
-        if !Self::can_transition(&old_status, &status) {
-            tracing::warn!(
-                "update_session_status: rejected illegal transition session={} {:?} -> {:?}",
-                session_id,
-                old_status,
-                status
-            );
-            return Ok(());
-        }
-        if persist && let Err(e) = Self::persist_status(&self.db, session_id, status.as_str()).await
-        {
-            tracing::error!(
-                "update_session_status: DB persist failed for session {}; transition {:?} -> {:?} aborted: {}",
-                session_id,
-                old_status,
-                status,
-                e
-            );
-            return Err(e);
-        }
-        session.status = status.clone();
-        session.updated_at = chrono::Utc::now().to_rfc3339();
-        tracing::info!(
-            "update_session_status: session={} {} -> {}",
-            session_id,
-            old_status.as_str(),
-            status.as_str()
-        );
-        let is_pending = status == SessionStatus::Pending;
-        let is_terminal = status.is_terminal();
-        drop(session);
-        drop(entry);
-        // Level-triggered wake: send on the existing watcher channel (or
-        // lazily create one) so the ReAct loop's pause-wait resolves.
-        let tx = {
-            let mut map = self.status_tx.lock().await;
-            map.entry(session_id.to_string())
-                .or_insert_with(|| watch::channel(status.clone()).0)
-                .clone()
-        };
-        let _ = tx.send(status.clone());
-        if is_pending {
+        let transition = actor.transition(status.clone(), persist).await?;
+        if transition.pending {
             self.enqueue_pending(session_id).await;
             self.wake_dispatcher();
         }
-        if is_terminal {
+        if transition.terminal {
             self.dequeue_pending(session_id).await;
-            self.cleanup_session_maps(session_id).await;
-            self.tools.unregister_session(session_id).await;
-            // Cascade + unregister + trust clear (ReAct / dispatcher-panic
-            // reach terminal status here, not only via `end_session`).
             self.finish_ended_session(session_id, true).await;
-            if let Some(tx) = self.status_tx.lock().await.remove(session_id) {
-                let _ = tx.send(status);
+            // Completed sessions are explicitly ended and leave the working
+            // set. Error is retryable: keep an idle actor when the transition
+            // happens outside the dispatcher so `continue_session` can inspect
+            // and resume it without rebuilding a second runtime owner.
+            if status == SessionStatus::Completed && !actor.is_running().await {
+                self.remove_actor(session_id).await;
             }
-            self.sessions.lock().await.remove(session_id);
         }
         Ok(())
     }
 
-    /// Centralized transition validation. Only transitions reachable from
-    /// real call sites are allowed; anything else (notably any mutation of a
-    /// terminal state except the explicit reopen/continue flows) is a bug and
-    /// is rejected.
-    fn can_transition(from: &SessionStatus, to: &SessionStatus) -> bool {
+    pub(crate) fn can_transition(from: &SessionStatus, to: &SessionStatus) -> bool {
         use SessionStatus::*;
-        match (from, to) {
-            // Claim by the dispatcher.
-            (Pending, Running) => true,
-            // Park / finish a queued session without dispatching it.
-            (Pending, Paused)
-            | (Pending, PausedAwaitingAnswer)
-            | (Pending, PausedAwaitingConfirm) => true,
-            (Pending, Completed) | (Pending, Error) => true,
-            // Pause for a user reply / confirm / scheduling / budget checkpoint.
-            (Running, Paused)
-            | (Running, PausedAwaitingAnswer)
-            | (Running, PausedAwaitingConfirm) => true,
-            // Immediate resume: the ask/confirm was answered in the same turn
-            // (pause_turn → Pending while the handler is still alive).
-            (Running, Pending) => true,
-            // Natural completion / failure.
-            (Running, Completed) | (Running, Error) => true,
-            // Resume paths (user message, action completion, continue flow).
-            (Paused, Pending)
-            | (PausedAwaitingAnswer, Pending)
-            | (PausedAwaitingConfirm, Pending) => true,
-            // R6: user-edit rollback (`pause=true`) from an ask/confirm wait
-            // must leave the gated flavor for plain Paused so ingress no
-            // longer treats the next send as an answer.
-            (PausedAwaitingAnswer, Paused) | (PausedAwaitingConfirm, Paused) => true,
-            // Re-pause with an answer / confirm requirement.
-            (Paused, PausedAwaitingAnswer) | (Paused, PausedAwaitingConfirm) => true,
-            // Phase 7 / E4: Paused* → Running is illegal. Only the dispatcher
-            // claim path (Pending → Running) starts a run; tools must not
-            // force-resume a paused session.
-            // Finish / fail a paused session (end_session's own path also exists,
-            // but explicit transitions are kept valid).
-            (Paused, Completed) | (Paused, Error) => true,
-            (PausedAwaitingAnswer, Completed) | (PausedAwaitingAnswer, Error) => true,
-            (PausedAwaitingConfirm, Completed) | (PausedAwaitingConfirm, Error) => true,
-            // User-driven exceptions: reopen a finished session for resume
-            // (history flow), retry an errored session from its snapshot.
-            (Completed, Paused) | (Error, Paused) => true,
-            (Error, Pending) => true,
-            _ => false,
-        }
+        matches!(
+            (from, to),
+            (Pending, Running)
+                | (Pending, Paused)
+                | (Pending, Completed)
+                | (Pending, Error)
+                | (Running, Paused)
+                | (Running, Pending)
+                | (Running, Completed)
+                | (Running, Error)
+                | (Paused, Pending)
+                | (Paused, Completed)
+                | (Paused, Error)
+                | (Completed, Paused)
+                | (Error, Paused)
+                | (Error, Pending)
+        )
     }
 
-    /// Remove `session_id` from the per-session maps (`running_sessions`,
-    /// `session_permits`, `session_cancellations`, `run_exit`). Centralizes
-    /// the cleanup that used to be copy-pasted at every cleanup site.
-    /// Signaling `run_exit` here makes [`Self::await_run_finished`] resolve
-    /// exactly when the running slot is released.
-    /// Does NOT touch `sessions` (working set) or `status_tx` — those have
-    /// ordering-sensitive callers (`update_session_status`, `unmark_running`)
-    /// that need to remain in the lock-order path.
     pub async fn cleanup_session_maps(&self, session_id: &str) {
-        self.running_sessions.lock().await.remove(session_id);
-        self.session_permits.lock().await.remove(session_id);
-        self.session_cancellations.lock().await.remove(session_id);
-        if let Some(gate) = self.run_exit.lock().await.remove(session_id) {
-            let _ = gate.tx.send(());
-        }
-        // A paused session keeps its asset lease for future follow-ups. A
-        // terminal session (or one removed from the working set) releases it
-        // only after the handler has fully unwound.
+        self.emit_event(SessionEvent::SessionCleanup {
+            session_id: session_id.to_string(),
+        });
         if self
             .get_session_state(session_id)
             .await
@@ -642,80 +348,38 @@ impl SessionExecutor {
         {
             self.tools.release_managed_assets_for_session(session_id);
         }
-        if let Some(cb) = self.on_session_cleanup.snap() {
-            cb(session_id.to_string());
-        }
     }
 
-    /// Look up an in-memory `SessionInfo` by id (O(1), per-session lock only).
     pub async fn get_session(&self, session_id: &str) -> Option<SessionInfo> {
-        let entry = { self.sessions.lock().await.get(session_id).cloned() };
-        Some(entry?.lock().await.clone())
+        let session = self.actor_for(session_id).await?.snapshot().await?;
+        (!session.status.is_terminal()).then_some(session)
     }
 
-    /// Load a session from the database into the in-memory list if it is not
-    /// already there (e.g. after an app restart). Used by `process_input`
-    /// so that follow-up messages can reach sessions that were paused before
-    /// the restart and never re-entered the executor's working set.
     pub async fn ensure_session_loaded(&self, session_id: &str) -> anyhow::Result<()> {
-        {
-            let sessions = self.sessions.lock().await;
-            if sessions.contains_key(session_id) {
-                return Ok(());
-            }
+        if self.actor_for(session_id).await.is_some() {
+            return Ok(());
         }
         let record = self
             .db
             .get_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found in database", session_id))?;
-        let session = SessionInfo::from_db_record(&record);
-        let mut sessions = self.sessions.lock().await;
-        // Re-check: another thread may have inserted this session between the
-        // check above and the DB query.
-        if !sessions.contains_key(session_id) {
-            sessions.insert(session_id.to_string(), Arc::new(Mutex::new(session)));
-        }
+        self.install_actor(SessionInfo::from_db_record(&record))
+            .await;
         Ok(())
     }
 
-    /// Reload sessions that are still `Pending` in the database into the
-    /// in-memory working set and wake the dispatcher. Called at dispatcher
-    /// startup so queued work from a previous run is picked up after an app
-    /// restart. Returns the number of sessions reloaded.
     pub async fn load_pending_sessions(&self) -> anyhow::Result<usize> {
         let pending = self
             .db
-            .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)
-            .map_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    "load_pending_sessions: pending-session query failed"
-                );
-                e
-            })?;
+            .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)?;
         let mut loaded = 0;
-        let mut queued = Vec::new();
-        {
-            let mut sessions = self.sessions.lock().await;
-            for record in pending {
-                if sessions.contains_key(&record.id) {
-                    continue;
-                }
-                // Force Pending: this loader only ever rehydrates sessions
-                // whose DB status is already "pending" (the SQL filter
-                // guarantees that), so the override is a no-op but keeps
-                // the invariant explicit at the call site.
-                let mut info = SessionInfo::from_db_record(&record);
-                info.status = SessionStatus::Pending;
-                sessions.insert(record.id.clone(), Arc::new(Mutex::new(info)));
-                queued.push(record.id);
+        for record in pending {
+            if self.actor_for(&record.id).await.is_none() {
+                self.install_actor(SessionInfo::from_db_record(&record))
+                    .await;
+                self.enqueue_pending(&record.id).await;
                 loaded += 1;
             }
-        }
-        // FIFO: enqueue after releasing the working-set lock (the queue lock
-        // is never held across the map lock to keep the order acyclic).
-        for id in queued {
-            self.enqueue_pending(&id).await;
         }
         if loaded > 0 {
             self.wake_dispatcher();
@@ -723,48 +387,34 @@ impl SessionExecutor {
         Ok(loaded)
     }
 
-    /// Current in-memory status of a session, or `None` when the session is not in
-    /// the working set (removed on terminal cleanup / `end_session` / restart).
-    /// Deliberately does NOT conflate "absent" with `Error`: callers that
-    /// previously probed for `Error` to detect removal must check for `None`.
     pub async fn get_session_state(&self, session_id: &str) -> Option<SessionStatus> {
-        let entry = { self.sessions.lock().await.get(session_id).cloned() };
-        Some(entry?.lock().await.status.clone())
+        let status = self.get_session_status(session_id).await?;
+        (!status.is_terminal()).then_some(status)
     }
 
-    /// Return whether a scheduled event may still target this session. The
-    /// working set is authoritative while loaded; after restart, consult the
-    /// durable status instead of treating an absent in-memory entry as alive.
-    /// Database failures fail closed because a scheduled event must never
-    /// resurrect an unknown session.
-    pub async fn session_is_live(&self, session_id: &str) -> bool {
-        if let Some(status) = self.get_session_state(session_id).await {
-            return !status.is_terminal();
-        }
-        let session_id = session_id.to_string();
-        self.db
-            .run_blocking(move |db| {
-                let Some(session) = db.get_session(&session_id)? else {
-                    return Ok(false);
-                };
-                Ok(!SessionStatus::from_status_str(&session.status).is_terminal())
-            })
+    /// Return the actor's exact status, including terminal states. The
+    /// compatibility `get_session_state` API intentionally hides Completed
+    /// because it means the session is no longer in the active working set;
+    /// lifecycle operations such as reopen and ingress cleanup still need the
+    /// terminal value to avoid accidentally resurrecting it.
+    pub async fn get_session_status(&self, session_id: &str) -> Option<SessionStatus> {
+        self.actor_for(session_id)
+            .await?
+            .snapshot()
             .await
-            .unwrap_or(false)
+            .map(|session| session.status)
     }
 
+    pub async fn session_is_live(&self, session_id: &str) -> bool {
+        self.get_session_state(session_id).await.is_some()
+    }
     pub fn get_tools(&self) -> Arc<ToolsManager> {
         self.tools.clone()
     }
-
     pub fn db(&self) -> &Arc<Database> {
         &self.db
     }
 
-    /// Cancel and drop every action owned by a session. Called when the session
-    /// ends, is removed, or is
-    /// rolled back so child processes cannot leak past their session and no
-    /// scheduled action fires against a session that no longer exists.
     pub async fn cancel_session_actions(&self, session_id: &str) {
         self.tools
             .action_service
@@ -772,17 +422,12 @@ impl SessionExecutor {
             .await;
     }
 
-    /// Finalize every unfinished action step for a session as `unknown` (handler panic /
-    /// abort after [`Self::begin_action_step`]).
     pub async fn fail_pending_action_steps(&self, session_id: &str, observation: &str) {
         let session_id = session_id.to_string();
         let observation = observation.to_string();
-        if let Err(e) = self
+        let _ = self
             .db
             .run_blocking(move |db| db.fail_pending_action_steps(&session_id, &observation))
-            .await
-        {
-            tracing::warn!("fail_pending_action_steps failed: {e}");
-        }
+            .await;
     }
 }

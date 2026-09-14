@@ -7,7 +7,8 @@
 //! the executor from minting related ids in several branches.
 
 use super::transcript::ActionCard;
-use crate::types::{Action, ConfirmPendingTool};
+use crate::interaction::{InteractionDetails, InteractionRequest};
+use crate::types::Action;
 use haven_common::types::CanonicalToolCall;
 
 /// One non-final call admitted by the turn coordinator.
@@ -43,19 +44,28 @@ impl ToolBatchPlan {
     /// identities. The pending confirmation record is the durable carrier of
     /// the original plan's step ids and protocol indexes; this constructor
     /// restores them into the same plan type used by a live batch.
-    pub(super) fn from_confirm_pending(tools: &[ConfirmPendingTool]) -> Self {
-        let tools = tools
+    pub(super) fn from_confirm_requests(requests: &[InteractionRequest]) -> Self {
+        let tools = requests
             .iter()
-            .map(|pending| PlannedTool {
-                action: Action {
-                    tool_name: pending.tool_name.clone(),
-                    tool_input: pending.tool_input.clone(),
-                    is_final: false,
-                    tool_call_id: (!pending.tool_call_id.is_empty())
-                        .then(|| pending.tool_call_id.clone()),
-                },
-                step_id: pending.step_id.clone(),
-                action_index: pending.action_index,
+            .filter_map(|request| match &request.details {
+                InteractionDetails::Confirm {
+                    tool_name,
+                    tool_input,
+                    tool_call_id,
+                    step_id,
+                    action_index,
+                    ..
+                } => Some(PlannedTool {
+                    action: Action {
+                        tool_name: tool_name.clone(),
+                        tool_input: tool_input.clone(),
+                        is_final: false,
+                        tool_call_id: (!tool_call_id.is_empty()).then(|| tool_call_id.clone()),
+                    },
+                    step_id: step_id.clone(),
+                    action_index: *action_index,
+                }),
+                _ => None,
             })
             .collect();
         Self { tools }
@@ -157,19 +167,19 @@ mod tests {
 
     #[test]
     fn confirm_resume_reuses_pending_identity() {
-        let pending = ConfirmPendingTool {
-            confirm_id: "conf-1".into(),
-            tool_name: "write".into(),
-            tool_input: serde_json::json!({"path": "a.txt"}),
-            tool_call_id: "call-write".into(),
-            step_id: "step-existing".into(),
-            action_index: 3,
-            risk_level: haven_common::types::RiskLevel::High,
-            receipt: None,
-            decision: Some(true),
-        };
+        let pending = InteractionRequest::confirm(
+            "ses-test",
+            1,
+            "write".into(),
+            serde_json::json!({"path": "a.txt"}),
+            "call-write".into(),
+            "step-existing".into(),
+            3,
+            haven_common::types::RiskLevel::High,
+            None,
+        );
 
-        let plan = ToolBatchPlan::from_confirm_pending(&[pending]);
+        let plan = ToolBatchPlan::from_confirm_requests(&[pending]);
         let planned = plan.get(0).unwrap();
 
         assert_eq!(planned.step_id, "step-existing");

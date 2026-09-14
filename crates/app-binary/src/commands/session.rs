@@ -2,8 +2,8 @@ use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::commands::log_err;
 use crate::commands::{SessionListResponse, emit_event_logged};
 use crate::events::{
-    SESSION_DELETED_EVENT, SESSION_TITLE_UPDATED_EVENT, SessionDeletedEvent,
-    SessionTitleUpdatedEvent,
+    InteractionRequestedEvent, SESSION_DELETED_EVENT, SESSION_TITLE_UPDATED_EVENT,
+    SessionDeletedEvent, SessionTitleUpdatedEvent,
 };
 use crate::logging::sanitize_error_text;
 use haven_common::types::permission_key;
@@ -451,6 +451,8 @@ pub struct SessionResumeResponse {
     /// Per-LLM-call usage detail (one row per model response: step, role,
     /// model, tokens, cost, duration), oldest first.
     pub llm_usage: Vec<haven_memory::repositories::usage::LlmCallUsage>,
+    /// Renderer-safe projections of the persisted interaction registry.
+    pub interactions: Vec<InteractionRequestedEvent>,
 }
 
 /// Load the session's messages and steps into a resume response.
@@ -471,12 +473,28 @@ fn resume_response_for_session(
     let llm_usage = db
         .get_session_llm_usage(&session.id)
         .map_err(|e| log_err("resume_response_for_session", e))?;
+    let interactions = db
+        .get_react_state(&session.id)
+        .map_err(|e| log_err("resume_response_for_session", e))?
+        .map(|json| {
+            haven_agent::ReActSnapshot::from_json(&json).map(|snapshot| {
+                snapshot
+                    .interactions
+                    .iter()
+                    .map(crate::bootstrap::project_interaction)
+                    .collect()
+            })
+        })
+        .transpose()
+        .map_err(|e| log_err("resume_response_for_session", e))?
+        .unwrap_or_default();
     Ok(SessionResumeResponse {
         session,
         messages,
         steps,
         usage,
         llm_usage,
+        interactions,
     })
 }
 

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crate::react::sidecars::MessagingPoller;
-use crate::session::{ReactContextBatch, SessionExecutor};
+use crate::session::{ReactContextBatch, SessionSupervisor};
 use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::Database;
 use haven_tools::MessageClaim;
@@ -93,17 +93,17 @@ impl PendingContextBatch {
 
 /// Reads pending session context and cross-session messages.
 pub(super) struct ContextSource {
-    executor: Arc<SessionExecutor>,
+    executor: Arc<SessionSupervisor>,
     db: Arc<Database>,
     messaging: MessagingPoller,
 }
 
 impl ContextSource {
-    pub(super) fn new(executor: Arc<SessionExecutor>, db: Arc<Database>) -> Self {
+    pub(super) fn new(executor: Arc<SessionSupervisor>, db: Arc<Database>) -> Self {
         Self {
-            executor,
+            executor: executor.clone(),
             db,
-            messaging: MessagingPoller::new(),
+            messaging: MessagingPoller::with_service(executor.messaging_service()),
         }
     }
 

@@ -50,8 +50,6 @@
 		pending: '排队中',
 		running: '运行中',
 		paused: '已暂停',
-		paused_awaiting_answer: '等待回答',
-		paused_awaiting_confirm: '等待确认',
 		completed: '已完成',
 		error: '错误',
 	};

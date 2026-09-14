@@ -8,7 +8,7 @@
 //! - Empty / cut-off truncate retry: **Allow** only inside a live Running loop
 //!   (already owned by `ResponsePolicy`); N/A outside the loop.
 //! - Errored continue: **Allow** / **AwaitThenAllow** only from `Error |
-//!   Paused*`; **Deny** for `Pending` / `Running` / `Completed` (enforced
+//!   Paused`; **Deny** for `Pending` / `Running` / `Completed` (enforced
 //!   inside [`decide`], not a separate gate).
 //!
 //! Unavailable / honest UI guidance:
@@ -39,10 +39,6 @@ pub enum LifecycleWindow {
     Idle,
     /// `running_sessions` holds the id (claim→spawn, stream, tools, pause unwind).
     RunInFlight,
-    /// `PausedAwaitingAnswer` and not in-flight.
-    AskWait,
-    /// `PausedAwaitingConfirm` and not in-flight.
-    ConfirmWait,
 }
 
 /// Policy decision for one (window × op) cell.
@@ -68,11 +64,7 @@ impl LifecycleWindow {
         if run_in_flight || matches!(status, Some(SessionStatus::Running)) {
             return Self::RunInFlight;
         }
-        match status {
-            Some(SessionStatus::PausedAwaitingAnswer) => Self::AskWait,
-            Some(SessionStatus::PausedAwaitingConfirm) => Self::ConfirmWait,
-            _ => Self::Idle,
-        }
+        Self::Idle
     }
 }
 
@@ -93,8 +85,6 @@ pub fn decide(
     match (window, op) {
         // --- Branch rollback ---
         (Idle, BranchRollback) => Allow,
-        (AskWait, BranchRollback) => Allow,
-        (ConfirmWait, BranchRollback) => Allow,
         (RunInFlight, BranchRollback) => CancelThenAllow,
 
         // --- Truncate retry (in-loop only) ---
@@ -102,7 +92,6 @@ pub fn decide(
         (_, TruncateRetry) => NotApplicable,
 
         // --- Errored continue ---
-        (AskWait, ErroredContinue) | (ConfirmWait, ErroredContinue) => Allow,
         (RunInFlight, ErroredContinue) => {
             if continue_status_allowed(status) {
                 AwaitThenAllow
@@ -124,10 +113,7 @@ pub fn decide(
 pub fn continue_status_allowed(status: Option<&SessionStatus>) -> bool {
     matches!(
         status,
-        Some(SessionStatus::Error)
-            | Some(SessionStatus::Paused)
-            | Some(SessionStatus::PausedAwaitingAnswer)
-            | Some(SessionStatus::PausedAwaitingConfirm)
+        Some(SessionStatus::Error) | Some(SessionStatus::Paused)
     )
 }
 
@@ -148,23 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn matrix_branch_allow_on_ask_confirm_idle() {
-        assert_eq!(
-            decide(
-                LifecycleWindow::AskWait,
-                LifecycleOp::BranchRollback,
-                Some(&SessionStatus::PausedAwaitingAnswer)
-            ),
-            LifecycleDecision::Allow
-        );
-        assert_eq!(
-            decide(
-                LifecycleWindow::ConfirmWait,
-                LifecycleOp::BranchRollback,
-                Some(&SessionStatus::PausedAwaitingConfirm)
-            ),
-            LifecycleDecision::Allow
-        );
+    fn matrix_branch_allow_on_paused_idle() {
         assert_eq!(
             decide(
                 LifecycleWindow::Idle,
@@ -235,24 +205,24 @@ mod tests {
         );
         assert_eq!(
             decide(
-                LifecycleWindow::AskWait,
+                LifecycleWindow::Idle,
                 LifecycleOp::TruncateRetry,
-                Some(&SessionStatus::PausedAwaitingAnswer)
+                Some(&SessionStatus::Paused)
             ),
             LifecycleDecision::NotApplicable
         );
     }
 
     #[test]
-    fn classify_prefers_run_in_flight_over_ask_status() {
+    fn classify_prefers_run_in_flight_over_paused_status() {
         // Pause already flipped but handler still unwinding.
         assert_eq!(
-            LifecycleWindow::classify(Some(&SessionStatus::PausedAwaitingAnswer), true),
+            LifecycleWindow::classify(Some(&SessionStatus::Paused), true),
             LifecycleWindow::RunInFlight
         );
         assert_eq!(
-            LifecycleWindow::classify(Some(&SessionStatus::PausedAwaitingAnswer), false),
-            LifecycleWindow::AskWait
+            LifecycleWindow::classify(Some(&SessionStatus::Paused), false),
+            LifecycleWindow::Idle
         );
         // Direct run_session_from_id: Running without dispatcher slot.
         assert_eq!(
@@ -264,9 +234,7 @@ mod tests {
     #[test]
     fn continue_status_gate() {
         assert!(continue_status_allowed(Some(&SessionStatus::Error)));
-        assert!(continue_status_allowed(Some(
-            &SessionStatus::PausedAwaitingConfirm
-        )));
+        assert!(continue_status_allowed(Some(&SessionStatus::Paused)));
         assert!(!continue_status_allowed(Some(&SessionStatus::Pending)));
         assert!(!continue_status_allowed(Some(&SessionStatus::Running)));
         assert!(!continue_status_allowed(Some(&SessionStatus::Completed)));

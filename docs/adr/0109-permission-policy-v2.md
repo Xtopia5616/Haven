@@ -16,7 +16,7 @@
    Critical）。策略变更会清除会话信任；永久规则仍保留 deny-first 和权限键父级继承。
 3. 规则管理继续使用 `tool` / `tool:operation` 精确键。允许写精确键，拒绝写工具根键，
    避免“始终拒绝”只覆盖当前一次操作的误解。
-4. `confirm:requested` 只发送后端生成的 `summary`，不再发送原始 `params`。原始参数
+4. `interaction:requested` 只发送后端生成的 `summary`，不再发送原始 `params`。原始参数
    只保留在后端待确认状态中，确认结果仍由后端按 step id、效果和范围重新校验。
 5. 设置页提供“权限中心”，显示可读规则标签、精确键和效果，并提供撤销单条规则与
    清除全部规则；清除规则不改变用户选中的默认策略。
@@ -28,7 +28,7 @@
    revision 和过期时间；恢复执行前必须重新校验全部字段，风险升高、Critical、策略
    变化、输入变化、拒绝规则或过期都会 fail-closed。
 8. MCP/skill 的 renderer 直调在需要确认时进入后端 pending 队列，并复用
-   `confirm:requested` 与 `resolve_confirmation`；直调错误只允许返回 request id、
+   `interaction:requested` 与 `resolve_confirmation`；直调错误只允许返回 request id、
    脱敏摘要、权限键和风险等级。原始参数只留在后端 pending 状态。
 9. `ToolConfig.risk_override` 只能提高内建风险，不能降低工具注册表声明的安全事实；
    Critical 仍是不可由规则绕过的硬底线。永久权限写盘成功后才发布到运行时授权引擎，

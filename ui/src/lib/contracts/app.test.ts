@@ -2,33 +2,43 @@ import { describe, expect, it } from 'vitest';
 import { mapAppEvent } from './app.ts';
 
 describe('app-shell IPC contract', () => {
-	it('maps confirmation fields at the renderer boundary', () => {
+	it('maps interaction fields at the renderer boundary', () => {
 		const event = mapAppEvent({
-			event: 'confirm:requested',
+			event: 'interaction:requested',
 			id: 1,
 			payload: {
-				step_id: 'conf-1',
+				id: 'conf-1',
+				session_id: 'ses-1',
+				kind: 'confirm',
+				status: 'pending',
+				prompt: 'Waiting for confirmation',
+				options: [],
 				invocation_step_id: 'step-1',
 				action_index: 1,
 				tool_call_id: 'call-1',
 				tool_name: 'run_command',
 				risk_level: 'high',
-				session_id: 'ses-1',
+				created_at: '2026-01-01T00:00:00Z',
 				summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
 				permission_key: 'tool.run_command',
 			},
 		});
 
 		expect(event.payload).toEqual({
-			stepId: 'conf-1',
+			id: 'conf-1',
+			sessionId: 'ses-1',
+			kind: 'confirm',
+			status: 'pending',
+			prompt: 'Waiting for confirmation',
+			options: [],
 			invocationStepId: 'step-1',
 			actionIndex: 1,
 			toolCallId: 'call-1',
 			toolName: 'run_command',
 			riskLevel: 'high',
-			sessionId: 'ses-1',
 			summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
 			permissionKey: 'tool.run_command',
+			createdAt: '2026-01-01T00:00:00Z',
 		});
 		expect(event.payload).not.toHaveProperty('step_id');
 	});

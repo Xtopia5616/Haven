@@ -84,7 +84,7 @@
 |---|---|---|---|
 | P0 | [`crates/agent/src/rollback_support.rs`](../crates/agent/src/rollback_support.rs)、[`crates/common/src/types.rs`](../crates/common/src/types.rs) | **已完成（2026-09-12）**：rollback 全路径只接受精确 `msg-*` 身份；compaction provenance、`InjectSource` 和 UI optimistic row 均不再按内容或 prefix 猜测。 | 保留 rollback 双时钟和 `last_msg_at` 语义不变。 |
 | P1 | [`crates/agent/src/resume.rs`](../crates/agent/src/resume.rs)、[`crates/agent/src/resume_support.rs`](../crates/agent/src/resume_support.rs) | **已完成（2026-09-13）**：resume 只有有效 snapshot 这一条 ReAct 状态路径；缺失或损坏的 snapshot 明确拒绝恢复，删除了从 `session_steps` 重投影的第二套 transcript 语义。 | 旧 snapshot 按 reset/release 说明处理；恢复逻辑只负责当前 snapshot 的确定性修复与崩溃后的未投递输入重排。 |
-| P1 | [`crates/agent/src/react/retries.rs`](../crates/agent/src/react/turn.rs) | **已完成（2026-09-12）**：`awaiting_answer` / typed tool result 是唯一 ask 来源；旧 canonical JSON 扫描、问题文本猜测和 substring 测试已删除，无法恢复时 fail closed。 | 保持结构化 ask signal 为唯一来源。 |
+| P1 | [`crates/agent/src/react/retries.rs`](../crates/agent/src/react/turn.rs) | **已完成（2026-09-12）**：`InteractionRequest` / typed tool result 是唯一 ask 来源；旧 canonical JSON 扫描、问题文本猜测和 substring 测试已删除，无法恢复时 fail closed。 | 保持结构化 ask signal 为唯一来源。 |
 | P1 | [`ui/src/lib/resumeMessages.ts`](../ui/src/lib/resumeMessages.ts)、[`ui/src/routes/+page.svelte`](../ui/src/routes/+page.svelte) | **已完成（2026-09-12）**：ask 只从 step/message 共享 id 恢复；旧 sentinel、内容配对和 optimistic bubble 的内容+时间反查已删除。 | 保持提交时 canonical `msg-*` 与 optimistic row 一一绑定；恢复失败直接进入当前错误处理，不向 UI 暴露猜测路径。 |
 | P1 | [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) | **已完成（2026-09-12）**：`api_style` 为空时只使用中性 `openai-chat`，`provider` 仅作为 vendor identity；`wire_provider_hint` 和 provider→wire 隐式推导已删除。 | 继续在 reset 边界清理 `model`→`model_name`、`Stdio`/`Http` serde alias；厂商 preset 只用于 UI 创建配置。 |
 | P2 | [`crates/tools/src/inbox.rs`](../crates/tools/src/inbox.rs)、[`crates/agent/src/react/context.rs`](../crates/agent/src/react/context.rs)、[`crates/tools/src/builtin/messaging.rs`](../crates/tools/src/builtin/messaging.rs) | **已完成（2026-09-13）**：自动收件和显式 `inbox` 都通过 `MessagingService::claim` 获取 durable claim；request/reply 的 selective wait 只消费匹配回复，不是第二套普通收件模型。 | 继续以 claim/project/ack 为唯一批量收件原语，保留 selective request/reply 作为独立协议操作。 |
@@ -141,17 +141,17 @@ RunEngine（纯 ReAct 状态机）
 
 目标不变量是：一个会话只有一个状态所有者；一个业务事实只有一个持久化权威；UI 的实时更新和恢复都消费同一条事件序列；后台任务和人工交互都有明确的持久状态机。SQLite、供应商 adapter 和 Windows 进程适配可以继续保留，它们不是本次要推翻的对象。
 
-### A. P0：推翻 `SessionExecutor` 的“大总管”模型
+### A. P0：用 `SessionSupervisor` + `SessionActor` + `RunEngine` 替代“大总管”
 
-当前 [`crates/agent/src/session/mod.rs`](../crates/agent/src/session/mod.rs) 的 `SessionExecutor` 同时拥有：session cache、FIFO dispatcher、运行集合、信号量、取消 token、状态 watch、pending queue、action completion、ask gate、confirm gate、scheduled confirm、partial store 和多组一次性 callback。`SessionInfo` 又把 follow-up/steering 队列放在另一层的 session mutex 里。这样会话的状态分散在多个 `HashMap + Mutex`，恢复、暂停、确认和结束都要跨多个 owner 协调。
+此前 [`crates/agent/src/session/mod.rs`](../crates/agent/src/session/mod.rs) 的 `SessionExecutor` 同时拥有：session cache、FIFO dispatcher、运行集合、信号量、取消 token、状态 watch、pending queue、action completion、ask gate、confirm gate、scheduled confirm、partial store 和多组一次性 callback。`SessionInfo` 又把 follow-up/steering 队列放在另一层的 session mutex 里。这样会话的状态分散在多个 `HashMap + Mutex`，恢复、暂停、确认和结束都要跨多个 owner 协调。
 
-建议推翻为三层：
+现已按三层落地：
 
 1. `SessionSupervisor` 只负责全局排队、并发 permit、启动/停止 session actor。
 2. `SessionActor` 以 mailbox 串行拥有一个会话的 status、输入队列、interaction、run lifecycle、partial/checkpoint 和 action completion。
-3. `RunEngine` 不再反向调用 executor 的几十个方法，而是接收不可变 `RunContext`，输出 typed `RunEffect` / `SessionCommand`。
+3. `RunEngine` 是 dispatcher 的单次运行边界；typed `SessionEvent` 替代跨层 callback，actor mailbox 负责会话内命令顺序。
 
-迁移完成后应删除 session 级 `HashMap` 之间的交叉协调、`on_*` callback 网和把队列藏在 `SessionInfo` 里的运行时状态。对外仍可保留 `SessionHandle`，但它只能发送命令，不能暴露内部 mutex。
+迁移后已删除 session 级多表交叉协调、`on_*` callback 网和 `SessionInfo` 内的运行时队列。全局只保留 supervisor 的 actor 注册表和 FIFO 调度队列；会话局部状态不再暴露 mutex，对外只通过 actor handle 发送 typed 命令。
 
 这不是为了换一种并发风格，而是为了让“一个 session 的所有状态变更按顺序发生”成为代码结构保证，而不是靠锁顺序、回调注册顺序和测试覆盖保证。
 
@@ -173,7 +173,7 @@ RunEngine（纯 ReAct 状态机）
 
 ### C. P0：统一 ask、confirm 和其他人工阻塞为 `InteractionRequest`
 
-当前 ask 与 confirm 在 [`crates/agent/src/types.rs`](../crates/agent/src/types.rs)、`SessionExecutor`、resume/rollback、Tauri command 和 UI 中都有各自的状态：`awaiting_answer`、`awaiting_confirm`、`scheduled_confirms`、`paused_awaiting_answer`、`paused_awaiting_confirm`，前端也分别有 ask controller 和 confirm queue。两者本质上都是“运行暂停，等待外部主体提交一个带 id 的决定”。
+当前 ask、confirm 和 scheduled confirm 都是“运行暂停，等待外部主体提交一个带 id 的决定”，但此前分散在不同的运行时容器和 UI 流程中。
 
 建议统一为一个持久化 `InteractionRequest`：
 
@@ -192,9 +192,10 @@ InteractionRequest {
 
 这项重构还应明确“回答是对哪个 request 的回复”，禁止再根据当前是否 paused、文本内容或 tool observation 猜测输入归属。
 
-第一阶段已落地 `haven-agent::interaction::InteractionRequest` 作为快照中的规范化投影，保留旧
-`awaiting_answer`/`awaiting_confirm` 字段以兼容已有快照；后续数据库/事件 schema 重置时再删除旧字段，
-并将 UI 的 ask/confirm store 合并到同一 request id 生命周期。
+该项已完成：`haven-agent::interaction::InteractionRequest` 是 ask、confirm、scheduled confirm
+的唯一生命周期与快照投影；session 只保留通用 `Paused`，Tauri 使用统一的
+`interaction:requested` 安全投影，前端由单一 `interactionStore` 按 request id 管理待处理请求。
+旧快照和旧数据库状态不做运行时迁移，按发布重置说明重新创建。
 
 ### D. P1：把 background action 与 scheduled action 合并成真正的 `ActionService`
 
@@ -282,7 +283,8 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 1. 写 ADR 并确定 reset boundary：session snapshot、actions、旧配置、UI local state 是否全部清空；先建立事件、interaction、action 的行为测试。
 2. 建立 `SessionEventStore` 和投影测试，先迁移一个完整的 session create → user input → one turn → tool result → resume 链路。
 3. 引入 `SessionActor` / `SessionSupervisor`，暂时把旧 ReAct 引擎包在 actor 内；新链路稳定后删除旧 executor maps/callbacks。
-4. 迁移 `InteractionRequest` 和 `ActionService`，删除 ask/confirm 双状态机与 background/scheduled 双 registry。
+4. **已完成**：迁移 `InteractionRequest` 和 `ActionService`，删除 ask/confirm 双状态机与
+   background/scheduled 双 registry。
 5. 收窄 tools、memory、prompt 和 model routing 的 ports；删除 callback setter、prompt DB 访问和硬编码身份事实。
 6. 迁移 UI `SessionReducer` 与 `ApplicationRuntime`；snapshot-less projector、内容匹配、旧 sentinel 和旧事件 merge 分支已删除，后续只需在新事件 schema 中保持这一不变量。
 
@@ -445,9 +447,10 @@ MessagingService
 
 2026-09-02 已完成第一条迁移切片：`MessagingService` / `MessageTransport` 成为应用层入口，
 `InboxBus` 收窄为 JSONL transport adapter；`agent` 工具、ReAct inbox、peer lifecycle 均使用
-`send → claim → process → complete`，并记录稳定 message id 与 `delivery_attempt`。完整
-`SessionActor` mailbox、supervisor port 以及 spawn callback 的删除仍留在后续阶段；本切片不保留
-运行时同步 drain 路径。
+`send → claim → process → complete`，并记录稳定 message id 与 `delivery_attempt`。2026-09-14
+已完成第二条迁移切片：`SessionActor` mailbox 接入 `MessagingService`，同进程消息优先经 actor
+mailbox，跨进程继续 fallback 到 JSONL；request/reply/receipt/ack/retry/expiry 统一由服务层
+收口，peer spawn/lifecycle 改走 typed supervisor/runtime port，删除可变 callback slot。
 
 ### N. P1：拆掉 `self` 超级管理工具，重建受限的 Admin Surface
 

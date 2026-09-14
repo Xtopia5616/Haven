@@ -14,7 +14,7 @@ use super::tool_batch::{
 use super::tool_batch_plan::ToolBatchPlan;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::*;
-use crate::types::{Action, ConfirmPending, ConfirmPendingTool};
+use crate::types::Action;
 use futures_util::StreamExt;
 use haven_memory::repositories::session_steps::ActionStepOutcome;
 use haven_tools::{ToolConcurrency, ToolExecutionOutcome};
@@ -66,7 +66,7 @@ struct DeferredAdmissionFailure {
 
 struct ToolBatchAdmission {
     runnable: Vec<AdmittedTool>,
-    need_confirm: Vec<ConfirmPendingTool>,
+    need_confirm: Vec<crate::interaction::InteractionRequest>,
     failures: Vec<DeferredAdmissionFailure>,
     results: ToolBatchResults,
 }
@@ -152,17 +152,19 @@ impl ReActEngine {
                         .push(DeferredAdmissionFailure { plan_index, error });
                 }
                 BeforeToolAction::NeedConfirm { receipt } => {
-                    admission.need_confirm.push(ConfirmPendingTool {
-                        confirm_id: receipt.confirmation_id.to_string(),
-                        tool_name: planned.action.tool_name.clone(),
-                        tool_input: planned.action.tool_input.clone(),
-                        tool_call_id: planned.action.tool_call_id.clone().unwrap_or_default(),
-                        step_id: planned.step_id.clone(),
-                        action_index: planned.action_index,
-                        risk_level: receipt.effective_risk,
-                        receipt: Some(receipt),
-                        decision: None,
-                    });
+                    admission
+                        .need_confirm
+                        .push(crate::interaction::InteractionRequest::confirm(
+                            session_id,
+                            step_num,
+                            planned.action.tool_name.clone(),
+                            planned.action.tool_input.clone(),
+                            planned.action.tool_call_id.clone().unwrap_or_default(),
+                            planned.step_id.clone(),
+                            planned.action_index,
+                            receipt.effective_risk,
+                            Some(receipt),
+                        ));
                 }
             }
         }
@@ -193,10 +195,14 @@ impl ReActEngine {
             > = admission
                 .need_confirm
                 .iter()
-                .filter_map(|tool| {
-                    tool.receipt
-                        .clone()
-                        .map(|receipt| (tool.action_index, (tool.risk_level, receipt)))
+                .filter_map(|tool| match &tool.details {
+                    crate::interaction::InteractionDetails::Confirm {
+                        action_index,
+                        risk_level,
+                        receipt: Some(receipt),
+                        ..
+                    } => Some((*action_index, (*risk_level, receipt.clone()))),
+                    _ => None,
                 })
                 .collect();
             admission.need_confirm = plan
@@ -206,24 +212,25 @@ impl ReActEngine {
                         .get(&planned.action_index)
                         .map(|(risk, receipt)| (*risk, Some(receipt.clone())))
                         .unwrap_or((haven_common::types::RiskLevel::Safe, None));
-                    ConfirmPendingTool {
-                        confirm_id: receipt
-                            .as_ref()
-                            .map(|receipt| receipt.confirmation_id.to_string())
-                            .unwrap_or_else(|| haven_common::types::new_id("conf").to_string()),
-                        tool_name: planned.action.tool_name.clone(),
-                        tool_input: planned.action.tool_input.clone(),
-                        tool_call_id: planned.action.tool_call_id.clone().unwrap_or_default(),
-                        step_id: planned.step_id.clone(),
-                        action_index: planned.action_index,
-                        risk_level,
-                        receipt,
+                    {
+                        let mut request = crate::interaction::InteractionRequest::confirm(
+                            session_id,
+                            step_num,
+                            planned.action.tool_name.clone(),
+                            planned.action.tool_input.clone(),
+                            planned.action.tool_call_id.clone().unwrap_or_default(),
+                            planned.step_id.clone(),
+                            planned.action_index,
+                            risk_level,
+                            receipt,
+                        );
                         // Safe, blocked, invalid, and already trusted calls do
-                        // not need a user decision. They still wait behind
-                        // the same batch barrier and are revalidated on
-                        // resume.
-                        decision: (!gated_by_index.contains_key(&planned.action_index))
-                            .then_some(true),
+                        // not need a user decision, but remain in the same
+                        // ordered barrier and are revalidated on resume.
+                        if !gated_by_index.contains_key(&planned.action_index) {
+                            let _ = request.resolve(serde_json::Value::Bool(true));
+                        }
+                        request
                     }
                 })
                 .collect();
@@ -579,21 +586,16 @@ impl ReActEngine {
                 // Ask question rows were projected inside apply(ToolResult).
                 let question = batch_state.asked_questions.join("\n\n");
                 self.executor
-                    .set_awaiting_answer(
+                    .request_interaction(crate::interaction::InteractionRequest::ask(
                         session_id,
-                        Some(crate::types::AskPending {
-                            question,
-                            step_ids: batch_state.ask_step_ids.clone(),
-                        }),
-                    )
-                    .await;
+                        question,
+                        Vec::new(),
+                        batch_state.ask_step_ids.clone(),
+                    ))
+                    .await?;
             }
-            let pending = ConfirmPending {
-                step_number: step_num,
-                tools: need_confirm,
-            };
             self.executor
-                .request_confirm_batch(session_id, pending)
+                .request_confirm_batch(session_id, need_confirm)
                 .await?;
             // UI-only waiting notice in `messages` (not an LLM event — must
             // not enter `react_state.events` or resume would re-feed it).
@@ -605,7 +607,7 @@ impl ReActEngine {
                 state,
                 snapshot_step: step_num + 1,
                 emitter,
-                status: SessionStatus::PausedAwaitingConfirm,
+                status: SessionStatus::Paused,
                 final_text: notice,
                 branch_point_step: None,
             })
@@ -627,10 +629,12 @@ impl ReActEngine {
                     state,
                     step_num,
                     emitter,
-                    crate::types::AskPending {
+                    crate::interaction::InteractionRequest::ask(
+                        session_id,
                         question,
-                        step_ids: batch_state.ask_step_ids.clone(),
-                    },
+                        Vec::new(),
+                        batch_state.ask_step_ids.clone(),
+                    ),
                 )
                 .await;
         }
@@ -679,11 +683,26 @@ impl ReActEngine {
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> anyhow::Result<ToolBatchOutcome> {
-        let Some(pending) = self.executor.get_awaiting_confirm(session_id).await else {
+        let pending = self
+            .executor
+            .interaction_requests(session_id)
+            .await
+            .into_iter()
+            .filter(|request| request.kind == crate::interaction::InteractionKind::Confirm)
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
             return Ok(ToolBatchOutcome::Continue);
-        };
-        let step_num = pending.step_number;
-        let plan = ToolBatchPlan::from_confirm_pending(&pending.tools);
+        }
+        let step_num = pending
+            .iter()
+            .find_map(|request| match &request.details {
+                crate::interaction::InteractionDetails::Confirm { step_number, .. } => {
+                    Some(*step_number)
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        let plan = ToolBatchPlan::from_confirm_requests(&pending);
         let proj_ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num,
@@ -695,10 +714,9 @@ impl ReActEngine {
         let actions: Vec<Action> = plan.iter().map(|planned| planned.action.clone()).collect();
         let validation_failures = self.validate_tool_inputs(session_id, &actions).await;
 
-        for (plan_index, (planned, pending_tool)) in
-            plan.iter().zip(pending.tools.iter()).enumerate()
+        for (plan_index, (planned, pending_request)) in plan.iter().zip(pending.iter()).enumerate()
         {
-            let Some(decision) = pending_tool.decision else {
+            let Some(decision) = pending_request.decision() else {
                 tracing::warn!(
                     session_id,
                     step_num,
@@ -743,7 +761,12 @@ impl ReActEngine {
                     // Only calls that actually crossed the confirmation
                     // gate may bypass it on resume. Siblings that were safe
                     // at admission have no receipt and are rechecked normally.
-                    receipt: pending_tool.receipt.clone(),
+                    receipt: match &pending_request.details {
+                        crate::interaction::InteractionDetails::Confirm { receipt, .. } => {
+                            receipt.clone()
+                        }
+                        _ => None,
+                    },
                     concurrency,
                 });
             } else {
@@ -785,7 +808,10 @@ impl ReActEngine {
 
         if execution.cancelled {
             self.executor
-                .clear_awaiting_confirm_persisted(session_id)
+                .clear_interactions_persisted(
+                    session_id,
+                    Some(crate::interaction::InteractionKind::Confirm),
+                )
                 .await?;
             return Ok(ToolBatchOutcome::Done(
                 self.exit_cancelled(session_id, state, step_num).await,
@@ -803,18 +829,27 @@ impl ReActEngine {
             );
         }
         self.executor
-            .clear_awaiting_confirm_persisted(session_id)
+            .clear_interactions_persisted(
+                session_id,
+                Some(crate::interaction::InteractionKind::Confirm),
+            )
             .await?;
 
         let pending_ask = if !batch_state.asked_questions.is_empty() {
-            Some(crate::types::AskPending {
-                question: batch_state.asked_questions.join("\n\n"),
-                step_ids: batch_state.ask_step_ids.clone(),
-            })
+            Some(crate::interaction::InteractionRequest::ask(
+                session_id,
+                batch_state.asked_questions.join("\n\n"),
+                Vec::new(),
+                batch_state.ask_step_ids.clone(),
+            ))
         } else {
             // Same-batch ask was stashed while confirm paused first: surface
             // it now.
-            self.executor.get_awaiting_answer(session_id).await
+            self.executor
+                .pending_interactions(session_id, crate::interaction::InteractionKind::Ask)
+                .await
+                .into_iter()
+                .next()
         };
         if let Some(pending) = pending_ask {
             return self

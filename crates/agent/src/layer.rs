@@ -4,11 +4,12 @@
 //! lives in `rollback.rs`. The entry gates live in the crate root.
 
 use super::*;
+use crate::session::SessionEvent;
 use serde_json::Value;
 
 pub struct AgentLayer {
     pub(crate) db: Arc<Database>,
-    pub(crate) executor: Arc<SessionExecutor>,
+    pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) conversation_window_size: usize,
     context_limits: std::sync::Mutex<ContextLimitsConfig>,
     pub(crate) events: Arc<EventDispatcher>,
@@ -22,7 +23,7 @@ pub struct AgentLayer {
 impl AgentLayer {
     pub fn new(
         db: Arc<Database>,
-        executor: Arc<SessionExecutor>,
+        executor: Arc<SessionSupervisor>,
         router: Arc<LlmRouter>,
         max_steps: u32,
         conversation_window_size: usize,
@@ -234,7 +235,7 @@ impl AgentLayer {
         self.react_engine.check_connection().await
     }
 
-    /// Spawn the SessionExecutor dispatcher with a runner wired to this
+    /// Spawn the SessionSupervisor dispatcher with a runner wired to this
     /// AgentLayer. Must be called exactly once after construction.
     pub fn start(self: Arc<Self>) {
         self.start_inner(true);
@@ -270,42 +271,31 @@ impl AgentLayer {
         self.executor
             .set_notification_summary_chars(self.limits().notification_summary_chars);
 
-        // R2: scheduled confirm outcomes surface as notifications (same path
-        // as the former blocking ScheduleMode::Tool consumer).
+        // Session lifecycle side effects consume the supervisor's typed event
+        // stream. The supervisor owns session state; this layer owns UI and
+        // inference integrations, so neither installs a callback into the
+        // other or shares a second cross-session registry.
         {
+            let mut events_rx = self.executor.subscribe_events();
             let events = self.events.clone();
-            self.executor.on_scheduled_confirm_outcome.set(Arc::new(
-                move |title: String, body: String| {
-                    let events = events.clone();
-                    tokio::spawn(async move {
-                        events.emit_notification(&title, &body).await;
-                    });
-                },
-            ));
-        }
-        // Clear mid-run MEMORY dirty/throttle maps when a session leaves the
-        // working set (end / terminal cleanup).
-        {
             let inference = self.inference.clone();
-            self.executor
-                .on_session_cleanup
-                .set(Arc::new(move |sid: String| {
-                    inference.clear_session(&sid);
-                }));
-        }
-        // Cascade force-ends peer children without going through the Tauri
-        // end_session command — emit session:completed so busy chips / lists
-        // clear (secondary session:updated comes from the app event bridge).
-        {
-            let events = self.events.clone();
-            self.executor
-                .on_cascade_completed
-                .set(Arc::new(move |sid: String, title: String| {
-                    let events = events.clone();
-                    tokio::spawn(async move {
-                        events.emit_session_completed(&sid, &title).await;
-                    });
-                }));
+            tokio::spawn(async move {
+                while let Ok(event) = events_rx.recv().await {
+                    match event {
+                        SessionEvent::ScheduledConfirmOutcome { title, body } => {
+                            events.emit_notification(&title, &body).await;
+                        }
+                        SessionEvent::SessionCleanup { session_id } => {
+                            inference.clear_session(&session_id);
+                        }
+                        SessionEvent::CascadeCompleted { session_id, title } => {
+                            events.emit_session_completed(&session_id, &title).await;
+                        }
+                        SessionEvent::InteractionRequested { .. }
+                        | SessionEvent::SessionError { .. } => {}
+                    }
+                }
+            });
         }
 
         // Spawn a consumer for background-action completions. When a action
@@ -752,7 +742,7 @@ impl AgentLayer {
     /// continue) must not fire concurrent title calls.
     pub(crate) async fn try_generate_title(
         db: Arc<Database>,
-        executor: Arc<SessionExecutor>,
+        executor: Arc<SessionSupervisor>,
         title: Option<TitleGenerator>,
         events: Arc<EventDispatcher>,
         in_flight: Arc<Mutex<HashSet<String>>>,
@@ -774,7 +764,7 @@ impl AgentLayer {
 
     async fn generate_title(
         db: Arc<Database>,
-        executor: Arc<SessionExecutor>,
+        executor: Arc<SessionSupervisor>,
         generator: TitleGenerator,
         events: Arc<EventDispatcher>,
         session_id: String,
@@ -893,9 +883,9 @@ impl AgentLayer {
     }
 
     /// Handle model-facing lifecycle requests for a peer session. The tools
-    /// crate deliberately receives this through a callback so it cannot reach
-    /// into executor internals; this method remains the single authority for
-    /// status reads, bounded waits, cancellation, and terminal cleanup.
+    /// crate calls this typed runtime port, while this method remains the
+    /// single authority for status reads, bounded waits, cancellation, and
+    /// terminal cleanup.
     pub async fn control_peer_session(
         &self,
         request: haven_tools::AgentControlRequest,
@@ -1161,5 +1151,26 @@ impl AgentLayer {
             running_sessions: running,
             max_concurrent,
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl haven_tools::MessagingRuntime for AgentLayer {
+    fn mailbox(&self) -> Arc<dyn haven_tools::SessionMailbox> {
+        self.executor.messaging_mailbox()
+    }
+
+    async fn spawn_peer_session(
+        &self,
+        request: haven_tools::AgentSpawnRequest,
+    ) -> anyhow::Result<haven_tools::AgentSpawnResult> {
+        AgentLayer::spawn_peer_session(self, request).await
+    }
+
+    async fn control_peer_session(
+        &self,
+        request: haven_tools::AgentControlRequest,
+    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+        AgentLayer::control_peer_session(self, request).await
     }
 }

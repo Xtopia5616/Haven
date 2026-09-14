@@ -114,12 +114,10 @@ pub use action_service::{
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
-    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentControlOperation,
-    AgentControlRequest, AgentControlResult, AgentController, AgentControllerSlot,
-    AgentSpawnRequest, AgentSpawnResult, AgentSpawner, ConfigAdminContext, ConfigAdminOperation,
-    ConfigAdminTool, ConfigOperationArgs, ConfigOperationError, ConfigOperationOutput,
-    ConfigViewOutput, LogLevelOutput, ScheduleMode, SelfOperation, SelfParams, SelfTool,
-    SelfToolContext,
+    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentTool, ConfigAdminContext,
+    ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs, ConfigOperationError,
+    ConfigOperationOutput, ConfigViewOutput, LogLevelOutput, ScheduleMode, SelfOperation,
+    SelfParams, SelfTool, SelfToolContext,
 };
 pub use circuit::ToolCircuitRegistry;
 pub use haven_mcp::{
@@ -127,7 +125,11 @@ pub use haven_mcp::{
 };
 pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
 pub use live_output::LiveOutputHub;
-pub use messaging_service::{MessageClaim, MessageTransport, MessagingService};
+pub use messaging_service::{
+    AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnRequest,
+    AgentSpawnResult, MessageClaim, MessageTransport, MessagingRuntime, MessagingService,
+    SentMessage, SessionMailbox, is_expired,
+};
 pub use output::{
     OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
     sanitize_shell_output, summarize_error,
@@ -411,10 +413,9 @@ pub struct ToolsManager {
     ocr_client: RwLock<Option<Arc<dyn haven_llm::OcrClient>>>,
     image_gen_client: RwLock<Option<Arc<dyn haven_llm::ImageGenClient>>>,
     media_config: RwLock<haven_common::config::MediaConfig>,
-    /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
-    agent_spawner: builtin::AgentSpawnerSlot,
-    /// Desktop-wired callback for peer status/wait/stop lifecycle operations.
-    agent_controller: builtin::AgentControllerSlot,
+    /// Shared message port. Its runtime/mailbox binding is visible to every
+    /// catalog generation, so a rebuild cannot retain stale lifecycle wiring.
+    messaging_service: Arc<MessagingService>,
     /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
     memory_recall: builtin::MemoryRecallSlot,
 }
@@ -458,22 +459,15 @@ impl ToolsManager {
             ocr_client: RwLock::new(None),
             image_gen_client: RwLock::new(None),
             media_config: RwLock::new(haven_common::config::MediaConfig::default()),
-            agent_spawner: builtin::new_agent_spawner_slot(),
-            agent_controller: builtin::new_agent_controller_slot(),
+            messaging_service: Arc::new(MessagingService::default_root()),
             memory_recall: builtin::new_memory_recall_slot(),
         }
     }
 
-    /// Install the desktop agent-layer callback used by `agent` spawn.
-    /// Does not rebuild the catalog (the tool already holds this slot).
-    pub async fn set_agent_spawner(&self, spawner: builtin::AgentSpawner) {
-        *self.agent_spawner.write().await = Some(spawner);
-    }
-
-    /// Install the desktop agent-layer callback used by `agent.status`,
-    /// `agent.wait`, and `agent.stop`. Does not rebuild the catalog.
-    pub async fn set_agent_controller(&self, controller: builtin::AgentController) {
-        *self.agent_controller.write().await = Some(controller);
+    /// Bind the single session runtime used by peer spawn, lifecycle control,
+    /// and in-process actor-mailbox delivery.
+    pub async fn set_messaging_runtime(&self, runtime: Arc<dyn MessagingRuntime>) {
+        self.messaging_service.set_runtime(runtime);
     }
 
     /// Install History-aligned recall for `memory` operation=recall.
@@ -947,8 +941,7 @@ impl ToolsManager {
                 default_shell: *self.default_shell.read().await,
                 clipboard_history: self.clipboard_history.clone(),
                 self_context,
-                agent_spawner: self.agent_spawner.clone(),
-                agent_controller: self.agent_controller.clone(),
+                messaging_service: self.messaging_service.clone(),
                 memory_recall: self.memory_recall.clone(),
                 managed_assets: self.managed_assets.clone(),
                 media: builtin::MediaDeps {

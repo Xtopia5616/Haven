@@ -32,7 +32,7 @@ describe('chat session lifecycle handlers', () => {
 		sessionMessagesStore.set({});
 	});
 
-	it.each(['paused', 'paused_awaiting_answer', 'paused_awaiting_confirm'] as const)(
+	it.each(['paused'] as const)(
 		'stops live bubbles when a session is %s',
 		(status) => {
 			const flushChunksNow = vi.fn();

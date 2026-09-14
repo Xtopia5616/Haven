@@ -118,17 +118,18 @@ impl AgentLayer {
         // restore. When the dispatcher already claimed, this is a no-op and
         // `unmark_running` owns the slot. Released via `DirectRunGuard` on every
         // exit path (including `?` / early return).
-        let owns_direct_slot = self.executor.begin_direct_run(session_id).await;
+        let direct_actor = self.executor.begin_direct_run(session_id).await;
         struct DirectRunGuard {
-            executor: std::sync::Arc<crate::session::SessionExecutor>,
+            executor: std::sync::Arc<crate::session::SessionSupervisor>,
+            actor: Option<crate::session::SessionActorHandle>,
             session_id: String,
-            owns: bool,
         }
         impl Drop for DirectRunGuard {
             fn drop(&mut self) {
-                if !self.owns {
+                let Some(actor) = self.actor.take() else {
                     return;
-                }
+                };
+                actor.release_run_now();
                 let exec = self.executor.clone();
                 let sid = self.session_id.clone();
                 tokio::spawn(async move {
@@ -138,8 +139,8 @@ impl AgentLayer {
         }
         let _direct_guard = DirectRunGuard {
             executor: self.executor.clone(),
+            actor: direct_actor,
             session_id: session_id.to_string(),
-            owns: owns_direct_slot,
         };
 
         let run_id = self.react_engine.next_run_id();
@@ -295,77 +296,43 @@ impl AgentLayer {
                     // rounds, since in-memory registrations are lost on restart.
                     let (_, rounds) = snapshot.project();
                     self.restore_per_session_tools(session_id, &rounds).await;
-                    // Phase 4 / C5+F2: restore the explicit ask gate from the
-                    // snapshot. Upgrade a plain paused status BEFORE publishing
-                    // the flag so auto-wake cannot race on plain Paused.
-                    if let Some(pending) = snapshot.awaiting_answer.clone() {
-                        if matches!(
-                            self.executor.get_session_state(session_id).await,
-                            Some(SessionStatus::Paused)
-                        ) && let Err(e) = self
-                            .executor
-                            .update_session_status(session_id, SessionStatus::PausedAwaitingAnswer)
-                            .await
-                        {
-                            tracing::warn!(
-                                "failed to restore session {} as paused_awaiting_answer on resume: {}",
-                                session_id,
-                                e
-                            );
-                        }
-                        self.executor
-                            .set_awaiting_answer(session_id, Some(pending))
-                            .await;
+                    // Restore the single interaction registry before resuming.
+                    // The actor replaces by request id, so this is idempotent
+                    // when a same-process resume races a snapshot reload.
+                    for request in snapshot.interactions.clone() {
+                        self.executor.request_interaction(request).await?;
                     }
-                    // Phase 5 / E3: restore confirm gate. Prefer in-memory
-                    // (same-process decisions already recorded) over the
-                    // snapshot so resolve_confirmation is not wiped.
-                    if self
-                        .executor
-                        .get_awaiting_confirm(session_id)
-                        .await
-                        .is_none()
-                        && let Some(pending) = snapshot.awaiting_confirm.clone()
-                    {
+                    let interactions = self.executor.interaction_requests(session_id).await;
+                    let has_pending_ask = interactions.iter().any(|request| {
+                        request.kind == crate::interaction::InteractionKind::Ask
+                            && request.status == crate::interaction::InteractionStatus::Pending
+                    });
+                    let confirm_requests = interactions
+                        .iter()
+                        .filter(|request| {
+                            request.kind == crate::interaction::InteractionKind::Confirm
+                        })
+                        .collect::<Vec<_>>();
+                    // A pending interaction is the pause reason; session
+                    // status stays the single generic `Paused` state.
+                    let _ = has_pending_ask;
+                    if !confirm_requests.is_empty() {
                         // Decisions already recorded but wake to Pending
                         // never landed (crash between persist and status):
                         // finish the confirm gate instead of restoring a
-                        // permanently stuck PausedAwaitingConfirm.
-                        if pending.all_decided() {
-                            self.executor
-                                .set_awaiting_confirm(session_id, Some(pending))
-                                .await;
-                            if let Err(e) = self
+                        // permanently stuck Paused with a pending interaction.
+                        if confirm_requests
+                            .iter()
+                            .all(|request| request.decision().is_some())
+                            && let Err(e) = self
                                 .set_session_status(session_id, SessionStatus::Pending)
                                 .await
-                            {
-                                tracing::warn!(
-                                    "failed to wake session {} after all-decided confirm on resume: {}",
-                                    session_id,
-                                    e
-                                );
-                            }
-                        } else {
-                            if matches!(
-                                self.executor.get_session_state(session_id).await,
-                                Some(SessionStatus::Paused)
-                            ) && let Err(e) = self
-                                .executor
-                                .update_session_status(
-                                    session_id,
-                                    SessionStatus::PausedAwaitingConfirm,
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "failed to restore session {} as paused_awaiting_confirm on resume: {}",
-                                    session_id,
-                                    e
-                                );
-                            }
-                            self.executor
-                                .set_awaiting_confirm(session_id, Some(pending))
-                                .await;
+                        {
+                            tracing::warn!(
+                                "failed to wake session {} after all-decided confirm on resume: {}",
+                                session_id,
+                                e
+                            );
                         }
                     }
                     // Skip trim when a confirm batch still needs results —
@@ -373,9 +340,11 @@ impl AgentLayer {
                     // finish_confirm_batch can append real observations.
                     let has_confirm = self
                         .executor
-                        .get_awaiting_confirm(session_id)
-                        .await
-                        .is_some();
+                        .has_pending_interaction(
+                            session_id,
+                            crate::interaction::InteractionKind::Confirm,
+                        )
+                        .await;
                     if !has_confirm {
                         trim_dangling_tool_call(&mut snapshot.events);
                         let event_len = snapshot.events.len();
@@ -429,8 +398,11 @@ impl AgentLayer {
     /// restart cannot strand an input that never reached the event log.
     pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
         self.executor.ensure_session_loaded(session_id).await?;
-        let state = self.executor.get_session_state(session_id).await;
-        let mut answer_pending = state == Some(SessionStatus::PausedAwaitingAnswer);
+        let state = self.executor.get_session_status(session_id).await;
+        let mut answer_pending = self
+            .executor
+            .has_pending_interaction(session_id, crate::interaction::InteractionKind::Ask)
+            .await;
         if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
             // History viewing must not persist a terminal session as active;
             // the memory-only transition only enables a later user action in

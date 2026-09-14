@@ -3,7 +3,6 @@
 // history resume flow.
 
 import { formatMessageTime } from '$lib/stores.ts';
-import { isPausedStatus } from '$lib/sessionStatus.ts';
 
 /** A resume-only bubble shown when a session has no persisted message rows. */
 export function isDisplayOnlyMessageId(id: unknown): boolean {
@@ -290,12 +289,9 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 					// closed without replacing the id-linked question text.
 				}
 			}
-			// The session pauses to wait for the user's answer, so a paused
-			// session's ask card is still awaiting a reply. Without this, a
-			// session switch / reload renders the card without quick-reply
-			// buttons and the user cannot answer from the chat view.
-			// Phase 4 / F2: `paused_awaiting_answer` is distinct from `paused`.
-			const sessionPaused = isPausedStatus(data.session?.status);
+			// Pending state is hydrated from the renderer-safe InteractionRequest
+			// projection by the chat route; resume messages only carry presentation
+			// defaults and never infer a decision from session status.
 			items.push({
 				id: stepId,
 				role: 'assistant',
@@ -303,7 +299,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 				type: 'ask',
 				toolName: 'ask',
 				options: askOptions,
-				awaiting: sessionPaused,
+				awaiting: false,
 				voice: false,
 				time: formatMessageTime(step.created_at),
 				_ts: cardTs,

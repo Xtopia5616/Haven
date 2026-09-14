@@ -22,8 +22,6 @@ fn test_session_info() -> SessionInfo {
         title: Some("My Title".into()),
         status: SessionStatus::Running,
         steps: vec![],
-        follow_up_queue: vec![],
-        steering_queue: vec![],
         created_at: "2026-01-01T00:00:00Z".into(),
         updated_at: "2026-01-01T00:00:00Z".into(),
     }

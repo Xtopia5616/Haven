@@ -85,7 +85,6 @@ impl AskTool {
             "question": question,
             "context": context,
             "options": options,
-            "awaiting_answer": true,
             "hint": "The session is paused. The user's next message will be used as the answer and the session will resume.",
         })))
     }
@@ -272,7 +271,6 @@ mod tests {
         assert_eq!(result.output["ask"], true);
         assert_eq!(result.output["question"], "Which file?");
         assert_eq!(result.output["context"], "two candidates");
-        assert_eq!(result.output["awaiting_answer"], true);
         assert_eq!(result.output["options"], serde_json::json!([]));
     }
 

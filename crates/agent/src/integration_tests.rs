@@ -1,5 +1,4 @@
 use super::*;
-use crate::types::{ConfirmPending, ConfirmPendingTool};
 use async_trait::async_trait;
 use futures_util::stream;
 use haven_common::types::{

@@ -1,7 +1,7 @@
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
 use haven_agent::AgentLayer;
-use haven_agent::SessionExecutor;
+use haven_agent::SessionSupervisor;
 use haven_common::config::{ConfigLoader, ConfigService};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
@@ -65,7 +65,7 @@ impl BootstrapStatus {
 pub struct AppState {
     pub db: Arc<Database>,
     pub tools: Arc<ToolsManager>,
-    pub executor: Arc<SessionExecutor>,
+    pub executor: Arc<SessionSupervisor>,
     pub agent: Arc<AgentLayer>,
     pub pipeline: Arc<InputPipeline>,
     pub shell: Arc<DesktopShell>,
@@ -140,7 +140,7 @@ impl AppState {
 
         let tools = Arc::new(ToolsManager::new());
 
-        let executor = Arc::new(SessionExecutor::new(
+        let executor = Arc::new(SessionSupervisor::new(
             db.clone(),
             tools.clone(),
             cfg.session.max_concurrent.max(1),
@@ -157,29 +157,10 @@ impl AppState {
         agent.set_media_strategy(cfg.media.input_strategy);
         agent.set_session_max_steps(session_max_steps);
 
-        // Plan A multi-agent: `agent` spawn creates real peer sessions through
-        // the agent layer (tools crate cannot depend on haven-agent).
-        {
-            let agent_for_spawn = agent.clone();
-            tools
-                .set_agent_spawner(std::sync::Arc::new(move |req| {
-                    let agent = agent_for_spawn.clone();
-                    Box::pin(async move { agent.spawn_peer_session(req).await })
-                }))
-                .await;
-        }
-        // Peer lifecycle operations stay behind the agent-layer authority so
-        // `agent.status/wait/stop` use the real SessionExecutor state machine
-        // instead of approximating it from the inbox heartbeat registry.
-        {
-            let agent_for_control = agent.clone();
-            tools
-                .set_agent_controller(std::sync::Arc::new(move |request| {
-                    let agent = agent_for_control.clone();
-                    Box::pin(async move { agent.control_peer_session(request).await })
-                }))
-                .await;
-        }
+        // Bind one typed messaging runtime. It supplies both the in-process
+        // SessionActor mailbox and peer lifecycle operations, so the catalog
+        // never needs a mutable spawn/controller callback pair.
+        tools.set_messaging_runtime(agent.clone()).await;
         // `memory` recall shares History/`InferenceEngine::recall_memory`.
         {
             let agent_for_recall = agent.clone();

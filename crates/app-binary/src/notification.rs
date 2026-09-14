@@ -203,11 +203,7 @@ impl DesktopNotifications {
                     format!("会话出错: {}", sanitize_error_text(error)),
                 );
             }
-            AgentEvent::SessionUpdated { session_id, status }
-                if status == "paused"
-                    || status == "paused_awaiting_answer"
-                    || status == "paused_awaiting_confirm" =>
-            {
+            AgentEvent::SessionUpdated { session_id, status } if status == "paused" => {
                 if !self.windows_enabled(|n| n.session_paused.windows, false) {
                     return;
                 }
@@ -218,13 +214,7 @@ impl DesktopNotifications {
                 // Only paused*/error → pending counts as resume. Running→Pending
                 // (ask answered in-turn) must not toast.
                 let prev = self.previous_session_status(session_id);
-                if !matches!(
-                    prev.as_deref(),
-                    Some("paused")
-                        | Some("paused_awaiting_answer")
-                        | Some("paused_awaiting_confirm")
-                        | Some("error")
-                ) {
+                if !matches!(prev.as_deref(), Some("paused") | Some("error")) {
                     return;
                 }
                 if !self.windows_enabled(|n| n.session_resumed.windows, false) {

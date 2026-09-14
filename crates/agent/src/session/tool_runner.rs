@@ -2,7 +2,7 @@
 //!
 //! Split from `session.rs` (Phase 7 / A3 mechanical extract). R2: confirm never
 //! blocks inside a tool future — ReAct uses pause/continue; scheduled fires
-//! use [`SessionExecutor::request_scheduled_confirm`].
+//! use [`SessionSupervisor::request_scheduled_confirm`].
 
 use super::*;
 use haven_memory::repositories::session_steps::ActionStepOutcome;
@@ -92,7 +92,7 @@ impl ActionStepContext {
     }
 }
 
-impl SessionExecutor {
+impl SessionSupervisor {
     async fn action_step_context(&self, request: ActionStepRequest<'_>) -> ActionStepContext {
         let risk_level = self
             .tools
@@ -464,18 +464,23 @@ impl SessionExecutor {
             receipt.is_some(),
         );
         {
-            let entry = { self.sessions.lock().await.get(session_id).cloned() };
+            let actor = self.actor_for(session_id).await;
             // Phase 7 / E4: only Running may execute tools. Missing session
             // (end_session already removed the entry) must fail closed — never
             // treat absence as permission to run.
-            let refuse = match entry {
+            let refuse = match actor {
                 None => Some(format!(
                     "execute_step: session {} not in working set; refusing to execute tool '{}'",
                     session_id, tool_name
                 )),
-                Some(entry) => {
-                    let session = entry.lock().await;
-                    let prev = session.status.clone();
+                Some(actor) => {
+                    let prev = actor.snapshot().await.map(|session| session.status);
+                    let Some(prev) = prev else {
+                        return Err(anyhow::anyhow!(
+                            "execute_step: session {} actor stopped",
+                            session_id
+                        ));
+                    };
                     if !matches!(prev, SessionStatus::Running) {
                         Some(format!(
                             "execute_step: session {} is {}; refusing to execute tool '{}'",
@@ -585,7 +590,7 @@ impl SessionExecutor {
         // running set while the tool was executing (e.g. rollback_session marked
         // it Error and restored a snapshot), skip persisting step records that
         // would otherwise corrupt the restored state.
-        if !self.running_sessions.lock().await.contains(session_id) {
+        if !self.is_run_in_flight(session_id).await {
             tracing::warn!(
                 "execute_step: session {} left running set during tool execution; skipping step record",
                 session_id
@@ -624,19 +629,19 @@ impl SessionExecutor {
         let tool_name_owned = tool_name.to_string();
         // The in-memory StepInfo reuses the persisted step row's id so the
         // live session state and the resume history reference the same step.
-        if let Some(entry) = self.sessions.lock().await.get(session_id).cloned() {
-            let mut session = entry.lock().await;
-            session.steps.push(StepInfo {
-                id: persist_step_id.clone(),
-                step_number,
-                tool_name: tool_name_owned.clone(),
-                input: input.clone(),
-                output: Some(result.output.clone()),
-                status: step_outcome.as_str().into(),
-                risk_level,
-                confirmed,
-            });
-            session.updated_at = chrono::Utc::now().to_rfc3339();
+        if let Some(actor) = self.actor_for(session_id).await {
+            actor
+                .record_step(StepInfo {
+                    id: persist_step_id.clone(),
+                    step_number,
+                    tool_name: tool_name_owned.clone(),
+                    input: input.clone(),
+                    output: Some(result.output.clone()),
+                    status: step_outcome.as_str().into(),
+                    risk_level,
+                    confirmed,
+                })
+                .await;
         }
         // Row was normally created at Action emit; ensure + complete covers
         // direct execute_step callers (tests) and races where begin failed.
@@ -665,7 +670,7 @@ impl SessionExecutor {
     /// Execute a tool through the safety gateway. The tool's risk level is
     /// checked against the configured threshold BEFORE anything runs; an
     /// operation at/above the threshold blocks on the user's confirmation
-    /// (`confirm:requested` event + `resolve_confirmation`), and is aborted
+    /// (`interaction:requested` event + `resolve_confirmation`), and is aborted
     /// when the user declines or the session is cancelled. Returns a failed
     /// `ToolResult` for declined operations so the ReAct loop sees a normal
     /// tool failure the model can react to.
@@ -806,7 +811,8 @@ impl SessionExecutor {
     }
 
     /// Queue a scheduled-tool confirmation without blocking the fired-action
-    /// consumer (R2). Emits `confirm:requested` and stores pending args; a
+    /// consumer (R2). Stores the canonical interaction request and emits it
+    /// through the supervisor event stream; a
     /// later [`Self::resolve_confirmation`] (or the timeout task) executes or
     /// skips. Returns `None` when no confirm channel is wired (fail closed).
     pub async fn request_scheduled_confirm(
@@ -818,37 +824,17 @@ impl SessionExecutor {
         title: &str,
     ) -> Option<haven_common::types::ConfirmId> {
         let step_id = receipt.confirmation_id.clone();
-        let tid = session_id.unwrap_or("action").to_string();
-        if self.on_confirm_request.snap().is_none() {
-            tracing::info!(
-                "scheduled confirmation for tool '{}' on session {} rejected: no confirmation channel wired",
-                tool_name,
-                tid
-            );
-            return None;
-        }
-        self.scheduled_confirms.lock().await.insert(
-            step_id.clone(),
-            ScheduledConfirmPending {
-                session_id: session_id.map(str::to_string),
-                tool_name: tool_name.to_string(),
-                tool_args: tool_args.clone(),
-                receipt: receipt.clone(),
-                title: title.to_string(),
-            },
+        let request = crate::interaction::InteractionRequest::scheduled_confirm(
+            session_id.unwrap_or("action"),
+            tool_name.to_string(),
+            tool_args,
+            receipt,
+            title.to_string(),
         );
-        if let Some(cb) = self.on_confirm_request.snap() {
-            cb(
-                step_id.clone(),
-                tid.clone(),
-                tool_name.to_string(),
-                receipt.effective_risk,
-                tool_args,
-                None,
-                0,
-                None,
-            );
-        }
+        self.scheduled_confirms.lock().await.push(request.clone());
+        self.emit_event(SessionEvent::InteractionRequested {
+            request: Box::new(request),
+        });
         // Absolute fail-closed timer for closed/crashed UI. Interactive
         // countdown starts when the dialog is shown (frontend), so queued
         // confirms are not starved by arrival-time deadlines.
@@ -860,7 +846,8 @@ impl SessionExecutor {
                 .scheduled_confirms
                 .lock()
                 .await
-                .contains_key(&timeout_id)
+                .iter()
+                .any(|request| request.id == timeout_id.as_str())
             {
                 tracing::warn!(
                     "scheduled confirmation {} timed out after {:?}; treating as rejected",
@@ -877,70 +864,118 @@ impl SessionExecutor {
     /// for the app layer to record a permission grant (tool + session).
     ///
     /// Handles (1) scheduled-tool pending (R2 — execute/skip asynchronously)
-    /// and (2) ReAct pause-confirm (`awaiting_confirm`). An unknown id is stale.
+    /// and (2) ReAct pause-confirm. An unknown id is stale.
     pub async fn resolve_confirmation(
         self: &Arc<Self>,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         // Scheduled tool path: non-blocking request → resolve later.
-        if let Some(pending) = self.scheduled_confirms.lock().await.remove(step_id) {
+        let scheduled = {
+            let mut entries = self.scheduled_confirms.lock().await;
+            entries
+                .iter()
+                .position(|request| request.id == step_id.as_str())
+                .map(|index| entries.remove(index))
+        };
+        if let Some(mut request) = scheduled {
+            let (session_id, tool_name, tool_input) = match &request.details {
+                crate::interaction::InteractionDetails::ScheduledConfirm {
+                    tool_name,
+                    tool_input,
+                    ..
+                } => (
+                    (request.session_id != "action").then(|| request.session_id.clone()),
+                    tool_name.clone(),
+                    tool_input.clone(),
+                ),
+                _ => return Ok(None),
+            };
+            let _ = request.resolve(Value::Bool(confirmed));
             let resolution = crate::session::ConfirmResolution {
-                session_id: pending.session_id.clone(),
-                tool_name: pending.tool_name.clone(),
-                tool_input: pending.tool_args.clone(),
+                session_id,
+                tool_name,
+                tool_input,
             };
             let executor = Arc::clone(self);
             tokio::spawn(async move {
-                executor.finish_scheduled_confirm(pending, confirmed).await;
+                executor.finish_scheduled_confirm(request, confirmed).await;
             });
             return Ok(Some(resolution));
         }
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
-        if let Some(resolution) = self.resolve_confirm_pause(step_id, confirmed).await? {
-            return Ok(Some(resolution));
+        if let Some(request) = self
+            .resolve_interaction(step_id.as_str(), Value::Bool(confirmed))
+            .await?
+        {
+            let (session_id, tool_name, tool_input) = match request.details {
+                crate::interaction::InteractionDetails::Confirm {
+                    tool_name,
+                    tool_input,
+                    ..
+                } => (Some(request.session_id), tool_name, tool_input),
+                _ => (None, String::new(), Value::Null),
+            };
+            return Ok(Some(crate::session::ConfirmResolution {
+                session_id,
+                tool_name,
+                tool_input,
+            }));
         }
         Ok(None)
     }
 
-    async fn finish_scheduled_confirm(&self, pending: ScheduledConfirmPending, confirmed: bool) {
+    async fn finish_scheduled_confirm(
+        &self,
+        request: crate::interaction::InteractionRequest,
+        confirmed: bool,
+    ) {
+        let (session_id, tool_name, tool_args, receipt, title) = match request.details {
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                tool_name,
+                tool_input,
+                receipt,
+                title,
+            } => (
+                (request.session_id != "action").then(|| request.session_id.clone()),
+                tool_name,
+                tool_input,
+                receipt,
+                title,
+            ),
+            _ => return,
+        };
         if confirmed
-            && let Some(session_id) = pending.session_id.as_deref()
+            && let Some(session_id) = session_id.as_deref()
             && !self.session_is_live(session_id).await
         {
-            if let Some(cb) = self.on_scheduled_confirm_outcome.snap() {
-                cb(
-                    pending.title,
-                    format!(
-                        "Scheduled tool '{}' was NOT executed: its session is no longer active.",
-                        pending.tool_name
-                    ),
-                );
-            }
+            self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+                title,
+                body: format!(
+                    "Scheduled tool '{}' was NOT executed: its session is no longer active.",
+                    tool_name
+                ),
+            });
             return;
         }
-        let tool_name = pending.tool_name;
-        let title = pending.title;
         if !confirmed {
-            if let Some(cb) = self.on_scheduled_confirm_outcome.snap() {
-                cb(
-                    title,
-                    format!(
-                        "Scheduled tool '{tool_name}' was NOT executed: \
-                         confirmation was declined or timed out."
-                    ),
-                );
-            }
+            self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+                title,
+                body: format!(
+                    "Scheduled tool '{tool_name}' was NOT executed: \
+                     confirmation was declined or timed out."
+                ),
+            });
             return;
         }
         let outcome = self
             .execute_gated(
-                pending.session_id.as_deref(),
+                session_id.as_deref(),
                 &tool_name,
-                pending.tool_args,
+                tool_args,
                 CancellationToken::new(),
-                Some(pending.receipt),
+                Some(receipt),
                 None,
             )
             .await;
@@ -954,9 +989,7 @@ impl SessionExecutor {
             }
             Err(e) => format!("schedule tool '{tool_name}' failed: {e}"),
         };
-        if let Some(cb) = self.on_scheduled_confirm_outcome.snap() {
-            cb(title, body);
-        }
+        self.emit_event(SessionEvent::ScheduledConfirmOutcome { title, body });
     }
 
     /// Safety-gateway pre-check used by `LoopHooks::before_tool` (Phase 5 / E3).
@@ -997,16 +1030,27 @@ impl SessionExecutor {
         action_index: u32,
         tool_call_id: Option<&str>,
     ) -> Option<(bool, Option<haven_tools::ConfirmationReceipt>)> {
-        let guard = self.awaiting_confirm.lock().await;
-        let pending = guard.get(session_id)?;
-        pending
-            .tools
-            .iter()
-            .find(|t| {
-                t.step_id == step_id
-                    && t.action_index == action_index
-                    && t.tool_call_id == tool_call_id.unwrap_or_default()
+        self.interaction_requests(session_id)
+            .await
+            .into_iter()
+            .filter(|request| request.kind == crate::interaction::InteractionKind::Confirm)
+            .find_map(|request| {
+                let decision = request.decision();
+                match request.details {
+                    crate::interaction::InteractionDetails::Confirm {
+                        step_id: request_step_id,
+                        action_index: request_action_index,
+                        tool_call_id: request_tool_call_id,
+                        receipt,
+                        ..
+                    } if request_step_id == step_id
+                        && request_action_index == action_index
+                        && request_tool_call_id == tool_call_id.unwrap_or_default() =>
+                    {
+                        decision.map(|decision| (decision, receipt))
+                    }
+                    _ => None,
+                }
             })
-            .and_then(|t| t.decision.map(|decision| (decision, t.receipt.clone())))
     }
 }

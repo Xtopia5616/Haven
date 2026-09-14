@@ -79,7 +79,7 @@ macro_rules! id_newtype {
 
 id_newtype! {
     /// Unique identifier for a safety-gateway confirmation request
-    /// (`conf-{uuid32}`). Ephemeral: lives only in the `confirm:requested`
+    /// (`conf-{uuid32}`). Ephemeral: lives only in the `interaction:requested`
     /// event payload and the executor's pending-wait map.
     ConfirmId
 }

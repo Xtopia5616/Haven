@@ -120,51 +120,6 @@ pub struct BranchPoint {
     pub last_msg_at: Option<String>,
 }
 
-/// Pending `ask` tool state persisted in the snapshot (Phase 4 / C5).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct AskPending {
-    pub question: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub step_ids: Vec<String>,
-}
-
-/// One gated tool awaiting (or holding) a confirm decision (Phase 5 / E3).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ConfirmPendingTool {
-    pub confirm_id: String,
-    pub tool_name: String,
-    pub tool_input: Value,
-    pub tool_call_id: String,
-    pub step_id: String,
-    pub action_index: u32,
-    pub risk_level: haven_common::types::RiskLevel,
-    /// One-shot proof issued by the authorization engine for this exact
-    /// invocation. `None` is used for safe/trusted siblings carried behind
-    /// the same batch barrier and therefore rechecked normally on resume.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub receipt: Option<haven_tools::ConfirmationReceipt>,
-    /// `None` = still waiting; `Some(true/false)` = user decided.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub decision: Option<bool>,
-}
-
-/// Pending safety-confirm batch persisted in the snapshot (Phase 5 / E3).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ConfirmPending {
-    pub step_number: u32,
-    pub tools: Vec<ConfirmPendingTool>,
-}
-
-impl ConfirmPending {
-    pub fn all_decided(&self) -> bool {
-        !self.tools.is_empty() && self.tools.iter().all(|t| t.decision.is_some())
-    }
-
-    pub fn any_approved(&self) -> bool {
-        self.tools.iter().any(|t| t.decision == Some(true))
-    }
-}
-
 /// Per-run step budget recorded on the snapshot for observability (R4 / J1).
 ///
 /// Storage is diagnostic only — the live loop still reads `max_steps` /
@@ -205,12 +160,8 @@ pub struct ReActSnapshot {
     /// process interruption cannot truncate later completed history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_partial_message_ids: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub awaiting_answer: Option<AskPending>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub awaiting_confirm: Option<ConfirmPending>,
-    /// Canonical projection for ask/confirm/scheduled-confirm waits. The two
-    /// legacy fields above are retained so older snapshots remain readable.
+    /// Canonical lifecycle records for ask/confirm/scheduled-confirm waits.
+    /// This is the only persisted interaction authority.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub interactions: Vec<crate::interaction::InteractionRequest>,
     /// Last run's effective step budget (R4). Absent before a run starts.
@@ -970,73 +921,91 @@ mod tests {
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("branch_points"));
-        assert!(!json.contains("awaiting_answer"));
+        assert!(!json.contains("interactions"));
         let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
         assert!(back.branch_points.is_empty());
-        assert!(back.awaiting_answer.is_none());
+        assert!(back.interactions.is_empty());
     }
 
     #[test]
-    fn snapshot_awaiting_answer_roundtrip() {
+    fn snapshot_interaction_ask_roundtrip() {
         let snapshot = ReActSnapshot {
             events: vec![],
             step_number: 2,
-            awaiting_answer: Some(AskPending {
-                question: "which file?".into(),
-                step_ids: vec!["step-abc".into()],
-            }),
+            interactions: vec![crate::interaction::InteractionRequest::ask(
+                "ses-0123456789abcdef0123456789abcdef",
+                "which file?",
+                vec!["notes.md".into(), "README.md".into()],
+                vec!["step-0123456789abcdef0123456789abcdef".into()],
+            )],
             ..Default::default()
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
-        let pending = back.awaiting_answer.expect("flag restored");
-        assert_eq!(pending.question, "which file?");
-        assert_eq!(pending.step_ids, vec!["step-abc".to_string()]);
+        let request = &back.interactions[0];
+        assert_eq!(request.kind, crate::interaction::InteractionKind::Ask);
+        assert_eq!(request.prompt, "which file?");
+        assert_eq!(
+            request.correlation_ids,
+            vec!["step-0123456789abcdef0123456789abcdef"]
+        );
     }
 
     #[test]
-    fn snapshot_awaiting_confirm_roundtrip_preserves_invocation_identity() {
+    fn snapshot_interaction_confirm_roundtrip_preserves_invocation_identity() {
         let snapshot = ReActSnapshot {
             events: vec![],
             step_number: 4,
-            awaiting_confirm: Some(ConfirmPending {
-                step_number: 4,
-                tools: vec![
-                    ConfirmPendingTool {
-                        confirm_id: "conf-a".into(),
-                        tool_name: "run_command".into(),
-                        tool_input: serde_json::json!({"command":"same"}),
-                        tool_call_id: "call-a".into(),
-                        step_id: "step-a".into(),
-                        action_index: 0,
-                        risk_level: haven_common::types::RiskLevel::High,
-                        receipt: None,
-                        decision: None,
-                    },
-                    ConfirmPendingTool {
-                        confirm_id: "conf-b".into(),
-                        tool_name: "run_command".into(),
-                        tool_input: serde_json::json!({"command":"same"}),
-                        tool_call_id: "call-b".into(),
-                        step_id: "step-a".into(),
-                        action_index: 1,
-                        risk_level: haven_common::types::RiskLevel::High,
-                        receipt: None,
-                        decision: None,
-                    },
-                ],
-            }),
+            interactions: vec![
+                crate::interaction::InteractionRequest::confirm(
+                    "ses-0123456789abcdef0123456789abcdef",
+                    4,
+                    "run_command".into(),
+                    serde_json::json!({"command":"same"}),
+                    "call-a".into(),
+                    "step-0123456789abcdef0123456789abcdef".into(),
+                    0,
+                    haven_common::types::RiskLevel::High,
+                    None,
+                ),
+                crate::interaction::InteractionRequest::confirm(
+                    "ses-0123456789abcdef0123456789abcdef",
+                    4,
+                    "run_command".into(),
+                    serde_json::json!({"command":"same"}),
+                    "call-b".into(),
+                    "step-0123456789abcdef0123456789abcdef".into(),
+                    1,
+                    haven_common::types::RiskLevel::High,
+                    None,
+                ),
+            ],
             ..Default::default()
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
-        let tools = back.awaiting_confirm.unwrap().tools;
-        assert_eq!(tools[0].step_id, "step-a");
-        assert_eq!(tools[0].action_index, 0);
-        assert_eq!(tools[0].tool_call_id, "call-a");
-        assert_eq!(tools[1].step_id, "step-a");
-        assert_eq!(tools[1].action_index, 1);
-        assert_eq!(tools[1].tool_call_id, "call-b");
+        assert_eq!(back.interactions.len(), 2);
+        for (request, call_id, action_index) in back
+            .interactions
+            .iter()
+            .zip(["call-a", "call-b"])
+            .zip([0u32, 1])
+            .map(|((request, call_id), action_index)| (request, call_id, action_index))
+        {
+            match &request.details {
+                crate::interaction::InteractionDetails::Confirm {
+                    step_id,
+                    action_index: actual_index,
+                    tool_call_id,
+                    ..
+                } => {
+                    assert_eq!(step_id, "step-0123456789abcdef0123456789abcdef");
+                    assert_eq!(*actual_index, action_index);
+                    assert_eq!(tool_call_id, call_id);
+                }
+                other => panic!("expected confirm details, got {other:?}"),
+            }
+        }
     }
 
     #[test]

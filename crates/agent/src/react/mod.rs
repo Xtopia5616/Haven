@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::session::{SessionExecutor, SessionStatus};
+use crate::session::{SessionStatus, SessionSupervisor};
 use haven_common::config::ContextLimitsConfig;
 use haven_common::media::{
     CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, MediaPlan,
@@ -310,7 +310,7 @@ impl Drop for RunMsgIdGuard<'_> {
 
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
-    executor: Arc<SessionExecutor>,
+    executor: Arc<SessionSupervisor>,
     db: Arc<Database>,
     max_steps: Mutex<u32>,
     /// Optional session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
@@ -375,7 +375,7 @@ impl ReActEngine {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<LlmRouter>,
-        executor: Arc<SessionExecutor>,
+        executor: Arc<SessionSupervisor>,
         db: Arc<Database>,
         max_steps: u32,
         context_limits: ContextLimitsConfig,

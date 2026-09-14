@@ -175,11 +175,11 @@ impl ReActEngine {
         // durable assistant state.
         let (thought, actions) = Self::parse_default_model_response(&response, step_num);
         let limits = self.limits();
-        let pending_ask = self
+        let pending_ask = !self
             .executor
-            .get_awaiting_answer(session_id)
+            .pending_interactions(session_id, crate::interaction::InteractionKind::Ask)
             .await
-            .is_some();
+            .is_empty();
         let AcceptedResponse {
             response,
             thought,
@@ -278,10 +278,12 @@ impl ReActEngine {
             if pending_ask {
                 let pending = self
                     .executor
-                    .get_awaiting_answer(session_id)
+                    .pending_interactions(session_id, crate::interaction::InteractionKind::Ask)
                     .await
+                    .into_iter()
+                    .next()
                     .ok_or_else(|| anyhow::anyhow!("ask state changed before resume"))?;
-                let question = pending.question;
+                let question = pending.prompt.clone();
                 self.project_chat_message(
                     session_id,
                     "assistant",
@@ -296,7 +298,7 @@ impl ReActEngine {
                     state,
                     snapshot_step: step_num + 1,
                     emitter: &ctx.emitter,
-                    status: SessionStatus::PausedAwaitingAnswer,
+                    status: SessionStatus::Paused,
                     final_text: &question,
                     branch_point_step: None,
                 })

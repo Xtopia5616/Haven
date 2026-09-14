@@ -43,7 +43,7 @@ pub(crate) const TRAY_STATUS_CHANGED_EVENT: &str = "tray:status_changed";
 pub(crate) const MUTE_CHANGED_EVENT: &str = "mute:changed";
 pub(crate) const MCP_STATUS_CHANGED_EVENT: &str = "mcp:status_change";
 pub(crate) const SKILLS_STATUS_CHANGED_EVENT: &str = "skills:status_change";
-pub(crate) const CONFIRM_REQUESTED_EVENT: &str = "confirm:requested";
+pub(crate) const INTERACTION_REQUESTED_EVENT: &str = "interaction:requested";
 pub(crate) const HOTKEY_CONFLICT_EVENT: &str = "hotkey:conflict";
 pub(crate) const HOTKEY_REBIND_EVENT: &str = "hotkey:rebind";
 pub(crate) const LLM_CONFIG_CHANGED_EVENT: &str = "llm:config_changed";
@@ -315,22 +315,6 @@ pub(crate) struct SkillsStatusChangedEvent {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct ConfirmationRequestedEvent {
-    /// Confirmation request id used by `session:resolve_confirmation`.
-    pub step_id: haven_common::types::ConfirmId,
-    /// ReAct invocation identity. `None` for scheduled/background actions.
-    pub invocation_step_id: Option<String>,
-    pub action_index: u32,
-    pub tool_call_id: Option<String>,
-    pub tool_name: String,
-    pub risk_level: haven_common::types::RiskLevel,
-    pub session_id: String,
-    /// Renderer-safe explanation. Raw tool parameters remain backend-only.
-    pub summary: String,
-    pub permission_key: String,
-}
-
-#[derive(Clone, Serialize)]
 pub(crate) struct HotkeyConflictEvent {
     pub binding: String,
     pub error: String,
@@ -386,6 +370,38 @@ pub(crate) struct AgentObservationEvent {
     pub result: haven_tools::ToolResultEnvelope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_seq: Option<u64>,
+}
+
+/// Renderer-safe projection of every human decision request. Internal
+/// `InteractionRequest` values may carry raw tool input and receipts; this
+/// DTO deliberately contains only the information needed to render a card
+/// and resolve it by id.
+#[derive(Clone, Serialize)]
+pub(crate) struct InteractionRequestedEvent {
+    pub id: String,
+    pub session_id: String,
+    pub kind: String,
+    pub status: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<haven_common::types::RiskLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_step_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

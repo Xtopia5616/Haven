@@ -15,7 +15,7 @@
 	import { isBusyStatus, isErrorStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
-	import { createChatConfirmationEventHandlers } from '$lib/chatConfirmationEventHandlers.ts';
+	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
@@ -54,6 +54,10 @@
 		mediaPlanStore,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
+		interactionStore,
+		hydrateInteractions,
+		resolveInteraction,
+		clearSessionInteractions,
 	} from '$lib/stores.ts';
 	import {
 		sessionMessagesStore,
@@ -107,18 +111,6 @@
 		maxFileBytes: 20 * 1024 * 1024,
 	});
 	let messages = /** @type {Array<any>} */ ($state([]));
-	const askAwaiting = $derived(
-		messages.some((message) => message?.type === 'ask' && message?.awaiting),
-	);
-	const askHasOptions = $derived(
-		messages.some(
-			(message) =>
-				message?.type === 'ask' &&
-				message?.awaiting &&
-				Array.isArray(message?.options) &&
-				message.options.length > 0,
-		),
-	);
 	let initialLoading = $state(true);
 	const sessionReducer = new SessionReducer();
 	let sessionState = $state(sessionReducer.getState());
@@ -137,14 +129,37 @@
 
 	const sessions = $derived(sessionState.sessions);
 	const activeSessionId = $derived(sessionState.activeSessionId);
-	// Pending security confirmations not yet shown, in arrival order. A
-	// batched ReAct step can fire several gated tool calls at once; each one
-	// must wait for its own user answer, so they are queued and displayed one
-	// at a time instead of auto-rejecting the visible dialog.
-	let confirmQueue =
-		/** @type {Array<import('$lib/chatConfirmationEventHandlers.ts').ConfirmationQueueEntry>} */ (
-			$state([])
-		);
+	// Interaction requests are shared by the ask cards and confirmation modal.
+	// The modal keeps only its current presentation id; pending requests remain
+	// owned by interactionStore so ask/confirm/scheduled-confirm cannot drift.
+	/** @type {Record<string, import('$lib/contracts/app.ts').InteractionRequest>} */
+	let interactionDict = $state({});
+	$effect(() =>
+		syncStoreImmediate(
+			interactionStore,
+			(value) => {
+				interactionDict = value;
+			},
+			() => get(interactionStore),
+		),
+	);
+	const pendingInteractions = $derived(
+		Object.values(interactionDict).filter((request) => request.status === 'pending'),
+	);
+	const pendingAskInteractions = $derived(
+		pendingInteractions.filter((request) => request.kind === 'ask'),
+	);
+	const pendingConfirmInteractions = $derived(
+		pendingInteractions.filter(
+			(request) => request.kind === 'confirm' || request.kind === 'scheduled_confirm',
+		),
+	);
+	const askAwaiting = $derived(pendingAskInteractions.length > 0);
+	const askHasOptions = $derived(
+		pendingAskInteractions.some((request) => request.options.length > 0),
+	);
+	/** @type {string|null} */
+	let activeConfirmId = $state(null);
 	// Interactive countdown for the visible dialog. Starts when the dialog is
 	// shown (not when the request arrived) so queued confirms are not starved.
 	// Backend uses a longer absolute fail-closed ceiling for closed UI.
@@ -580,6 +595,7 @@
 		if (!sessionId) return;
 		try {
 			const result = await invoke('get_session_for_resume', { sessionId });
+			hydrateInteractions(result);
 			const dbMessages = buildResumeMessages(result);
 			// Rollback rebuilds the timeline from the truncated DB state, so the
 			// pre-rollback live messages in `existing` are STALE: their content
@@ -604,6 +620,7 @@
 			clearSessionMessages(activeSessionId);
 			clearSessionTokenStats(activeSessionId);
 			clearSessionLlmUsage(activeSessionId);
+			clearSessionInteractions(activeSessionId);
 		}
 		// 新对话 = explicit fresh start. While `newSessionIntentStore` is set, no
 		// event-driven path may auto-assign an existing session (loadSessions
@@ -647,6 +664,7 @@
 		const prevActive = activeSessionId;
 		try {
 			const result = await invoke('get_session_for_resume', { sessionId });
+			hydrateInteractions(result);
 			const dbMessages = buildResumeMessages(result);
 			// Live tool cards and DB step badges share the same `step-*` id
 			// (minted by the backend when the action started), so the merge
@@ -748,6 +766,7 @@
 			// retained; stale pre-continue UI entries cannot leak back in.
 			try {
 				const result = await invoke('get_session_for_resume', { sessionId: tid });
+				hydrateInteractions(result);
 				updateSessionMessages(tid, (existing) => {
 					const dbMessages = buildResumeMessages(result);
 					const retryMessages = existing.filter((m) => !preContinueMessageIds.has(m.id));
@@ -816,10 +835,31 @@
 	// Derive visible messages for the current view.
 	$effect(() => {
 		const dict = sessionMessagesDict;
+		const interactions = interactionDict;
+		/** @param {any[]} list */
+		const projectInteractions = (list) =>
+			list.map((/** @type {any} */ message) => {
+				if (message?.type !== 'ask') return message;
+				const request = interactions[message.id];
+				if (!request || request.kind !== 'ask') return message;
+				/** @type {any} */
+				const response = request.response;
+				return {
+					...message,
+					options: request.options,
+					awaiting: request.status === 'pending',
+					resolved:
+						request.status === 'resolved'
+							? response?.ignored
+							? { ignored: true }
+							: { answer: response?.answer || '' }
+							: null,
+				};
+			});
 		if (activeSessionId) {
-			messages = Array.isArray(dict[activeSessionId]) ? dict[activeSessionId] : [];
+			messages = Array.isArray(dict[activeSessionId]) ? projectInteractions(dict[activeSessionId]) : [];
 		} else {
-			messages = Array.isArray(dict[DRAFT_KEY]) ? dict[DRAFT_KEY] : [];
+			messages = Array.isArray(dict[DRAFT_KEY]) ? projectInteractions(dict[DRAFT_KEY]) : [];
 		}
 	});
 
@@ -1133,7 +1173,10 @@
 						getSessionErrorId: () => sessionErrorId,
 						rememberSessionError,
 						forgetSessionError,
-						clearAskAwaiting,
+						clearAskAwaiting: (sessionId) => {
+							clearAskAwaiting(sessionId);
+							clearSessionInteractions(sessionId);
+						},
 						evictTerminalSessionMemory,
 						clearStepBlockIds,
 						flushChunksNow,
@@ -1190,19 +1233,7 @@
 						finalizeBackgroundActionMessages(event.payload);
 					},
 				}),
-				...appEventListeners(
-					createChatConfirmationEventHandlers({
-						getSessionTitle: (sessionId) =>
-							String(
-								sessions.find((session) => session.id === sessionId)?.title ||
-									sessionId,
-							),
-						enqueueConfirmation: (entry) => {
-							confirmQueue = [...confirmQueue, entry];
-						},
-						showNextConfirm,
-					}),
-				),
+				...appEventListeners(createChatInteractionEventHandlers()),
 				...agentEventListeners(createChatUsageEventHandlers()),
 			},
 			{ tag: '+page' },
@@ -1376,6 +1407,7 @@
 		// history page; the window starts blank instead.
 		if (last.session.status === 'completed') return;
 		const wasError = isErrorStatus(last.session.status);
+		hydrateInteractions(last);
 		updateSessionMessages(last.session.id, (existing) =>
 			mergeLiveStreaming(buildResumeMessages(last), existing),
 		);
@@ -1466,29 +1498,40 @@
 		submitMessage(text, images, files);
 	}
 
-	// Show the next queued confirmation once the current one is resolved
-	// (either by the user or by the dialog's timeout). Entries are shown in
-	// arrival order so every pending operation still gets its own decision.
+	// Show the next pending confirm request. The request collection itself is
+	// ordered by the shared store; this local id is only modal presentation state.
 	function showNextConfirm() {
-		if (confirmDialog.stepId || confirmQueue.length === 0) return;
-		const [next, ...rest] = confirmQueue;
-		confirmQueue = rest;
+		if (activeConfirmId || pendingConfirmInteractions.length === 0) return;
+		const next = pendingConfirmInteractions[0];
+		activeConfirmId = next.id;
 		confirmDialog = {
-			...next,
-			// Fresh 120s window from show time — queued items keep a full
-			// interactive budget instead of inheriting arrival-time debt.
+			stepId: next.id,
+			toolName: next.toolName || '',
+			sessionId: next.sessionId,
+			sessionTitle: String(
+				sessions.find((session) => session.id === next.sessionId)?.title || next.sessionId,
+			),
+			riskLevel: next.riskLevel || 'medium',
+			summary: next.summary || next.prompt || '此操作需要你的许可。',
+			permissionKey: next.permissionKey || next.toolName || '',
+			// Fresh 120s window from show time; the backend remains the fail-closed
+			// authority when the renderer is closed.
 			deadlineAt: Date.now() + CONFIRM_TIMEOUT_MS,
 		};
 	}
 
+	$effect(() => {
+		pendingConfirmInteractions;
+		if (!activeConfirmId) showNextConfirm();
+	});
+
 	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string }} payload */
 	async function handleConfirm({ stepId, approved, effect, scope }) {
-		// Clear the dialog synchronously BEFORE awaiting the IPC round-trip.
-		// If we only cleared it after `await invoke(...)`, a new
-		// `confirm:requested` arriving during that window would find the old
-		// stepId still set and hold the queue hostage until the stale dialog
-		// was dismissed.
+		// Resolve the shared request synchronously before awaiting IPC. This keeps
+		// a batched response from blocking the next request on the round trip.
 		const resolvedStep = stepId;
+		resolveInteraction(resolvedStep, { approved, effect, scope });
+		activeConfirmId = null;
 		confirmDialog = {
 			stepId: null,
 			toolName: '',
@@ -1499,10 +1542,6 @@
 			permissionKey: '',
 			deadlineAt: null,
 		};
-		// Surface the next queued confirmation immediately (before the IPC
-		// await) so a batched step's remaining operations stay answerable
-		// back-to-back instead of piling up behind the in-flight resolve.
-		showNextConfirm();
 		if (!resolvedStep) return;
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';

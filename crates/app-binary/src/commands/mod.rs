@@ -23,7 +23,7 @@ pub mod skills;
 
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::events::{
-    CONFIRM_REQUESTED_EVENT, ConfirmationRequestedEvent, LLM_CONFIG_CHANGED_EVENT,
+    INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, LLM_CONFIG_CHANGED_EVENT,
 };
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
@@ -261,17 +261,23 @@ pub(crate) async fn queue_ui_confirmation(
         },
     );
     if let Err(error) = app.emit(
-        CONFIRM_REQUESTED_EVENT,
-        ConfirmationRequestedEvent {
-            step_id: request_id.clone(),
-            invocation_step_id: None,
-            action_index: 0,
-            tool_call_id: None,
-            tool_name,
-            risk_level,
+        INTERACTION_REQUESTED_EVENT,
+        InteractionRequestedEvent {
+            id: request_id.clone().to_string(),
+            kind: "confirm".into(),
+            status: "pending".into(),
+            prompt: summary.clone(),
+            options: Vec::new(),
+            tool_name: Some(tool_name),
             session_id: "ui".into(),
-            summary: summary.clone(),
-            permission_key: permission_key.clone(),
+            risk_level: Some(risk_level),
+            summary: Some(summary.clone()),
+            permission_key: Some(permission_key.clone()),
+            invocation_step_id: None,
+            action_index: Some(0),
+            tool_call_id: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
         },
     ) {
         state

@@ -31,18 +31,6 @@ pub(super) struct MessagingState {
     pub(super) title_cache: HashMap<String, Option<String>>,
 }
 
-impl MessagingState {
-    pub(super) fn new() -> Self {
-        let service = Arc::new(MessagingService::default_root());
-        Self {
-            service,
-            receivers: HashMap::new(),
-            steps_since_poll: HashMap::new(),
-            title_cache: HashMap::new(),
-        }
-    }
-}
-
 /// Sidecar wrapping [`MessagingState`] for cross-session inbox polling.
 pub(crate) struct MessagingPoller {
     inner: Mutex<MessagingState>,
@@ -53,8 +41,17 @@ pub(crate) struct MessagingPoller {
 
 impl MessagingPoller {
     pub(crate) fn new() -> Self {
+        Self::with_service(Arc::new(MessagingService::default_root()))
+    }
+
+    pub(crate) fn with_service(service: Arc<MessagingService>) -> Self {
         Self {
-            inner: Mutex::new(MessagingState::new()),
+            inner: Mutex::new(MessagingState {
+                service,
+                receivers: HashMap::new(),
+                steps_since_poll: HashMap::new(),
+                title_cache: HashMap::new(),
+            }),
             heartbeat_inflight: Arc::new(Mutex::new(HashSet::new())),
         }
     }

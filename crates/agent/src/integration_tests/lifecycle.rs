@@ -339,7 +339,12 @@ async fn process_input_marks_reply_as_answer_when_awaiting() {
         .await
         .unwrap();
     executor
-        .update_session_status(&session.id, SessionStatus::PausedAwaitingAnswer)
+        .request_interaction(crate::interaction::InteractionRequest::ask(
+            &session.id,
+            "the answer",
+            Vec::new(),
+            vec!["step-0123456789abcdef0123456789abcdef".into()],
+        ))
         .await
         .unwrap();
 
@@ -360,11 +365,11 @@ async fn process_input_marks_reply_as_answer_when_awaiting() {
     );
     assert_eq!(supps[0].text, "the answer");
     assert!(
-        !executor
-            .get_session_state(&session.id)
+        executor
+            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
             .await
-            .is_some_and(|s| s.is_awaiting_answer()),
-        "reactivation must clear the awaiting-answer gate"
+            .is_empty(),
+        "reactivation must clear the ask interaction"
     );
 }
 

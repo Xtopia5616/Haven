@@ -93,11 +93,7 @@ pub use admin::{
     ConfigOperationOutput, ConfigViewOutput, LogLevelOutput,
 };
 pub use memory::{MemoryRecallFn, MemoryRecallSlot, MemoryTool, new_memory_recall_slot};
-pub use messaging::{
-    AgentControlOperation, AgentControlRequest, AgentControlResult, AgentController,
-    AgentControllerSlot, AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot,
-    new_agent_controller_slot, new_agent_spawner_slot,
-};
+pub use messaging::AgentTool;
 pub use scheduled_action::{ScheduleMode, ScheduledActionFired, ScheduledActionTool};
 pub use self_tool::{SelfOperation, SelfParams, SelfTool, SelfToolContext};
 
@@ -155,8 +151,7 @@ pub struct BuiltinContext {
     pub default_shell: haven_common::types::ShellChoice,
     pub clipboard_history: Arc<clipboard::ClipboardHistory>,
     pub self_context: Option<SelfToolContext>,
-    pub agent_spawner: messaging::AgentSpawnerSlot,
-    pub agent_controller: messaging::AgentControllerSlot,
+    pub messaging_service: Arc<crate::MessagingService>,
     pub memory_recall: memory::MemoryRecallSlot,
     pub managed_assets: crate::ManagedAssetRegistry,
     pub media: MediaDeps,
@@ -180,8 +175,7 @@ pub async fn register_builtin_tools(
         default_shell,
         clipboard_history,
         self_context,
-        agent_spawner,
-        agent_controller,
+        messaging_service,
         memory_recall,
         managed_assets,
         media:
@@ -354,14 +348,9 @@ pub async fn register_builtin_tools(
     }));
     tools.push(Arc::new(notify::typed_adapter()));
     // Cross-session messaging / peer collab: one aggregate implementation over
-    // the shared file bus, exposed to the model as operation views. Agents
-    // lazily register on first call; spawn needs the desktop-wired spawner
-    // slot (None in headless → tool errors clearly).
-    let messaging_service = Arc::new(crate::messaging_service::MessagingService::default_root());
-    let agent_tool: ToolBox = Arc::new(
-        messaging::AgentTool::new(messaging_service, agent_spawner)
-            .with_controller(agent_controller),
-    );
+    // the service-owned transport and session mailbox. Agents lazily register
+    // on first call; the desktop runtime is an optional typed service port.
+    let agent_tool: ToolBox = Arc::new(messaging::AgentTool::new(messaging_service));
     add_operation_views(tools, agent_tool, settings, AGENT_OPERATION_VIEWS);
     let max_tools = limits.max_tools_per_request.max(1);
     // Skills are executable adapters in the deferred catalog. They become

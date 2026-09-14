@@ -3,7 +3,8 @@
 //
 // statusColor() returns a hex color for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the memory/sessions page.
-// isPausedStatus() covers plain pause, ask-awaiting (F2), and confirm-awaiting (E3).
+// InteractionRequest carries ask/confirm pause reasons; session status only
+// exposes the generic paused state.
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
 /** Session statuses only. */
@@ -11,8 +12,6 @@ export const SESSION_STATUSES = [
 	'pending',
 	'running',
 	'paused',
-	'paused_awaiting_answer',
-	'paused_awaiting_confirm',
 	'completed',
 	'error',
 ];
@@ -21,8 +20,6 @@ const COLOR_MAP: Record<string, string> = {
 	pending: '#666',
 	running: 'var(--md-sys-color-success)',
 	paused: '#ccaa44',
-	paused_awaiting_answer: '#ccaa44',
-	paused_awaiting_confirm: '#ccaa44',
 	completed: '#4488ff',
 	error: '#ff4444',
 };
@@ -31,18 +28,12 @@ const VARIANT_MAP: Record<string, string> = {
 	pending: 'default',
 	running: 'primary',
 	paused: 'warning',
-	paused_awaiting_answer: 'warning',
-	paused_awaiting_confirm: 'warning',
 	completed: 'success',
 	error: 'error',
 };
 
 export function isPausedStatus(status: string | undefined | null): boolean {
-	return (
-		status === 'paused' ||
-		status === 'paused_awaiting_answer' ||
-		status === 'paused_awaiting_confirm'
-	);
+	return status === 'paused';
 }
 
 /** Queued (`pending`) or claimed (`running`) — both block "idle" UI. */

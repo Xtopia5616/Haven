@@ -8,7 +8,7 @@ export const APP_EVENT_NAMES = [
 	'mute:changed',
 	'mcp:status_change',
 	'skills:status_change',
-	'confirm:requested',
+	'interaction:requested',
 	'hotkey:conflict',
 	'hotkey:rebind',
 	'llm:config_changed',
@@ -27,16 +27,25 @@ export interface TrayStatusPayload { status: string; tooltip: string; }
 export interface MuteChangedPayload { muted: boolean; }
 export interface McpStatusPayload { name: string; status: McpStatus; }
 export interface SkillsStatusPayload { op: string; }
-export interface ConfirmationRequestedPayload {
-	stepId: string;
-	invocationStepId: string | null;
-	actionIndex: number;
-	toolCallId: string | null;
-	toolName: string;
-	riskLevel: RiskLevel;
+export type InteractionKind = 'ask' | 'confirm' | 'scheduled_confirm';
+export type InteractionStatus = 'pending' | 'resolved' | 'expired' | 'cancelled';
+export interface InteractionRequest {
+	id: string;
 	sessionId: string;
-	summary: string;
-	permissionKey: string;
+	kind: InteractionKind;
+	status: InteractionStatus;
+	prompt: string;
+	options: string[];
+	toolName?: string;
+	riskLevel?: RiskLevel;
+	summary?: string;
+	permissionKey?: string;
+	invocationStepId?: string;
+	actionIndex?: number;
+	toolCallId?: string;
+	createdAt: string;
+	expiresAt?: string;
+	response?: unknown;
 }
 export interface HotkeyConflictPayload { binding: string; error: string; }
 export interface HotkeyRebindPayload { oldBinding: string; newBinding: string; }
@@ -47,7 +56,7 @@ export interface AppEventPayloadMap {
 	'mute:changed': MuteChangedPayload;
 	'mcp:status_change': McpStatusPayload;
 	'skills:status_change': SkillsStatusPayload;
-	'confirm:requested': ConfirmationRequestedPayload;
+	'interaction:requested': InteractionRequest;
 	'hotkey:conflict': HotkeyConflictPayload;
 	'hotkey:rebind': HotkeyRebindPayload;
 	'llm:config_changed': null;
@@ -59,16 +68,22 @@ interface AppWirePayloadMap {
 	'mute:changed': { muted: boolean };
 	'mcp:status_change': { name: string; status: McpStatus };
 	'skills:status_change': { op: string };
-	'confirm:requested': {
-		step_id: string;
-		invocation_step_id: string | null;
-		action_index: number;
-		tool_call_id: string | null;
-		tool_name: string;
-		risk_level: RiskLevel;
+	'interaction:requested': {
+		id: string;
 		session_id: string;
-		summary: string;
-		permission_key: string;
+		kind: InteractionKind;
+		status: InteractionStatus;
+		prompt: string;
+		options?: string[];
+		tool_name?: string | null;
+		risk_level?: RiskLevel | null;
+		summary?: string | null;
+		permission_key?: string | null;
+		invocation_step_id?: string | null;
+		action_index?: number | null;
+		tool_call_id?: string | null;
+		created_at: string;
+		expires_at?: string | null;
 	};
 	'hotkey:conflict': { binding: string; error: string };
 	'hotkey:rebind': { old_binding: string; new_binding: string };
@@ -91,18 +106,24 @@ export function mapAppEvent<K extends AppEventName>(
 			return { ...event, payload: p } as unknown as TauriEvent<AppEventPayloadMap[K]>;
 		case 'skills:status_change':
 			return { ...event, payload: p } as unknown as TauriEvent<AppEventPayloadMap[K]>;
-		case 'confirm:requested': {
-			const payload = p as AppWirePayloadMap['confirm:requested'];
+		case 'interaction:requested': {
+			const payload = p as AppWirePayloadMap['interaction:requested'];
 			return { ...event, payload: {
-				stepId: payload.step_id,
-				invocationStepId: payload.invocation_step_id,
-				actionIndex: payload.action_index,
-				toolCallId: payload.tool_call_id,
-				toolName: payload.tool_name,
-				riskLevel: payload.risk_level,
+				id: payload.id,
 				sessionId: payload.session_id,
-				summary: payload.summary,
-				permissionKey: payload.permission_key,
+				kind: payload.kind,
+				status: payload.status,
+				prompt: payload.prompt,
+				options: payload.options || [],
+				...(payload.tool_name ? { toolName: payload.tool_name } : {}),
+				...(payload.risk_level ? { riskLevel: payload.risk_level } : {}),
+				...(payload.summary ? { summary: payload.summary } : {}),
+				...(payload.permission_key ? { permissionKey: payload.permission_key } : {}),
+				...(payload.invocation_step_id ? { invocationStepId: payload.invocation_step_id } : {}),
+				...(payload.action_index != null ? { actionIndex: payload.action_index } : {}),
+				...(payload.tool_call_id ? { toolCallId: payload.tool_call_id } : {}),
+				createdAt: payload.created_at,
+				...(payload.expires_at ? { expiresAt: payload.expires_at } : {}),
 			} } as unknown as TauriEvent<AppEventPayloadMap[K]>;
 		}
 		case 'hotkey:conflict': {

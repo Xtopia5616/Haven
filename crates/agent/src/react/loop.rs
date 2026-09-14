@@ -130,11 +130,17 @@ impl ReActEngine {
 
         // A confirmation decision wakes a paused run. Finish the already
         // advertised batch before asking the model for another response.
-        if self
+        let confirm_requests = self
             .executor
-            .get_awaiting_confirm(session_id)
+            .interaction_requests(session_id)
             .await
-            .is_some_and(|pending| pending.all_decided())
+            .into_iter()
+            .filter(|request| request.kind == crate::interaction::InteractionKind::Confirm)
+            .collect::<Vec<_>>();
+        if !confirm_requests.is_empty()
+            && confirm_requests
+                .iter()
+                .all(|request| request.decision().is_some())
         {
             match self
                 .finish_confirm_batch(session_id, state, &emitter, run_id)
