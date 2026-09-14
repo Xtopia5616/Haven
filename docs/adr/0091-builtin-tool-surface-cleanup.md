@@ -16,7 +16,7 @@
 1. 保持稳定的顶层工具名，不拆分或重命名 `agent`、`system`、`files`、`audio`；把
    `env`、`power`、`registry` 收紧为 `system` 的私有实现模块。
 2. 权限路由只保留实际模型入口和 operation-aware capability：删除过期的 `messaging`、
-   `haven` 路由，补齐 `actions`、`agent` 和六个 `haven_*` capability 的 operation key。
+   `haven` 路由，补齐 `actions`、`agent` 和五个 `haven_*` capability 的 operation key。
 3. `actions(operation=cancel, action_id=...)` 只允许取消当前 session 所拥有的任务，
    风险为 medium，并复用 `BackgroundActions::cancel_for_session` 的幂等语义。
 4. `files(operation=create_dir, path=...)` 使用现有路径清理和安全网关，创建目录树，风险为

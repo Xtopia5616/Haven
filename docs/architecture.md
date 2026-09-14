@@ -528,7 +528,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-01 | §2.3 Memory / §2.5 Agent/Tools：将查询、prompt memory、工具定义与 token estimate 缓存分别提取为有界/版本化结构，按 key/domain 失效并用内容指纹守住上下文一致性（ADR 0066） |
 | 2026-09-01 | §2.5 Agent：上下文 Additional context 改为单项有界拼接，compaction 改为 token-aware 规划，摘要输入/输出有界并保留工具轮次与稳定前缀（ADR 0067） |
 | 2026-09-02 | §2.5 Agent/Tools：以 `MessagingService` 统一 Envelope identity、claim/complete/retry/expiry 与 request/reply/receipt；InboxBus 收窄为 JSONL transport adapter（ADR 0069） |
-| 2026-09-02 | §2.5 Tools：将模型可见的 `haven` 管理入口收窄为六个 capability-scoped admin tools；删除任意 dotted `config_set`，诊断结果增加脱敏与内容边界（ADR 0070） |
+| 2026-09-02 | §2.5 Tools：将模型可见的 `haven` 管理入口收窄为五个 capability-scoped admin tools；删除任意 dotted `config_set`，诊断结果增加脱敏与内容边界（ADR 0070） |
 | 2026-09-02 | §3 阶段 B：将 `haven-mcp` 的 protocol、transport、client、manager 与测试从单一 `lib.rs` 拆出，保持 MCP 外部契约不变 |
 | 2026-09-02 | §3 阶段 C：将 `haven-tools` 的 shell runtime、background actions、output/process helpers 从 `bg.rs` 拆出；旧 `bg` 路径暂留薄 facade |
 | 2026-09-05 | §3 阶段 C 收尾：删除已无 workspace 调用方的旧 `bg` facade，统一使用拆分后的模块与 crate-root 导出（ADR 0082） |

@@ -124,7 +124,7 @@
 - 2026-09-01：P2 Agent/Tools/Memory 失败安全边界收口：数据库读取、向量身份、事实写入、action durability 与未知副作用结果不再被静默降级或错误重试（ADR 0065）。
 - 2026-09-01：P2 Agent/Tools/Memory 缓存边界重构：查询缓存抽离为有界 LRU，prompt memory 支持多项复用，工具定义按全局/会话版本隔离，token estimate 以内容指纹保证等长替换一致（ADR 0066）。
 - 2026-09-01：P2 Agent 上下文边界优化：Additional context 限制单项大小，compaction 按 token 规划最近尾部，摘要输入/输出有界并保留工具轮次结构（ADR 0067）。
-- 2026-09-02：P1 Tools 管理面收口：模型目录拆为六个 capability-scoped admin tools，删除任意 dotted `config_set`，配置写入使用 typed `ConfigService` patch，诊断结果脱敏并限制隐私字段；native `SelfTool` 仅暂时保留给 Tauri structured calls（ADR 0070）。
+- 2026-09-02：P1 Tools 管理面收口：模型目录拆为五个 capability-scoped admin tools，删除任意 dotted `config_set`，配置写入使用 typed `ConfigService` patch，诊断结果脱敏并限制隐私字段；native `SelfTool` 仅暂时保留给 Tauri structured calls（ADR 0070）。
 
 - 2026-09-02：P1 Tools 契约首条迁移：haven_config 使用 TypedToolOperation，由 typed operation 统一提供 args/output/error 与风险、幂等、取消/超时和并发 metadata；其余 admin domain 仍列为后续切片（ADR 0071）。
 - 2026-09-04：P1 Agent/LLM 上下文预算收口：消息、工具 schema、provider overhead 与动态输出上限统一按 token 计算；摘要失败降级为保留 system/最近完整 tool-call 边界并提示 UI；token cache、上游 prompt budget 与 compaction cancellation 一并收口（ADR 0079）。

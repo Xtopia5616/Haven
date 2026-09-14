@@ -13,10 +13,10 @@
 
 ## 决定
 
-1. 模型目录不再注册 broad `haven` dispatcher，而注册六个 capability-scoped
-   工具：`haven_diagnostics`、`haven_config`、`haven_skills`、`haven_tools`、
-   `haven_mcp` 和 `haven_session_diagnostics`。每个工具只接受自己的 operation
-   allowlist，schema 拒绝额外字段；因此 SafetyGateway 的权限键也按 capability
+1. 模型目录不再注册 broad `haven` dispatcher，而注册五个 capability-scoped
+   工具：`haven_diagnostics`、`haven_config`、`haven_skills`、`haven_tools` 和
+   `haven_mcp`。会话诊断已按 ADR 0103 合并到 `haven_diagnostics`；每个工具只接受自己的
+   operation allowlist，schema 拒绝额外字段；因此 SafetyGateway 的权限键也按 capability
    和 operation 分离。
 2. 删除普通模型路径上的任意 `config_set(path, value)`。配置写操作使用
    `ConfigService::apply_patch(ConfigPatch::...)`；`haven_config` 当前仅保留经过
