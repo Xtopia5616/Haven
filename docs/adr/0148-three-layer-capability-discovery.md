@@ -31,6 +31,57 @@ Haven 的内置工具数量持续增加。把每个 operation 的名称、描述
 - `{"action":"describe","name":"window.screenshot"}` 查询第三层精确详情；
 - `cursor`/`limit`/`next_cursor` 提供有界分页；发现动作不加载、不调用、不执行目标工具。
 
+### 统一目录模型与状态链路
+
+目录的唯一元数据来源是 `ToolManifest`：`identity`（`source`、`catalog_group`、
+`root`、`operation`、`stable_name`）、`model`（名称、描述、schema）、`policy`（风险、
+权限键、确认、幂等性、作用域、并发）、`presentation` 和 `availability`。Builtin 和 Skill
+通过 `ToolDef` 生成 manifest；MCP 将 `McpToolInfo` 映射到同一字段语义，使用
+`mcp__...` 的稳定 provider 名称。manifest 是 host/UI/权限目录模型，不直接塞进 provider
+`tools[]`；provider schema 只由当前 session 的 `ToolDef` surface 生成。
+
+状态严格按以下单向链路变化：
+
+`discovered → described → load_requested → loaded(session) → executable → executed`。
+
+`discovered` 只读 host catalog/Skill index/MCP tools cache；`described` 只返回紧凑字段，
+第三层 operation 才返回完整 schema；`load_requested` 由显式 loader action 产生；只有原子
+预算检查成功后才进入 `SessionCatalog`，下一轮才进入 `tools[]`。`execute` 只能从 global
+core registry 或该 session overlay 查找，deferred catalog 不是可调用注册表。加载失败、
+超预算、断线和权限拒绝均保持在失败状态，不隐式回退到执行或部分加载。
+
+上下文预算分开计算：第一层 prompt 目录使用固定短文本预算，第二层/第三层 discovery
+响应分别受分页 `limit`（服务端封顶）和单字段字符上限约束，provider `tools[]` 受
+`context_limits.max_tools_per_request` 约束，工具 observation 仍使用独立的
+`max_observation_chars`。loader 批次做 all-or-nothing admission；已加载名称不重复计数，
+超限只返回可选名称摘要。
+
+目录 list 返回 `catalog_revision`（builtin/session/MCP 三个单调时钟的组合）。继续使用
+`next_cursor` 时必须回传该 revision；配置、builtin/Skill rebuild、session load 或 MCP
+`tools/list_changed` 使旧 cursor 返回 `stale_cursor`，调用方从 0 重新分页。prompt 的
+第一层缓存按 global registry 版本失效，MCP/Skill 变化在下一次 resume 重建；provider
+schema 缓存按 `(global_version, session_version)` 失效，不让一个 session 的 load 影响其它
+session。
+
+权限在 load 和 execute 两处都成立：目录只列 enabled/available 项，loader 是 Safe 但
+要求私有 session context，目标 operation 的 intrinsic policy、`permission_key` 和
+disabled-operation 规则仍由统一安全网关执行；MCP/Skill 默认 High，不能借由延迟加载绕过
+确认。外部 MCP/Skill 描述和 schema 的人类可读注释按单行/长度上限清洗；不信任其内容为
+指令，不向 prompt 暴露 MCP command、args、env、凭据或宿主路径。schema 的结构、枚举、
+默认值保持不变，执行仍使用 host 保存的原始 MCP input。
+
+resume 只重放事件中已成功的 loader 选择（MCP server + 可选 raw tool names、builtin
+operation/root、Skill name），通过同一 loader 的幂等注册路径恢复 session overlay；缺失或
+禁用能力是可观测的软失败，坏 snapshot 仍 hard fail。并发 load 在 session 写锁下完成预算
+检查和批量提交；失败不得留下半批次。rollback 截断事件和投影后丢弃 session overlay，
+下一轮从 snapshot 选择重新加载；不把 catalog 描述写入 transcript 作为第二真源。
+
+兼容性与迁移：本 ADR 不改数据库 schema、实体 ID 或既有权限 key；旧配置无需迁移。旧版
+无法识别 loader action 时按测试版发布策略结束/重置进行中 snapshot，不保留永久兼容分支。
+诊断只记录 source/name、revision、选择数、预算拒绝、连接状态和耗时，不记录 schema 中的
+凭据或完整参数；关键门禁覆盖 prompt 轻量化、三层发现、describe 无副作用、load 后 schema、
+Builtin/Skill/MCP 适配、分页 revision、缓存失效、权限拒绝与不可信元数据清洗。
+
 Builtin/Skill/MCP 的完整实现仍分别由 `DeferredToolCatalog`、Skill catalog 或 MCP cache
 提供。模型获得第三层详情后，必须使用 `load_builtin`、`load_skill` 或 `load_mcp` 激活能力；
 只有当前 session 已激活的能力才进入 provider `tools[]`，该结构化 surface 仍是实际调用 schema

@@ -258,7 +258,7 @@ impl LoadMcpTool {
         let mut tool_schemas = Vec::with_capacity(tools.len());
         for info in tools {
             let tool_name = info.name.clone();
-            let description = truncate_description(&info.description);
+            let description = crate::adapters::sanitize_external_description(&info.description);
             let adapter = McpToolAdapter::new(client.clone(), server_name, info);
             // The next provider request receives the full schema through
             // `tools[]`; returning it here would duplicate the schema inside
@@ -341,27 +341,12 @@ fn catalog_entries(tools: &[haven_mcp::McpToolInfo]) -> Vec<Value> {
     tools
         .iter()
         .map(|t| {
-            let desc = t.description.trim();
-            let desc = if desc.chars().count() > 160 {
-                let truncated: String = desc.chars().take(157).collect();
-                format!("{truncated}...")
-            } else {
-                desc.to_string()
-            };
             serde_json::json!({
                 "name": t.name,
-                "description": desc,
+                "description": crate::adapters::sanitize_external_text(&t.description, 160),
             })
         })
         .collect()
-}
-
-fn truncate_description(description: &str) -> String {
-    let description = description.trim();
-    if description.chars().count() <= 160 {
-        return description.into();
-    }
-    format!("{}...", description.chars().take(157).collect::<String>())
 }
 
 #[async_trait]

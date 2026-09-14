@@ -42,6 +42,10 @@ pub struct ToolCatalogParams {
     pub cursor: Option<usize>,
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Revision returned by a prior paged list. A cursor from an older
+    /// catalog is rejected instead of silently skipping or duplicating items.
+    #[serde(default)]
+    pub revision: Option<String>,
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
 }
@@ -176,7 +180,19 @@ impl ToolCatalogTool {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("session context required to query tool catalog"))?;
 
-        match params.action.trim() {
+        let revision = self.catalog_revision(&session_id).await;
+        if params.cursor.unwrap_or(0) > 0 && params.revision.as_deref() != Some(revision.as_str()) {
+            return Ok(ToolResult::ok(serde_json::json!({
+                "status": "stale_cursor",
+                "action": params.action,
+                "source": source.as_str(),
+                "catalog_revision": revision,
+                "restart_cursor": 0,
+                "hint": "The capability catalog changed; restart this list from cursor 0.",
+            })));
+        }
+
+        let result = match params.action.trim() {
             "list" => {
                 let level = CatalogLevel::parse(params.level.as_deref())?;
                 self.list(
@@ -202,7 +218,23 @@ impl ToolCatalogTool {
                 self.describe(&session_id, source, name).await
             }
             other => anyhow::bail!("action must be one of list or describe; got '{other}'"),
+        }?;
+        Self::add_revision(result, &revision)
+    }
+
+    async fn catalog_revision(&self, session_id: &str) -> String {
+        let (global, session) = self
+            .session_catalog
+            .catalog_version_for_session(session_id)
+            .await;
+        format!("{global}:{session}:{}", self.mcp_manager.catalog_version())
+    }
+
+    fn add_revision(mut result: ToolResult, revision: &str) -> anyhow::Result<ToolResult> {
+        if let Some(object) = result.output.as_object_mut() {
+            object.insert("catalog_revision".into(), Value::String(revision.into()));
         }
+        Ok(result)
     }
 
     async fn list(
@@ -612,6 +644,11 @@ impl Tool for ToolCatalogTool {
                     "maximum": MAX_PAGE_SIZE,
                     "default": DEFAULT_PAGE_SIZE,
                     "description": "Number of compact entries to return"
+                },
+                "revision": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "description": "Catalog revision returned with a prior page; required when following next_cursor"
                 }
             },
             "oneOf": [
@@ -776,7 +813,7 @@ fn mcp_tool_detail(server_name: &str, info: &McpToolInfo, loaded: bool) -> Value
         "tool_name": info.name,
         "description": compact_text(&info.description, 240),
         "risk_level": RiskLevel::High,
-        "input_schema": info.input_schema,
+        "input_schema": crate::adapters::sanitize_external_schema(&info.input_schema),
         "loaded": loaded,
         "load": {
             "tool": "load_mcp",

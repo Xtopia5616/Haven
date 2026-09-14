@@ -4,6 +4,7 @@ use haven_llm::{McpToolCaller, McpToolOutcome};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -34,6 +35,10 @@ pub struct McpManager {
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
+    /// Changes whenever the configured server set or a server's tools/list
+    /// cache changes. Consumers use this as a cheap catalog invalidation
+    /// clock; it is not a durable protocol version.
+    catalog_version: Arc<AtomicU64>,
 }
 
 impl Clone for McpManager {
@@ -43,6 +48,7 @@ impl Clone for McpManager {
             status_tx: self.status_tx.clone(),
             discovery_config: self.discovery_config.clone(),
             limits: self.limits.clone(),
+            catalog_version: self.catalog_version.clone(),
         }
     }
 }
@@ -59,7 +65,17 @@ impl McpManager {
             limits: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::ContextLimitsConfig::default(),
             )),
+            catalog_version: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Monotonic in-process version for MCP catalog consumers.
+    pub fn catalog_version(&self) -> u64 {
+        self.catalog_version.load(Ordering::Relaxed)
+    }
+
+    fn bump_catalog_version(&self) {
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Replace the unified context limits (binary payload / SSE buffer caps)
@@ -81,6 +97,7 @@ impl McpManager {
             .lock()
             .await
             .insert(client.name().to_string(), client);
+        self.bump_catalog_version();
     }
 
     pub async fn remove_client(&self, name: &str) {
@@ -94,6 +111,7 @@ impl McpManager {
                     haven_common::error::sanitize_error_text(&error.to_string())
                 );
             }
+            self.bump_catalog_version();
         }
     }
 
@@ -146,6 +164,7 @@ impl McpManager {
     /// Does NOT start health monitors — call `start_monitors` separately
     /// or use `discover_all` for the combined operation.
     pub async fn load_from_config(&self, servers: &[haven_common::McpServerConfig]) {
+        self.bump_catalog_version();
         let t0 = std::time::Instant::now();
         let reconcile = self.reconcile_servers(servers).await;
 
@@ -187,8 +206,10 @@ impl McpManager {
                 .insert(name.clone(), client.clone());
 
             let listener_client = client.clone();
+            let catalog_version = self.catalog_version.clone();
             listener_client.start_notification_listener(move |server_name: &str| {
                 tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
+                catalog_version.fetch_add(1, Ordering::Relaxed);
             });
 
             // Set authoritative client status AND broadcast before the connect
@@ -366,7 +387,13 @@ impl McpManager {
     pub async fn reconnect(&self, name: &str) -> anyhow::Result<()> {
         let clients = self.clients.lock().await;
         match clients.get(name) {
-            Some(client) => client.reconnect().await,
+            Some(client) => {
+                let result = client.reconnect().await;
+                if result.is_ok() {
+                    self.bump_catalog_version();
+                }
+                result
+            }
             None => anyhow::bail!("MCP client '{}' not found", name),
         }
     }
@@ -382,6 +409,10 @@ impl McpManager {
                 match client.list_tools().await {
                     Ok(tools) => {
                         *client.tools_cache.lock().await = Some(tools);
+                        // The client may have been added directly in tests or
+                        // by a native host path, bypassing load_from_config.
+                        // Refreshing its discovery cache still invalidates
+                        // the model-facing catalog.
                     }
                     Err(e) => {
                         tracing::warn!("Failed to refresh tools from '{}': {}", name, e);
@@ -394,6 +425,7 @@ impl McpManager {
                 tracing::warn!("MCP tools refresh task failed: {}", error);
             }
         }
+        self.bump_catalog_version();
     }
 
     pub async fn call_tool(

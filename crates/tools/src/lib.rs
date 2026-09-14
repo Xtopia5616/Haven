@@ -873,6 +873,11 @@ impl ToolsManager {
         }
         drop(configs);
 
+        // Configuration changes alter the discovery catalog even before a
+        // client has connected. Keep catalog pagination/resume consumers on
+        // the same invalidation clock as builtin rebuilds.
+        self.session_catalog.bump_global_version();
+
         self.mcp_manager.load_from_config(servers).await;
     }
 
@@ -892,6 +897,7 @@ impl ToolsManager {
                 configs.insert(server.name.clone(), server.clone());
             }
         }
+        self.session_catalog.bump_global_version();
         self.mcp_manager.discover_all(servers, config).await;
     }
 
@@ -1293,11 +1299,13 @@ impl ToolsManager {
             .write()
             .await
             .insert(config.name.clone(), config);
+        self.session_catalog.bump_global_version();
     }
 
     /// Remove a single MCP server config from the in-memory map.
     pub async fn remove_mcp_server_config(&self, name: &str) {
         self.mcp_server_configs.write().await.remove(name);
+        self.session_catalog.bump_global_version();
     }
 
     /// List all known MCP server configs (enabled and disabled).
@@ -2341,6 +2349,53 @@ mod tests {
             .unwrap();
         assert_eq!(operation_page.output["items"].as_array().unwrap().len(), 1);
         assert_eq!(operation_page.output["next_cursor"], 1);
+        let revision = operation_page.output["catalog_revision"]
+            .as_str()
+            .expect("paged catalog responses carry a revision")
+            .to_string();
+        let next_page = mgr
+            .execute_tool(
+                Some(session_id),
+                "tool_catalog",
+                json!({
+                    "action": "list",
+                    "level": "operations",
+                    "root": "window",
+                    "cursor": 1,
+                    "revision": revision,
+                    "limit": 1
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(next_page.output["status"], "ok");
+
+        // A config mutation invalidates an outstanding cursor instead of
+        // returning a page from a different catalog snapshot.
+        mgr.upsert_mcp_server_config(McpServerConfig {
+            name: "catalog-revision-test".into(),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+        let stale_page = mgr
+            .execute_tool(
+                Some(session_id),
+                "tool_catalog",
+                json!({
+                    "action": "list",
+                    "level": "operations",
+                    "root": "window",
+                    "cursor": 1,
+                    "revision": operation_page.output["catalog_revision"],
+                    "limit": 1
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale_page.output["status"], "stale_cursor");
 
         let screenshot_detail = mgr
             .execute_tool(
@@ -2370,6 +2425,35 @@ mod tests {
                 .await
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        mgr.upsert_mcp_server_config(McpServerConfig {
+            name: "unconnected-catalog-server".into(),
+            command: "this-command-must-not-run".into(),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        let result = mgr
+            .execute_tool(
+                Some("ses-0123456789abcdef0123456789abcdef"),
+                "tool_catalog",
+                json!({
+                    "action": "describe",
+                    "name": "unconnected-catalog-server"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["status"], "ok");
+        assert_eq!(result.output["source"], "mcp");
+        assert!(mgr.mcp_manager.list_clients().await.is_empty());
     }
 
     #[tokio::test]
