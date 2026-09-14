@@ -148,6 +148,10 @@ async fn mcp_client_new_initial_state() {
     );
     assert_eq!(client.name(), "test");
     assert!(client.enabled());
+    assert_eq!(
+        client.network_policy().await,
+        haven_common::types::NetworkPolicy::Restricted
+    );
     let status = client.status().await;
     assert!(matches!(status, McpClientStatus::Disconnected));
 }
@@ -185,6 +189,10 @@ fn mcp_status_change_event_serde() {
 #[tokio::test]
 async fn mcp_manager_new() {
     let mgr = McpManager::new();
+    assert_eq!(
+        mgr.network_policy().await,
+        haven_common::types::NetworkPolicy::Restricted
+    );
     let clients = mgr.clients.lock().await;
     assert!(clients.is_empty());
 }

@@ -57,6 +57,13 @@ impl Clone for McpManager {
 
 impl McpManager {
     pub fn new() -> Self {
+        Self::new_with_network_policy(haven_common::types::NetworkPolicy::Restricted)
+    }
+
+    /// Construct a manager with an explicit transport policy. The regular
+    /// constructor is fail-closed; this is useful for controlled hosts and
+    /// tests that intentionally provide their own network boundary.
+    pub fn new_with_network_policy(network_policy: haven_common::types::NetworkPolicy) -> Self {
         let (status_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
@@ -67,12 +74,7 @@ impl McpManager {
             limits: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::ContextLimitsConfig::default(),
             )),
-            network_policy: Arc::new(tokio::sync::RwLock::new(
-                // Fail closed until the desktop shell applies its
-                // SecurityConfig snapshot. Tests that intentionally exercise
-                // a local server must opt into Open explicitly.
-                haven_common::types::NetworkPolicy::Restricted,
-            )),
+            network_policy: Arc::new(tokio::sync::RwLock::new(network_policy)),
             catalog_version: Arc::new(AtomicU64::new(0)),
         }
     }

@@ -1159,60 +1159,23 @@ mod tests {
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
 
-    // Test-only fixture for legacy threshold cases. Production callers must
-    // provide the concrete operation contract through `check_with_policy` and
-    // `verify_receipt_with_policy`; this helper is intentionally unavailable
-    // from the compiled runtime API.
-    impl AuthorizationEngine {
-        async fn check(
-            &self,
-            session_id: Option<&str>,
-            tool_name: &str,
-            params: &Value,
-            risk_level: RiskLevel,
-        ) -> ConfirmationResult {
-            let policy = OperationPolicy {
-                risk_level,
-                permission_key: permission_key(tool_name, params),
-                confirmation: if risk_level >= RiskLevel::Critical {
-                    ConfirmationRequirement::Required
-                } else if risk_level == RiskLevel::Safe {
-                    ConfirmationRequirement::None
-                } else {
-                    ConfirmationRequirement::SecurityPolicy
-                },
-                idempotency: crate::OperationIdempotency::Unknown,
-                scope: crate::ToolOperationScope::Session,
-                concurrency: ToolConcurrency::Exclusive,
-                effect: OperationEffect::ExternalEffect,
-                data_sensitivity: DataSensitivity::None,
-                network_access: NetworkAccess::None,
-            };
-            self.check_with_policy(session_id, tool_name, params, &policy)
-                .await
-        }
-
-        async fn verify_receipt(
-            &self,
-            session_id: Option<&str>,
-            tool_name: &str,
-            params: &Value,
-            reported_risk: RiskLevel,
-            receipt: &ConfirmationReceipt,
-        ) -> Result<(), String> {
-            let policy = OperationPolicy {
-                risk_level: reported_risk,
-                permission_key: permission_key(tool_name, params),
-                confirmation: ConfirmationRequirement::SecurityPolicy,
-                idempotency: crate::OperationIdempotency::Unknown,
-                scope: crate::ToolOperationScope::Session,
-                concurrency: ToolConcurrency::Exclusive,
-                effect: OperationEffect::ExternalEffect,
-                data_sensitivity: DataSensitivity::None,
-                network_access: NetworkAccess::None,
-            };
-            self.verify_receipt_with_policy(session_id, tool_name, params, &policy, receipt)
-                .await
+    fn fixture_policy(tool_name: &str, params: &Value, risk_level: RiskLevel) -> OperationPolicy {
+        OperationPolicy {
+            risk_level,
+            permission_key: permission_key(tool_name, params),
+            confirmation: if risk_level >= RiskLevel::Critical {
+                ConfirmationRequirement::Required
+            } else if risk_level == RiskLevel::Safe {
+                ConfirmationRequirement::None
+            } else {
+                ConfirmationRequirement::SecurityPolicy
+            },
+            idempotency: crate::OperationIdempotency::Unknown,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+            effect: OperationEffect::ExternalEffect,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
         }
     }
 
@@ -1244,9 +1207,10 @@ mod tests {
             params: &Value,
             risk_level: RiskLevel,
         ) -> ConfirmationResult {
+            let policy = fixture_policy(tool_name, params, risk_level);
             let result = self
                 .engine
-                .check(session_id, tool_name, params, risk_level)
+                .check_with_policy(session_id, tool_name, params, &policy)
                 .await;
             if risk_level < self.threshold
                 && matches!(result, ConfirmationResult::RequiresConfirmation { .. })
@@ -1317,7 +1281,7 @@ mod tests {
 
     #[tokio::test]
     async fn permission_modes_have_predictable_prompt_boundaries() {
-        let gw = AuthorizationEngine::new();
+        let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.set_permission_mode(PermissionMode::Default).await;
         assert!(matches!(
             gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
@@ -1337,7 +1301,7 @@ mod tests {
 
     #[tokio::test]
     async fn operation_contract_drives_plan_and_auto_edit_modes() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
             permission_key: "files.read".into(),
@@ -1386,7 +1350,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_mode_cannot_be_bypassed_by_permanent_allow() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
             permission_key: "files.write".into(),
@@ -1417,7 +1381,7 @@ mod tests {
 
     #[tokio::test]
     async fn sensitive_read_and_network_access_are_not_safe_just_because_read_only() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let sensitive_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
             permission_key: "system.env.get".into(),
@@ -1451,7 +1415,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_edit_does_not_auto_approve_ui_schedule_or_process_effects() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
         gateway.set_permission_mode(PermissionMode::AutoEdit).await;
         gateway
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -1487,7 +1451,14 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_write_rejects_opaque_processes_until_full_access_is_explicit() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
+        gateway
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
         let policy = OperationPolicy::native(
             "shell",
             "shell".into(),
@@ -1513,7 +1484,7 @@ mod tests {
 
     #[tokio::test]
     async fn network_deny_is_a_hard_boundary_for_http_and_adapters() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let security = SecurityConfig {
             network_policy: NetworkPolicy::Deny,
             ..SecurityConfig::default()
@@ -1563,7 +1534,7 @@ mod tests {
 
     #[tokio::test]
     async fn sandbox_boundaries_block_writes_and_enforce_writable_roots() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_only = SecurityConfig {
             sandbox_mode: SandboxMode::ReadOnly,
             ..SecurityConfig::default()
@@ -1627,7 +1598,7 @@ mod tests {
 
     #[tokio::test]
     async fn risk_override_can_raise_but_never_lower_intrinsic_risk() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let mut settings = HashMap::new();
         settings.insert(
             "system".into(),
@@ -1659,35 +1630,28 @@ mod tests {
 
     #[tokio::test]
     async fn confirmation_receipt_is_bound_to_input_and_policy_revision() {
-        let gateway = AuthorizationEngine::new();
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
+        let safe_input = json!({"command": "echo safe"});
+        let safe_policy = fixture_policy("shell", &safe_input, RiskLevel::High);
         let decision = gateway
-            .check(
-                None,
-                "shell",
-                &json!({"command": "echo safe"}),
-                RiskLevel::High,
-            )
+            .check(None, "shell", &safe_input, RiskLevel::High)
             .await;
         let ConfirmationResult::RequiresConfirmation { receipt, .. } = decision else {
             panic!("High-risk shell call should require confirmation");
         };
         gateway
-            .verify_receipt(
-                None,
-                "shell",
-                &json!({"command": "echo safe"}),
-                RiskLevel::High,
-                &receipt,
-            )
+            .verify_receipt_with_policy(None, "shell", &safe_input, &safe_policy, &receipt)
             .await
             .unwrap();
+        let changed_input = json!({"command": "echo changed"});
+        let changed_policy = fixture_policy("shell", &changed_input, RiskLevel::High);
         assert!(
             gateway
-                .verify_receipt(
+                .verify_receipt_with_policy(
                     None,
                     "shell",
-                    &json!({"command": "echo changed"}),
-                    RiskLevel::High,
+                    &changed_input,
+                    &changed_policy,
                     &receipt,
                 )
                 .await
@@ -1697,13 +1661,7 @@ mod tests {
         gateway.set_permission_mode(PermissionMode::Default).await;
         assert!(
             gateway
-                .verify_receipt(
-                    None,
-                    "shell",
-                    &json!({"command": "echo safe"}),
-                    RiskLevel::High,
-                    &receipt,
-                )
+                .verify_receipt_with_policy(None, "shell", &safe_input, &safe_policy, &receipt,)
                 .await
                 .is_err()
         );
@@ -1847,7 +1805,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_permanent_resets_permanent_and_session_rules() {
-        let gw = AuthorizationEngine::new();
+        let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.grant(
             None,
             "shell",
@@ -1874,7 +1832,7 @@ mod tests {
 
     #[tokio::test]
     async fn critical_operations_cannot_be_bypassed_by_allow_grants() {
-        let gw = AuthorizationEngine::new();
+        let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.grant(
             None,
             "system:hibernate",

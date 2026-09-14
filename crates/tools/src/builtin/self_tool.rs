@@ -420,7 +420,9 @@ mod tests {
         let tool = SelfTool::new(
             ctx,
             SkillsEngine::new(),
-            Arc::new(McpManager::new()),
+            Arc::new(McpManager::new_with_network_policy(
+                haven_common::types::NetworkPolicy::Open,
+            )),
             Arc::new(RwLock::new(HashMap::new())),
             ToolRegistry::new(),
             256 * 1024,
