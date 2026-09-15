@@ -687,26 +687,16 @@ impl SessionSupervisor {
             .tools
             .get_risk_level(session_id, tool_name, &input)
             .await;
-        let operation_policy = self
+        let authorization_request = self
             .tools
-            .get_operation_policy(session_id, tool_name, &input)
-            .await;
-        let policy_input = self
-            .tools
-            .get_authorization_input(session_id, tool_name, &input)
+            .get_authorization_request(session_id, tool_name, &input)
             .await;
         let mut confirmed: Option<bool> = None;
         if let Some(receipt) = receipt.as_ref()
             && let Err(reason) = self
                 .tools
                 .authorization()
-                .verify_receipt_with_policy(
-                    session_id,
-                    tool_name,
-                    &policy_input,
-                    &operation_policy,
-                    receipt,
-                )
+                .verify_receipt(&authorization_request, receipt)
                 .await
         {
             tracing::warn!(
@@ -738,11 +728,11 @@ impl SessionSupervisor {
         match self
             .tools
             .authorization()
-            .check_with_policy(session_id, tool_name, &policy_input, &operation_policy)
+            .authorize(&authorization_request)
             .await
         {
-            ConfirmationResult::AutoApproved => {}
-            ConfirmationResult::Blocked { reason } => {
+            AuthorizationDecision::AutoApproved => {}
+            AuthorizationDecision::Blocked { reason } => {
                 return Ok(ToolExecution {
                     result: ToolResult {
                         success: false,
@@ -762,7 +752,7 @@ impl SessionSupervisor {
                     confirmed: Some(false),
                 });
             }
-            ConfirmationResult::RequiresConfirmation { .. } => {
+            AuthorizationDecision::RequiresConfirmation { .. } => {
                 // R2 / Phase 5 E3: never block inside the tool future.
                 // Callers must pre-decide via pause-confirm or
                 // `request_scheduled_confirm`. Missing receipt fails closed.
@@ -999,23 +989,14 @@ impl SessionSupervisor {
         session_id: &str,
         tool_name: &str,
         input: &Value,
-    ) -> ConfirmationResult {
-        let operation_policy = self
+    ) -> haven_tools::AuthorizationDecision {
+        let authorization_request = self
             .tools
-            .get_operation_policy(Some(session_id), tool_name, input)
-            .await;
-        let policy_input = self
-            .tools
-            .get_authorization_input(Some(session_id), tool_name, input)
+            .get_authorization_request(Some(session_id), tool_name, input)
             .await;
         self.tools
             .authorization()
-            .check_with_policy(
-                Some(session_id),
-                tool_name,
-                &policy_input,
-                &operation_policy,
-            )
+            .authorize(&authorization_request)
             .await
     }
 

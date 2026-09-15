@@ -8,7 +8,8 @@ use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
 use haven_common::types::{RiskLevel, permission_key};
 use haven_tools::{
-    ConfirmationResult, McpClientStatus, McpServerSnapshot, NetworkAccess, OperationPolicy,
+    AuthorizationDecision, AuthorizationRequest, McpClientStatus, McpServerSnapshot, NetworkAccess,
+    OperationPolicy,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -269,30 +270,25 @@ pub async fn mcp_tool_call(
     let tool_key = haven_tools::McpToolAdapter::qualified_name_of(&client, &tool);
     let policy = OperationPolicy::native(
         &tool_key,
-        permission_key(&tool_key, &args),
+        permission_key(&tool_key, &args).into(),
         RiskLevel::High,
         NetworkAccess::Opaque,
     );
+    let authorization_request =
+        AuthorizationRequest::new(Some("ui"), &tool_key, args.clone(), policy);
     match state
         .tools
         .authorization()
-        .check_with_policy(Some("ui"), &tool_key, &args, &policy)
+        .authorize(&authorization_request)
         .await
     {
-        ConfirmationResult::AutoApproved => {}
-        ConfirmationResult::RequiresConfirmation {
-            tool_name,
-            risk_level,
-            receipt,
-            ..
-        } => {
+        AuthorizationDecision::AutoApproved => {}
+        AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
             let action_args = args.clone();
             return Err(queue_ui_confirmation(
                 &state,
                 &app,
-                tool_name,
-                args,
-                risk_level,
+                authorization_request,
                 receipt,
                 UiConfirmationAction::Mcp {
                     client,
@@ -302,7 +298,7 @@ pub async fn mcp_tool_call(
             )
             .await?);
         }
-        ConfirmationResult::Blocked { reason } => {
+        AuthorizationDecision::Blocked { reason } => {
             return Err(format!(
                 "MCP tool call blocked by security policy ({reason})"
             ));

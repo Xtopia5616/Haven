@@ -5,8 +5,9 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    ConfirmationRequirement, OperationIdempotency, OperationPolicy, Tool, ToolBox, ToolConcurrency,
-    ToolDef, ToolExecutionOutcome, ToolOperationScope, ToolRegistration, ToolResult, ToolSignals,
+    ConfirmationRequirement, OperationIdempotency, OperationPolicy, StructuredToolError, Tool,
+    ToolBox, ToolConcurrency, ToolDef, ToolErrorMetadata, ToolExecutionOutcome, ToolOperationScope,
+    ToolRegistration, ToolResult, ToolSignals,
 };
 use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolIdentity, ToolManifest, ToolModel, ToolPresentation,
@@ -72,6 +73,7 @@ impl OperationViewTool {
 /// make the narrow provider schema self-describing in tool inspectors and
 /// provider traces.
 fn annotate_schema(spec: &mut OperationSpec) {
+    close_object_schemas(&mut spec.schema);
     let Some(schema) = spec.schema.as_object_mut() else {
         return;
     };
@@ -79,12 +81,32 @@ fn annotate_schema(spec: &mut OperationSpec) {
     schema.insert("description".into(), Value::String(spec.description.into()));
 }
 
+/// Operation branches are the provider boundary. Some aggregate schemas use
+/// a nested `oneOf` and omit `additionalProperties: false` on those inner
+/// branches; once a branch is split into a view, accepting an extra field
+/// would silently discard caller input before the aggregate receives it.
+fn close_object_schemas(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    if object.get("properties").is_some() {
+        object.insert("additionalProperties".into(), Value::Bool(false));
+    }
+    for keyword in ["oneOf", "anyOf", "allOf"] {
+        if let Some(branches) = object.get_mut(keyword).and_then(Value::as_array_mut) {
+            for branch in branches {
+                close_object_schemas(branch);
+            }
+        }
+    }
+}
+
 /// Extract one operation branch from an aggregate tool schema and remove the
 /// fixed discriminator from the provider-facing input. The aggregate remains
 /// the execution boundary; this helper only creates a narrow model view.
 pub(crate) fn split_operation_schema(schema: &Value, operation: &str) -> Option<Value> {
     let mut branches = Vec::new();
-    collect_operation_branches(schema, operation, &mut branches);
+    collect_operation_branches(schema, operation, &mut branches, &Map::new());
     match branches.len() {
         0 => None,
         1 => branches.into_iter().next(),
@@ -102,7 +124,7 @@ pub(crate) fn split_scope_operation_schema(
     operation: &str,
 ) -> Option<Value> {
     let mut branches = Vec::new();
-    collect_scope_operation_branches(schema, scope, operation, &mut branches);
+    collect_scope_operation_branches(schema, scope, operation, &mut branches, &Map::new());
     match branches.len() {
         0 => None,
         1 => branches.into_iter().next(),
@@ -113,21 +135,26 @@ pub(crate) fn split_scope_operation_schema(
     }
 }
 
-fn collect_operation_branches(node: &Value, operation: &str, out: &mut Vec<Value>) {
+fn collect_operation_branches(
+    node: &Value,
+    operation: &str,
+    out: &mut Vec<Value>,
+    inherited_properties: &Map<String, Value>,
+) {
     let Some(object) = node.as_object() else {
         return;
     };
+    let mut properties = inherited_properties.clone();
+    if let Some(local_properties) = object.get("properties").and_then(Value::as_object) {
+        properties.extend(local_properties.clone());
+    }
     if let Some(one_of) = object.get("oneOf").and_then(Value::as_array) {
         for branch in one_of {
-            collect_operation_branches(branch, operation, out);
+            collect_operation_branches(branch, operation, out, &properties);
         }
         return;
     }
-    let Some(operation_schema) = object
-        .get("properties")
-        .and_then(Value::as_object)
-        .and_then(|properties| properties.get("operation"))
-    else {
+    let Some(operation_schema) = properties.get("operation") else {
         return;
     };
     let matches = operation_schema.get("const").and_then(Value::as_str) == Some(operation)
@@ -139,6 +166,9 @@ fn collect_operation_branches(node: &Value, operation: &str, out: &mut Vec<Value
         return;
     }
     let mut branch = node.clone();
+    if !properties.is_empty() {
+        branch["properties"] = Value::Object(properties);
+    }
     remove_fixed_property(&mut branch, "operation");
     out.push(branch);
 }
@@ -148,19 +178,21 @@ fn collect_scope_operation_branches(
     scope: &str,
     operation: &str,
     out: &mut Vec<Value>,
+    inherited_properties: &Map<String, Value>,
 ) {
     let Some(object) = node.as_object() else {
         return;
     };
+    let mut properties = inherited_properties.clone();
+    if let Some(local_properties) = object.get("properties").and_then(Value::as_object) {
+        properties.extend(local_properties.clone());
+    }
     if let Some(one_of) = object.get("oneOf").and_then(Value::as_array) {
         for branch in one_of {
-            collect_scope_operation_branches(branch, scope, operation, out);
+            collect_scope_operation_branches(branch, scope, operation, out, &properties);
         }
         return;
     }
-    let Some(properties) = object.get("properties").and_then(Value::as_object) else {
-        return;
-    };
     let scope_matches = properties
         .get("scope")
         .and_then(|value| value.get("const"))
@@ -173,6 +205,9 @@ fn collect_scope_operation_branches(
         == Some(operation);
     if scope_matches && operation_matches {
         let mut branch = node.clone();
+        if !properties.is_empty() {
+            branch["properties"] = Value::Object(properties);
+        }
         remove_fixed_property(&mut branch, "scope");
         remove_fixed_property(&mut branch, "operation");
         out.push(branch);
@@ -246,6 +281,12 @@ impl Tool for OperationViewTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        if let Err(error) = self.validate_input(&input) {
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                error.to_string(),
+                ToolErrorMetadata::validation(),
+            )));
+        }
         self.inner.execute(self.routed_input(&input), cancel).await
     }
 
@@ -404,7 +445,7 @@ mod tests {
                 }),
                 policy: OperationPolicy {
                     risk_level: RiskLevel::Low,
-                    permission_key: "files.read".into(),
+                    capability: "files.read".into(),
                     confirmation: ConfirmationRequirement::SecurityPolicy,
                     idempotency: OperationIdempotency::Idempotent,
                     scope: ToolOperationScope::Session,

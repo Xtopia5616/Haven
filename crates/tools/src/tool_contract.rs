@@ -1,4 +1,4 @@
-use haven_common::types::{RiskLevel, permission_key};
+use haven_common::types::{CapabilityScope, RiskLevel, permission_key};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -276,11 +276,11 @@ impl NetworkAccess {
 
 /// Single runtime policy returned by every tool implementation. The manifest
 /// is derived from this value, while the authorization gateway consumes the
-/// same risk and permission identity for the actual call.
+/// same risk and capability identity for the actual call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationPolicy {
     pub risk_level: RiskLevel,
-    pub permission_key: String,
+    pub capability: CapabilityScope,
     pub confirmation: ConfirmationRequirement,
     pub idempotency: OperationIdempotency,
     pub scope: ToolOperationScope,
@@ -293,10 +293,10 @@ pub struct OperationPolicy {
 impl OperationPolicy {
     /// Build a contract for a native/UI entry point that does not have a
     /// registered `Tool` object. Callers must still provide the same stable
-    /// permission key and explicitly declare the network capability.
+    /// capability scope and explicitly declare the network capability.
     pub fn native(
         tool_name: &str,
-        permission_key: String,
+        capability: CapabilityScope,
         risk_level: RiskLevel,
         network_access: NetworkAccess,
     ) -> Self {
@@ -304,7 +304,7 @@ impl OperationPolicy {
             operation_attributes(tool_name, ToolConcurrency::Exclusive);
         Self {
             risk_level,
-            permission_key,
+            capability,
             confirmation: if risk_level >= RiskLevel::Critical {
                 ConfirmationRequirement::Required
             } else if risk_level == RiskLevel::Safe {
@@ -342,7 +342,7 @@ impl OperationPolicy {
         };
         ToolPolicy {
             risk_level: self.risk_level,
-            permission_key: self.permission_key.clone(),
+            permission_key: self.capability.to_string(),
             confirmation: self.confirmation.as_str().into(),
             idempotency: self.idempotency.as_str().into(),
             scope: self.scope.as_str().into(),
@@ -1288,7 +1288,7 @@ pub trait Tool: Send + Sync {
             operation_attributes_for_input(&name, input, concurrency.clone());
         OperationPolicy {
             risk_level,
-            permission_key: permission_key(&name, &self.authorization_input(input)),
+            capability: permission_key(&name, &self.authorization_input(input)).into(),
             confirmation: if risk_level >= RiskLevel::Critical {
                 ConfirmationRequirement::Required
             } else if risk_level == RiskLevel::Safe {
@@ -1692,7 +1692,17 @@ where
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let args = parse_tool_input::<O::Args>(&self.name(), input).map_err(|error| {
+        let args = parse_tool_input::<O::Args>(&self.name(), input.clone()).map_err(|error| {
+            anyhow::Error::new(StructuredToolError::new(
+                error.to_string(),
+                ToolErrorMetadata::validation(),
+            ))
+        })?;
+        // Serde intentionally accepts extra fields for unit variants of an
+        // internally tagged enum. Validate after parsing so missing/typed
+        // field diagnostics retain serde's precise message while unknown
+        // fields are still rejected before the operation runs.
+        self.validate_input(&input).map_err(|error| {
             anyhow::Error::new(StructuredToolError::new(
                 error.to_string(),
                 ToolErrorMetadata::validation(),
@@ -2182,6 +2192,66 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(result.outcome, ToolExecutionOutcome::Cancelled);
         assert!(!result.success);
+    }
+
+    struct SlowTypedOperation;
+
+    #[async_trait::async_trait]
+    impl TypedToolOperation for SlowTypedOperation {
+        type Args = Value;
+        type Output = Value;
+        type Error = std::convert::Infallible;
+
+        fn metadata(&self, _args: &Self::Args) -> ToolOperationMetadata {
+            self.default_metadata()
+        }
+
+        fn default_metadata(&self) -> ToolOperationMetadata {
+            ToolOperationMetadata {
+                capability: "test.slow_typed",
+                operation: "slow_typed",
+                scope: ToolOperationScope::Session,
+                risk_level: RiskLevel::Safe,
+                idempotency: OperationIdempotency::Unknown,
+                cancellation: ToolCancellationPolicy::Cooperative,
+                timeout_secs: 1,
+                concurrency: ToolConcurrency::Exclusive,
+            }
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+
+        async fn execute_typed(
+            &self,
+            _args: Self::Args,
+            _cancel: CancellationToken,
+        ) -> Result<Self::Output, Self::Error> {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok(json!({"done": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_adapter_timeout_preserves_unknown_outcome_metadata() {
+        let tool = TypedToolAdapter::new(
+            "test.slow_typed",
+            "slow typed operation",
+            SlowTypedOperation,
+        );
+        let result = tool
+            .execute_with_timeout(json!({}), CancellationToken::new(), 1)
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert_eq!(result.outcome, ToolExecutionOutcome::TimedOutUnknown);
+        assert_eq!(result.error_class, Some(ToolErrorClass::UnknownOutcome));
+        assert_eq!(result.retryability, ToolRetryability::Unknown);
+        assert_eq!(
+            tool.timeout_outcome(),
+            ToolExecutionOutcome::TimedOutUnknown
+        );
     }
 
     #[test]

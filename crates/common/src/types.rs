@@ -231,6 +231,77 @@ pub enum PermissionScope {
     Always,
 }
 
+/// Typed identity of an authorization capability.
+///
+/// A capability is hierarchical (`files.read`, `system.power.lock`) so a
+/// parent grant can intentionally cover a child operation. Keeping the
+/// identity in a newtype prevents authorization code from accidentally
+/// treating arbitrary input text as a permission key while retaining the
+/// string representation required by the config and IPC boundaries.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CapabilityScope(String);
+
+impl CapabilityScope {
+    pub fn new(value: impl Into<String>) -> Self {
+        let value = value.into();
+        debug_assert!(!value.trim().is_empty(), "capability scope cannot be empty");
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Return this capability and all of its intentional parent scopes.
+    pub fn candidates(&self) -> Vec<Self> {
+        permission_key_candidates(&self.0)
+            .into_iter()
+            .map(Self::new)
+            .collect()
+    }
+}
+
+impl std::fmt::Display for CapabilityScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl From<&str> for CapabilityScope {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for CapabilityScope {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<CapabilityScope> for String {
+    fn from(value: CapabilityScope) -> Self {
+        value.0
+    }
+}
+
+impl From<&CapabilityScope> for CapabilityScope {
+    fn from(value: &CapabilityScope) -> Self {
+        value.clone()
+    }
+}
+
+impl From<&String> for CapabilityScope {
+    fn from(value: &String) -> Self {
+        Self::new(value.clone())
+    }
+}
+
 /// Tools whose Haven routing uses `scope` / `operation` params in the key.
 /// Other tools (MCP/skills/arbitrary args) use the bare tool name so a random
 /// `operation` field in args cannot fragment grants.
@@ -1454,6 +1525,24 @@ mod tests {
             vec!["system.power.lock", "system.power", "system"]
         );
         assert_eq!(permission_key_candidates("shell"), vec!["shell"]);
+    }
+
+    #[test]
+    fn capability_scope_is_typed_and_preserves_hierarchical_matching() {
+        let scope = CapabilityScope::from("system.power.lock");
+        assert_eq!(scope.as_str(), "system.power.lock");
+        assert_eq!(
+            scope.candidates(),
+            vec![
+                CapabilityScope::from("system.power.lock"),
+                CapabilityScope::from("system.power"),
+                CapabilityScope::from("system"),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_string(&scope).unwrap(),
+            "\"system.power.lock\""
+        );
     }
 
     #[test]

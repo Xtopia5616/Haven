@@ -8,7 +8,7 @@
 //! implementation without importing production side effects.
 
 use async_trait::async_trait;
-use haven_tools::ConfirmationResult;
+use haven_tools::AuthorizationDecision;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -152,14 +152,14 @@ impl LoopHooks for DefaultHooks {
             .check_tool_gate(&ctx.session_id, tool_name, input)
             .await
         {
-            ConfirmationResult::AutoApproved => BeforeToolAction::Proceed { receipt: None },
-            ConfirmationResult::Blocked { reason } => BeforeToolAction::Block {
+            AuthorizationDecision::AutoApproved => BeforeToolAction::Proceed { receipt: None },
+            AuthorizationDecision::Blocked { reason } => BeforeToolAction::Block {
                 error: format!(
                     "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                     tool_name
                 ),
             },
-            ConfirmationResult::RequiresConfirmation { receipt, .. } => {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
                 BeforeToolAction::NeedConfirm { receipt }
             }
         }

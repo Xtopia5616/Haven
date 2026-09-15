@@ -509,7 +509,8 @@ fn operation_spec(
     let mut policy = inner.operation_policy(&policy_input);
     // Operation views are stable permission identities even though execution
     // is delegated to an aggregate builtin implementation.
-    policy.permission_key = name.into();
+    policy.capability = name.into();
+    policy.idempotency = metadata.idempotency;
     if metadata.read_only {
         policy.concurrency = ToolConcurrency::ReadOnly;
         if policy.risk_level < RiskLevel::Critical {
@@ -565,7 +566,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_read_text_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                permission_key: "files.read".into(),
+                capability: "files.read".into(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -595,7 +596,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_outline_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                permission_key: "files.outline".into(),
+                capability: "files.outline".into(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -625,7 +626,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_summary_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                permission_key: "files.summary".into(),
+                capability: "files.summary".into(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -655,7 +656,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: files_search_schema(max_results),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Low,
-                permission_key: "files.search".into(),
+                capability: "files.search".into(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
@@ -685,7 +686,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
             schema: system_info_schema(),
             policy: OperationPolicy {
                 risk_level: RiskLevel::Safe,
-                permission_key: "system.info".into(),
+                capability: "system.info".into(),
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Global,
@@ -1322,7 +1323,7 @@ mod tests {
         for contract in contracts {
             assert!(contract.schema.is_object(), "{} schema", contract.name);
             assert_eq!(contract.schema["additionalProperties"], json!(false));
-            assert!(!contract.policy.permission_key.is_empty());
+            assert!(!contract.policy.capability.is_empty());
             assert!(!contract.presentation.renderer.is_empty());
             assert!(!contract.presentation.icon.is_empty());
             assert!(!contract.prompt.when_to_use.is_empty());
@@ -1336,7 +1337,7 @@ mod tests {
             );
             assert_eq!(
                 haven_common::types::permission_key(contract.name, &policy_input),
-                contract.policy.permission_key,
+                contract.policy.capability.to_string(),
                 "permission key drift for {}",
                 contract.name
             );

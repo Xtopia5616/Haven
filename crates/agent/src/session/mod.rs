@@ -3,7 +3,7 @@ use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::repositories::sessions::Session as DbSession;
-use haven_tools::{ConfirmationResult, ToolResult, ToolsManager, is_silent_action};
+use haven_tools::{AuthorizationDecision, ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;

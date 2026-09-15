@@ -25,6 +25,7 @@ pub struct NotifyTool;
 /// Typed parameters for `NotifyTool`. Entry ① (native `run`) and entry ②
 /// (`Tool::execute` with LLM JSON) both land in `NotifyTool::run`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NotifyParams {
     /// Short notification title. Defaults to 'Haven'.
     #[serde(default)]
@@ -320,5 +321,45 @@ mod tests {
             .await;
         let err = result.unwrap_err().to_string();
         assert!(err.contains("invalid 'notify' input"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_notify_rejects_unknown_fields_at_the_json_boundary() {
+        let result = NotifyTool
+            .execute(
+                json!({"body": "done", "unexpected": true}),
+                CancellationToken::new(),
+            )
+            .await;
+        let error = result.expect_err("unknown notify fields must be rejected");
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_notify_adapter_cancellation_is_unknown_and_non_replayable() {
+        let adapter = crate::TypedToolAdapter::new("notify", "notify", NotifyTool);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = adapter
+            .execute(json!({"body": "done"}), cancel)
+            .await
+            .expect_err("cancelled notify must not emit a notification");
+        let structured = error.downcast_ref::<StructuredToolError>().unwrap();
+        assert_eq!(
+            structured.metadata(),
+            ToolErrorMetadata {
+                class: crate::ToolErrorClass::UnknownOutcome,
+                outcome: crate::ToolExecutionOutcome::Cancelled,
+                retryability: crate::ToolRetryability::Unknown,
+            }
+        );
+        assert_eq!(
+            adapter.idempotency(&json!({"body": "done"})),
+            crate::OperationIdempotency::NonIdempotent
+        );
+        assert_eq!(
+            adapter.timeout_outcome(),
+            crate::ToolExecutionOutcome::TimedOutUnknown
+        );
     }
 }

@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use haven_common::types::{RiskLevel, permission_key};
-use haven_tools::{ConfirmationResult, NetworkAccess, OperationPolicy};
+use haven_tools::{AuthorizationDecision, AuthorizationRequest, NetworkAccess, OperationPolicy};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -30,21 +30,23 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
     };
     let policy = OperationPolicy::native(
         "open_external",
-        permission_key("open_external", &params),
+        permission_key("open_external", &params).into(),
         RiskLevel::Low,
         network_access,
     );
+    let authorization_request =
+        AuthorizationRequest::new(None, "open_external", params.clone(), policy);
     match state
         .tools
         .authorization()
-        .check_with_policy(None, "open_external", &params, &policy)
+        .authorize(&authorization_request)
         .await
     {
-        ConfirmationResult::AutoApproved => {}
-        ConfirmationResult::Blocked { .. } => {
+        AuthorizationDecision::AutoApproved => {}
+        AuthorizationDecision::Blocked { .. } => {
             return Err("external open blocked by security policy".into());
         }
-        ConfirmationResult::RequiresConfirmation { .. } => {
+        AuthorizationDecision::RequiresConfirmation { .. } => {
             return Err("external open requires confirmation".into());
         }
     }

@@ -5,8 +5,8 @@ use crate::{
 };
 use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
-    NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel, SandboxMode,
-    permission_key, permission_key_candidates,
+    CapabilityScope, NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel,
+    SandboxMode,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -211,7 +211,7 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
 /// Check an absolute local path without applying a tool-specific allowlist.
 /// This is for native app entry points such as “open skills directory” and
 /// “open external path”; the normal tool path goes through
-/// `check_with_policy`, which adds
+/// `AuthorizationRequest`, which adds
 /// configured `allowed_paths` on top of this reparse-point check.
 pub fn is_safe_local_path(path: &Path) -> bool {
     if !path.is_absolute() || is_unc_or_device_path(path) {
@@ -293,7 +293,7 @@ fn registered_operation_label(tool_name: &str, params: &Value) -> String {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ConfirmationReceipt {
     pub confirmation_id: haven_common::types::ConfirmId,
-    pub permission_key: String,
+    pub capability: CapabilityScope,
     pub canonical_input_hash: String,
     pub effective_risk: RiskLevel,
     pub policy_revision: u64,
@@ -301,14 +301,11 @@ pub struct ConfirmationReceipt {
 }
 
 #[derive(Debug, Clone)]
-pub enum ConfirmationResult {
+pub enum AuthorizationDecision {
     AutoApproved,
     RequiresConfirmation {
-        tool_name: String,
+        capability: CapabilityScope,
         risk_level: RiskLevel,
-        /// Stable dotted operation-view key used for grant matching; root
-        /// grants remain supported as aggregate parents.
-        permission_key: String,
         receipt: ConfirmationReceipt,
     },
     /// Hard deny — permanent/session denylist, disabled operation, or path sandbox.
@@ -317,11 +314,42 @@ pub enum ConfirmationResult {
     },
 }
 
-/// Per-session allow/deny sets keyed by permission key.
+/// The complete typed input to [`AuthorizationEngine`]. The engine owns the
+/// decision; callers only provide the concrete operation contract and its
+/// canonical input once.
+#[derive(Debug, Clone)]
+pub struct AuthorizationRequest {
+    pub session_id: Option<String>,
+    pub tool_name: String,
+    pub input: Value,
+    pub policy: OperationPolicy,
+}
+
+impl AuthorizationRequest {
+    pub fn new(
+        session_id: Option<&str>,
+        tool_name: impl Into<String>,
+        input: Value,
+        policy: OperationPolicy,
+    ) -> Self {
+        Self {
+            session_id: session_id.map(ToOwned::to_owned),
+            tool_name: tool_name.into(),
+            input,
+            policy,
+        }
+    }
+
+    pub fn capability(&self) -> &CapabilityScope {
+        &self.policy.capability
+    }
+}
+
+/// Per-session allow/deny sets keyed by typed capability scope.
 #[derive(Clone, Default)]
 struct SessionGrants {
-    allow: HashSet<String>,
-    deny: HashSet<String>,
+    allow: HashSet<CapabilityScope>,
+    deny: HashSet<CapabilityScope>,
 }
 
 /// Combined safety config under a single RwLock so `check` reads atomically.
@@ -336,7 +364,7 @@ struct SafetyConfig {
     /// that created a receipt is intentionally applied after final execution.
     policy_revision: u64,
     /// Permanent (Always) grants from `SecurityConfig.permissions`.
-    permanent: HashMap<String, PermissionEffect>,
+    permanent: HashMap<CapabilityScope, PermissionEffect>,
     /// Per-conversation grants keyed by session id.
     session_grants: HashMap<String, SessionGrants>,
     /// Live copy of `tool_settings` for disabled_operations / risk_override /
@@ -381,7 +409,7 @@ impl AuthorizationEngine {
         cfg.network_policy = security.network_policy;
         cfg.permanent.clear();
         for p in &security.permissions {
-            cfg.permanent.insert(p.key.clone(), p.effect);
+            cfg.permanent.insert(p.key.clone().into(), p.effect);
         }
         cfg.session_grants.clear();
         bump_policy_revision(&mut cfg);
@@ -452,32 +480,26 @@ impl AuthorizationEngine {
         effective_risk_from(&cfg, tool_name, reported)
     }
 
-    /// Evaluate a concrete operation contract. The caller supplies the same
-    /// policy object that produced the tool manifest, so authorization cannot
-    /// silently downgrade an operation by re-deriving risk from a tool name.
-    pub async fn check_with_policy(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        params: &Value,
-        policy: &OperationPolicy,
-    ) -> ConfirmationResult {
-        let computed_key = permission_key(tool_name, params);
-        let key = if policy.permission_key.is_empty() {
-            computed_key
-        } else {
-            policy.permission_key.clone()
-        };
+    /// Evaluate one typed authorization request. The operation policy and
+    /// capability scope are produced by the same contract that executes the
+    /// operation; the engine never reconstructs authorization from a tool
+    /// name or a renderer-provided flag.
+    pub async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
+        let session_id = request.session_id.as_deref();
+        let tool_name = &request.tool_name;
+        let params = &request.input;
+        let policy = &request.policy;
+        let key = request.capability();
         let cfg = self.config.read().await;
         let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
 
         if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
-            return ConfirmationResult::Blocked { reason };
+            return AuthorizationDecision::Blocked { reason };
         }
         if let Some(reason) =
             network_policy_block(cfg.network_policy, cfg.sandbox_mode, tool_name, policy)
         {
-            return ConfirmationResult::Blocked { reason };
+            return AuthorizationDecision::Blocked { reason };
         }
         if let Some(reason) = path_sandbox_block(
             &cfg.tool_settings,
@@ -487,14 +509,14 @@ impl AuthorizationEngine {
             params,
             policy,
         ) {
-            return ConfirmationResult::Blocked { reason };
+            return AuthorizationDecision::Blocked { reason };
         }
 
         // Plan is a capability boundary, not a prompting preference. It must
         // run before permanent/session allows so an old Always grant cannot
         // silently turn Plan back into an execution mode.
         if matches!(cfg.permission_mode, PermissionMode::Plan) && !policy.is_read_only() {
-            return ConfirmationResult::Blocked {
+            return AuthorizationDecision::Blocked {
                 reason: "plan mode only permits read-only operations".into(),
             };
         }
@@ -502,16 +524,16 @@ impl AuthorizationEngine {
         // Deny always wins over Allow (permanent deny → session deny →
         // permanent allow → session allow). Session deny can override a
         // permanent allow for the rest of that conversation.
-        if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Deny) {
-            return ConfirmationResult::Blocked {
+        if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
+            return AuthorizationDecision::Blocked {
                 reason: format!("permanently denied: {key}"),
             };
         }
         if let Some(sid) = session_id
             && let Some(grants) = cfg.session_grants.get(sid)
-            && match_key_set(&grants.deny, &key)
+            && match_key_set(&grants.deny, key)
         {
-            return ConfirmationResult::Blocked {
+            return AuthorizationDecision::Blocked {
                 reason: format!("denied for this session: {key}"),
             };
         }
@@ -521,14 +543,14 @@ impl AuthorizationEngine {
         let hard_confirmation =
             risk >= RiskLevel::Critical || policy.confirmation == ConfirmationRequirement::Required;
         if !hard_confirmation {
-            if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Allow) {
-                return ConfirmationResult::AutoApproved;
+            if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Allow) {
+                return AuthorizationDecision::AutoApproved;
             }
             if let Some(sid) = session_id
                 && let Some(grants) = cfg.session_grants.get(sid)
-                && match_key_set(&grants.allow, &key)
+                && match_key_set(&grants.allow, key)
             {
-                return ConfirmationResult::AutoApproved;
+                return AuthorizationDecision::AutoApproved;
             }
         }
 
@@ -545,7 +567,7 @@ impl AuthorizationEngine {
                 hard_confirmation
                     || policy.requires_disclosure_confirmation()
                     || (!policy.is_read_only()
-                        && (!is_auto_edit_safe(&key, policy) || risk >= RiskLevel::High))
+                        && (!is_auto_edit_safe(key, policy) || risk >= RiskLevel::High))
             }
             PermissionMode::Autonomous => {
                 hard_confirmation
@@ -555,46 +577,38 @@ impl AuthorizationEngine {
         };
 
         if !needs_prompt {
-            return ConfirmationResult::AutoApproved;
+            return AuthorizationDecision::AutoApproved;
         }
 
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::new_id("conf").into(),
-            permission_key: key.clone(),
+            capability: key.clone(),
             canonical_input_hash: canonical_input_hash(params),
             effective_risk: risk,
             policy_revision: cfg.policy_revision,
             expires_at: confirmation_expiry(),
         };
-        ConfirmationResult::RequiresConfirmation {
-            tool_name: tool_name.into(),
+        AuthorizationDecision::RequiresConfirmation {
+            capability: key.clone(),
             risk_level: risk,
-            permission_key: key,
             receipt,
         }
     }
 
-    /// Verify a receipt against the concrete operation contract used to
-    /// create it. Production Agent execution uses this variant; the compact
-    /// `verify_receipt` wrapper remains for native adapters that only expose a
-    /// reported risk value.
-    pub async fn verify_receipt_with_policy(
+    /// Verify a receipt against the exact typed request that created it.
+    pub async fn verify_receipt(
         &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        params: &Value,
-        policy: &OperationPolicy,
+        request: &AuthorizationRequest,
         receipt: &ConfirmationReceipt,
     ) -> Result<(), String> {
-        let computed_key = permission_key(tool_name, params);
-        let key = if policy.permission_key.is_empty() {
-            computed_key
-        } else {
-            policy.permission_key.clone()
-        };
+        let session_id = request.session_id.as_deref();
+        let tool_name = &request.tool_name;
+        let params = &request.input;
+        let policy = &request.policy;
+        let key = request.capability();
         let cfg = self.config.read().await;
-        if receipt.permission_key != key {
-            return Err("confirmation receipt does not match the permission key".into());
+        if receipt.capability != *key {
+            return Err("confirmation receipt does not match the capability scope".into());
         }
         if receipt.canonical_input_hash != canonical_input_hash(params) {
             return Err("confirmation receipt does not match the tool input".into());
@@ -633,12 +647,12 @@ impl AuthorizationEngine {
         ) {
             return Err(reason);
         }
-        if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Deny) {
+        if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
             return Err(format!("permanently denied: {key}"));
         }
         if let Some(sid) = session_id
             && let Some(grants) = cfg.session_grants.get(sid)
-            && match_key_set(&grants.deny, &key)
+            && match_key_set(&grants.deny, key)
         {
             return Err(format!("denied for this session: {key}"));
         }
@@ -651,17 +665,18 @@ impl AuthorizationEngine {
     pub async fn grant(
         &self,
         session_id: Option<&str>,
-        key: &str,
+        capability: impl Into<CapabilityScope>,
         effect: PermissionEffect,
         scope: PermissionScope,
     ) {
-        if matches!(scope, PermissionScope::Once) || key.is_empty() {
+        let capability = capability.into();
+        if matches!(scope, PermissionScope::Once) || capability.is_empty() {
             return;
         }
         let mut cfg = self.config.write().await;
         match scope {
             PermissionScope::Always => {
-                cfg.permanent.insert(key.to_string(), effect);
+                cfg.permanent.insert(capability.clone(), effect);
             }
             PermissionScope::Session => {
                 let Some(sid) = session_id else {
@@ -670,12 +685,12 @@ impl AuthorizationEngine {
                 let entry = cfg.session_grants.entry(sid.to_string()).or_default();
                 match effect {
                     PermissionEffect::Allow => {
-                        entry.deny.remove(key);
-                        entry.allow.insert(key.to_string());
+                        entry.deny.remove(&capability);
+                        entry.allow.insert(capability.clone());
                     }
                     PermissionEffect::Deny => {
-                        entry.allow.remove(key);
-                        entry.deny.insert(key.to_string());
+                        entry.allow.remove(&capability);
+                        entry.deny.insert(capability.clone());
                     }
                 }
             }
@@ -694,7 +709,7 @@ impl AuthorizationEngine {
             .permanent
             .iter()
             .map(|(key, effect)| StoredPermission {
-                key: key.clone(),
+                key: key.to_string(),
                 effect: *effect,
             })
             .collect();
@@ -705,7 +720,7 @@ impl AuthorizationEngine {
     /// Remove one permanent grant from memory. App layer persists the change.
     pub async fn revoke_permanent(&self, key: &str) -> bool {
         let mut cfg = self.config.write().await;
-        let removed = cfg.permanent.remove(key).is_some();
+        let removed = cfg.permanent.remove(&CapabilityScope::from(key)).is_some();
         if removed {
             bump_policy_revision(&mut cfg);
         }
@@ -807,12 +822,12 @@ fn canonicalize_json(value: &Value) -> Value {
     }
 }
 
-fn is_auto_edit_safe(key: &str, policy: &OperationPolicy) -> bool {
+fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
     // AutoEdit is intentionally a narrow convenience mode for ordinary
     // workspace mutations. UI effects, scheduling, subprocesses, network
     // calls and destructive deletes must never inherit edit auto-approval.
     matches!(
-        key,
+        key.as_str(),
         "files.write"
             | "files.edit"
             | "files.patch"
@@ -881,27 +896,30 @@ fn network_policy_block(
     }
 }
 
-fn match_grant(map: &HashMap<String, PermissionEffect>, key: &str) -> Option<PermissionEffect> {
-    let candidates = permission_key_candidates(key);
+fn match_grant(
+    map: &HashMap<CapabilityScope, PermissionEffect>,
+    key: &CapabilityScope,
+) -> Option<PermissionEffect> {
+    let candidates = key.candidates();
     // A child Allow must never outrank a parent Deny. Check the entire
     // inheritance chain for denies before considering any allow, otherwise a
     // broad deny such as `files` could be bypassed by `files:read`.
     if candidates
         .iter()
-        .any(|candidate| map.get(*candidate) == Some(&PermissionEffect::Deny))
+        .any(|candidate| map.get(candidate) == Some(&PermissionEffect::Deny))
     {
         return Some(PermissionEffect::Deny);
     }
     candidates
         .iter()
-        .any(|candidate| map.get(*candidate) == Some(&PermissionEffect::Allow))
+        .any(|candidate| map.get(candidate) == Some(&PermissionEffect::Allow))
         .then_some(PermissionEffect::Allow)
 }
 
-fn match_key_set(set: &HashSet<String>, key: &str) -> bool {
-    permission_key_candidates(key)
+fn match_key_set(set: &HashSet<CapabilityScope>, key: &CapabilityScope) -> bool {
+    key.candidates()
         .into_iter()
-        .any(|c| set.contains(c))
+        .any(|candidate| set.contains(&candidate))
 }
 
 fn disabled_operation_block(
@@ -1156,13 +1174,18 @@ fn normalize_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolExecutionOutcome;
+    use haven_common::types::permission_key;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
+    use tokio_util::sync::CancellationToken;
+
+    type ConfirmationResult = AuthorizationDecision;
 
     fn fixture_policy(tool_name: &str, params: &Value, risk_level: RiskLevel) -> OperationPolicy {
         OperationPolicy {
             risk_level,
-            permission_key: permission_key(tool_name, params),
+            capability: permission_key(tool_name, params).into(),
             confirmation: if risk_level >= RiskLevel::Critical {
                 ConfirmationRequirement::Required
             } else if risk_level == RiskLevel::Safe {
@@ -1177,6 +1200,18 @@ mod tests {
             data_sensitivity: DataSensitivity::None,
             network_access: NetworkAccess::None,
         }
+    }
+
+    async fn authorize(
+        engine: &AuthorizationEngine,
+        session_id: Option<&str>,
+        tool_name: &str,
+        params: &Value,
+        policy: &OperationPolicy,
+    ) -> AuthorizationDecision {
+        let request =
+            AuthorizationRequest::new(session_id, tool_name, params.clone(), policy.clone());
+        engine.authorize(&request).await
     }
 
     // Keep threshold fixtures terse while production tests use the new policy
@@ -1208,10 +1243,8 @@ mod tests {
             risk_level: RiskLevel,
         ) -> ConfirmationResult {
             let policy = fixture_policy(tool_name, params, risk_level);
-            let result = self
-                .engine
-                .check_with_policy(session_id, tool_name, params, &policy)
-                .await;
+            let request = AuthorizationRequest::new(session_id, tool_name, params.clone(), policy);
+            let result = self.engine.authorize(&request).await;
             if risk_level < self.threshold
                 && matches!(result, ConfirmationResult::RequiresConfirmation { .. })
             {
@@ -1239,7 +1272,7 @@ mod tests {
     #[test]
     fn permission_prompt_summary_never_includes_raw_sensitive_arguments() {
         let summary = permission_prompt_summary(
-            "shell",
+            "shell".into(),
             &json!({"command": "curl https://example.test?token=super-secret"}),
         );
         assert!(summary.contains("受保护的本机命令"));
@@ -1304,7 +1337,7 @@ mod tests {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
-            permission_key: "files.read".into(),
+            capability: "files.read".into(),
             confirmation: ConfirmationRequirement::None,
             idempotency: crate::OperationIdempotency::Idempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1314,16 +1347,14 @@ mod tests {
             network_access: NetworkAccess::None,
         };
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "files.read", &json!({}), &read_policy)
-                .await,
+            authorize(&gateway, None, "files.read", &json!({}), &read_policy).await,
             ConfirmationResult::AutoApproved
         ));
 
         gateway.set_permission_mode(PermissionMode::Plan).await;
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
-            permission_key: "files.write".into(),
+            capability: "files.write".into(),
             confirmation: ConfirmationRequirement::SecurityPolicy,
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1333,17 +1364,13 @@ mod tests {
             network_access: NetworkAccess::None,
         };
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "files.write", &json!({}), &write_policy)
-                .await,
+            authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
             ConfirmationResult::Blocked { .. }
         ));
 
         gateway.set_permission_mode(PermissionMode::AutoEdit).await;
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "files.write", &json!({}), &write_policy)
-                .await,
+            authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
             ConfirmationResult::AutoApproved
         ));
     }
@@ -1353,7 +1380,7 @@ mod tests {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
-            permission_key: "files.write".into(),
+            capability: "files.write".into(),
             confirmation: ConfirmationRequirement::SecurityPolicy,
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1372,9 +1399,7 @@ mod tests {
             .await;
         gateway.set_permission_mode(PermissionMode::Plan).await;
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "files.write", &json!({}), &write_policy)
-                .await,
+            authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
             ConfirmationResult::Blocked { .. }
         ));
     }
@@ -1384,7 +1409,7 @@ mod tests {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let sensitive_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
-            permission_key: "system.env.get".into(),
+            capability: "system.env.get".into(),
             confirmation: ConfirmationRequirement::None,
             idempotency: crate::OperationIdempotency::Idempotent,
             scope: crate::ToolOperationScope::Global,
@@ -1394,21 +1419,24 @@ mod tests {
             network_access: NetworkAccess::None,
         };
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "system.env.get", &json!({}), &sensitive_policy)
-                .await,
+            authorize(
+                &gateway,
+                None,
+                "system.env.get",
+                &json!({}),
+                &sensitive_policy,
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
 
         let network_policy = OperationPolicy {
-            permission_key: "http".into(),
+            capability: "http".into(),
             network_access: NetworkAccess::Public,
             ..sensitive_policy.clone()
         };
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "http", &json!({}), &network_policy)
-                .await,
+            authorize(&gateway, None, "http", &json!({}), &network_policy).await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -1427,7 +1455,7 @@ mod tests {
         ] {
             let policy = OperationPolicy {
                 risk_level: RiskLevel::Medium,
-                permission_key: tool_name.into(),
+                capability: tool_name.into(),
                 confirmation: ConfirmationRequirement::SecurityPolicy,
                 idempotency: crate::OperationIdempotency::Unknown,
                 scope: crate::ToolOperationScope::Session,
@@ -1441,9 +1469,7 @@ mod tests {
                 },
             };
             assert!(matches!(
-                gateway
-                    .check_with_policy(None, tool_name, &json!({}), &policy)
-                    .await,
+                authorize(&gateway, None, tool_name, &json!({}), &policy).await,
                 ConfirmationResult::RequiresConfirmation { .. }
             ));
         }
@@ -1466,18 +1492,14 @@ mod tests {
             NetworkAccess::Opaque,
         );
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "shell", &json!({}), &policy)
-                .await,
+            authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::Blocked { .. }
         ));
         gateway
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         assert!(matches!(
-            gateway
-                .check_with_policy(None, "shell", &json!({}), &policy)
-                .await,
+            authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -1562,7 +1584,7 @@ mod tests {
             .await;
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
-            permission_key: "files.write".into(),
+            capability: "files.write".into(),
             confirmation: ConfirmationRequirement::SecurityPolicy,
             idempotency: crate::OperationIdempotency::NonIdempotent,
             scope: crate::ToolOperationScope::Session,
@@ -1573,25 +1595,25 @@ mod tests {
         };
         let outside = std::env::temp_dir().join("haven-permission-outside.txt");
         assert!(matches!(
-            gateway
-                .check_with_policy(
-                    None,
-                    "files.write",
-                    &json!({"path": outside}),
-                    &write_policy,
-                )
-                .await,
+            authorize(
+                &gateway,
+                None,
+                "files.write",
+                &json!({"path": outside}),
+                &write_policy,
+            )
+            .await,
             ConfirmationResult::Blocked { .. }
         ));
         assert!(matches!(
-            gateway
-                .check_with_policy(
-                    None,
-                    "files.write",
-                    &json!({"path": root.join("notes.md")}),
-                    &write_policy,
-                )
-                .await,
+            authorize(
+                &gateway,
+                None,
+                "files.write",
+                &json!({"path": root.join("notes.md")}),
+                &write_policy,
+            )
+            .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
@@ -1639,19 +1661,18 @@ mod tests {
         let ConfirmationResult::RequiresConfirmation { receipt, .. } = decision else {
             panic!("High-risk shell call should require confirmation");
         };
+        let safe_request =
+            AuthorizationRequest::new(None, "shell", safe_input.clone(), safe_policy.clone());
         gateway
-            .verify_receipt_with_policy(None, "shell", &safe_input, &safe_policy, &receipt)
+            .verify_receipt(&safe_request, &receipt)
             .await
             .unwrap();
         let changed_input = json!({"command": "echo changed"});
         let changed_policy = fixture_policy("shell", &changed_input, RiskLevel::High);
         assert!(
             gateway
-                .verify_receipt_with_policy(
-                    None,
-                    "shell",
-                    &changed_input,
-                    &changed_policy,
+                .verify_receipt(
+                    &AuthorizationRequest::new(None, "shell", changed_input, changed_policy,),
                     &receipt,
                 )
                 .await
@@ -1661,7 +1682,41 @@ mod tests {
         gateway.set_permission_mode(PermissionMode::Default).await;
         assert!(
             gateway
-                .verify_receipt_with_policy(None, "shell", &safe_input, &safe_policy, &receipt,)
+                .verify_receipt(&safe_request, &receipt)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn authorization_request_and_receipt_are_bound_to_typed_capability() {
+        let gateway = ThresholdFixture::new(RiskLevel::Safe);
+        let input = json!({"command": "echo safe"});
+        let policy = fixture_policy("shell", &input, RiskLevel::High);
+        let request = AuthorizationRequest::new(None, "shell", input, policy);
+        let AuthorizationDecision::RequiresConfirmation {
+            receipt,
+            capability,
+            ..
+        } = gateway.authorize(&request).await
+        else {
+            panic!("High-risk shell call should require confirmation");
+        };
+        assert_eq!(capability, request.policy.capability);
+        assert_eq!(receipt.capability, request.policy.capability);
+
+        let wrong_request = AuthorizationRequest::new(
+            None,
+            "shell",
+            json!({"command": "echo safe"}),
+            OperationPolicy {
+                capability: "process.kill".into(),
+                ..request.policy.clone()
+            },
+        );
+        assert!(
+            gateway
+                .verify_receipt(&wrong_request, &receipt)
                 .await
                 .is_err()
         );
@@ -2111,6 +2166,27 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn permanent_deny_blocks_every_registered_operation_view() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
+        for case in LOCAL_TOOL_SECURITY_MATRIX {
+            let input = matrix_input(case);
+            let key = permission_key(case.tool_name, &input);
+            gw.grant(None, &key, PermissionEffect::Deny, PermissionScope::Always)
+                .await;
+            assert!(
+                matches!(
+                    gw.check(None, case.tool_name, &input, case.risk_level)
+                        .await,
+                    ConfirmationResult::Blocked { .. }
+                ),
+                "permanent deny must block {}:{}",
+                case.tool_name,
+                case.operation
+            );
+        }
+    }
+
     /// Extract the routing fields from the operation branches of a tool
     /// schema. This intentionally inspects the provider-facing schema rather
     /// than duplicating each tool's operation list in the test.
@@ -2357,6 +2433,354 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn schema_example(schema: &Value) -> Option<Value> {
+        schema_example_at(schema, 0)
+    }
+
+    fn schema_example_at(schema: &Value, depth: usize) -> Option<Value> {
+        if depth > 12 {
+            return None;
+        }
+        if let Some(value) = schema.get("const") {
+            return Some(value.clone());
+        }
+        if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            return values.first().cloned();
+        }
+        for keyword in ["oneOf", "anyOf"] {
+            if schema.get("properties").is_some() {
+                continue;
+            }
+            if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
+                for branch in branches {
+                    let candidate = schema_example_at(branch, depth + 1).or_else(|| {
+                        // Operation-view branches often carry only
+                        // `required`; their properties live on the parent
+                        // object. Build the smallest branch example from
+                        // that shared property map.
+                        let required = branch.get("required")?.as_array()?;
+                        let properties = schema.get("properties")?.as_object()?;
+                        let mut object = serde_json::Map::new();
+                        for name in required.iter().filter_map(Value::as_str) {
+                            let property = properties.get(name)?;
+                            object.insert(name.into(), schema_example_at(property, depth + 1)?);
+                        }
+                        Some(Value::Object(object))
+                    });
+                    let Some(candidate) = candidate else { continue };
+                    let Ok(validator) = jsonschema::validator_for(schema) else {
+                        continue;
+                    };
+                    if validator.is_valid(&candidate) {
+                        return Some(candidate);
+                    }
+                }
+                return None;
+            }
+        }
+
+        let schema_type = schema
+            .get("type")
+            .and_then(Value::as_str)
+            .or_else(|| schema.get("properties").map(|_| "object"));
+        match schema_type {
+            Some("object") => {
+                let mut object = serde_json::Map::new();
+                let properties = schema.get("properties").and_then(Value::as_object);
+                let required = schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str);
+                for name in required {
+                    let property = properties?.get(name)?;
+                    object.insert(name.into(), schema_example_at(property, depth + 1)?);
+                }
+                for keyword in ["oneOf", "anyOf"] {
+                    let Some(branches) = schema.get(keyword).and_then(Value::as_array) else {
+                        continue;
+                    };
+                    for branch in branches {
+                        let mut candidate = object.clone();
+                        let branch_required = branch
+                            .get("required")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str);
+                        for name in branch_required {
+                            if candidate.contains_key(name) {
+                                continue;
+                            }
+                            let property = properties?.get(name)?;
+                            candidate.insert(name.into(), schema_example_at(property, depth + 1)?);
+                        }
+                        let candidate = Value::Object(candidate);
+                        let Ok(validator) = jsonschema::validator_for(schema) else {
+                            return None;
+                        };
+                        if validator.is_valid(&candidate) {
+                            return Some(candidate);
+                        }
+                    }
+                    return None;
+                }
+                let candidate = Value::Object(object);
+                let Ok(validator) = jsonschema::validator_for(schema) else {
+                    return None;
+                };
+                validator.is_valid(&candidate).then_some(candidate)
+            }
+            Some("array") => {
+                let min_items = schema
+                    .get("minItems")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .min(4) as usize;
+                let item = schema
+                    .get("items")
+                    .and_then(|items| schema_example_at(items, depth + 1));
+                Some(Value::Array(
+                    item.into_iter().cycle().take(min_items).collect(),
+                ))
+            }
+            Some("string") => {
+                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
+                    if let Some(rest) = pattern.strip_prefix('^') {
+                        if let Some((prefix, suffix)) = rest.split_once("[0-9a-f]") {
+                            let count = suffix
+                                .strip_prefix("{")
+                                .and_then(|value| value.split_once('}'))
+                                .and_then(|(value, _)| value.parse::<usize>().ok())
+                                .unwrap_or(1);
+                            return Some(Value::String(format!("{}{}", prefix, "0".repeat(count))));
+                        }
+                    }
+                }
+                let min_len = schema
+                    .get("minLength")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1)
+                    .min(32) as usize;
+                let mut value = "x".repeat(min_len.max(1));
+                if schema.get("format").and_then(Value::as_str) == Some("uri") {
+                    value = "https://example.invalid/".into();
+                }
+                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
+                    if pattern.contains("msg-") {
+                        value = "msg-00000000000000000000000000000000".into();
+                    } else if pattern.contains("claim-") {
+                        value = "claim-00000000000000000000000000000000".into();
+                    }
+                }
+                if let Some(max_len) = schema.get("maxLength").and_then(Value::as_u64) {
+                    value.truncate(max_len as usize);
+                }
+                Some(Value::String(value))
+            }
+            Some("integer") => Some(json!(
+                schema.get("minimum").and_then(Value::as_i64).unwrap_or(0)
+            )),
+            Some("number") => Some(json!(
+                schema.get("minimum").and_then(Value::as_f64).unwrap_or(0.0)
+            )),
+            Some("boolean") => Some(Value::Bool(false)),
+            Some("null") => Some(Value::Null),
+            // An empty schema intentionally means any JSON value (used by
+            // preference values and opaque payloads); null is the smallest
+            // valid representative.
+            _ => Some(Value::Null),
+        }
+    }
+
+    fn required_fields_for_valid_branch(schema: &Value, input: &Value) -> Vec<String> {
+        for keyword in ["oneOf", "anyOf"] {
+            if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
+                if let Some(branch) = branches.iter().find(|branch| {
+                    jsonschema::validator_for(branch)
+                        .map(|validator| validator.is_valid(input))
+                        .unwrap_or(false)
+                }) {
+                    return required_fields_for_valid_branch(branch, input);
+                }
+            }
+        }
+        schema
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn every_registered_operation_view_rejects_missing_and_unknown_fields() {
+        use crate::ToolsManager;
+        use crate::builtin::AdminContext;
+        use haven_common::config::{ConfigLoader, ConfigService};
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let manager = ToolsManager::new();
+        manager
+            .set_admin_context(AdminContext {
+                config_service: Some(Arc::new(ConfigService::new(loader))),
+                db: None,
+                router: None,
+                log_path: None,
+                log_level: None,
+                tool_control: None,
+            })
+            .await;
+
+        let mut tools = manager.registry().list().await;
+        let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
+        for def in manager.list_enabled_builtin_defs().await {
+            if !registry_names.contains(&def.name) {
+                tools.push(
+                    manager
+                        .get_tool(&def.name)
+                        .await
+                        .unwrap_or_else(|| panic!("missing deferred builtin {}", def.name)),
+                );
+            }
+        }
+        let mut seen = HashSet::new();
+        for tool in tools.iter().filter(|tool| tool.name().contains('.')) {
+            let name = tool.name();
+            let schema = tool.input_schema();
+            let input = schema_example(&schema)
+                .unwrap_or_else(|| panic!("{name} schema has no structural example: {schema}"));
+            assert!(
+                tool.validate_input(&input).is_ok(),
+                "{name} rejected generated valid input {input}"
+            );
+
+            let required = required_fields_for_valid_branch(&schema, &input);
+            for field in required {
+                let mut missing = input.as_object().cloned().unwrap_or_default();
+                missing.remove(&field);
+                assert!(
+                    tool.validate_input(&Value::Object(missing)).is_err(),
+                    "{name} accepted input missing required field {field}"
+                );
+            }
+
+            let mut unknown = input.as_object().cloned().unwrap_or_default();
+            unknown.insert("__unexpected_field".into(), json!(true));
+            assert!(
+                tool.validate_input(&Value::Object(unknown)).is_err(),
+                "{name} accepted an unknown field"
+            );
+            seen.insert(name);
+        }
+
+        assert!(
+            seen.len() >= 20,
+            "expected broad operation-view coverage, got {}: {:?}",
+            seen.len(),
+            seen
+        );
+        assert!(seen.contains("haven.config.logs_level"));
+        assert!(seen.contains("files.read"));
+    }
+
+    #[tokio::test]
+    async fn every_registered_operation_view_declares_replay_timeout_and_cancel_contract() {
+        use crate::ToolsManager;
+        use crate::builtin::AdminContext;
+        use haven_common::config::{ConfigLoader, ConfigService};
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let manager = ToolsManager::new();
+        manager
+            .set_admin_context(AdminContext {
+                config_service: Some(Arc::new(ConfigService::new(loader))),
+                db: None,
+                router: None,
+                log_path: None,
+                log_level: None,
+                tool_control: None,
+            })
+            .await;
+
+        let mut tools = manager.registry().list().await;
+        let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
+        for def in manager.list_enabled_builtin_defs().await {
+            if !registry_names.contains(&def.name) {
+                tools.push(
+                    manager
+                        .get_tool(&def.name)
+                        .await
+                        .unwrap_or_else(|| panic!("missing deferred builtin {}", def.name)),
+                );
+            }
+        }
+
+        let mut seen = HashSet::new();
+        let expected_unknown = [
+            "haven.skills.skill_create",
+            "haven.mcp.mcp_add",
+            "haven.mcp.mcp_update",
+            "haven.mcp.mcp_remove",
+        ];
+        for tool in tools.iter().filter(|tool| tool.name().contains('.')) {
+            let name = tool.name();
+            let input = schema_example(&tool.input_schema())
+                .unwrap_or_else(|| panic!("{name} schema has no structural example"));
+            assert!(
+                tool.validate_input(&input).is_ok(),
+                "{name} rejected {input}"
+            );
+            let policy = tool.operation_policy(&input);
+            if expected_unknown.contains(&name.as_str()) {
+                assert_eq!(
+                    policy.idempotency,
+                    crate::OperationIdempotency::Unknown,
+                    "{name} must preserve its explicitly unknown replay semantics"
+                );
+            } else {
+                assert_ne!(
+                    policy.idempotency,
+                    crate::OperationIdempotency::Unknown,
+                    "{name} must declare duplicate-call semantics"
+                );
+            }
+            assert!(
+                tool.timeout_secs_for(&input) > 0,
+                "{name} must declare a positive timeout"
+            );
+            let timeout_secs = tool.timeout_secs_for(&input);
+
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let result = tool
+                .execute_with_timeout(input, cancel, timeout_secs)
+                .await
+                .unwrap_or_else(|error| panic!("{name} lost cancellation result: {error}"));
+            assert_eq!(
+                result.outcome,
+                ToolExecutionOutcome::Cancelled,
+                "{name} must stop before a cancelled operation runs"
+            );
+            assert_eq!(result.attempts, 1);
+            seen.insert(name);
+        }
+
+        assert!(
+            seen.len() >= 100,
+            "operation-view contract coverage is too small"
+        );
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@
 //! projection, prompt catalog and UI manifest. Schemas remain close to the
 //! implementation because they can depend on runtime limits.
 
+use crate::OperationIdempotency;
 use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 
@@ -15,6 +16,7 @@ pub(crate) struct OperationContract {
     pub(crate) catalog_group: ToolCatalogGroup,
     pub(crate) read_only: bool,
     pub(crate) risk_override: Option<RiskLevel>,
+    pub(crate) idempotency: OperationIdempotency,
 }
 
 /// Return the single stable metadata record for a model-facing builtin
@@ -250,12 +252,40 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         _ => (name, ToolCatalogGroup::Other, false, None),
     };
 
+    let idempotency = match name {
+        // Configuration toggles and lifecycle controls converge on a stable
+        // state, so repeating the same request is safe.
+        "actions.cancel"
+        | "schedule.cancel"
+        | "haven.config.config_get"
+        | "haven.config.logs_level"
+        | "haven.skills.skills_list"
+        | "haven.skills.skill_enable"
+        | "haven.skills.skill_disable"
+        | "haven.tools.tool_enable"
+        | "haven.tools.tool_disable"
+        | "haven.mcp.mcp_list"
+        | "haven.mcp.mcp_connect"
+        | "haven.mcp.mcp_disconnect"
+        | "haven.mcp.mcp_toggle"
+        | "haven.mcp.mcp_reload" => OperationIdempotency::Idempotent,
+        // Creation and replacement/removal requests must be verified before
+        // replay because their first attempt may already have changed state.
+        "haven.skills.skill_create"
+        | "haven.mcp.mcp_add"
+        | "haven.mcp.mcp_update"
+        | "haven.mcp.mcp_remove" => OperationIdempotency::Unknown,
+        _ if read_only => OperationIdempotency::Idempotent,
+        _ => OperationIdempotency::NonIdempotent,
+    };
+
     OperationContract {
         name,
         label,
         catalog_group,
         read_only,
         risk_override,
+        idempotency,
     }
 }
 

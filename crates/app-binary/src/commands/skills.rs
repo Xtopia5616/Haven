@@ -4,7 +4,9 @@ use crate::commands::log_err;
 use crate::commands::{emit_event_logged, queue_ui_confirmation};
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent};
 use haven_common::types::{RiskLevel, permission_key};
-use haven_tools::{ConfirmationResult, NetworkAccess, OperationPolicy, SkillInfo};
+use haven_tools::{
+    AuthorizationDecision, AuthorizationRequest, NetworkAccess, OperationPolicy, SkillInfo,
+};
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::State;
@@ -107,21 +109,23 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
     let params = serde_json::json!({"target": root});
     let policy = OperationPolicy::native(
         "open_skills_dir",
-        permission_key("open_skills_dir", &params),
+        permission_key("open_skills_dir", &params).into(),
         RiskLevel::Low,
         NetworkAccess::None,
     );
+    let authorization_request =
+        AuthorizationRequest::new(None, "open_skills_dir", params.clone(), policy);
     match state
         .tools
         .authorization()
-        .check_with_policy(None, "open_skills_dir", &params, &policy)
+        .authorize(&authorization_request)
         .await
     {
-        ConfirmationResult::AutoApproved => {}
-        ConfirmationResult::Blocked { .. } => {
+        AuthorizationDecision::AutoApproved => {}
+        AuthorizationDecision::Blocked { .. } => {
             return Err("opening skills directory blocked by security policy".into());
         }
-        ConfirmationResult::RequiresConfirmation { .. } => {
+        AuthorizationDecision::RequiresConfirmation { .. } => {
             return Err("opening skills directory requires confirmation".into());
         }
     }
@@ -180,35 +184,30 @@ pub async fn execute_skill(
     let risk_level = RiskLevel::High;
     let policy = OperationPolicy::native(
         &tool_key,
-        permission_key(&tool_key, &params),
+        permission_key(&tool_key, &params).into(),
         risk_level,
         NetworkAccess::Opaque,
     );
+    let authorization_request =
+        AuthorizationRequest::new(Some("ui"), &tool_key, params.clone(), policy);
     match state
         .tools
         .authorization()
-        .check_with_policy(Some("ui"), &tool_key, &params, &policy)
+        .authorize(&authorization_request)
         .await
     {
-        ConfirmationResult::AutoApproved => {}
-        ConfirmationResult::RequiresConfirmation {
-            tool_name,
-            risk_level,
-            receipt,
-            ..
-        } => {
+        AuthorizationDecision::AutoApproved => {}
+        AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
             return Err(queue_ui_confirmation(
                 &state,
                 &app,
-                tool_name,
-                params.clone(),
-                risk_level,
+                authorization_request,
                 receipt,
                 UiConfirmationAction::Skill { name, params },
             )
             .await?);
         }
-        ConfirmationResult::Blocked { reason } => {
+        AuthorizationDecision::Blocked { reason } => {
             return Err(format!(
                 "skill execution blocked by security policy ({reason})"
             ));

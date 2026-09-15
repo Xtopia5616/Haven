@@ -67,9 +67,7 @@ pub(crate) enum UiConfirmationAction {
 
 pub(crate) struct UiConfirmationPending {
     pub session_id: String,
-    pub tool_name: String,
-    pub permission_key: String,
-    pub risk_level: haven_common::types::RiskLevel,
+    pub authorization_request: haven_tools::AuthorizationRequest,
     pub summary: String,
     pub receipt: haven_tools::ConfirmationReceipt,
     pub action: UiConfirmationAction,

@@ -75,6 +75,7 @@ pub(crate) fn project_interaction(
             tool_name,
             tool_input,
             risk_level,
+            receipt,
             ..
         } => {
             event.tool_name = Some(tool_name.clone());
@@ -82,7 +83,9 @@ pub(crate) fn project_interaction(
             event.summary = Some(haven_tools::permission_prompt_summary(
                 tool_name, tool_input,
             ));
-            event.permission_key = Some(haven_common::types::permission_key(tool_name, tool_input));
+            event.permission_key = receipt
+                .as_ref()
+                .map(|receipt| receipt.capability.to_string());
             event.invocation_step_id = Some(step_id.clone());
             event.action_index = Some(*action_index);
             event.tool_call_id = (!tool_call_id.is_empty()).then(|| tool_call_id.clone());
@@ -90,13 +93,14 @@ pub(crate) fn project_interaction(
         haven_agent::InteractionDetails::ScheduledConfirm {
             tool_name,
             tool_input,
+            receipt,
             ..
         } => {
             event.tool_name = Some(tool_name.clone());
             event.summary = Some(haven_tools::permission_prompt_summary(
                 tool_name, tool_input,
             ));
-            event.permission_key = Some(haven_common::types::permission_key(tool_name, tool_input));
+            event.permission_key = Some(receipt.capability.to_string());
         }
         haven_agent::InteractionDetails::Generic => {}
     }

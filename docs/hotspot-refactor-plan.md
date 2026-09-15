@@ -372,6 +372,11 @@ pending row 继续保留，等待下一次启动恢复。配置热替换和更�
    - 必须保留：deny-first、永久/会话授权、路径和进程安全检查、TOCTOU 防护、scheduled/MCP/skill/Tauri 统一过闸。
    - 完成标志：所有副作用入口只有一个授权决策入口，前端不能通过 `confirmed` 或旧字段绕过它。
 
+   2026-09-15 已完成：`OperationPolicy` 使用 `CapabilityScope`，所有运行时入口构造
+   `AuthorizationRequest` 并调用 `AuthorizationEngine::authorize`；receipt、grant 和
+   native/UI 队列复用同一 typed request，旧 tuple-style `check_with_policy` /
+   `verify_receipt_with_policy` 已删除（ADR 0163）。
+
 2. **输入与媒体：`InputPipeline` / `MediaTool`**
    - 目标：将硬件采集、录音生命周期与媒体内容理解重划分为明确边界；输入层只拥有采集，provider 选择和 fallback 由 `haven-tools::builtin::media` 统一处理。
    - 可以删除：`provider == "llm"` 的双路径特判、重复 STT 路由、隐式 eager preprocessing 和不透明的媒体 fallback 组合。

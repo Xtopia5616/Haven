@@ -6,11 +6,9 @@ use crate::events::{
     SessionDeletedEvent, SessionTitleUpdatedEvent,
 };
 use crate::logging::sanitize_error_text;
-use haven_common::types::permission_key;
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use haven_memory::repositories::sessions::Session;
-use haven_tools::{NetworkAccess, OperationPolicy};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -132,9 +130,15 @@ pub async fn resolve_confirmation(
     // deny action means “deny this operation”; a broader tool/server scope
     // must be an explicit future policy operation, not an accidental side
     // effect of rejecting one invocation.
-    let precise =
-        haven_common::types::permission_key(&resolution.tool_name, &resolution.tool_input);
-    let key = precise;
+    let authorization_request = state
+        .tools
+        .get_authorization_request(
+            resolution.session_id.as_deref(),
+            &resolution.tool_name,
+            &resolution.tool_input,
+        )
+        .await;
+    let key = authorization_request.policy.capability.to_string();
     // Persist Always before publishing it to the live authorization engine.
     // If the atomic config write fails, the process must not temporarily
     // behave as if a permanent grant exists when restart would forget it.
@@ -145,8 +149,8 @@ pub async fn resolve_confirmation(
         .tools
         .authorization()
         .grant(
-            resolution.session_id.as_deref(),
-            &key,
+            authorization_request.session_id.as_deref(),
+            &authorization_request.policy.capability,
             perm_effect,
             perm_scope,
         )
@@ -162,41 +166,17 @@ async fn resolve_ui_confirmation(
     perm_scope: haven_common::types::PermissionScope,
 ) -> Result<(), String> {
     tracing::debug!(
-        tool = %pending.tool_name,
-        risk = ?pending.risk_level,
+        tool = %pending.authorization_request.tool_name,
+        risk = ?pending.receipt.effective_risk,
         summary = %pending.summary,
         "resolving renderer-triggered confirmation"
     );
     if matches!(perm_effect, haven_common::types::PermissionEffect::Allow) {
-        let input = match &pending.action {
-            UiConfirmationAction::Mcp { args, .. } => args.clone(),
-            UiConfirmationAction::Skill { params, .. } => params.clone(),
-            UiConfirmationAction::Admin { request } => request.input(),
-        };
-        let network_access = if pending.tool_name.starts_with("mcp__")
-            || pending.tool_name.starts_with("skill__")
-            || pending.tool_name.starts_with("haven.mcp.")
-        {
-            NetworkAccess::Opaque
-        } else {
-            NetworkAccess::None
-        };
-        let policy = OperationPolicy::native(
-            &pending.tool_name,
-            permission_key(&pending.tool_name, &input),
-            pending.risk_level,
-            network_access,
-        );
+        let authorization_request = &pending.authorization_request;
         state
             .tools
             .authorization()
-            .verify_receipt_with_policy(
-                Some(&pending.session_id),
-                &pending.tool_name,
-                &input,
-                &policy,
-                &pending.receipt,
-            )
+            .verify_receipt(authorization_request, &pending.receipt)
             .await
             .map_err(|reason| format!("confirmation is no longer valid: {reason}"))?;
 
@@ -246,14 +226,19 @@ async fn resolve_ui_confirmation(
         return Ok(());
     }
     if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
-        persist_permanent_permission(state, &pending.permission_key, perm_effect).await?;
+        persist_permanent_permission(
+            state,
+            pending.authorization_request.policy.capability.as_str(),
+            perm_effect,
+        )
+        .await?;
     }
     state
         .tools
         .authorization()
         .grant(
             Some(&pending.session_id),
-            &pending.permission_key,
+            &pending.authorization_request.policy.capability,
             perm_effect,
             perm_scope,
         )

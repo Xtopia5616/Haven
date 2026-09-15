@@ -557,15 +557,8 @@ impl AgentLayer {
                             // Pre-check the gate; RequiresConfirmation → queue
                             // pending + emit UI, then continue draining.
                             let tools = agent.executor.get_tools();
-                            let operation_policy = tools
-                                .get_operation_policy(
-                                    fired.session_id.as_deref(),
-                                    &tool_name,
-                                    &args,
-                                )
-                                .await;
-                            let policy_input = tools
-                                .get_authorization_input(
+                            let authorization_request = tools
+                                .get_authorization_request(
                                     fired.session_id.as_deref(),
                                     &tool_name,
                                     &args,
@@ -573,15 +566,10 @@ impl AgentLayer {
                                 .await;
                             let gate = tools
                                 .authorization()
-                                .check_with_policy(
-                                    fired.session_id.as_deref(),
-                                    &tool_name,
-                                    &policy_input,
-                                    &operation_policy,
-                                )
+                                .authorize(&authorization_request)
                                 .await;
                             match gate {
-                                haven_tools::ConfirmationResult::Blocked { reason } => {
+                                haven_tools::AuthorizationDecision::Blocked { reason } => {
                                     agent
                                         .events
                                         .emit_notification(
@@ -592,7 +580,7 @@ impl AgentLayer {
                                         )
                                         .await;
                                 }
-                                haven_tools::ConfirmationResult::RequiresConfirmation {
+                                haven_tools::AuthorizationDecision::RequiresConfirmation {
                                     receipt,
                                     ..
                                 } => {
@@ -619,7 +607,7 @@ impl AgentLayer {
                                             .await;
                                     }
                                 }
-                                haven_tools::ConfirmationResult::AutoApproved => {
+                                haven_tools::AuthorizationDecision::AutoApproved => {
                                     // Do NOT pass Some(true): that would fail-open
                                     // if the inner gate tightens between checks
                                     // (TOCTOU). None re-checks and fail-closes.

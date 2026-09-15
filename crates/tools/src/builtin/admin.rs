@@ -386,6 +386,7 @@ impl Serialize for AdminOperationOutput {
 enum AdminErrorKind {
     Cancelled,
     Validation,
+    SideEffectMayHaveHappened,
     Other,
 }
 
@@ -414,6 +415,13 @@ impl AdminOperationError {
             message: sanitize_diagnostic(&error.into()),
         }
     }
+
+    fn side_effect_may_have_happened(error: impl Into<String>) -> Self {
+        Self {
+            kind: AdminErrorKind::SideEffectMayHaveHappened,
+            message: sanitize_diagnostic(&error.into()),
+        }
+    }
 }
 
 impl Display for AdminOperationError {
@@ -424,6 +432,10 @@ impl Display for AdminOperationError {
 
 fn service_error(error: anyhow::Error) -> AdminOperationError {
     AdminOperationError::other(error.to_string())
+}
+
+fn side_effect_service_error(error: anyhow::Error) -> AdminOperationError {
+    AdminOperationError::side_effect_may_have_happened(error.to_string())
 }
 
 fn metadata(
@@ -466,6 +478,11 @@ fn operation_error_metadata(error: &AdminOperationError) -> ToolErrorMetadata {
             retryability: crate::ToolRetryability::Unknown,
         },
         AdminErrorKind::Validation => ToolErrorMetadata::validation(),
+        AdminErrorKind::SideEffectMayHaveHappened => ToolErrorMetadata {
+            class: crate::ToolErrorClass::SideEffectMayHaveHappened,
+            outcome: ToolExecutionOutcome::Failed,
+            retryability: crate::ToolRetryability::Unknown,
+        },
         AdminErrorKind::Other => ToolErrorMetadata::other(),
     }
 }
@@ -656,11 +673,19 @@ impl TypedToolOperation for SkillsAdminOperation {
             return Err(AdminOperationError::cancelled());
         }
         let value = match args {
-            SkillsOperationArgs::SkillsList => self.services.skills_list().await,
-            SkillsOperationArgs::SkillEnable { name } => self.services.skill_set(&name, true).await,
-            SkillsOperationArgs::SkillDisable { name } => {
-                self.services.skill_set(&name, false).await
+            SkillsOperationArgs::SkillsList => {
+                self.services.skills_list().await.map_err(service_error)
             }
+            SkillsOperationArgs::SkillEnable { name } => self
+                .services
+                .skill_set(&name, true)
+                .await
+                .map_err(side_effect_service_error),
+            SkillsOperationArgs::SkillDisable { name } => self
+                .services
+                .skill_set(&name, false)
+                .await
+                .map_err(side_effect_service_error),
             SkillsOperationArgs::SkillCreate {
                 name,
                 description,
@@ -668,20 +693,19 @@ impl TypedToolOperation for SkillsAdminOperation {
                 language,
                 version,
                 script,
-            } => {
-                self.services
-                    .skill_create(
-                        &name,
-                        &description,
-                        &instructions,
-                        language.as_deref(),
-                        version.as_deref(),
-                        script.as_deref(),
-                    )
-                    .await
-            }
-        }
-        .map_err(service_error)?;
+            } => self
+                .services
+                .skill_create(
+                    &name,
+                    &description,
+                    &instructions,
+                    language.as_deref(),
+                    version.as_deref(),
+                    script.as_deref(),
+                )
+                .await
+                .map_err(side_effect_service_error),
+        }?;
         Ok(AdminOperationOutput::new(value))
     }
 }
@@ -762,7 +786,7 @@ impl TypedToolOperation for ToolsAdminOperation {
             self.services
                 .tool_set(&name, enabled)
                 .await
-                .map_err(service_error)?,
+                .map_err(side_effect_service_error)?,
         ))
     }
 }
@@ -897,9 +921,17 @@ impl TypedToolOperation for McpAdminOperation {
             return Err(AdminOperationError::cancelled());
         }
         let value = match args {
-            McpOperationArgs::McpList => self.services.mcp_status().await,
-            McpOperationArgs::McpConnect { name } => self.services.mcp_connect(&name).await,
-            McpOperationArgs::McpDisconnect { name } => self.services.mcp_disconnect(&name).await,
+            McpOperationArgs::McpList => self.services.mcp_status().await.map_err(service_error),
+            McpOperationArgs::McpConnect { name } => self
+                .services
+                .mcp_connect(&name)
+                .await
+                .map_err(side_effect_service_error),
+            McpOperationArgs::McpDisconnect { name } => self
+                .services
+                .mcp_disconnect(&name)
+                .await
+                .map_err(service_error),
             McpOperationArgs::McpAdd {
                 name,
                 transport,
@@ -910,21 +942,21 @@ impl TypedToolOperation for McpAdminOperation {
                 cwd,
                 enabled,
                 auto_connect,
-            } => {
-                self.services
-                    .mcp_add(&McpAddFields {
-                        name,
-                        transport,
-                        command,
-                        url,
-                        args,
-                        env,
-                        cwd,
-                        enabled,
-                        auto_connect,
-                    })
-                    .await
-            }
+            } => self
+                .services
+                .mcp_add(&McpAddFields {
+                    name,
+                    transport,
+                    command,
+                    url,
+                    args,
+                    env,
+                    cwd,
+                    enabled,
+                    auto_connect,
+                })
+                .await
+                .map_err(side_effect_service_error),
             McpOperationArgs::McpUpdate {
                 name,
                 transport,
@@ -934,27 +966,34 @@ impl TypedToolOperation for McpAdminOperation {
                 env,
                 cwd,
                 enabled,
-            } => {
-                self.services
-                    .mcp_update(&McpUpdateFields {
-                        name,
-                        transport,
-                        command,
-                        url,
-                        args,
-                        env,
-                        cwd,
-                        enabled,
-                    })
-                    .await
+            } => self
+                .services
+                .mcp_update(&McpUpdateFields {
+                    name,
+                    transport,
+                    command,
+                    url,
+                    args,
+                    env,
+                    cwd,
+                    enabled,
+                })
+                .await
+                .map_err(side_effect_service_error),
+            McpOperationArgs::McpToggle { name, enabled } => self
+                .services
+                .mcp_toggle(&name, enabled)
+                .await
+                .map_err(side_effect_service_error),
+            McpOperationArgs::McpRemove { name } => {
+                self.services.mcp_remove(&name).await.map_err(service_error)
             }
-            McpOperationArgs::McpToggle { name, enabled } => {
-                self.services.mcp_toggle(&name, enabled).await
-            }
-            McpOperationArgs::McpRemove { name } => self.services.mcp_remove(&name).await,
-            McpOperationArgs::McpReload => self.services.mcp_reload().await,
-        }
-        .map_err(service_error)?;
+            McpOperationArgs::McpReload => self
+                .services
+                .mcp_reload()
+                .await
+                .map_err(side_effect_service_error),
+        }?;
         Ok(AdminOperationOutput::new(value))
     }
 }
@@ -1018,6 +1057,7 @@ pub enum ConfigOperationError {
     Cancelled,
     Unavailable,
     PathNotFound { path: String },
+    SideEffectMayHaveHappened,
     Failed,
 }
 
@@ -1027,7 +1067,27 @@ impl Display for ConfigOperationError {
             Self::Cancelled => formatter.write_str("configuration operation cancelled"),
             Self::Unavailable => formatter.write_str("configuration administration is unavailable"),
             Self::PathNotFound { path } => write!(formatter, "config key '{}' not found", path),
+            Self::SideEffectMayHaveHappened => {
+                formatter.write_str("configuration log level may have been changed")
+            }
             Self::Failed => formatter.write_str("configuration operation failed"),
+        }
+    }
+}
+
+impl From<ConfigOperationError> for AdminOperationError {
+    fn from(error: ConfigOperationError) -> Self {
+        match error {
+            ConfigOperationError::Cancelled => Self::cancelled(),
+            ConfigOperationError::PathNotFound { path } => {
+                Self::validation(format!("config key '{}' not found", path))
+            }
+            ConfigOperationError::SideEffectMayHaveHappened => {
+                Self::side_effect_may_have_happened(error.to_string())
+            }
+            ConfigOperationError::Unavailable | ConfigOperationError::Failed => {
+                Self::other(error.to_string())
+            }
         }
     }
 }
@@ -1086,6 +1146,11 @@ impl TypedToolOperation for ConfigAdminOperation {
                 retryability: crate::ToolRetryability::Unknown,
             },
             ConfigOperationError::PathNotFound { .. } => ToolErrorMetadata::validation(),
+            ConfigOperationError::SideEffectMayHaveHappened => ToolErrorMetadata {
+                class: crate::ToolErrorClass::SideEffectMayHaveHappened,
+                outcome: ToolExecutionOutcome::Failed,
+                retryability: crate::ToolRetryability::Unknown,
+            },
             ConfigOperationError::Unavailable | ConfigOperationError::Failed => {
                 ToolErrorMetadata::other()
             }
@@ -1123,7 +1188,7 @@ impl TypedToolOperation for ConfigAdminOperation {
                     .services
                     .logs_level(level.clone())
                     .await
-                    .map_err(|_| ConfigOperationError::Failed)?;
+                    .map_err(|_| ConfigOperationError::SideEffectMayHaveHappened)?;
                 Ok(ConfigOperationOutput::LogsLevel(LogLevelOutput {
                     level,
                     saved: true,
@@ -1231,11 +1296,7 @@ impl AdminSurfaces {
     ) -> Result<ToolResult, AdminOperationError> {
         match request {
             AdminRequest::Diagnostics(args) => {
-                let output = self
-                    .diagnostics
-                    .execute_typed(args, cancel)
-                    .await
-                    .map_err(|error| AdminOperationError::other(error.to_string()))?;
+                let output = self.diagnostics.execute_typed(args, cancel).await?;
                 Ok(ToolResult::ok(serde_json::to_value(output).map_err(
                     |error| AdminOperationError::other(error.to_string()),
                 )?))
@@ -1245,37 +1306,25 @@ impl AdminSurfaces {
                     .config
                     .execute_typed(args, cancel)
                     .await
-                    .map_err(|error| AdminOperationError::other(error.to_string()))?;
+                    .map_err(AdminOperationError::from)?;
                 Ok(ToolResult::ok(serde_json::to_value(output).map_err(
                     |error| AdminOperationError::other(error.to_string()),
                 )?))
             }
             AdminRequest::Skills(args) => {
-                let output = self
-                    .skills
-                    .execute_typed(args, cancel)
-                    .await
-                    .map_err(|error| AdminOperationError::other(error.to_string()))?;
+                let output = self.skills.execute_typed(args, cancel).await?;
                 Ok(ToolResult::ok(serde_json::to_value(output).map_err(
                     |error| AdminOperationError::other(error.to_string()),
                 )?))
             }
             AdminRequest::Tools(args) => {
-                let output = self
-                    .tools
-                    .execute_typed(args, cancel)
-                    .await
-                    .map_err(|error| AdminOperationError::other(error.to_string()))?;
+                let output = self.tools.execute_typed(args, cancel).await?;
                 Ok(ToolResult::ok(serde_json::to_value(output).map_err(
                     |error| AdminOperationError::other(error.to_string()),
                 )?))
             }
             AdminRequest::Mcp(args) => {
-                let output = self
-                    .mcp
-                    .execute_typed(args, cancel)
-                    .await
-                    .map_err(|error| AdminOperationError::other(error.to_string()))?;
+                let output = self.mcp.execute_typed(args, cancel).await?;
                 Ok(ToolResult::ok(serde_json::to_value(output).map_err(
                     |error| AdminOperationError::other(error.to_string()),
                 )?))
@@ -1287,10 +1336,225 @@ impl AdminSurfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
+    use crate::{StructuredToolError, Tool};
     use haven_common::config::{ConfigLoader, ConfigService};
     use serde_json::json;
     use tempfile::TempDir;
+
+    struct AdminOperationCase {
+        surface: &'static str,
+        operation: &'static str,
+        input: Value,
+        required: &'static [&'static str],
+        idempotency: OperationIdempotency,
+    }
+
+    fn admin_operation_cases() -> Vec<AdminOperationCase> {
+        vec![
+            AdminOperationCase {
+                surface: "haven_diagnostics",
+                operation: "status",
+                input: json!({"operation": "status"}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_diagnostics",
+                operation: "logs_tail",
+                input: json!({"operation": "logs_tail", "limit": 2}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_diagnostics",
+                operation: "sessions",
+                input: json!({"operation": "sessions", "limit": 1}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_diagnostics",
+                operation: "errors",
+                input: json!({"operation": "errors", "limit": 1}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_config",
+                operation: "config_get",
+                input: json!({"operation": "config_get", "path": "log.level"}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_config",
+                operation: "logs_level",
+                input: json!({"operation": "logs_level", "level": "debug"}),
+                required: &["operation", "level"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_skills",
+                operation: "skills_list",
+                input: json!({"operation": "skills_list"}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_skills",
+                operation: "skill_enable",
+                input: json!({"operation": "skill_enable", "name": "demo"}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_skills",
+                operation: "skill_disable",
+                input: json!({"operation": "skill_disable", "name": "demo"}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_skills",
+                operation: "skill_create",
+                input: json!({
+                    "operation": "skill_create",
+                    "name": "demo",
+                    "description": "Demo skill",
+                    "instructions": "Do the demo",
+                }),
+                required: &["operation", "name", "description", "instructions"],
+                idempotency: OperationIdempotency::Unknown,
+            },
+            AdminOperationCase {
+                surface: "haven_tools",
+                operation: "tool_enable",
+                input: json!({"operation": "tool_enable", "name": "shell"}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_tools",
+                operation: "tool_disable",
+                input: json!({"operation": "tool_disable", "name": "shell"}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_list",
+                input: json!({"operation": "mcp_list"}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_connect",
+                input: json!({"operation": "mcp_connect", "name": "demo"}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_disconnect",
+                input: json!({"operation": "mcp_disconnect", "name": "demo"}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_add_stdio",
+                input: json!({
+                    "operation": "mcp_add",
+                    "name": "demo",
+                    "transport": "stdio",
+                    "command": "demo-mcp",
+                    "enabled": false,
+                    "auto_connect": false,
+                }),
+                required: &["operation", "name", "transport", "command"],
+                idempotency: OperationIdempotency::Unknown,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_add_http",
+                input: json!({
+                    "operation": "mcp_add",
+                    "name": "demo-http",
+                    "transport": "http",
+                    "url": "https://example.invalid/mcp",
+                    "enabled": false,
+                    "auto_connect": false,
+                }),
+                required: &["operation", "name", "transport", "url"],
+                idempotency: OperationIdempotency::Unknown,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_update",
+                input: json!({"operation": "mcp_update", "name": "demo", "enabled": false}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Unknown,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_toggle",
+                input: json!({"operation": "mcp_toggle", "name": "demo", "enabled": false}),
+                required: &["operation", "name", "enabled"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_remove",
+                input: json!({"operation": "mcp_remove", "name": "demo"}),
+                required: &["operation", "name"],
+                idempotency: OperationIdempotency::Unknown,
+            },
+            AdminOperationCase {
+                surface: "haven_mcp",
+                operation: "mcp_reload",
+                input: json!({"operation": "mcp_reload"}),
+                required: &["operation"],
+                idempotency: OperationIdempotency::Idempotent,
+            },
+        ]
+    }
+
+    fn tool_for<'a>(tools: &'a [ToolBox], name: &str) -> &'a dyn Tool {
+        tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .unwrap_or_else(|| panic!("missing admin surface {name}"))
+            .as_ref()
+    }
+
+    fn remove_field(input: &Value, field: &str) -> Value {
+        let mut input = input
+            .as_object()
+            .cloned()
+            .expect("admin operation input is an object");
+        input.remove(field);
+        Value::Object(input)
+    }
+
+    async fn assert_validation_rejection(tool: &dyn Tool, input: Value, label: &str) {
+        assert!(
+            tool.validate_input(&input).is_err(),
+            "{label}: schema accepted {input}"
+        );
+        let error = tool
+            .execute(input, CancellationToken::new())
+            .await
+            .expect_err(label);
+        let structured = error
+            .downcast_ref::<StructuredToolError>()
+            .unwrap_or_else(|| panic!("{label}: error lost structured metadata: {error}"));
+        assert_eq!(
+            structured.metadata().class,
+            crate::ToolErrorClass::Validation,
+            "{label}: wrong error class"
+        );
+    }
 
     fn test_surfaces() -> (AdminSurfaces, TempDir) {
         let dir = TempDir::new().expect("temporary config directory");
@@ -1533,6 +1797,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_level_failure_after_persist_reports_unknown_side_effect() {
+        struct FailingLogLevelPort;
+
+        impl crate::LogLevelPort for FailingLogLevelPort {
+            fn set_level(&self, _level: &LogLevel) -> anyhow::Result<()> {
+                anyhow::bail!("host logger could not be reconfigured")
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let service = Arc::new(ConfigService::new(loader));
+        let tool = new_config_admin_tool(ConfigAdminContext {
+            config_service: Some(service.clone()),
+            log_level: Some(Arc::new(FailingLogLevelPort)),
+        });
+
+        let error = tool
+            .execute(
+                json!({"operation": "logs_level", "level": "debug"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("host logger failure must be surfaced");
+        let metadata = error
+            .downcast_ref::<StructuredToolError>()
+            .expect("side-effect uncertainty must remain structured")
+            .metadata();
+        assert_eq!(
+            metadata,
+            ToolErrorMetadata {
+                class: crate::ToolErrorClass::SideEffectMayHaveHappened,
+                outcome: ToolExecutionOutcome::Failed,
+                retryability: crate::ToolRetryability::Unknown,
+            }
+        );
+        assert_eq!(
+            service.snapshot().unwrap().config.log.level,
+            LogLevel::Debug
+        );
+        assert_eq!(service.snapshot().unwrap().version, 1);
+    }
+
+    #[tokio::test]
     async fn typed_config_contract_rejects_unknown_missing_removed_and_cancelled() {
         let (tool, service, _dir) = config_tool();
         let unknown = json!({
@@ -1581,5 +1889,249 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("cancelled"));
         assert_eq!(service.snapshot().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn every_admin_operation_rejects_missing_unknown_and_cross_surface_input() {
+        let (surfaces, _dir) = test_surfaces();
+        let tools = surfaces.tools();
+        let cases = admin_operation_cases();
+        let mut seen = std::collections::HashSet::new();
+
+        for case in cases {
+            let tool = tool_for(&tools, case.surface);
+            assert!(
+                tool.validate_input(&case.input).is_ok(),
+                "{}:{} rejected its valid input {}",
+                case.surface,
+                case.operation,
+                case.input
+            );
+            assert!(seen.insert((case.surface, case.operation)));
+
+            for field in case.required {
+                assert_validation_rejection(
+                    tool,
+                    remove_field(&case.input, field),
+                    &format!("{}:{} missing {field}", case.surface, case.operation),
+                )
+                .await;
+            }
+
+            let mut unknown = case.input.as_object().unwrap().clone();
+            unknown.insert("unexpected_field".into(), json!(true));
+            assert_validation_rejection(
+                tool,
+                Value::Object(unknown),
+                &format!("{}:{} unknown field", case.surface, case.operation),
+            )
+            .await;
+        }
+
+        // The selector is a closed union: an operation from another surface
+        // must not be guessed or dispatched by its spelling.
+        for (surface, input) in [
+            (
+                "haven_diagnostics",
+                json!({"operation": "logs_level", "level": "debug"}),
+            ),
+            (
+                "haven_config",
+                json!({"operation": "skill_create", "name": "x"}),
+            ),
+            (
+                "haven_skills",
+                json!({"operation": "tool_disable", "name": "shell"}),
+            ),
+            (
+                "haven_tools",
+                json!({"operation": "mcp_remove", "name": "demo"}),
+            ),
+            ("haven_mcp", json!({"operation": "config_get"})),
+        ] {
+            assert_validation_rejection(tool_for(&tools, surface), input, surface).await;
+        }
+
+        assert_eq!(
+            seen.len(),
+            21,
+            "operation matrix must cover every admin operation"
+        );
+    }
+
+    #[test]
+    fn every_admin_operation_declares_duplicate_and_timeout_policy() {
+        let (surfaces, _dir) = test_surfaces();
+        let tools = surfaces.tools();
+
+        for case in admin_operation_cases() {
+            let tool = tool_for(&tools, case.surface);
+            assert_eq!(
+                tool.idempotency(&case.input),
+                case.idempotency,
+                "duplicate-call policy drift for {}:{}",
+                case.surface,
+                case.operation
+            );
+            assert_eq!(
+                tool.timeout_secs_for(&case.input),
+                10,
+                "timeout policy drift for {}:{}",
+                case.surface,
+                case.operation
+            );
+            assert_eq!(
+                tool.timeout_outcome(),
+                ToolExecutionOutcome::TimedOutAndTerminated,
+                "admin operations must use the declared terminating timeout contract"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_admin_operation_is_cancellation_safe_before_side_effects() {
+        let (surfaces, _dir) = test_surfaces();
+        let tools = surfaces.tools();
+
+        for case in admin_operation_cases() {
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let error = tool_for(&tools, case.surface)
+                .execute(case.input, cancel)
+                .await
+                .expect_err("cancelled admin operation must not execute");
+            let structured = error
+                .downcast_ref::<StructuredToolError>()
+                .unwrap_or_else(|| {
+                    panic!("{} lost structured cancellation metadata", case.operation)
+                });
+            assert_eq!(
+                structured.metadata(),
+                ToolErrorMetadata {
+                    class: crate::ToolErrorClass::UnknownOutcome,
+                    outcome: ToolExecutionOutcome::Cancelled,
+                    retryability: crate::ToolRetryability::Unknown,
+                },
+                "cancellation contract drift for {}:{}",
+                case.surface,
+                case.operation
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_admin_calls_are_bounded_and_unknown_side_effects_are_not_replayed() {
+        let (surfaces, service, _dir) = test_surfaces_with_service();
+        let tools = surfaces.tools();
+
+        let level = json!({"operation": "logs_level", "level": "debug"});
+        let first = tool_for(&tools, "haven_config")
+            .execute(level.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        let second = tool_for(&tools, "haven_config")
+            .execute(level, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(first.output["version"], json!(1));
+        assert_eq!(second.output["version"], json!(1));
+        assert_eq!(service.snapshot().unwrap().version, 1);
+
+        let add = json!({
+            "operation": "mcp_add",
+            "name": "duplicate-server",
+            "transport": "stdio",
+            "command": "not-started",
+            "enabled": false,
+            "auto_connect": false,
+        });
+        tool_for(&tools, "haven_mcp")
+            .execute(add.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        tool_for(&tools, "haven_mcp")
+            .execute(add, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .snapshot()
+                .unwrap()
+                .config
+                .mcp_servers
+                .iter()
+                .filter(|server| server.name == "duplicate-server")
+                .count(),
+            1,
+            "duplicate mcp_add must not append a second server"
+        );
+
+        // Unknown-idempotency operations are never eligible for automatic
+        // replay, even when their first call has already changed state.
+        for case in admin_operation_cases()
+            .into_iter()
+            .filter(|case| case.idempotency == OperationIdempotency::Unknown)
+        {
+            assert_eq!(
+                tool_for(&tools, case.surface).idempotency(&case.input),
+                OperationIdempotency::Unknown,
+                "{}:{} must require verification before replay",
+                case.surface,
+                case.operation
+            );
+        }
+    }
+
+    #[test]
+    fn admin_error_metadata_preserves_cancelled_validation_and_unknown_side_effect_states() {
+        let cancelled = AdminOperationError::cancelled();
+        assert_eq!(
+            operation_error_metadata(&cancelled),
+            ToolErrorMetadata {
+                class: crate::ToolErrorClass::UnknownOutcome,
+                outcome: ToolExecutionOutcome::Cancelled,
+                retryability: crate::ToolRetryability::Unknown,
+            }
+        );
+
+        let validation = AdminOperationError::validation("not allowed");
+        assert_eq!(
+            operation_error_metadata(&validation),
+            ToolErrorMetadata::validation()
+        );
+
+        let unknown = AdminOperationError::side_effect_may_have_happened("write may have landed");
+        assert_eq!(
+            operation_error_metadata(&unknown),
+            ToolErrorMetadata {
+                class: crate::ToolErrorClass::SideEffectMayHaveHappened,
+                outcome: ToolExecutionOutcome::Failed,
+                retryability: crate::ToolRetryability::Unknown,
+            }
+        );
+    }
+
+    fn test_surfaces_with_service() -> (AdminSurfaces, Arc<ConfigService>, TempDir) {
+        let dir = TempDir::new().expect("temporary config directory");
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let service = Arc::new(ConfigService::new(loader));
+        let context = AdminContext {
+            config_service: Some(service.clone()),
+            db: None,
+            router: None,
+            log_path: Some(dir.path().join("logs").join("haven.log")),
+            log_level: None,
+            tool_control: None,
+        };
+        let surfaces = AdminSurfaces::new(
+            context,
+            SkillsEngine::new(),
+            Arc::new(McpManager::new()),
+            Arc::new(RwLock::new(HashMap::new())),
+            ToolRegistry::new(),
+            256 * 1024,
+            512 * 1024,
+        );
+        (surfaces, service, dir)
     }
 }

@@ -26,6 +26,7 @@ pub struct AskTool;
 /// Typed parameters for `AskTool`. Entry ① (native `run`) and entry ②
 /// (`Tool::execute` with LLM JSON) both land in `AskTool::run`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AskParams {
     /// The question to ask the human.
     pub question: String,
@@ -349,5 +350,45 @@ mod tests {
             .await;
         let err = result.unwrap_err().to_string();
         assert!(err.contains("invalid 'ask' input"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_ask_rejects_unknown_fields_at_the_json_boundary() {
+        let result = AskTool
+            .execute(
+                json!({"question": "continue?", "unexpected": true}),
+                CancellationToken::new(),
+            )
+            .await;
+        let error = result.expect_err("unknown ask fields must be rejected");
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_ask_adapter_cancellation_is_unknown_and_non_replayable() {
+        let adapter = crate::TypedToolAdapter::new("ask", "ask", AskTool);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = adapter
+            .execute(json!({"question": "continue?"}), cancel)
+            .await
+            .expect_err("cancelled ask must not pause the session");
+        let structured = error.downcast_ref::<StructuredToolError>().unwrap();
+        assert_eq!(
+            structured.metadata(),
+            ToolErrorMetadata {
+                class: crate::ToolErrorClass::UnknownOutcome,
+                outcome: crate::ToolExecutionOutcome::Cancelled,
+                retryability: crate::ToolRetryability::Unknown,
+            }
+        );
+        assert_eq!(
+            adapter.idempotency(&json!({"question": "continue?"})),
+            crate::OperationIdempotency::NonIdempotent
+        );
+        assert_eq!(
+            adapter.timeout_outcome(),
+            crate::ToolExecutionOutcome::TimedOutUnknown
+        );
     }
 }

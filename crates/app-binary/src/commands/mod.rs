@@ -27,7 +27,6 @@ use crate::events::{
 };
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
-use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use serde::Serialize;
@@ -134,37 +133,34 @@ pub(crate) async fn authorize_admin_request(
     };
     let policy = haven_tools::OperationPolicy::native(
         &tool_name,
-        tool_name.clone(),
+        tool_name.clone().into(),
         risk_level,
         network_access,
     );
+    let authorization_request =
+        haven_tools::AuthorizationRequest::new(Some("ui"), &tool_name, input, policy);
     match state
         .tools
         .authorization()
-        .check_with_policy(Some("ui"), &tool_name, &input, &policy)
+        .authorize(&authorization_request)
         .await
     {
-        haven_tools::ConfirmationResult::AutoApproved => {
+        haven_tools::AuthorizationDecision::AutoApproved => {
             execute_admin_surface(state, ctx, request).await
         }
-        haven_tools::ConfirmationResult::RequiresConfirmation {
-            tool_name,
-            risk_level,
-            receipt,
-            ..
-        } => Err(queue_ui_confirmation(
-            state,
-            app,
-            tool_name,
-            input,
-            risk_level,
-            receipt,
-            UiConfirmationAction::Admin {
-                request: Box::new(request),
-            },
-        )
-        .await?),
-        haven_tools::ConfirmationResult::Blocked { reason } => Err(format!(
+        haven_tools::AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
+            Err(queue_ui_confirmation(
+                state,
+                app,
+                authorization_request,
+                receipt,
+                UiConfirmationAction::Admin {
+                    request: Box::new(request),
+                },
+            )
+            .await?)
+        }
+        haven_tools::AuthorizationDecision::Blocked { reason } => Err(format!(
             "native admin operation blocked by security policy ({reason})"
         )),
     }
@@ -251,22 +247,20 @@ pub(crate) async fn finalize_admin_ui_operation(
 pub(crate) async fn queue_ui_confirmation(
     state: &AppState,
     app: &AppHandle,
-    tool_name: String,
-    params: serde_json::Value,
-    risk_level: RiskLevel,
+    authorization_request: haven_tools::AuthorizationRequest,
     receipt: haven_tools::ConfirmationReceipt,
     action: UiConfirmationAction,
 ) -> Result<String, String> {
     let request_id = receipt.confirmation_id.clone();
-    let summary = haven_tools::permission_prompt_summary(&tool_name, &params);
-    let permission_key = receipt.permission_key.clone();
+    let tool_name = authorization_request.tool_name.clone();
+    let summary = haven_tools::permission_prompt_summary(&tool_name, &authorization_request.input);
+    let permission_key = authorization_request.policy.capability.to_string();
+    let risk_level = receipt.effective_risk;
     state.ui_confirmations.lock().await.insert(
         request_id.to_string(),
         UiConfirmationPending {
             session_id: "ui".into(),
-            tool_name: tool_name.clone(),
-            permission_key: permission_key.clone(),
-            risk_level,
+            authorization_request,
             summary: summary.clone(),
             receipt: receipt.clone(),
             action,

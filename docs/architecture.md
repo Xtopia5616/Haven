@@ -477,6 +477,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-15 | §2.5 Security / Tools / Agent / App：由 `AuthorizationEngine` 统一承载 typed `AuthorizationRequest`、`AuthorizationDecision` 与 `CapabilityScope`；scheduled、MCP、skill、Tauri/UI confirmation 共用同一请求与 receipt 校验路径（ADR 0163） |
 | 2026-09-15 | §2.6 App：引入 `ApplicationRuntime` 统一服务句柄、后台任务 owner、根取消 token、退出 shutdown/teardown；输入、session、action、MCP 和 bootstrap worker 按依赖顺序停止，pending scheduled action 保留恢复语义（ADR 0161） |
 | 2026-09-15 | §2.6 UI：以 typed `SessionReducer` 统一 live event、resume、rollback/reconnect replay、Interaction、usage 与 optimistic 状态；旧消息/用量 store 降为兼容投影（ADR 0160） |
 | 2026-09-15 | §2.3 Memory / §2.5 Agent：新增版本化 `session_events` append-only 事件流与 `SessionEventStore`；snapshot 降级为 checkpoint/cache，resume、rollback、transcript 投影与 live replay 共用 durable sequence（ADR 0159） |

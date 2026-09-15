@@ -109,6 +109,7 @@ pub use builtin::{
     LogLevelOutput, McpOperationArgs, ScheduleMode, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use circuit::ToolCircuitRegistry;
+pub use haven_common::types::CapabilityScope;
 pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
@@ -126,8 +127,9 @@ pub use output::{
 pub(crate) use process::{read_stream_capped, take_tail_if_changed};
 pub use registry::{DeferredToolCatalog, RegistryProbe, SessionCatalog, ToolRegistry};
 pub use security::{
-    AuthorizationEngine, ConfirmationReceipt, ConfirmationResult, LOCAL_TOOL_SECURITY_MATRIX,
-    LocalToolSecurityCase, is_safe_local_path, permission_prompt_summary,
+    AuthorizationDecision, AuthorizationEngine, AuthorizationRequest, ConfirmationReceipt,
+    LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, is_safe_local_path,
+    permission_prompt_summary,
 };
 #[cfg(windows)]
 pub use shell_runtime::CREATE_NO_WINDOW;
@@ -1613,7 +1615,7 @@ impl ToolsManager {
             .map(|tool| tool.operation_policy(input))
             .unwrap_or_else(|| OperationPolicy {
                 risk_level: RiskLevel::Safe,
-                permission_key: haven_common::types::permission_key(tool_name, input),
+                capability: haven_common::types::permission_key(tool_name, input).into(),
                 confirmation: crate::ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Unknown,
                 scope: ToolOperationScope::Session,
@@ -1622,6 +1624,23 @@ impl ToolsManager {
                 data_sensitivity: DataSensitivity::None,
                 network_access: NetworkAccess::None,
             })
+    }
+
+    /// Build the single authorization request used by agent, scheduled,
+    /// native and renderer-triggered execution paths.
+    pub async fn get_authorization_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest {
+        let policy = self
+            .get_operation_policy(session_id, tool_name, input)
+            .await;
+        let authorization_input = self
+            .get_authorization_input(session_id, tool_name, input)
+            .await;
+        AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
     }
 
     /// Return the canonical policy input used by a tool, including fixed
@@ -1834,7 +1853,7 @@ mod tests {
             },
             policy: ToolPolicy {
                 risk_level: RiskLevel::Safe,
-                permission_key: String::new(),
+                permission_key: name.into(),
                 confirmation: "none".into(),
                 idempotency: "safe".into(),
                 scope: "session".into(),
@@ -2645,6 +2664,96 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn execute_tool_never_retries_when_side_effect_outcome_is_unknown() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct UnknownSideEffectTool {
+            calls: Arc<AtomicU32>,
+        }
+
+        #[async_trait::async_trait]
+        impl Tool for UnknownSideEffectTool {
+            fn name(&self) -> String {
+                "unknown_side_effect".into()
+            }
+            fn description(&self) -> String {
+                "test tool with an unknown side-effect outcome".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::High
+            }
+            fn idempotency(&self, _: &Value) -> OperationIdempotency {
+                OperationIdempotency::Idempotent
+            }
+            fn default_max_retries(&self) -> u32 {
+                3
+            }
+            fn default_retry_backoff_secs(&self) -> u64 {
+                0
+            }
+            fn error_metadata(&self, _: &anyhow::Error) -> ToolErrorMetadata {
+                ToolErrorMetadata {
+                    class: ToolErrorClass::SideEffectMayHaveHappened,
+                    outcome: ToolExecutionOutcome::Failed,
+                    retryability: ToolRetryability::Unknown,
+                }
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object", "additionalProperties": false})
+            }
+            async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(anyhow::Error::new(StructuredToolError::new(
+                    "the external side effect may have happened",
+                    ToolErrorMetadata {
+                        class: ToolErrorClass::SideEffectMayHaveHappened,
+                        outcome: ToolExecutionOutcome::Failed,
+                        retryability: ToolRetryability::Unknown,
+                    },
+                )))
+            }
+        }
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let manager = ToolsManager::new();
+        manager
+            .set_tool_settings(HashMap::from([(
+                "unknown_side_effect".into(),
+                ToolConfig {
+                    max_retries: Some(3),
+                    retry_backoff_secs: Some(0),
+                    ..Default::default()
+                },
+            )]))
+            .await;
+        manager
+            .registry()
+            .register(Arc::new(UnknownSideEffectTool {
+                calls: calls.clone(),
+            }))
+            .await
+            .unwrap();
+
+        let result = manager
+            .execute_tool(
+                None,
+                "unknown_side_effect",
+                json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert_eq!(result.attempts, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            result.error_class,
+            Some(ToolErrorClass::SideEffectMayHaveHappened)
+        );
+        assert_eq!(result.retryability, ToolRetryability::Unknown);
     }
 
     #[tokio::test]
