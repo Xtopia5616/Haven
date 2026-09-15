@@ -24,7 +24,6 @@ pub mod preferences;
 pub mod process;
 mod registry;
 pub mod scheduled_action;
-pub mod self_tool;
 pub mod shell;
 pub mod system;
 pub mod tool_catalog;
@@ -89,14 +88,14 @@ pub(crate) async fn resolve_media_capabilities(
 
 pub use crate::tool_runtime::{MemoryRecallPort, MemoryRecallSlot, new_memory_recall_slot};
 pub use admin::{
-    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, ConfigAdminContext,
-    ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs, ConfigOperationError,
-    ConfigOperationOutput, ConfigViewOutput, LogLevelOutput,
+    AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces,
+    ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
+    ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
+    LogLevelOutput, McpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use memory::MemoryTool;
 pub use messaging::AgentTool;
 pub use scheduled_action::{ScheduleMode, ScheduledActionFired, ScheduledActionTool};
-pub use self_tool::{SelfOperation, SelfParams, SelfTool, SelfToolContext};
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
 /// when set, else the global observation budget
@@ -151,7 +150,7 @@ pub struct BuiltinContext {
     pub limits: haven_common::config::ContextLimitsConfig,
     pub default_shell: haven_common::types::ShellChoice,
     pub clipboard_history: Arc<clipboard::ClipboardHistory>,
-    pub self_context: Option<SelfToolContext>,
+    pub admin_context: Option<AdminContext>,
     pub messaging_service: Arc<crate::MessagingService>,
     pub memory_recall: MemoryRecallSlot,
     pub managed_assets: crate::ManagedAssetRegistry,
@@ -162,7 +161,7 @@ pub struct BuiltinContext {
 pub async fn register_builtin_tools(
     tools: &mut Vec<ToolBox>,
     context: BuiltinContext,
-) -> Option<Arc<self_tool::SelfTool>> {
+) -> Option<Arc<admin::AdminSurfaces>> {
     let BuiltinContext {
         skills_engine,
         skill_runner,
@@ -175,7 +174,7 @@ pub async fn register_builtin_tools(
         limits,
         default_shell,
         clipboard_history,
-        self_context,
+        admin_context,
         messaging_service,
         memory_recall,
         managed_assets,
@@ -197,7 +196,7 @@ pub async fn register_builtin_tools(
     } = context;
     let settings = &settings;
     let limits = &limits;
-    let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
+    let mut admin_surfaces: Option<Arc<admin::AdminSurfaces>> = None;
     let (vision_available, transcribe_available) =
         resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
     let record_available = if let Some(pipeline) = audio_pipeline.as_ref() {
@@ -307,7 +306,7 @@ pub async fn register_builtin_tools(
     let schedule_tool: ToolBox = Arc::new(scheduled_action::ScheduledActionTool {
         service: action_service,
         // Weak registry probe so `set` can validate tool_name / risk at
-        // schedule time; taken before `registry` is moved into SelfTool.
+        // schedule time; taken before the registry is shared with admin services.
         registry: Some(registry.probe()),
     });
     let preferences_tool: ToolBox = Arc::new(preferences::PreferencesTool::default());
@@ -387,35 +386,25 @@ pub async fn register_builtin_tools(
             max_tools_per_request: max_tools,
         }));
     }
-    if let Some(ctx) = self_context {
-        let config_admin = Arc::new(admin::new_config_admin_tool(admin::ConfigAdminContext {
-            config_service: ctx.config_service.clone(),
-            log_level: ctx.log_level.clone(),
-        }));
-        add_admin_operation_views(tools, config_admin.clone(), settings, "haven_config");
-        // Facts memory needs the DB; like SelfTool it only registers once the
-        // desktop shell wires the app context (headless builds skip it).
+    if let Some(ctx) = admin_context {
+        // Facts memory needs the DB; it is registered only once the desktop
+        // shell wires the app context (headless builds skip it).
         let memory_tool: ToolBox = Arc::new(memory::MemoryTool::new(ctx.db.clone(), memory_recall));
         add_operation_views(tools, memory_tool, settings, MEMORY_OPERATION_VIEWS);
-        let tool = Arc::new(self_tool::SelfTool::new(
+        let surfaces = Arc::new(admin::AdminSurfaces::new(
             ctx,
             skills_engine.clone(),
             mcp_manager.clone(),
             server_configs.clone(),
-            registry,
+            registry.clone(),
             limits.self_tool_max_instructions_bytes,
             limits.self_tool_max_script_bytes,
         ));
-        self_tool_arc = Some(tool.clone());
-        // The broad native surface is retained for app commands. The model
-        // receives one dotted operation view per capability and operation.
-        for capability in admin::AdminCapability::ALL {
-            if capability != admin::AdminCapability::Config {
-                let capability_tool: ToolBox =
-                    Arc::new(admin::AdminCapabilityTool::new(tool.clone(), capability));
-                add_admin_operation_views(tools, capability_tool, settings, capability.name());
-            }
+        for capability_tool in surfaces.tools() {
+            let capability = capability_tool.name();
+            add_admin_operation_views(tools, capability_tool, settings, &capability);
         }
+        admin_surfaces = Some(surfaces);
     }
     add_action_views(tools, actions_tool, settings);
     add_operation_views(tools, schedule_tool, settings, SCHEDULE_OPERATION_VIEWS);
@@ -426,7 +415,7 @@ pub async fn register_builtin_tools(
         PREFERENCE_OPERATION_VIEWS,
     );
     add_operation_views(tools, checklist_tool, settings, CHECKLIST_OPERATION_VIEWS);
-    self_tool_arc
+    admin_surfaces
 }
 
 fn files_read_text_schema() -> serde_json::Value {

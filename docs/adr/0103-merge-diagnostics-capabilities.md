@@ -6,8 +6,8 @@
 ## 背景
 
 ADR 0070 将应用诊断拆成 `haven_diagnostics` 和
-`haven_session_diagnostics` 两个模型工具。两者都是只读、低风险能力，且都由
-`SelfTool` 的同一 structured surface 执行；前者的 `status` 还已经包含会话数量摘要。
+`haven_session_diagnostics` 两个模型工具。两者都是只读、低风险能力，且都由同一组
+admin service 执行；前者的 `status` 还已经包含会话数量摘要。
 两个工具在模型目录和 UI 中分开显示，造成能力重复和入口不统一。
 
 ## 决定
@@ -17,7 +17,7 @@ ADR 0070 将应用诊断拆成 `haven_diagnostics` 和
    `errors`。
 3. 保留各 operation 的原有边界：日志最多 500 行，会话查询最多 50 条；会话诊断仍只
    返回 id、状态、标题、时间和字符数，不返回 input/transcript 正文；日志继续逐行脱敏和截断。
-4. 合并只影响模型可见 capability，不改变 `SelfTool` 的 native structured entry。日志
+4. 合并只影响模型可见 capability，不改变 native command 的 typed request 入口。日志
    operation 使用 `haven:diagnostics` 共享资源，会话 operation 使用
    `haven:sessions` 共享资源，避免无意义地串行化两类只读查询。
 5. 新的会话权限 key 为 `haven_diagnostics:sessions` 和

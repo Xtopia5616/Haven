@@ -27,7 +27,7 @@
 5. 删除旧模型根名 `process`、`clipboard`、`input`、`window`、`actions`、`schedule`、
    `preferences`、`checklist` 以及 `haven_diagnostics`、`haven_config`、`haven_skills`、
    `haven_tools`、`haven_mcp`。旧 tool settings 和权限键触发配置备份/重置，不做别名迁移。
-   `SelfTool` 继续只用于 native Tauri 命令。
+   Haven 管理命令统一通过五个 typed admin surface 执行，不保留旧的 `SelfTool` 兼容入口。
 
 ## 替代方案
 

@@ -171,8 +171,7 @@ async fn resolve_ui_confirmation(
         let input = match &pending.action {
             UiConfirmationAction::Mcp { args, .. } => args.clone(),
             UiConfirmationAction::Skill { params, .. } => params.clone(),
-            UiConfirmationAction::Admin { params } => serde_json::to_value(params)
-                .map_err(|error| log_err("resolve_ui_confirmation admin input", error))?,
+            UiConfirmationAction::Admin { request } => request.input(),
         };
         let network_access = if pending.tool_name.starts_with("mcp__")
             || pending.tool_name.starts_with("skill__")
@@ -231,14 +230,14 @@ async fn resolve_ui_confirmation(
                     .await
                     .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
             }
-            UiConfirmationAction::Admin { params } => {
+            UiConfirmationAction::Admin { request } => {
                 crate::commands::execute_admin_surface(
                     state,
                     "resolve_ui_confirmation admin",
-                    params.as_ref().clone(),
+                    request.as_ref().clone(),
                 )
                 .await?;
-                crate::commands::finalize_admin_ui_operation(state, app, params).await?;
+                crate::commands::finalize_admin_ui_operation(state, app, request).await?;
             }
         }
     }

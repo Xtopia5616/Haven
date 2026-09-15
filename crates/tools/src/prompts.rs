@@ -24,7 +24,7 @@ pub(crate) const PREFERENCES_DESCRIPTION: &str =
     "Read or change lightweight preferences for the current session.";
 pub(crate) const PROCESS_DESCRIPTION: &str = "List running processes or kill one by PID.";
 pub(crate) const SCHEDULE_DESCRIPTION: &str = "Create, list, or cancel future actions. A scheduled action has not run yet; completion wakes the session.";
-pub(crate) const SELF_DESCRIPTION: &str =
+pub(crate) const HAVEN_DESCRIPTION: &str =
     "Inspect or change Haven configuration, skills, builtins, MCP servers, logs, or sessions.";
 pub(crate) const SHELL_DESCRIPTION: &str = "Run a non-interactive shell command in the configured shell. Use an explicit cwd and flags; background work returns an action_id and must not be polled.";
 pub(crate) const SYSTEM_DESCRIPTION: &str = "Read or change machine info, environment variables, Registry, power, or display settings. Prefer the narrow operation view; mutations require explicit user intent.";
@@ -50,7 +50,7 @@ pub(crate) fn root_description(root: &str) -> &'static str {
         "checklist" => CHECKLIST_DESCRIPTION,
         "clipboard" => CLIPBOARD_DESCRIPTION,
         "files" => FILES_DESCRIPTION,
-        "haven" => SELF_DESCRIPTION,
+        "haven" => HAVEN_DESCRIPTION,
         "http" => HTTP_DESCRIPTION,
         "input" => INPUT_DESCRIPTION,
         "load_builtin" => LOAD_BUILTIN_DESCRIPTION,
@@ -608,7 +608,7 @@ mod tests {
             PREFERENCES_DESCRIPTION,
             PROCESS_DESCRIPTION,
             SCHEDULE_DESCRIPTION,
-            SELF_DESCRIPTION,
+            HAVEN_DESCRIPTION,
             SHELL_DESCRIPTION,
             SYSTEM_DESCRIPTION,
             WINDOW_DESCRIPTION,

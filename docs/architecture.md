@@ -65,7 +65,8 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 在这组稳定模块之上，`tool_core.rs` 只组合 catalog/authorization，`tool_runtime.rs` 只
 组合执行依赖和一次性 typed capability ports，`tool_builtins.rs` 只组合 MCP/Skills 与
 具体 builtin provider；`ToolsManager` 只是三者的 facade。安全矩阵只有 `security.rs`
-一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。详见 ADR 0162。
+一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed operation 实现。
+ToolsManager 的三层边界见 ADR 0162。
 
 `document.rs` 是受管附件的本地派生边界：由 `media.extract` 对 PDF/DOCX/XLSX/PPTX
 执行有资源上限的文本/表格抽取，输出带
@@ -363,10 +364,11 @@ session 归属；因此 `mcp_add` 是 High，而 `mcp_list` 是 Low，二者不�
 
 配置写入使用 `ConfigService::apply_patch` 的 typed patch；普通模型路径没有任意
 `config_set(path, value)`。诊断结果只提供脱敏、截断后的日志和 session 元数据，不能
-返回 API key、完整 prompt、完整命令输出或会话正文。原 `SelfTool` 仍只作为 native
-Tauri command 的 structured surface，未直接注册进模型目录；`haven` view 通过受限 adapter
-路由到同一实现。高风险、网络、媒体、文件和跨 session 协作仍保留独立的内部实现边界，
-以维持各自的确认、路径、provider 和生命周期边界；模型看到的名称仍遵循点号 view 契约。
+返回 API key、完整 prompt、完整命令输出或会话正文。五个 capability root 由各自的
+`TypedToolOperation` 实现，provider JSON 只在 `TypedToolAdapter` 边界转换；native Tauri
+command 保存同一组 typed request 并调用对应 surface，未注册 broad `haven` dispatcher。
+高风险、网络、媒体、文件和跨 session 协作仍保留独立的内部实现边界，以维持各自的确认、
+路径、provider 和生命周期边界；模型看到的名称仍遵循点号 view 契约。
 
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
@@ -494,7 +496,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-14 | §2.6 UI：聊天页会话列表、选择和错误恢复通过 `SessionReducer` 单一迁移入口；事件适配层仅保留消息/流式清理与其它副作用，ModelSettings 补齐拆分前组件测试（ADR 0154） |
 | 2026-09-02 | §2.5 Tools：将 Tool contract、registry/catalog 与 AuthorizationEngine 拆分为 `tool_contract.rs`、`registry.rs`、`security.rs`，直接迁移 workspace 调用点并保持安全/执行契约不变（阶段 D） |
-| 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层；其余 admin facade 仍待迁移（ADR 0071） |
+| 2026-09-15 | §2.5 Tools：五个受限 Admin surface 全部迁移到 TypedToolOperation；native Tauri 请求改为 typed request，删除旧 broad dispatcher 及其参数/操作类型（ADR 0071） |
+| 2026-09-02 | §2.5 Tools：haven_config 完成首条 TypedToolOperation 切片，typed metadata 与 provider JSON adapter 分层（ADR 0071） |
 | 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |
 | 2026-08-18 | 初版；历史输入类型从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
 | 2026-08-20 | 曾增加 memory / react 改进文档（后续合并为已归档的 backlog） |

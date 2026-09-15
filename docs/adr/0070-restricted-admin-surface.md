@@ -28,10 +28,9 @@
 4. 每个 capability operation 声明风险等级、是否只读/可重试和 session scope
    metadata。模型调用仍由 Agent 的 SafetyGateway 在执行前检查，High/Critical
    副作用不会绕过确认或 deny 规则。
-5. `SelfTool` 暂时保留为 app command 使用的 native structured surface，**不再
-   注册进模型目录**。这是迁移期边界，不是长期兼容层；后续 typed
-   `ToolOperation`/admin service 完成后，必须删除 `SelfTool`、`SelfParams`、
-   native `run_admin_op` 以及旧文件。
+5. 五个 capability surface 均由独立的 typed `ToolOperation` 实现，native Tauri
+   command 也通过同一组 `AdminRequest` 进入对应 operation；不再保留 broad
+   dispatcher、`SelfTool`、`SelfParams` 或 native `run_admin_op`。
 
 ## 替代方案
 
@@ -53,7 +52,7 @@
 
 ```text
 cargo fmt --all -- --check
-cargo test --locked -p haven-tools self_tool
+cargo test --locked -p haven-tools admin
 cargo test --locked -p haven-tools capabilities_have_disjoint_operation_surfaces
 cargo check --locked -p haven-tools -p haven-app-binary
 cargo clippy --workspace --locked -- -D warnings
@@ -62,5 +61,5 @@ cargo clippy --workspace --locked -- -D warnings
 ## 回滚
 
 回退本 ADR 对应提交即可恢复原 `haven` 注册和旧 operation schema；不需要删除
-TOML 配置或数据库。若要删除 native `SelfTool`，应在同一提交迁移所有 Tauri
-command 调用并更新发布说明中的模型工具契约。
+TOML 配置或数据库。恢复旧版本时，需同时恢复与旧工具契约匹配的 Tauri command
+调用和发布说明。

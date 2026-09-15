@@ -197,9 +197,9 @@ pub struct ContextLimitsConfig {
     pub skills_max_parse_lines: usize,
     /// Max length of a single SKILL.md parser line.
     pub skills_max_line_len: usize,
-    /// Max bytes of skill `instructions` accepted by the `self` create-skill op.
+    /// Max bytes of skill `instructions` accepted by the typed skill admin operation.
     pub self_tool_max_instructions_bytes: usize,
-    /// Max bytes of a skill script file accepted by the `self` create-skill op.
+    /// Max bytes of a skill script file accepted by the typed skill admin operation.
     pub self_tool_max_script_bytes: usize,
     /// Max retries for the network tool's HTTP requests.
     pub network_max_retries: u32,

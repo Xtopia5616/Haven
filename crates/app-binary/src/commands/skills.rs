@@ -51,19 +51,15 @@ pub async fn set_skill_enabled(
     // the UI toggle and the LLM's skill_enable / skill_disable ops. The op
     // flips the engine filter and persists `skills.enabled` to config.toml
     // via ConfigService.
-    crate::commands::run_admin_op(
+    crate::commands::authorize_admin_request(
         &state,
         &app,
         "set_skill_enabled",
-        haven_tools::SelfParams {
-            operation: if enabled {
-                haven_tools::SelfOperation::SkillEnable
-            } else {
-                haven_tools::SelfOperation::SkillDisable
-            },
-            name: Some(name),
-            ..Default::default()
-        },
+        haven_tools::AdminRequest::Skills(if enabled {
+            haven_tools::SkillsOperationArgs::SkillEnable { name }
+        } else {
+            haven_tools::SkillsOperationArgs::SkillDisable { name }
+        }),
     )
     .await?;
 
@@ -85,19 +81,15 @@ pub async fn set_tool_enabled(
     // persists `tool_settings.<name>.enabled` to config.toml AND applies the
     // runtime change (in-memory tool_settings + catalog rebuild) through the
     // ToolsManager, so the toggle takes effect in the Reasoner immediately.
-    crate::commands::run_admin_op(
+    crate::commands::authorize_admin_request(
         &state,
         &app,
         "set_tool_enabled",
-        haven_tools::SelfParams {
-            operation: if enabled {
-                haven_tools::SelfOperation::ToolEnable
-            } else {
-                haven_tools::SelfOperation::ToolDisable
-            },
-            name: Some(name),
-            ..Default::default()
-        },
+        haven_tools::AdminRequest::Tools(if enabled {
+            haven_tools::ToolsOperationArgs::ToolEnable { name }
+        } else {
+            haven_tools::ToolsOperationArgs::ToolDisable { name }
+        }),
     )
     .await?;
 

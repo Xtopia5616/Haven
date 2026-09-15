@@ -25,7 +25,7 @@ media、日志和快捷键。
    和 `restart_required` consumer。设置命令先提交一个完整配置快照，再按照 plan 更新受影响的
    pipeline、shell、context limits、router、session、MCP、安全、skills、日志和 hotkey；不再
    无条件重建所有运行时组件。
-5. `AppState`、Tauri commands 和 `SelfTool` 使用 `ConfigService`。仍需 loader 形状的迁移代码只能
+5. `AppState`、Tauri commands 和五个 typed admin surface 使用 `ConfigService`。仍需 loader 形状的迁移代码只能
    经过 service 的 serialized adapter；应用代码不得重新暴露共享 loader mutex。
 
 ## 替代方案
@@ -47,9 +47,9 @@ media、日志和快捷键。
   `AppConfig::apply_settings` 和 typed patch 测试保护。
 - 运行时尚未支持热替换的 `SkillsExec` 与 Memory maintenance 会在 apply plan 中报告
   `restart_required`，不能静默假装已应用。
-- Self/Admin 的第一条迁移已删除 `SelfTool` 的任意 dotted `config_set`；后续 typed
-  `ToolOperation` 完成后，应继续删除 `ReplaceAppConfig`、`edit_loader` 和 native
-  `SelfTool` 兼容入口。
+- Self/Admin 的迁移已删除任意 dotted `config_set`，并将五个受限 admin surface
+  收敛为 typed `ToolOperation`；后续仍应删除 `ReplaceAppConfig`、`edit_loader` 等
+  迁移期 loader 适配入口。
 
 重点验证：
 

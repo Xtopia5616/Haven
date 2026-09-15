@@ -2218,7 +2218,7 @@ mod tests {
     #[tokio::test]
     async fn test_builtin_registry_security_contract_covers_every_route() {
         use crate::ToolsManager;
-        use crate::builtin::SelfToolContext;
+        use crate::builtin::AdminContext;
         use haven_common::config::{ConfigLoader, ConfigService};
         use std::sync::Arc;
         use tempfile::TempDir;
@@ -2227,7 +2227,7 @@ mod tests {
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let manager = ToolsManager::new();
         manager
-            .set_admin_context(SelfToolContext {
+            .set_admin_context(AdminContext {
                 config_service: Some(Arc::new(ConfigService::new(loader))),
                 db: None,
                 router: None,

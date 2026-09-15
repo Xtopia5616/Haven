@@ -6,7 +6,7 @@
 
 use crate::action_service::ActionService;
 use crate::asset_registry::ManagedAssetRegistry;
-use crate::builtin::SelfToolContext;
+use crate::builtin::AdminContext;
 use crate::live_output::LiveOutputHub;
 use crate::messaging_service::{MessagingRuntime, MessagingService};
 use haven_common::config::{ContextLimitsConfig, SecurityConfig, ToolConfig};
@@ -49,8 +49,8 @@ pub(crate) struct ToolRuntime {
     pub(crate) router: RwLock<Option<Arc<LlmRouter>>>,
     pub(crate) action_service: Arc<ActionService>,
     pub(crate) live_outputs: Arc<LiveOutputHub>,
-    pub(crate) self_context: RwLock<Option<SelfToolContext>>,
-    pub(crate) admin_surface: RwLock<Option<Arc<crate::builtin::SelfTool>>>,
+    pub(crate) admin_context: RwLock<Option<AdminContext>>,
+    pub(crate) admin_surfaces: RwLock<Option<Arc<crate::builtin::AdminSurfaces>>>,
     pub(crate) clipboard_history: Arc<crate::builtin::clipboard::ClipboardHistory>,
     pub(crate) audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
     pub(crate) tts_client: RwLock<Option<Arc<dyn haven_llm::TtsClient>>>,
@@ -69,8 +69,8 @@ impl ToolRuntime {
             router: RwLock::new(None),
             action_service: Arc::new(ActionService::new()),
             live_outputs: Arc::new(LiveOutputHub::new()),
-            self_context: RwLock::new(None),
-            admin_surface: RwLock::new(None),
+            admin_context: RwLock::new(None),
+            admin_surfaces: RwLock::new(None),
             clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
             tts_client: RwLock::new(None),
@@ -114,7 +114,7 @@ pub struct StartupWiring {
     pub ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
     pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
-    pub admin_context: SelfToolContext,
+    pub admin_context: AdminContext,
 }
 
 /// Live capabilities shared by prompt assembly and builtin registration.

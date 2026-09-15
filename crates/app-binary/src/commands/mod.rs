@@ -79,23 +79,22 @@ pub struct SessionListResponse {
 /// Re-export: command error logging lives in `crate::logging` (conventions §1).
 pub(crate) use crate::logging::log_err;
 
-/// Execute one native admin operation through the structured entry (entry ①
-/// of the builtin two-entry contract). This helper is intentionally separate
-/// from authorization so a queued UI confirmation can resume the exact same
-/// operation without recursively creating another confirmation.
+/// Execute one native admin request through the typed operation that owns its
+/// capability. This helper is intentionally separate from authorization so a
+/// queued UI confirmation can resume the exact same request.
 pub(crate) async fn execute_admin_surface(
     state: &AppState,
     ctx: &str,
-    params: haven_tools::builtin::SelfParams,
+    request: haven_tools::AdminRequest,
 ) -> Result<haven_tools::ToolResult, String> {
-    let admin_surface = state
+    let admin_surfaces = state
         .tools
-        .admin_surface()
+        .admin_surfaces()
         .await
-        .ok_or_else(|| log_err(ctx, "admin surface is not wired"))?;
+        .ok_or_else(|| log_err(ctx, "admin surfaces are not wired"))?;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let result = admin_surface
-        .run(params, cancel)
+    let result = admin_surfaces
+        .execute(request, cancel)
         .await
         .map_err(|e| log_err(ctx, e))?;
     if !result.success {
@@ -103,26 +102,31 @@ pub(crate) async fn execute_admin_surface(
             ctx,
             result
                 .error
-                .unwrap_or_else(|| "self tool operation failed".into()),
+                .unwrap_or_else(|| "admin operation failed".into()),
         ));
     }
     Ok(result)
 }
 
-/// Run one native admin operation through AuthorizationEngine and then the
-/// structured entry. Settings-modifying Tauri commands route through here so
-/// the config mutation lives in ONE implementation shared by native commands
-/// and capability-scoped model adapters. A confirmation request stores the
-/// typed parameters backend-only and is resumed by `resolve_confirmation`.
-pub(crate) async fn run_admin_op(
+/// Authorize one native typed admin request and execute it, or place the typed
+/// request in the UI confirmation queue. The operation metadata is read from
+/// the same typed implementation used by the provider adapter.
+pub(crate) async fn authorize_admin_request(
     state: &AppState,
     app: &AppHandle,
     ctx: &str,
-    params: haven_tools::builtin::SelfParams,
+    request: haven_tools::AdminRequest,
 ) -> Result<haven_tools::ToolResult, String> {
-    let tool_name = params.operation.model_tool_name().to_string();
-    let risk_level = params.operation.risk_level();
-    let input = serde_json::to_value(&params).map_err(|error| log_err(ctx, error))?;
+    let admin_surfaces = state
+        .tools
+        .admin_surfaces()
+        .await
+        .ok_or_else(|| log_err(ctx, "admin surfaces are not wired"))?;
+    let operation_name = request.model_operation_name();
+    let metadata = admin_surfaces.metadata(&request);
+    let tool_name = operation_name.to_string();
+    let risk_level = metadata.risk_level;
+    let input = request.input();
     let network_access = if tool_name.starts_with("haven.mcp.") {
         haven_tools::NetworkAccess::Opaque
     } else {
@@ -141,7 +145,7 @@ pub(crate) async fn run_admin_op(
         .await
     {
         haven_tools::ConfirmationResult::AutoApproved => {
-            execute_admin_surface(state, ctx, params).await
+            execute_admin_surface(state, ctx, request).await
         }
         haven_tools::ConfirmationResult::RequiresConfirmation {
             tool_name,
@@ -156,7 +160,7 @@ pub(crate) async fn run_admin_op(
             risk_level,
             receipt,
             UiConfirmationAction::Admin {
-                params: Box::new(params),
+                request: Box::new(request),
             },
         )
         .await?),
@@ -174,12 +178,14 @@ pub(crate) async fn run_admin_op(
 pub(crate) async fn finalize_admin_ui_operation(
     state: &AppState,
     app: &AppHandle,
-    params: &haven_tools::builtin::SelfParams,
+    request: &haven_tools::AdminRequest,
 ) -> Result<(), String> {
-    use haven_tools::builtin::SelfOperation;
+    use haven_tools::{McpOperationArgs, SkillsOperationArgs, ToolsOperationArgs};
 
-    match params.operation {
-        SelfOperation::SkillEnable | SelfOperation::SkillDisable => {
+    match request {
+        haven_tools::AdminRequest::Skills(
+            SkillsOperationArgs::SkillEnable { .. } | SkillsOperationArgs::SkillDisable { .. },
+        ) => {
             state.tools.rebuild_catalog().await;
             emit_event_logged(
                 app,
@@ -190,14 +196,18 @@ pub(crate) async fn finalize_admin_ui_operation(
                 "resolve_ui_confirmation skill",
             );
         }
-        SelfOperation::ToolEnable | SelfOperation::ToolDisable => {
+        haven_tools::AdminRequest::Tools(
+            ToolsOperationArgs::ToolEnable { .. } | ToolsOperationArgs::ToolDisable { .. },
+        ) => {
             state.tools.rebuild_catalog().await;
         }
-        SelfOperation::McpAdd
-        | SelfOperation::McpUpdate
-        | SelfOperation::McpToggle
-        | SelfOperation::McpConnect => {
-            if let Some(name) = params.name.as_deref() {
+        haven_tools::AdminRequest::Mcp(
+            McpOperationArgs::McpAdd { .. }
+            | McpOperationArgs::McpUpdate { .. }
+            | McpOperationArgs::McpToggle { .. }
+            | McpOperationArgs::McpConnect { .. },
+        ) => {
+            if let Some(name) = request.server_name() {
                 crate::commands::mcp::spawn_monitor_if_client(state, name).await?;
                 state.tools.rebuild_catalog().await;
                 let connected = state.tools.mcp_manager().get_client(name).await.is_some();
@@ -213,9 +223,11 @@ pub(crate) async fn finalize_admin_ui_operation(
                 );
             }
         }
-        SelfOperation::McpDisconnect | SelfOperation::McpRemove => {
+        haven_tools::AdminRequest::Mcp(
+            McpOperationArgs::McpDisconnect { .. } | McpOperationArgs::McpRemove { .. },
+        ) => {
             state.tools.rebuild_catalog().await;
-            if let Some(name) = params.name.as_deref() {
+            if let Some(name) = request.server_name() {
                 crate::commands::mcp::emit_mcp_status(
                     app,
                     name.to_string(),
@@ -224,7 +236,7 @@ pub(crate) async fn finalize_admin_ui_operation(
                 );
             }
         }
-        SelfOperation::McpReload => {
+        haven_tools::AdminRequest::Mcp(McpOperationArgs::McpReload) => {
             state.tools.rebuild_catalog().await;
         }
         _ => {}

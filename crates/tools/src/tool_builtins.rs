@@ -47,7 +47,7 @@ impl ToolBuiltins {
         runtime: &ToolRuntime,
     ) -> BuiltinContext {
         let router = runtime.router.read().await.clone();
-        let self_context = runtime.self_context.read().await.clone();
+        let admin_context = runtime.admin_context.read().await.clone();
         let settings = core.tool_settings.read().await.clone();
         let limits = core.context_limits.read().await.clone();
         let audio_pipeline = runtime.audio_pipeline.read().await.clone();
@@ -69,7 +69,7 @@ impl ToolBuiltins {
             limits,
             default_shell: *self.default_shell.read().await,
             clipboard_history: runtime.clipboard_history.clone(),
-            self_context,
+            admin_context,
             messaging_service: runtime.messaging_service.clone(),
             memory_recall: runtime.memory_recall.clone(),
             managed_assets: runtime.managed_assets.clone(),

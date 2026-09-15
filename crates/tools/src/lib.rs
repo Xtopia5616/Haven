@@ -103,10 +103,10 @@ pub use action_service::{
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
-    AdminCapability, AdminCapabilityTool, AdminOperationMetadata, AgentTool, ConfigAdminContext,
-    ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs, ConfigOperationError,
-    ConfigOperationOutput, ConfigViewOutput, LogLevelOutput, ScheduleMode, SelfOperation,
-    SelfParams, SelfTool, SelfToolContext,
+    AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces, AgentTool,
+    ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
+    ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
+    LogLevelOutput, McpOperationArgs, ScheduleMode, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use circuit::ToolCircuitRegistry;
 pub use haven_mcp::{
@@ -640,7 +640,7 @@ impl ToolsManager {
             .action_service
             .set_db(admin_context.db.clone())
             .await;
-        *self.runtime.self_context.write().await = Some(admin_context);
+        *self.runtime.admin_context.write().await = Some(admin_context);
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
@@ -656,14 +656,14 @@ impl ToolsManager {
             .await;
     }
 
-    /// Wire the app-level context for the native admin surface. Called by the
+    /// Wire the app-level context for the five native admin surfaces. Called by the
     /// desktop shell after the config loader exists; later catalog rebuilds
     /// keep the capability-scoped adapters registered. Also hands the DB to
     /// the unified action state machine so timer and process action results
     /// persist across restarts.
-    pub async fn set_admin_context(&self, ctx: builtin::SelfToolContext) {
+    pub async fn set_admin_context(&self, ctx: builtin::AdminContext) {
         self.runtime.action_service.set_db(ctx.db.clone()).await;
-        *self.runtime.self_context.write().await = Some(ctx);
+        *self.runtime.admin_context.write().await = Some(ctx);
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
@@ -685,18 +685,17 @@ impl ToolsManager {
         }
     }
 
-    /// The native admin surface, when the desktop shell wired the app
-    /// context. App commands use its structured entry; the model sees only
-    /// capability-scoped adapters.
-    pub async fn admin_surface(&self) -> Option<Arc<builtin::SelfTool>> {
-        self.runtime.admin_surface.read().await.clone()
+    /// The five native admin surfaces, when the desktop shell wired the app
+    /// context. The model sees the same operations through five typed adapters.
+    pub async fn admin_surfaces(&self) -> Option<Arc<builtin::AdminSurfaces>> {
+        self.runtime.admin_surfaces.read().await.clone()
     }
 
     /// Flip the `enabled` flag for one builtin tool in the in-memory
     /// `tool_settings` and rebuild the catalog so the toggle takes effect on
     /// the agent's next step. The config.toml persistence is done by the
-    /// caller (the `self` tool's `tool_enable`/`tool_disable` ops, which call
-    /// this after persisting).
+    /// caller (the admin surface's `tool_enable`/`tool_disable` operations,
+    /// which call this after persisting).
     pub async fn set_tool_enabled(&self, name: &str, enabled: bool) {
         let mut settings = self.core.tool_settings.write().await;
         settings
@@ -877,7 +876,7 @@ impl ToolsManager {
         // loaders when an enabled skill/MCP source is actually available.
         let context = self.builtins.build_context(&self.core, &self.runtime).await;
         let settings = context.settings.clone();
-        let self_tool_arc = builtin::register_builtin_tools(&mut all_tools, context).await;
+        let admin_surfaces = builtin::register_builtin_tools(&mut all_tools, context).await;
 
         // Keep the full list (enabled + disabled) for the UI, and exclude
         // disabled tools from the registry the agent sees.
@@ -911,7 +910,7 @@ impl ToolsManager {
         }
         self.core.deferred_catalog.replace(deferred_tools).await;
         *self.core.all_builtin_tools.write().await = all_tools;
-        *self.runtime.admin_surface.write().await = self_tool_arc;
+        *self.runtime.admin_surfaces.write().await = admin_surfaces;
         self.core.session_catalog.bump_global_version();
     }
 

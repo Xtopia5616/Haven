@@ -48,7 +48,7 @@
 | Tool contract / registry / security | 1,737 / 434 / 1,912 行，合计约 4,083 行 | 阶段 D 的边界拆分已完成；`tool_contract` 与 `security` 仍由 TypedToolOperation / AuthorizationEngine 后续任务继续收窄 |
 | app-binary 组合根拆分模块 | `event_bridge` 581、`handlers` 242、`bootstrap` 737、`lib` 21，合计约 1,581 行 | 阶段 E 已完成；`event_bridge` 是当前唯一事件映射边界 |
 | UI 视图 | `SettingsView` 1,118、`ModelSettings` 916、`MemoryView` 767 行 | 阶段 F 已完成；ModelSettings 的 provider discovery/CRUD 边界仍有意保留 |
-| SelfTool | 1,623 行 | 阶段 G 未完成；待 admin domain typed migration 后删除，而非继续机械拆 dispatcher |
+| Admin typed surfaces | `admin.rs` / `admin_services.rs` | 阶段 G 已完成：五个受限 surface 使用独立 `TypedToolOperation`，旧 broad dispatcher 已删除 |
 
 本次复查还发现原阶段表没有覆盖的当前热点：`crates/tools/src/builtin/files.rs` 约 3,385 行、
 `crates/tools/src/builtin/window.rs` 约 2,035 行、`crates/tools/src/lib.rs` 约 2,923 行、
@@ -224,7 +224,7 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 ### E. P1：收窄 `ToolsManager`，删除 callback service locator
 
-[`crates/tools/src/lib.rs`](../crates/tools/src/lib.rs) 的 `ToolsManager` 同时管理 registry、MCP、skills、shell defaults、context limits、safety gateway、background/scheduled action、audio pipeline、self tool、router，以及通过 setter 注入的 agent spawner 和 memory recall。`app_state.rs` 以 `Arc<dyn Fn>` 把 agent 反向接回 tools，虽然避免了 crate 循环，却把组合根的依赖隐藏成运行时 callback 网络。
+[`crates/tools/src/lib.rs`](../crates/tools/src/lib.rs) 的 `ToolsManager` 同时管理 registry、MCP、skills、shell defaults、context limits、safety gateway、background/scheduled action、audio pipeline、admin surfaces、router，以及通过 setter 注入的 agent spawner 和 memory recall。`app_state.rs` 以 `Arc<dyn Fn>` 把 agent 反向接回 tools，虽然避免了 crate 循环，却把组合根的依赖隐藏成运行时 callback 网络。
 
 建议重划分为：
 
@@ -469,7 +469,7 @@ mailbox，跨进程继续 fallback 到 JSONL；request/reply/receipt/ack/retry/e
 
 ### N. P1：拆掉 `self` 超级管理工具，重建受限的 Admin Surface
 
-当前 [`crates/tools/src/builtin/self_tool.rs`](../crates/tools/src/builtin/self_tool.rs) 同时提供状态、config get/set、skills、tools、MCP、logs、sessions/errors 等管理能力。`SelfToolContext` 还直接持有 config loader、数据库、router、日志回调和弱引用的 `ToolsManager`，因此模型可见的一个 `self` 工具实际覆盖了多个服务的读写入口。
+旧的 `self_tool.rs` 曾同时提供状态、config get/set、skills、tools、MCP、logs、sessions/errors 等管理能力。其 context 直接持有 config loader、数据库、router、日志回调和弱引用的 `ToolsManager`，因此模型可见的一个 `self` 工具实际覆盖了多个服务的读写入口；该实现现已删除。
 
 其中通用 `config_set(path, value)` 尤其容易把稳定配置契约退化为字符串路径和任意 JSON；MCP/skills/tool/log 操作又各自拥有持久化和 live apply 逻辑。即便把 handler 机械拆到多个文件，权限面和副作用边界仍然没有改善。
 
@@ -495,12 +495,12 @@ McpAdmin             （MCP 配置、连接和健康状态）
 2026-09-02 已完成第一条受限 surface 切片：模型目录改为五个 capability-scoped
 工具，旧 broad `haven` 不再注册；任意 dotted `config_set` 已删除，skills/tool/MCP/log
 配置写入统一使用 `ConfigService::apply_patch`。日志行和 session/error 诊断已增加
-脱敏与内容边界。native `SelfTool` structured entry 仍暂时供 Tauri commands 共用，
-明确作为迁移期边界，待 `TypedToolOperation` 与 domain admin service 完成后删除。
+脱敏与内容边界。2026-09-15 完成剩余迁移，native Tauri commands 也改为调用对应的
+typed surface。
 
 ### O. P1/P2：把多操作工具改成 typed `ToolOperation` 契约
 
-当前 files、memory、system、audio、messaging、self 等 builtin 大量采用：
+当前 files、memory、system、audio、messaging 等 builtin 大量采用：
 
 ```text
 Tool + operation: String + serde_json::Value
@@ -530,12 +530,14 @@ TypedToolOperation
 
 这项不是要求把每一个 operation 都暴露成独立的 provider tool，而是要求“模型分组”和“运行时契约”分层。它应作为第 2.3 节 E `ToolsManager/tool-core` 重构的独立子任务；收益是让工具授权和行为契约按 capability 组织，而不是继续按字符串和调用方约定组织。
 
-2026-09-02 已完成第一条端到端 typed 切片：haven_config 的
+2026-09-15 已完成全部 admin typed migration：五个 capability-scoped surface
+分别实现 `TypedToolOperation`，native Tauri confirmation queue 保存 typed
+`AdminRequest`，旧 dispatcher、参数和 operation enum 均已删除。2026-09-02 的首条切片
+是 haven_config 的
 config_get/logs_level 使用 TypedToolOperation，其 args/output/error、
 capability/scope/risk/idempotency/cancellation/timeout/concurrency metadata
-来自同一 operation；provider JSON 只在 adapter 边界转换。剩余 admin capability
-仍通过临时 SelfTool facade，必须在后续 domain 切片中迁移并删除，不能把
-TypedToolAdapter 退化成新的万能 dispatcher。
+来自同一 operation；provider JSON 只在 adapter 边界转换。后续 operation 也必须保持
+这一边界，不能把 `TypedToolAdapter` 退化成新的万能 dispatcher。
 
 ### 补充四项的任务拆分建议
 
@@ -543,7 +545,7 @@ TypedToolAdapter 退化成新的万能 dispatcher。
 
 1. `refactor(config)`: `ConfigService`、版本化 runtime snapshot、typed patch 和 apply plan；
 2. `refactor(messaging)`: `MessagingService`、Envelope、claim/ack/retry 和 SessionActor mailbox；
-3. `refactor(self-admin)`: Diagnostics/Config/Skill/MCP admin surface，删除超级 `self` dispatcher；
+3. `refactor(self-admin)`: Diagnostics/Config/Skill/MCP admin surface，删除超级 `self` dispatcher（已完成）；
 4. `refactor(tool-contract)`: typed `ToolOperation`、capability metadata 和 operation contract tests。
 
 建议依赖顺序为：先定义 `ConfigService` 和 `ToolOperation` 的边界，再接入 `AuthorizationEngine`；`MessagingService` 在 `SessionActor`/`SessionSupervisor` 的 mailbox 方向确定后迁移；`self-admin` 最后迁移，因为它同时依赖配置、工具注册、MCP、skills、诊断和安全授权。`tool-contract` 可以与 `ToolsManager` 并行设计，但必须在 `self-admin` 完成前提供新的管理操作注册方式。
@@ -748,13 +750,13 @@ provider discovery 与 provider CRUD（两者共享同一模型缓存和引用�
 
 ### 阶段 G：低优先级复杂操作文件
 
-目标：[crates/tools/src/builtin/self_tool.rs](../crates/tools/src/builtin/self_tool.rs)
+目标：`crates/tools/src/builtin/admin.rs` 与 `admin_services.rs`
 
-- 当前规模：约 1,623 行；阶段 G 仍未完成，最终目标是删除 SelfTool dispatcher，而不是只移动 handler。
-- `SelfOperation` 同时覆盖 config、skills、tools、MCP、logs、sessions/errors。
-- 如果只是执行本阶段的低风险文件拆分，可以先按 config/skills、MCP、diagnostics/history 拆 handler 模块；但保留 dispatcher 仅是过渡，不能作为最终架构。
-- 真正的目标和删除条件见第 2.5 节 N：迁移到受限 admin surface 后删除超级 `self` dispatcher 和任意配置写入口。
-- 这是高风险目标，必须先补齐每个 operation 的正向、错误和持久化测试，不要作为第一轮拆分。
+- 阶段 G 已完成：诊断、配置、skills、builtin tool 和 MCP 分别由五个 typed surface 承载。
+- 每个 surface 的 args、output/error、metadata 和 provider schema 在同一 typed operation
+  边界声明；native confirmation queue 使用 `AdminRequest`，不再维护统一的旧参数结构。
+- 旧 broad dispatcher、任意配置写入口及对应文件/导出均已删除；行为测试保留在 admin
+  typed surface 模块中。
 
 ## 4. 暂时不要做的事情
 

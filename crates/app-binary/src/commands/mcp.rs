@@ -361,23 +361,21 @@ pub async fn add_mcp_server(
     // (mcp_add): one implementation for the UI dialog and the LLM. The op
     // persists through ConfigService, keeps the in-memory index in sync, and
     // connects when enabled (UI always adds enabled servers).
-    crate::commands::run_admin_op(
+    crate::commands::authorize_admin_request(
         &state,
         &app,
         "add_mcp_server",
-        haven_tools::SelfParams {
-            operation: haven_tools::SelfOperation::McpAdd,
-            name: Some(config.name.clone()),
-            transport: Some(config.transport.as_str().to_string()),
+        haven_tools::AdminRequest::Mcp(haven_tools::McpOperationArgs::McpAdd {
+            name: config.name.clone(),
+            transport: config.transport.clone(),
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
-            args: Some(config.args.clone()),
-            env: Some(config.env.clone()),
+            args: config.args.clone(),
+            env: config.env.clone(),
             cwd: config.cwd.clone(),
-            enabled: Some(config.enabled),
-            auto_connect: Some(config.enabled),
-            ..Default::default()
-        },
+            enabled: config.enabled,
+            auto_connect: config.enabled,
+        }),
     )
     .await?;
 
@@ -414,22 +412,20 @@ pub async fn update_mcp_server(
     // reconnects before persisting when the connection profile changed and
     // rolls the config back on a failed connect (stricter than the old
     // persist-then-connect order).
-    crate::commands::run_admin_op(
+    crate::commands::authorize_admin_request(
         &state,
         &app,
         "update_mcp_server",
-        haven_tools::SelfParams {
-            operation: haven_tools::SelfOperation::McpUpdate,
-            name: Some(name.clone()),
-            transport: Some(config.transport.as_str().to_string()),
+        haven_tools::AdminRequest::Mcp(haven_tools::McpOperationArgs::McpUpdate {
+            name: name.clone(),
+            transport: Some(config.transport.clone()),
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
             args: Some(config.args.clone()),
             env: Some(config.env.clone()),
             cwd: config.cwd.clone(),
             enabled: Some(config.enabled),
-            ..Default::default()
-        },
+        }),
     )
     .await?;
 
@@ -459,15 +455,13 @@ pub async fn remove_mcp_server(
     // Route through the native admin surface (mcp_remove): removes the
     // server from config via ConfigService, shuts down the live client,
     // and drops it from the in-memory index.
-    crate::commands::run_admin_op(
+    crate::commands::authorize_admin_request(
         &state,
         &app,
         "remove_mcp_server",
-        haven_tools::SelfParams {
-            operation: haven_tools::SelfOperation::McpRemove,
-            name: Some(name.clone()),
-            ..Default::default()
-        },
+        haven_tools::AdminRequest::Mcp(haven_tools::McpOperationArgs::McpRemove {
+            name: name.clone(),
+        }),
     )
     .await?;
 
@@ -493,16 +487,14 @@ pub async fn toggle_mcp_server(
     // Route through the native admin surface (mcp_toggle). The op
     // connects before persisting when enabling (rolling the config back on a
     // failed connect) and shuts the live client down when disabling.
-    crate::commands::run_admin_op(
+    crate::commands::authorize_admin_request(
         &state,
         &app,
         "toggle_mcp_server",
-        haven_tools::SelfParams {
-            operation: haven_tools::SelfOperation::McpToggle,
-            name: Some(name.clone()),
-            enabled: Some(enabled),
-            ..Default::default()
-        },
+        haven_tools::AdminRequest::Mcp(haven_tools::McpOperationArgs::McpToggle {
+            name: name.clone(),
+            enabled,
+        }),
     )
     .await?;
 

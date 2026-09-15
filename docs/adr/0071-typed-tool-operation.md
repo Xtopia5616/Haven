@@ -4,8 +4,8 @@
 
 Builtin 工具已经有若干 typed 参数结构，但 Tool 的运行时元数据仍通过
 operation 字符串和 serde_json::Value 分散计算。模型工具 schema、风险、
-幂等性、并发、超时与真正执行的分支因此可能出现漂移。Self/Admin 的第一条
-受限 surface 切片还保留了 SelfOperation/SelfParams 作为迁移期 native facade。
+幂等性、并发、超时与真正执行的分支因此可能出现漂移。Self/Admin 的第一条受限
+surface 切片曾保留旧的 native facade，作为迁移期边界。
 
 ## 决定
 
@@ -22,19 +22,20 @@ operation 字符串和 serde_json::Value 分散计算。模型工具 schema、�
    ConfigOperationOutput 变体。
 4. serde_json::Value 在这条切片只存在于可演进的、只读的配置 projection；稳定
    的 operation selector、日志级别输入和写入 patch 不再用动态 JSON。后续 domain
-   operation 必须复制 typed contract，而不是给旧 SelfParams 增加字段。
+   operation 必须复制 typed contract，而不是给旧的通用参数结构增加字段。
 
-## 未完成边界
+## 完成状态
 
-haven_skills、haven_tools、haven_mcp、diagnostics/session diagnostics 以及
-Tauri command 目前仍通过 SelfTool/SelfOperation。它们不是新的兼容承诺：
-后续切片必须分别迁移到 typed domain operation 后删除 SelfTool、SelfParams、
-SelfOperation 和 run_admin_op，不能让本 ADR 的 adapter 成为新的万能 dispatcher。
+五个受限 surface（`haven_diagnostics`、`haven_config`、`haven_skills`、
+`haven_tools`、`haven_mcp`）均已分别迁移到 `TypedToolOperation`。每个 surface
+拥有独立的 typed args/output/error 和 metadata；native Tauri confirmation queue
+只保存 `AdminRequest`，再调用对应 surface，不再存在 broad dispatcher、旧参数结构或
+旧 operation enum。
 
 ## 影响与验证
 
-- haven_config 的模型工具名和基本返回 shape 不变；缺少 level、未知字段、
-  config_set 和越权 operation 都会在 schema/serde 层拒绝。
+- 五个 admin 模型工具名和基本返回 shape 不变；缺少字段、未知字段、
+  `config_set` 和越权 operation 都会在 schema/serde 层拒绝。
 - 配置 TOML schema、现有 ConfigService 版本和 Tauri wire payload 不变，不需要
   删除用户配置。
 - 验证包括 typed operation metadata、成功持久化、重复幂等、取消无副作用、缺参、
@@ -49,5 +50,5 @@ SelfOperation 和 run_admin_op，不能让本 ADR 的 adapter 成为新的万能
 
 ## 回滚
 
-回退本 ADR 对应提交即可将 haven_config 恢复为旧 capability adapter；不需要
-修改 TOML 或数据库。后续 admin domain 迁移应保持单独提交和单独回滚边界。
+回退本 ADR 对应提交即可恢复迁移前的实现；不需要修改 TOML 或数据库。该变更删除
+进程内旧入口，不改变持久化 schema、配置 schema 或 IPC wire payload。

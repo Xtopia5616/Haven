@@ -7,7 +7,7 @@
 ## 背景
 
 `ToolsManager` 同时持有工具契约、目录、授权、MCP/Skills、媒体 provider、
-ActionService、admin surface 和应用服务注入点。它还曾以 closure、可变
+ActionService、五个 typed admin surface 和应用服务注入点。它还曾以 closure、可变
 `Option` 和 `Weak<ToolsManager>` 作为隐式 service locator，使 catalog rebuild
 期间的依赖来源不清晰，并允许不同 catalog generation 看到不同的反向服务。
 
@@ -18,7 +18,7 @@ ActionService、admin surface 和应用服务注入点。它还曾以 closure、
    context limits 和 circuit registry。
 2. `haven-tools/src/tool_runtime.rs` 的 `ToolRuntime` 只拥有执行所需的运行时
    capability：取消边界下的 action/live output、媒体和 asset 依赖、router、
-   admin surface 以及 typed capability ports。
+   五个 admin surface 以及 typed capability ports。
 3. `haven-tools/src/tool_builtins.rs` 的 `ToolBuiltins` 只拥有 MCP/Skills/
    shell 等具体 builtin provider，并负责把三层依赖组装成不可变的 `BuiltinContext`。
    `ToolsManager` 保留为 catalog/composition facade，不再公开可替换字段。

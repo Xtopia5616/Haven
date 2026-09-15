@@ -61,7 +61,7 @@ pub(crate) enum UiConfirmationAction {
         params: serde_json::Value,
     },
     Admin {
-        params: Box<haven_tools::builtin::SelfParams>,
+        request: Box<haven_tools::AdminRequest>,
     },
 }
 
@@ -493,8 +493,8 @@ impl AppState {
             t0.elapsed().as_millis()
         );
 
-        // Wire the `self` management tool: the assistant can read its own
-        // status, change config, toggle skills/MCP servers, tail logs, and
+        // Wire the five typed admin surfaces: the assistant can read status,
+        // change typed config, toggle skills/tools/MCP servers, tail logs, and
         // switch the runtime log level (via the tracing reload handles).
         let log_path = cfg.log.file_enabled.then(|| {
             cfg.log
@@ -505,19 +505,19 @@ impl AppState {
         let log_level = Some(Arc::new(ReloadLogLevelPort {
             handles: filter_handles.clone(),
         }) as Arc<dyn haven_tools::LogLevelPort>);
-        let admin_context = haven_tools::SelfToolContext {
+        let admin_context = haven_tools::AdminContext {
             config_service: Some(config_service.clone()),
             db: Some(db.clone()),
             router: Some(router.clone()),
             log_path,
             log_level,
-            // The self tool's tool_enable/tool_disable ops apply the runtime
+            // The admin tool's tool_enable/tool_disable ops apply the runtime
             // change through the running ToolsManager after persisting config.
             tool_control: Some(tools.tool_control_port()),
         };
 
         // Single catalog rebuild for all startup wiring (settings / shell /
-        // limits / router / audio pipeline / self tool). Previously each
+        // limits / router / audio pipeline / admin surface). Previously each
         // setter rebuilt the catalog and delayed window creation.
         tools
             .wire_startup(haven_tools::StartupWiring {
