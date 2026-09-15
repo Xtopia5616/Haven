@@ -1272,7 +1272,7 @@ mod tests {
     #[test]
     fn permission_prompt_summary_never_includes_raw_sensitive_arguments() {
         let summary = permission_prompt_summary(
-            "shell".into(),
+            "shell",
             &json!({"command": "curl https://example.test?token=super-secret"}),
         );
         assert!(summary.contains("受保护的本机命令"));
@@ -2548,17 +2548,16 @@ mod tests {
                 ))
             }
             Some("string") => {
-                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
-                    if let Some(rest) = pattern.strip_prefix('^') {
-                        if let Some((prefix, suffix)) = rest.split_once("[0-9a-f]") {
-                            let count = suffix
-                                .strip_prefix("{")
-                                .and_then(|value| value.split_once('}'))
-                                .and_then(|(value, _)| value.parse::<usize>().ok())
-                                .unwrap_or(1);
-                            return Some(Value::String(format!("{}{}", prefix, "0".repeat(count))));
-                        }
-                    }
+                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
+                    && let Some(rest) = pattern.strip_prefix('^')
+                    && let Some((prefix, suffix)) = rest.split_once("[0-9a-f]")
+                {
+                    let count = suffix
+                        .strip_prefix("{")
+                        .and_then(|value| value.split_once('}'))
+                        .and_then(|(value, _)| value.parse::<usize>().ok())
+                        .unwrap_or(1);
+                    return Some(Value::String(format!("{}{}", prefix, "0".repeat(count))));
                 }
                 let min_len = schema
                     .get("minLength")
@@ -2598,14 +2597,14 @@ mod tests {
 
     fn required_fields_for_valid_branch(schema: &Value, input: &Value) -> Vec<String> {
         for keyword in ["oneOf", "anyOf"] {
-            if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
-                if let Some(branch) = branches.iter().find(|branch| {
+            if let Some(branches) = schema.get(keyword).and_then(Value::as_array)
+                && let Some(branch) = branches.iter().find(|branch| {
                     jsonschema::validator_for(branch)
                         .map(|validator| validator.is_valid(input))
                         .unwrap_or(false)
-                }) {
-                    return required_fields_for_valid_branch(branch, input);
-                }
+                })
+            {
+                return required_fields_for_valid_branch(branch, input);
             }
         }
         schema
