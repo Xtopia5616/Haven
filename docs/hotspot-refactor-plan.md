@@ -273,6 +273,14 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 这不是为了把启动代码分成更多文件，而是为了确保窗口关闭、配置热替换、数据库关闭和测试 teardown 时，所有后台任务都有明确的停止语义。启动失败也应返回阶段化的诊断，而不是部分服务已经 spawn 后继续运行。
 
+2026-09-15 已完成第一阶段（ADR 0161）：新增 `ApplicationRuntime` 作为组合根 owner，
+将 app-binary 的 maintenance、cleanup、prewarm、bootstrap、MCP/Skills/status、
+session event、托盘/快捷键和 transcription task 纳入受管 registry；`InputPipeline`、
+`ActionService` 与 `SessionSupervisor`/Agent consumers 增加取消/停止接口。Tauri exit、
+setup 失败时的 drop 和测试 teardown 共享幂等 shutdown；scheduled action 的 durable
+pending row 继续保留，等待下一次启动恢复。配置热替换和更细粒度 provider/title worker
+仍由各自领域 owner 管理，不在本阶段扩张 runtime API。
+
 ### J. 暂不推翻的边界
 
 以下内容当前看起来是合理的稳定边界，除非新的证据证明其实现有功能错误，不建议为了“彻底重构”而重写：

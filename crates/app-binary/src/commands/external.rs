@@ -36,7 +36,7 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
     );
     match state
         .tools
-        .authorization
+        .authorization()
         .check_with_policy(None, "open_external", &params, &policy)
         .await
     {

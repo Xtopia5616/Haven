@@ -87,12 +87,13 @@ pub(crate) async fn resolve_media_capabilities(
     )
 }
 
+pub use crate::tool_runtime::{MemoryRecallPort, MemoryRecallSlot, new_memory_recall_slot};
 pub use admin::{
     AdminCapability, AdminCapabilityTool, AdminOperationMetadata, ConfigAdminContext,
     ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs, ConfigOperationError,
     ConfigOperationOutput, ConfigViewOutput, LogLevelOutput,
 };
-pub use memory::{MemoryRecallFn, MemoryRecallSlot, MemoryTool, new_memory_recall_slot};
+pub use memory::MemoryTool;
 pub use messaging::AgentTool;
 pub use scheduled_action::{ScheduleMode, ScheduledActionFired, ScheduledActionTool};
 pub use self_tool::{SelfOperation, SelfParams, SelfTool, SelfToolContext};
@@ -152,7 +153,7 @@ pub struct BuiltinContext {
     pub clipboard_history: Arc<clipboard::ClipboardHistory>,
     pub self_context: Option<SelfToolContext>,
     pub messaging_service: Arc<crate::MessagingService>,
-    pub memory_recall: memory::MemoryRecallSlot,
+    pub memory_recall: MemoryRecallSlot,
     pub managed_assets: crate::ManagedAssetRegistry,
     pub media: MediaDeps,
     pub actions: ActionDeps,
@@ -389,7 +390,7 @@ pub async fn register_builtin_tools(
     if let Some(ctx) = self_context {
         let config_admin = Arc::new(admin::new_config_admin_tool(admin::ConfigAdminContext {
             config_service: ctx.config_service.clone(),
-            set_log_level: ctx.set_log_level.clone(),
+            log_level: ctx.log_level.clone(),
         }));
         add_admin_operation_views(tools, config_admin.clone(), settings, "haven_config");
         // Facts memory needs the DB; like SelfTool it only registers once the

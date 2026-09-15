@@ -2232,12 +2232,12 @@ mod tests {
                 db: None,
                 router: None,
                 log_path: None,
-                set_log_level: None,
-                tools_weak: None,
+                log_level: None,
+                tool_control: None,
             })
             .await;
 
-        let mut tools = manager.registry.list().await;
+        let mut tools = manager.registry().list().await;
         // Deferred builtins are intentionally absent from the model-facing
         // registry, but they still need the same security-contract coverage.
         // Resolve them through the control-plane lookup so this test covers

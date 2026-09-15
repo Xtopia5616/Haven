@@ -132,6 +132,7 @@
 - 2026-09-05：P2 UI 声波条动画原语复用：LoadingState 与 RecordingIndicator 共享 VoiceBars，业务状态和生命周期仍由各自组件持有（ADR 0081）。
 - 2026-09-14：P2 UI 会话状态收口：聊天页的会话列表、选择与错误恢复统一经 `SessionReducer` 迁移；ModelSettings 先补 discovery/Provider CRUD 组件测试，为后续拆分建立行为基线（ADR 0154）。
 - 2026-09-15：P1 UI 会话运行态收口：live event、resume、rollback/reconnect replay、Interaction、usage、tool preview 与 optimistic 消息统一经 typed `SessionReducer` 迁移；旧消息/用量 store 降为兼容投影（ADR 0160）。
+- 2026-09-15：P2 应用生命周期收口：引入 `ApplicationRuntime` 统一 app-scoped 服务句柄、后台任务 owner、根取消 token、幂等 shutdown/teardown；InputPipeline、ActionService、SessionSupervisor/Agent consumers 与 Tauri exit 共用停止边界，pending scheduled action 保留恢复语义（ADR 0161）。
 - 2026-09-05：P1 后端删除已完成拆分后的 `bg` facade、测试专用 `upgrade_tool_rounds` 快照空字段和 memory text-only keyword facade；统一使用当前模块与 typed recall 入口，不改变持久化或 IPC 契约（ADR 0082）。
 - 2026-09-05：P2 UI 表单字段与弹窗操作复用：MCP 表单使用 MaterialField，API Key、回退确认、日期选择器和 MCP 弹窗 footer 复用 MaterialButton（ADR 0083）。
 - 2026-09-05：P2 UI 语义化按钮迁移：工具、任务、记忆、设置、异步状态和懒加载失败态按主要、次要、低强调与危险语义复用 MaterialButton，保留 Tab、列表行、日历和安全确认等专用按钮（ADR 0084）。

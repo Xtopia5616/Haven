@@ -305,9 +305,10 @@ pub async fn stop_recording(
     // awaiting the STT network call here would hold the command action for its
     // whole duration.
     let state = state.inner().clone();
-    std::mem::drop(tokio::spawn(async move {
-        finalize_transcription(&state, &app, result).await
-    }));
+    let runtime = state.runtime.clone();
+    runtime.spawn("recording-transcription", async move {
+        let _ = finalize_transcription(&state, &app, result).await;
+    });
     Ok(String::new())
 }
 

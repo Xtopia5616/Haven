@@ -47,14 +47,35 @@ impl SessionSupervisor {
     }
 
     pub fn start_dispatcher(self: Arc<Self>, handler: RunHandler) {
-        self.start_dispatcher_inner(RunEngine::new(handler), true);
+        self.start_dispatcher_with_cancellation(handler, CancellationToken::new());
     }
 
     pub fn start_dispatcher_without_recovery(self: Arc<Self>, handler: RunHandler) {
-        self.start_dispatcher_inner(RunEngine::new(handler), false);
+        self.start_dispatcher_without_recovery_with_cancellation(handler, CancellationToken::new());
     }
 
-    fn start_dispatcher_inner(self: Arc<Self>, engine: RunEngine, recover_pending: bool) {
+    pub fn start_dispatcher_with_cancellation(
+        self: Arc<Self>,
+        handler: RunHandler,
+        cancellation: CancellationToken,
+    ) {
+        self.start_dispatcher_inner(RunEngine::new(handler), true, cancellation);
+    }
+
+    pub fn start_dispatcher_without_recovery_with_cancellation(
+        self: Arc<Self>,
+        handler: RunHandler,
+        cancellation: CancellationToken,
+    ) {
+        self.start_dispatcher_inner(RunEngine::new(handler), false, cancellation);
+    }
+
+    fn start_dispatcher_inner(
+        self: Arc<Self>,
+        engine: RunEngine,
+        recover_pending: bool,
+        cancellation: CancellationToken,
+    ) {
         tokio::spawn(async move {
             if recover_pending {
                 match self.load_pending_sessions().await {
@@ -68,13 +89,26 @@ impl SessionSupervisor {
             }
             let mut wake_rx = self.subscribe_dispatch();
             loop {
-                let permit = match self.semaphore.clone().acquire_owned().await {
-                    Ok(permit) => permit,
-                    Err(_) => return,
+                let permit = tokio::select! {
+                    _ = cancellation.cancelled() => return,
+                    result = self.semaphore.clone().acquire_owned() => match result {
+                        Ok(permit) => permit,
+                        Err(_) => return,
+                    }
                 };
+                if cancellation.is_cancelled() {
+                    return;
+                }
                 let Some(session_id) = self.try_claim_pending().await else {
                     drop(permit);
-                    let _ = wake_rx.changed().await;
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        result = wake_rx.changed() => {
+                            if result.is_err() {
+                                return;
+                            }
+                        }
+                    }
                     continue;
                 };
                 let supervisor = self.clone();

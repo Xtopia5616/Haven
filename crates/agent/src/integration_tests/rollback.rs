@@ -676,7 +676,7 @@ async fn rollback_pause_matches_compacted_message_id() {
 async fn rollback_while_ask_wait_clears_interaction_gate() {
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
         .await
         .unwrap();
@@ -756,12 +756,12 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
     let tools = Arc::new(ToolsManager::new());
     let timing = Arc::new(TimingState::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
         .await
         .unwrap();
     tools
-        .registry
+        .registry()
         .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
         .await
         .unwrap();
@@ -858,7 +858,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
 async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
         .await
         .unwrap();

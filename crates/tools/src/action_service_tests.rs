@@ -662,3 +662,55 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
     }
     assert_eq!(service.status(&id).await["status"], "completed");
 }
+
+#[tokio::test]
+async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
+    let service = Arc::new(ActionService::new());
+    let mut rx = service
+        .take_action_receiver()
+        .expect("unified receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "Shutdown".into(),
+            body: "must not fire after teardown".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: Some(serde_json::json!({})),
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    service.shutdown().await;
+    service.shutdown().await;
+
+    assert_eq!(service.status(&id).await["status"], "scheduled");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1200), rx.recv())
+            .await
+            .is_err(),
+        "scheduled timer must not fire after action-service shutdown"
+    );
+    assert!(
+        service
+            .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+                due_at: None,
+                delay_secs: Some(1),
+                watch_action_id: None,
+                title: "Rejected".into(),
+                body: "not admitted".into(),
+                mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+                session_id: None,
+                tool_name: Some("notify".into()),
+                tool_args: Some(serde_json::json!({})),
+                prompt: None,
+            })
+            .await
+            .is_err(),
+        "new scheduled work must be rejected after shutdown"
+    );
+}

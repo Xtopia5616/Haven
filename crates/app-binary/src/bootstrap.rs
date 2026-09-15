@@ -197,27 +197,32 @@ pub(crate) fn run() {
             // manual refresh.
             {
                 let emit_handle = handle.clone();
-                let mut rx = state.tools.mcp_manager.subscribe();
-                tokio::spawn(async move {
+                let mut rx = state.tools.mcp_manager().subscribe();
+                state
+                    .runtime
+                    .spawn_with_child_token("mcp-status-forwarder", move |cancel| async move {
                     loop {
-                        match rx.recv().await {
-                            Ok(ev) => {
-                                log_ignored_result!(
-                                    "event.mcp_status_changed",
-                                    emit_handle.emit(
-                                        MCP_STATUS_CHANGED_EVENT,
-                                        McpStatusChangedEvent {
-                                            name: ev.name,
-                                            status: ev.status,
-                                        },
-                                    )
-                                );
+                        tokio::select! {
+                            _ = cancel.cancelled() => break,
+                            result = rx.recv() => match result {
+                                Ok(ev) => {
+                                    log_ignored_result!(
+                                        "event.mcp_status_changed",
+                                        emit_handle.emit(
+                                            MCP_STATUS_CHANGED_EVENT,
+                                            McpStatusChangedEvent {
+                                                name: ev.name,
+                                                status: ev.status,
+                                            },
+                                        )
+                                    );
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
-                });
+                    });
             }
 
             // Auto-refresh skills when the skills folder changes on disk
@@ -226,18 +231,27 @@ pub(crate) fn run() {
             // removed SKILL.md files are picked up without a manual Refresh.
             {
                 let emit_handle = handle.clone();
-                state.tools.clone().spawn_skills_watcher(
-                    std::time::Duration::from_secs(3),
-                    move || {
-                        log_ignored_result!(
-                            "event.skills_status_changed",
-                            emit_handle.emit(
-                                SKILLS_STATUS_CHANGED_EVENT,
-                                SkillsStatusChangedEvent {
-                                    op: "auto_refresh".into(),
+                let tools = state.tools.clone();
+                state.runtime.spawn_with_child_token(
+                    "skills-watcher",
+                    move |cancel| async move {
+                        tools
+                            .run_skills_watcher(
+                                std::time::Duration::from_secs(3),
+                                cancel,
+                                move || {
+                                    log_ignored_result!(
+                                        "event.skills_status_changed",
+                                        emit_handle.emit(
+                                            SKILLS_STATUS_CHANGED_EVENT,
+                                            SkillsStatusChangedEvent {
+                                                op: "auto_refresh".into(),
+                                            },
+                                        )
+                                    );
                                 },
                             )
-                        );
+                            .await;
                     },
                 );
             }
@@ -282,7 +296,7 @@ pub(crate) fn run() {
             // never expose dynamic tool args, continuation prompts, or
             // output-log paths.
             let action_sink_handle = handle.clone();
-            state.tools.action_service.set_event_sink(Arc::new(
+                    state.tools.action_service().set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     let kind = match payload.get("kind").and_then(|value| value.as_str()) {
                         Some("scheduled") => ActionKind::Scheduled,
@@ -296,7 +310,7 @@ pub(crate) fn run() {
             // shell (and future long-running tools) can expand the chat card
             // while still running.
             let tool_output_handle = handle.clone();
-            state.tools.live_outputs.set_event_sink(Arc::new(
+                state.tools.live_outputs().set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     if event != AGENT_TOOL_OUTPUT_EVENT {
                         tracing::warn!(event, "dropping unknown live tool-output event");
@@ -321,13 +335,10 @@ pub(crate) fn run() {
             let key_binding = cfg.hotkey.key_binding.clone();
 
             // The global-shortcut and tray callbacks run on plugin/main
-            // threads that are outside the tokio runtime, where
-            // `Handle::current()` panics ("there is no reactor running").
-            // All callbacks therefore dispatch work through
-            // `tauri::async_runtime::spawn`, which is safe from any thread
-            // (unlike `Handle::block_on`, which panics with "Cannot start a
-            // runtime from within a runtime" when the callback fires on the
-            // async runtime's own thread).
+            // threads that are outside the tokio runtime. ApplicationRuntime
+            // stores the runtime handle, so these short async callbacks can
+            // still be registered and cancelled without relying on
+            // `Handle::current()` being available on the callback thread.
 
             // --------------------- System tray (build first) ---------------------
             let show = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
@@ -345,6 +356,7 @@ pub(crate) fn run() {
                 .on_menu_event(move |app, _event| {
                     let id = _event.id().as_ref();
                     let state = app.state::<Arc<AppState>>();
+                    let runtime = state.runtime.clone();
                     match id {
                         "show" => {
                             let _ = app.get_webview_window("main").map(|w| {
@@ -354,9 +366,9 @@ pub(crate) fn run() {
                         }
                         "mute" => {
                             let shell = state.shell.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let shell_state = shell.get_state().await;
-                                shell.set_muted(!shell_state.is_muted).await;
+                            runtime.spawn("tray-mute", async move {
+                                    let shell_state = shell.get_state().await;
+                                    shell.set_muted(!shell_state.is_muted).await;
                             });
                         }
                         "settings" => {
@@ -444,10 +456,18 @@ pub(crate) fn run() {
                 {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
-                    rt.block_on(async move {
-                        let mut events = st_arc.executor.subscribe_events();
-                        tokio::spawn(async move {
-                            while let Ok(event) = events.recv().await {
+                    state.runtime.spawn_with_child_token(
+                        "session-event-forwarder",
+                        move |cancel| async move {
+                            let mut events = st_arc.executor.subscribe_events();
+                            loop {
+                                let event = tokio::select! {
+                                    _ = cancel.cancelled() => return,
+                                    result = events.recv() => match result {
+                                        Ok(event) => event,
+                                        Err(_) => return,
+                                    }
+                                };
                                 match event {
                                     haven_agent::SessionEvent::InteractionRequested { request } => {
                                         log_ignored_result!(
@@ -491,8 +511,8 @@ pub(crate) fn run() {
                                     | haven_agent::SessionEvent::CascadeCompleted { .. } => {}
                                 }
                             }
-                        });
-                    });
+                        },
+                    );
                 }
             });
 
@@ -512,6 +532,7 @@ pub(crate) fn run() {
                 .global_shortcut()
                 .on_shortcut(shortcut, move |app, _sc, event| {
                     let state = app.state::<Arc<AppState>>();
+                    let runtime = state.runtime.clone();
                     let shell = state.shell.clone();
                     let pipeline = state.pipeline.clone();
                     let app_h = app.clone();
@@ -520,7 +541,7 @@ pub(crate) fn run() {
                     // shortcut callback firing on the async runtime's own thread
                     // can't panic with "Cannot start a runtime from within a
                     // runtime".
-                    tauri::async_runtime::spawn(async move {
+                    runtime.spawn("global-hotkey", async move {
                         let shell_state = shell.get_state().await;
                         if shell_state.is_muted {
                             return;
@@ -671,6 +692,7 @@ pub(crate) fn run() {
                         );
                     }
                 }
+                state.runtime.teardown_blocking();
             }
         });
 }

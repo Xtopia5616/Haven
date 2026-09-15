@@ -2199,7 +2199,9 @@ mod tests {
         .unwrap();
         bus.register("ses-other", &[]).unwrap();
         let service = Arc::new(MessagingService::new(bus.clone()));
-        service.set_runtime(Arc::new(TestRuntime { bus: bus.clone() }));
+        service
+            .bind_runtime(Arc::new(TestRuntime { bus: bus.clone() }))
+            .unwrap();
         let tool = AgentTool::new(service);
 
         let status = tool
@@ -2331,7 +2333,9 @@ mod tests {
     async fn agent_spawn_uses_runtime_and_registers_child() {
         let (_dir, bus, _unused) = test_tools();
         let service = Arc::new(MessagingService::new(bus.clone()));
-        service.set_runtime(Arc::new(TestRuntime { bus: bus.clone() }));
+        service
+            .bind_runtime(Arc::new(TestRuntime { bus: bus.clone() }))
+            .unwrap();
         let spawn = AgentTool::new(service);
         let result = spawn
             .execute(

@@ -6,12 +6,12 @@ async fn run_session_parallel_tool_execution() {
     let tools = Arc::new(ToolsManager::new());
     let timing = Arc::new(TimingState::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
         .await
         .unwrap();
     tools
-        .registry
+        .registry()
         .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
         .await
         .unwrap();
@@ -91,12 +91,12 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     let tools = Arc::new(ToolsManager::new());
     let timing = Arc::new(TimingState::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
         .await
         .unwrap();
     tools
-        .registry
+        .registry()
         .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
         .await
         .unwrap();

@@ -67,8 +67,8 @@ impl SelfTool {
             .apply_patch(ConfigPatch::Tools(settings))?;
         // Runtime apply: in-memory tool_settings + catalog rebuild. Skipped
         // (config still persisted) in headless/test builds without a manager.
-        if let Some(tools) = self.context.tools_weak.as_ref().and_then(|w| w.upgrade()) {
-            tools.set_tool_enabled(name, enabled).await;
+        if let Some(tool_control) = &self.context.tool_control {
+            tool_control.set_tool_enabled(name, enabled).await?;
         }
         Ok(serde_json::json!({
             "name": name,

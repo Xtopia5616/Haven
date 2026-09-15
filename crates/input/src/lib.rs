@@ -579,6 +579,23 @@ impl InputPipeline {
         Ok(())
     }
 
+    /// Stop any active capture and release resident audio workers.
+    ///
+    /// `ApplicationRuntime` calls this during process teardown. The VAD worker
+    /// is intentionally kept resident during normal recording cancellation so
+    /// the next recording remains fast; only application shutdown drops it.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.cancel_recording().await?;
+
+        if let Some(handle) = lock_std_or_recover(&self.engine, "engine").take() {
+            handle.stop_and_clear();
+        }
+        lock_std_or_recover(&self.vad_worker, "vad_worker").take();
+        self.vad_detector.lock().await.reset();
+        tracing::debug!("input pipeline shut down");
+        Ok(())
+    }
+
     /// Stop the audio capture and return the captured PCM. Runs no STT and
     /// leaves `transcript`/`transcript_error` unset.
     pub async fn stop_capture(&self) -> Result<RecordingResult> {

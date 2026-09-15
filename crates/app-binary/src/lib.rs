@@ -13,6 +13,7 @@ mod events;
 mod handlers;
 mod logging;
 mod notification;
+mod runtime;
 
 pub(crate) use bootstrap::to_tauri_shortcut;
 

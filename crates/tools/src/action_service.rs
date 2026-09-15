@@ -1,8 +1,10 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::{RwLock, broadcast, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::ActionLifecycle;
@@ -245,6 +247,10 @@ pub struct ActionService {
     /// Terminal action rows stay here as history even after the in-memory board
     /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
     db: RwLock<Option<Arc<Database>>>,
+    /// Cancels process runners, output preview loops and scheduled timers
+    /// during application teardown.
+    shutdown_token: CancellationToken,
+    shutting_down: AtomicBool,
 }
 
 impl Default for ActionService {
@@ -268,6 +274,8 @@ impl ActionService {
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
             event_sink: ActionLifecycle::default(),
             db: RwLock::new(None),
+            shutdown_token: CancellationToken::new(),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
@@ -304,6 +312,45 @@ impl ActionService {
     /// headless tests skip it.
     pub async fn set_db(&self, db: Option<Arc<Database>>) {
         *self.db.write().await = db;
+    }
+
+    /// Stop action workers owned by the application.
+    ///
+    /// Running background processes are cancelled and become terminal so the
+    /// action board cannot retain a ghost `running` row. Pending scheduled rows
+    /// are left durable and are only stopped in memory; they can be restored by
+    /// the next process instead of being silently cancelled on a normal app
+    /// exit.
+    pub async fn shutdown(&self) {
+        if self
+            .shutting_down
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        // Serialize shutdown with action admission. This closes the window in
+        // which a process could be published after the application has begun
+        // teardown.
+        let _spawn_gate = self.spawn_gate.lock().await;
+        self.shutdown_token.cancel();
+        let ids = {
+            let actions = self.actions.read().await;
+            actions
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.kind == ActionKind::Background
+                        && matches!(entry.state, ActionState::Running { .. })
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        };
+        drop(_spawn_gate);
+
+        for id in ids {
+            let _ = self.cancel(&id).await;
+        }
     }
 
     /// Post-restart cleanup: action rows a previous process left `running` are
@@ -531,6 +578,9 @@ impl ActionService {
         cwd: Option<std::path::PathBuf>,
         session_id: Option<&str>,
     ) -> anyhow::Result<String> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            anyhow::bail!("action service is shutting down");
+        }
         if command.trim().is_empty() {
             anyhow::bail!("command is required");
         }
@@ -546,6 +596,9 @@ impl ActionService {
         let terminal_ttl = *self.terminal_job_ttl.read().await;
         let max_actions = *self.max_actions.read().await;
         let _spawn_gate = self.spawn_gate.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            anyhow::bail!("action service is shutting down");
+        }
         {
             let mut actions = self.actions.write().await;
             // Reap terminal entries first: their results were already
@@ -677,6 +730,7 @@ impl ActionService {
         let action_span = tracing::info_span!("bg_action", action_id = %action_id);
         let runner_tail = tail.clone();
         let emit_action_id = action_id.clone();
+        let shutdown_token = self.shutdown_token.clone();
         tokio::spawn(async move {
             // Keep the Job Object alive for the entire action. Its
             // kill-on-close flag then cleans up descendants on cancellation
@@ -728,6 +782,12 @@ impl ActionService {
                     }
                     me.mark_cancelled(&action_id, &started_at).await;
                 }
+                _ = shutdown_token.cancelled() => {
+                    if let Some(pid) = child_pid {
+                        kill_process_tree(pid).await;
+                    }
+                    me.mark_cancelled(&action_id, &started_at).await;
+                }
                 (combined, success, exit_code, truncated) = &mut run => {
                     me.mark_finished(&action_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
                 }
@@ -738,10 +798,14 @@ impl ActionService {
         // changes (by value — length alone freezes once the window is full).
         let emit_me = self.clone();
         let emit_tail = tail;
+        let shutdown_token = self.shutdown_token.clone();
         tokio::spawn(async move {
             let mut last_output = String::new();
             loop {
-                tokio::time::sleep(emit_interval).await;
+                tokio::select! {
+                    _ = shutdown_token.cancelled() => return,
+                    _ = tokio::time::sleep(emit_interval) => {}
+                }
                 if emit_me.status(&emit_action_id).await["status"].as_str() != Some("running") {
                     return;
                 }
@@ -1182,6 +1246,9 @@ impl ActionService {
         let id = haven_common::types::new_id("act");
         let due_at = due.map(|value| value.to_rfc3339()).unwrap_or_default();
         let _mutation = self.spawn_gate.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            anyhow::bail!("action service is shutting down");
+        }
         let max_pending = *self.max_scheduled_actions.read().await;
         let mut actions = self.actions.write().await;
         // Fired schedules are already durable history and must not consume
@@ -1285,14 +1352,23 @@ impl ActionService {
 
         let service = self.clone();
         let fired_id = id.clone();
+        let shutdown_token = self.shutdown_token.clone();
         if let Some(watched_id) = watch_action_id {
             tokio::spawn(async move {
-                service.watch_action_timer(fired_id, watched_id).await;
+                tokio::select! {
+                    _ = shutdown_token.cancelled() => {}
+                    _ = service.watch_action_timer(fired_id, watched_id) => {}
+                }
             });
         } else {
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(remaining.max(0) as u64)).await;
-                service.fire_scheduled(&fired_id).await;
+                tokio::select! {
+                    _ = shutdown_token.cancelled() => {}
+                    _ = async {
+                        tokio::time::sleep(Duration::from_secs(remaining.max(0) as u64)).await;
+                        service.fire_scheduled(&fired_id).await;
+                    } => {}
+                }
             });
         }
         Ok(id)
@@ -1600,9 +1676,15 @@ impl ActionService {
                 overdue += 1;
             } else {
                 let service = Arc::clone(self);
+                let shutdown_token = self.shutdown_token.clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(remaining as u64)).await;
-                    service.fire_scheduled(&id).await;
+                    tokio::select! {
+                        _ = shutdown_token.cancelled() => {}
+                        _ = async {
+                            tokio::time::sleep(Duration::from_secs(remaining as u64)).await;
+                            service.fire_scheduled(&id).await;
+                        } => {}
+                    }
                 });
             }
         }

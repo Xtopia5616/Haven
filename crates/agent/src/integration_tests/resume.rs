@@ -41,7 +41,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
     );
     let tools = Arc::new(ToolsManager::new());
     tools
-        .skills_engine
+        .skills_engine()
         .set_config(Some(dir.clone()), None)
         .await
         .unwrap();
@@ -649,7 +649,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     // which would reject it with a 400 error.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(EchoTool) as ToolBox)
         .await
         .unwrap();

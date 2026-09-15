@@ -61,9 +61,11 @@
 
 `haven-tools` 的工具核心按稳定边界分为 `tool_contract.rs`（Tool、ToolResult、typed
 operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog、版本快照与 probe）和
-`security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）；
-`lib.rs` 只从这些模块重新导出 crate 公共 API，builtin 直接依赖对应模块。安全矩阵只有
-`security.rs` 一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。
+`security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
+在这组稳定模块之上，`tool_core.rs` 只组合 catalog/authorization，`tool_runtime.rs` 只
+组合执行依赖和一次性 typed capability ports，`tool_builtins.rs` 只组合 MCP/Skills 与
+具体 builtin provider；`ToolsManager` 只是三者的 facade。安全矩阵只有 `security.rs`
+一个权威来源，SelfTool 的 ADR 0070/0071 迁移边界保持不变。详见 ADR 0162。
 
 `document.rs` 是受管附件的本地派生边界：由 `media.extract` 对 PDF/DOCX/XLSX/PPTX
 执行有资源上限的文本/表格抽取，输出带
@@ -368,8 +370,13 @@ Tauri command 的 structured surface，未直接注册进模型目录；`haven` 
 
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
-- `app_state.rs`：装配 `AppState`（db / router / tools / executor / agent / pipeline / shell /
-  `config_service` / media clients / stt_client）。
+- `runtime.rs`：`ApplicationRuntime` 是应用级生命周期 owner，集中持有服务句柄、
+  app-scoped task handles 和根 `CancellationToken`；`shutdown`/`teardown` 统一输入、
+  session、action、MCP 与 bootstrap worker 的停止顺序。领域 worker 仍由所属 crate
+  释放，但必须接收 runtime 子 token 或响应领域 shutdown。
+- `app_state.rs`：装配 `AppState`（runtime / 瞬态录音状态 / bootstrap 状态 / UI
+  confirmation）；命令通过 runtime 稳定句柄消费 db / router / tools / executor /
+  agent / pipeline / shell / `config_service` / media clients / stt_client。
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
   `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
 - `commands/recording.rs`：host 校验并落盘上传附件、分配 `asset_id`，并由 app-binary
@@ -468,6 +475,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-15 | §2.6 App：引入 `ApplicationRuntime` 统一服务句柄、后台任务 owner、根取消 token、退出 shutdown/teardown；输入、session、action、MCP 和 bootstrap worker 按依赖顺序停止，pending scheduled action 保留恢复语义（ADR 0161） |
 | 2026-09-15 | §2.6 UI：以 typed `SessionReducer` 统一 live event、resume、rollback/reconnect replay、Interaction、usage 与 optimistic 状态；旧消息/用量 store 降为兼容投影（ADR 0160） |
 | 2026-09-15 | §2.3 Memory / §2.5 Agent：新增版本化 `session_events` append-only 事件流与 `SessionEventStore`；snapshot 降级为 checkpoint/cache，resume、rollback、transcript 投影与 live replay 共用 durable sequence（ADR 0159） |
 | 2026-09-12 | §2.5 Tools / Agent / App：删除 `MediaGateway`、coverage、intent 与 ingress eager preprocessing；由单一共享 `MediaTool` 统一 OCR、STT fallback、文档抽取和显式媒体生成，并同步 UI 媒体结果契约（ADR 0130） |

@@ -11,7 +11,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    StructuredToolError, Tool, ToolConcurrency, ToolErrorMetadata, ToolRegistry, ToolResult,
+    LogLevelPort, StructuredToolError, Tool, ToolConcurrency, ToolControlPort, ToolErrorMetadata,
+    ToolRegistry, ToolResult,
 };
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
@@ -38,11 +39,10 @@ pub struct SelfToolContext {
     /// Path to the log file tailed by `logs_tail`.
     pub log_path: Option<PathBuf>,
     /// Runtime log-level switcher (wired to the tracing reload layer).
-    pub set_log_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
-    /// Weak handle to the running `ToolsManager` so the tool enable/disable
-    /// ops can apply the runtime change (in-memory `tool_settings` +
-    /// catalog rebuild) after persisting config. `None` in headless builds.
-    pub tools_weak: Option<std::sync::Weak<crate::ToolsManager>>,
+    /// Host subscriber port for runtime log-level application.
+    pub log_level: Option<Arc<dyn LogLevelPort>>,
+    /// Typed live catalog port for applying persisted tool toggles.
+    pub tool_control: Option<Arc<dyn ToolControlPort>>,
 }
 
 /// Operations the `self` tool understands.
@@ -414,8 +414,8 @@ mod tests {
             db: None,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
-            set_log_level: None,
-            tools_weak: None,
+            log_level: None,
+            tool_control: None,
         };
         let tool = SelfTool::new(
             ctx,
@@ -1704,8 +1704,8 @@ mod tests {
             db: None,
             router: None,
             log_path: None,
-            set_log_level: None,
-            tools_weak: Some(Arc::downgrade(&mgr)),
+            log_level: None,
+            tool_control: Some(mgr.tool_control_port()),
         };
         mgr.set_admin_context(ctx).await;
         assert!(mgr.get_tool("shell").await.is_some());

@@ -261,7 +261,13 @@ impl AgentLayer {
     /// Spawn the SessionSupervisor dispatcher with a runner wired to this
     /// AgentLayer. Must be called exactly once after construction.
     pub fn start(self: Arc<Self>) {
-        self.start_inner(true);
+        self.start_with_cancellation(CancellationToken::new());
+    }
+
+    /// Start the dispatcher and its lifecycle consumers under an application
+    /// supplied cancellation boundary.
+    pub fn start_with_cancellation(self: Arc<Self>, cancellation: CancellationToken) {
+        self.start_inner(true, cancellation);
     }
 
     /// Start the dispatcher immediately, but defer recovery of sessions that
@@ -269,7 +275,15 @@ impl AgentLayer {
     /// during cold start so a fresh conversation is not blocked by MCP/Skills
     /// discovery; it calls `load_pending_sessions` once that catalog is ready.
     pub fn start_without_pending_recovery(self: Arc<Self>) {
-        self.start_inner(false);
+        self.start_without_pending_recovery_with_cancellation(CancellationToken::new());
+    }
+
+    /// Cold-start variant of [`Self::start_with_cancellation`].
+    pub fn start_without_pending_recovery_with_cancellation(
+        self: Arc<Self>,
+        cancellation: CancellationToken,
+    ) {
+        self.start_inner(false, cancellation);
     }
 
     /// Reload sessions that were left Pending by a previous process after the
@@ -278,7 +292,7 @@ impl AgentLayer {
         self.executor.load_pending_sessions().await
     }
 
-    fn start_inner(self: Arc<Self>, recover_pending: bool) {
+    fn start_inner(self: Arc<Self>, recover_pending: bool, cancellation: CancellationToken) {
         let agent = self.clone();
         let executor = self.executor.clone();
         let handler: RunHandler = Arc::new(move |session_id: String| {
@@ -286,9 +300,10 @@ impl AgentLayer {
             Box::pin(async move { agent.run_session_from_id(&session_id).await.map(|_| ()) })
         });
         if recover_pending {
-            executor.start_dispatcher(handler);
+            executor.start_dispatcher_with_cancellation(handler, cancellation.clone());
         } else {
-            executor.start_dispatcher_without_recovery(handler);
+            executor
+                .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
         }
 
         self.executor
@@ -302,8 +317,16 @@ impl AgentLayer {
             let mut events_rx = self.executor.subscribe_events();
             let events = self.events.clone();
             let inference = self.inference.clone();
+            let cancellation = cancellation.clone();
             tokio::spawn(async move {
-                while let Ok(event) = events_rx.recv().await {
+                loop {
+                    let event = tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        result = events_rx.recv() => match result {
+                            Ok(event) => event,
+                            Err(_) => return,
+                        }
+                    };
                     match event {
                         SessionEvent::ScheduledConfirmOutcome { title, body } => {
                             events.emit_notification(&title, &body).await;
@@ -334,9 +357,16 @@ impl AgentLayer {
         // is still buffered and delivered as context once the user resumes.
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.action_service.take_action_receiver() {
+        if let Some(mut rx) = tools.action_service().take_action_receiver() {
+            let cancellation = cancellation.clone();
             tokio::spawn(async move {
-                while let Some(event) = rx.recv().await {
+                loop {
+                    let Some(event) = (tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        event = rx.recv() => event,
+                    }) else {
+                        return;
+                    };
                     let haven_tools::ActionCompletion::Background(comp) = event else {
                         continue;
                     };
@@ -477,9 +507,16 @@ impl AgentLayer {
         //   without a session id is an error (no fallback).
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.action_service.take_action_receiver() {
+        if let Some(mut rx) = tools.action_service().take_action_receiver() {
+            let cancellation = cancellation.clone();
             tokio::spawn(async move {
-                while let Some(event) = rx.recv().await {
+                loop {
+                    let Some(event) = (tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        event = rx.recv() => event,
+                    }) else {
+                        return;
+                    };
                     let haven_tools::ActionCompletion::Scheduled(fired) = event else {
                         continue;
                     };
@@ -535,7 +572,7 @@ impl AgentLayer {
                                 )
                                 .await;
                             let gate = tools
-                                .authorization
+                                .authorization()
                                 .check_with_policy(
                                     fired.session_id.as_deref(),
                                     &tool_name,
@@ -592,7 +629,7 @@ impl AgentLayer {
                                             fired.session_id.as_deref(),
                                             &tool_name,
                                             args,
-                                            CancellationToken::new(),
+                                            cancellation.clone(),
                                             None,
                                             None,
                                         )
@@ -719,8 +756,12 @@ impl AgentLayer {
         // previous run left `running` (their child processes died with the
         // app), so persisted action history never shows stale live work.
         let restore_tools = self.executor.get_tools();
+        let cancellation = cancellation.clone();
         tokio::spawn(async move {
-            let (overdue, interrupted) = restore_tools.action_service.restore().await;
+            let (overdue, interrupted) = tokio::select! {
+                _ = cancellation.cancelled() => return,
+                result = restore_tools.action_service().restore() => result,
+            };
             if overdue > 0 {
                 tracing::info!(
                     "restored {} overdue scheduled action(s) from previous run",
@@ -1195,5 +1236,15 @@ impl haven_tools::MessagingRuntime for AgentLayer {
         request: haven_tools::AgentControlRequest,
     ) -> anyhow::Result<haven_tools::AgentControlResult> {
         AgentLayer::control_peer_session(self, request).await
+    }
+}
+
+#[async_trait::async_trait]
+impl haven_tools::MemoryRecallPort for AgentLayer {
+    async fn recall(
+        &self,
+        query: haven_memory::recall::MemoryQuery,
+    ) -> anyhow::Result<haven_memory::recall::MemoryRecall> {
+        self.recall_memory_query(query).await
     }
 }

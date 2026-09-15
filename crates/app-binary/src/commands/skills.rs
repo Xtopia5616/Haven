@@ -11,7 +11,7 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> Result<Vec<SkillInfo>, String> {
-    Ok(state.tools.skills_engine.list().await)
+    Ok(state.tools.skills_engine().list().await)
 }
 
 #[tauri::command]
@@ -22,7 +22,7 @@ pub async fn refresh_skills(
     // Re-scan skills from the configured (or default) skills directory (M4-01).
     state
         .tools
-        .skills_engine
+        .skills_engine()
         .refresh_from_disk()
         .await
         .map_err(|e| log_err("refresh_skills", e))?;
@@ -106,7 +106,7 @@ pub async fn set_tool_enabled(
 
 #[tauri::command]
 pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let root = state.tools.skills_engine.resolved_root().await;
+    let root = state.tools.skills_engine().resolved_root().await;
     if !haven_tools::is_safe_local_path(&root) {
         return Err(
             "skills directory contains an unsafe reparse point or cannot be resolved".into(),
@@ -121,7 +121,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
     );
     match state
         .tools
-        .authorization
+        .authorization()
         .check_with_policy(None, "open_skills_dir", &params, &policy)
         .await
     {
@@ -172,7 +172,7 @@ pub async fn execute_skill(
 ) -> Result<SkillExecutionResponse, String> {
     let skill_info = state
         .tools
-        .skills_engine
+        .skills_engine()
         .get(&name)
         .await
         .ok_or_else(|| format!("skill '{}' not found", name))?;
@@ -194,7 +194,7 @@ pub async fn execute_skill(
     );
     match state
         .tools
-        .authorization
+        .authorization()
         .check_with_policy(Some("ui"), &tool_key, &params, &policy)
         .await
     {
@@ -225,7 +225,7 @@ pub async fn execute_skill(
 
     let skill = state
         .tools
-        .skills_engine
+        .skills_engine()
         .get_skill(&name)
         .await
         .ok_or_else(|| format!("skill '{}' not found", name))?;
@@ -233,7 +233,7 @@ pub async fn execute_skill(
     let cancel = tokio_util::sync::CancellationToken::new();
     let result = state
         .tools
-        .skill_runner
+        .skill_runner()
         .read()
         .await
         .execute(&skill, &params, cancel)

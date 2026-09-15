@@ -158,8 +158,15 @@ impl SelfTool {
         };
         self.config_service()?
             .apply_patch(ConfigPatch::LogLevel(parsed))?;
-        if let Some(f) = &self.context.set_log_level {
-            f(level.clone());
+        if let Some(log_level) = &self.context.log_level {
+            let parsed = match level.as_str() {
+                "trace" => LogLevel::Trace,
+                "debug" => LogLevel::Debug,
+                "warn" => LogLevel::Warn,
+                "error" => LogLevel::Error,
+                _ => LogLevel::Info,
+            };
+            log_level.set_level(&parsed)?;
         }
         Ok(serde_json::json!({ "level": level, "saved": true }))
     }

@@ -644,7 +644,7 @@ impl SystemPromptBuilder {
         let limits = self.tools.context_limits().await;
         let shell = self.tools.default_shell_name().await;
         let runtime_capabilities = self.tools.runtime_capabilities().await;
-        let permissions = self.tools.authorization.prompt_summary().await;
+        let permissions = self.tools.authorization().prompt_summary().await;
         let mcp_count = self
             .tools
             .list_mcp_server_configs()
@@ -654,7 +654,7 @@ impl SystemPromptBuilder {
             .count();
         let skill_count = self
             .tools
-            .skills_engine
+            .skills_engine()
             .list()
             .await
             .into_iter()
@@ -1259,7 +1259,7 @@ impl SystemPromptBuilder {
         // The builtin registry and MCP tools/list clocks are both authorities
         // for this frozen global index. Per-session registrations do not enter
         // the index and therefore do not invalidate it.
-        let version = self.tools.registry.version();
+        let version = self.tools.registry().version();
         let mcp_catalog_version = self.tools.mcp_catalog_version();
         {
             let cache = self.schema_cache.read().unwrap();
@@ -1282,7 +1282,7 @@ impl SystemPromptBuilder {
         // registry as a narrow fallback so the prompt still reflects tools
         // explicitly installed by the host.
         if defs.is_empty() {
-            defs = self.tools.registry.list_defs().await;
+            defs = self.tools.registry().list_defs().await;
         }
         let new_cache = self
             .build_sections(version, mcp_catalog_version, defs)
@@ -1325,7 +1325,7 @@ impl SystemPromptBuilder {
             "use `load_mcp` or `tool_catalog` for details",
         );
         let skills_section = cap_capability_index(
-            render_skill_index(&self.tools.skills_engine.list().await),
+            render_skill_index(&self.tools.skills_engine().list().await),
             SKILL_INDEX_CHAR_BUDGET,
             "use `load_skill` or `tool_catalog` for details",
         );
@@ -1519,7 +1519,7 @@ mod tests {
 
         // With a dotted agent operation registered: the guidance rides along.
         tools
-            .registry
+            .registry()
             .register(std::sync::Arc::new(DummyTool {
                 name: "agent.inbox".into(),
             }))

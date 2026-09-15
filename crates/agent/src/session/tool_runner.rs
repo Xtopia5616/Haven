@@ -618,7 +618,7 @@ impl SessionSupervisor {
         for reg in &registrations {
             if let haven_tools::ToolRegistration::Action(action_id) = reg {
                 self.tools
-                    .action_service
+                    .action_service()
                     .attach_session(action_id, session_id)
                     .await;
             }
@@ -699,7 +699,7 @@ impl SessionSupervisor {
         if let Some(receipt) = receipt.as_ref()
             && let Err(reason) = self
                 .tools
-                .authorization
+                .authorization()
                 .verify_receipt_with_policy(
                     session_id,
                     tool_name,
@@ -737,7 +737,7 @@ impl SessionSupervisor {
         }
         match self
             .tools
-            .authorization
+            .authorization()
             .check_with_policy(session_id, tool_name, &policy_input, &operation_policy)
             .await
         {
@@ -1009,7 +1009,7 @@ impl SessionSupervisor {
             .get_authorization_input(Some(session_id), tool_name, input)
             .await;
         self.tools
-            .authorization
+            .authorization()
             .check_with_policy(
                 Some(session_id),
                 tool_name,

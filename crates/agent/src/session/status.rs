@@ -114,7 +114,7 @@ impl SessionSupervisor {
         }
         self.clear_has_children(session_id).await;
         self.tools
-            .authorization
+            .authorization()
             .clear_session_trust(session_id)
             .await;
     }
@@ -199,7 +199,7 @@ impl SessionSupervisor {
         self.dequeue_pending(session_id).await;
         self.tools.unregister_session(session_id).await;
         self.tools
-            .authorization
+            .authorization()
             .clear_session_trust(session_id)
             .await;
         self.scheduled_confirms
@@ -255,7 +255,7 @@ impl SessionSupervisor {
             self.await_run_finished(&actor.id).await;
             actor.clear_runtime().await;
         }
-        self.tools.authorization.clear_all_trust().await;
+        self.tools.authorization().clear_all_trust().await;
         self.actors.lock().await.clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
@@ -414,7 +414,7 @@ impl SessionSupervisor {
 
     pub async fn cancel_session_actions(&self, session_id: &str) {
         self.tools
-            .action_service
+            .action_service()
             .cancel_owned_by_session(session_id)
             .await;
     }

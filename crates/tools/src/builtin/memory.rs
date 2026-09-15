@@ -7,28 +7,10 @@ use haven_memory::recall::{
 };
 use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
 use serde_json::{Value, json};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolConcurrency, ToolResult};
-
-/// Desktop-wired recall callback (History `recall_memory` / InferenceEngine).
-/// The callback receives and returns the shared typed memory contract.
-pub type MemoryRecallFn = Arc<
-    dyn Fn(MemoryQuery) -> Pin<Box<dyn Future<Output = anyhow::Result<MemoryRecall>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// Shared slot so catalog rebuilds keep the same callback.
-pub type MemoryRecallSlot = Arc<RwLock<Option<MemoryRecallFn>>>;
-
-pub fn new_memory_recall_slot() -> MemoryRecallSlot {
-    Arc::new(RwLock::new(None))
-}
+use crate::{MemoryRecallSlot, Tool, ToolConcurrency, ToolResult};
 
 fn recall_output(kind: MemoryKind, recall: MemoryRecall) -> Value {
     let is_empty = recall.hits.is_empty();
@@ -287,8 +269,8 @@ impl MemoryTool {
             .with_excluded_session(session_id)
             .with_fact_subject(params.subject.as_deref());
 
-        if let Some(recall) = self.recall.read().await.clone() {
-            let recall = recall(query).await?;
+        if let Some(recall) = self.recall.get() {
+            let recall = recall.recall(query).await?;
             return Ok(ToolResult::ok(recall_output(kind, recall)));
         }
 
@@ -485,7 +467,30 @@ impl Tool for MemoryTool {
 mod tests {
     use super::*;
     use crate::Tool;
+    use crate::tool_runtime::new_memory_recall_slot;
     use haven_memory::MemoryHit;
+    use std::future::Future;
+
+    struct TestRecall<F>(F);
+
+    #[async_trait]
+    impl<F, Fut> crate::MemoryRecallPort for TestRecall<F>
+    where
+        F: Fn(MemoryQuery) -> Fut + Send + Sync,
+        Fut: Future<Output = anyhow::Result<MemoryRecall>> + Send,
+    {
+        async fn recall(&self, query: MemoryQuery) -> anyhow::Result<MemoryRecall> {
+            (self.0)(query).await
+        }
+    }
+
+    fn bind_recall<F, Fut>(slot: &MemoryRecallSlot, handler: F)
+    where
+        F: Fn(MemoryQuery) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<MemoryRecall>> + Send + 'static,
+    {
+        assert!(slot.set(Arc::new(TestRecall(handler))).is_ok());
+    }
 
     fn test_tool() -> (MemoryTool, Arc<Database>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -774,26 +779,24 @@ mod tests {
     async fn shared_recall_preserves_typed_mode_and_hits() {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
-        *slot.write().await = Some(Arc::new(|query| {
-            Box::pin(async move {
-                assert_eq!(query.kind, MemoryKind::Episode);
-                assert_eq!(query.text, "release notes");
-                assert_eq!(query.limit, 3);
-                assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
-                assert_eq!(query.fact_subject, None);
-                Ok(MemoryRecall {
-                    hits: vec![MemoryHit {
-                        entity_id: "msg-episode".into(),
-                        text: "release notes summary".into(),
-                        score: 0.9,
-                        model: "model-a".into(),
-                    }],
-                    mode: haven_memory::MemoryRecallMode::Hybrid,
-                    empty_reason: None,
-                    diagnostics: None,
-                })
+        bind_recall(&slot, |query| async move {
+            assert_eq!(query.kind, MemoryKind::Episode);
+            assert_eq!(query.text, "release notes");
+            assert_eq!(query.limit, 3);
+            assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
+            assert_eq!(query.fact_subject, None);
+            Ok(MemoryRecall {
+                hits: vec![MemoryHit {
+                    entity_id: "msg-episode".into(),
+                    text: "release notes summary".into(),
+                    score: 0.9,
+                    model: "model-a".into(),
+                }],
+                mode: haven_memory::MemoryRecallMode::Hybrid,
+                empty_reason: None,
+                diagnostics: None,
             })
-        }));
+        });
 
         let result = tool
             .execute(
@@ -817,14 +820,12 @@ mod tests {
     async fn shared_recall_forwards_fact_subject_scope() {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
-        *slot.write().await = Some(Arc::new(|query| {
-            Box::pin(async move {
-                assert_eq!(query.kind, MemoryKind::Fact);
-                assert_eq!(query.fact_subject.as_deref(), Some("workspace"));
-                assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
-                Ok(MemoryRecall::default())
-            })
-        }));
+        bind_recall(&slot, |query| async move {
+            assert_eq!(query.kind, MemoryKind::Fact);
+            assert_eq!(query.fact_subject.as_deref(), Some("workspace"));
+            assert_eq!(query.exclude_session_id.as_deref(), Some("ses-current"));
+            Ok(MemoryRecall::default())
+        });
 
         tool.execute(
             json!({

@@ -136,7 +136,7 @@ pub(crate) async fn run_admin_op(
     );
     match state
         .tools
-        .authorization
+        .authorization()
         .check_with_policy(Some("ui"), &tool_name, &input, &policy)
         .await
     {
@@ -200,7 +200,7 @@ pub(crate) async fn finalize_admin_ui_operation(
             if let Some(name) = params.name.as_deref() {
                 crate::commands::mcp::spawn_monitor_if_client(state, name).await?;
                 state.tools.rebuild_catalog().await;
-                let connected = state.tools.mcp_manager.get_client(name).await.is_some();
+                let connected = state.tools.mcp_manager().get_client(name).await.is_some();
                 crate::commands::mcp::emit_mcp_status(
                     app,
                     name.to_string(),
@@ -331,7 +331,7 @@ pub(crate) async fn hot_swap_router(
         .config;
     let stt_config = config.media.stt.clone();
     let providers = config.llm.providers.clone();
-    let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.tools.mcp_manager.clone());
+    let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.tools.mcp_manager().clone());
     let stt_client: Option<Arc<dyn haven_llm::SttClient>> = match build_stt_client(
         new_router.clone(),
         Some(mcp_caller),
@@ -402,7 +402,7 @@ pub(crate) async fn connect_and_monitor(
     ctx: &str,
 ) -> Result<Arc<haven_tools::McpClient>, String> {
     if matches!(
-        state.tools.mcp_manager.network_policy().await,
+        state.tools.mcp_manager().network_policy().await,
         haven_common::types::NetworkPolicy::Deny
     ) && config.enabled
     {
@@ -421,14 +421,14 @@ pub(crate) async fn connect_and_monitor(
         limits.mcp_max_sse_buffer_bytes,
     ));
     client
-        .set_network_policy(state.tools.mcp_manager.network_policy().await)
+        .set_network_policy(state.tools.mcp_manager().network_policy().await)
         .await;
     if config.enabled {
         client.connect().await.map_err(|e| log_err(ctx, e))?;
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
         let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
         let max_backoff = std::time::Duration::from_millis(discovery.reconnect_max_ms);
-        let status_tx = state.tools.mcp_manager.status_tx();
+        let status_tx = state.tools.mcp_manager().status_tx();
         client.clone().spawn_monitor(
             health_interval,
             initial_backoff,

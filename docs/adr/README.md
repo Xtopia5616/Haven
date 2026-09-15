@@ -162,3 +162,4 @@
 - [0158：MessagingService 接入 SessionActor mailbox](0158-messaging-service-session-actor-mailbox.md)
 - [0159：SessionEventStore 与 append-only 会话事件流](0159-session-event-store.md)
 - [0160：UI 统一 typed SessionReducer 运行态](0160-ui-session-runtime-reducer.md)
+- [0161：ApplicationRuntime 统一应用生命周期](0161-application-runtime-lifecycle.md)

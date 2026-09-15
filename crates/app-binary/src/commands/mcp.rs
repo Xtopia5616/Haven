@@ -24,7 +24,7 @@ pub async fn list_mcp_tools(
 ) -> Result<Vec<McpServerSnapshot>, String> {
     let mut snapshots: HashMap<String, McpServerSnapshot> = state
         .tools
-        .mcp_manager
+        .mcp_manager()
         .snapshot()
         .await
         .into_iter()
@@ -100,12 +100,12 @@ pub(crate) fn emit_mcp_status(
 pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Result<(), String> {
     state
         .tools
-        .mcp_manager
+        .mcp_manager()
         .reconnect(&name)
         .await
         .map_err(|e| log_err("reconnect_mcp", e))?;
     // Restart health monitor for this client
-    if let Some(client) = state.tools.mcp_manager.get_client(&name).await {
+    if let Some(client) = state.tools.mcp_manager().get_client(&name).await {
         let config = state
             .config_service
             .snapshot()
@@ -117,7 +117,7 @@ pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Res
         let initial_backoff = std::time::Duration::from_millis(config.reconnect_initial_ms);
         let max_backoff = std::time::Duration::from_millis(config.reconnect_max_ms);
         let max_retries = config.reconnect_max_retries;
-        let status_tx = state.tools.mcp_manager.status_tx();
+        let status_tx = state.tools.mcp_manager().status_tx();
         client.spawn_monitor(
             health_interval,
             initial_backoff,
@@ -172,7 +172,7 @@ pub async fn refresh_mcp_servers(
     // the UI snapshot and the MCP server index never diverge after an
     // external config.toml edit.
     {
-        let mut map = state.tools.mcp_server_configs.write().await;
+        let mut map = state.tools.mcp_server_configs().write().await;
         map.clear();
         for server in &servers {
             map.insert(server.name.clone(), server.clone());
@@ -181,7 +181,7 @@ pub async fn refresh_mcp_servers(
 
     // Single reconciliation rule shared with `McpManager::load_from_config`:
     // diff the live clients against the persisted config.
-    let reconcile = state.tools.mcp_manager.reconcile_servers(&servers).await;
+    let reconcile = state.tools.mcp_manager().reconcile_servers(&servers).await;
 
     // 1) Enabled servers whose live client was spawned from a different
     //    config → tear the old client down (its monitor must not keep a
@@ -193,7 +193,7 @@ pub async fn refresh_mcp_servers(
             "refresh_mcp_servers: config changed for '{}', reconnecting",
             server.name
         );
-        state.tools.mcp_manager.remove_client(&server.name).await;
+        state.tools.mcp_manager().remove_client(&server.name).await;
         updated.push(server.name.clone());
         emit_mcp_status(
             &app,
@@ -210,7 +210,7 @@ pub async fn refresh_mcp_servers(
     for server in reconcile.to_connect_new.into_iter().chain(changed) {
         match connect_and_monitor(&state, &discovery, &server, "refresh_mcp_servers").await {
             Ok(client) => {
-                state.tools.mcp_manager.add_client(client).await;
+                state.tools.mcp_manager().add_client(client).await;
                 if !updated.iter().any(|n| n == &server.name) {
                     added.push(server.name.clone());
                 }
@@ -236,7 +236,7 @@ pub async fn refresh_mcp_servers(
     //    shut them down.
     let mut removed = Vec::new();
     for name in reconcile.to_remove {
-        state.tools.mcp_manager.remove_client(&name).await;
+        state.tools.mcp_manager().remove_client(&name).await;
         removed.push(name.clone());
         emit_mcp_status(
             &app,
@@ -275,7 +275,7 @@ pub async fn mcp_tool_call(
     );
     match state
         .tools
-        .authorization
+        .authorization()
         .check_with_policy(Some("ui"), &tool_key, &args, &policy)
         .await
     {
@@ -312,7 +312,7 @@ pub async fn mcp_tool_call(
     let cancel = CancellationToken::new();
     let result = state
         .tools
-        .mcp_manager
+        .mcp_manager()
         .call_tool(&client, &tool, args, cancel)
         .await
         .map_err(|e| log_err("mcp_tool_call", e))?;
@@ -328,7 +328,7 @@ pub async fn mcp_tool_call(
 /// does not need one), so the app commands re-attach it after routing through
 /// the tool — same wiring as `reconnect_mcp`.
 pub(crate) async fn spawn_monitor_if_client(state: &AppState, name: &str) -> Result<(), String> {
-    let Some(client) = state.tools.mcp_manager.get_client(name).await else {
+    let Some(client) = state.tools.mcp_manager().get_client(name).await else {
         return Ok(());
     };
     let discovery = state
@@ -340,7 +340,7 @@ pub(crate) async fn spawn_monitor_if_client(state: &AppState, name: &str) -> Res
     let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
     let max_backoff = std::time::Duration::from_millis(discovery.reconnect_max_ms);
     let max_retries = discovery.reconnect_max_retries;
-    let status_tx = state.tools.mcp_manager.status_tx();
+    let status_tx = state.tools.mcp_manager().status_tx();
     client.spawn_monitor(
         health_interval,
         initial_backoff,
@@ -386,7 +386,7 @@ pub async fn add_mcp_server(
     state.tools.rebuild_catalog().await;
     let connected = state
         .tools
-        .mcp_manager
+        .mcp_manager()
         .get_client(&config.name)
         .await
         .is_some();
@@ -436,7 +436,7 @@ pub async fn update_mcp_server(
     // App-level aftermath: health monitor + catalog rebuild + UI event.
     spawn_monitor_if_client(&state, &name).await?;
     state.tools.rebuild_catalog().await;
-    let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
+    let connected = state.tools.mcp_manager().get_client(&name).await.is_some();
     emit_mcp_status(
         &app,
         name,
@@ -509,7 +509,7 @@ pub async fn toggle_mcp_server(
     // App-level aftermath: health monitor + catalog rebuild + UI event.
     spawn_monitor_if_client(&state, &name).await?;
     state.tools.rebuild_catalog().await;
-    let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
+    let connected = state.tools.mcp_manager().get_client(&name).await.is_some();
     emit_mcp_status(
         &app,
         name,

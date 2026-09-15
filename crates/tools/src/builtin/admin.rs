@@ -10,7 +10,7 @@
 use super::admin_support::{mask_sensitive_config, value_at};
 use super::self_tool::{SelfOperation, SelfParams, SelfTool, sanitize_diagnostic};
 use crate::{
-    OperationIdempotency, Tool, ToolCancellationPolicy, ToolConcurrency, ToolDef,
+    LogLevelPort, OperationIdempotency, Tool, ToolCancellationPolicy, ToolConcurrency, ToolDef,
     ToolErrorMetadata, ToolExecutionOutcome, ToolOperationMetadata, ToolOperationScope, ToolResult,
     TypedToolAdapter, TypedToolOperation,
 };
@@ -369,7 +369,7 @@ pub struct AdminOperationMetadata {
 #[derive(Clone)]
 pub struct ConfigAdminContext {
     pub config_service: Option<Arc<ConfigService>>,
-    pub set_log_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    pub log_level: Option<Arc<dyn LogLevelPort>>,
 }
 
 /// Typed arguments for the `haven_config` aggregate implementation. The serde tag is the
@@ -580,8 +580,10 @@ impl TypedToolOperation for ConfigAdminOperation {
                 let update = service
                     .apply_patch(ConfigPatch::LogLevel(level.clone()))
                     .map_err(|_| ConfigOperationError::Failed)?;
-                if let Some(set_log_level) = &self.context.set_log_level {
-                    set_log_level(level.as_str().to_string());
+                if let Some(log_level) = &self.context.log_level {
+                    log_level
+                        .set_level(&level)
+                        .map_err(|_| ConfigOperationError::Failed)?;
                 }
                 Ok(ConfigOperationOutput::LogsLevel(LogLevelOutput {
                     level,
@@ -848,8 +850,8 @@ mod tests {
             db: None,
             router: None,
             log_path: None,
-            set_log_level: None,
-            tools_weak: None,
+            log_level: None,
+            tool_control: None,
         };
         (
             Arc::new(SelfTool::new(
@@ -1033,7 +1035,7 @@ mod tests {
         let service = Arc::new(ConfigService::new(loader));
         let tool = new_config_admin_tool(ConfigAdminContext {
             config_service: Some(service.clone()),
-            set_log_level: None,
+            log_level: None,
         });
         (tool, service, dir)
     }

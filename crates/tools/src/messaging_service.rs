@@ -5,7 +5,7 @@
 //! use one lifecycle: send, claim, process, and complete (or drop to retry).
 //! This keeps transport recovery details out of tools and the ReAct loop.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -236,30 +236,16 @@ pub struct AgentControlResult {
 #[derive(Clone)]
 pub struct MessagingService {
     transport: Arc<dyn MessageTransport>,
-    mailbox: Arc<RwLock<Option<Arc<dyn SessionMailbox>>>>,
-    runtime: Arc<RwLock<Option<Arc<dyn MessagingRuntime>>>>,
+    mailbox: Arc<OnceLock<Arc<dyn SessionMailbox>>>,
+    runtime: Arc<OnceLock<Arc<dyn MessagingRuntime>>>,
 }
 
 impl std::fmt::Debug for MessagingService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MessagingService")
             .field("transport", &self.transport)
-            .field(
-                "has_mailbox",
-                &self
-                    .mailbox
-                    .read()
-                    .map(|guard| guard.is_some())
-                    .unwrap_or(false),
-            )
-            .field(
-                "has_runtime",
-                &self
-                    .runtime
-                    .read()
-                    .map(|guard| guard.is_some())
-                    .unwrap_or(false),
-            )
+            .field("has_mailbox", &self.mailbox.get().is_some())
+            .field("has_runtime", &self.runtime.get().is_some())
             .finish()
     }
 }
@@ -269,8 +255,8 @@ impl MessagingService {
     pub fn new(transport: Arc<dyn MessageTransport>) -> Self {
         Self {
             transport,
-            mailbox: Arc::new(RwLock::new(None)),
-            runtime: Arc::new(RwLock::new(None)),
+            mailbox: Arc::new(OnceLock::new()),
+            runtime: Arc::new(OnceLock::new()),
         }
     }
 
@@ -283,34 +269,31 @@ impl MessagingService {
     /// uses the shared JSONL adapter for all other recipients.
     pub fn with_session_mailbox(mailbox: Arc<dyn SessionMailbox>) -> Self {
         let service = Self::default_root();
-        service.set_session_mailbox(mailbox);
+        assert!(
+            service.mailbox.set(mailbox).is_ok(),
+            "new messaging mailbox binding"
+        );
         service
     }
 
-    /// Install the mailbox/runtime once the composition root has created the
-    /// session supervisor. Existing service clones observe the same port.
-    pub fn set_session_mailbox(&self, mailbox: Arc<dyn SessionMailbox>) {
-        if let Ok(mut current) = self.mailbox.write() {
-            *current = Some(mailbox);
-        }
-    }
-
-    pub fn set_runtime(&self, runtime: Arc<dyn MessagingRuntime>) {
+    /// Bind the runtime once at the composition boundary. Existing service
+    /// clones observe the same immutable capability port.
+    pub fn bind_runtime(&self, runtime: Arc<dyn MessagingRuntime>) -> anyhow::Result<()> {
         let mailbox = runtime.mailbox();
-        if let Ok(mut current) = self.mailbox.write() {
-            *current = Some(mailbox);
-        }
-        if let Ok(mut current) = self.runtime.write() {
-            *current = Some(runtime);
-        }
+        self.runtime
+            .set(runtime)
+            .map_err(|_| anyhow::anyhow!("messaging runtime is already bound"))?;
+        self.mailbox
+            .set(mailbox)
+            .map_err(|_| anyhow::anyhow!("messaging mailbox is already bound"))
     }
 
     fn mailbox(&self) -> Option<Arc<dyn SessionMailbox>> {
-        self.mailbox.read().ok().and_then(|guard| guard.clone())
+        self.mailbox.get().cloned()
     }
 
     fn runtime(&self) -> Option<Arc<dyn MessagingRuntime>> {
-        self.runtime.read().ok().and_then(|guard| guard.clone())
+        self.runtime.get().cloned()
     }
 
     /// Subscribe to delivery notifications. The signal is only a wake-up

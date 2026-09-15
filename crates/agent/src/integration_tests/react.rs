@@ -225,7 +225,7 @@ async fn truncated_text_only_response_retried_before_final() {
 async fn run_session_executes_tool_then_final_answer() {
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(EchoTool) as ToolBox)
         .await
         .unwrap();
@@ -309,14 +309,14 @@ async fn media_tool_usage_flows_to_event_and_database() {
 
     let tools = Arc::new(ToolsManager::new());
     tools
-        .authorization
+        .authorization()
         .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
         .await;
     // `media.describe` delegates to a configured vision provider, so the
     // external-network disclosure gate still applies in Autonomous mode.
     // This test exercises usage propagation after that explicit approval.
     tools
-        .authorization
+        .authorization()
         .grant(
             None,
             "media:describe",
@@ -324,7 +324,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
             haven_common::types::PermissionScope::Always,
         )
         .await;
-    tools.registry.register(media_tool).await.unwrap();
+    tools.registry().register(media_tool).await.unwrap();
     let main_client = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("I will inspect the image.".into()),
@@ -403,7 +403,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
     // is rejected with a 400.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(EchoTool) as ToolBox)
         .await
         .unwrap();
@@ -482,7 +482,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
     // re-run with the message in context.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(EchoTool) as ToolBox)
         .await
         .unwrap();
@@ -605,7 +605,7 @@ async fn run_session_injects_steering_between_tool_calls() {
     let tools = Arc::new(ToolsManager::new());
     let timing = Arc::new(TimingState::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
         .await
         .unwrap();
@@ -690,7 +690,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
     // ends Paused and the question is persisted as an assistant message.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
         .await
         .unwrap();
@@ -758,7 +758,7 @@ async fn run_session_ask_resumes_after_user_answer() {
     // supplement; the loop resumes and should reach final_answer.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
         .await
         .unwrap();
@@ -839,7 +839,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     // history should show exactly one question, one answer, one response.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
         .await
         .unwrap();
@@ -968,7 +968,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
     // session: the loop continues to the final answer.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::notify::NotifyTool) as ToolBox)
         .await
         .unwrap();
@@ -1036,7 +1036,7 @@ async fn run_session_multiple_asks_surface_all_questions() {
     // assistant message), not just the first.
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
         .await
         .unwrap();
@@ -1227,7 +1227,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
 async fn run_session_compaction_retry_on_context_exceeded() {
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(EchoTool) as ToolBox)
         .await
         .unwrap();
@@ -1452,7 +1452,7 @@ async fn continue_session_non_error_fails() {
 async fn pause_snapshot_includes_run_budget() {
     let tools = Arc::new(ToolsManager::new());
     tools
-        .registry
+        .registry()
         .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
         .await
         .unwrap();

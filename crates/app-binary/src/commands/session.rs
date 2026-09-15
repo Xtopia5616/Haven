@@ -143,7 +143,7 @@ pub async fn resolve_confirmation(
     }
     state
         .tools
-        .authorization
+        .authorization()
         .grant(
             resolution.session_id.as_deref(),
             &key,
@@ -190,7 +190,7 @@ async fn resolve_ui_confirmation(
         );
         state
             .tools
-            .authorization
+            .authorization()
             .verify_receipt_with_policy(
                 Some(&pending.session_id),
                 &pending.tool_name,
@@ -205,7 +205,7 @@ async fn resolve_ui_confirmation(
             UiConfirmationAction::Mcp { client, tool, args } => {
                 state
                     .tools
-                    .mcp_manager
+                    .mcp_manager()
                     .call_tool(
                         client,
                         tool,
@@ -218,13 +218,13 @@ async fn resolve_ui_confirmation(
             UiConfirmationAction::Skill { name, params } => {
                 let skill = state
                     .tools
-                    .skills_engine
+                    .skills_engine()
                     .get_skill(name)
                     .await
                     .ok_or_else(|| format!("skill '{}' not found", name))?;
                 state
                     .tools
-                    .skill_runner
+                    .skill_runner()
                     .read()
                     .await
                     .execute(&skill, params, tokio_util::sync::CancellationToken::new())
@@ -251,7 +251,7 @@ async fn resolve_ui_confirmation(
     }
     state
         .tools
-        .authorization
+        .authorization()
         .grant(
             Some(&pending.session_id),
             &pending.permission_key,

@@ -1,19 +1,41 @@
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
+use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::AgentLayer;
 use haven_agent::SessionSupervisor;
-use haven_common::config::{ConfigLoader, ConfigService};
+use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use haven_memory::Database;
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
+
+struct ReloadLogLevelPort {
+    handles: Vec<reload::Handle<EnvFilter, Registry>>,
+}
+
+impl haven_tools::LogLevelPort for ReloadLogLevelPort {
+    fn set_level(&self, level: &LogLevel) -> anyhow::Result<()> {
+        for handle in &self.handles {
+            if let Err(error) = handle.modify(|filter| {
+                *filter = EnvFilter::new(format!("haven={}", level.as_str()));
+            }) {
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to apply runtime log level"
+                );
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Cold-start progress exposed to the UI status chip.
 /// `loading` while MCP/skills/audio prewarm finish in the background;
@@ -63,14 +85,7 @@ impl BootstrapStatus {
 }
 
 pub struct AppState {
-    pub db: Arc<Database>,
-    pub tools: Arc<ToolsManager>,
-    pub executor: Arc<SessionSupervisor>,
-    pub agent: Arc<AgentLayer>,
-    pub pipeline: Arc<InputPipeline>,
-    pub shell: Arc<DesktopShell>,
-    pub log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
-    pub config_service: Arc<ConfigService>,
+    pub(crate) runtime: Arc<ApplicationRuntime>,
     /// The `rec-{uuid}` id of the in-flight voice recording. Set when a
     /// recording starts (button or hotkey), consumed by
     /// `finalize_transcription`, and shared by every event of the same
@@ -89,6 +104,14 @@ pub struct AppState {
     pub(crate) ui_confirmations: Arc<tokio::sync::Mutex<HashMap<String, UiConfirmationPending>>>,
 }
 
+impl Deref for AppState {
+    type Target = ApplicationRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
 impl AppState {
     pub async fn new(
         db_path: &std::path::Path,
@@ -101,26 +124,6 @@ impl AppState {
             "AppState::new phase=db elapsed={}ms",
             t0.elapsed().as_millis()
         );
-
-        let db_finalize = db.clone();
-        tokio::spawn(async move {
-            // The previous process is gone, so any session left `running` can
-            // never resume — mark it errored immediately so the user sees the
-            // interrupted state and can retry via the continue flow. This runs
-            // before any UI fetches the session list.
-            match db_finalize.finalize_orphaned_running_sessions() {
-                Ok(n) if n > 0 => {
-                    tracing::info!(
-                        "finalized {} orphaned running session(s) from previous run",
-                        n
-                    );
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::error!(error = %error, "failed to finalize orphaned running sessions");
-                }
-            }
-        });
 
         let config_service = Arc::new(ConfigService::new(config_loader));
         let cfg = config_service.snapshot()?.config;
@@ -160,20 +163,25 @@ impl AppState {
         // Bind one typed messaging runtime. It supplies both the in-process
         // SessionActor mailbox and peer lifecycle operations, so the catalog
         // never needs a mutable spawn/controller callback pair.
-        tools.set_messaging_runtime(agent.clone()).await;
-        // `memory` recall shares History/`InferenceEngine::recall_memory`.
-        {
-            let agent_for_recall = agent.clone();
-            tools
-                .set_memory_recall(std::sync::Arc::new(move |query| {
-                    let agent = agent_for_recall.clone();
-                    Box::pin(async move { agent.recall_memory_query(query).await })
-                }))
-                .await;
-        }
+        tools.bind_messaging_runtime(agent.clone())?;
+        // `memory` recall shares History/`InferenceEngine::recall_memory`
+        // through a typed capability port. The port is immutable after this
+        // composition step, so catalog rebuilds cannot retain a stale closure.
+        tools.bind_memory_recall(agent.clone())?;
 
         let pipeline = Arc::new(InputPipeline::new());
         pipeline.set_limits(&context_limits_clone);
+        let shell = Arc::new(DesktopShell::new());
+        let runtime = Arc::new(ApplicationRuntime::new(RuntimeServices {
+            db: db.clone(),
+            tools: tools.clone(),
+            executor: executor.clone(),
+            agent: agent.clone(),
+            pipeline: pipeline.clone(),
+            shell: shell.clone(),
+            log_filter_handles: filter_handles.clone(),
+            config_service: config_service.clone(),
+        }));
 
         // Periodic memory maintenance: fact decay, dedup, sensitive purge and
         // embedding pruning. Hot-path infer only extracts + bounded-embeds, so
@@ -182,10 +190,13 @@ impl AppState {
         // that as the startup pass instead of discarding it.)
         {
             let agent = agent.clone();
-            tokio::spawn(async move {
+            runtime.spawn_with_child_token("memory-maintenance", move |cancel| async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
                 loop {
-                    ticker.tick().await;
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        _ = ticker.tick() => {}
+                    }
                     if let Err(error) = agent.run_memory_maintenance().await {
                         tracing::warn!("periodic memory maintenance failed: {}", error);
                     }
@@ -199,7 +210,7 @@ impl AppState {
         // the input pipeline. On error (e.g. `mcp` provider with no server)
         // or `none`, the pipeline gets no client so transcription is disabled.
         let mcp_caller: std::sync::Arc<dyn haven_llm::McpToolCaller> =
-            std::sync::Arc::new(tools.mcp_manager.clone());
+            std::sync::Arc::new(tools.mcp_manager().clone());
         let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> = match build_stt_client(
             router.clone(),
             Some(mcp_caller),
@@ -256,14 +267,34 @@ impl AppState {
                 }
             };
 
-        let shell = Arc::new(DesktopShell::new());
+        // The previous process is gone, so any session left `running` can
+        // never resume — mark it errored immediately so the user sees the
+        // interrupted state and can retry via the continue flow. This runs
+        // before any UI fetches the session list.
+        {
+            let db_finalize = db.clone();
+            runtime.spawn("finalize-orphaned-sessions", async move {
+                match db_finalize.finalize_orphaned_running_sessions() {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(
+                            "finalized {} orphaned running session(s) from previous run",
+                            n
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(error = %error, "failed to finalize orphaned running sessions");
+                    }
+                }
+            });
+        }
 
         // Retention-based cleanup: deferred to background (non-critical).
         let retention_days = cfg.memory.history_retention_days;
         if retention_days > 0 {
             let db_retention = db.clone();
             let days = retention_days;
-            tokio::spawn(async move {
+            runtime.spawn("retention-cleanup", async move {
                 match db_retention.delete_old_sessions(days) {
                     Ok(n) if n > 0 => {
                         tracing::info!("cleaned up {} session(s) older than {} days", n, days);
@@ -280,9 +311,9 @@ impl AppState {
             let upload_ttl = std::time::Duration::from_secs(
                 u64::from(retention_days).saturating_mul(24 * 60 * 60),
             );
-            let upload_registry = tools.managed_assets.clone();
+            let upload_registry = tools.managed_assets().clone();
             let db_upload_cleanup = db.clone();
-            tokio::spawn(async move {
+            runtime.spawn("upload-retention-cleanup", async move {
                 let referenced_paths = match db_upload_cleanup.list_managed_attachment_paths() {
                     Ok(paths) => paths,
                     Err(error) => {
@@ -317,8 +348,8 @@ impl AppState {
         // state, so their cleanup is independent from history retention.
         let staging_root = haven_common::default_work_dir().join("uploads");
         let generated_root = haven_common::config::default_generated_media_dir();
-        let generated_registry = tools.managed_assets.clone();
-        tokio::spawn(async move {
+        let generated_registry = tools.managed_assets().clone();
+        runtime.spawn("stale-upload-cleanup", async move {
             match crate::commands::recording::cleanup_stale_upload_staging(staging_root).await {
                 Ok(n) if n > 0 => {
                     tracing::info!("cleaned up {} stale upload staging director(ies)", n);
@@ -353,13 +384,16 @@ impl AppState {
         let upload_ttl = std::time::Duration::from_secs(
             u64::from(retention_days.max(1)).saturating_mul(24 * 60 * 60),
         );
-        let upload_registry = tools.managed_assets.clone();
+        let upload_registry = tools.managed_assets().clone();
         let generated_root = haven_common::config::default_generated_media_dir();
-        let generated_registry = tools.managed_assets.clone();
-        tokio::spawn(async move {
+        let generated_registry = tools.managed_assets().clone();
+        runtime.spawn_with_child_token("daily-cleanup", move |cancel| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
                 if retention > 0 {
                     match db_clone.delete_old_sessions(retention) {
                         Ok(n) if n > 0 => {
@@ -443,7 +477,7 @@ impl AppState {
         // `spawn_background_init` as soon as the event bus is installed; only
         // durable pending-session recovery waits for the MCP/Skills catalog.
         let router_warm = router.clone();
-        tokio::spawn(async move {
+        runtime.spawn("llm-prewarm", async move {
             // Bound the prewarm: a slow/unreachable endpoint's health check
             // must not hold the runtime. On timeout the endpoint fails fast
             // on its first real request instead.
@@ -468,28 +502,18 @@ impl AppState {
                 .clone()
                 .unwrap_or_else(haven_common::config::LogConfig::default_log_path)
         });
-        let log_handles = filter_handles.clone();
-        let set_log_level = Some(Arc::new(move |level: String| {
-            for handle in &log_handles {
-                if let Err(error) = handle.modify(|filter| {
-                    *filter = EnvFilter::new(format!("haven={}", level));
-                }) {
-                    tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "failed to apply runtime log level"
-                    );
-                }
-            }
-        }) as Arc<dyn Fn(String) + Send + Sync>);
+        let log_level = Some(Arc::new(ReloadLogLevelPort {
+            handles: filter_handles.clone(),
+        }) as Arc<dyn haven_tools::LogLevelPort>);
         let admin_context = haven_tools::SelfToolContext {
             config_service: Some(config_service.clone()),
             db: Some(db.clone()),
             router: Some(router.clone()),
             log_path,
-            set_log_level,
+            log_level,
             // The self tool's tool_enable/tool_disable ops apply the runtime
             // change through the running ToolsManager after persisting config.
-            tools_weak: Some(Arc::downgrade(&tools)),
+            tool_control: Some(tools.tool_control_port()),
         };
 
         // Single catalog rebuild for all startup wiring (settings / shell /
@@ -518,14 +542,7 @@ impl AppState {
         );
 
         Ok(Self {
-            db,
-            tools,
-            executor,
-            agent,
-            pipeline,
-            shell,
-            log_filter_handles: filter_handles,
-            config_service,
+            runtime,
             recording_session: Arc::new(std::sync::Mutex::new(None)),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
@@ -571,49 +588,64 @@ impl AppState {
             status: BootstrapStatus::Loading.as_str().to_string(),
         });
 
-        tokio::spawn(async move {
+        self.runtime
+            .spawn_with_child_token("app-bootstrap", move |cancel| async move {
             // Audio engine + VAD worker: first recording must not pay spawn
             // latency, but window creation should not wait for it either.
             pipeline.prewarm().await;
 
-            // MCP discover + skills scan run in a task so a hung server cannot
-            // block session resume forever. `load_mcp` / restore already wait
-            // briefly for tools when the catalog is still warming.
-            let tools_bg = tools.clone();
-            let mut catalog = tokio::spawn(async move {
-                tools_bg.discover_all(&mcp_servers, &mcp_discovery).await;
-                if let Err(e) = tools_bg
-                    .skills_engine
-                    .set_config(skills_cfg_root, skills_cfg_enabled)
-                    .await
-                {
-                    tracing::warn!("skills engine initial scan failed: {e}");
-                }
-                tools_bg.rebuild_catalog().await;
-            });
-
             // Start new conversations immediately. Recovery of sessions left
             // Pending by a previous process is deferred until the catalog is
             // ready below, so restart semantics do not race an empty catalog.
-            agent.clone().start_without_pending_recovery();
+            agent
+                .clone()
+                .start_without_pending_recovery_with_cancellation(cancel.clone());
 
+            // MCP discover + skills scan run behind an explicit deadline so a
+            // hung server cannot block session resume forever. This task is
+            // directly owned by ApplicationRuntime; no detached child join
+            // handle survives shutdown.
             let catalog_finished = tokio::select! {
-                r = &mut catalog => {
-                    if let Err(e) = r {
-                        tracing::warn!("bootstrap catalog task panicked: {e}");
+                _ = cancel.cancelled() => return,
+                result = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    async {
+                        tools.discover_all(&mcp_servers, &mcp_discovery).await;
+                        if let Err(e) = tools
+                            .skills_engine()
+                            .set_config(skills_cfg_root, skills_cfg_enabled)
+                            .await
+                        {
+                            tracing::warn!("skills engine initial scan failed: {e}");
+                        }
+                        tools.rebuild_catalog().await;
                     }
-                    true
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
-                    tracing::warn!(
-                        "MCP/skills bootstrap timed out after 10s; starting session dispatcher anyway"
-                    );
-                    false
+                ) => {
+                    if result.is_err() {
+                        tracing::warn!(
+                            "MCP/skills bootstrap timed out after 10s; starting session dispatcher anyway"
+                        );
+                        false
+                    } else {
+                        true
+                    }
                 }
             };
 
-            if !catalog_finished && let Err(e) = catalog.await {
-                tracing::warn!("bootstrap catalog task panicked: {e}");
+            if cancel.is_cancelled() {
+                return;
+            }
+
+            if !catalog_finished {
+                // The timed operation was dropped above. Keep the branch
+                // explicit so the readiness transition remains observable.
+                tracing::debug!(
+                    "continuing bootstrap after the MCP/skills catalog deadline"
+                );
+            }
+
+            if cancel.is_cancelled() {
+                return;
             }
 
             match agent.recover_pending_sessions().await {
@@ -630,12 +662,16 @@ impl AppState {
                 ),
             }
 
+            if cancel.is_cancelled() {
+                return;
+            }
+
             bootstrap_ready.store(true, Ordering::Release);
             emit(AppBootstrapEvent {
                 status: BootstrapStatus::Ready.as_str().to_string(),
             });
             tracing::info!("app bootstrap ready (MCP/skills/audio prewarm finished)");
-        });
+            });
     }
 }
 
@@ -663,6 +699,42 @@ mod tests {
         assert!(cfg.session.max_steps > 0);
         assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
+    }
+
+    #[tokio::test]
+    async fn runtime_shutdown_cancels_owned_tasks_and_is_idempotent() {
+        struct DropProbe(Arc<AtomicBool>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let state = AppState::new(&dir.path().join("test.db"), vec![], loader)
+            .await
+            .unwrap();
+        let runtime = state.runtime.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_task = dropped.clone();
+
+        assert!(runtime.spawn("runtime-test-task", async move {
+            let _probe = DropProbe(dropped_task);
+            std::future::pending::<()>().await;
+        }));
+
+        tokio::task::yield_now().await;
+        runtime.shutdown().await;
+
+        assert!(runtime.cancellation_token().is_cancelled());
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(!runtime.spawn("late-task", async {}));
+
+        // The second call is intentionally a no-op: teardown is safe to call
+        // from both an exit hook and an owning test fixture.
+        runtime.teardown().await;
     }
 
     #[tokio::test]
