@@ -13,7 +13,12 @@ fn tool() -> WindowTool {
         haven_common::types::new_id("file")
     ));
     WindowTool::new(registry)
-        .with_media_tool(Arc::new(media.with_capabilities(true, false)))
+        .with_media_tool(Arc::new(media.with_capabilities(
+            crate::builtin::media::MediaCapabilities {
+                describe: true,
+                ..Default::default()
+            },
+        )))
         .with_capture_root(capture_root)
 }
 

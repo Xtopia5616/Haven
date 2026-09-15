@@ -204,32 +204,19 @@ impl AppState {
 
         let stt_config = &cfg.media.stt;
 
-        // Build the STT client for the configured provider and wire it into
-        // the input pipeline. On error (e.g. `mcp` provider with no server)
-        // or `none`, the pipeline gets no client so transcription is disabled.
+        // Build the dedicated STT client for the media runtime. On error
+        // (e.g. `mcp` provider with no server) or `none`, the optional
+        // transcription capability degrades without affecting capture.
         let mcp_caller: std::sync::Arc<dyn haven_llm::McpToolCaller> =
             std::sync::Arc::new(tools.mcp_manager().clone());
-        let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> = match build_stt_client(
-            router.clone(),
-            Some(mcp_caller),
-            stt_config,
-            &cfg.llm.providers,
-        ) {
-            Ok(client) => client.map(std::sync::Arc::from),
-            Err(e) => {
-                tracing::warn!("STT client build failed, transcription disabled: {e}");
-                None
-            }
-        };
-        pipeline.set_stt_client(stt_client.clone()).await;
-        // `provider == "llm"`: hotkey transcription uses the same
-        // `LlmRouter::transcribe_audio` path as the model-facing media tool.
-        if stt_config.provider == "llm" {
-            pipeline.set_stt_router(Some(router.clone())).await;
-        } else {
-            pipeline.set_stt_router(None).await;
-        }
-
+        let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> =
+            match build_stt_client(Some(mcp_caller), stt_config, &cfg.llm.providers) {
+                Ok(client) => client.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!("STT client build failed, transcription disabled: {e}");
+                    None
+                }
+            };
         // Build the TTS client once for the model-facing `media.speak` operation
         // while startup wiring is assembled below. A failed optional
         // capability degrades only that capability and remains observable in

@@ -106,7 +106,8 @@ pub use builtin::{
     AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces, AgentTool,
     ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
     ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
-    LogLevelOutput, McpOperationArgs, ScheduleMode, SkillsOperationArgs, ToolsOperationArgs,
+    LogLevelOutput, McpOperationArgs, MediaTranscriptionResult, MediaTranscriptionStatus,
+    ScheduleMode, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use circuit::ToolCircuitRegistry;
 pub use haven_common::types::CapabilityScope;
@@ -754,25 +755,69 @@ impl ToolsManager {
         self.runtime.tts_client.read().await.is_some()
     }
 
+    /// Whether the shared media transcription boundary currently has a live
+    /// route. This is the app-facing gate for voice ingress; capture itself is
+    /// owned by `haven-input` and is intentionally not consulted here.
+    pub async fn transcription_available(&self) -> bool {
+        let router = self.runtime.router.read().await.clone();
+        let stt_client = self.runtime.stt_client.read().await.clone();
+        builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some())
+            .await
+            .transcribe
+    }
+
+    /// Transcribe app-captured WAV data through the same media provider
+    /// policy used by `media.transcribe`: dedicated STT first, then the LLM
+    /// route when the dedicated result is unusable. The input crate never
+    /// sees provider clients or fallback decisions.
+    pub async fn transcribe_recording(
+        &self,
+        wav_data: &[u8],
+        cancel: CancellationToken,
+    ) -> builtin::MediaTranscriptionResult {
+        let router = self.runtime.router.read().await.clone();
+        let stt_client = self.runtime.stt_client.read().await.clone();
+        let capabilities =
+            builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
+        if !capabilities.transcribe {
+            return builtin::MediaTranscriptionResult::unavailable(
+                "No speech-to-text provider is configured.",
+            );
+        }
+        let media_config = self.runtime.media_config.read().await.clone();
+        let limits = self.core.context_limits.read().await;
+        let timeout_secs = limits.file_summary_timeout_secs;
+        let max_output_chars = limits.max_observation_chars;
+        drop(limits);
+        builtin::media::MediaTranscriber::new(
+            router,
+            stt_client,
+            timeout_secs,
+            media_config.stt.min_confidence,
+            max_output_chars,
+        )
+        .transcribe_wav(wav_data, &cancel)
+        .await
+    }
+
     /// Return the same live capability decisions used while rebuilding the
     /// builtin catalog. Keeping this at the manager boundary prevents the
     /// prompt snapshot from advertising a role that the tool schema removed.
     pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
         let router = self.runtime.router.read().await.clone();
         let stt_client = self.runtime.stt_client.read().await.clone();
-        let (vision, transcription) =
+        let media_capabilities =
             builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
+        let vision = media_capabilities.describe;
+        let transcription = media_capabilities.transcribe;
         let audio_pipeline = self.runtime.audio_pipeline.read().await.clone();
         // Capturing and transcribing are separate capabilities: a recording
         // must remain available even when STT is temporarily unconfigured so
         // it can still produce an asset for a later `media.transcribe` call.
-        // Match the same configured-pipeline check used by builtin
-        // registration so the prompt cannot advertise a pruned operation.
-        let recording = if let Some(pipeline) = audio_pipeline.as_ref() {
-            pipeline.recording_configured().await
-        } else {
-            false
-        };
+        // Recording is a capture capability. It remains available without an
+        // STT provider so a managed audio asset can be retained for later
+        // derivation.
+        let recording = audio_pipeline.is_some();
         let image_generation = self.runtime.image_gen_client.read().await.is_some();
         let tts = self.runtime.tts_client.read().await.is_some();
         let mcp_search_available = self

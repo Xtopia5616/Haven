@@ -1,11 +1,12 @@
-//! Input pipeline: recording orchestration, VAD, transcription and the
-//! Audio capture and microphone recording lifecycle.
+//! Input pipeline: recording orchestration, VAD, and the audio capture
+//! lifecycle.
 //!
 //! The pipeline owns the high-level recording state machine; the actual
 //! audio capture lives in [`capture`] (the capture engine thread + CPAL
 //! backend). Media interpretation and provider fallback live in the
 //! model-facing `haven-tools::builtin::media` runtime; this crate only owns
-//! capture, VAD, recording lifecycle, and the injected STT route.
+//! capture, VAD, and recording lifecycle. Provider selection, transcription,
+//! and fallback stay outside the acquisition boundary.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -19,7 +20,6 @@ use tokio_util::sync::CancellationToken;
 
 use capture::{EngineHandle, TARGET_SAMPLE_RATE};
 use haven_common::hooks::OnceHandler;
-use haven_llm::SttClient;
 
 pub use haven_common::config::AudioConfig;
 
@@ -32,6 +32,20 @@ pub use wav::encode_wav_to_vec;
 
 const VAD_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
 const RECORDING_LOOP_INTERVAL: Duration = Duration::from_millis(30);
+const DIGITAL_SILENCE_FLOOR: f32 = 1e-4;
+
+fn capture_error_for(mode: LoopMode, pcm: &[f32], duration_ms: u64) -> Option<String> {
+    if !matches!(mode, LoopMode::Normal) || duration_ms < 200 || pcm.is_empty() {
+        return None;
+    }
+    let rms = (pcm.iter().map(|sample| sample * sample).sum::<f32>() / pcm.len() as f32).sqrt();
+    if rms < DIGITAL_SILENCE_FLOOR {
+        tracing::error!("captured audio is digital silence (RMS={rms:.6})");
+        Some("麦克风没有检测到声音，请检查系统麦克风是否被静音或已禁用".into())
+    } else {
+        None
+    }
+}
 
 fn lock_std_or_recover<'a, T>(
     lock: &'a StdMutex<T>,
@@ -89,10 +103,10 @@ pub struct RecordingResult {
     pub pcm: Vec<f32>,
     pub reason: RecordingReason,
     pub duration_ms: u64,
-    pub transcript: Option<String>,
-    /// When transcription was attempted but failed, the underlying error
-    /// message. Surfaced to the UI instead of a generic failure notice.
-    pub transcript_error: Option<String>,
+    /// Capture-side failure, if the device or VAD could not produce a usable
+    /// recording. Provider and transcription failures are owned by the media
+    /// runtime and never cross back into this acquisition result.
+    pub capture_error: Option<String>,
 }
 
 impl Default for RecordingResult {
@@ -101,8 +115,7 @@ impl Default for RecordingResult {
             pcm: Vec::new(),
             reason: RecordingReason::Manual,
             duration_ms: 0,
-            transcript: None,
-            transcript_error: None,
+            capture_error: None,
         }
     }
 }
@@ -120,12 +133,6 @@ pub struct InputPipeline {
     handler: OnceHandler<dyn InputHandler>,
     cancel_token: StdMutex<Option<CancellationToken>>,
     result_rx: StdMutex<Option<tokio::sync::oneshot::Receiver<RecordingResult>>>,
-    /// Dedicated STT providers (cloud / MCP). Cleared when provider is `llm`
-    /// or `none`.
-    stt_client: Arc<Mutex<Option<Arc<dyn SttClient>>>>,
-    /// Shared LLM path (`media.stt.provider == "llm"`): the same
-    /// [`haven_llm::LlmRouter::transcribe_audio`] used by `media.transcribe`.
-    stt_router: Arc<Mutex<Option<Arc<haven_llm::LlmRouter>>>>,
 }
 
 impl InputPipeline {
@@ -141,8 +148,6 @@ impl InputPipeline {
             handler: OnceHandler::new(),
             cancel_token: StdMutex::new(None),
             result_rx: StdMutex::new(None),
-            stt_client: Arc::new(Mutex::new(None)),
-            stt_router: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -164,24 +169,6 @@ impl InputPipeline {
     pub fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
         *lock_std_or_recover(&self.ring_buffer_secs, "ring_buffer_secs") =
             limits.input_ring_buffer_secs;
-    }
-
-    /// Install or clear the dedicated STT client (cloud / MCP). Mutually
-    /// exclusive with [`Self::set_stt_router`] at the app layer.
-    pub async fn set_stt_client(&self, client: Option<Arc<dyn SttClient>>) {
-        *self.stt_client.lock().await = client;
-    }
-
-    /// Install or clear the shared LLM STT path (`provider == "llm"`).
-    pub async fn set_stt_router(&self, router: Option<Arc<haven_llm::LlmRouter>>) {
-        *self.stt_router.lock().await = router;
-    }
-
-    /// Whether speech-to-text is configured (dedicated client or LLM router).
-    /// Used by callers that should only record when transcription can
-    /// actually produce a transcript (e.g. the wake hotkey).
-    pub async fn recording_configured(&self) -> bool {
-        self.stt_client.lock().await.is_some() || self.stt_router.lock().await.is_some()
     }
 
     /// Start the capture engine at app startup so the first recording pays no
@@ -365,12 +352,13 @@ impl InputPipeline {
         loop {
             if cancel.is_cancelled() {
                 let elapsed = start.elapsed();
+                let capture_error =
+                    capture_error_for(data.mode, &accumulated_pcm, elapsed.as_millis() as u64);
                 return RecordingResult {
+                    capture_error,
                     pcm: accumulated_pcm,
                     reason: RecordingReason::Manual,
                     duration_ms: elapsed.as_millis() as u64,
-                    transcript: None,
-                    transcript_error: None,
                 };
             }
 
@@ -389,14 +377,13 @@ impl InputPipeline {
                     pcm: accumulated_pcm,
                     reason: RecordingReason::Manual,
                     duration_ms: elapsed.as_millis() as u64,
-                    transcript: None,
-                    transcript_error: Some("录音设备发生错误，请检查麦克风连接后重试".into()),
+                    capture_error: Some("录音设备发生错误，请检查麦克风连接后重试".into()),
                 };
             }
 
             // The engine aborted the recording: the capture delivered pure
             // digital silence for the opening window. Stop immediately — the
-            // transcribe step reports the error and the request is never sent.
+            // capture result reports the error and no provider is contacted.
             if data.silent_abort.load(Ordering::SeqCst) {
                 tracing::warn!("recording aborted: capture delivered no signal");
                 let elapsed = start.elapsed();
@@ -404,8 +391,7 @@ impl InputPipeline {
                     pcm: accumulated_pcm,
                     reason: RecordingReason::Manual,
                     duration_ms: elapsed.as_millis() as u64,
-                    transcript: None,
-                    transcript_error: Some(
+                    capture_error: Some(
                         "录音没有收到麦克风信号，请检查系统麦克风是否被静音或已禁用".into(),
                     ),
                 };
@@ -418,12 +404,13 @@ impl InputPipeline {
                     notify_auto_stop(&data.handler);
                 }
                 let elapsed = start.elapsed();
+                let capture_error =
+                    capture_error_for(data.mode, &accumulated_pcm, elapsed.as_millis() as u64);
                 return RecordingResult {
+                    capture_error,
                     pcm: accumulated_pcm,
                     reason: RecordingReason::MaxDuration,
                     duration_ms: elapsed.as_millis() as u64,
-                    transcript: None,
-                    transcript_error: None,
                 };
             }
 
@@ -452,12 +439,16 @@ impl InputPipeline {
                         // builds) cannot stall the stop path.
                         if cancel.is_cancelled() {
                             let elapsed = start.elapsed();
+                            let capture_error = capture_error_for(
+                                data.mode,
+                                &accumulated_pcm,
+                                elapsed.as_millis() as u64,
+                            );
                             return RecordingResult {
+                                capture_error,
                                 pcm: accumulated_pcm,
                                 reason: RecordingReason::Manual,
                                 duration_ms: elapsed.as_millis() as u64,
-                                transcript: None,
-                                transcript_error: None,
                             };
                         }
                         let frame = &vad_input[offset..offset + vad::FRAME_SIZE];
@@ -474,12 +465,16 @@ impl InputPipeline {
                                     p = w.infer(frame_owned) => p,
                                     _ = cancel.cancelled() => {
                                         let elapsed = start.elapsed();
+                                        let capture_error = capture_error_for(
+                                            data.mode,
+                                            &accumulated_pcm,
+                                            elapsed.as_millis() as u64,
+                                        );
                                         return RecordingResult {
+                                            capture_error,
                                             pcm: accumulated_pcm,
                                             reason: RecordingReason::Manual,
                                             duration_ms: elapsed.as_millis() as u64,
-                                            transcript: None,
-                                            transcript_error: None,
                                         };
                                     }
                                 }
@@ -495,8 +490,7 @@ impl InputPipeline {
                                     pcm: accumulated_pcm,
                                     reason: RecordingReason::Manual,
                                     duration_ms: elapsed.as_millis() as u64,
-                                    transcript: None,
-                                    transcript_error: Some(format!("VAD worker failed: {error}")),
+                                    capture_error: Some(format!("VAD worker failed: {error}")),
                                 };
                             }
                         };
@@ -520,12 +514,16 @@ impl InputPipeline {
                         if signal == vad::VadSignal::AutoStop {
                             notify_auto_stop(&data.handler);
                             let elapsed = start.elapsed();
+                            let capture_error = capture_error_for(
+                                data.mode,
+                                &accumulated_pcm,
+                                elapsed.as_millis() as u64,
+                            );
                             return RecordingResult {
+                                capture_error,
                                 pcm: accumulated_pcm,
                                 reason: RecordingReason::Silence,
                                 duration_ms: elapsed.as_millis() as u64,
-                                transcript: None,
-                                transcript_error: None,
                             };
                         }
                     }
@@ -596,103 +594,12 @@ impl InputPipeline {
         Ok(())
     }
 
-    /// Stop the audio capture and return the captured PCM. Runs no STT and
-    /// leaves `transcript`/`transcript_error` unset.
+    /// Stop the audio capture and return the captured PCM. No provider or
+    /// transcription work is performed at this boundary.
     pub async fn stop_capture(&self) -> Result<RecordingResult> {
         let result = self.stop_capture_inner().await;
         *self.state.lock().await = RecordingState::Pending;
         result
-    }
-
-    /// Run STT on a previously-captured result, mutating `transcript` /
-    /// `transcript_error` in place. Returns usage for an LLM-backed route;
-    /// native STT providers intentionally return no token usage. Safe to call
-    /// after `stop_capture`.
-    pub async fn transcribe(&self, result: &mut RecordingResult) -> Vec<haven_llm::LlmCallUsage> {
-        if result.pcm.is_empty() {
-            return Vec::new();
-        }
-        // Diagnostic: report how much audio was captured and whether the
-        // opening seconds actually carry signal.
-        let head_secs = 5u64.min(result.duration_ms / 1000 + 1);
-        let head_samples = (head_secs as usize * TARGET_SAMPLE_RATE as usize).min(result.pcm.len());
-        let head = &result.pcm[..head_samples];
-        let rms = (head.iter().map(|s| s * s).sum::<f32>() / head.len() as f32).sqrt();
-        tracing::info!(
-            "captured audio: {:.1}s, {} samples, head({}s) RMS={:.4}",
-            result.duration_ms as f64 / 1000.0,
-            result.pcm.len(),
-            head_secs,
-            rms
-        );
-
-        // Silent-capture guard: if the whole recording is below the signal
-        // floor, the microphone delivered nothing (muted / disabled / dead
-        // effects chain). Surface an explicit error so the caller shows it
-        // and does NOT submit a request — an all-zero clip must never
-        // silently vanish or be transcribed. The threshold is set above a
-        // quiet room's noise floor (~-80 dBFS) so only true silence trips it.
-        if result.duration_ms >= 200 {
-            let total_rms =
-                (result.pcm.iter().map(|s| s * s).sum::<f32>() / result.pcm.len() as f32).sqrt();
-            if total_rms < 1e-4 {
-                let msg = "麦克风没有检测到声音，请检查系统麦克风是否被静音或已禁用".to_string();
-                tracing::error!("captured audio is digital silence (RMS={total_rms:.6}): {msg}");
-                result.transcript_error = Some(msg);
-                return Vec::new();
-            }
-        }
-
-        // Clone backends out of the locks: the STT call is a network
-        // round-trip, and holding the mutex across it would block
-        // `set_stt_client` / `set_stt_router` for the whole transcription.
-        let client = self.stt_client.lock().await.clone();
-        let router = self.stt_router.lock().await.clone();
-        // `result.pcm` is always the resampled mono stream at TARGET_SAMPLE_RATE.
-        let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
-        let mut llm_usage = Vec::new();
-
-        let stt_result = if let Some(client) = client {
-            client.transcribe(&wav).await
-        } else if let Some(router) = router {
-            let role = router.stt_role().await;
-            let started = std::time::Instant::now();
-            let response = router.transcribe_audio(&wav).await;
-            if let Ok(stt) = &response
-                && let Some(role) = role
-                && let Some(usage) = stt.usage.clone()
-            {
-                llm_usage.push(haven_llm::LlmCallUsage {
-                    role,
-                    usage,
-                    model: stt.model.clone(),
-                    duration_ms: Some(started.elapsed().as_millis() as u64),
-                });
-            }
-            response.map_err(|e| anyhow::anyhow!(e))
-        } else {
-            result.transcript_error =
-                Some("未配置 STT 服务（设置 → 输入 → Voice → STT Provider）".into());
-            return Vec::new();
-        };
-
-        match stt_result {
-            Ok(stt) => {
-                if !stt.text.trim().is_empty() {
-                    result.transcript = Some(stt.text);
-                } else {
-                    tracing::warn!(
-                        "STT returned an empty transcription ({}s of audio); skipping — no speech detected",
-                        result.duration_ms / 1000
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("STT transcription failed: {}", e);
-                result.transcript_error = Some(e.to_string());
-            }
-        }
-        llm_usage
     }
 
     async fn stop_capture_inner(&self) -> Result<RecordingResult> {
@@ -944,29 +851,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_stt_client() {
-        struct DummySttClient;
-        #[async_trait::async_trait]
-        impl SttClient for DummySttClient {
-            async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
-                Ok(haven_llm::SttResult {
-                    text: "dummy".into(),
-                    confidence: None,
-                    usage: None,
-                    model: None,
-                })
-            }
-        }
-        let pipeline = InputPipeline::new();
-        pipeline
-            .set_stt_client(Some(Arc::new(DummySttClient)))
-            .await;
-        assert!(pipeline.stt_client.lock().await.is_some());
-        pipeline.set_stt_client(None).await;
-        assert!(pipeline.stt_client.lock().await.is_none());
-    }
-
-    #[tokio::test]
     async fn test_set_handler() {
         struct StopHandler;
         #[async_trait]
@@ -1047,41 +931,27 @@ mod tests {
             pcm: vec![0.1, -0.2],
             reason: RecordingReason::Manual,
             duration_ms: 0,
-            transcript: None,
-            transcript_error: None,
+            capture_error: None,
         };
         assert_eq!(result.pcm.len(), 2);
         assert_eq!(result.reason, RecordingReason::Manual);
-        assert!(result.transcript.is_none());
     }
 
-    #[tokio::test]
-    async fn test_transcribe_skips_empty_text() {
-        struct EmptySttClient;
-        #[async_trait::async_trait]
-        impl SttClient for EmptySttClient {
-            async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
-                Ok(haven_llm::SttResult {
-                    text: "   ".into(),
-                    confidence: None,
-                    usage: None,
-                    model: None,
-                })
-            }
-        }
-        let pipeline = InputPipeline::new();
-        pipeline
-            .set_stt_client(Some(Arc::new(EmptySttClient)))
-            .await;
-        let mut result = RecordingResult {
-            pcm: vec![0.0; 160],
-            reason: RecordingReason::Manual,
-            duration_ms: 10,
-            transcript: None,
-            transcript_error: None,
-        };
-        let _ = pipeline.transcribe(&mut result).await;
-        assert!(result.transcript.is_none());
-        assert!(result.transcript_error.is_none());
+    #[test]
+    fn digital_silence_is_a_capture_error_only_for_voice_ingress() {
+        let silence = vec![0.0; 4_000];
+        assert!(capture_error_for(LoopMode::Normal, &silence, 250).is_some());
+        assert!(
+            capture_error_for(
+                LoopMode::Timed {
+                    duration: Duration::from_secs(1)
+                },
+                &silence,
+                250
+            )
+            .is_none()
+        );
+        assert!(capture_error_for(LoopMode::Normal, &silence, 100).is_none());
+        assert!(capture_error_for(LoopMode::Normal, &[0.01, -0.01], 250).is_none());
     }
 }

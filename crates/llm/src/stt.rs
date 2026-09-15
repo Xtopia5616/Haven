@@ -5,8 +5,8 @@
 //! consumer-facing factory (the STT counterpart of `adapters::adapter_for`):
 //! - `none`: no client
 //! - `mcp`: route through an MCP server exposing `stt.transcribe`
-//! - `llm`: no dedicated client — InputPipeline and the model-facing media
-//!   tool call [`LlmRouter::transcribe_audio`] (same single-shot path as OCR `llm`)
+//! - `llm`: no dedicated client — the model-facing media runtime calls
+//!   [`LlmRouter::transcribe_audio`] (same single-shot path as OCR `llm`)
 //! - a name from `llm.providers`: credentials + backend (openai/groq/gemini/
 //!   deepgram/assemblyai) are taken from that provider
 //!
@@ -148,13 +148,10 @@ fn stt_backend_for(p: &ProviderConfig) -> Result<&'static str> {
 /// (required only for the `mcp` provider). Dedicated cloud providers are
 /// dispatched through the same [`adapter_for`] path as chat endpoints.
 pub fn build_stt_client(
-    _router: Arc<LlmRouter>,
     mcp: Option<Arc<dyn McpToolCaller>>,
     cfg: &SttConfig,
     providers: &[ProviderConfig],
 ) -> Result<Option<Box<dyn SttClient>>> {
-    // `_router` is unused: `provider == "llm"` is wired through
-    // InputPipeline::set_stt_router / the media tool instead.
     let resolved = resolve_stt_config(cfg, providers)?;
     let client: Box<dyn SttClient> = match resolved.provider.as_str() {
         "none" | "llm" => return Ok(None),
@@ -627,20 +624,19 @@ mod tests {
             provider: "none".into(),
             ..Default::default()
         };
-        let router = mock_router("unused");
         let mcp: Arc<dyn McpToolCaller> = Arc::new(NoopMcpCaller);
-        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[]).unwrap();
+        let client = build_stt_client(Some(mcp.clone()), &cfg, &[]).unwrap();
         assert!(client.is_none());
 
         let cfg = SttConfig {
             provider: "llm".into(),
             ..Default::default()
         };
-        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[]).unwrap();
+        let client = build_stt_client(Some(mcp.clone()), &cfg, &[]).unwrap();
         assert!(client.is_none(), "llm provider uses router path, no client");
 
         let cfg = test_stt_cfg("mcp");
-        let err = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[])
+        let err = build_stt_client(Some(mcp.clone()), &cfg, &[])
             .err()
             .expect("expected mcp without server to fail");
         assert!(err.to_string().contains("mcp_server"));
@@ -650,7 +646,7 @@ mod tests {
             mcp_server: Some("svc".into()),
             ..Default::default()
         };
-        let err = build_stt_client(router.clone(), None, &cfg, &[])
+        let err = build_stt_client(None, &cfg, &[])
             .err()
             .expect("expected mcp without caller to fail");
         assert!(err.to_string().contains("MCP caller"));
@@ -666,8 +662,7 @@ mod tests {
                 api_key: "test-key".into(),
                 ..Default::default()
             }];
-            let client =
-                build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &providers).unwrap();
+            let client = build_stt_client(Some(mcp.clone()), &cfg, &providers).unwrap();
             assert!(
                 client.is_some(),
                 "provider {provider} should yield a client"
@@ -678,7 +673,7 @@ mod tests {
     #[test]
     fn build_stt_client_unknown_provider_errors() {
         let cfg = test_stt_cfg("not-a-provider");
-        let err = build_stt_client(mock_router("unused"), None, &cfg, &[])
+        let err = build_stt_client(None, &cfg, &[])
             .err()
             .expect("expected unknown provider to fail");
         assert!(err.to_string().contains("unknown provider"));

@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::ManagedAsset;
 use crate::document::supports_document_path;
 
+use super::MediaCapabilities;
 use super::MediaOperation;
 
 /// Coarse media classification shared by the media tool and window output
@@ -46,17 +47,13 @@ pub(crate) fn model_media_reference_with_capabilities(
     asset: &ManagedAsset,
     representation: MediaRepresentationKind,
     content: Option<&str>,
-    describe_available: bool,
-    ocr_available: bool,
-    transcribe_available: bool,
+    capabilities: MediaCapabilities,
 ) -> Value {
     serde_json::to_value(media_reference_with_capabilities(
         asset,
         representation,
         content,
-        describe_available,
-        ocr_available,
-        transcribe_available,
+        capabilities,
     ))
     .expect("media reference is serializable")
 }
@@ -65,22 +62,20 @@ pub(crate) fn media_reference_with_capabilities(
     asset: &ManagedAsset,
     representation: MediaRepresentationKind,
     content: Option<&str>,
-    describe_available: bool,
-    ocr_available: bool,
-    transcribe_available: bool,
+    capabilities: MediaCapabilities,
 ) -> MediaReference {
     let (modality, file_kind) = classify_media(asset);
     let mut available_representations = vec![MediaRepresentationKind::ManagedFileRef];
     match modality {
         MediaType::Image => {
-            if describe_available {
+            if capabilities.describe {
                 available_representations.push(MediaRepresentationKind::ImageDescription);
             }
-            if ocr_available {
+            if capabilities.ocr {
                 available_representations.push(MediaRepresentationKind::OcrText);
             }
         }
-        MediaType::Audio if transcribe_available => {
+        MediaType::Audio if capabilities.transcribe => {
             available_representations.push(MediaRepresentationKind::Transcript);
         }
         MediaType::Document if supports_document_path(&asset.path) => {
@@ -92,13 +87,13 @@ pub(crate) fn media_reference_with_capabilities(
         available_representations.push(representation);
     }
     let recommended_next = match (representation, modality) {
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Image) if describe_available => {
+        (MediaRepresentationKind::ManagedFileRef, MediaType::Image) if capabilities.describe => {
             Some("media.describe")
         }
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Image) if ocr_available => {
+        (MediaRepresentationKind::ManagedFileRef, MediaType::Image) if capabilities.ocr => {
             Some("media.ocr")
         }
-        (MediaRepresentationKind::ManagedFileRef, MediaType::Audio) if transcribe_available => {
+        (MediaRepresentationKind::ManagedFileRef, MediaType::Audio) if capabilities.transcribe => {
             Some("media.transcribe")
         }
         (MediaRepresentationKind::ManagedFileRef, MediaType::Video) => None,
@@ -128,18 +123,14 @@ pub(crate) fn media_result_envelope(
     asset: Option<&ManagedAsset>,
     representation: Option<MediaRepresentationKind>,
     content: Option<&str>,
-    describe_available: bool,
-    ocr_available: bool,
-    transcribe_available: bool,
+    capabilities: MediaCapabilities,
 ) -> Value {
     media_result_envelope_named(
         operation_name(operation),
         asset,
         representation,
         content,
-        describe_available,
-        ocr_available,
-        transcribe_available,
+        capabilities,
     )
 }
 
@@ -148,9 +139,7 @@ pub(crate) fn media_result_envelope_named(
     asset: Option<&ManagedAsset>,
     representation: Option<MediaRepresentationKind>,
     content: Option<&str>,
-    describe_available: bool,
-    ocr_available: bool,
-    transcribe_available: bool,
+    capabilities: MediaCapabilities,
 ) -> Value {
     let result = if let Some(asset) = asset {
         MediaResult::asset(
@@ -159,9 +148,7 @@ pub(crate) fn media_result_envelope_named(
                 asset,
                 representation.unwrap_or(MediaRepresentationKind::ManagedFileRef),
                 content,
-                describe_available,
-                ocr_available,
-                transcribe_available,
+                capabilities,
             ),
             representation,
         )

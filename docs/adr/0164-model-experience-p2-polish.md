@@ -29,7 +29,7 @@ observation 和受管媒体资产边界，但模型在首层索引、媒体结�
 5. runtime snapshot 只报告实时 capability 状态：provider/MCP web search、vision、
    image generation、STT、录音和 TTS。它不再把模型名称、endpoint slot 配置或
    router 存在性直接呈现为模型能力；录音状态与 builtin registration 使用同一份
-   configured-pipeline 判断。
+   capture-pipeline 判断，录音与 STT 保持独立。
 
 ## 替代方案
 

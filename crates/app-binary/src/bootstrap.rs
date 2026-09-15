@@ -538,7 +538,7 @@ pub(crate) fn run() {
                     let state = app.state::<Arc<AppState>>();
                     let runtime = state.runtime.clone();
                     let shell = state.shell.clone();
-                    let pipeline = state.pipeline.clone();
+                    let tools = state.tools.clone();
                     let app_h = app.clone();
                     let pressed = event.state == ShortcutState::Pressed;
                     // `spawn` (unlike `block_on`) is safe from any thread, so a
@@ -556,9 +556,10 @@ pub(crate) fn run() {
                             log_ignored_result!("hotkey.show", w.show());
                             log_ignored_result!("hotkey.set_focus", w.set_focus());
                         }
-                        // 未配置录音（STT 不可用）时，快捷键仅唤醒窗口，不尝试
-                        // 开始录音，避免无意义的录音错误提示。
-                        if !pipeline.recording_configured().await {
+                        // Voice ingress needs a transcription route, but this
+                        // capability gate belongs to the media runtime rather
+                        // than the capture pipeline.
+                        if !tools.transcription_available().await {
                             return;
                         }
                         if shell_state.hold_mode {

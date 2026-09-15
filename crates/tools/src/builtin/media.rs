@@ -18,6 +18,33 @@ use crate::{ManagedAssetRegistry, OperationIdempotency, Tool, ToolConcurrency, T
 
 use super::media_audio::AudioRuntime;
 
+/// Live capability snapshot shared by the media schema, result references,
+/// and prompt/runtime reporting. Capture and transcription intentionally have
+/// separate bits: producing an audio asset must not depend on an STT route.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MediaCapabilities {
+    pub describe: bool,
+    pub ocr: bool,
+    pub transcribe: bool,
+    pub generate: bool,
+    pub record: bool,
+    pub speak: bool,
+}
+
+impl MediaCapabilities {
+    pub(crate) fn allows(self, operation: &str) -> bool {
+        match operation {
+            "describe" => self.describe,
+            "ocr" => self.ocr,
+            "transcribe" => self.transcribe,
+            "generate" => self.generate,
+            "record" => self.record,
+            "speak" => self.speak,
+            _ => true,
+        }
+    }
+}
+
 const MAX_FOCUS_CHARS: usize = 2_000;
 const MAX_GENERATION_PROMPT_CHARS: usize = 4_000;
 
@@ -34,6 +61,8 @@ mod media_reference;
 mod tests;
 
 pub(crate) use media_asset::register_path_asset;
+pub(crate) use media_content::MediaTranscriber;
+pub use media_content::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub(crate) use media_generation::register_generated_asset;
 pub(crate) use media_reference::classify_media;
 
@@ -177,18 +206,12 @@ pub struct MediaParams {
 
 pub struct MediaTool {
     router: Option<Arc<LlmRouter>>,
-    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    transcriber: Arc<media_content::MediaTranscriber>,
     ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
     image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
-    describe_available: bool,
-    ocr_available: bool,
-    transcribe_available: bool,
-    generate_available: bool,
-    record_available: bool,
-    tts_available: bool,
+    capabilities: MediaCapabilities,
     pub(crate) audio_runtime: Arc<AudioRuntime>,
     ocr_min_confidence: f32,
-    stt_min_confidence: f32,
     managed_assets: ManagedAssetRegistry,
     max_bytes: u64,
     timeout_secs: u64,
@@ -205,21 +228,23 @@ impl MediaTool {
     ) -> Self {
         let has_router = router.is_some();
         Self {
+            transcriber: Arc::new(media_content::MediaTranscriber::new(
+                router.clone(),
+                None,
+                timeout_secs,
+                0.0,
+                max_output_chars.max(1),
+            )),
             router,
-            stt_client: None,
             ocr_client: None,
             image_gen_client: None,
-            describe_available: has_router,
-            // OCR is a dedicated capability. A router may support text-only
-            // requests, so it must never make OCR appear available by itself.
-            ocr_available: false,
-            transcribe_available: has_router,
-            generate_available: false,
-            record_available: false,
-            tts_available: false,
+            capabilities: MediaCapabilities {
+                describe: has_router,
+                transcribe: has_router,
+                ..MediaCapabilities::default()
+            },
             audio_runtime: Arc::new(AudioRuntime::with_tts(None, None)),
             ocr_min_confidence: 0.0,
-            stt_min_confidence: 0.0,
             managed_assets,
             max_bytes,
             timeout_secs,
@@ -227,20 +252,14 @@ impl MediaTool {
         }
     }
 
-    pub(crate) fn with_capabilities(
-        mut self,
-        describe_available: bool,
-        transcribe_available: bool,
-    ) -> Self {
-        self.describe_available = describe_available;
-        // OCR is deliberately independent from the vision description route.
-        // The dedicated OCR client is the only supported OCR capability until
-        // a renderer-backed OCR provider is installed.
-        self.ocr_available = self.ocr_client.is_some();
-        // Keep the schema truthful even when callers apply capability
-        // overrides after installing the dedicated STT client. The client is
-        // the authoritative live route for audio transcription.
-        self.transcribe_available = transcribe_available || self.stt_client.is_some();
+    pub(crate) fn with_capabilities(mut self, capabilities: MediaCapabilities) -> Self {
+        self.capabilities = MediaCapabilities {
+            // A live dedicated client is an authoritative transcription
+            // route even when a caller supplies a partial snapshot.
+            transcribe: capabilities.transcribe || self.transcriber.has_stt_client(),
+            ocr: capabilities.ocr || self.ocr_client.is_some(),
+            ..capabilities
+        };
         self
     }
 
@@ -248,10 +267,12 @@ impl MediaTool {
         mut self,
         stt_client: Option<Arc<dyn haven_llm::SttClient>>,
     ) -> Self {
-        if stt_client.is_some() {
-            self.transcribe_available = true;
-        }
-        self.stt_client = stt_client;
+        self.transcriber = Arc::new(
+            self.transcriber
+                .as_ref()
+                .clone()
+                .with_stt_client(stt_client),
+        );
         self
     }
 
@@ -259,7 +280,7 @@ impl MediaTool {
         mut self,
         ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
     ) -> Self {
-        self.ocr_available = ocr_client.is_some();
+        self.capabilities.ocr = ocr_client.is_some();
         self.ocr_client = ocr_client;
         self
     }
@@ -268,14 +289,14 @@ impl MediaTool {
         mut self,
         image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     ) -> Self {
-        self.generate_available = image_gen_client.is_some();
+        self.capabilities.generate = image_gen_client.is_some();
         self.image_gen_client = image_gen_client;
         self
     }
 
     pub(crate) fn with_audio_runtime(mut self, audio_runtime: Arc<AudioRuntime>) -> Self {
-        self.record_available = audio_runtime.record_available();
-        self.tts_available = audio_runtime.tts_available();
+        self.capabilities.record = audio_runtime.record_available();
+        self.capabilities.speak = audio_runtime.tts_available();
         self.audio_runtime = audio_runtime;
         self
     }
@@ -286,8 +307,37 @@ impl MediaTool {
         stt_min_confidence: f32,
     ) -> Self {
         self.ocr_min_confidence = ocr_min_confidence;
-        self.stt_min_confidence = stt_min_confidence;
+        self.transcriber = Arc::new(
+            self.transcriber
+                .as_ref()
+                .clone()
+                .with_min_confidence(stt_min_confidence),
+        );
         self
+    }
+
+    pub(crate) fn ocr_available(&self) -> bool {
+        self.capabilities.ocr
+    }
+
+    pub(crate) fn capability_available(&self, operation: &str) -> bool {
+        self.capabilities.allows(operation)
+    }
+
+    pub(crate) fn unavailable_operation_result(
+        &self,
+        operation: MediaOperation,
+        reason: impl Into<String>,
+    ) -> ToolResult {
+        let mut output = self.media_result_output(operation, None, None, None);
+        output["available"] = Value::Bool(false);
+        output["capability"] = Value::String(media_reference::operation_name(operation).into());
+        output["reason_code"] = Value::String(format!(
+            "{}_unavailable",
+            media_reference::operation_name(operation)
+        ));
+        output["reason"] = Value::String(reason.into());
+        ToolResult::ok(output)
     }
 
     pub async fn run(
@@ -447,12 +497,12 @@ impl Tool for MediaTool {
             ]
         });
         let unavailable = [
-            ("describe", self.describe_available),
-            ("ocr", self.ocr_available),
-            ("transcribe", self.transcribe_available),
-            ("generate", self.generate_available),
-            ("record", self.record_available),
-            ("speak", self.tts_available),
+            "describe",
+            "ocr",
+            "transcribe",
+            "generate",
+            "record",
+            "speak",
         ];
         if let Some(operations) = schema["properties"]["operation"]
             .get_mut("enum")
@@ -461,13 +511,14 @@ impl Tool for MediaTool {
             operations.retain(|operation| {
                 unavailable
                     .iter()
-                    .all(|(name, available)| operation.as_str() != Some(*name) || *available)
+                    .all(|name| operation.as_str() != Some(*name) || self.capabilities.allows(name))
             });
         }
         if let Some(branches) = schema.get_mut("oneOf").and_then(Value::as_array_mut) {
             branches.retain(|branch| {
-                unavailable.iter().all(|(name, available)| {
-                    branch["properties"]["operation"]["const"].as_str() != Some(*name) || *available
+                unavailable.iter().all(|name| {
+                    branch["properties"]["operation"]["const"].as_str() != Some(*name)
+                        || self.capabilities.allows(name)
                 })
             });
         }

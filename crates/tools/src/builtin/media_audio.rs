@@ -32,7 +32,7 @@ const MAX_SPEAK_CHARS: usize = 4_000;
 /// platform/device boundary isolated so merging the public operations does not
 /// merge Windows audio plumbing into managed-asset orchestration.
 pub(crate) struct AudioRuntime {
-    /// Shared capture/STT pipeline. `None` in headless/test contexts where
+    /// Shared capture pipeline. `None` in headless/test contexts where
     /// recording is unavailable; the `record` operation then fails cleanly.
     pipeline: Option<Arc<InputPipeline>>,
     /// Shared TTS client. `None` means TTS is disabled or failed to initialize.
@@ -43,8 +43,6 @@ pub(crate) struct AudioRuntime {
     managed_assets: ManagedAssetRegistry,
     /// Dedicated generated-media root for recordings.
     capture_root: PathBuf,
-    /// Whether microphone capture is wired in this runtime.
-    record_available: bool,
 }
 
 #[derive(Debug)]
@@ -76,14 +74,12 @@ impl AudioRuntime {
         pipeline: Option<Arc<InputPipeline>>,
         tts: Option<Arc<dyn TtsClient>>,
     ) -> Self {
-        let record_available = pipeline.is_some();
         Self {
             pipeline,
             tts,
             playback: Arc::new(SystemAudioPlayback),
             managed_assets: ManagedAssetRegistry::default(),
             capture_root: default_generated_media_dir(),
-            record_available,
         }
     }
 
@@ -92,13 +88,8 @@ impl AudioRuntime {
         self
     }
 
-    pub(crate) fn with_capabilities(mut self, record_available: bool) -> Self {
-        self.record_available = record_available;
-        self
-    }
-
     pub(crate) fn record_available(&self) -> bool {
-        self.record_available
+        self.pipeline.is_some()
     }
 
     pub(crate) fn tts_available(&self) -> bool {
@@ -125,7 +116,7 @@ impl AudioRuntime {
                 "media record: recording is unavailable in this context"
             ));
         };
-        if !self.record_available {
+        if !self.record_available() {
             return Err(anyhow::anyhow!(
                 "media record: recording is unavailable in this context"
             ));
@@ -525,6 +516,18 @@ impl MediaTool {
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
+        }
+        if params.operation == MediaOperation::Record && !self.capability_available("record") {
+            return Ok(self.unavailable_operation_result(
+                MediaOperation::Record,
+                "Microphone capture is not configured.",
+            ));
+        }
+        if params.operation == MediaOperation::Speak && !self.capability_available("speak") {
+            return Ok(self.unavailable_operation_result(
+                MediaOperation::Speak,
+                "No text-to-speech provider is configured.",
+            ));
         }
         match params.operation {
             MediaOperation::Record => {

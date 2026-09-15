@@ -37,6 +37,8 @@ impl MediaTool {
             let mut output =
                 self.media_result_output(super::MediaOperation::Generate, None, None, None);
             output["available"] = json!(false);
+            output["capability"] = json!("generate");
+            output["reason_code"] = json!("generate_unavailable");
             output["reason"] = json!("No image-generation provider is configured.");
             return Ok(ToolResult::ok(output));
         };

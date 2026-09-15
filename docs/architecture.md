@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.1 | 日期: 2026-08-22
+> 版本: v1.2 | 日期: 2026-09-15
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -10,31 +10,16 @@
 ## 1. 依赖图
 
 ```
-                      ┌─────────────────────┐
-                      │     haven-app-binary │   组合根 / 宿主边界（Tauri）
-                      └──────────┬──────────┘
-                                 │
-        ┌─────────────────────┬──┴─────────────┬────────────┐
-        ▼                     ▼                ▼            ▼
- ┌────────────┐        ┌────────────┐   ┌────────────┐  ┌────────────┐
- │ haven-agent│        │ haven-input │   │ haven-tools│  │ haven-mcp  │
- │ ReAct 编排 │        │ 输入采集/语音│   │ 工具执行   │  │ MCP 客户端 │
- └─────┬──────┘        └─────┬──────┘   └─────┬──────┘  └─────┬──────┘
-       │          ┌──────────┘                │               │
-       │          ▼                           │               │
-       │   ┌────────────┐                     │               │
-       │   │ haven-llm  │◄────────────────────┴───────────────┘
-       │   │ 模型/媒体  │
-       │   └─────┬──────┘
-       │         ▼
-       │   ┌────────────┐    ┌────────────┐    ┌────────────┐
-       └──►│ haven-memory│──►│ haven-skills│◄──┘
-           │ 持久化      │    │ 技能目录    │
-           └─────┬──────┘    └────────────┘
-                 ▼
-          ┌────────────┐
-          │ haven-common │  共享叶子：类型 / 配置 / 提示词 / 编码
-          └────────────┘
+haven-app-binary（组合根 / 宿主边界）
+├── haven-agent（ReAct 编排）
+├── haven-input（输入采集 / VAD）
+├── haven-tools（工具执行）
+└── haven-mcp（MCP 客户端）
+
+haven-agent ──► haven-tools, haven-memory, haven-llm, haven-common
+haven-tools ──► haven-input, haven-mcp, haven-memory, haven-skills, haven-llm, haven-common
+haven-mcp   ──► haven-llm, haven-common
+haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 ```
 
 实际依赖（见各 `Cargo.toml`）：
@@ -47,12 +32,13 @@
 | `haven-skills` | common | 技能目录解析 |
 | `haven-mcp` | common, llm | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
 | `haven-tools` | common, memory, skills, mcp, llm, input | 工具注册表 + 各内置工具 |
-| `haven-input` | common, llm | 录音 / VAD / STT 编排（**不实现 provider**） |
+| `haven-input` | common | 录音 / VAD / PCM/WAV 采集（不实现 provider 或转写） |
 | `haven-agent` | common, llm, memory, tools | ReAct 循环 + 会话执行 |
 | `haven-app-binary` | 以上全部 + tauri | 装配 + Tauri 命令 + 事件桥 |
 
 > 依据 `crates/*/Cargo.toml` 实际 workspace 依赖整理。`haven-agent` 与 `haven-app-binary` 是最上层，
 > 其余全部是它们的底层依赖。`haven-llm` 不允许被业务 crate 反向依赖。
+> 语音转写的运行时调用路径是 app → tools → llm；`haven-input` 只产出采集结果，不直接依赖 `haven-llm`。
 
 `haven-mcp` 内部按职责分为 `protocol.rs`（MCP/JSON-RPC DTO 与内容归一化）、
 `transport.rs`（stdio、Streamable HTTP、SSE 和进程边界）、`client.rs`（单服务器连接、
@@ -217,11 +203,11 @@ Agent 的 `memory_index.rs` 是 embedding 编排边界：它负责 embedding pro
 - `capture/`：CPAL 采集线程 + 环形缓冲 + 重采样。
 - `vad.rs`：tract ONNX 语音活动检测（含常驻 worker 线程）。
 - `lib.rs` 的 `InputPipeline`：录音状态机（start / stop / cancel）、VAD 判定 →
-  自动停止、`transcribe()` 把 WAV 交给 `SttClient`。
+  自动停止、PCM/WAV 序列化和采集侧错误。
 - `hotkey.rs`：快捷键字符串解析为中性 `KeyCombo`（与平台解耦）。
 
-**判定标准**：管「何时/怎么采」——录音生命周期、VAD、把音频交给 STT；**不实现**任何
-provider（STT 客户端来自 `haven-llm`）。
+**判定标准**：管「何时/怎么采」——录音生命周期、VAD 和音频产出；**不实现** provider
+调用、转写或 fallback。
 
 ### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
@@ -412,21 +398,21 @@ sequence/block identity；live event、resume、rollback 同步和 reconnect rep
 
 ## 3. 易混边界（历史演进遗留，现已收敛）
 
-### 3.1 input 与 llm 都碰 STT
+### 3.1 input、tools 与 llm 的 STT 边界
 
 | | `haven-input` | `haven-llm` |
 |---|---|---|
-| 角色 | **消费方**：录音 → VAD → WAV → 调 `SttClient` | **实现方**：`LlmClient::transcribe` + `build_stt_client` / `adapter_for` |
-| 复用点 | `InputPipeline::transcribe`（用户麦克风录音） | `haven-tools::builtin::media`（agent 的受管资产；工具内统一走 STT / 多模态 fallback） |
+| 角色 | **采集方**：录音 → VAD → PCM/WAV → `RecordingResult` | **provider 适配方**：`LlmClient::transcribe` + `build_stt_client` / `adapter_for` |
+| 编排方 | `haven-tools::builtin::media` 的 `MediaTranscriber` 统一专用 STT → LLM fallback | `LlmRouter::transcribe_audio` 只负责 provider-wire/native-to-chat fallback |
 
-同一个 `SttClient` 被两处复用是**有意的共享**，不是职责重复：input 走「用户录音」路径，
-工具层的 `media` 走「agent 资产」路径。云端 STT（Whisper / Groq / Gemini / Deepgram /
-AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider = "llm"` 走
+用户语音入口和工具资产入口共享同一个 `MediaTranscriber` 策略，不再各自实现转写：应用通过
+`ToolsManager::transcribe_recording` 把采集到的 WAV 交给工具边界。云端 STT（Whisper / Groq /
+Gemini / Deepgram / AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider = "llm"` 走
 `LlmRouter::transcribe_audio`（原生 `transcribe`，否则 multimodal chat 回退）。
-MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。两条录音路径的语义也保持显式
+MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。两条录音路径的生命周期仍显式
 不同：UI 麦克风是 `voice input`，只提交转写文本并用 `rec-*` 关联事件；`media.record` 是
-`recorded media asset`，先登记 WAV 并返回可复用的 `asset_id`，再附带转写结果。两者共享
-STT 实现与事件规范，但不会隐式互相升级为另一种生命周期。
+`recorded media asset`，先登记 WAV 并返回可复用的 `asset_id`，再附带转写结果。`record`
+只依赖采集管线，转写不可用时仍可保留资产并返回结构化 capability 状态。
 
 ### 3.2 媒体编排归属
 

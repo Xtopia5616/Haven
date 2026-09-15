@@ -143,6 +143,7 @@
 - 2026-09-12：测试版破坏性契约收敛：删除独立 `audio` 模型工具，将录音、播放、TTS、音量和静音纳入 `media` operation 分支；保留 `media_audio.rs` 作为内部音频子系统，集中音频分支与 Windows 设备适配，旧 audio 配置/权限按 reset 边界处理（ADR 0133）。
 - 2026-09-12：继续拆分媒体工具热点：`media` 公共契约、媒体引用、内容派生、生成/资产登记和测试各自进入独立模块；不改变模型入口或运行时行为（ADR 0134）。
 - 2026-09-12：多模态链路继续收口：common 探测器成为 MIME/扩展名权威，视频贯通受管资产与 UI，STT fallback 复用 MediaPlan，工具结果统一为 typed `MediaResult`，并明确 voice input 与 recorded media asset 的生命周期（ADR 0136）。
+- 2026-09-15：InputPipeline 与 MediaTool 的采集/派生边界收口：input 仅产出录音，MediaTranscriber 统一专用 STT → LLM fallback，录音 capability 与 STT 解耦，能力不可用结果使用稳定 reason code（ADR 0165）。
 - 2026-09-10：P1/P2 Tools/Agent/Memory/UI 多模态用量边界收口：媒体派生文本只保留一个 `media.content`，模型观察去除运行时元数据；媒体 LLM 调用单独记录为 `call_kind=media`，其它工具内部 LLM 调用记录为 `call_kind=tool`，不降低 Agent 主循环缓存率，UI 分组展示内部推理用量（ADR 0124）。
 - 2026-09-12：P1/P2 Agent/Tools/LLM/UI 收口：补齐 `ContentPart::Video` 的能力门控和 Gemini 原生 inline wire；文档抽取增加 `page_index`/`next_page`；模型目录注册 `system.info`、`files.read_text`、`files.outline`、`files.summary`、`files.search` 瘦 operation view；搜索/outline 输出范围与上下文元数据；新增 session-scoped 非阻断 `preferences`/`checklist` 和 memory 空结果来源诊断（ADR 0131）。
 - 2026-09-12：测试版破坏性兼容清理：`Supplement`/`FollowUp` 统一为 FollowUp 队列 API；confirmation IPC 只接受 typed effect/scope；删除 ask sentinel/文本启发式、rollback 内容匹配、UI optimistic 内容反查和 provider→wire-style 隐式推导；旧数据按 reset/release 说明处理（ADR 0131）。

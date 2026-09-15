@@ -59,9 +59,12 @@ use haven_skills::SkillsEngine;
 pub(crate) async fn resolve_media_capabilities(
     router: Option<&Arc<haven_llm::LlmRouter>>,
     dedicated_stt_available: bool,
-) -> (bool, bool) {
+) -> media::MediaCapabilities {
     let Some(router) = router else {
-        return (false, dedicated_stt_available);
+        return media::MediaCapabilities {
+            transcribe: dedicated_stt_available,
+            ..media::MediaCapabilities::default()
+        };
     };
 
     let vision_role = router.vision_role().await;
@@ -75,15 +78,21 @@ pub(crate) async fn resolve_media_capabilities(
             let config = router.config().await;
             haven_llm::adapters::api_style_for(config.endpoint(role))
         };
-        configured && (profile.audio.is_supported() || haven_llm::is_stt_only_style(style))
+        let unknown_custom_route = profile.audio == haven_common::media::CapabilitySupport::Unknown
+            && !haven_llm::adapters::is_known_api_style(style);
+        configured
+            && (profile.audio.is_supported()
+                || haven_llm::is_stt_only_style(style)
+                || unknown_custom_route)
     } else {
         false
     };
 
-    (
-        vision_available,
-        transcribe_available || dedicated_stt_available,
-    )
+    media::MediaCapabilities {
+        describe: vision_available,
+        transcribe: transcribe_available || dedicated_stt_available,
+        ..media::MediaCapabilities::default()
+    }
 }
 
 pub use crate::tool_runtime::{MemoryRecallPort, MemoryRecallSlot, new_memory_recall_slot};
@@ -93,6 +102,7 @@ pub use admin::{
     ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
     LogLevelOutput, McpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
 };
+pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub use memory::MemoryTool;
 pub use messaging::AgentTool;
 pub use scheduled_action::{ScheduleMode, ScheduledActionFired, ScheduledActionTool};
@@ -197,17 +207,14 @@ pub async fn register_builtin_tools(
     let settings = &settings;
     let limits = &limits;
     let mut admin_surfaces: Option<Arc<admin::AdminSurfaces>> = None;
-    let (vision_available, transcribe_available) =
-        resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
-    let record_available = if let Some(pipeline) = audio_pipeline.as_ref() {
-        pipeline.recording_configured().await
-    } else {
-        false
-    };
+    let mut capabilities = resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
+    capabilities.record = audio_pipeline.is_some();
+    capabilities.ocr = ocr_client.is_some();
+    capabilities.generate = image_gen_client.is_some();
+    capabilities.speak = tts_client.is_some();
     let audio_runtime = Arc::new(
         media_audio::AudioRuntime::with_tts(audio_pipeline, tts_client)
-            .with_managed_assets(managed_assets.clone())
-            .with_capabilities(record_available),
+            .with_managed_assets(managed_assets.clone()),
     );
     let has_enabled_mcp = server_configs
         .read()
@@ -247,7 +254,7 @@ pub async fn register_builtin_tools(
             media_config.ocr.min_confidence,
             media_config.stt.min_confidence,
         )
-        .with_capabilities(vision_available, transcribe_available)
+        .with_capabilities(capabilities)
         .with_audio_runtime(audio_runtime),
     );
     add_operation_views(tools, media_tool.clone(), settings, MEDIA_OPERATION_VIEWS);

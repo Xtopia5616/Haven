@@ -7,7 +7,10 @@ use crate::events::{
     TranscriptionStartedEvent,
 };
 use haven_common::error::sanitize_error_text;
-use haven_input::{RecordingReason, RecordingResult};
+use haven_input::{
+    RecordingReason, RecordingResult, capture::TARGET_SAMPLE_RATE, encode_wav_to_vec,
+};
+use haven_tools::MediaTranscriptionStatus;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
@@ -127,7 +130,7 @@ pub(crate) fn emit_recording_error(app: &tauri::AppHandle, error: impl Into<Stri
 pub(crate) async fn finalize_transcription(
     state: &Arc<AppState>,
     app: &tauri::AppHandle,
-    mut result: RecordingResult,
+    result: RecordingResult,
 ) -> Option<String> {
     // The session id of the recording that produced this transcription:
     // generated at start (recording:started) and consumed here, so both
@@ -151,10 +154,46 @@ pub(crate) async fn finalize_transcription(
         "transcription_started",
     );
 
-    let llm_usage = state.pipeline.transcribe(&mut result).await;
+    if let Some(error) = result.capture_error {
+        emit_event_logged(
+            app,
+            TRANSCRIPTION_ERROR_EVENT,
+            TranscriptionErrorEvent {
+                session_id,
+                error: sanitize_error_text(&error),
+            },
+            "transcription_capture_error",
+        );
+        return None;
+    }
 
-    match result.transcript {
-        Some(text) => {
+    if result.pcm.is_empty() {
+        emit_event_logged(
+            app,
+            TRANSCRIPTION_RESULT_EVENT,
+            TranscriptionResultEvent {
+                session_id,
+                text: String::new(),
+                duration_ms: result.duration_ms,
+                confidence: None,
+            },
+            "transcription_empty_capture",
+        );
+        return None;
+    }
+
+    let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
+    let transcription = state
+        .tools
+        .transcribe_recording(&wav, tokio_util::sync::CancellationToken::new())
+        .await;
+    let llm_usage = transcription.llm_usage.clone();
+
+    match transcription.status {
+        MediaTranscriptionStatus::Succeeded => {
+            let text = transcription
+                .text
+                .expect("successful transcription has text");
             if !llm_usage.is_empty() {
                 let mut pending = state
                     .pending_recording_usage
@@ -189,39 +228,50 @@ pub(crate) async fn finalize_transcription(
             );
             Some(text)
         }
-        None => {
+        MediaTranscriptionStatus::Empty => {
             state
                 .pending_recording_usage
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(session_id.as_str());
-            if let Some(err) = result.transcript_error {
-                emit_event_logged(
-                    app,
-                    TRANSCRIPTION_ERROR_EVENT,
-                    TranscriptionErrorEvent {
-                        session_id: session_id.clone(),
-                        error: sanitize_error_text(&err),
-                    },
-                    "transcription_error",
-                );
-            } else {
-                // STT succeeded but returned no text (silence / too-short
-                // clip): there is nothing to submit, but the UI still needs
-                // the "transcribing" overlay closed. The frontend treats an
-                // empty `transcription:result` as "close, add no message".
-                emit_event_logged(
-                    app,
-                    TRANSCRIPTION_RESULT_EVENT,
-                    TranscriptionResultEvent {
-                        session_id: session_id.clone(),
-                        text: String::new(),
-                        duration_ms: result.duration_ms,
-                        confidence: None,
-                    },
-                    "transcription_empty_result",
-                );
-            }
+            // There is nothing to submit, but the UI still needs the
+            // "transcribing" overlay closed. The frontend treats an empty
+            // `transcription:result` as "close, add no message".
+            emit_event_logged(
+                app,
+                TRANSCRIPTION_RESULT_EVENT,
+                TranscriptionResultEvent {
+                    session_id: session_id.clone(),
+                    text: String::new(),
+                    duration_ms: result.duration_ms,
+                    confidence: None,
+                },
+                "transcription_empty_result",
+            );
+            None
+        }
+        MediaTranscriptionStatus::Unavailable
+        | MediaTranscriptionStatus::Failed
+        | MediaTranscriptionStatus::TimedOut
+        | MediaTranscriptionStatus::Cancelled => {
+            state
+                .pending_recording_usage
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(session_id.as_str());
+            emit_event_logged(
+                app,
+                TRANSCRIPTION_ERROR_EVENT,
+                TranscriptionErrorEvent {
+                    session_id,
+                    error: sanitize_error_text(
+                        &transcription
+                            .error
+                            .unwrap_or_else(|| "语音转写失败".to_string()),
+                    ),
+                },
+                "transcription_error",
+            );
             None
         }
     }
@@ -245,7 +295,7 @@ pub async fn start_recording(
         let msg = if matches!(pipeline_state, haven_input::RecordingState::Processing) {
             "正在处理上一条录音，请稍候再试".to_string()
         } else {
-            format!("录音启动失败，请检查麦克风/STT 配置: {e}")
+            format!("录音启动失败，请检查麦克风配置: {e}")
         };
         emit_recording_error(&app, msg.clone());
         return Err(log_err("start_recording", msg));

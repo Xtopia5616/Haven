@@ -338,17 +338,13 @@ pub(crate) async fn hot_swap_router(
     let stt_config = config.media.stt.clone();
     let providers = config.llm.providers.clone();
     let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.tools.mcp_manager().clone());
-    let stt_client: Option<Arc<dyn haven_llm::SttClient>> = match build_stt_client(
-        new_router.clone(),
-        Some(mcp_caller),
-        &stt_config,
-        &providers,
-    ) {
-        Ok(client) => client.map(std::sync::Arc::from),
-        Err(e) => {
-            return Err(log_err("hot_swap_router STT", e));
-        }
-    };
+    let stt_client: Option<Arc<dyn haven_llm::SttClient>> =
+        match build_stt_client(Some(mcp_caller), &stt_config, &providers) {
+            Ok(client) => client.map(std::sync::Arc::from),
+            Err(e) => {
+                return Err(log_err("hot_swap_router STT", e));
+            }
+        };
 
     // Rebuild the canonical media runtime with the new router so fallback
     // extraction calls (low confidence / failed dedicated provider) and image
@@ -381,15 +377,6 @@ pub(crate) async fn hot_swap_router(
             media.clone(),
         )
         .await;
-    state.pipeline.set_stt_client(stt_client.clone()).await;
-    if stt_config.provider == "llm" {
-        state
-            .pipeline
-            .set_stt_router(Some(new_router.clone()))
-            .await;
-    } else {
-        state.pipeline.set_stt_router(None).await;
-    }
     Ok(())
 }
 

@@ -2329,7 +2329,6 @@ dependencies = [
  "cpal",
  "futures-util",
  "haven-common",
- "haven-llm",
  "haven-tools",
  "serde",
  "serde_json",

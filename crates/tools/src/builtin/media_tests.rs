@@ -287,9 +287,12 @@ fn model_media_reference_has_one_content_slot_and_no_runtime_metadata() {
         &asset,
         MediaRepresentationKind::ImageDescription,
         Some("same text"),
-        true,
-        true,
-        true,
+        MediaCapabilities {
+            describe: true,
+            ocr: true,
+            transcribe: true,
+            ..MediaCapabilities::default()
+        },
     );
     let serialized = serde_json::to_string(&output).unwrap();
     assert_eq!(serialized.matches("same text").count(), 1);
@@ -325,12 +328,112 @@ async fn describe_without_router_is_explicitly_unavailable() {
         .unwrap();
     assert!(result.success);
     assert_eq!(result.output["available"], false);
+    assert_eq!(result.output["capability"], "describe");
+    assert_eq!(result.output["reason_code"], "describe_unavailable");
     assert!(
         result.output["media"]["asset_id"]
             .as_str()
             .unwrap()
             .starts_with("asset-")
     );
+}
+
+#[tokio::test]
+async fn transcribe_without_provider_is_successful_capability_downgrade() {
+    let root = TempDir::new().unwrap();
+    let (registry, asset_id) = registered_asset(root.path(), "recording.wav", "audio/wav");
+    let tool = MediaTool::new(None, registry, 1024, 10, 2_000);
+    let result = tool
+        .run(
+            MediaParams {
+                operation: MediaOperation::Transcribe,
+                asset_id: Some(asset_id),
+                focus: None,
+                prompt: None,
+                page_index: None,
+                file_path: None,
+                text: None,
+                duration: None,
+                volume: None,
+                muted: None,
+                session_id: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(result.success);
+    assert_eq!(result.output["available"], false);
+    assert_eq!(result.output["capability"], "transcribe");
+    assert_eq!(result.output["reason_code"], "transcribe_unavailable");
+}
+
+#[tokio::test]
+async fn shared_transcriber_keeps_empty_provider_result_non_successful() {
+    struct EmptySttClient;
+
+    #[async_trait]
+    impl haven_llm::SttClient for EmptySttClient {
+        async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
+            Ok(haven_llm::SttResult {
+                text: "  ".into(),
+                confidence: None,
+                usage: None,
+                model: None,
+            })
+        }
+    }
+
+    let result = MediaTranscriber::new(None, Some(Arc::new(EmptySttClient)), 10, 0.0, 2_000)
+        .transcribe_wav(b"wav", &CancellationToken::new())
+        .await;
+    assert_eq!(result.status, MediaTranscriptionStatus::Empty);
+    assert!(result.text.is_none());
+    assert!(result.error.is_none());
+}
+
+#[test]
+fn recording_capability_only_requires_capture_pipeline() {
+    let runtime = Arc::new(crate::builtin::media_audio::AudioRuntime::with_tts(
+        Some(Arc::new(haven_input::InputPipeline::new())),
+        None,
+    ));
+    let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000)
+        .with_audio_runtime(runtime);
+    let schema = tool.input_schema();
+    let operations = schema["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation enum");
+    assert!(operations.iter().any(|operation| operation == "record"));
+    assert!(!operations.iter().any(|operation| operation == "transcribe"));
+}
+
+#[tokio::test]
+async fn record_without_capture_is_a_capability_result() {
+    let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000);
+    let result = tool
+        .run(
+            MediaParams {
+                operation: MediaOperation::Record,
+                asset_id: None,
+                focus: None,
+                prompt: None,
+                page_index: None,
+                file_path: None,
+                text: None,
+                duration: None,
+                volume: None,
+                muted: None,
+                session_id: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(result.success);
+    assert_eq!(result.output["available"], false);
+    assert_eq!(result.output["capability"], "record");
+    assert_eq!(result.output["reason_code"], "record_unavailable");
 }
 
 #[tokio::test]
@@ -342,7 +445,7 @@ async fn transcribe_prefers_dedicated_stt_without_router() {
     });
     let tool = MediaTool::new(None, registry, 1024, 10, 2_000)
         .with_stt_client(Some(client.clone()))
-        .with_capabilities(false, false);
+        .with_capabilities(MediaCapabilities::default());
     assert!(
         tool.input_schema()["properties"]["operation"]["enum"]
             .as_array()
@@ -383,7 +486,7 @@ async fn transcribe_provider_failure_keeps_full_media_navigation_reference() {
     let (registry, asset_id) = registered_asset(root.path(), "recording.wav", "audio/wav");
     let tool = MediaTool::new(None, registry, 1024, 10, 2_000)
         .with_stt_client(Some(Arc::new(FailingSttClient)))
-        .with_capabilities(false, false);
+        .with_capabilities(MediaCapabilities::default());
 
     let result = tool
         .run(
@@ -406,6 +509,7 @@ async fn transcribe_provider_failure_keeps_full_media_navigation_reference() {
         .unwrap();
 
     assert!(!result.success);
+    assert_eq!(result.output["available"], true);
     assert_eq!(result.output["asset_id"], asset_id);
     assert_eq!(result.output["media"]["asset_id"], asset_id);
     assert_eq!(result.output["media"]["representation"], "managed_file_ref");
@@ -455,6 +559,7 @@ async fn cancelled_transcription_keeps_full_media_navigation_reference() {
         .unwrap();
 
     assert_eq!(result.outcome, crate::ToolExecutionOutcome::Cancelled);
+    assert_eq!(result.output["available"], true);
     assert_eq!(result.output["media"]["asset_id"], asset_id);
 }
 
@@ -464,7 +569,7 @@ async fn ocr_prefers_dedicated_provider_without_router() {
     let (registry, asset_id) = registered_asset(root.path(), "photo.png", "image/png");
     let tool = MediaTool::new(None, registry, 1024, 10, 2_000)
         .with_ocr_client(Some(Arc::new(DedicatedOcrClient)))
-        .with_capabilities(false, false);
+        .with_capabilities(MediaCapabilities::default());
     let result = tool
         .run(
             MediaParams {
@@ -559,9 +664,12 @@ fn generated_asset_is_registered_with_expiry_and_opaque_metadata() {
         &asset,
         MediaRepresentationKind::ManagedFileRef,
         None,
-        true,
-        true,
-        true,
+        MediaCapabilities {
+            describe: true,
+            ocr: true,
+            transcribe: true,
+            ..MediaCapabilities::default()
+        },
     ))
     .unwrap();
     assert!(!serialized.contains(&path.to_string_lossy().to_string()));
