@@ -1,11 +1,11 @@
 import type {
 	SessionErrorPayload,
 	SessionLifecyclePayload,
+	SessionDeletedPayload,
 	SessionTitleUpdatedPayload,
 } from './contracts/session.ts';
 import type { TauriEvent } from './contracts/session.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
-import { updateSessionMessages } from './sessionMessages.ts';
 import type { SessionAction } from './sessionReducer.ts';
 
 interface ChatSessionEventContext {
@@ -28,6 +28,7 @@ interface ChatSessionEventContext {
 type LifecycleEvent = TauriEvent<SessionLifecyclePayload>;
 type ErrorEvent = TauriEvent<SessionErrorPayload>;
 type TitleUpdatedEvent = TauriEvent<SessionTitleUpdatedPayload>;
+type DeletedEvent = TauriEvent<SessionDeletedPayload>;
 
 /**
  * Build the session lifecycle handlers used by the chat route. The route
@@ -54,17 +55,14 @@ export function createChatSessionEventHandlers({
 	'session:completed': (event: LifecycleEvent) => void;
 	'session:error': (event: ErrorEvent) => void;
 	'session:title-updated': (event: TitleUpdatedEvent) => void;
+	'session:deleted': (event: DeletedEvent) => void;
 } {
 	const finalizeLiveMessages = (sessionId: string) => {
 		// A lifecycle event can arrive while the last chunks are still queued for
 		// the next animation frame. Flush first, otherwise that frame can recreate
 		// a streaming bubble (and its blinking caret) after this cleanup.
 		flushChunksNow();
-		updateSessionMessages(sessionId, (messages) =>
-			messages.map((message) =>
-				message.streaming ? { ...message, streaming: false } : message,
-			),
-		);
+		dispatchSession({ type: 'session/messages/finalized', sessionId });
 	};
 
 	return {
@@ -84,6 +82,8 @@ export function createChatSessionEventHandlers({
 					sessionId,
 					freshStart: isFreshSessionIntent(),
 					adoptedDraft,
+					status: event.payload.status,
+					title: event.payload.title,
 				});
 			}
 			loadSessions();
@@ -103,6 +103,7 @@ export function createChatSessionEventHandlers({
 				type: 'session/status-updated',
 				sessionId: data.sessionId,
 				status: data.status,
+				title: data.title,
 			});
 			if (shouldForgetError) {
 				forgetSessionError(data.sessionId);
@@ -123,6 +124,12 @@ export function createChatSessionEventHandlers({
 		},
 		'session:completed': (event) => {
 			const sessionId = event.payload.sessionId;
+			dispatchSession({
+				type: 'session/status-updated',
+				sessionId,
+				status: event.payload.status,
+				title: event.payload.title,
+			});
 			if (getActiveSessionId() === sessionId) {
 				clearAskAwaiting(sessionId);
 				finalizeLiveMessages(sessionId);
@@ -146,6 +153,10 @@ export function createChatSessionEventHandlers({
 		'session:title-updated': (event) => {
 			const { sessionId, title } = event.payload;
 			updateSessionTitle(sessionId, title);
+		},
+		'session:deleted': (event) => {
+			dispatchSession({ type: 'session/deleted', sessionId: event.payload.sessionId });
+			loadSessions();
 		},
 	};
 }

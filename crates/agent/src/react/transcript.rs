@@ -1,15 +1,16 @@
 //! Append-only transcript events and a unified `apply` (Phase 6 / B1-2 + H1;
-//! Phase 8 / B1-3: events are the snapshot authority; canonical is a
-//! projection cache updated here).
+//! Phase 8 / B1-3: the event store is the durable authority and canonical is
+//! a projection cache updated here).
 //!
 //! # X12 projection contract
 //!
-//! Events are the sole append-only authority. `messages` / `session_steps` are
-//! materialized projections written from [`ReActEngine::apply_transcript`]
+//! The durable `session_events` rows are the append-only authority.
+//! `messages` / `session_steps` are materialized projections written from
+//! [`ReActEngine::apply_transcript`]
 //! (or the shared [`ReActEngine::project_chat_message`] helper it owns).
 //!
-//! `apply` order is always: **project row → emit UI event → append
-//! [`TranscriptRecord`] → project into `canonical`**.
+//! `apply` first commits [`TranscriptRecord`] to `SessionEventStore`, then
+//! projects rows, emits the live transport event, and updates `canonical`.
 //!
 //! Exceptions (documented, not parallel authorities):
 //! - **Ingress user seed**: `layer`/`ingress` may insert the user `messages`
@@ -223,6 +224,11 @@ impl ReActEngine {
             event => event,
         };
         let record = event.to_record(ctx.step_num);
+        // Persist the event before mutating the in-memory projection. A
+        // snapshot checkpoint may lag, but a committed event is replayable
+        // after a crash and therefore cannot be lost with the RAM state.
+        self.append_transcript_record(&ctx.session_id, &record, ctx.run_id, ctx.step_num)
+            .await?;
         match event {
             TranscriptEvent::Thought { text, message_id } => {
                 let trimmed = text.trim();
@@ -387,8 +393,10 @@ impl ReActEngine {
                 attachments,
                 message_id,
             } => {
-                // Persist the thought step before notifying the UI. A failed
-                // projection must not produce an event that looks durable.
+                // Persist the thought step before notifying the UI. The
+                // transcript event was already committed above; if this
+                // materialized projection fails, resume repairs it from the
+                // durable event rather than losing the transcript.
                 if source != InjectSource::ActionResult {
                     let step_id = message_id
                         .clone()
@@ -431,7 +439,7 @@ impl ReActEngine {
                     .collect::<Vec<_>>();
                 let media_plan = crate::react::media_plan_for_inputs(&media_inputs, strategy);
                 if !media_plan.is_empty() || !media_plan.notices.is_empty() {
-                    state.events.push(TranscriptRecord::MediaPlan {
+                    let media_record = TranscriptRecord::MediaPlan {
                         step_number: ctx.step_num,
                         strategy,
                         media_inputs: media_inputs
@@ -440,7 +448,15 @@ impl ReActEngine {
                             .collect(),
                         projections: media_plan.projections.clone(),
                         notices: media_plan.notices.clone(),
-                    });
+                    };
+                    self.append_transcript_record(
+                        &ctx.session_id,
+                        &media_record,
+                        ctx.run_id,
+                        ctx.step_num,
+                    )
+                    .await?;
+                    state.events.push(media_record);
                     ctx.emitter
                         .emit(crate::event::AgentEvent::MediaPlan {
                             session_id: ctx.session_id.clone(),
@@ -496,7 +512,7 @@ impl ReActEngine {
 mod tests {
     use super::*;
     use crate::event::AgentEventEmitter;
-    use crate::types::project_transcript;
+    use crate::types::{BranchPoint, project_transcript};
     use async_trait::async_trait;
     use haven_memory::Database;
     use std::sync::Arc;

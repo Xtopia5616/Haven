@@ -29,6 +29,7 @@ import {
 	coalesceTokenTotal,
 	cumulativeCacheHitRatePercent,
 } from './sessionUsage.ts';
+import { appSessionReducer } from './sessionReducer.ts';
 import {
 	notificationStore,
 	addNotification,
@@ -98,12 +99,19 @@ describe('upsertAction', () => {
 	});
 
 	it('finalizeBackgroundActionMessages clears actionId and writes terminal content', () => {
-		sessionMessagesStore.set({
-			'ses-1': [
+		appSessionReducer.dispatch({ type: 'sessions/cleared' });
+		appSessionReducer.dispatch({
+			type: 'session/messages/resume-loaded',
+			sessionId: 'ses-1',
+			messages: [
 				{
 					id: 'msg-1',
 					actionId: 'act-fin',
-					content: JSON.stringify({ background: true, action_id: 'act-fin', status: 'running' }),
+					content: JSON.stringify({
+						background: true,
+						action_id: 'act-fin',
+						status: 'running',
+					}),
 					streaming: true,
 				},
 			],
@@ -114,7 +122,7 @@ describe('upsertAction', () => {
 			status: 'cancelled',
 			output: 'stopped',
 		});
-		const msg = get(sessionMessagesStore)['ses-1'][0] as Record<string, unknown>;
+		const msg = appSessionReducer.getMessages('ses-1')[0] as unknown as Record<string, unknown>;
 		expect(msg.actionId).toBeNull();
 		expect(msg.streaming).toBe(false);
 		const body = JSON.parse(String(msg.content));
@@ -172,8 +180,8 @@ describe('addNotification', () => {
 		addNotification('boom', 'error');
 		addNotification('ok', 'info');
 		addNotification('oops', 'warning');
-		const errorCalls = spy.mock.calls.filter((args) =>
-			typeof args[0] === 'string' && args[0].includes('[ERROR]')
+		const errorCalls = spy.mock.calls.filter(
+			(args) => typeof args[0] === 'string' && args[0].includes('[ERROR]'),
 		);
 		expect(errorCalls).toHaveLength(1);
 		expect(errorCalls[0][0]).toContain('notification');
@@ -352,7 +360,10 @@ describe('moveSessionMessages', () => {
 	});
 
 	it('prepends messages from a stale session into a newly created one', () => {
-		setSessionMessages('stale', [{ id: 's1', role: 'user' }, { id: 's2', role: 'user' }]);
+		setSessionMessages('stale', [
+			{ id: 's1', role: 'user' },
+			{ id: 's2', role: 'user' },
+		]);
 		setSessionMessages('new', [{ id: 'n1' }]);
 		moveSessionMessages('stale', 'new');
 		const m = storeMap();
@@ -549,7 +560,13 @@ describe('sessionTokenStatsStore', () => {
 	});
 
 	it('restoreSessionTokenStats restores cumulative counters without cost', () => {
-		restoreSessionTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.25, has_cost: true });
+		restoreSessionTokenStats('t1', {
+			prompt_tokens: 100,
+			completion_tokens: 50,
+			total_tokens: 150,
+			cost_usd: 0.25,
+			has_cost: true,
+		});
 		const e = statsMap().t1;
 		expect(e.cumulativePromptTokens).toBe(100);
 		expect(e.cumulativeCompletionTokens).toBe(50);
@@ -565,7 +582,13 @@ describe('sessionTokenStatsStore', () => {
 	});
 
 	it('restoreSessionTokenStats coalesces omitted total from prompt+completion', () => {
-		restoreSessionTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 0, cost_usd: 0.0, has_cost: false });
+		restoreSessionTokenStats('t1', {
+			prompt_tokens: 100,
+			completion_tokens: 50,
+			total_tokens: 0,
+			cost_usd: 0.0,
+			has_cost: false,
+		});
 		expect(statsMap().t1.cumulativeTotalTokens).toBe(150);
 	});
 
@@ -611,13 +634,18 @@ describe('token usage helpers', () => {
 				cache_accounting: 'exclusive',
 			},
 		]);
-		expect(rate).toBeCloseTo(500 / 600 * 100, 6);
+		expect(rate).toBeCloseTo((500 / 600) * 100, 6);
 	});
 
 	it('does not guess a cache rate for unknown calls', () => {
 		expect(
 			cumulativeCacheHitRatePercent([
-				{ call_kind: 'agent', prompt_tokens: 100, cached_tokens: 80, cache_accounting: 'unknown' },
+				{
+					call_kind: 'agent',
+					prompt_tokens: 100,
+					cached_tokens: 80,
+					cache_accounting: 'unknown',
+				},
 			]),
 		).toBeNull();
 	});

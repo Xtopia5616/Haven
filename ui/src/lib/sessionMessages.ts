@@ -1,11 +1,14 @@
 import { writable } from 'svelte/store';
+import { DRAFT_SESSION_ID } from './sessionReducer.ts';
 
 // Per-session message storage: { [sessionId: string]: Message[] }
 // Special key '_draft' holds messages that haven't been assigned to a session yet
 // (e.g. transcribed text before the session is created).
 export const sessionMessagesStore = writable<Record<string, any[]>>({});
 
-export const DRAFT_KEY = '_draft';
+// Compatibility projection. Runtime conversation state is owned by
+// SessionReducer; this key remains for legacy store consumers at the boundary.
+export const DRAFT_KEY = DRAFT_SESSION_ID;
 
 export function setSessionMessages(sessionId: string, messages: unknown[]) {
 	sessionMessagesStore.update((m) => ({ ...m, [sessionId]: messages }));
@@ -159,9 +162,7 @@ function moveMessages(m: Record<string, any[]>, fromKey: string, toKey: string) 
 	// Opening migrate: mark received and drop any sticky `steering` that a
 	// parallel busy session's global modelState may have stamped on draft.
 	next[toKey] = [
-		...list.map((x) =>
-			x.role === 'user' ? { ...x, received: true, steering: false } : x,
-		),
+		...list.map((x) => (x.role === 'user' ? { ...x, received: true, steering: false } : x)),
 		...(next[toKey] || []),
 	];
 	return next;

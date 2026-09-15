@@ -1,10 +1,7 @@
 import { get } from 'svelte/store';
 import { sessionMessagesStore } from './sessionMessages.ts';
-import {
-	clearSessionInteractions,
-	pendingInteractions,
-	resolveInteraction,
-} from './stores.ts';
+import { clearSessionInteractions, pendingInteractions, resolveInteraction } from './stores.ts';
+import type { SessionReducer } from './sessionReducer.ts';
 
 interface AskMessage {
 	id: string;
@@ -19,6 +16,7 @@ interface AskInteractionContext {
 	setAutoFollow: () => void;
 	setSelectionsReady: (ready: boolean) => void;
 	submitMessage: (text: string, images?: unknown, files?: unknown) => void;
+	reducer?: SessionReducer;
 }
 
 interface ResolveAskOptions {
@@ -35,6 +33,7 @@ export function createAskInteractionController({
 	setAutoFollow,
 	setSelectionsReady,
 	submitMessage,
+	reducer,
 }: AskInteractionContext) {
 	const askSelections = new Map<string, Map<string, string[]>>();
 	const resolvedAskIds = new Map<string, Set<string>>();
@@ -44,12 +43,24 @@ export function createAskInteractionController({
 	>();
 
 	const messagesFor = (sessionId: string): AskMessage[] =>
-		(get(sessionMessagesStore)[sessionId] || []) as AskMessage[];
+		(reducer
+			? reducer.getMessages(sessionId)
+			: get(sessionMessagesStore)[sessionId] || []) as AskMessage[];
+
+	const pendingFor = (sessionId: string, kind: 'ask' | 'confirm' | 'scheduled_confirm') =>
+		reducer
+			? Object.values(reducer.getState().interactions || {}).filter(
+					(request) =>
+						request.sessionId === sessionId &&
+						request.kind === kind &&
+						request.status === 'pending',
+				)
+			: pendingInteractions(sessionId, kind);
 
 	function computeAskSelectionsReady() {
 		const sessionId = getActiveSessionId();
 		if (!sessionId) return false;
-		const awaiting = pendingInteractions(sessionId, 'ask');
+		const awaiting = pendingFor(sessionId, 'ask');
 		if (awaiting.length === 0) return false;
 		const byMessage = askSelections.get(sessionId);
 		if (!byMessage) return false;
@@ -66,7 +77,9 @@ export function createAskInteractionController({
 	}
 
 	function clearAskAwaiting(sessionId: string) {
-		clearSessionInteractions(sessionId, 'ask');
+		if (reducer)
+			reducer.dispatch({ type: 'session/interactions-cleared', sessionId, kind: 'ask' });
+		else clearSessionInteractions(sessionId, 'ask');
 		// A resume/end invalidates quick-reply answers for the pending batch.
 		resolvedAskIds.delete(sessionId);
 		resolvedAskResponses.delete(sessionId);
@@ -124,7 +137,10 @@ export function createAskInteractionController({
 		const ids = resolvedAskIds.get(sessionId) || new Set<string>();
 		// A double-click must not compose and submit the same answer twice.
 		if (ids.has(msgId)) return;
-		resolveInteraction(msgId, resolved.ignored ? { ignored: true } : { answer: resolved.answer || '' });
+		const response = resolved.ignored ? { ignored: true } : { answer: resolved.answer || '' };
+		if (reducer)
+			reducer.dispatch({ type: 'session/interaction-resolved', id: msgId, response });
+		else resolveInteraction(msgId, response);
 		ids.add(msgId);
 		resolvedAskIds.set(sessionId, ids);
 		const responses = resolvedAskResponses.get(sessionId) || new Map();
@@ -137,7 +153,7 @@ export function createAskInteractionController({
 		}
 		refreshSelectionsReady();
 		if (opts.deferSubmit) return;
-		const remaining = pendingInteractions(sessionId, 'ask');
+		const remaining = pendingFor(sessionId, 'ask');
 		if (remaining.length === 0) {
 			const submitted = resolvedAskIds.get(sessionId);
 			submitActionAnswers(sessionId, submitted);
@@ -150,11 +166,12 @@ export function createAskInteractionController({
 		images: unknown,
 		files: unknown,
 	) {
-		const awaiting = pendingInteractions(sessionId, 'ask');
+		const awaiting = pendingFor(sessionId, 'ask');
 		if (awaiting.length === 0) return false;
 		const byMessage = askSelections.get(sessionId);
 		if (!byMessage) return false;
-		if (!awaiting.every((message) => (byMessage.get(message.id) || []).length > 0)) return false;
+		if (!awaiting.every((message) => (byMessage.get(message.id) || []).length > 0))
+			return false;
 		for (const request of awaiting) {
 			const selected = byMessage.get(request.id) || [];
 			resolveAsk(request.id, { answer: selected.join(' ') }, { deferSubmit: true });

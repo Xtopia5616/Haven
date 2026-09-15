@@ -17,10 +17,13 @@ import {
 import { sessionStore } from './stores.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
+import type { SessionReducer } from './sessionReducer.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
-function isMidTurnSubmit(sessionId: string): boolean {
-	const list = get(sessionMessagesStore)[sessionId] || [];
+function isMidTurnSubmit(sessionId: string, reducer?: SessionReducer): boolean {
+	const list = reducer
+		? reducer.getMessages(sessionId)
+		: get(sessionMessagesStore)[sessionId] || [];
 	if (list.some((m) => m.streaming || m.steering)) return true;
 	// Prior user still awaiting first agent bubble (race before modelState flips).
 	for (let i = list.length - 1; i >= 0; i--) {
@@ -29,10 +32,12 @@ function isMidTurnSubmit(sessionId: string): boolean {
 		if (m.role === 'user' && !m.received) return true;
 	}
 	// This session's own status — never borrow another session's busy chip.
-	const st = get(sessionStore).find((t) => t.id === sessionId)?.status;
+	const st = (reducer ? reducer.getState().sessions : get(sessionStore)).find(
+		(t) => t.id === sessionId,
+	)?.status;
 	if (isBusyStatus(st) || isPausedStatus(st)) return true;
 	// Global modelState only applies to the active session.
-	if (get(activeSessionIdStore) === sessionId) {
+	if ((reducer ? reducer.getState().activeSessionId : get(activeSessionIdStore)) === sessionId) {
 		const state = get(modelStateStore);
 		if (
 			state === 'streaming' ||
@@ -119,7 +124,9 @@ function drainQueue() {
 	// adopt it so typed+voice (or two draft sends) append to the same
 	// conversation instead of spawning a second one.
 	if (next.payload.pinnedSessionId == null) {
-		const active = get(activeSessionIdStore);
+		const active = next.payload.reducer
+			? next.payload.reducer.getState().activeSessionId
+			: get(activeSessionIdStore);
 		const intentStillFresh = get(newSessionIntentStore);
 		if (active && !intentStillFresh) {
 			next.payload = {
@@ -160,11 +167,13 @@ interface SubmitOptions {
 	files?: Array<{ media_type: string; data: string; filename: string }> | null;
 	voice?: boolean;
 	recordingSessionId?: string;
+	/** Runtime reducer used by the chat route; omitted by legacy unit callers. */
+	reducer?: SessionReducer;
 }
 
 export async function submitTranscript(
 	text: string,
-	{ images = null, files = null, voice = false, recordingSessionId }: SubmitOptions = {},
+	{ images = null, files = null, voice = false, recordingSessionId, reducer }: SubmitOptions = {},
 ): Promise<any> {
 	const payload: SubmitPayload = {
 		text,
@@ -172,8 +181,9 @@ export async function submitTranscript(
 		files,
 		voice,
 		recordingSessionId,
-		pinnedSessionId: get(activeSessionIdStore),
+		pinnedSessionId: reducer ? reducer.getState().activeSessionId : get(activeSessionIdStore),
 		freshStartAtEnqueue: get(newSessionIntentStore),
+		reducer,
 	};
 	if (inflight) {
 		// Identical duplicate (double-click 继续 / quick-reply spam): join the
@@ -208,16 +218,14 @@ async function doSubmit({
 	recordingSessionId,
 	pinnedSessionId,
 	freshStartAtEnqueue,
+	reducer,
 }: SubmitPayload): Promise<any> {
 	const hasImages = Array.isArray(images) && images.length > 0;
 	const hasFiles = Array.isArray(files) && files.length > 0;
 	const hasAttachments = hasImages || hasFiles;
 	// Images and files travel together as one attachment list; the backend
 	// splits inline media from ordinary files at the host boundary.
-	const attachments = [
-		...(hasImages ? images : []),
-		...(hasFiles ? files : []),
-	];
+	const attachments = [...(hasImages ? images : []), ...(hasFiles ? files : [])];
 	const activeId = pinnedSessionId;
 	const sessionId = activeId || DRAFT_KEY;
 	// Fresh-start intent was snapshotted when this submission was accepted
@@ -225,7 +233,7 @@ async function doSubmit({
 	// request is in flight, that older snapshot stays false — resolving must
 	// not clear the newer intent, or the blank draft would be hijacked.
 	const freshStartAtDispatch = freshStartAtEnqueue;
-	const steering = isMidTurnSubmit(sessionId);
+	const steering = isMidTurnSubmit(sessionId, reducer);
 	const msg = {
 		...newMessage({
 			role: 'user',
@@ -236,16 +244,22 @@ async function doSubmit({
 		}),
 		...(steering ? { steering: true } : {}),
 	};
-	addSessionMessage(sessionId, msg);
+	if (reducer) {
+		reducer.dispatch({ type: 'session/messages/optimistic-added', sessionId, message: msg });
+	} else {
+		addSessionMessage(sessionId, msg);
+	}
 	// A reviewed conversation with no persisted messages yet (e.g. after
 	// rolling back the very first user message) is rebuilt with a
 	// display-only `placeholder-*` bubble carrying the session input text.
 	// The submitted message is the real start of the conversation: drop
 	// the stand-in so the original input is never shown twice.
-	updateSessionMessages(sessionId, (list) => {
-		if (!list.some((m) => m.id.startsWith('placeholder-'))) return list;
-		return list.filter((m) => !m.id.startsWith('placeholder-'));
-	});
+	if (!reducer) {
+		updateSessionMessages(sessionId, (list) => {
+			if (!list.some((m) => m.id.startsWith('placeholder-'))) return list;
+			return list.filter((m) => !m.id.startsWith('placeholder-'));
+		});
+	}
 	try {
 		const request = {
 			transcript: text,
@@ -272,13 +286,32 @@ async function doSubmit({
 				newSessionIntentStore.set(false);
 				if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			}
-			moveSessionMessages(sessionId, createdId);
-			activeSessionIdStore.set(createdId);
+			if (reducer) {
+				reducer.dispatch({
+					type: 'session/messages/accepted',
+					fromSessionId: sessionId,
+					toSessionId: createdId,
+					optimisticId: msg.id,
+					persistedId: dbMsgId,
+				});
+				reducer.dispatch({ type: 'session/selected', sessionId: createdId });
+			} else {
+				moveSessionMessages(sessionId, createdId);
+				activeSessionIdStore.set(createdId);
+			}
 			targetSessionId = createdId;
 		}
 		// Align the optimistic bubble with the persisted `msg-*` id so rollback
 		// / continue no longer need content+timestamp guessing.
-		if (dbMsgId && dbMsgId !== msg.id) {
+		if (reducer && (!createdId || createdId === sessionId)) {
+			reducer.dispatch({
+				type: 'session/messages/accepted',
+				fromSessionId: sessionId,
+				toSessionId: targetSessionId,
+				optimisticId: msg.id,
+				persistedId: dbMsgId,
+			});
+		} else if (dbMsgId && dbMsgId !== msg.id) {
 			updateSessionMessages(targetSessionId, (list) => {
 				const idx = list.findIndex((x) => x.id === msg.id);
 				if (idx < 0) return list;
@@ -291,7 +324,11 @@ async function doSubmit({
 		}
 		return result;
 	} catch (e) {
-		updateSessionMessages(sessionId, (list) => list.filter((x) => x.id !== msg.id));
+		if (reducer) {
+			reducer.dispatch({ type: 'session/messages/rejected', sessionId, messageId: msg.id });
+		} else {
+			updateSessionMessages(sessionId, (list) => list.filter((x) => x.id !== msg.id));
+		}
 		throw e;
 	}
 }

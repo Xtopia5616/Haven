@@ -11,6 +11,7 @@ import {
 	formatTokenCount,
 	updateSessionTokenStats,
 } from './sessionUsage.ts';
+import type { SessionAction, SessionTokenStats } from './sessionReducer.ts';
 import { rememberMediaPlan } from './stores.ts';
 import logger from '$lib/logger.ts';
 import {
@@ -25,10 +26,12 @@ type MediaPlanEvent = TauriEvent<AgentMediaPlanPayload>;
 
 /**
  * Build the usage-related Agent event handlers used by the chat route. Usage
- * state and its presentation helpers stay behind the stores boundary; the
- * route only registers the returned handlers with the IPC event adapter.
+ * state is reduced through SessionAction; the old usage helpers are retained
+ * only for isolated legacy callers that omit the reducer dispatcher.
  */
-export function createChatUsageEventHandlers(): {
+export function createChatUsageEventHandlers({
+	dispatchSession,
+}: { dispatchSession?: (action: SessionAction) => void } = {}): {
 	'agent:usage': (event: UsageEvent) => void;
 	'agent:compaction': (event: CompactionEvent) => void;
 	'agent:media_plan': (event: MediaPlanEvent) => void;
@@ -39,7 +42,10 @@ export function createChatUsageEventHandlers(): {
 			if (!d.sessionId) return;
 			const callKind = d.callKind;
 			if (callKind !== 'agent' && callKind !== 'media' && callKind !== 'tool') {
-				logger.error('chatUsageEventHandlers', `Unsupported usage call kind: ${String(callKind)}`);
+				logger.error(
+					'chatUsageEventHandlers',
+					`Unsupported usage call kind: ${String(callKind)}`,
+				);
 				return;
 			}
 			const prompt = d.promptTokens || 0;
@@ -55,26 +61,81 @@ export function createChatUsageEventHandlers(): {
 				creation,
 				d.cacheAccounting || 'unknown',
 			);
+			const call = {
+				step_number: d.stepNumber ?? null,
+				call_kind: callKind,
+				role: d.role || undefined,
+				model: d.model ?? null,
+				prompt_tokens: prompt,
+				completion_tokens: completion,
+				total_tokens: total,
+				cached_tokens: cached,
+				cache_creation_tokens: creation,
+				cache_miss_tokens: miss,
+				cache_accounting: d.cacheAccounting || 'unknown',
+				cache_diagnostics: d.cacheDiagnostics || undefined,
+				context_tokens: d.contextTokens || 0,
+				context_window: d.contextWindow ?? null,
+				cost_usd: d.costUsd ?? null,
+				has_cost: !!d.hasCost,
+				duration_ms: d.durationMs ?? null,
+			};
+			if (dispatchSession) {
+				const stats: SessionTokenStats = {
+					promptTokens: prompt,
+					completionTokens: completion,
+					totalTokens: total,
+					cachedTokens: cached,
+					cacheCreationTokens: creation,
+					cacheMissTokens: miss,
+					cacheAccounting: d.cacheAccounting || 'unknown',
+					contextTokens: d.contextTokens || 0,
+					cacheExclusive: !!d.cacheExclusive,
+					cumulativePromptTokens: d.cumulativePromptTokens || 0,
+					cumulativeCompletionTokens: d.cumulativeCompletionTokens || 0,
+					cumulativeTotalTokens: coalesceTokenTotal(
+						d.cumulativePromptTokens || 0,
+						d.cumulativeCompletionTokens || 0,
+						d.cumulativeTotalTokens || 0,
+						d.cumulativeCachedTokens || 0,
+						d.cumulativeCacheCreationTokens || 0,
+					),
+					cumulativeCachedTokens: d.cumulativeCachedTokens || 0,
+					cumulativeCacheCreationTokens: d.cumulativeCacheCreationTokens || 0,
+					cumulativeCacheMissTokens: d.cumulativeCacheMissTokens || 0,
+					costUsd: d.costUsd ?? null,
+					cumulativeCostUsd: d.cumulativeCostUsd ?? null,
+					contextWindow: d.contextWindow ?? null,
+					model: d.model ?? null,
+				};
+				dispatchSession({
+					type: 'session/usage-live',
+					sessionId: d.sessionId,
+					...(callKind === 'agent' ? { stats } : {}),
+					...(d.stepNumber != null ? { call } : {}),
+				});
+				return;
+			}
 			if (callKind === 'media' || callKind === 'tool') {
 				appendSessionLlmUsage(d.sessionId, {
-						step_number: d.stepNumber ?? null,
-						call_kind: callKind,
-						role: d.role || undefined,
-						model: d.model ?? null,
-						prompt_tokens: prompt,
-						completion_tokens: completion,
-						total_tokens: total,
-						cached_tokens: cached,
-						cache_creation_tokens: creation,
-						cache_miss_tokens: miss,
-						cache_accounting: d.cacheAccounting || 'unknown',
-						cache_diagnostics: d.cacheDiagnostics || undefined,
-						context_tokens: d.contextTokens || 0,
-						context_window: d.contextWindow ?? null,
-						cost_usd: d.costUsd ?? null,
-						has_cost: !!d.hasCost,
-						duration_ms: d.durationMs ?? null,
-					});
+					step_number: d.stepNumber ?? null,
+					call_kind: callKind,
+					role: d.role || undefined,
+					model: d.model ?? null,
+					prompt_tokens: prompt,
+					completion_tokens: completion,
+					total_tokens: total,
+					cached_tokens: cached,
+					cache_creation_tokens: creation,
+					cache_miss_tokens: miss,
+					cache_accounting: d.cacheAccounting || 'unknown',
+					cache_diagnostics: d.cacheDiagnostics || undefined,
+					context_tokens: d.contextTokens || 0,
+					context_window: d.contextWindow ?? null,
+					cost_usd: d.costUsd ?? null,
+					has_cost: !!d.hasCost,
+					duration_ms: d.durationMs ?? null,
+				});
 				return;
 			}
 			const cumPrompt = d.cumulativePromptTokens || 0;
@@ -159,7 +220,9 @@ export function createChatUsageEventHandlers(): {
 				.map((notice) => mediaPlanNoticeLabel(notice.code))
 				.filter((label, index, all) => all.indexOf(label) === index);
 			const details = [
-				projections.length > 0 ? `已使用 ${projections.join('、')}` : '没有发送兼容的附件表示',
+				projections.length > 0
+					? `已使用 ${projections.join('、')}`
+					: '没有发送兼容的附件表示',
 				`策略：${mediaPlanStrategyLabel(d.strategy)}`,
 				...reasons.map((reason) => `原因：${reason}`),
 			];

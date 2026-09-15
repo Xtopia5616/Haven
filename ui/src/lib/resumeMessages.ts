@@ -2,7 +2,7 @@
 // steps) into the chat bubble message list used by the chat page and the
 // history resume flow.
 
-import { formatMessageTime } from '$lib/stores.ts';
+import { formatMessageTime } from './messageFormat.ts';
 
 /** A resume-only bubble shown when a session has no persisted message rows. */
 export function isDisplayOnlyMessageId(id: unknown): boolean {
@@ -80,7 +80,7 @@ interface ResumeData {
  * navigates back). Pure ID union: every live bubble carries the SAME id
  * the backend mints and persists its DB row under (`msg-*` for streamed
  * thought/reasoning, `step-*` for tool/ask cards), so identity is decided
-	 * by id alone; content equality is never used as an identity fallback.
+ * by id alone; content equality is never used as an identity fallback.
  *
  * Rules:
  * - id present in both: the DB copy wins, EXCEPT an awaiting live `ask`

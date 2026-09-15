@@ -13,6 +13,39 @@ use serde_json::Value;
 
 use crate::types::{Action, TranscriptRecord};
 
+/// Infer the next step when the optional checkpoint cache is unavailable or
+/// is older than the durable event stream. A completed tool result advances
+/// the loop; a user inject remains the input for its recorded step. This is a
+/// conservative fallback for crash recovery — a current cache, when present,
+/// still carries the exact next-step boundary.
+pub(crate) fn infer_resume_step(events: &[TranscriptRecord]) -> u32 {
+    let mut max_step = 0;
+    let mut last = None;
+    for event in events {
+        match event {
+            TranscriptRecord::Thought { step_number, .. }
+            | TranscriptRecord::Reasoning { step_number, .. }
+            | TranscriptRecord::ToolCall { step_number, .. }
+            | TranscriptRecord::ToolResult { step_number, .. }
+            | TranscriptRecord::UserInject { step_number, .. }
+            | TranscriptRecord::MediaPlan { step_number, .. } => {
+                max_step = max_step.max(*step_number);
+                if !matches!(event, TranscriptRecord::MediaPlan { .. }) {
+                    last = Some(event);
+                }
+            }
+            TranscriptRecord::CompactSummary { .. } => {
+                last = Some(event);
+            }
+        }
+    }
+    match last {
+        Some(TranscriptRecord::ToolResult { .. }) => max_step.saturating_add(1).max(1),
+        Some(TranscriptRecord::UserInject { step_number, .. }) => (*step_number).max(1),
+        _ => max_step.max(1),
+    }
+}
+
 /// Merge the two durable recovery scans in their read order and deduplicate by
 /// the persisted message id.
 ///
@@ -211,6 +244,36 @@ mod tests {
         );
         let ids: Vec<_> = candidates.into_iter().map(|message| message.id).collect();
         assert_eq!(ids, ["msg-first", "msg-second"]);
+    }
+
+    #[test]
+    fn infer_resume_step_uses_the_durable_tail() {
+        let events = vec![
+            TranscriptRecord::CompactSummary {
+                compacted: Vec::new(),
+                media_inputs: Vec::new(),
+                summary: String::new(),
+                tokens_before: 0,
+                tokens_after: 0,
+                episode_id: "msg-summary".into(),
+                degraded: false,
+            },
+            TranscriptRecord::ToolResult {
+                step_number: 4,
+                action_index: 0,
+                step_id: "step-tool".into(),
+                canonical_observation: "ok".into(),
+                history_observation: "ok".into(),
+                tool_call_id: Some("call-tool".into()),
+                action: Action {
+                    tool_name: "read".into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some("call-tool".into()),
+                },
+            },
+        ];
+        assert_eq!(infer_resume_step(&events), 5);
     }
 
     #[test]

@@ -42,6 +42,12 @@ pub use types::{
     TranscriptRecord, project_transcript, project_transcript_with_strategy,
     seed_events_from_canonical,
 };
+// The store owns SQLite ordering/persistence in `haven-memory`, while this
+// re-export keeps the Agent's session boundary discoverable to callers.
+pub use haven_memory::{
+    SessionEvent as DurableSessionEvent, SessionEventInput, SessionEventStore,
+    SessionEventSubscription,
+};
 
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::MessageAttachment;

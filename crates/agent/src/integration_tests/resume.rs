@@ -317,8 +317,8 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
 #[tokio::test]
 async fn resume_keeps_repeated_same_text_turns() {
     // Two distinct turns with identical text (user said "好的" twice) are
-    // both legitimate history. The snapshot is the single authority for
-    // everything it contains; a message persisted AFTER the snapshot's
+    // both legitimate history. The durable event stream is the authority for
+    // everything it contains; a message persisted AFTER the checkpoint's
     // ingress cursor is recovered by id — identical text is recovered too.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
@@ -480,7 +480,7 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
         user_texts
             .iter()
             .all(|t| !t.starts_with("Additional context from user:")),
-        "no post-snapshot supplement may appear: {:?}",
+        "no post-checkpoint supplement may appear: {:?}",
         user_texts
     );
 }
@@ -761,8 +761,8 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     );
 }
 
-/// Phase 7 / B4: corrupt react_state must hard-fail instead of starting a
-/// different transcript path.
+/// Legacy sessions with no durable events still hard-fail on corrupt
+/// `react_state` instead of starting a different transcript path.
 #[tokio::test]
 async fn corrupt_react_state_hard_fails_resume() {
     let tools = Arc::new(ToolsManager::new());
@@ -805,4 +805,56 @@ async fn corrupt_react_state_hard_fails_resume() {
         mock.seen.lock().unwrap().is_empty(),
         "LLM must not be called after corrupt-snapshot hard-fail"
     );
+}
+
+#[tokio::test]
+async fn resume_ignores_corrupt_snapshot_when_durable_events_exist() {
+    let tools = Arc::new(ToolsManager::new());
+    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+        StreamChunk {
+            text: Some("recovered".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "final".into(),
+                name: "final_answer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        },
+    )]));
+    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+    agent.set_emitter(make_recording_emitter());
+    let session = executor.create_session("durable history").await.unwrap();
+
+    let canonical = vec![
+        CanonicalMessage::system(vec![ContentPart::text("system")]),
+        CanonicalMessage::user_text("durable history"),
+    ];
+    let event = seed_events_from_canonical(canonical).remove(0);
+    let store = haven_memory::SessionEventStore::new(agent.db.clone());
+    store
+        .append_transcript(&session.id, &serde_json::to_string(&event).unwrap(), 1, 1)
+        .unwrap();
+
+    // The checkpoint is deliberately unreadable JSON. The durable event row
+    // above is the only valid transcript source and must still be resumed.
+    agent
+        .db
+        .save_react_state(&session.id, "{not-valid-json")
+        .unwrap();
+
+    agent.run_session_from_id(&session.id).await.unwrap();
+
+    assert!(!mock.seen.lock().unwrap().is_empty());
+    assert_eq!(
+        executor.get_session_state(&session.id).await,
+        Some(SessionStatus::Paused)
+    );
+    let events = store.read_active_transcript(&session.id).unwrap();
+    assert!(events.len() >= 2, "resume must append the recovered turn");
 }

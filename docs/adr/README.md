@@ -160,3 +160,5 @@
 - [0153：权限边界的操作契约、网络覆盖与进程约束](0153-permission-boundary-hardening.md)
 - [0154：聊天页会话状态使用 SessionReducer](0154-ui-session-reducer.md)
 - [0158：MessagingService 接入 SessionActor mailbox](0158-messaging-service-session-actor-mailbox.md)
+- [0159：SessionEventStore 与 append-only 会话事件流](0159-session-event-store.md)
+- [0160：UI 统一 typed SessionReducer 运行态](0160-ui-session-runtime-reducer.md)

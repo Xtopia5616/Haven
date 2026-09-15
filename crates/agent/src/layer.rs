@@ -91,6 +91,29 @@ impl AgentLayer {
         }
     }
 
+    /// Subscribe to the same durable event source used by resume and
+    /// rollback. Consumers should replay from their last sequence before
+    /// listening; a lagged receiver must replay again.
+    pub fn subscribe_session_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<haven_memory::SessionEvent> {
+        self.react_engine.event_store.subscribe()
+    }
+
+    /// Subscribe to the durable session timeline with a race-free initial
+    /// replay. The returned replay and live receiver are the same source used
+    /// by resume and rollback; consumers must deduplicate overlapping sequence
+    /// values and replay again after a lagged receiver error.
+    pub fn subscribe_session_events_from(
+        &self,
+        session_id: &str,
+        after_sequence: i64,
+    ) -> anyhow::Result<haven_memory::SessionEventSubscription> {
+        self.react_engine
+            .event_store
+            .subscribe_from(session_id, after_sequence)
+    }
+
     /// Persist usage from media work performed before a ReAct step exists.
     /// The caller supplies the already-resolved durable session, while the
     /// event dispatcher is optional for headless/test embeddings.

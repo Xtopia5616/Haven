@@ -473,21 +473,35 @@ fn resume_response_for_session(
     let llm_usage = db
         .get_session_llm_usage(&session.id)
         .map_err(|e| log_err("resume_response_for_session", e))?;
-    let interactions = db
-        .get_react_state(&session.id)
-        .map_err(|e| log_err("resume_response_for_session", e))?
-        .map(|json| {
-            haven_agent::ReActSnapshot::from_json(&json).map(|snapshot| {
-                snapshot
-                    .interactions
-                    .iter()
-                    .map(crate::bootstrap::project_interaction)
-                    .collect()
-            })
-        })
-        .transpose()
-        .map_err(|e| log_err("resume_response_for_session", e))?
-        .unwrap_or_default();
+    // `react_state` is a checkpoint cache. A damaged cache must not make the
+    // history view unavailable; the Agent resume path will use the durable
+    // event stream and restore whatever interaction state is still present.
+    let interactions = match db.get_react_state(&session.id) {
+        Ok(Some(json)) => match haven_agent::ReActSnapshot::from_json(&json) {
+            Ok(snapshot) => snapshot
+                .interactions
+                .iter()
+                .map(crate::bootstrap::project_interaction)
+                .collect(),
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session.id,
+                    error = %error,
+                    "ignoring corrupt react_state cache while loading session history"
+                );
+                Vec::new()
+            }
+        },
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                session_id = %session.id,
+                error = %error,
+                "ignoring unreadable react_state cache while loading session history"
+            );
+            Vec::new()
+        }
+    };
     Ok(SessionResumeResponse {
         session,
         messages,

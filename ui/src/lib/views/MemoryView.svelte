@@ -2,21 +2,14 @@
 	/** @typedef {{ id: string; title?: string; input_text?: string; transcript?: string; status: string; created_at: string; [key: string]: any }} MemorySession */
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
-	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
+	import { buildResumeMessages } from '$lib/resumeMessages.ts';
+	import { appSessionReducer, resumeInteractions } from '$lib/sessionReducer.ts';
 	import {
 		formatMessageTime,
 		addNotification,
-		activeSessionIdStore,
 		getSessionErrorReason,
 		resumeTargetStore,
-		hydrateInteractions,
 	} from '$lib/stores.ts';
-	import {
-		clearAllSessionMessages,
-		clearSessionMessages,
-		updateSessionMessages,
-	} from '$lib/sessionMessages.ts';
-	import { restoreSessionLlmUsage, restoreSessionTokenStats } from '$lib/sessionUsage.ts';
 	import { isErrorStatus, statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
@@ -279,12 +272,14 @@
 			// explicit transition when the user asks for it.
 			if (!wasError) await invoke('reopen_session', { sessionId: session.id });
 			const result = await invoke('get_session_for_resume', { sessionId: session.id });
-			hydrateInteractions(result);
-			updateSessionMessages(session.id, (existing) =>
-				mergeLiveStreaming(buildResumeMessages(result), existing),
-			);
-			restoreSessionTokenStats(session.id, result.usage);
-			restoreSessionLlmUsage(session.id, result.llm_usage);
+			appSessionReducer.dispatch({
+				type: 'session/messages/resume-loaded',
+				sessionId: session.id,
+				messages: buildResumeMessages(result),
+				interactions: resumeInteractions(result),
+				usage: result.usage,
+				llmUsage: result.llm_usage,
+			});
 			resumeTargetStore.set({
 				sessionId: session.id,
 				summary: session.input_text,
@@ -304,10 +299,9 @@
 			await invoke('delete_session', { sessionId });
 			sessions = sessions.filter((session) => session.id !== sessionId);
 			totalCount = sessions.length;
-			if (get(activeSessionIdStore) === sessionId) {
-				activeSessionIdStore.set(null);
-				clearSessionMessages(sessionId);
-			}
+			appSessionReducer.dispatch({ type: 'session/memory-cleared', sessionId });
+			if (appSessionReducer.getState().activeSessionId === sessionId)
+				appSessionReducer.dispatch({ type: 'session/cleared' });
 			addNotification('会话已删除', 'success', 2000);
 		} catch (e) {
 			reportError(e, { context: 'MemoryView', message: '删除失败', log: false });
@@ -320,8 +314,7 @@
 			sessions = [];
 			totalCount = 0;
 			hasMore = false;
-			activeSessionIdStore.set(null);
-			clearAllSessionMessages();
+			appSessionReducer.dispatch({ type: 'sessions/cleared' });
 			addNotification(`已清空 ${count} 条会话`, 'success', 3000);
 		} catch {
 			addNotification('清空会话失败', 'error', 4000);

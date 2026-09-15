@@ -3,12 +3,9 @@ import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
 import { mapActionPayload, type ActionKind, type ActionPayload } from './contracts/action.ts';
 import type { AgentMediaPlanPayload } from './contracts/agent.ts';
-import type {
-	InteractionKind,
-	InteractionRequest,
-	InteractionStatus,
-} from './contracts/app.ts';
-import { sessionMessagesStore, updateSessionMessages } from './sessionMessages.ts';
+import type { InteractionKind, InteractionRequest, InteractionStatus } from './contracts/app.ts';
+import { formatMessageTime as formatMessageTimeValue } from './messageFormat.ts';
+import { appSessionReducer, backgroundActionResultContent } from './sessionReducer.ts';
 
 export const sessionStore = writable<any[]>([]);
 
@@ -40,9 +37,7 @@ export function hydrateInteractions(result: any) {
 			status: raw.status,
 			prompt: raw.prompt || '',
 			options: raw.options || [],
-			...(raw.toolName || raw.tool_name
-				? { toolName: raw.toolName ?? raw.tool_name }
-				: {}),
+			...(raw.toolName || raw.tool_name ? { toolName: raw.toolName ?? raw.tool_name } : {}),
 			...(raw.riskLevel || raw.risk_level
 				? { riskLevel: raw.riskLevel ?? raw.risk_level }
 				: {}),
@@ -99,8 +94,7 @@ export function clearSessionInteractions(sessionId: string, kind?: InteractionKi
 	interactionStore.update((current) => {
 		const next = Object.fromEntries(
 			Object.entries(current).filter(
-				([, request]) =>
-					request.sessionId !== sessionId || (kind && request.kind !== kind),
+				([, request]) => request.sessionId !== sessionId || (kind && request.kind !== kind),
 			),
 		);
 		return Object.keys(next).length === Object.keys(current).length ? current : next;
@@ -317,39 +311,14 @@ export async function cancelAction(id: string, kind: ActionKind = 'background') 
  * the original "running" observation ack.
  */
 export function finalizeBackgroundActionMessages(payload: ActionPayload) {
-	if (payload.kind !== 'background') return;
-	const actionId = payload.id;
-	if (!actionId) return;
-	const status = payload.status ?? 'completed';
-	const rawOut = payload.output ?? payload.error ?? '';
-	const finalContent =
-		typeof rawOut === 'string' && rawOut.trim().startsWith('{')
-			? rawOut
-			: JSON.stringify({
-					output: rawOut,
-					background: true,
-					action_id: actionId,
-					status,
-					...(payload.exitCode != null ? { exit_code: payload.exitCode } : {}),
-					...(payload.error && !payload.output ? { error: payload.error } : {}),
-				});
-	const all = get(sessionMessagesStore) || {};
-	for (const tid of Object.keys(all)) {
-		updateSessionMessages(tid, (m) => {
-			let changed = false;
-			const next = m.map((msg) => {
-				if (msg.actionId !== actionId) return msg;
-				changed = true;
-				return {
-					...msg,
-					content: finalContent,
-					actionId: null,
-					streaming: false,
-				};
-			});
-			return changed ? next : m;
-		});
-	}
+	const content = backgroundActionResultContent(payload);
+	if (!content) return;
+	appSessionReducer.dispatch({
+		type: 'session/background-result',
+		sessionId: payload.sessionId,
+		actionId: payload.id,
+		content,
+	});
 }
 
 export type NotificationType = 'info' | 'success' | 'warning' | 'error';
@@ -453,20 +422,7 @@ export function mediaDataUrl(att: { media_type: string; data: string }) {
  * @returns {string}
  */
 export function formatMessageTime(input: Date | string | number) {
-	const d = input instanceof Date ? input : new Date(input);
-	const now = new Date();
-	const sameDay =
-		d.getFullYear() === now.getFullYear() &&
-		d.getMonth() === now.getMonth() &&
-		d.getDate() === now.getDate();
-	if (sameDay) return d.toLocaleTimeString();
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, '0');
-	const day = String(d.getDate()).padStart(2, '0');
-	const h = String(d.getHours()).padStart(2, '0');
-	const min = String(d.getMinutes()).padStart(2, '0');
-	const s = String(d.getSeconds()).padStart(2, '0');
-	return `${y}/${m}/${day} ${h}:${min}:${s}`;
+	return formatMessageTimeValue(input);
 }
 
 /**

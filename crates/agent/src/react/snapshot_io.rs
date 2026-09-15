@@ -7,7 +7,21 @@
 use tracing::Instrument;
 
 use super::{PauseReason, StepCtx, *};
-use crate::types::TranscriptRecord;
+use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
+use haven_memory::SessionEventInput;
+
+/// The durable event-derived session state used by resume and rollback.
+///
+/// `ReActSnapshot` is intentionally not returned here: it also contains
+/// checkpoint-only interaction and budget metadata. Keeping this value
+/// separate makes it impossible for a stale snapshot transcript or branch map
+/// to accidentally win over the event stream.
+#[derive(Debug)]
+pub(crate) struct DurableEventState {
+    pub(crate) events: Vec<TranscriptRecord>,
+    pub(crate) branch_points: HashMap<u32, BranchPoint>,
+    pub(crate) latest_sequence: i64,
+}
 
 /// Mid-run DB snapshot throttle policy (Phase 7 / F3).
 ///
@@ -59,8 +73,8 @@ impl SnapshotStore {
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
 /// of building an owned `ReActSnapshot` skips the per-step deep copies of
 /// events/branch_points (which accumulate to O(n²) over a long session).
-/// Field names/shape match `ReActSnapshot` exactly. `events` is the sole
-/// transcript authority (Phase 8).
+/// Field names/shape match `ReActSnapshot` exactly. `events` is a checkpoint
+/// cache; the durable transcript is stored in `session_events`.
 #[derive(serde::Serialize)]
 struct SnapshotView<'a> {
     events: &'a [TranscriptRecord],
@@ -123,6 +137,209 @@ const BUDGET_EXHAUSTED_TITLE: &str = "任务步骤上限已用尽";
 const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任务已暂停。发一条消息即可继续。";
 
 impl ReActEngine {
+    /// Load the active transcript and branch metadata from the durable event
+    /// stream in one blocking read. `None` means the session has not crossed
+    /// the event-store cutover yet; once any control or transcript event
+    /// exists, the snapshot cache is never consulted for transcript state.
+    pub(crate) async fn load_durable_event_state(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<DurableEventState>> {
+        let store = self.event_store.clone();
+        let session_id = session_id.to_string();
+        self.db
+            .run_blocking(move |_| {
+                let latest_sequence = store.latest_sequence(&session_id)?;
+                if latest_sequence == 0 {
+                    return Ok(None);
+                }
+                let events = store
+                    .read_active_transcript(&session_id)?
+                    .into_iter()
+                    .map(|event| {
+                        serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
+                            anyhow::anyhow!(
+                                "invalid transcript event {} for session {}: {}",
+                                event.sequence,
+                                session_id,
+                                error
+                            )
+                        })
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                let branch_points = store
+                    .read_active_branch_points(&session_id)?
+                    .into_iter()
+                    .map(|(_, event_cursor, step_number, last_msg_at)| {
+                        (
+                            step_number,
+                            BranchPoint {
+                                event_cursor,
+                                step_number,
+                                last_msg_at,
+                            },
+                        )
+                    })
+                    .collect();
+                Ok(Some(DurableEventState {
+                    events,
+                    branch_points,
+                    latest_sequence,
+                }))
+            })
+            .await
+    }
+
+    fn transcript_event_input(
+        event: &TranscriptRecord,
+        run_id: u64,
+    ) -> anyhow::Result<SessionEventInput> {
+        let step_number = match event {
+            TranscriptRecord::Thought { step_number, .. }
+            | TranscriptRecord::Reasoning { step_number, .. }
+            | TranscriptRecord::ToolCall { step_number, .. }
+            | TranscriptRecord::ToolResult { step_number, .. }
+            | TranscriptRecord::UserInject { step_number, .. }
+            | TranscriptRecord::MediaPlan { step_number, .. } => *step_number,
+            TranscriptRecord::CompactSummary { .. } => 0,
+        };
+        Ok(SessionEventInput::transcript(
+            serde_json::to_string(event)?,
+            run_id,
+            step_number,
+        ))
+    }
+
+    /// Append transcript records produced by a deterministic recovery repair.
+    /// Recovery must use the same durable writer as the live loop; changing a
+    /// snapshot alone would make the next resume rediscover the same repair.
+    pub(crate) async fn append_transcript_records(
+        &self,
+        session_id: &str,
+        events: &[TranscriptRecord],
+        run_id: u64,
+    ) -> anyhow::Result<Vec<i64>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inputs = events
+            .iter()
+            .map(|event| Self::transcript_event_input(event, run_id))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let store = self.event_store.clone();
+        let session_id = session_id.to_string();
+        self.db
+            .run_blocking(move |db| {
+                if db.get_session(&session_id)?.is_none() {
+                    return Ok(Vec::new());
+                }
+                Ok(store
+                    .append_batch(&session_id, &inputs)?
+                    .into_iter()
+                    .map(|event| event.sequence)
+                    .collect())
+            })
+            .await
+    }
+
+    /// Import a valid snapshot cache only when no durable events exist. This
+    /// is a one-way cutover helper; once the event table has one row, the
+    /// snapshot can never overwrite it.
+    pub(crate) async fn seed_transcript_events(
+        &self,
+        session_id: &str,
+        events: &[TranscriptRecord],
+        run_id: u64,
+    ) -> anyhow::Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let inputs = events
+            .iter()
+            .map(|event| Self::transcript_event_input(event, run_id))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let store = self.event_store.clone();
+        let session_id = session_id.to_string();
+        self.db
+            .run_blocking(move |_| {
+                store.seed_if_empty(&session_id, &inputs)?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Import a legacy snapshot exactly once, including its branch metadata.
+    /// Transcript rows are appended before branch markers; their cursors are
+    /// indexes into that transcript and therefore remain valid regardless of
+    /// the control-event ordering used for the one-time import.
+    pub(crate) async fn seed_snapshot_events(
+        &self,
+        session_id: &str,
+        snapshot: &ReActSnapshot,
+        run_id: u64,
+    ) -> anyhow::Result<()> {
+        if snapshot.events.is_empty() && snapshot.branch_points.is_empty() {
+            return Ok(());
+        }
+        let mut inputs = snapshot
+            .events
+            .iter()
+            .map(|event| Self::transcript_event_input(event, run_id))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut branch_points = snapshot.branch_points.iter().collect::<Vec<_>>();
+        branch_points.sort_by_key(|(step_number, _)| **step_number);
+        inputs.extend(branch_points.into_iter().map(|(_, branch)| {
+            let payload = serde_json::json!({
+                "event_cursor": branch.event_cursor,
+                "step_number": branch.step_number,
+                "last_msg_at": branch.last_msg_at,
+            });
+            SessionEventInput {
+                event_type: haven_memory::BRANCH_POINT_EVENT_TYPE.into(),
+                payload: payload.to_string(),
+                run_id: Some(run_id),
+                step_number: Some(branch.step_number),
+            }
+        }));
+        let store = self.event_store.clone();
+        let session_id = session_id.to_string();
+        self.db
+            .run_blocking(move |_| {
+                store.seed_if_empty(&session_id, &inputs)?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Append one transcript record to the durable event authority. The
+    /// returned sequence is useful for checkpoint metadata, while the hot
+    /// ReAct projection continues to use the record itself.
+    pub(super) async fn append_transcript_record(
+        &self,
+        session_id: &str,
+        record: &TranscriptRecord,
+        run_id: u64,
+        step_number: u32,
+    ) -> anyhow::Result<i64> {
+        let payload = serde_json::to_string(record)?;
+        let store = self.event_store.clone();
+        let session_id = session_id.to_string();
+        self.db
+            .run_blocking(move |db| {
+                // A few provider/stream unit tests exercise the ReAct engine
+                // with a synthetic session id and no database session row.
+                // Production ingress always creates the row first; keep the
+                // isolated engine test path side-effect free.
+                if db.get_session(&session_id)?.is_none() {
+                    return Ok(0);
+                }
+                Ok(store
+                    .append_transcript(&session_id, &payload, run_id, step_number)?
+                    .sequence)
+            })
+            .await
+    }
+
     /// Project a chat row into `messages` and refresh `last_msg_at`.
     ///
     /// X12: the ReAct loop must call this only from [`Self::apply_transcript`]
@@ -704,6 +921,7 @@ impl ReActEngine {
         } else {
             self.refresh_last_msg_at(session_id).await
         };
+        let last_msg_at_for_event = last_msg_at.clone();
         // Phase 8 / F4: store only an index into the parent events vec — no
         // Arc copies of transcript state.
         state.branch_points.insert(
@@ -714,6 +932,36 @@ impl ReActEngine {
                 last_msg_at,
             },
         );
+        // Branch metadata is part of the durable timeline as well. This lets
+        // rollback recover its target without requiring the snapshot cache;
+        // the cache still stores the same map for cheap hot-path access.
+        let store = self.event_store.clone();
+        let sid = session_id.to_string();
+        let event_cursor = state.events.len();
+        if let Err(error) = self
+            .db
+            .run_blocking(move |db| {
+                if db.get_session(&sid)?.is_none() {
+                    return Ok(());
+                }
+                store.append_branch_point(
+                    &sid,
+                    event_cursor,
+                    step_number,
+                    last_msg_at_for_event.as_deref(),
+                    None,
+                )?;
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!(
+                session_id,
+                step = step_number,
+                error = %error,
+                "failed to append durable branch point"
+            );
+        }
         // The throttle marker guard is confined to this block so it is always
         // dropped before the write's await.
         let due = {

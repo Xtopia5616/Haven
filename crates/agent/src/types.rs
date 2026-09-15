@@ -26,7 +26,7 @@ pub struct ReActRound {
     pub tools: Vec<ToolRecord>,
 }
 
-/// Append-only transcript record — sole snapshot authority (Phase 8 / B1-3).
+/// Append-only transcript record — payload stored in `session_events`.
 /// Projected to canonical + [`ReActRound`] via [`project_transcript`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -112,7 +112,9 @@ pub enum TranscriptRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BranchPoint {
-    /// Index into parent `events` — restored state is `events[..event_cursor]`.
+    /// Index into the active transcript cache — restored state is
+    /// `events[..event_cursor]`. The durable rollback cursor is the corresponding
+    /// `session_events.sequence` stored by the event store marker.
     pub event_cursor: usize,
     pub step_number: u32,
     /// `created_at` of the most recent session message at save time. On
@@ -140,9 +142,9 @@ pub struct RunBudget {
 
 /// Serializable snapshot of the ReAct loop state for pause/resume.
 ///
-/// **Authority (Phase 8 / B1-3):** [`Self::events`] is the sole transcript.
-/// Canonical and [`ReActRound`]s are derived via [`project_transcript`] /
-/// [`Self::project`].
+/// `events` is a hot cache of the durable session event stream. Canonical and
+/// [`ReActRound`]s are derived via [`project_transcript`] / [`Self::project`];
+/// resume must replace this cache from `SessionEventStore` before projecting.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ReActSnapshot {
@@ -173,10 +175,11 @@ impl ReActSnapshot {
     pub fn interaction_requests(&self) -> &[crate::interaction::InteractionRequest] {
         &self.interactions
     }
-    /// Parse the current events-authority snapshot shape.
+    /// Parse the current snapshot-cache shape.
     ///
     /// Snapshot upgrades are deliberately unsupported: a snapshot without
-    /// `events` belongs to an incompatible Haven version and must be reset.
+    /// `events` still has a versioned shape and incompatible cache payloads
+    /// are rejected when no durable event stream is available.
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
         let snapshot: Self = serde_json::from_str(json)
             .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;

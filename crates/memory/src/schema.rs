@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 20;
+pub const SCHEMA_VERSION: i32 = 21;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -43,9 +43,24 @@ const SCHEMA_SQL: &[&str] = &[
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         revision INTEGER NOT NULL DEFAULT 0,
         event_cursor INTEGER NOT NULL DEFAULT 0,
+        event_sequence INTEGER NOT NULL DEFAULT 0,
         message_ingress_seq INTEGER NOT NULL DEFAULT 0,
         step_seq INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )",
+    // Durable session event authority. Rows are never updated or deleted by
+    // the repository; rollback is represented by a timeline_rollback marker.
+    // The payload is versioned JSON owned by the event producer.
+    "CREATE TABLE IF NOT EXISTS session_events (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        event_type TEXT NOT NULL CHECK(length(trim(event_type)) > 0),
+        event_version INTEGER NOT NULL DEFAULT 1 CHECK(event_version > 0),
+        payload TEXT NOT NULL CHECK(json_valid(payload)),
+        created_at TEXT NOT NULL,
+        run_id INTEGER,
+        step_number INTEGER,
+        PRIMARY KEY(session_id, sequence)
     )",
     "CREATE TABLE IF NOT EXISTS session_step_cursors (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -195,6 +210,13 @@ const SCHEMA_SQL: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_session_steps_session ON session_steps(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_session_events_session_sequence
+        ON session_events(session_id, sequence)",
+    "CREATE TRIGGER IF NOT EXISTS session_events_append_only_update
+        BEFORE UPDATE ON session_events
+        BEGIN
+            SELECT RAISE(ABORT, 'session_events is append-only');
+        END",
     "CREATE INDEX IF NOT EXISTS idx_memory_edges_subject ON memory_edges(subject)",
     "CREATE INDEX IF NOT EXISTS idx_memory_edges_confidence ON memory_edges(confidence)",
     "CREATE INDEX IF NOT EXISTS idx_memory_items_session ON memory_items(session_id)",
@@ -425,7 +447,10 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
 const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("sessions", "transcript"),
     ("messages", "voice"),
+    ("react_checkpoints", "event_sequence"),
     ("messages", "media_inputs"),
+    ("session_events", "payload"),
+    ("session_events", "event_version"),
     ("session_steps", "thought"),
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
@@ -565,6 +590,7 @@ mod tests {
             "partial_messages",
             "react_checkpoints",
             "session_steps",
+            "session_events",
             "session_step_cursors",
             "session_usage",
             "sessions",

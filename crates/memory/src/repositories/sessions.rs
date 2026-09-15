@@ -61,14 +61,15 @@ pub struct Session {
 
 /// Metadata committed alongside `sessions.react_state`.
 ///
-/// The snapshot JSON is the event authority; these cursors only describe the
-/// point at which its materialized projections were observed. They let resume
-/// distinguish a projection that is ahead of a snapshot (reconcile) from one
-/// that is behind it (fail closed).
+/// The snapshot JSON is a checkpoint cache; `event_sequence` records the
+/// durable event high-water mark observed by that cache write. The remaining
+/// cursors describe the materialized projections at the same boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReactCheckpoint {
     pub revision: i64,
     pub event_cursor: i64,
+    /// High-water mark in `session_events` observed by this cache write.
+    pub event_sequence: i64,
     pub message_ingress_seq: i64,
     pub step_seq: i64,
 }
@@ -523,13 +524,13 @@ impl Database {
         Ok(sessions)
     }
 
-    /// Save serialized ReAct state (canonical messages + history) for pause/resume.
+    /// Save serialized ReAct state as a checkpoint/cache for pause/resume.
     ///
     /// The snapshot is gzip-compressed before storage: every branch point
-    /// carries a full canonical + history copy, so a long session's snapshot
-    /// routinely reaches tens of MB of JSON (observed 53MB) and is rewritten
-    /// on every step boundary. Compression shrinks it ~5x (the JSON is
-    /// repetitive) and cuts both the DB size and per-step write cost.
+    /// carries a full event projection, so a long session's snapshot can still
+    /// reach tens of MB of JSON. The durable transcript lives in
+    /// `session_events`; compression keeps this optional checkpoint compact
+    /// without making it the recovery authority.
     pub fn save_react_state(&self, session_id: &str, state_json: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let compressed = compress_react_state(state_json)?;
@@ -564,6 +565,12 @@ impl Database {
                 )
                 .optional()?
                 .unwrap_or(0);
+            let event_sequence: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(sequence), 0)
+                     FROM session_events WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )?;
             let step_seq: i64 = conn
                 .query_row(
                     "SELECT COALESCE(last_step_seq, 0)
@@ -579,11 +586,13 @@ impl Database {
             )?;
             conn.execute(
                 "INSERT INTO react_checkpoints
-                    (session_id, revision, event_cursor, message_ingress_seq, step_seq, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    (session_id, revision, event_cursor, event_sequence,
+                     message_ingress_seq, step_seq, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(session_id) DO UPDATE SET
                     revision = excluded.revision,
                     event_cursor = excluded.event_cursor,
+                    event_sequence = excluded.event_sequence,
                     message_ingress_seq = excluded.message_ingress_seq,
                     step_seq = excluded.step_seq,
                     updated_at = excluded.updated_at",
@@ -591,6 +600,7 @@ impl Database {
                     session_id,
                     revision,
                     event_cursor,
+                    event_sequence,
                     message_ingress_seq,
                     step_seq,
                     now
@@ -616,15 +626,17 @@ impl Database {
         let conn = self.conn();
         let value = conn
             .query_row(
-                "SELECT revision, event_cursor, message_ingress_seq, step_seq
+                "SELECT revision, event_cursor, event_sequence,
+                        message_ingress_seq, step_seq
                  FROM react_checkpoints WHERE session_id = ?1",
                 rusqlite::params![session_id],
                 |row| {
                     Ok(ReactCheckpoint {
                         revision: row.get(0)?,
                         event_cursor: row.get(1)?,
-                        message_ingress_seq: row.get(2)?,
-                        step_seq: row.get(3)?,
+                        event_sequence: row.get(2)?,
+                        message_ingress_seq: row.get(3)?,
+                        step_seq: row.get(4)?,
                     })
                 },
             )

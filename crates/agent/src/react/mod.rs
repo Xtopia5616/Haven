@@ -13,11 +13,11 @@ use haven_common::media::{
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
-use haven_memory::Database;
+use haven_memory::{Database, SessionEventStore};
 
 use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
-use crate::types::{Action, BranchPoint, TranscriptRecord, media_inputs_from_events};
+use crate::types::{Action, TranscriptRecord, media_inputs_from_events};
 
 mod context;
 mod hook_policy;
@@ -312,6 +312,10 @@ pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionSupervisor>,
     db: Arc<Database>,
+    /// Durable transcript/event boundary. Snapshot JSON is only a checkpoint
+    /// cache; all new transcript records are appended here before entering
+    /// the in-memory projection.
+    pub(crate) event_store: SessionEventStore,
     max_steps: Mutex<u32>,
     /// Optional session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
     session_max_steps: Mutex<Option<u32>>,
@@ -381,10 +385,12 @@ impl ReActEngine {
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let context_source = ContextSource::new(executor.clone(), db.clone());
+        let event_store = SessionEventStore::new(db.clone());
         Self {
             router: Arc::new(RwLock::new(router)),
             executor,
             db,
+            event_store,
             max_steps: Mutex::new(max_steps),
             session_max_steps: Mutex::new(None),
             context_limits: std::sync::Mutex::new(context_limits),

@@ -23,7 +23,7 @@ P2 的第一刀已经把回合结束和待处理上下文拆出，但恢复流�
 4. `hooks.rs` 只保留 `LoopHooks` 契约、输入类型和 `NoopHooks`；生产策略
    （inbox/compact/infer、响应策略和安全门）位于 `hook_policy.rs`。循环依赖的
    Hook 仍只通过契约调用，默认生产装配不改变。
-5. 全部路径继续遵守 X12：`ReActSnapshot.events` 是恢复唯一权威，
+5. 全部路径继续遵守 X12：`session_events` 是恢复唯一权威，
    `messages`/`session_steps` 只能作为物化投影或明确标记的缺失快照恢复来源；
    不引入按内容去重。
 

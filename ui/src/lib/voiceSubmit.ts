@@ -1,4 +1,5 @@
 import { submitTranscript } from './submit.ts';
+import { appSessionReducer } from './sessionReducer.ts';
 
 /**
  * Deliver a transcribed voice clip through `process_transcript`. The shared
@@ -9,5 +10,5 @@ import { submitTranscript } from './submit.ts';
  * @returns {Promise<any>} the `process_transcript` result
  */
 export function submitVoiceTranscript(text: string, recordingSessionId?: string) {
-	return submitTranscript(text, { voice: true, recordingSessionId });
+	return submitTranscript(text, { voice: true, recordingSessionId, reducer: appSessionReducer });
 }

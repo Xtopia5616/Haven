@@ -1,12 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { get } from 'svelte/store';
+import { describe, expect, it, vi } from 'vitest';
 import { createChatSessionEventHandlers } from './chatSessionEventHandlers.ts';
-import { sessionMessagesStore, setSessionMessages } from './sessionMessages.ts';
+import { initialSessionState, SessionReducer } from './sessionReducer.ts';
 
 function handlers(options: {
 	fresh?: boolean;
 	adoptedDraft?: boolean;
 	activeSessionId?: string | null;
+	reducer?: SessionReducer;
 	dispatchSession?: (action: import('./sessionReducer.ts').SessionAction) => void;
 	flushChunksNow?: () => void;
 }) {
@@ -14,7 +14,7 @@ function handlers(options: {
 		getActiveSessionId: () => options.activeSessionId ?? null,
 		isFreshSessionIntent: () => options.fresh ?? false,
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
-		dispatchSession: options.dispatchSession ?? vi.fn(),
+		dispatchSession: options.dispatchSession ?? ((action) => options.reducer?.dispatch(action)),
 		getSessionErrorId: () => null,
 		rememberSessionError: vi.fn(),
 		forgetSessionError: vi.fn(),
@@ -28,46 +28,45 @@ function handlers(options: {
 }
 
 describe('chat session lifecycle handlers', () => {
-	beforeEach(() => {
-		sessionMessagesStore.set({});
+	it.each(['paused'] as const)('stops live bubbles when a session is %s', (status) => {
+		const flushChunksNow = vi.fn();
+		const reducer = new SessionReducer({
+			...initialSessionState,
+			messages: {
+				['ses-paused']: [
+					{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: true },
+					{
+						id: 'ask-1',
+						type: 'ask',
+						content: '还要继续吗？',
+						awaiting: true,
+						streaming: false,
+					},
+				],
+			},
+		});
+		const eventHandlers = handlers({
+			activeSessionId: 'ses-paused',
+			flushChunksNow,
+			reducer,
+		});
+
+		eventHandlers['session:updated']({
+			payload: { sessionId: 'ses-paused', status, title: null },
+		} as never);
+
+		expect(flushChunksNow).toHaveBeenCalledOnce();
+		expect(reducer.getMessages('ses-paused')).toEqual([
+			{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: false },
+			{
+				id: 'ask-1',
+				type: 'ask',
+				content: '还要继续吗？',
+				awaiting: true,
+				streaming: false,
+			},
+		]);
 	});
-
-	it.each(['paused'] as const)(
-		'stops live bubbles when a session is %s',
-		(status) => {
-			const flushChunksNow = vi.fn();
-			setSessionMessages('ses-paused', [
-				{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: true },
-				{
-					id: 'ask-1',
-					type: 'ask',
-					content: '还要继续吗？',
-					awaiting: true,
-					streaming: false,
-				},
-			]);
-			const eventHandlers = handlers({
-				activeSessionId: 'ses-paused',
-				flushChunksNow,
-			});
-
-			eventHandlers['session:updated']({
-				payload: { sessionId: 'ses-paused', status, title: null },
-			} as never);
-
-			expect(flushChunksNow).toHaveBeenCalledOnce();
-			expect(get(sessionMessagesStore)['ses-paused']).toEqual([
-				{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: false },
-				{
-					id: 'ask-1',
-					type: 'ask',
-					content: '还要继续吗？',
-					awaiting: true,
-					streaming: false,
-				},
-			]);
-		},
-	);
 
 	it('selects a fresh session when it adopts the pending draft', () => {
 		const dispatchSession = vi.fn();
@@ -86,6 +85,8 @@ describe('chat session lifecycle handlers', () => {
 			sessionId: 'ses-fast',
 			freshStart: true,
 			adoptedDraft: true,
+			status: 'pending',
+			title: null,
 		});
 	});
 
@@ -102,6 +103,8 @@ describe('chat session lifecycle handlers', () => {
 			sessionId: 'ses-background',
 			freshStart: true,
 			adoptedDraft: false,
+			status: 'pending',
+			title: null,
 		});
 	});
 

@@ -192,9 +192,10 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   投影，并由受信 host 根目录重建历史预览。
 - `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
 
-schema 初始化不改变 X12：`messages` / `session_steps` 仍是投影，
-`ReActSnapshot.events` 仍是恢复唯一权威；`UserInject` snapshot 只保存
-`MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
+schema 初始化不改变 X12：`session_events` 经 `SessionEventStore` 追加并按
+sequence replay，是会话恢复、rollback 和实时订阅的唯一事件权威；
+`messages` / `session_steps` 仍是投影，`ReActSnapshot.events` 降级为 checkpoint/cache。
+`UserInject` 事件只保存 `MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
 
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
 provider 协议和 UI 展示逻辑不得进入本 crate。
@@ -223,7 +224,7 @@ provider（STT 客户端来自 `haven-llm`）。
 
 - `react/`：ReAct 循环（`loop` / `turn` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责阶段编排，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
-- **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
+- **X12 持久化契约**：`SessionEventStore` 是 `session_events` 的 append-only writer；`apply_transcript` 先提交 durable event，再维护 `messages`/`session_steps` 物化投影并发出同一语义的 live event。resume、rollback 和实时重放均从 event sequence 读取，snapshot 仅是定期 checkpoint/cache。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件与 snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失 snapshot 不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
 - `session/`：`SessionSupervisor` 负责 FIFO、并发 permit 和 actor 生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态，`RunEngine` 承载一次 ReAct run；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
@@ -385,10 +386,13 @@ Tauri command 的 structured surface，未直接注册进模型目录；`haven` 
   skills / memory / settings / log）。
 - `desktop.rs` / `events.rs` / `autostart.rs`。
 
-聊天 UI 的会话状态位于 `ui/src/lib/sessionReducer.ts`：`+page.svelte` 负责视图、滚动和
-副作用编排，`SessionReducer` 统一处理会话列表、当前会话、fresh-start 选择和错误恢复；
-`chatSessionEventHandlers.ts` 只做事件适配及消息/流式终态清理。`sessionMessages.ts`、
-`sessionUsage.ts` 与 `streamAggregator.ts` 继续分别拥有消息、用量和流式归并状态。
+聊天 UI 的会话状态位于 `ui/src/lib/sessionReducer.ts`：`SessionReducer` 统一处理会话
+列表/选择、消息、Interaction、usage、tool preview、optimistic 生命周期以及 replay
+sequence/block identity；live event、resume、rollback 同步和 reconnect replay 都只
+通过 typed `SessionAction` 迁移。`+page.svelte`/`+layout.svelte` 负责视图、滚动、IPC
+和通知副作用，`chat*EventHandlers.ts` 只做 DTO 到 action 的适配；旧
+`sessionMessages.ts`、`sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责
+排队后 dispatch chunk action（ADR 0160）。
 `ModelSettings.svelte` 当前保留模型角色、Provider CRUD 与 discovery 的页面编排，已补
 组件行为测试，后续再按 discovery / mutation 边界拆分。
 
@@ -464,6 +468,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-15 | §2.6 UI：以 typed `SessionReducer` 统一 live event、resume、rollback/reconnect replay、Interaction、usage 与 optimistic 状态；旧消息/用量 store 降为兼容投影（ADR 0160） |
+| 2026-09-15 | §2.3 Memory / §2.5 Agent：新增版本化 `session_events` append-only 事件流与 `SessionEventStore`；snapshot 降级为 checkpoint/cache，resume、rollback、transcript 投影与 live replay 共用 durable sequence（ADR 0159） |
 | 2026-09-12 | §2.5 Tools / Agent / App：删除 `MediaGateway`、coverage、intent 与 ingress eager preprocessing；由单一共享 `MediaTool` 统一 OCR、STT fallback、文档抽取和显式媒体生成，并同步 UI 媒体结果契约（ADR 0130） |
 | 2026-09-12 | §2.5 Tools / UI / Security：删除独立 `audio` 模型工具，将录音、播放、TTS、音量和静音纳入 `media` operation 分支；旧 audio 配置/权限按测试版策略重置（ADR 0133） |
 | 2026-09-12 | §2.5 Tools：按公共契约、媒体引用、内容派生、生成/资产登记和测试职责拆分 `media` 内部模块；模型入口与运行时行为不变（ADR 0134） |

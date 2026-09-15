@@ -1,15 +1,8 @@
 import logger from './logger.ts';
-import {
-	accumulateStreamChunk,
-	finalizeStreamBlocks,
-	type StreamMessage,
-} from './streaming.ts';
+import { accumulateStreamChunk, finalizeStreamBlocks, type StreamMessage } from './streaming.ts';
 import type { AgentChunkPayload } from './contracts/agent.ts';
-import {
-	pruneSeq,
-	seqLastSeen,
-	updateSessionMessages,
-} from './sessionMessages.ts';
+import { pruneSeq, seqLastSeen, updateSessionMessages } from './sessionMessages.ts';
+import type { SessionAction } from './sessionReducer.ts';
 
 export interface PendingChunk {
 	tid: string;
@@ -18,6 +11,7 @@ export interface PendingChunk {
 	msgType: string | undefined;
 	stepNumber: number;
 	runId: number;
+	seq?: number;
 	time: string;
 	finalizeReasoning: boolean;
 }
@@ -40,6 +34,7 @@ export function foldContiguousChunks(batch: readonly PendingChunk[]): PendingChu
 			previous.runId === chunk.runId
 		) {
 			previous.delta = (previous.delta || '') + (chunk.delta || '');
+			previous.seq = chunk.seq ?? previous.seq;
 			previous.finalizeReasoning = previous.finalizeReasoning || chunk.finalizeReasoning;
 		} else {
 			merged.push({ ...chunk });
@@ -78,9 +73,14 @@ export interface StreamEventAggregator {
 export function createStreamEventAggregator({
 	getActiveSessionId,
 	onActiveStream,
+	dispatch,
+	getBlockIds,
 }: {
 	getActiveSessionId: () => string | null;
 	onActiveStream: () => void;
+	/** SessionReducer dispatch. Omitted only for legacy isolated tests. */
+	dispatch?: (action: SessionAction) => void;
+	getBlockIds?: (sessionId: string, stepNumber: number, runId: number) => StepBlockIds;
 }): StreamEventAggregator {
 	const pendingChunks: PendingChunk[] = [];
 	let chunkFlushRaf = 0;
@@ -110,16 +110,22 @@ export function createStreamEventAggregator({
 	}
 
 	function blockIdsOf(sessionId: string, stepNumber: number, runId: number) {
+		if (getBlockIds) return getBlockIds(sessionId, stepNumber, runId);
 		return stepBlockIds.get(sessionId)?.get(blockKey(stepNumber, runId)) || {};
 	}
 
 	function clearStepBlockIds(sessionId: string | null) {
 		if (!sessionId) return;
+		if (dispatch) {
+			dispatch({ type: 'session/stream-blocks-cleared', sessionId });
+			return;
+		}
 		const perSession = stepBlockIds.get(sessionId);
 		if (perSession) {
-			for (const { thoughtId, reasoningId } of perSession.values()) {
-				if (thoughtId) pruneSeq(thoughtId);
-				if (reasoningId) pruneSeq(reasoningId);
+			// Legacy fallback keeps the old sequence map behavior for isolated tests.
+			for (const ids of perSession.values()) {
+				if (ids.thoughtId) pruneSeq(ids.thoughtId);
+				if (ids.reasoningId) pruneSeq(ids.reasoningId);
 			}
 		}
 		stepBlockIds.delete(sessionId);
@@ -142,12 +148,34 @@ export function createStreamEventAggregator({
 			if (!list) bySession.set(chunk.tid, (list = []));
 			list.push(chunk);
 		}
-		for (const [sessionId, chunks] of bySession) {
-			updateSessionMessages(sessionId, (messages) => {
+		for (const [, chunks] of bySession) {
+			if (dispatch) {
+				for (const chunk of chunks) {
+					dispatch({
+						type: 'agent/chunk',
+						kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
+						...(chunk.msgType !== undefined ? { msgType: chunk.msgType } : {}),
+						payload: {
+							sessionId: chunk.tid,
+							delta: chunk.delta,
+							stepNumber: chunk.stepNumber,
+							runId: chunk.runId,
+							messageId: chunk.sid,
+							seq: chunk.seq ?? 0,
+						},
+					});
+				}
+				continue;
+			}
+			updateSessionMessages(chunks[0].tid, (messages) => {
 				let next: StreamMessage[] = messages;
 				for (const chunk of chunks) {
 					if (chunk.finalizeReasoning) {
-						const { reasoningId } = blockIdsOf(chunk.tid, chunk.stepNumber, chunk.runId);
+						const { reasoningId } = blockIdsOf(
+							chunk.tid,
+							chunk.stepNumber,
+							chunk.runId,
+						);
 						if (reasoningId) {
 							next = finalizeStreamBlocks(next, reasoningId, null);
 							pruneSeq(reasoningId);
@@ -184,7 +212,7 @@ export function createStreamEventAggregator({
 			const messageId = data.messageId;
 			const delta = data.delta || '';
 			if (getActiveSessionId() === sessionId) onActiveStream();
-			if (seqLastSeen(messageId, data.seq, sessionId)) return;
+			if (!dispatch && seqLastSeen(messageId, data.seq, sessionId)) return;
 			registerBlockId(
 				sessionId,
 				data.stepNumber,
@@ -199,6 +227,7 @@ export function createStreamEventAggregator({
 				msgType,
 				stepNumber: data.stepNumber,
 				runId: data.runId,
+				seq: data.seq,
 				time: new Date().toLocaleTimeString(),
 				finalizeReasoning: isThought,
 			});

@@ -69,13 +69,61 @@ impl AgentLayer {
         // input to a request that no longer exists.
         self.executor.clear_interactions(session_id, None).await;
 
-        let state_json = self.db.get_react_state(session_id)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "rollback_session {}: no react_state; session is not resumable",
-                session_id
-            )
-        })?;
-        let mut snapshot = ReActSnapshot::from_json(&state_json)?;
+        // Snapshot bytes are only a cache. Keep a read error around until the
+        // event stream has been checked: a durable timeline can still provide
+        // every rollback input when the cache is corrupt or unreadable.
+        let (state_json, state_json_error) = match self.db.get_react_state(session_id) {
+            Ok(state) => (state, None),
+            Err(error) => (None, Some(error)),
+        };
+        let mut durable_state = self
+            .react_engine
+            .load_durable_event_state(session_id)
+            .await?;
+        if durable_state.is_none()
+            && let Some(state_json) = state_json.as_deref()
+        {
+            let cached = ReActSnapshot::from_json(state_json)?;
+            self.react_engine
+                .seed_snapshot_events(session_id, &cached, 0)
+                .await?;
+            durable_state = self
+                .react_engine
+                .load_durable_event_state(session_id)
+                .await?;
+        }
+        if durable_state.is_none()
+            && let Some(error) = state_json_error
+        {
+            return Err(anyhow::anyhow!(
+                "rollback_session {}: failed to read legacy snapshot: {}",
+                session_id,
+                error
+            ));
+        }
+        let mut snapshot = match durable_state {
+            Some(durable) => {
+                // Snapshot metadata is a cache. If it is unavailable or
+                // corrupt, the event stream still supplies the active
+                // transcript and branch control plane.
+                let mut snapshot = state_json
+                    .as_deref()
+                    .and_then(|json| ReActSnapshot::from_json(json).ok())
+                    .unwrap_or_default();
+                snapshot.events = durable.events;
+                snapshot.branch_points = durable.branch_points;
+                snapshot
+            }
+            None => match state_json {
+                Some(state_json) => ReActSnapshot::from_json(&state_json)?,
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "rollback_session {}: no session event log; session is not resumable",
+                        session_id
+                    ));
+                }
+            },
+        };
 
         // Compaction replaces the pre-compaction event prefix and clears its
         // rollback points. Refuse to pretend those old messages are still
@@ -255,6 +303,43 @@ impl AgentLayer {
         // Budget is per-run observability; a restored branch starts a new run.
         snapshot.run_budget = None;
 
+        // Keep the database event log append-only. The marker changes the
+        // active replay cursor; discarded rows remain available for audit and
+        // can never leak into the resumed timeline.
+        let event_store = self.react_engine.event_store.clone();
+        let sid = session_id.to_string();
+        let event_cursor = snapshot.events.len();
+        let branch_point_sequence = self
+            .db
+            .run_blocking({
+                let event_store = self.react_engine.event_store.clone();
+                let sid = session_id.to_string();
+                move |_| {
+                    Ok(event_store
+                        .branch_point_for_step(&sid, target_step)?
+                        .filter(|(_, cursor, _)| *cursor == event_cursor)
+                        .map(|(event, _, _)| event.sequence))
+                }
+            })
+            .await?;
+        let to_sequence = if let Some(sequence) = branch_point_sequence {
+            sequence
+        } else {
+            self.db
+                .run_blocking(move |_| {
+                    event_store.sequence_for_transcript_cursor(&sid, event_cursor)
+                })
+                .await?
+        };
+        let event_store = self.react_engine.event_store.clone();
+        let sid = session_id.to_string();
+        self.db
+            .run_blocking(move |_| {
+                event_store.append_rollback(&sid, to_sequence, target_step, None)?;
+                Ok(())
+            })
+            .await?;
+
         let json = serde_json::to_string(&snapshot)?;
         self.db.save_react_state(session_id, &json)?;
 
@@ -327,25 +412,41 @@ impl AgentLayer {
         // boundary for this error (after an app restart it can be several
         // completed steps old). Only an explicit failed-stream marker makes
         // this attempt's branch point safe to truncate.
-        if let Some(state_json) = self.db.get_react_state(session_id)? {
-            let snapshot = ReActSnapshot::from_json(&state_json)?;
-            if let Some(error_partial_message_ids) = snapshot.error_partial_message_ids {
-                if let Some(cutoff) = snapshot
-                    .branch_points
-                    .get(&snapshot.step_number)
-                    .and_then(|bp| bp.last_msg_at.as_deref())
-                {
-                    // The marker is saved immediately after save_branch_point
-                    // in persist_partial_on_error, so this range belongs to
-                    // the known failed attempt, including its step projection.
-                    self.db.truncate_session_after(session_id, cutoff, false)?;
-                } else {
-                    // A partially persisted error snapshot may lack a branch
-                    // point. Its explicit recovery IDs are still safe.
-                    self.db
-                        .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
+        match self.db.get_react_state(session_id) {
+            Ok(Some(state_json)) => match ReActSnapshot::from_json(&state_json) {
+                Ok(snapshot) => {
+                    if let Some(error_partial_message_ids) = snapshot.error_partial_message_ids {
+                        if let Some(cutoff) = snapshot
+                            .branch_points
+                            .get(&snapshot.step_number)
+                            .and_then(|bp| bp.last_msg_at.as_deref())
+                        {
+                            // The marker is saved immediately after
+                            // save_branch_point in persist_partial_on_error,
+                            // so this range belongs to the known failed
+                            // attempt, including its step projection.
+                            self.db.truncate_session_after(session_id, cutoff, false)?;
+                        } else {
+                            // A partially persisted error snapshot may lack a
+                            // branch point. Its explicit recovery IDs are
+                            // still safe.
+                            self.db
+                                .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
+                        }
+                    }
                 }
-            }
+                Err(error) => tracing::warn!(
+                    session_id,
+                    error = %error,
+                    "ignoring corrupt snapshot while continuing from durable session events"
+                ),
+            },
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                session_id,
+                error = %error,
+                "ignoring unreadable snapshot while continuing from durable session events"
+            ),
         }
         // Clear after join + truncation so unwind persists cannot leave a
         // stale-high cutoff in the mid-run branch-point cache. Invalidate

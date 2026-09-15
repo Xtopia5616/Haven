@@ -3,7 +3,6 @@
 	import {
 		addNotification,
 		recordingOverlay,
-		activeSessionIdStore,
 		modelStateStore,
 		activeConversationStatusStore,
 		updateModelState,
@@ -12,11 +11,14 @@
 		removeAction,
 		refreshActions,
 		actionStore,
-		sessionStore,
 		cancelAction,
 		resumeTargetStore,
-		clearSessionInteractions,
 	} from '$lib/stores.ts';
+	import {
+		appSessionReducer,
+		backgroundActionResultContent,
+		sessionStateStore,
+	} from '$lib/sessionReducer.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
 	import { invoke, isTauri } from '$lib/tauri.ts';
@@ -178,14 +180,18 @@
 	function openTaskSession(sessionId) {
 		if (!sessionId) return;
 		resumeTargetStore.set({ sessionId, wasError: false });
-		activeSessionIdStore.set(sessionId);
+		appSessionReducer.dispatch({ type: 'session/selected', sessionId });
 		switchTab('chat');
 	}
 
 	function startNewSessionFromTasks() {
-		const currentSessionId = get(activeSessionIdStore);
-		if (currentSessionId) clearSessionInteractions(currentSessionId);
-		activeSessionIdStore.set(null);
+		const currentSessionId = appSessionReducer.getState().activeSessionId;
+		if (currentSessionId)
+			appSessionReducer.dispatch({
+				type: 'session/memory-cleared',
+				sessionId: currentSessionId,
+			});
+		appSessionReducer.dispatch({ type: 'session/cleared' });
 		switchTab('chat');
 	}
 	let theme = $state(themeStore.currentTheme);
@@ -239,9 +245,8 @@
 	// `null` = probe in-flight / never completed (show 检测中, never a false
 	// 就绪).
 	let llmConnected = /** @type {string | null} */ ($state(null));
-	let llmConnectionReport = /** @type {import('$lib/llmConnection.ts').LlmConnectionReport | null} */ (
-		$state(null)
-	);
+	let llmConnectionReport =
+		/** @type {import('$lib/llmConnection.ts').LlmConnectionReport | null} */ ($state(null));
 	let llmProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
 	let llmProbeInFlight = false;
 	let llmProbeFailureStreak = 0;
@@ -294,7 +299,8 @@
 		const previous = llmConnected;
 		llmConnectionReport = report;
 		llmConnected = report.status;
-		llmProbeFailureStreak = report.status === 'ready' ? 0 : Math.min(llmProbeFailureStreak + 1, 4);
+		llmProbeFailureStreak =
+			report.status === 'ready' ? 0 : Math.min(llmProbeFailureStreak + 1, 4);
 
 		// A probe runs repeatedly, so notify only when the user-visible state
 		// changes. The first disconnected result is still important at startup.
@@ -303,7 +309,11 @@
 		} else if (report.status === 'ready' && previous === 'disconnected') {
 			addNotification(formatLlmConnectionRecovery(report), 'success', 3000);
 		} else if (report.status === 'unconfigured' && previous && previous !== 'unconfigured') {
-			addNotification('默认模型未配置，请到模型设置填写 Provider、模型和 API Key', 'warning', 4000);
+			addNotification(
+				'默认模型未配置，请到模型设置填写 Provider、模型和 API Key',
+				'warning',
+				4000,
+			);
 		}
 	}
 	async function probeLlmConnection() {
@@ -463,8 +473,9 @@
 	const runningActionCount = $derived(runningBackgroundActions.length);
 	// Active chat is plain-paused while its own background action(s) still run
 	// — titlebar should say "等待后台任务" so it does not look idle/ready.
-	let activeSessionId = $state(/** @type {string | null} */ (null));
-	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
+	let sessionState = $state(appSessionReducer.getState());
+	$effect(() => syncStore(sessionStateStore, (v) => (sessionState = v)));
+	const activeSessionId = $derived(sessionState.activeSessionId);
 	const awaitingBackgroundActive = $derived.by(() => {
 		if (!activeSessionId) return false;
 		const st = sessions.find((t) => t.id === activeSessionId)?.status;
@@ -478,8 +489,7 @@
 
 	// Session titles for background-action rows; mirrored from the chat page's
 	// loadSessions().
-	let sessions = /** @type {Array<any>} */ ($state([]));
-	$effect(() => syncStore(sessionStore, (v) => (sessions = v)));
+	const sessions = $derived(sessionState.sessions);
 
 	// While the panel is open, re-render once a second so countdowns tick.
 	let countdownTick = $state(0);
@@ -562,7 +572,9 @@
 		if (isTauri()) {
 			invoke('get_tools')
 				.then((result) => setToolManifests(result?.tools))
-				.catch((error) => logger.debug('+layout', 'tool manifest warmup unavailable', error));
+				.catch((error) =>
+					logger.debug('+layout', 'tool manifest warmup unavailable', error),
+				);
 		}
 		removeGlobalErrorHandlers = installGlobalErrorHandlers();
 		// Keep the static shell above the live DOM until it has had a paint pass.
@@ -839,7 +851,7 @@
 						// state — not a guessed "slow" label. Cleared by the next chunk
 						// (streaming) or a terminal session event (ready/error).
 						const data = event.payload;
-						const activeId = get(activeSessionIdStore);
+						const activeId = appSessionReducer.getState().activeSessionId;
 						if (data.sessionId && activeId && data.sessionId !== activeId) return;
 						updateModelState('stalled');
 					},
@@ -889,11 +901,20 @@
 						const p = event.payload;
 						if (p.kind === 'background') {
 							upsertAction(p);
+							const content = backgroundActionResultContent(p);
+							if (content) {
+								appSessionReducer.dispatch({
+									type: 'session/background-result',
+									sessionId: p.sessionId,
+									actionId: p.id,
+									content,
+								});
+							}
 							// A background action finishing is only worth a toast when the
 							// user is not already watching its owning session (the result
 							// also lands in the session's conversation).
 							if (p.status === 'completed' || p.status === 'failed') {
-								const activeId = get(activeSessionIdStore);
+								const activeId = appSessionReducer.getState().activeSessionId;
 								if (!p.sessionId || p.sessionId !== activeId) {
 									const label = p.status === 'completed' ? '完成' : '失败';
 									addNotification(
@@ -973,7 +994,9 @@
 			{runtime}
 			{bootstrapReady}
 			{llmConnected}
-			llmConnectionDetail={llmConnectionReport ? llmConnectionReasonText(llmConnectionReport.reason) : null}
+			llmConnectionDetail={llmConnectionReport
+				? llmConnectionReasonText(llmConnectionReport.reason)
+				: null}
 			{awaitingBackgroundActive}
 			{runningActionCount}
 			{pendingScheduledActions}

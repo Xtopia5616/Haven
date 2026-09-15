@@ -161,6 +161,13 @@ RunEngine（纯 ReAct 状态机）
 
 更彻底的目标是新增版本化的 `session_events` append-only 存储：每个事件有 `session_id`、单调 `sequence`、事件类型、payload、时间和 run/step identity。`ReActSnapshot` 只保留为定期 checkpoint/cache，不再是唯一持久化真源。`messages`、`session_steps`、usage、action 和 UI live stream 都从同一批已提交事件投影；实时订阅按 sequence 重放，断线后从最后 sequence 继续。
 
+该项已完成首条完整迁移链（2026-09-15）：`haven_memory::SessionEventStore`
+提供版本化 append、按 sequence replay、提交后 live broadcast，以及用
+`timeline_rollback` marker 表达回退；ReAct transcript 与 branch point 已写入
+事件流，resume 优先 replay 事件，旧 snapshot 仅在事件流为空时一次性导入，
+rollback 保留 append-only 历史。后续可在同一事件 envelope 上继续迁移 usage、action
+和 Tauri/UI reducer；本次不保留第二套 snapshot-less transcript projector。
+
 这样可以直接消除或显著收窄：
 
 - 整块 snapshot 每步重写和长会话的 O(n) 持久化成本；
@@ -746,7 +753,7 @@ provider discovery 与 provider CRUD（两者共享同一模型缓存和引用�
 - 不把 `haven-agent`、`haven-tools`、`haven-llm` 直接拆成多个 crate。
 - 不因为 `openai.rs`、`openai_responses.rs`、`anthropic.rs` 各约 2.5k 行就立即拆 provider crate；每个文件约一半是协议测试，先考虑把测试按 provider 移到独立测试模块。
 - 不拆 `memory/src/repositories/facts.rs` 的生产 facade；当前总计约 1,963 行，图谱写入、查询和维护已经分别位于其他模块。
-- 机械拆分阶段不修改 ReAct X12 写路径、`ReActSnapshot.events` 恢复权威、消息/步骤投影、rollback 双时钟或任何数据库 schema；进入第 2.3/2.4/2.5 的明确重构任务后，按对应 ADR 处理这些边界。
+- 机械拆分阶段不修改已完成的 ReAct X12 事件写路径、消息/步骤投影、rollback 双时钟或数据库 schema；`session_events` cutover 已按 ADR 0159 落地，后续阶段只在同一 event envelope 上迁移 usage/action/UI reducer。
 - 机械拆分阶段不借机修改 provider wire payload、工具重试、安全确认、IPC event shape 或 UI 交互；provider adapter、AuthorizationEngine、Tauri bridge、ConfigService 和 ToolOperation 的概念级调整必须在各自任务中单独验收。
 
 ## 5. 可选的 crate 级后续方向

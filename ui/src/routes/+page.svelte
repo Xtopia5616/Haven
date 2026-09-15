@@ -2,11 +2,7 @@
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import {
-		buildResumeMessages,
-		mergeLiveStreaming,
-		isDisplayOnlyMessageId,
-	} from '$lib/resumeMessages.ts';
+	import { buildResumeMessages, isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
 	import {
 		pickContinueStrategy,
 		shouldResubmitOriginalUser,
@@ -21,7 +17,11 @@
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
-	import { SessionReducer } from '$lib/sessionReducer.ts';
+	import {
+		appSessionReducer,
+		sessionStateStore,
+		resumeInteractions,
+	} from '$lib/sessionReducer.ts';
 	import {
 		buildTokenUsageDetails,
 		buildTokenUsageTooltip,
@@ -31,7 +31,6 @@
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
 	import {
-		actionEventListeners,
 		agentEventListeners,
 		appEventListeners,
 		registerListeners,
@@ -49,33 +48,16 @@
 		updateModelState,
 		modelStateStore,
 		refreshActions,
-		finalizeBackgroundActionMessages,
 		actionStore,
 		mediaPlanStore,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
 		interactionStore,
-		hydrateInteractions,
-		resolveInteraction,
-		clearSessionInteractions,
+		toolOutputPreviewStore,
 	} from '$lib/stores.ts';
-	import {
-		sessionMessagesStore,
-		updateSessionMessages,
-		adoptDraftMessages,
-		clearSessionMessages,
-		clearSeqMap,
-		DRAFT_KEY,
-	} from '$lib/sessionMessages.ts';
-	import {
-		sessionTokenStatsStore,
-		clearSessionTokenStats,
-		restoreSessionTokenStats,
-		sessionLlmUsageStore,
-		restoreSessionLlmUsage,
-		clearSessionLlmUsage,
-	} from '$lib/sessionUsage.ts';
-	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
+	import { sessionMessagesStore, DRAFT_KEY } from '$lib/sessionMessages.ts';
+	import { sessionTokenStatsStore, sessionLlmUsageStore } from '$lib/sessionUsage.ts';
+	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import {
 		CHAT_SCROLL_SETTLED_THRESHOLD,
@@ -112,37 +94,35 @@
 	});
 	let messages = /** @type {Array<any>} */ ($state([]));
 	let initialLoading = $state(true);
-	const sessionReducer = new SessionReducer();
+	const sessionReducer = appSessionReducer;
 	let sessionState = $state(sessionReducer.getState());
 
-	/** Dispatch the only session state mutation path and mirror its public stores. */
 	/** @param {import('$lib/sessionReducer.ts').SessionAction} action */
 	function dispatchSession(action) {
-		const previous = sessionState;
-		const next = sessionReducer.dispatch(action);
-		sessionState = next;
-		if (next.sessions !== previous.sessions) sessionStore.set(next.sessions);
-		if (next.activeSessionId !== previous.activeSessionId) {
-			activeSessionIdStore.set(next.activeSessionId);
-		}
+		sessionReducer.dispatch(action);
 	}
+
+	// Legacy stores are read-only projections for shell/components that have not
+	// yet migrated. They never feed state back into this reducer.
+	$effect(() =>
+		syncStore(sessionStateStore, (next) => {
+			sessionState = next;
+			sessionStore.set(next.sessions);
+			activeSessionIdStore.set(next.activeSessionId);
+			if (next.messages) sessionMessagesStore.set(next.messages);
+			if (next.interactions) interactionStore.set(next.interactions);
+			if (next.tokenStats) sessionTokenStatsStore.set(next.tokenStats);
+			if (next.llmUsage) sessionLlmUsageStore.set(next.llmUsage);
+			if (next.toolOutputPreview) toolOutputPreviewStore.set(next.toolOutputPreview);
+		}),
+	);
 
 	const sessions = $derived(sessionState.sessions);
 	const activeSessionId = $derived(sessionState.activeSessionId);
 	// Interaction requests are shared by the ask cards and confirmation modal.
 	// The modal keeps only its current presentation id; pending requests remain
-	// owned by interactionStore so ask/confirm/scheduled-confirm cannot drift.
-	/** @type {Record<string, import('$lib/contracts/app.ts').InteractionRequest>} */
-	let interactionDict = $state({});
-	$effect(() =>
-		syncStoreImmediate(
-			interactionStore,
-			(value) => {
-				interactionDict = value;
-			},
-			() => get(interactionStore),
-		),
-	);
+	// owned by SessionReducer so ask/confirm/scheduled-confirm cannot drift.
+	const interactionDict = $derived(sessionState.interactions || {});
 	const pendingInteractions = $derived(
 		Object.values(interactionDict).filter((request) => request.status === 'pending'),
 	);
@@ -205,8 +185,8 @@
 	// in sync via `hotkey:rebind` so placeholders show the real value.
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
-	// Active session token stats (mirrored from sessionTokenStatsStore so this page
-	// can render a compact budget widget). Cleared when the active session
+	// Active session token stats (the legacy store is updated as a read-only
+	// projection for tool-card components). Cleared when the active session
 	// changes; updated on every `agent:usage` event.
 	/**
 	 * @typedef {object} SessionTokenStats
@@ -234,13 +214,13 @@
 
 	/** @type {SessionTokenStats | null} */
 	let tokenStats = $state(null);
-	$effect(() =>
-		syncStore(sessionTokenStatsStore, (m) => {
-			tokenStats = activeSessionId
-				? /** @type {SessionTokenStats | undefined} */ (m[activeSessionId]) || null
-				: null;
-		}),
-	);
+	$effect(() => {
+		tokenStats = activeSessionId
+			? /** @type {SessionTokenStats | undefined} */ (
+					sessionState.tokenStats?.[activeSessionId]
+				) || null
+			: null;
+	});
 	// Clear per-session stats when the active session changes so a stale entry
 	// from a previous session doesn't bleed into the new session's display.
 	$effect(() => {
@@ -256,11 +236,9 @@
 	// session-level token tooltip and call count.
 	/** @type {Array<import('$lib/sessionUsage.ts').LlmUsage>} */
 	let llmUsage = $state([]);
-	$effect(() =>
-		syncStore(sessionLlmUsageStore, (m) => {
-			llmUsage = activeSessionId ? m[activeSessionId] || [] : [];
-		}),
-	);
+	$effect(() => {
+		llmUsage = activeSessionId ? sessionState.llmUsage?.[activeSessionId] || [] : [];
+	});
 	$effect(() => {
 		const _ = activeSessionId;
 		if (!activeSessionId) llmUsage = [];
@@ -544,6 +522,8 @@
 
 	async function confirmRollbackAction() {
 		const { stepNumber, role, content, msgId } = rollbackDialog;
+		const rollbackSessionId = activeSessionId;
+		if (!rollbackSessionId) return;
 		rollbackLoading = true;
 		try {
 			if (role === 'user') {
@@ -554,29 +534,29 @@
 				// User-message rollback: pause the session and put the message
 				// text back in the input box so the user can edit and re-send.
 				await invoke('rollback_session', {
-					sessionId: activeSessionId,
+					sessionId: rollbackSessionId,
 					targetStep: stepNumber,
 					pause: true,
 					targetMessageId: msgId,
 				});
-				clearSeqMap(/** @type {string} */ (activeSessionId));
-				clearStepBlockIds(activeSessionId);
+				dispatchSession({ type: 'session/replay-reset', sessionId: rollbackSessionId });
+				clearStepBlockIds(rollbackSessionId);
 				// The backend is the source of truth for what the rollback
 				// deleted (target message + its whole discarded timeline);
 				// rebuild from the DB instead.
-				await resyncSessionMessages(activeSessionId);
+				await resyncSessionMessages(rollbackSessionId);
 				inputRouterRef?.setDraft(content);
 				addNotification('已回退，请编辑后重新发送', 'info', 3000);
 			} else {
 				await invoke('rollback_session', {
-					sessionId: activeSessionId,
+					sessionId: rollbackSessionId,
 					targetStep: stepNumber,
 					pause: false,
 					targetMessageId: msgId,
 				});
-				clearSeqMap(/** @type {string} */ (activeSessionId));
-				clearStepBlockIds(activeSessionId);
-				await resyncSessionMessages(activeSessionId);
+				dispatchSession({ type: 'session/replay-reset', sessionId: rollbackSessionId });
+				clearStepBlockIds(rollbackSessionId);
+				await resyncSessionMessages(rollbackSessionId);
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
 		} catch (e) {
@@ -595,21 +575,15 @@
 		if (!sessionId) return;
 		try {
 			const result = await invoke('get_session_for_resume', { sessionId });
-			hydrateInteractions(result);
-			const dbMessages = buildResumeMessages(result);
-			// Rollback rebuilds the timeline from the truncated DB state, so the
-			// pre-rollback live messages in `existing` are STALE: their content
-			// was truncated out of the DB. Keep only live messages that are
-			// still streaming; finalized items are replaced by the authoritative
-			// DB copy until the in-flight output converges.
-			updateSessionMessages(sessionId, (existing) =>
-				mergeLiveStreaming(
-					dbMessages,
-					existing.filter((m) => m.streaming),
-				),
-			);
-			restoreSessionTokenStats(sessionId, result.usage);
-			restoreSessionLlmUsage(sessionId, result.llm_usage);
+			dispatchSession({
+				type: 'session/messages/resume-loaded',
+				sessionId,
+				messages: buildResumeMessages(result),
+				interactions: resumeInteractions(result),
+				usage: result.usage,
+				llmUsage: result.llm_usage,
+				preserveStreamingOnly: true,
+			});
 		} catch (e) {
 			reportError(e, { context: '+page', message: '同步消息失败', log: false });
 		}
@@ -617,10 +591,7 @@
 
 	function newSession() {
 		if (activeSessionId) {
-			clearSessionMessages(activeSessionId);
-			clearSessionTokenStats(activeSessionId);
-			clearSessionLlmUsage(activeSessionId);
-			clearSessionInteractions(activeSessionId);
+			dispatchSession({ type: 'session/memory-cleared', sessionId: activeSessionId });
 		}
 		// 新对话 = explicit fresh start. While `newSessionIntentStore` is set, no
 		// event-driven path may auto-assign an existing session (loadSessions
@@ -646,11 +617,7 @@
 	/** @param {string | null} sessionId */
 	function evictTerminalSessionMemory(sessionId) {
 		if (!sessionId || (activeSessionId && sessionId === activeSessionId)) return;
-		clearSessionMessages(sessionId);
-		clearSessionTokenStats(sessionId);
-		clearSessionLlmUsage(sessionId);
-		clearSeqMap(sessionId);
-		clearStepBlockIds(sessionId);
+		dispatchSession({ type: 'session/memory-cleared', sessionId });
 	}
 
 	/** @param {string} sessionId */
@@ -664,17 +631,18 @@
 		const prevActive = activeSessionId;
 		try {
 			const result = await invoke('get_session_for_resume', { sessionId });
-			hydrateInteractions(result);
-			const dbMessages = buildResumeMessages(result);
 			// Live tool cards and DB step badges share the same `step-*` id
 			// (minted by the backend when the action started), so the merge
 			// dedups them by id alone — a mid-step card keeps streaming its
 			// observation, the DB copy wins once it is finalized.
-			updateSessionMessages(sessionId, (existing) =>
-				mergeLiveStreaming(dbMessages, existing),
-			);
-			restoreSessionTokenStats(sessionId, result.usage);
-			restoreSessionLlmUsage(sessionId, result.llm_usage);
+			dispatchSession({
+				type: 'session/messages/resume-loaded',
+				sessionId,
+				messages: buildResumeMessages(result),
+				interactions: resumeInteractions(result),
+				usage: result.usage,
+				llmUsage: result.llm_usage,
+			});
 			// An explicit switch abandons the fresh-start intent: the chosen
 			// session becomes the active conversation (and may be auto-restored
 			// on the next app launch).
@@ -710,11 +678,7 @@
 		const endedId = activeSessionId;
 		try {
 			await invoke('end_session', { sessionId: endedId });
-			clearSessionMessages(endedId);
-			clearSessionTokenStats(endedId);
-			clearSessionLlmUsage(endedId);
-			clearSeqMap(endedId);
-			clearStepBlockIds(endedId);
+			dispatchSession({ type: 'session/memory-cleared', sessionId: endedId });
 		} catch (e) {
 			// The session is still alive server-side: keep the view attached to
 			// it so the user can retry. Clearing the pointer here would orphan a
@@ -744,7 +708,7 @@
 		if (!activeSessionId || continuePending) return;
 		continuePending = true;
 		const tid = activeSessionId;
-		const currentMessages = get(sessionMessagesStore)[tid] || [];
+		const currentMessages = sessionReducer.getMessages(tid);
 		// A retry can begin as soon as continue_session resolves. Keep only
 		// bubbles created after this point when merging its DB snapshot: every
 		// pre-existing bubble is either represented by the DB or was explicitly
@@ -766,18 +730,21 @@
 			// retained; stale pre-continue UI entries cannot leak back in.
 			try {
 				const result = await invoke('get_session_for_resume', { sessionId: tid });
-				hydrateInteractions(result);
-				updateSessionMessages(tid, (existing) => {
-					const dbMessages = buildResumeMessages(result);
-					const retryMessages = existing.filter((m) => !preContinueMessageIds.has(m.id));
-					return mergeLiveStreaming(dbMessages, retryMessages);
+				dispatchSession({
+					type: 'session/messages/resume-loaded',
+					sessionId: tid,
+					messages: buildResumeMessages(result),
+					interactions: resumeInteractions(result),
+					usage: result.usage,
+					llmUsage: result.llm_usage,
+					preserveStreamingOnly: true,
+					excludeMessageIds: [...preContinueMessageIds],
 				});
 			} catch (e) {
 				// Keep the current view until a later sync succeeds. A failed read
 				// is not evidence that any visible history is a failed partial.
 			}
-			clearSeqMap(tid);
-			clearStepBlockIds(tid);
+			dispatchSession({ type: 'session/replay-reset', sessionId: tid });
 			// Two strategies:
 			// - LLM mid-generation interrupt → send "继续" as a real user turn.
 			// - User message sent but agent never generated → pass the original
@@ -787,7 +754,7 @@
 			if (strategy.mode === 'continue') {
 				submitMessage(strategy.text, []);
 			} else {
-				const synced = get(sessionMessagesStore)[tid] || [];
+				const synced = sessionReducer.getMessages(tid);
 				if (shouldResubmitOriginalUser(synced, strategy.text)) {
 					submitMessage(strategy.text, []);
 				}
@@ -816,51 +783,30 @@
 	// a newer one.
 	let loadSessionsSeq = 0;
 
-	// Sync the Svelte store to a $state variable — $effect does NOT track
-	// get(store), so we must use .subscribe() to get reactive updates.
-	// Also read the current value once on mount via get(), otherwise values
-	// set before subscription (e.g. by history resume) are never received.
-	/** @type {Record<string, any[]>} */
-	let sessionMessagesDict = $state({});
-	$effect(() =>
-		syncStoreImmediate(
-			sessionMessagesStore,
-			(v) => {
-				sessionMessagesDict = v;
-			},
-			() => get(sessionMessagesStore),
-		),
-	);
-
-	// Derive visible messages for the current view.
+	// Visible messages are a projection of the reducer. Interaction metadata is
+	// joined by the stable request/message id, never by text or position.
 	$effect(() => {
-		const dict = sessionMessagesDict;
-		const interactions = interactionDict;
-		/** @param {any[]} list */
-		const projectInteractions = (list) =>
-			list.map((/** @type {any} */ message) => {
-				if (message?.type !== 'ask') return message;
-				const request = interactions[message.id];
-				if (!request || request.kind !== 'ask') return message;
-				/** @type {any} */
-				const response = request.response;
-				return {
-					...message,
-					options: request.options,
-					awaiting: request.status === 'pending',
-					resolved:
-						request.status === 'resolved'
-							? response?.ignored
+		const list = sessionState.messages?.[activeSessionId || DRAFT_KEY] || [];
+		const interactions = sessionState.interactions || {};
+		messages = list.map((message) => {
+			if (message.type !== 'ask') return message;
+			const request = interactions[message.id];
+			if (!request || request.kind !== 'ask') return message;
+			const response = /** @type {{ answer?: string; ignored?: boolean } | undefined} */ (
+				request.response
+			);
+			return {
+				...message,
+				options: request.options,
+				awaiting: request.status === 'pending',
+				resolved:
+					request.status === 'resolved'
+						? response?.ignored
 							? { ignored: true }
 							: { answer: response?.answer || '' }
-							: null,
-				};
-			});
-		if (activeSessionId) {
-			messages = Array.isArray(dict[activeSessionId]) ? projectInteractions(dict[activeSessionId]) : [];
-		} else {
-			messages = Array.isArray(dict[DRAFT_KEY]) ? projectInteractions(dict[DRAFT_KEY]) : [];
-		}
+						: null,
+			};
+		});
 	});
 
 	const activeSessionError = $derived(
@@ -902,31 +848,6 @@
 		autoFollow = true;
 		scrollToBottom();
 	});
-
-	// Follow external store writes back into the local state. The effect
-	// above mirrors state → store only; submit.ts writes the store directly
-	// when a submission creates a fresh session (its `SessionCreated` result never
-	// passes through this page), and the view must follow the new session
-	// instead of staying on the blank draft. Guarded with `!activeSessionId`
-	// (never override a session the user is actively viewing) AND the
-	// fresh-start intent (while the intent is pending, a background session
-	// creation must not hijack the blank draft — the submission that
-	// fulfills the intent clears it before writing the store).
-	$effect(() =>
-		syncStore(activeSessionIdStore, (id) => {
-			if (id) {
-				if (!activeSessionId && !get(newSessionIntentStore))
-					dispatchSession({ type: 'session/selected', sessionId: id });
-			} else if (activeSessionId) {
-				// An external writer nulled the store — the only path is the
-				// history page deleting/clearing the session that was active.
-				// Follow it so the chat never keeps pointing at a session that
-				// no longer exists (the +page's own writers always set the
-				// local state first, so this can never clobber a live view).
-				dispatchSession({ type: 'session/cleared' });
-			}
-		}),
-	);
 
 	function scrollToBottom() {
 		if (!messagesEl || dead || scrollRafPending) return;
@@ -1012,8 +933,11 @@
 	const streamEvents = createStreamEventAggregator({
 		getActiveSessionId: () => activeSessionId,
 		onActiveStream: () => updateModelState('streaming'),
+		dispatch: dispatchSession,
+		getBlockIds: (sessionId, stepNumber, runId) =>
+			sessionReducer.getBlockIds(sessionId, stepNumber, runId),
 	});
-	const { blockIdsOf, chunkHandler, clearStepBlockIds, flushChunksNow } = streamEvents;
+	const { chunkHandler, clearStepBlockIds, flushChunksNow } = streamEvents;
 
 	// Model discovery and default-model settings synchronization live outside the
 	// route component; this page only supplies Svelte state setters.
@@ -1168,14 +1092,18 @@
 					createChatSessionEventHandlers({
 						getActiveSessionId: () => activeSessionId,
 						isFreshSessionIntent: () => get(newSessionIntentStore),
-						adoptDraftMessages,
+						adoptDraftMessages: (sessionId) => {
+							const adopted = sessionReducer.getMessages(DRAFT_KEY).length > 0;
+							dispatchSession({ type: 'session/messages/adopt-draft', sessionId });
+							return adopted;
+						},
 						dispatchSession,
 						getSessionErrorId: () => sessionErrorId,
 						rememberSessionError,
 						forgetSessionError,
 						clearAskAwaiting: (sessionId) => {
 							clearAskAwaiting(sessionId);
-							clearSessionInteractions(sessionId);
+							dispatchSession({ type: 'session/interactions-cleared', sessionId });
 						},
 						evictTerminalSessionMemory,
 						clearStepBlockIds,
@@ -1219,22 +1147,13 @@
 				}),
 				...agentEventListeners(
 					createChatAgentEventHandlers({
-						getActiveSessionId: () => activeSessionId,
-						blockIdsOf,
 						chunkHandler,
 						flushChunksNow,
+						dispatchSession,
 					}),
 				),
-				...actionEventListeners({
-					'action:finished': (event) => {
-						// Persist terminal background output onto the tool card and
-						// clear actionId so a later refreshActions() cannot revert
-						// the card to the original "running" observation ack.
-						finalizeBackgroundActionMessages(event.payload);
-					},
-				}),
-				...appEventListeners(createChatInteractionEventHandlers()),
-				...agentEventListeners(createChatUsageEventHandlers()),
+				...appEventListeners(createChatInteractionEventHandlers({ dispatchSession })),
+				...agentEventListeners(createChatUsageEventHandlers({ dispatchSession })),
 			},
 			{ tag: '+page' },
 		);
@@ -1323,34 +1242,24 @@
 			// Stale response guard: a newer loadSessions call superseded this one.
 			if (seq !== loadSessionsSeq) return;
 			if (result && result.sessions) {
-				dispatchSession({ type: 'sessions/loaded', sessions: result.sessions });
+				const before = sessionReducer.getState();
+				dispatchSession({
+					type: 'sessions/loaded',
+					sessions: result.sessions,
+					autoSelect: !before.activeSessionId && !get(newSessionIntentStore),
+				});
+				const after = sessionReducer.getState();
 				// The active session can be ended (removed from the executor) while
 				// this page is open — e.g. a follow-up message targeting a
 				// terminal session is dropped server-side. Drop the stale pointer
 				// so the next message starts a new session instead of hitting the
 				// same terminal branch again.
 				if (
-					activeSessionId &&
-					!sessions.some((t) => t.id === activeSessionId) &&
-					!activeSessionError
+					after.activeSessionId &&
+					!after.sessions.some((t) => t.id === after.activeSessionId) &&
+					!after.error
 				) {
 					dispatchSession({ type: 'session/cleared' });
-				}
-				if (!activeSessionId && !get(newSessionIntentStore)) {
-					// Only auto-assign a session whose messages are actually in
-					// memory. A session that has no loaded messages here (e.g.
-					// its list was cleared by an earlier 新对话) must NOT be
-					// silently activated: the chat would render the blank
-					// welcome screen while activeSessionId still points at it,
-					// so the next typed message would be appended to that
-					// hidden session and the end button would target it.
-					const firstActive = sessions.find(
-						(t) =>
-							(isBusyStatus(t.status) || isPausedStatus(t.status)) &&
-							(get(sessionMessagesStore)[t.id] || []).length > 0,
-					);
-					if (firstActive)
-						dispatchSession({ type: 'session/selected', sessionId: firstActive.id });
 				}
 			}
 			// Session lifecycle changes may have reaped background actions (a session
@@ -1385,10 +1294,14 @@
 		// sees the real list (matches the previous sequential ordering) and a
 		// running/paused session auto-assigned by loadSessions wins over the restore.
 		await loadSessionsSettled;
-		if (activeSessionId && !sessions.some((t) => t.id === activeSessionId)) {
+		const current = sessionReducer.getState();
+		if (
+			current.activeSessionId &&
+			!current.sessions.some((t) => t.id === current.activeSessionId)
+		) {
 			dispatchSession({ type: 'session/cleared' });
 		}
-		if (activeSessionId) return;
+		if (sessionReducer.getState().activeSessionId) return;
 		let last;
 		try {
 			last = await invoke('get_last_conversation');
@@ -1400,19 +1313,26 @@
 		// the user clicked the new-session button while the lookup was in flight
 		// — don't clobber the live session (or the fresh draft) with the restored
 		// conversation.
-		if (!last?.session || activeSessionId || get(newSessionIntentStore)) return;
+		if (
+			!last?.session ||
+			sessionReducer.getState().activeSessionId ||
+			get(newSessionIntentStore)
+		)
+			return;
 		// A completed conversation is history: the user already ended it, so
 		// restoring it into the window adds nothing (and reopens it as
 		// Paused, resurrecting an ended session). It stays reachable via the
 		// history page; the window starts blank instead.
 		if (last.session.status === 'completed') return;
 		const wasError = isErrorStatus(last.session.status);
-		hydrateInteractions(last);
-		updateSessionMessages(last.session.id, (existing) =>
-			mergeLiveStreaming(buildResumeMessages(last), existing),
-		);
-		restoreSessionTokenStats(last.session.id, last.usage);
-		restoreSessionLlmUsage(last.session.id, last.llm_usage);
+		dispatchSession({
+			type: 'session/messages/resume-loaded',
+			sessionId: last.session.id,
+			messages: buildResumeMessages(last),
+			interactions: resumeInteractions(last),
+			usage: last.usage,
+			llmUsage: last.llm_usage,
+		});
 		dispatchSession({ type: 'session/selected', sessionId: last.session.id });
 		if (wasError) {
 			dispatchSession({
@@ -1442,7 +1362,7 @@
 	/** @param {string} text @param {any} [images] @param {any} [files] */
 	async function submitMessage(text, images, files) {
 		try {
-			const result = await submitTranscript(text, { images, files });
+			const result = await submitTranscript(text, { images, files, reducer: sessionReducer });
 			const createdId = processResultSessionId(result);
 			if (createdId) {
 				dispatchSession({ type: 'session/selected', sessionId: createdId });
@@ -1467,6 +1387,7 @@
 			askSelectionsReady = ready;
 		},
 		submitMessage,
+		reducer: sessionReducer,
 	});
 	const {
 		clearAskAwaiting,
@@ -1530,7 +1451,11 @@
 		// Resolve the shared request synchronously before awaiting IPC. This keeps
 		// a batched response from blocking the next request on the round trip.
 		const resolvedStep = stepId;
-		resolveInteraction(resolvedStep, { approved, effect, scope });
+		dispatchSession({
+			type: 'session/interaction-resolved',
+			id: resolvedStep,
+			response: { approved, effect, scope },
+		});
 		activeConfirmId = null;
 		confirmDialog = {
 			stepId: null,

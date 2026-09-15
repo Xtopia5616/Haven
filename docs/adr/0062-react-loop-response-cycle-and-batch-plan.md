@@ -23,7 +23,7 @@ durable transcript 的问题。
 - Run driver 计算本次 run 的绝对终点，并只把 `allow_tool_retry` 布尔策略传入
   Turn/ToolBatch。ToolBatch 不再解释 per-run budget；暂停后恢复的 run 仍可在其
   绝对终点前为工具失败安排下一轮。
-- 保持 `ReActSnapshot.events` 为唯一恢复权威，`apply_transcript` 为唯一 durable
+- 保持 `session_events` 为唯一恢复权威，`apply_transcript` 为唯一 durable
   transcript writer；不引入 snapshot、wire 或数据库兼容层。
 
 ## 替代方案
