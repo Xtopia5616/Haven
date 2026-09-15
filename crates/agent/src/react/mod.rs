@@ -1517,7 +1517,10 @@ mod tests {
             })
             .expect("raw managed media should leave a plan notice");
         assert!(text.contains("asset-0123456789abcdef0123456789abcdef"));
+        assert!(text.contains("asset_id=asset-0123456789abcdef0123456789abcdef"));
         assert!(text.contains("managed_file_ref"));
+        assert!(text.contains("previous tool result"));
+        assert!(text.contains("media(asset_id="));
         assert!(!text.contains(r"C:\Users\olive"));
     }
 

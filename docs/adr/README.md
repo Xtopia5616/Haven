@@ -163,3 +163,6 @@
 - [0159：SessionEventStore 与 append-only 会话事件流](0159-session-event-store.md)
 - [0160：UI 统一 typed SessionReducer 运行态](0160-ui-session-runtime-reducer.md)
 - [0161：ApplicationRuntime 统一应用生命周期](0161-application-runtime-lifecycle.md)
+- [0162：ToolsManager 的 core/runtime/builtins 边界](0162-tool-manager-boundaries.md)
+- [0163：AuthorizationEngine 统一 typed 授权模型](0163-typed-authorization-engine.md)
+- [0164：模型体验 P2 清单收口](0164-model-experience-p2-polish.md)

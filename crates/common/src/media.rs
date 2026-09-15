@@ -13,6 +13,11 @@ use serde::{Deserialize, Serialize};
 /// Runtime/storage identifier for a managed media asset.
 pub const MEDIA_ASSET_ID_PREFIX: &str = "asset";
 
+/// Stable model-facing guidance attached to every asset-producing result.
+/// Keeping the wording next to the shared result envelope prevents producer
+/// tools from drifting into path-based or content-based follow-up hints.
+pub const MEDIA_ASSET_NAVIGATION_NOTE: &str = "Prefer the asset_id from the previous tool result for follow-up media operations; do not guess or use a host path.";
+
 /// A safe, provider-neutral description of one managed or referenced asset.
 ///
 /// `content_hash` may be empty while an attachment is entering the managed
@@ -630,9 +635,10 @@ pub struct MediaReference {
 /// inventing a fake asset identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MediaResult {
-    pub operation: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub operation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -646,8 +652,9 @@ impl MediaResult {
         representation: Option<MediaRepresentationKind>,
     ) -> Self {
         Self {
-            operation: operation.into(),
             asset_id: Some(reference.asset_id.clone()),
+            notes: Some(MEDIA_ASSET_NAVIGATION_NOTE.into()),
+            operation: operation.into(),
             media: Some(reference),
             representation,
         }
@@ -655,8 +662,9 @@ impl MediaResult {
 
     pub fn device(operation: impl Into<String>) -> Self {
         Self {
-            operation: operation.into(),
             asset_id: None,
+            notes: None,
+            operation: operation.into(),
             media: None,
             representation: None,
         }

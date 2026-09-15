@@ -14,7 +14,7 @@ Haven 已经具备可恢复 PC agent 的骨架：runtime snapshot 固定环境�
 4. 只读操作和可能造成副作用的操作必须分开处理重试；
 5. `tools[]` 和 runtime snapshot 必须使用同一份能力判断。
 
-P1 还增加了独立的 operation view、文档页游标、原生视频 ContentPart、非阻断偏好/清单和可行动的 memory 空结果诊断；所有 operation-based builtin 的模型入口统一使用 `root.operation`，聚合实现只保留给 native/Tauri 和内部执行边界。
+P1 还增加了独立的 operation view、文档页游标、原生视频 ContentPart、非阻断偏好/清单和可行动的 memory 空结果诊断；所有 operation-based builtin 的模型入口统一使用 `root.operation`，聚合实现只保留给 native/Tauri 和内部执行边界。P2 体验清单也已收口：工具首层索引、媒体资产导航、请求表示标记、shell 语法提示和实时能力快照现在遵循同一套模型可见契约。
 
 ## P0：本轮已落地
 
@@ -92,13 +92,21 @@ provider tool name、权限矩阵、session catalog、历史恢复和旧步骤�
 - `haven.preferences_*` / `haven.checklist_*` 不产生 ask/confirm 暂停，且 session 之间互不泄漏。
 - memory 空结果包含来源诊断和建议动作，同时保持 `success=true`。
 
-## P2：体验打磨
+## P2：体验打磨（已完成）
 
-- 短工具索引改为“何时用 / 何时不用 / 关键 operation”三行，继续把 `tools[]` 作为 schema 权威。
-- 截图、附件和生成媒体结果把 `asset_id` 放在 observation 最前，并在 notes 明确“优先读取上一条 tool result 的 `asset_id`”。
-- 原始附件的请求投影附带 `media_plan: asset_id → representation` 短标记，说明该表示已经随请求发送；需要另一种表示时直接调用对应的 `media.*` view。
-- `shell` schema 顶部继续保留当前 default shell 的两条硬规则，并对更多明显 bash/cmd 语法提供预校验。
-- 能力状态继续扩展为 `web_search`、`vision/image`、`tts`、`stt` 的可用性，而不是模型名称或配置存在性。
+- 短工具索引按 family 输出“when to use / when not to use / key operations”三行，并只列少量代表性 operation；完整名称、参数和 schema 仍以 `tools[]` 与 `tool_catalog` 为权威。
+- 截图、附件和生成媒体结果统一将 `asset_id` 与导航 `notes` 放在 observation 前部；notes 明确要求优先读取上一条 tool result 的 `asset_id`，禁止猜测 host path。
+- 原始附件的请求投影附带 `media_plan: asset_id → representation` 短标记，说明该 representation 已随请求发送；需要另一种 representation 时直接调用对应的 `media.*` view。
+- `shell` schema 顶部保留当前 default shell 的链式语法硬规则，并在启动子进程前拦截明显的 bash/cmd 语法错配，例如 `$()`、POSIX assignment、`%VAR%` 和 `set NAME=value`。
+- runtime snapshot 只报告 `web_search`、`vision`、image generation、`stt`、audio recording 和 `tts` 的实时可用性，不再把模型名称或 endpoint 配置存在性当作能力。
+
+### P2 验收标准
+
+- 首层每个内置 capability family 都有三条标记明确的短提示；索引保持预算内，且不替代 `tools[]` 的完整 schema。
+- asset-producing observation 的顶层 JSON 以 `asset_id` 开始并带导航 notes；受管附件结果不泄露 host path，structured-first 裁剪优先保留这两个字段。
+- 含 raw media 的请求能看到 `media_plan` 标记，标明已发送的 representation 和下一步 `media(asset_id=...)` 入口；快照重放不会持久化该 UI-only 标记。
+- 明显 shell 语法错配在 spawn 前失败，错误包含 shell 选择建议；被引号包裹的普通文本不被误判。
+- runtime snapshot 不包含 `model_capabilities`，且 `image` 状态与 image-generation client、`vision`/`stt` 状态与实际路由和 dedicated client 一致。
 
 ## 不变量与安全边界
 

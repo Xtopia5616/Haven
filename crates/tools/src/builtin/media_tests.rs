@@ -409,6 +409,17 @@ async fn transcribe_provider_failure_keeps_full_media_navigation_reference() {
     assert_eq!(result.output["asset_id"], asset_id);
     assert_eq!(result.output["media"]["asset_id"], asset_id);
     assert_eq!(result.output["media"]["representation"], "managed_file_ref");
+    assert!(
+        result.output["notes"]
+            .as_str()
+            .unwrap()
+            .contains("previous tool result")
+    );
+    assert!(
+        serde_json::to_string(&result.output)
+            .unwrap()
+            .starts_with("{\"asset_id\":")
+    );
 }
 
 #[tokio::test]

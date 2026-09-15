@@ -766,7 +766,14 @@ impl ToolsManager {
         // Capturing and transcribing are separate capabilities: a recording
         // must remain available even when STT is temporarily unconfigured so
         // it can still produce an asset for a later `media.transcribe` call.
-        let recording = audio_pipeline.is_some();
+        // Match the same configured-pipeline check used by builtin
+        // registration so the prompt cannot advertise a pruned operation.
+        let recording = if let Some(pipeline) = audio_pipeline.as_ref() {
+            pipeline.recording_configured().await
+        } else {
+            false
+        };
+        let image_generation = self.runtime.image_gen_client.read().await.is_some();
         let tts = self.runtime.tts_client.read().await.is_some();
         let mcp_search_available = self
             .build_mcp_index()
@@ -795,6 +802,7 @@ impl ToolsManager {
         };
         RuntimeCapabilities {
             vision,
+            image_generation,
             transcription,
             recording,
             tts,
@@ -1995,6 +2003,7 @@ mod tests {
         let mgr = ToolsManager::new();
         let capabilities = mgr.runtime_capabilities().await;
         assert!(!capabilities.vision);
+        assert!(!capabilities.image_generation);
         assert!(!capabilities.transcription);
         assert!(!capabilities.recording);
         assert!(!capabilities.tts);

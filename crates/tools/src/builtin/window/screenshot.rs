@@ -44,22 +44,32 @@ impl WindowTool {
             .media_tool
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("media runtime is not wired"))?;
-        let mut output = serde_json::json!({
-            "operation": "observe",
-            "window": {
-                "window_id": resolved_window_id,
-                "title": resolved_title,
-                "pid": params.pid,
-            },
-            "elements": elements,
-            "count": count,
-        });
-        output["screenshot"] = media_tool.media_result_output_named(
+        let screenshot = media_tool.media_result_output_named(
             "screenshot",
             Some(&capture.asset),
             Some(haven_common::media::MediaRepresentationKind::ManagedFileRef),
             None,
         );
+        let mut output = serde_json::Map::new();
+        if let Some(asset_id) = screenshot.get("asset_id") {
+            output.insert("asset_id".into(), asset_id.clone());
+        }
+        if let Some(notes) = screenshot.get("notes") {
+            output.insert("notes".into(), notes.clone());
+        }
+        output.insert("operation".into(), serde_json::json!("observe"));
+        output.insert(
+            "window".into(),
+            serde_json::json!({
+                "window_id": resolved_window_id,
+                "title": resolved_title,
+                "pid": params.pid,
+            }),
+        );
+        output.insert("elements".into(), serde_json::json!(elements));
+        output.insert("count".into(), serde_json::json!(count));
+        output.insert("screenshot".into(), screenshot);
+        let mut output = Value::Object(output);
         if params.ocr.unwrap_or(false) {
             let ocr = media_tool
                 .run(

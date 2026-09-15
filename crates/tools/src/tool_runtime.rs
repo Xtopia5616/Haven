@@ -121,6 +121,7 @@ pub struct StartupWiring {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCapabilities {
     pub vision: bool,
+    pub image_generation: bool,
     pub transcription: bool,
     pub recording: bool,
     pub tts: bool,

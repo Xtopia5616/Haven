@@ -139,8 +139,8 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "Read the exact error and classify it b
 
 /// Per-tool supplementary usage guidance, rendered as a dedicated block of the
 /// main system prompt (via the `{tool_notes}` placeholder). Kept separate from
-/// the one-line tool index so each tool can carry richer "when to use / when
-/// not to use" advice without bloating the list.
+/// the compact three-line family index so each tool can carry richer "when to
+/// use / when not to use" advice without bloating the list.
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - Capability discovery has three layers: layer 1 is the family summary in this prompt (`system`, `agent`, `haven`, plus optional `skills`/`mcp`); layer 2 is a root such as `window` or `files`; layer 3 is one exact operation such as `window.screenshot`.\n\
 - Use `tool_catalog` with `{\"action\":\"list\"}` for the top-level family list. Use `{\"action\":\"list\",\"level\":\"tools\"}` for root names, `{\"action\":\"describe\",\"name\":\"window\"}` or `{\"action\":\"list\",\"level\":\"operations\",\"root\":\"window\"}` for a root's child operations, and `{\"action\":\"describe\",\"name\":\"window.screenshot\"}` for one operation's description and schema. Follow `next_cursor` for paged lists.\n\

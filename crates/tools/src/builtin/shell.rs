@@ -335,18 +335,19 @@ impl Tool for ShellTool {
         let shells = ["cmd", "powershell", "pwsh"];
         #[cfg(not(windows))]
         let shells = ["sh", "bash"];
+        let default_shell = self.default_shell.as_str();
         serde_json::json!({
             "type": "object",
             "additionalProperties": false,
+            "description": format!("Shell syntax is selected per call. The configured default is `{default_shell}`. Preflight checks reject obvious mismatches: Windows PowerShell 5.1 rejects unquoted && and ||; cmd accepts && and || but not bash substitutions such as $() or POSIX assignments; bash/sh reject cmd expansions such as %VAR% and set VAR=value. Long commands may use background=true; do not poll actions/status."),
             "properties": {
                 "command": { "type": "string", "minLength": 1, "description": "Shell command to execute" },
-                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
+                "shell": { "type": "string", "enum": shells, "description": format!("Which shell to run the command in (default: the shell configured in app settings — `{default_shell}`; pwsh requires PowerShell 7 installed). Match command syntax to this shell; PowerShell 5.1 uses `;` instead of `&&`/`||`." ) },
                 "silent": { "type": "boolean", "description": "Only use when the user explicitly requests a quiet tool card; never use it to conceal a side effect (the agent still receives the output)", "default": false },
                 "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. Prefer true for long-running work when later steps depend on the result. After launch, if nothing else useful can run in parallel, end your turn — the result is auto-pushed when the action finishes (do not poll).", "default": false },
                 "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the detected workspace root when this process is inside a repository; otherwise the shared Temp sandbox." }
             },
-            "required": ["command"],
-            "description": "Shell syntax is selected per call. Windows PowerShell 5.1: do not use && or ||; use ; or separate tool calls. cmd supports &&. pwsh (PowerShell 7) supports &&/||. Long commands may use background=true; do not poll actions/status."
+            "required": ["command"]
         })
     }
 
@@ -382,14 +383,109 @@ impl Tool for ShellTool {
 }
 
 fn validate_shell_command(shell: &str, command: &str) -> anyhow::Result<()> {
-    if shell.eq_ignore_ascii_case("powershell")
-        && (contains_unquoted_operator(command, "&&") || contains_unquoted_operator(command, "||"))
-    {
-        anyhow::bail!(
-            "shell syntax error before execution: Windows PowerShell does not support && or ||; use ';' or select cmd/pwsh"
-        );
+    match shell.to_ascii_lowercase().as_str() {
+        "powershell" => {
+            if contains_unquoted_operator(command, "&&")
+                || contains_unquoted_operator(command, "||")
+            {
+                anyhow::bail!(
+                    "shell syntax error before execution: Windows PowerShell 5.1 does not support && or ||; use ';' or select cmd/pwsh"
+                );
+            }
+        }
+        "cmd" => {
+            if contains_unquoted_operator(command, "$(")
+                || contains_unquoted_operator(command, "<(")
+                || starts_with_shell_construct(command, "export ")
+                || starts_with_shell_construct(command, "source ")
+                || starts_with_shell_construct(command, "set -")
+                || is_posix_assignment(command)
+            {
+                anyhow::bail!(
+                    "shell syntax error before execution: cmd does not support this bash/sh construct; use cmd syntax or select a POSIX shell"
+                );
+            }
+        }
+        "bash" | "sh"
+            if contains_unquoted_cmd_variable(command)
+                || starts_with_shell_construct(command, "@echo off")
+                || starts_with_shell_construct(command, "for /f")
+                || starts_with_shell_construct(command, "for /l")
+                || starts_with_shell_construct(command, "call :")
+                || starts_with_shell_construct(command, "goto ")
+                || starts_with_shell_construct(command, "set /")
+                || is_cmd_assignment(command) =>
+        {
+            anyhow::bail!(
+                "shell syntax error before execution: bash/sh does not support this cmd construct; use POSIX assignment/expansion syntax or select cmd"
+            );
+        }
+        _ => {}
     }
     Ok(())
+}
+
+fn starts_with_shell_construct(command: &str, construct: &str) -> bool {
+    command
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with(construct)
+}
+
+fn is_posix_assignment(command: &str) -> bool {
+    let first = command.split_whitespace().next().unwrap_or_default();
+    let Some((name, _value)) = first.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.chars().enumerate().all(|(index, ch)| {
+            (index == 0 && (ch == '_' || ch.is_ascii_alphabetic()))
+                || (index > 0 && (ch == '_' || ch.is_ascii_alphanumeric()))
+        })
+}
+
+fn is_cmd_assignment(command: &str) -> bool {
+    let trimmed = command.trim_start();
+    if !trimmed.to_ascii_lowercase().starts_with("set ") {
+        return false;
+    }
+    let value = trimmed[4..].trim_start();
+    contains_unquoted_operator(value, "=") || (value.starts_with('"') && value[1..].contains('='))
+}
+
+fn contains_unquoted_cmd_variable(command: &str) -> bool {
+    let chars: Vec<char> = command.chars().collect();
+    let mut quote = None;
+    for (index, ch) in chars.iter().enumerate() {
+        if let Some(active) = quote {
+            if *ch == active && (index == 0 || chars[index - 1] != '\\') {
+                quote = None;
+            }
+            continue;
+        }
+        if *ch == '\'' || *ch == '"' {
+            quote = Some(*ch);
+            continue;
+        }
+        if *ch != '%' {
+            continue;
+        }
+        let Some(end) = chars[index + 1..]
+            .iter()
+            .position(|candidate| *candidate == '%')
+        else {
+            continue;
+        };
+        let name = &chars[index + 1..index + 1 + end];
+        if !name.is_empty()
+            && name
+                .iter()
+                .all(|candidate| candidate.is_ascii_alphanumeric() || *candidate == '_')
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn contains_unquoted_operator(command: &str, operator: &str) -> bool {
@@ -449,6 +545,13 @@ mod tests {
     fn test_shell_tool_input_schema() {
         let schema = ShellTool::default().input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
+        assert!(
+            schema["description"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("preflight")
+        );
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(req.contains(&"command"));
@@ -474,6 +577,39 @@ mod tests {
         assert!(error.to_string().contains("does not support &&"));
         assert!(validate_shell_command("powershell", "Write-Output 'a && b'").is_ok());
         assert!(validate_shell_command("pwsh", "Write-Output one && Write-Output two").is_ok());
+    }
+
+    #[test]
+    fn cmd_validation_rejects_obvious_posix_constructs() {
+        for command in [
+            "echo $(Get-Date)",
+            "export NAME=value",
+            "source ./env.sh",
+            "NAME=value echo ready",
+        ] {
+            let error = validate_shell_command("cmd", command)
+                .expect_err("cmd should reject an obvious POSIX construct");
+            assert!(error.to_string().contains("before execution"));
+        }
+        assert!(validate_shell_command("cmd", "echo '$(not-a-command)'").is_ok());
+        assert!(validate_shell_command("cmd", "echo ok && echo ready").is_ok());
+    }
+
+    #[test]
+    fn posix_validation_rejects_obvious_cmd_constructs() {
+        for command in [
+            "echo %PATH%",
+            "set NAME=value",
+            "set \"NAME=value\"",
+            "for /f %i in (file) do @echo %i",
+            "@echo off",
+        ] {
+            let error = validate_shell_command("bash", command)
+                .expect_err("bash should reject an obvious cmd construct");
+            assert!(error.to_string().contains("before execution"));
+        }
+        assert!(validate_shell_command("bash", "echo '$PATH'").is_ok());
+        assert!(validate_shell_command("sh", "NAME=value echo ready").is_ok());
     }
 
     #[cfg(windows)]

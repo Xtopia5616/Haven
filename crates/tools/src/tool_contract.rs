@@ -939,6 +939,7 @@ impl ToolResult {
             "retryability",
             "outcome",
             "asset_id",
+            "notes",
             "path",
             "root",
             "next_offset",
@@ -996,6 +997,7 @@ const STRUCTURED_PRIORITY_KEYS: &[&str] = &[
     "retryability",
     "outcome",
     "asset_id",
+    "notes",
     "path",
     "root",
     "next_offset",
@@ -1013,7 +1015,7 @@ fn bounded_json_object(value: Value, max_chars: usize) -> String {
     let Value::Object(mut object) = value else {
         return serde_json::to_string(&value).unwrap_or_default();
     };
-    let full = serde_json::to_string(&object).unwrap_or_default();
+    let full = ordered_json_object(&object);
     if full.chars().count() <= max_chars {
         return full;
     }
@@ -1028,10 +1030,7 @@ fn bounded_json_object(value: Value, max_chars: usize) -> String {
     for key in keys.iter().rev() {
         if !STRUCTURED_PRIORITY_KEYS.contains(&key.as_str())
             && !object.get(key).is_some_and(Value::is_string)
-            && serde_json::to_string(&object)
-                .map(|s| s.chars().count())
-                .unwrap_or(0)
-                > max_chars
+            && ordered_json_object(&object).chars().count() > max_chars
         {
             object.remove(key);
         }
@@ -1050,11 +1049,7 @@ fn bounded_json_object(value: Value, max_chars: usize) -> String {
         let Some(Value::String(original)) = object.get(key).cloned() else {
             continue;
         };
-        if serde_json::to_string(&object)
-            .map(|s| s.chars().count())
-            .unwrap_or(0)
-            <= max_chars
-        {
+        if ordered_json_object(&object).chars().count() <= max_chars {
             break;
         }
         let mut low = 0usize;
@@ -1064,9 +1059,7 @@ fn bounded_json_object(value: Value, max_chars: usize) -> String {
             let mid = low + (high - low) / 2;
             let candidate = bounded_string(&original, mid);
             object.insert(key.clone(), Value::String(candidate.clone()));
-            let fits = serde_json::to_string(&object)
-                .map(|s| s.chars().count() <= max_chars)
-                .unwrap_or(false);
+            let fits = ordered_json_object(&object).chars().count() <= max_chars;
             if fits {
                 best = candidate;
                 low = mid.saturating_add(1);
@@ -1080,13 +1073,46 @@ fn bounded_json_object(value: Value, max_chars: usize) -> String {
         object.insert(key.clone(), Value::String(best));
     }
 
-    let rendered = serde_json::to_string(&object).unwrap_or_default();
+    let rendered = ordered_json_object(&object);
     if rendered.chars().count() <= max_chars {
         return rendered;
     }
     // Extremely small budgets cannot hold all field names and values. Keep a
     // bounded fallback; normal observation budgets preserve recovery keys.
     rendered.chars().take(max_chars).collect()
+}
+
+/// Serialize a JSON object with recovery fields first. `serde_json::Map`
+/// defaults to a sorted map in this workspace, so inserting priority fields
+/// first is not sufficient to protect them from prefix-based observation
+/// truncation; the model-facing bounded view needs an explicit key order.
+fn ordered_json_object(object: &Map<String, Value>) -> String {
+    let mut keys = Vec::with_capacity(object.len());
+    for key in STRUCTURED_PRIORITY_KEYS {
+        if object.contains_key(*key) {
+            keys.push((*key).to_owned());
+        }
+    }
+    for key in object.keys() {
+        if !STRUCTURED_PRIORITY_KEYS.contains(&key.as_str()) {
+            keys.push(key.clone());
+        }
+    }
+
+    let mut rendered = String::from("{");
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            rendered.push(',');
+        }
+        rendered.push_str(&serde_json::to_string(key).unwrap_or_default());
+        rendered.push(':');
+        rendered.push_str(
+            &serde_json::to_string(object.get(key).expect("key came from the object"))
+                .unwrap_or_default(),
+        );
+    }
+    rendered.push('}');
+    rendered
 }
 
 fn bounded_string(value: &str, max_chars: usize) -> String {
@@ -1956,6 +1982,7 @@ pub(crate) mod tests {
         let result = ToolResult::ok(json!({
             "content": "x".repeat(2_000),
             "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "notes": "Prefer the asset_id from the previous tool result",
             "mime_type": "image/png",
         }));
 
@@ -1963,6 +1990,10 @@ pub(crate) mod tests {
         assert!(
             observation.find("asset_id").unwrap() < observation.find("content").unwrap(),
             "asset handles must survive before large body fields: {observation}"
+        );
+        assert!(
+            observation.find("notes").unwrap() < observation.find("content").unwrap(),
+            "asset navigation notes must survive before large body fields: {observation}"
         );
         let parsed: Value = serde_json::from_str(&observation).expect("bounded JSON object");
         assert_eq!(parsed["asset_id"], "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");

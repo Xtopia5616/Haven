@@ -387,7 +387,7 @@ pub(crate) fn append_media_projection(
     {
         let asset_id = sanitize_prompt_field(&input.asset.asset_id, 96);
         content.push(ContentPart::text(format!(
-            "[media_plan: {asset_id} -> {representation}; this representation is already in the request; use media(asset_id={asset_id}) for another representation]"
+            "[media_plan: asset_id={asset_id} -> {representation}; this representation is already in the request; prefer reading asset_id from the previous tool result; use media(asset_id={asset_id}) for another representation]"
         )));
     }
 }

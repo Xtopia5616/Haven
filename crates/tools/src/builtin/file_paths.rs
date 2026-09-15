@@ -1,3 +1,4 @@
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
 use tokio::io::AsyncWriteExt;
@@ -314,7 +315,30 @@ pub(super) fn redact_managed_file_result(result: &mut ToolResult, asset: &Manage
         output.remove(key);
     }
     output.insert("asset_id".into(), serde_json::json!(asset.asset_id));
+    output
+        .entry("notes")
+        .or_insert_with(|| Value::String(haven_common::media::MEDIA_ASSET_NAVIGATION_NOTE.into()));
     if let Some(filename) = asset.filename.as_deref() {
         output.insert("filename".into(), serde_json::json!(filename));
     }
+    prioritize_asset_fields(output);
+}
+
+/// Put the opaque asset handle and its follow-up note at the head of a
+/// provider-facing result. The JSON order is not semantic, but it is useful
+/// when a bounded observation keeps the prefix and drops the tail.
+fn prioritize_asset_fields(output: &mut Map<String, Value>) {
+    let original = std::mem::take(output);
+    let mut ordered = Map::new();
+    for key in ["asset_id", "notes"] {
+        if let Some(value) = original.get(key) {
+            ordered.insert(key.to_owned(), value.clone());
+        }
+    }
+    for (key, value) in original {
+        if !matches!(key.as_str(), "asset_id" | "notes") {
+            ordered.insert(key, value);
+        }
+    }
+    *output = ordered;
 }

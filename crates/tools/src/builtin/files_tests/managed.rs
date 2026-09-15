@@ -20,6 +20,13 @@ use super::*;
         assert_eq!(result.output["content"], "managed content");
         assert_eq!(result.output["asset_id"], "asset-test");
         assert_eq!(result.output["filename"], "report.txt");
+        assert!(result.output["notes"]
+            .as_str()
+            .unwrap()
+            .contains("previous tool result"));
+        assert!(serde_json::to_string(&result.output)
+            .unwrap()
+            .starts_with("{\"asset_id\":"));
         assert!(result.output.get("path").is_none());
         assert!(
             !serde_json::to_string(&result.output)

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -408,6 +408,7 @@ struct ToolIndexGroup {
     when_to_use: Vec<String>,
     when_not_to_use: Vec<String>,
     roots: BTreeMap<String, usize>,
+    key_operations: BTreeSet<String>,
 }
 
 fn compact_index_text(value: &str, max_chars: usize) -> String {
@@ -418,6 +419,7 @@ fn compact_index_text(value: &str, max_chars: usize) -> String {
 const BUILTIN_INDEX_CHAR_BUDGET: usize = 4096;
 const SKILL_INDEX_CHAR_BUDGET: usize = 1024;
 const MCP_INDEX_CHAR_BUDGET: usize = 2048;
+const TOOL_INDEX_KEY_OPERATION_LIMIT: usize = 8;
 const CAPABILITY_INDEX_TOTAL_CHAR_BUDGET: usize =
     BUILTIN_INDEX_CHAR_BUDGET + SKILL_INDEX_CHAR_BUDGET + MCP_INDEX_CHAR_BUDGET;
 
@@ -468,9 +470,10 @@ fn catalog_group_prompt(group: ToolCatalogGroup) -> ToolPrompt {
     }
 }
 
-/// Render the first layer of the capability tree. The prompt keeps family and
-/// root names only; child operation names and schemas are available on demand
-/// through `tool_catalog` so the model does not have to memorize a flat list.
+/// Render the first layer of the capability tree. Each family has exactly
+/// three compact guidance lines. A small representative operation list makes
+/// the index actionable while `tools[]` and `tool_catalog` remain authoritative
+/// for complete names, arguments and schemas.
 fn render_tool_index(defs: &[ToolDef]) -> String {
     let mut groups = BTreeMap::<String, ToolIndexGroup>::new();
     for def in defs
@@ -489,18 +492,29 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
                 when_to_use: vec![orientation.when_to_use],
                 when_not_to_use: vec![orientation.when_not_to_use],
                 roots: BTreeMap::new(),
+                key_operations: BTreeSet::new(),
             });
         let root = compact_index_text(&tool_root(def), 96);
         *group.roots.entry(root).or_default() += 1;
+        let operation_names = def
+            .prompt
+            .as_ref()
+            .map(|prompt| prompt.key_operations.iter())
+            .into_iter()
+            .flatten()
+            .chain((def.prompt.is_none() && def.name.contains('.')).then_some(&def.name));
+        for operation in operation_names {
+            let operation = compact_index_text(operation, 128);
+            if !operation.is_empty() {
+                group.key_operations.insert(operation);
+            }
+        }
     }
 
     let mut rendered = String::new();
     for (family, group) in groups {
         let when_to_use = compact_index_text(&group.when_to_use.join("; "), 640);
         let when_not_to_use = compact_index_text(&group.when_not_to_use.join("; "), 420);
-        rendered.push_str(&format!(
-            "- {family}: use {when_to_use}; avoid {when_not_to_use}; roots: "
-        ));
         let roots = group
             .roots
             .into_iter()
@@ -513,8 +527,19 @@ fn render_tool_index(defs: &[ToolDef]) -> String {
                 format!("{root}({operation_count} {suffix})")
             })
             .collect::<Vec<_>>();
-        rendered.push_str(&roots.join("; "));
-        rendered.push('\n');
+        let key_operations = group
+            .key_operations
+            .into_iter()
+            .take(TOOL_INDEX_KEY_OPERATION_LIMIT)
+            .collect::<Vec<_>>();
+        let key_operations = if key_operations.is_empty() {
+            format!("roots: {}", roots.join("; "))
+        } else {
+            format!("{}; roots: {}", key_operations.join(", "), roots.join("; "))
+        };
+        rendered.push_str(&format!(
+            "- {family}:\n  when to use: {when_to_use}\n  when not to use: {when_not_to_use}\n  key operations: {key_operations}\n"
+        ));
     }
     rendered
 }
@@ -624,8 +649,8 @@ impl SystemPromptBuilder {
 
     /// Render host facts that are stable for the lifetime of a session. This
     /// is deliberately assembled from live runtime owners so the prompt does
-    /// not advertise a stale shell, TTS client, MCP list, or model slot after
-    /// settings hot-reload.
+    /// not advertise a stale shell, TTS client, MCP list, or media capability
+    /// after settings hot-reload.
     async fn render_runtime_snapshot(&self) -> String {
         let process_cwd = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
@@ -661,49 +686,6 @@ impl SystemPromptBuilder {
             .filter(|skill| skill.enabled)
             .count();
 
-        let model_capabilities = if let Some(router) = &self.router {
-            let mut states = Vec::new();
-            for role in [
-                EndpointRole::DefaultModel,
-                EndpointRole::ImageModel,
-                EndpointRole::AudioModel,
-                EndpointRole::EmbeddingModel,
-            ] {
-                let state = if router.is_role_configured(role).await {
-                    "configured"
-                } else {
-                    "unavailable"
-                };
-                states.push(format!("{}={state}", role.as_str()));
-            }
-            states.push(format!(
-                "vision={}",
-                if runtime_capabilities.vision {
-                    "available"
-                } else {
-                    "unavailable"
-                }
-            ));
-            states.push(format!(
-                "stt={}",
-                if runtime_capabilities.transcription {
-                    "available"
-                } else {
-                    "unavailable"
-                }
-            ));
-            states.push(format!(
-                "tts={}",
-                if runtime_capabilities.tts {
-                    "available"
-                } else {
-                    "unavailable"
-                }
-            ));
-            states.join(", ")
-        } else {
-            "router=unavailable".into()
-        };
         let context_window = if let Some(router) = &self.router {
             router
                 .context_window_for_role(EndpointRole::DefaultModel)
@@ -724,8 +706,7 @@ impl SystemPromptBuilder {
 - tool_default_cwd: {}\n\
 - tool_sandbox_cwd: {}\n\
 - default_shell: {}\n\
-- model_capabilities: {}\n\
-- runtime_capabilities: web_search={}, vision={}, stt={}, audio_recording={}, tts={}\n\
+- runtime_capabilities: web_search={}, vision={}, image={}, stt={}, audio_recording={}, tts={}\n\
 - context_budget: window_tokens={}, max_observation_chars={}, max_tools_per_request={}\n\
 - enabled_mcp_servers: {}\n\
 - discovered_skills: {}\n\
@@ -742,9 +723,13 @@ impl SystemPromptBuilder {
             runtime_value(tool_cwd),
             runtime_value(sandbox_cwd),
             runtime_value(shell),
-            model_capabilities,
             runtime_capabilities.web_search,
             if runtime_capabilities.vision {
+                "available"
+            } else {
+                "unavailable"
+            },
+            if runtime_capabilities.image_generation {
                 "available"
             } else {
                 "unavailable"
@@ -1679,8 +1664,10 @@ mod tests {
         assert!(prompt.contains("tool_default_cwd:"));
         assert!(prompt.contains("tool_sandbox_cwd:"));
         assert!(prompt.contains("workspace_root:"));
-        assert!(prompt.contains("model_capabilities:"));
         assert!(prompt.contains("runtime_capabilities:"));
+        assert!(prompt.contains("vision=unavailable"));
+        assert!(prompt.contains("image=unavailable"));
+        assert!(!prompt.contains("model_capabilities:"));
         assert!(prompt.contains("context_budget:"));
         assert!(prompt.contains("permissions:"));
         let closer = prompt.find("End of stable instructions.").unwrap();
@@ -1743,11 +1730,10 @@ mod tests {
 
         let index = render_tool_index(&defs);
         assert_eq!(index.matches("- system:").count(), 1);
-        assert!(index.contains("use Inspect or control the local PC"));
-        assert!(index.contains("avoid Do not use for Haven conversation state"));
+        assert!(index.contains("when to use: Inspect or control the local PC"));
+        assert!(index.contains("when not to use: Do not use for Haven conversation state"));
+        assert!(index.contains("key operations: files.read, files.write"));
         assert!(index.contains("files(2 operations)"));
-        assert!(!index.contains("files.read"));
-        assert!(!index.contains("files.write"));
         assert!(!index.contains("input_schema"));
     }
 
@@ -1787,8 +1773,15 @@ mod tests {
 
         let index = render_tool_index(&defs);
         assert!(index.contains("files(40 operations)"));
-        assert!(!index.contains("operation_00"));
+        assert!(index.contains("operation_00"));
         assert!(!index.contains("operation_39"));
+        assert_eq!(
+            index
+                .lines()
+                .filter(|line| line.contains("key operations:"))
+                .count(),
+            1
+        );
     }
 
     #[test]
