@@ -183,11 +183,6 @@
 		gap: var(--md-sys-space-sm);
 	}
 	.operation-item {
-		/* Keep the third-level operation cards compact and visually consistent. */
-		display: flex;
-		flex-direction: column;
-		min-height: 120px;
-		box-sizing: border-box;
 		padding: var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
