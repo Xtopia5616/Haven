@@ -99,7 +99,12 @@ impl ReActEngine {
         // Build one immutable provider projection. Durable canonical state is
         // never used as a scratch buffer by retries or provider repairs.
         let retry_nudge = state.take_retry_nudge();
-        let request_context = RequestContext::from_state(state, retry_nudge.as_ref());
+        let cached_message_tokens = self.estimate_canonical_tokens(session_id, state);
+        let request_context = RequestContext::from_state_with_estimate(
+            state,
+            retry_nudge.as_ref(),
+            Some(cached_message_tokens),
+        );
         if request_context.repairs() > 0 {
             tracing::warn!(
                 session_id,

@@ -603,6 +603,24 @@ impl InboxBus {
     pub(crate) fn claim_and_archive(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
+        self.claim_and_archive_unlocked(name)
+    }
+
+    /// Best-effort claim for heartbeat/background polling. It never waits for
+    /// the shared inbox lock; a concurrent sender or explicit messaging
+    /// operation owns the lock, so the caller can retry on its next cadence.
+    pub(crate) fn try_claim_and_archive(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<Vec<Envelope>>> {
+        validate_agent_name(name)?;
+        let Some(_lock) = LockGuard::try_acquire(&self.root)? else {
+            return Ok(None);
+        };
+        self.claim_and_archive_unlocked(name).map(Some)
+    }
+
+    fn claim_and_archive_unlocked(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
         self.ensure_dir()?;
         self.recover_processing_tmp_unlocked(name)?;
         let pending = self.processing(name);
@@ -1071,6 +1089,48 @@ struct LockGuard {
 }
 
 impl LockGuard {
+    /// Try one lock acquisition without sleeping. A stale lock is removed and
+    /// retried once so a crashed writer does not suppress the next poll, but a
+    /// live contender immediately returns `Ok(None)`.
+    fn try_acquire(root: &Path) -> anyhow::Result<Option<Self>> {
+        std::fs::create_dir_all(root)?;
+        let path = root.join(".lock");
+        let pid = std::process::id();
+        for attempt in 0..2 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    if let Err(error) = writeln!(f, "pid={pid}") {
+                        let _ = remove_lock_file(&path);
+                        return Err(error.into());
+                    }
+                    if let Err(error) = f.sync_all() {
+                        let _ = remove_lock_file(&path);
+                        return Err(error.into());
+                    }
+                    return Ok(Some(Self { path }));
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                    ) =>
+                {
+                    if attempt == 0 && lock_is_stale(&path)? {
+                        remove_lock_file(&path)?;
+                        continue;
+                    }
+                    return Ok(None);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(None)
+    }
+
     fn acquire(root: &Path) -> anyhow::Result<Self> {
         std::fs::create_dir_all(root)?;
         let path = root.join(".lock");
@@ -1352,6 +1412,26 @@ mod tests {
         assert!(bus.claim_and_archive("ses-b").unwrap().is_empty());
         let archive = std::fs::read_to_string(bus.archive("ses-b")).unwrap();
         assert_eq!(archive.lines().count(), 1);
+    }
+
+    #[test]
+    fn try_claim_returns_busy_without_waiting_for_global_lock() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let _held = LockGuard::acquire(bus.root()).unwrap();
+
+        let started = std::time::Instant::now();
+        let result = bus.try_claim_and_archive("ses-b").unwrap();
+
+        assert!(
+            result.is_none(),
+            "a live lock must defer the background poll"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "try_claim must not inherit the 15-second blocking lock timeout"
+        );
     }
 
     #[test]

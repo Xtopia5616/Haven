@@ -30,6 +30,10 @@ pub(crate) struct ReActState {
     pub(crate) events: Vec<TranscriptRecord>,
     pub(crate) canonical: Vec<CanonicalMessage>,
     pub(crate) branch_points: HashMap<u32, BranchPoint>,
+    /// Monotonic revision for the in-memory canonical projection.  The
+    /// token-estimate sidecar uses this instead of serializing the whole
+    /// transcript just to prove that its cached value is still current.
+    canonical_revision: u64,
     retry_nudge: Option<RetryNudge>,
 }
 
@@ -43,8 +47,25 @@ impl ReActState {
             events,
             canonical,
             branch_points,
+            canonical_revision: 0,
             retry_nudge: None,
         }
+    }
+
+    pub(crate) fn canonical_revision(&self) -> u64 {
+        self.canonical_revision
+    }
+
+    /// Mark a non-append canonical edit (for example a MEMORY fence refresh).
+    /// The next estimate will perform one full tokenization pass because the
+    /// prior append delta can no longer be trusted.
+    pub(crate) fn mark_canonical_changed(&mut self) {
+        self.canonical_revision = self.canonical_revision.wrapping_add(1);
+    }
+
+    /// Mark one message appended to the canonical projection.
+    pub(crate) fn mark_canonical_append(&mut self) {
+        self.mark_canonical_changed();
     }
 
     pub(crate) fn stage_retry_nudge(&mut self, tool_call_id: String, text: String) {
@@ -69,6 +90,7 @@ impl ReActState {
         self.events = vec![record];
         self.canonical = compacted;
         self.branch_points.clear();
+        self.mark_canonical_changed();
     }
 }
 

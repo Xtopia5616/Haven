@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -15,7 +14,6 @@ use std::sync::MutexGuard;
 use haven_common::types::CanonicalMessage;
 use haven_llm::{EndpointRole, ToolDefinition};
 use haven_tools::MessagingService;
-use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use crate::compactor::estimate_message_tokens;
@@ -353,40 +351,10 @@ impl Default for ToolDefCache {
 pub(super) struct TokenEstimate {
     msgs_len: usize,
     tokens: u32,
-    /// Fingerprint of the exact canonical prefix represented by `tokens`.
-    /// Length alone is not a valid cache key: rollback, repair, or a caller
-    /// can replace a message without changing the vector length.
-    fingerprint: [u8; 32],
-}
-
-struct FingerprintWriter(Sha256);
-
-impl io::Write for FingerprintWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.update(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn canonical_fingerprint(messages: &[CanonicalMessage]) -> [u8; 32] {
-    // Stream JSON directly into the digest instead of allocating one large
-    // Vec containing every message and every base64 attachment. A separator
-    // keeps [a, bc] distinct from [ab, c] without retaining serialized data.
-    let mut writer = FingerprintWriter(Sha256::new());
-    for message in messages {
-        if serde_json::to_writer(&mut writer, message).is_err() {
-            // Canonical messages currently serialize infallibly. If a future
-            // content part does not, the debug form remains deterministic and
-            // still cannot create a false cache hit for valid JSON.
-            writer.0.update(format!("{message:?}").as_bytes());
-        }
-        writer.0.update([0]);
-    }
-    writer.0.finalize().into()
+    /// Revision of the in-memory canonical projection represented by
+    /// `tokens`. The owner increments this whenever the projection changes;
+    /// no full JSON fingerprint is needed on the hot path.
+    revision: u64,
 }
 
 /// Per-session incremental token-estimate cache.
@@ -413,8 +381,12 @@ impl TokenEstimateCache {
         }
     }
 
-    pub(super) fn estimate(&self, session_id: &str, canonical: &[CanonicalMessage]) -> u32 {
-        let fingerprint = canonical_fingerprint(canonical);
+    pub(super) fn estimate(
+        &self,
+        session_id: &str,
+        canonical: &[CanonicalMessage],
+        revision: u64,
+    ) -> u32 {
         // Snapshot the prior entry under the lock; run tiktoken outside so
         // concurrent sessions are not serialized behind one mutex for the
         // whole estimate.
@@ -423,7 +395,8 @@ impl TokenEstimateCache {
             state.entries.get(session_id).cloned()
         };
         if let Some(entry) = &prior
-            && entry.fingerprint == fingerprint
+            && entry.revision == revision
+            && entry.msgs_len == canonical.len()
         {
             let mut state = self.cache.lock().unwrap();
             if state.entries.contains_key(session_id) {
@@ -433,19 +406,12 @@ impl TokenEstimateCache {
             return entry.tokens;
         }
 
-        let (new_msgs_len, new_tokens) = if let Some(entry) = prior
-            && entry.msgs_len < canonical.len()
-            && entry.fingerprint == canonical_fingerprint(&canonical[..entry.msgs_len])
-        {
-            (
-                canonical.len(),
-                entry
-                    .tokens
-                    .saturating_add(estimate_message_tokens(&canonical[entry.msgs_len..])),
-            )
-        } else {
-            (canonical.len(), estimate_message_tokens(canonical))
-        };
+        // A revision change without an explicit append notification means the
+        // projection may have been replaced or edited in place. Re-tokenize
+        // once rather than hashing every message on every turn. Normal
+        // transcript appends update this entry through `append_message` below.
+        let new_msgs_len = canonical.len();
+        let new_tokens = estimate_message_tokens(canonical);
         let mut state = self.cache.lock().unwrap();
         state.order.retain(|cached| cached != session_id);
         while state.entries.len() >= Self::CAPACITY && !state.entries.contains_key(session_id) {
@@ -460,11 +426,54 @@ impl TokenEstimateCache {
             TokenEstimate {
                 msgs_len: new_msgs_len,
                 tokens: new_tokens,
-                fingerprint,
+                revision,
             },
         );
         state.order.push_back(session_key);
         new_tokens
+    }
+
+    /// Extend a cached estimate after the canonical projection appended one
+    /// message. This is called at the single transcript projection boundary,
+    /// so subsequent turn-start checks remain O(1) with respect to history
+    /// length. If the cache is cold or the revision does not line up, leave it
+    /// untouched and let the next `estimate` rebuild it safely.
+    pub(super) fn append_message(
+        &self,
+        session_id: &str,
+        message: &CanonicalMessage,
+        canonical_len: usize,
+        revision: u64,
+    ) {
+        let can_append = {
+            let state = self.cache.lock().unwrap();
+            state.entries.get(session_id).is_some_and(|entry| {
+                entry.revision.saturating_add(1) == revision
+                    && entry.msgs_len.saturating_add(1) == canonical_len
+            })
+        };
+        if !can_append {
+            return;
+        }
+
+        // Keep the cache lock free while running the tokenizer. A concurrent
+        // replacement can invalidate this append; the second validation below
+        // then safely leaves the cache for the next full rebuild.
+        let message_tokens = estimate_message_tokens(std::slice::from_ref(message));
+        let mut state = self.cache.lock().unwrap();
+        let Some(entry) = state.entries.get_mut(session_id) else {
+            return;
+        };
+        if entry.revision.saturating_add(1) != revision
+            || entry.msgs_len.saturating_add(1) != canonical_len
+        {
+            return;
+        }
+        entry.tokens = entry.tokens.saturating_add(message_tokens);
+        entry.msgs_len = canonical_len;
+        entry.revision = revision;
+        state.order.retain(|cached| cached != session_id);
+        state.order.push_back(session_id.to_string());
     }
 
     pub(crate) fn remove(&self, session_id: &str) {
@@ -600,11 +609,11 @@ mod tests {
     fn token_estimate_cache_is_bounded_and_evicts_least_recently_used() {
         let cache = TokenEstimateCache::new();
         for index in 0..TokenEstimateCache::CAPACITY {
-            cache.estimate(&format!("ses-{index}"), &[]);
+            cache.estimate(&format!("ses-{index}"), &[], 0);
         }
-        cache.estimate("ses-0", &[]);
+        cache.estimate("ses-0", &[], 0);
 
-        cache.estimate("ses-overflow", &[]);
+        cache.estimate("ses-overflow", &[], 0);
 
         let state = cache.cache.lock().unwrap();
         assert_eq!(state.entries.len(), TokenEstimateCache::CAPACITY);
@@ -632,7 +641,7 @@ mod tests {
         let cache = TokenEstimateCache::new();
         let mut messages = vec![CanonicalMessage::user_text("short")];
         assert_eq!(
-            cache.estimate("ses-a", &messages),
+            cache.estimate("ses-a", &messages, 0),
             estimate_message_tokens(&messages)
         );
 
@@ -640,7 +649,7 @@ mod tests {
             "a substantially longer replacement message with different content",
         );
         assert_eq!(
-            cache.estimate("ses-a", &messages),
+            cache.estimate("ses-a", &messages, 1),
             estimate_message_tokens(&messages)
         );
     }
@@ -649,12 +658,31 @@ mod tests {
     fn token_estimate_cache_reuses_valid_prefix_for_appends() {
         let cache = TokenEstimateCache::new();
         let mut messages = vec![CanonicalMessage::user_text("first")];
-        let first = cache.estimate("ses-a", &messages);
+        let first = cache.estimate("ses-a", &messages, 0);
 
         messages.push(CanonicalMessage::user_text("second"));
-        let appended = cache.estimate("ses-a", &messages);
+        cache.append_message("ses-a", &messages[1], messages.len(), 1);
+        let appended = cache.estimate("ses-a", &messages, 1);
 
         assert_eq!(first, estimate_message_tokens(&messages[..1]));
         assert_eq!(appended, estimate_message_tokens(&messages));
+    }
+
+    #[test]
+    fn token_estimate_cache_rebuilds_after_non_append_revision() {
+        let cache = TokenEstimateCache::new();
+        let messages = vec![CanonicalMessage::user_text("first")];
+        let first = cache.estimate("ses-a", &messages, 0);
+
+        let replacement = vec![CanonicalMessage::user_text(
+            "a replacement with a different token cost",
+        )];
+        cache.append_message("ses-a", &replacement[0], replacement.len(), 1);
+        assert_eq!(
+            cache.estimate("ses-a", &replacement, 1),
+            estimate_message_tokens(&replacement),
+            "a mismatched append notification must not reuse stale tokens"
+        );
+        assert_ne!(first, estimate_message_tokens(&replacement));
     }
 }

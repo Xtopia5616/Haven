@@ -42,6 +42,12 @@ pub trait MessageTransport: std::fmt::Debug + Send + Sync {
     fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>>;
     fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome>;
     fn claim(&self, recipient: &str) -> anyhow::Result<Vec<Envelope>>;
+    /// Best-effort claim for background polling. `None` means the transport
+    /// is busy and the caller should retry later; the normal `claim` path may
+    /// wait for the transport lock.
+    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
+        self.claim(recipient).map(Some)
+    }
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()>;
     fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>>;
     fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>>;
@@ -111,6 +117,10 @@ impl MessageTransport for InboxBus {
         InboxBus::claim_and_archive(self, recipient)
     }
 
+    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
+        InboxBus::try_claim_and_archive(self, recipient)
+    }
+
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()> {
         InboxBus::ack_claimed(self, recipient, ids)
     }
@@ -151,6 +161,11 @@ pub trait SessionMailbox: Send + Sync {
     /// service can fall back to the cross-process transport.
     fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<Option<SendOutcome>>;
     fn claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
+    /// Session mailboxes are in-process and non-blocking by contract. The
+    /// default keeps custom mailbox implementations source-compatible.
+    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
+        self.claim(recipient)
+    }
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>>;
     fn last_received(&self, name: &str) -> anyhow::Result<Option<Option<Envelope>>>;
     fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Option<Envelope>>>;
@@ -409,6 +424,27 @@ impl MessagingService {
             recipient: recipient.to_string(),
             envelopes,
         })
+    }
+
+    /// Best-effort claim used by automatic heartbeat polling. Unlike
+    /// [`Self::claim`], it never waits on the file transport's global lock.
+    /// A `None` result is an ordinary busy/no-op outcome, not a delivery
+    /// failure.
+    pub fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<MessageClaim>> {
+        validate_agent_name(recipient)?;
+        let envelopes = if let Some(mailbox) = self.mailbox() {
+            match mailbox.try_claim(recipient)? {
+                Some(envelopes) => Some(envelopes),
+                None => self.transport.try_claim(recipient)?,
+            }
+        } else {
+            self.transport.try_claim(recipient)?
+        };
+        Ok(envelopes.map(|envelopes| MessageClaim {
+            service: self.clone(),
+            recipient: recipient.to_string(),
+            envelopes,
+        }))
     }
 
     pub fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>> {

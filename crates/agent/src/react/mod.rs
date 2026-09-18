@@ -1161,17 +1161,29 @@ impl ReActEngine {
 
     /// Incremental token estimate for a session's canonical message list.
     ///
-    /// The estimate is cached per session. Appends reuse the previous prefix
-    /// estimate, while a content fingerprint forces a full tokenization pass for
-    /// replacement, rollback, repair, or compaction changes. This preserves
-    /// the cheap append path without allowing equal-length histories to return
-    /// a stale token count.
-    pub(super) fn estimate_canonical_tokens(
-        &self,
-        session_id: &str,
-        canonical: &[CanonicalMessage],
-    ) -> u32 {
-        self.token_estimates.estimate(session_id, canonical)
+    /// The estimate is cached per session. Transcript appends update the
+    /// cached total at the projection boundary; replacement, rollback, repair,
+    /// or compaction increments the canonical revision and causes one safe
+    /// rebuild. This avoids serializing the whole history merely to validate a
+    /// cache hit.
+    pub(super) fn estimate_canonical_tokens(&self, session_id: &str, state: &ReActState) -> u32 {
+        self.token_estimates
+            .estimate(session_id, &state.canonical, state.canonical_revision())
+    }
+
+    /// Keep the token sidecar synchronized with the one canonical append
+    /// boundary. This is deliberately adjacent to the transcript projector so
+    /// callers cannot forget to invalidate the estimate when adding a message.
+    pub(super) fn note_canonical_append(&self, session_id: &str, state: &mut ReActState) {
+        state.mark_canonical_append();
+        if let Some(message) = state.canonical.last() {
+            self.token_estimates.append_message(
+                session_id,
+                message,
+                state.canonical.len(),
+                state.canonical_revision(),
+            );
+        }
     }
 
     /// Drop the per-session token-estimate cache entry (called alongside
@@ -1211,8 +1223,7 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        let cached_message_tokens =
-            self.estimate_canonical_tokens(&ctx.session_id, &state.canonical);
+        let cached_message_tokens = self.estimate_canonical_tokens(&ctx.session_id, state);
         let request_tokens = estimate_provider_request_tokens_with_message_estimate(
             &state.canonical,
             tool_defs,

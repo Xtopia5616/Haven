@@ -472,16 +472,15 @@ impl ReActEngine {
             reasoning_msg_id,
         );
         let started = std::time::Instant::now();
-        // RequestContext is already sanitized. Reuse the per-session message
-        // estimate (the fingerprint still detects retry nudges or repairs)
-        // and only add the request-scoped tool schema/overhead here.
-        let cached_message_tokens =
-            self.estimate_canonical_tokens(&ctx.session_id, request_context.messages());
+        // RequestContext carries the exact token estimate for its immutable
+        // provider-visible copy. Do not fingerprint the cloned request again
+        // during stream setup; retries create a new context with its own
+        // precise estimate.
         let estimated_input_tokens =
             crate::compactor::estimate_provider_request_tokens_with_message_estimate(
                 request_context.messages(),
                 tools,
-                cached_message_tokens,
+                request_context.message_tokens(),
             );
         let max_output_tokens = router
             .effective_output_tokens(role, estimated_input_tokens)

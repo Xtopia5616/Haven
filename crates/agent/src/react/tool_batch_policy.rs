@@ -155,9 +155,9 @@ impl ReActEngine {
         messages: &mut [CanonicalMessage],
         nudge: &str,
         failed_tool_call_id: Option<&str>,
-    ) {
+    ) -> bool {
         let Some(id) = failed_tool_call_id else {
-            return;
+            return false;
         };
         let idx = messages
             .iter()
@@ -165,7 +165,7 @@ impl ReActEngine {
             .position(|m| m.role == CanonicalRole::Tool && m.tool_call_id.as_deref() == Some(id))
             .map(|rev_i| messages.len() - 1 - rev_i);
         let Some(idx) = idx else {
-            return;
+            return false;
         };
         let msg = &mut messages[idx];
         if let Some(ContentPart::Text(text)) = msg.content.last_mut() {
@@ -174,6 +174,7 @@ impl ReActEngine {
         } else {
             msg.content.push(ContentPart::text(nudge));
         }
+        true
     }
 }
 

@@ -264,8 +264,17 @@ impl ContextSource {
         let poll_session_id = session_id_owned.clone();
         let read_service = service.clone();
         let claim =
-            match tokio::task::spawn_blocking(move || read_service.claim(&poll_session_id)).await {
-                Ok(Ok(claim)) => claim,
+            match tokio::task::spawn_blocking(move || read_service.try_claim(&poll_session_id))
+                .await
+            {
+                Ok(Ok(Some(claim))) => claim,
+                Ok(Ok(None)) => {
+                    // A sender or explicit messaging operation currently owns
+                    // the shared transport lock. Background polling must not
+                    // hold up the model turn; the next notification/cadence
+                    // will retry the claim.
+                    return PendingContextBatch::default();
+                }
                 Ok(Err(error)) => {
                     tracing::debug!("messaging inbox poll failed for {session_id}: {error}");
                     return PendingContextBatch::default();

@@ -71,10 +71,13 @@ impl LoopHooks for DefaultHooks {
                 Some(s) => s.input,
                 None => String::new(),
             };
-            patch
+            let changed = patch
                 .prompt_builder
                 .patch_canonical_memory_fence(&ctx.session_id, &description, &mut state.canonical)
                 .await;
+            if changed {
+                state.mark_canonical_changed();
+            }
         }
         let media_requirements = canonical_media_requirements(&state.canonical);
         // Resolve the exact per-session tool projection before compaction so

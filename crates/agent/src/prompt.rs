@@ -1182,12 +1182,12 @@ impl SystemPromptBuilder {
         session_id: &str,
         description: &str,
         canonical: &mut [CanonicalMessage],
-    ) {
+    ) -> bool {
         let Some(sys) = canonical.first_mut() else {
-            return;
+            return false;
         };
         if sys.role != CanonicalRole::System {
-            return;
+            return false;
         }
         let sections = self
             .build_memory_sections(description, Some(session_id))
@@ -1195,10 +1195,13 @@ impl SystemPromptBuilder {
         let block = Self::render_memory_block(&sections);
         for part in &mut sys.content {
             if let ContentPart::Text(text) = part {
-                *text = Self::patch_system_memory(text, &block);
-                return;
+                let patched = Self::patch_system_memory(text, &block);
+                let changed = *text != patched;
+                *text = patched;
+                return changed;
             }
         }
+        false
     }
 
     /// X2 / G7 (freeze-per-run): fully rebuild `canonical[0]` on resume —

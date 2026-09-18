@@ -8,22 +8,28 @@
 //! paths to each invent their own clone/append/sanitize sequence.
 
 use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_requirements};
+use crate::compactor::estimate_message_tokens;
 use crate::types::TranscriptRecord;
 use haven_common::media::{
     CapabilityProfile, MediaInput, MediaInputStrategy, MediaModality, MediaPlan,
     MediaProjectionMode, build_media_plan,
 };
 use haven_common::types::{CanonicalMessage, ContentPart};
+use std::sync::Arc;
 
 /// One immutable provider request snapshot.
 #[derive(Debug, Clone)]
 pub(crate) struct RequestContext {
-    messages: Vec<CanonicalMessage>,
+    messages: Arc<Vec<CanonicalMessage>>,
     /// Durable media metadata aligned to `messages[].content[]`. Provider
     /// `ContentPart` deliberately contains only wire-safe bytes, so planning
     /// from it alone would mint synthetic asset ids and break the producer →
     /// asset → consumer identity contract.
-    media_inputs: Vec<Vec<Option<MediaInput>>>,
+    media_inputs: Arc<Vec<Vec<Option<MediaInput>>>>,
+    /// Token cost of the exact provider-visible message copy. Keeping this
+    /// beside the immutable request view avoids fingerprinting the cloned
+    /// request again during stream setup.
+    message_tokens: u32,
     repairs: usize,
 }
 
@@ -33,27 +39,52 @@ impl RequestContext {
     /// Sanitization is deliberately performed exactly here, at the provider
     /// boundary. The repaired copy is never written back to `ReActState`.
     pub(super) fn from_state(state: &ReActState, retry_nudge: Option<&RetryNudge>) -> Self {
+        Self::from_state_with_estimate(state, retry_nudge, None)
+    }
+
+    /// Build from state while reusing the state-owned estimate when no
+    /// request-only mutation was needed. The canonical vector is still copied
+    /// once to preserve the durable projection's ownership boundary.
+    pub(super) fn from_state_with_estimate(
+        state: &ReActState,
+        retry_nudge: Option<&RetryNudge>,
+        cached_message_tokens: Option<u32>,
+    ) -> Self {
         let mut messages = state.canonical.clone();
+        let mut request_changed = false;
         if let Some(nudge) = retry_nudge {
-            ReActEngine::attach_failure_nudge(
+            request_changed = ReActEngine::attach_failure_nudge(
                 &mut messages,
                 &nudge.text,
                 Some(&nudge.tool_call_id),
             );
         }
         let media_inputs = media_inputs_for_state(state, &messages);
-        Self::from_messages(messages, media_inputs)
+        Self::from_messages(
+            messages,
+            media_inputs,
+            (!request_changed)
+                .then_some(cached_message_tokens)
+                .flatten(),
+        )
     }
 
     /// Build a new request view with a trailing, provider-only user
     /// instruction. Used by the cut-off retry. The original snapshot remains
     /// untouched, so retries cannot accidentally accumulate instructions.
     pub(super) fn with_user_instruction(&self, instruction: impl Into<String>) -> Self {
-        let mut messages = self.messages.clone();
-        let mut media_inputs = self.media_inputs.clone();
-        messages.push(CanonicalMessage::user_text(instruction));
+        let mut messages = self.messages.as_ref().clone();
+        let mut media_inputs = self.media_inputs.as_ref().clone();
+        let instruction = CanonicalMessage::user_text(instruction);
+        let instruction_tokens = estimate_message_tokens(std::slice::from_ref(&instruction));
+        messages.push(instruction);
         media_inputs.push(vec![None]);
-        Self::from_messages(messages, media_inputs)
+        Self {
+            messages: Arc::new(messages),
+            media_inputs: Arc::new(media_inputs),
+            message_tokens: self.message_tokens.saturating_add(instruction_tokens),
+            repairs: self.repairs,
+        }
     }
 
     /// Re-project raw media against the selected adapter's actual wire
@@ -65,10 +96,9 @@ impl RequestContext {
         capabilities: &CapabilityProfile,
         strategy: MediaInputStrategy,
     ) -> (Self, MediaPlan) {
-        let mut messages = self.messages.clone();
         let mut planned_inputs = Vec::new();
         let mut media_positions = Vec::new();
-        for (message_index, message) in messages.iter().enumerate() {
+        for (message_index, message) in self.messages.iter().enumerate() {
             for (part_index, _part) in message.content.iter().enumerate() {
                 let Some(input) = self
                     .media_inputs
@@ -86,6 +116,19 @@ impl RequestContext {
 
         let plan = build_media_plan(&planned_inputs, capabilities, strategy);
         let projected = haven_llm::media::project_media_plan(&plan, &planned_inputs).ok();
+        // Raw projections are already represented by the current canonical
+        // parts. In the common case capability selection is therefore just an
+        // Arc clone instead of a second deep copy of the full transcript.
+        if projected.is_some()
+            && plan.projections.len() == planned_inputs.len()
+            && plan.notices.is_empty()
+            && plan
+                .projections
+                .iter()
+                .all(|projection| projection.mode == MediaProjectionMode::Raw)
+        {
+            return (self.clone(), plan);
+        }
         let projected_by_asset = projected
             .into_iter()
             .flatten()
@@ -97,6 +140,7 @@ impl RequestContext {
             .map(|(message_index, part_index, asset_id)| ((message_index, part_index), asset_id))
             .collect::<std::collections::HashMap<_, _>>();
 
+        let mut messages = self.messages.as_ref().clone();
         for (message_index, message) in messages.iter_mut().enumerate() {
             let original = std::mem::take(&mut message.content);
             let mut content = Vec::with_capacity(original.len());
@@ -125,8 +169,9 @@ impl RequestContext {
         let repairs = crate::sanitize_canonical(&mut messages);
         (
             Self {
-                messages,
-                media_inputs: self.media_inputs.clone(),
+                message_tokens: estimate_message_tokens(&messages),
+                messages: Arc::new(messages),
+                media_inputs: Arc::clone(&self.media_inputs),
                 repairs,
             },
             plan,
@@ -134,11 +179,15 @@ impl RequestContext {
     }
 
     pub(super) fn messages(&self) -> &[CanonicalMessage] {
-        &self.messages
+        self.messages.as_slice()
+    }
+
+    pub(super) fn message_tokens(&self) -> u32 {
+        self.message_tokens
     }
 
     pub(super) fn media_requirements(&self) -> MediaRequirements {
-        canonical_media_requirements(&self.messages)
+        canonical_media_requirements(self.messages.as_slice())
     }
 
     /// Check whether every raw image/audio part can remain raw for a role.
@@ -193,6 +242,7 @@ impl RequestContext {
     fn from_messages(
         mut messages: Vec<CanonicalMessage>,
         mut media_inputs: Vec<Vec<Option<MediaInput>>>,
+        cached_message_tokens: Option<u32>,
     ) -> Self {
         let repairs = crate::sanitize_canonical(&mut messages);
         media_inputs.resize_with(messages.len(), Vec::new);
@@ -200,8 +250,13 @@ impl RequestContext {
             parts.resize(message.content.len(), None);
         }
         Self {
-            messages,
-            media_inputs,
+            message_tokens: if repairs == 0 {
+                cached_message_tokens.unwrap_or_else(|| estimate_message_tokens(&messages))
+            } else {
+                estimate_message_tokens(&messages)
+            },
+            messages: Arc::new(messages),
+            media_inputs: Arc::new(media_inputs),
             repairs,
         }
     }
