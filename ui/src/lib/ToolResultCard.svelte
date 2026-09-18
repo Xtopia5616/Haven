@@ -104,6 +104,11 @@
 	);
 	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
 	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
+	// Preview chunks are a display-only side channel. They may briefly be empty
+	// between output events, so they must not drive the disclosure lifecycle or
+	// a manual collapse can be reopened by the next chunk. The message/action
+	// lifecycle is the stable execution signal.
+	let executionActive = $derived(streaming || actionRunning);
 	let displayContent = $derived.by(() => {
 		if (actionRunning) {
 			const out =
@@ -150,14 +155,13 @@
 
 	// Keep live output visible while a tool is running, then collapse the card
 	// once its output is complete. Manual clicks after completion persist until
-	// the next streaming transition.
-	let cardOpen = $state(untrack(() => liveStreaming));
-	let lastStreaming = untrack(() => liveStreaming);
+	// the next execution transition.
+	let cardOpen = $state(untrack(() => executionActive));
+	let lastExecutionActive = untrack(() => executionActive);
 	$effect.pre(() => {
-		if (liveStreaming === lastStreaming) return;
-		if (liveStreaming) cardOpen = true;
-		else cardOpen = false;
-		lastStreaming = liveStreaming;
+		if (executionActive === lastExecutionActive) return;
+		cardOpen = executionActive;
+		lastExecutionActive = executionActive;
 	});
 	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));

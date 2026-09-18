@@ -90,6 +90,41 @@ describe('ConversationActivityGroup', () => {
 		expect(headers()[2].getAttribute('aria-expanded')).toBe('true');
 	});
 
+	it('keeps a running tool card manually collapsible across live output updates', async () => {
+		const message = (content: string) => ({
+			id: 'tool-running',
+			role: 'assistant',
+			content,
+			type: 'tool',
+			toolName: 'shell',
+			streaming: true,
+		});
+		const { container, rerender } = render(ConversationActivityGroup, {
+			entries: [{ message: message('第一段输出'), index: 0 }],
+			streaming: true,
+			toolCount: 1,
+			stepCount: 1,
+		});
+		const headers = () =>
+			Array.from(container.querySelectorAll('.md-collapsible-header')) as HTMLButtonElement[];
+		const toolHeader = headers()[1];
+
+		expect(toolHeader.getAttribute('aria-expanded')).toBe('true');
+		await fireEvent.click(toolHeader);
+		expect(toolHeader.getAttribute('aria-expanded')).toBe('false');
+
+		await rerender({
+			entries: [{ message: message('第二段输出'), index: 0 }],
+			streaming: true,
+			toolCount: 1,
+			stepCount: 1,
+		});
+		expect(headers()[1].getAttribute('aria-expanded')).toBe('false');
+
+		await fireEvent.click(headers()[1]);
+		expect(headers()[1].getAttribute('aria-expanded')).toBe('true');
+	});
+
 	it('keeps the collapsible work surface outlined around nested work entries', () => {
 		const toolMessage = {
 			...entry(false).message,

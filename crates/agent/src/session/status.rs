@@ -59,9 +59,12 @@ impl SessionSupervisor {
         match status {
             SessionStatus::Running => {
                 let cancel = self.cancellation_token(session_id).await;
+                // The UI command must not report success while a cancelled
+                // tool/turn can still publish output or release the run slot.
+                cancel.cancel();
+                self.await_run_finished(session_id).await;
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
-                cancel.cancel();
                 Ok(self.get_session_state(session_id).await == Some(SessionStatus::Paused))
             }
             SessionStatus::Pending => {
@@ -90,15 +93,15 @@ impl SessionSupervisor {
         };
         actor.cancel().cancel();
         self.cancel_session_actions(session_id).await;
+        // Keep terminal cleanup behind the run-exit fence. Otherwise the
+        // frontend can clear the session while the old handler is still alive,
+        // and a late tool result can race with the next session.
+        self.await_run_finished(session_id).await;
         if let Err(error) = self.partials.promote(session_id).await {
             tracing::warn!(session_id = %session_id, error = %error, "failed to promote session partial");
         }
         self.update_session_status(session_id, SessionStatus::Completed)
             .await?;
-        if !actor.is_running().await {
-            self.finish_ended_session(session_id, cascade).await;
-            self.remove_actor(session_id).await;
-        }
         Ok(SessionStatus::Completed)
     }
 

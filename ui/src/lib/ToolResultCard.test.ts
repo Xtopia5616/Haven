@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
-import { actionStore, upsertAction } from './stores.ts';
+import { actionStore, toolOutputPreviewStore, upsertAction } from './stores.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 
 const searchJson = (results: any[], extra: any = {}) =>
@@ -387,6 +388,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 
 afterEach(() => {
 	actionStore.set({});
+	toolOutputPreviewStore.set({});
 });
 
 describe('ToolResultCard raw', () => {
@@ -624,6 +626,28 @@ describe('ToolResultCard collapsible', () => {
 		expect(header.getAttribute('aria-expanded')).toBe('false');
 		await rerender({ streaming: true, content: '' });
 		expect(header.getAttribute('aria-expanded')).toBe('true');
+	});
+
+	it('does not reopen after a transient live-preview gap', async () => {
+		const messageId = 'step-preview-gap';
+		toolOutputPreviewStore.set({ [messageId]: 'first chunk' });
+		const { container, rerender } = render(ToolResultCard, {
+			toolName: 'shell',
+			messageId,
+			streaming: true,
+			content: '',
+		});
+		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+
+		await fireEvent.click(header);
+		expect(header.getAttribute('aria-expanded')).toBe('false');
+		await rerender({ streaming: false });
+		toolOutputPreviewStore.set({});
+		await tick();
+		toolOutputPreviewStore.set({ [messageId]: 'second chunk' });
+		await tick();
+
+		expect(header.getAttribute('aria-expanded')).toBe('false');
 	});
 });
 

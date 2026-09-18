@@ -934,6 +934,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn end_session_waits_for_an_active_run_to_exit() {
+        let exec = make_executor(1);
+        let session = exec.create_session("active end").await.unwrap();
+        let started = Arc::new(AtomicUsize::new(0));
+        let cancellation_seen = Arc::new(AtomicUsize::new(0));
+        let allow_exit = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicUsize::new(0));
+
+        let started_handler = started.clone();
+        let cancellation_seen_handler = cancellation_seen.clone();
+        let allow_exit_handler = allow_exit.clone();
+        let exited_handler = exited.clone();
+        let exec_handler = exec.clone();
+        let handler: RunHandler = Arc::new(move |session_id: String| {
+            let started = started_handler.clone();
+            let cancellation_seen = cancellation_seen_handler.clone();
+            let allow_exit = allow_exit_handler.clone();
+            let exited = exited_handler.clone();
+            let exec = exec_handler.clone();
+            Box::pin(async move {
+                started.store(1, Ordering::SeqCst);
+                let cancel = exec.cancellation_token(&session_id).await;
+                cancel.cancelled().await;
+                cancellation_seen.store(1, Ordering::SeqCst);
+                while allow_exit.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+                exited.store(1, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        exec.clone().start_dispatcher(handler);
+
+        for _ in 0..100 {
+            if started.load(Ordering::SeqCst) == 1 && exec.is_run_in_flight(&session.id).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(started.load(Ordering::SeqCst), 1, "handler should start");
+        assert!(
+            exec.is_run_in_flight(&session.id).await,
+            "run should be active"
+        );
+
+        let end = {
+            let exec = exec.clone();
+            let session_id = session.id.clone();
+            tokio::spawn(async move { exec.end_session(&session_id).await })
+        };
+
+        for _ in 0..100 {
+            if cancellation_seen.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            cancellation_seen.load(Ordering::SeqCst),
+            1,
+            "end_session should cancel the active run"
+        );
+        assert!(
+            !end.is_finished(),
+            "end_session must wait for the active run"
+        );
+        assert_eq!(exited.load(Ordering::SeqCst), 0);
+
+        allow_exit.store(1, Ordering::SeqCst);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), end)
+            .await
+            .expect("end_session should finish after the run exits")
+            .expect("end task should join")
+            .expect("end_session should succeed");
+        assert_eq!(result, SessionStatus::Completed);
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+        assert_eq!(exec.get_session_state(&session.id).await, None);
+    }
+
+    #[tokio::test]
     async fn interrupt_session_pauses_and_cancels_without_removing() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
@@ -953,6 +1033,89 @@ mod tests {
         );
         assert!(exec.get_session(&session.id).await.is_some());
         assert!(!exec.interrupt_session(&session.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn interrupt_session_waits_for_an_active_run_to_exit() {
+        let exec = make_executor(1);
+        let session = exec.create_session("active interrupt").await.unwrap();
+        let started = Arc::new(AtomicUsize::new(0));
+        let cancellation_seen = Arc::new(AtomicUsize::new(0));
+        let allow_exit = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicUsize::new(0));
+
+        let started_handler = started.clone();
+        let cancellation_seen_handler = cancellation_seen.clone();
+        let allow_exit_handler = allow_exit.clone();
+        let exited_handler = exited.clone();
+        let exec_handler = exec.clone();
+        let handler: RunHandler = Arc::new(move |session_id: String| {
+            let started = started_handler.clone();
+            let cancellation_seen = cancellation_seen_handler.clone();
+            let allow_exit = allow_exit_handler.clone();
+            let exited = exited_handler.clone();
+            let exec = exec_handler.clone();
+            Box::pin(async move {
+                started.store(1, Ordering::SeqCst);
+                let cancel = exec.cancellation_token(&session_id).await;
+                cancel.cancelled().await;
+                cancellation_seen.store(1, Ordering::SeqCst);
+                while allow_exit.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+                exited.store(1, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        exec.clone().start_dispatcher(handler);
+
+        for _ in 0..100 {
+            if started.load(Ordering::SeqCst) == 1 && exec.is_run_in_flight(&session.id).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(started.load(Ordering::SeqCst), 1, "handler should start");
+        assert!(
+            exec.is_run_in_flight(&session.id).await,
+            "run should be active"
+        );
+
+        let interrupt = {
+            let exec = exec.clone();
+            let session_id = session.id.clone();
+            tokio::spawn(async move { exec.interrupt_session(&session_id).await })
+        };
+
+        for _ in 0..100 {
+            if cancellation_seen.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            cancellation_seen.load(Ordering::SeqCst),
+            1,
+            "interrupt_session should cancel the active run"
+        );
+        assert!(
+            !interrupt.is_finished(),
+            "interrupt_session must wait for the active run"
+        );
+        assert_eq!(exited.load(Ordering::SeqCst), 0);
+
+        allow_exit.store(1, Ordering::SeqCst);
+        let paused = tokio::time::timeout(std::time::Duration::from_secs(2), interrupt)
+            .await
+            .expect("interrupt_session should finish after the run exits")
+            .expect("interrupt task should join")
+            .expect("interrupt_session should succeed");
+        assert!(paused);
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            exec.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
     }
 
     #[tokio::test]
