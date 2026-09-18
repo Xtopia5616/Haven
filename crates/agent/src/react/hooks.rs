@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use haven_common::types::CanonicalMessage;
-use haven_llm::LlmResponse;
+use haven_llm::{LlmResponse, ToolDefinition};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -72,6 +72,17 @@ pub(crate) struct AfterLlmInput<'a> {
     pub state: ResponsePolicyState,
 }
 
+/// Values prepared by the prologue for the rest of the turn.
+///
+/// Production hooks already resolve the session tool surface before deciding
+/// whether compaction is needed. Returning that immutable `Arc` avoids a
+/// second catalog-version lookup on the hot path; test hooks may leave it
+/// empty and let the turn build the surface itself.
+#[derive(Default)]
+pub(crate) struct BeforeStepOutput {
+    pub(crate) tool_definitions: Option<Arc<Vec<ToolDefinition>>>,
+}
+
 /// Extension seam for ReAct domain side effects. Production uses
 /// [`DefaultHooks`]; unit tests can install [`NoopHooks`].
 #[async_trait]
@@ -84,7 +95,7 @@ pub(crate) trait LoopHooks: Send + Sync {
         ctx: &StepCtx,
         state: &mut ReActState,
         cancel: CancellationToken,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<BeforeStepOutput>;
 
     /// Classify the parsed LLM response (Phase 5 / G3). Default accepts.
     async fn after_llm(
@@ -127,8 +138,8 @@ impl LoopHooks for NoopHooks {
         _ctx: &StepCtx,
         _state: &mut ReActState,
         _cancel: CancellationToken,
-    ) -> anyhow::Result<()> {
-        Ok(())
+    ) -> anyhow::Result<BeforeStepOutput> {
+        Ok(BeforeStepOutput::default())
     }
 }
 

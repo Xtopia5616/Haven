@@ -90,7 +90,8 @@ impl ReActEngine {
             .instrument(tracing::info_span!("inject", session_id, step_num))
             .await?;
 
-        self.hooks
+        let before_step = self
+            .hooks
             .before_step(self, &ctx, state, cancel.clone())
             .instrument(tracing::info_span!("before_step", session_id, step_num))
             .await?;
@@ -108,7 +109,10 @@ impl ReActEngine {
             );
         }
 
-        let tools = self.build_tool_definitions_for_session(session_id).await;
+        let tools = match before_step.tool_definitions {
+            Some(tools) => tools,
+            None => self.build_tool_definitions_for_session(session_id).await,
+        };
         let router = self.router();
         let role = choose_agent_role(&router, &request_context).await;
         let (request_context, media_plan) = request_context

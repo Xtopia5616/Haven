@@ -14,7 +14,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::hooks::{
-    AfterLlmInput, BeforeToolAction, InferCallback, LoopHooks, MemoryPatchHandle, ToolCallIdentity,
+    AfterLlmInput, BeforeStepOutput, BeforeToolAction, InferCallback, LoopHooks, MemoryPatchHandle,
+    ToolCallIdentity,
 };
 use super::retries::{AfterLlmAction, ResponsePolicy};
 use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_media_requirements};
@@ -57,7 +58,7 @@ impl LoopHooks for DefaultHooks {
         ctx: &StepCtx,
         state: &mut ReActState,
         cancel: CancellationToken,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<BeforeStepOutput> {
         // M2: after outbox fact writes, surgically refresh MEMORY fence
         // (throttled). It must run before compaction so the budget decision
         // sees the exact system prompt that will be sent to the provider.
@@ -98,7 +99,9 @@ impl LoopHooks for DefaultHooks {
         if ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval) {
             self.call_infer(&ctx.session_id, false);
         }
-        Ok(())
+        Ok(BeforeStepOutput {
+            tool_definitions: Some(tool_defs),
+        })
     }
 
     async fn after_llm(
