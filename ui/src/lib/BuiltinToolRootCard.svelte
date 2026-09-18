@@ -183,6 +183,13 @@
 		gap: var(--md-sys-space-sm);
 	}
 	.operation-item {
+		/* The operation card is the third and deepest level of the builtin-tool
+		 * hierarchy. Keep this level visually taller while the family/root cards
+		 * remain compact navigation surfaces. */
+		display: flex;
+		flex-direction: column;
+		min-height: 168px;
+		box-sizing: border-box;
 		padding: var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
