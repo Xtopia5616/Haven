@@ -35,6 +35,10 @@ pub(crate) struct RetryNudge {
 /// persisted representation.
 pub(crate) struct ReActState {
     pub(crate) events: Vec<TranscriptRecord>,
+    /// Event indexes that can carry durable media metadata. Request-context
+    /// reconstruction walks this compact index instead of scanning every
+    /// thought/tool event in a long session.
+    pub(crate) media_event_indices: Vec<usize>,
     pub(crate) canonical: Vec<CanonicalMessage>,
     pub(crate) branch_points: HashMap<u32, BranchPoint>,
     /// Stable ids of already projected user injections.  This index is built
@@ -57,6 +61,20 @@ impl ReActState {
         canonical: Vec<CanonicalMessage>,
         branch_points: HashMap<u32, BranchPoint>,
     ) -> Self {
+        let mut media_event_indices = Vec::new();
+        for (index, event) in events.iter().enumerate() {
+            if matches!(
+                event,
+                TranscriptRecord::UserInject { .. }
+                    | TranscriptRecord::MediaPlan { .. }
+                    | TranscriptRecord::CompactSummary { .. }
+            ) {
+                if matches!(event, TranscriptRecord::CompactSummary { .. }) {
+                    media_event_indices.clear();
+                }
+                media_event_indices.push(index);
+            }
+        }
         Self {
             applied_inject_message_ids: events
                 .iter()
@@ -69,6 +87,7 @@ impl ReActState {
                 })
                 .collect(),
             events,
+            media_event_indices,
             canonical,
             branch_points,
             canonical_revision: 0,
@@ -110,6 +129,16 @@ impl ReActState {
     }
 
     pub(crate) fn push_event(&mut self, record: TranscriptRecord) {
+        let media_event = matches!(
+            &record,
+            TranscriptRecord::UserInject { .. }
+                | TranscriptRecord::MediaPlan { .. }
+                | TranscriptRecord::CompactSummary { .. }
+        );
+        if matches!(&record, TranscriptRecord::CompactSummary { .. }) {
+            self.media_event_indices.clear();
+        }
+        let event_index = self.events.len();
         if let TranscriptRecord::UserInject {
             message_id: Some(message_id),
             ..
@@ -118,6 +147,9 @@ impl ReActState {
             self.applied_inject_message_ids.insert(message_id.clone());
         }
         self.events.push(record);
+        if media_event {
+            self.media_event_indices.push(event_index);
+        }
     }
 
     /// Replace the transcript root after compaction.
@@ -132,6 +164,7 @@ impl ReActState {
         compacted: Vec<CanonicalMessage>,
     ) {
         self.events = vec![record];
+        self.media_event_indices = vec![0];
         self.applied_inject_message_ids = self
             .events
             .iter()

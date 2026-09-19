@@ -36,6 +36,10 @@ Profiling the ReAct turn preparation path found three avoidable costs:
   argument, but the retry coordinator itself never rebuilds the canonical
   message/tool vectors; native adapters can consume the shared boundary
   directly.
+- ReAct state maintains a compact index of media-bearing transcript events.
+  Request-context media identity recovery walks that index and updates it on
+  append/compaction, so long text/tool histories do not force a full event-log
+  scan merely because the current request contains media.
 - Add `try_claim` to the messaging transport boundary. The JSONL transport
   attempts the lock once (recovering one stale lock) and returns busy without
   sleeping. Automatic ReAct polling uses this path; explicit inbox and
@@ -60,7 +64,8 @@ Profiling the ReAct turn preparation path found three avoidable costs:
 - `cargo test --locked -p haven-tools -- --nocapture`
 - Regression tests cover same-length token-cache replacement, append reuse,
   request-media fallback, immediate return while the inbox lock is held, and
-  retry attempts reusing the same immutable provider snapshot.
+  retry attempts reusing the same immutable provider snapshot. A long-history
+  media replay test verifies that only media-bearing event indexes are walked.
 - Revert this ADR's implementation commit to restore digest validation,
   deep-copy request projection, and blocking background claims; no database or
   on-disk reset is required.

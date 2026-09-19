@@ -320,7 +320,8 @@ fn media_inputs_for_state(
     let mut compact_inputs: Option<Vec<MediaInput>> = None;
     let mut compacted_messages: Option<Vec<CanonicalMessage>> = None;
     let mut event_inputs: Vec<Vec<MediaInput>> = Vec::new();
-    for event in &state.events {
+    for &event_index in &state.media_event_indices {
+        let event = &state.events[event_index];
         match event {
             TranscriptRecord::CompactSummary {
                 compacted,
@@ -589,6 +590,38 @@ mod tests {
         assert!(plan.is_empty());
         assert!(Arc::ptr_eq(&context.messages, &planned.messages));
         assert!(context.raw_media_fits_profile(&CapabilityProfile::default()));
+    }
+
+    #[test]
+    fn media_replay_walks_the_media_event_index_not_the_full_transcript() {
+        let input = image_input("aGVsbG8=");
+        let message = CanonicalMessage::user(vec![ContentPart::Image {
+            content_type: "image".into(),
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }]);
+        let mut events = (0..10_000)
+            .map(|step_number| TranscriptRecord::Thought {
+                step_number,
+                text: "history".into(),
+                message_id: format!("msg-{step_number}"),
+            })
+            .collect::<Vec<_>>();
+        events.push(TranscriptRecord::UserInject {
+            step_number: 10_000,
+            source: haven_common::types::InjectSource::FollowUp,
+            text: "image".into(),
+            media_inputs: vec![input.clone()],
+            message_id: None,
+        });
+        let state = ReActState::new(events, vec![message], HashMap::new());
+
+        assert_eq!(state.media_event_indices.len(), 1);
+        let linked = media_inputs_for_state(&state, &state.canonical);
+        assert_eq!(
+            linked[0][0].as_ref().map(|item| &item.asset.asset_id),
+            Some(&input.asset.asset_id)
+        );
     }
 
     #[test]
