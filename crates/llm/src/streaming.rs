@@ -118,6 +118,11 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
     idle_timeout: Duration,
     retry: RetryPolicy,
 ) -> Result<LlmResponse, LlmError> {
+    // Materialize the retry-invariant request once.  Each attempt below only
+    // clones these Arcs; the canonical message/tool graph is not deep-cloned
+    // by the retry loop.
+    let messages = Arc::<[CanonicalMessage]>::from(context.messages);
+    let tools = Arc::<[ToolDefinition]>::from(context.tools);
     for attempt in 0..=retry.max_retries {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
@@ -132,10 +137,10 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
                 callback(chunk);
             }))
         };
-        let result = aggregate_stream_cancellable(
+        let result = aggregate_stream_cancellable_shared(
             client.clone(),
-            context.messages.to_vec(),
-            context.tools.to_vec(),
+            messages.clone(),
+            tools.clone(),
             callback,
             cancel.clone(),
             stream_rules,
@@ -183,6 +188,35 @@ pub(crate) async fn aggregate_stream_cancellable(
     idle_timeout: Duration,
     max_output_tokens: Option<u32>,
 ) -> Result<LlmResponse, LlmError> {
+    aggregate_stream_cancellable_shared(
+        client,
+        Arc::<[CanonicalMessage]>::from(messages),
+        Arc::<[ToolDefinition]>::from(tools),
+        on_chunk,
+        cancel,
+        stream_rules,
+        idle_timeout,
+        max_output_tokens,
+    )
+    .await
+}
+
+/// Aggregate a stream from a shared immutable request snapshot. Provider
+/// retries use this path so retry bookkeeping only clones Arc handles. The
+/// default `LlmClient` compatibility method may still materialize owned
+/// provider arguments; native adapters can override that boundary to serialize
+/// directly from the shared slices.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn aggregate_stream_cancellable_shared(
+    client: Arc<dyn LlmClient>,
+    messages: Arc<[CanonicalMessage]>,
+    tools: Arc<[ToolDefinition]>,
+    on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
+    cancel: CancellationToken,
+    stream_rules: &RwLock<Vec<StreamRule>>,
+    idle_timeout: Duration,
+    max_output_tokens: Option<u32>,
+) -> Result<LlmResponse, LlmError> {
     // Long contexts make providers slower between deltas; grant extra
     // data-gap budget proportional to the request size so a slow-but-alive
     // stream is not aborted mid-answer (see `scale_stream_idle`).
@@ -195,15 +229,9 @@ pub(crate) async fn aggregate_stream_cancellable(
     // button cannot stop a provider that accepted the connection but has not
     // returned headers yet, and the caller waits for the transport timeout.
     let stream_result = async {
-        if tools.is_empty() {
-            client
-                .chat_stream_output_cap(messages, max_output_tokens)
-                .await
-        } else {
-            client
-                .chat_stream_with_tools_output_cap(messages, tools, max_output_tokens)
-                .await
-        }
+        client
+            .chat_stream_with_tools_output_cap_shared(messages, tools, max_output_tokens)
+            .await
     };
     let mut stream = tokio::select! {
         biased;
@@ -380,11 +408,28 @@ pub(crate) async fn aggregate_stream_cancellable(
 mod tests {
     use super::*;
     use crate::client::LlmClient;
-    use crate::types::{Embedding, SttResult};
+    use crate::types::{Embedding, SttResult, ToolFunction};
     use async_trait::async_trait;
     use std::pin::Pin;
+    use std::sync::atomic::AtomicUsize;
 
     struct PendingStreamClient;
+
+    struct SharedRetryProbe {
+        attempts: AtomicUsize,
+        message_backing: StdMutex<Vec<usize>>,
+        tool_backing: StdMutex<Vec<usize>>,
+    }
+
+    impl SharedRetryProbe {
+        fn new() -> Self {
+            Self {
+                attempts: AtomicUsize::new(0),
+                message_backing: StdMutex::new(Vec::new()),
+                tool_backing: StdMutex::new(Vec::new()),
+            }
+        }
+    }
 
     #[async_trait]
     impl LlmClient for PendingStreamClient {
@@ -438,6 +483,51 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl LlmClient for SharedRetryProbe {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::Unknown("test client does not chat".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            messages: Arc<[CanonicalMessage]>,
+            tools: Arc<[ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.message_backing
+                .lock()
+                .unwrap()
+                .push(messages.as_ptr() as usize);
+            self.tool_backing
+                .lock()
+                .unwrap()
+                .push(tools.as_ptr() as usize);
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(LlmError::ServerError("retry once".into()))
+            } else {
+                Ok(Box::pin(futures_util::stream::empty()))
+            }
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn cancellation_interrupts_provider_stream_creation() {
         let cancel = CancellationToken::new();
@@ -466,5 +556,50 @@ mod tests {
             .expect("stream creation should be cancellable")
             .expect("stream task should not panic");
         assert!(matches!(result, Err(LlmError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn retry_reuses_shared_message_and_tool_snapshot() {
+        let probe = Arc::new(SharedRetryProbe::new());
+        let client: Arc<dyn LlmClient> = probe.clone();
+        let rules = RwLock::new(Vec::new());
+        let messages = vec![CanonicalMessage::user_text("hello")];
+        let tools = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "probe".into(),
+                description: "probe".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }];
+        let result = aggregate_stream_with_retry_before_output(
+            client,
+            StreamContext {
+                messages: &messages,
+                tools: &tools,
+                max_output_tokens: None,
+            },
+            Arc::new(StdMutex::new(|_chunk: &StreamChunk| {})),
+            CancellationToken::new(),
+            &rules,
+            Duration::from_secs(1),
+            RetryPolicy {
+                max_retries: 1,
+                base_secs: 0,
+                factor: 1,
+                max_secs: 0,
+                jitter: 0.0,
+            },
+        )
+        .await;
+
+        assert!(result.is_ok(), "retry should succeed: {result:?}");
+        assert_eq!(probe.attempts.load(Ordering::SeqCst), 2);
+        let message_backing = probe.message_backing.lock().unwrap().clone();
+        let tool_backing = probe.tool_backing.lock().unwrap().clone();
+        assert_eq!(message_backing.len(), 2);
+        assert_eq!(tool_backing.len(), 2);
+        assert_eq!(message_backing[0], message_backing[1]);
+        assert_eq!(tool_backing[0], tool_backing[1]);
     }
 }

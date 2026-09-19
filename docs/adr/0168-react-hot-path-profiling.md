@@ -30,6 +30,12 @@ Profiling the ReAct turn preparation path found three avoidable costs:
   selection returns a shared request for complete, notice-free raw projections
   and only clones for an actual fallback/rewrite. Retry instructions calculate
   the incremental cost of their new message.
+- The provider stream retry loop materializes one immutable message/tool
+  snapshot and passes `Arc` handles to every attempt. The compatibility
+  default on `LlmClient` may still copy into an adapter's legacy owned
+  argument, but the retry coordinator itself never rebuilds the canonical
+  message/tool vectors; native adapters can consume the shared boundary
+  directly.
 - Add `try_claim` to the messaging transport boundary. The JSONL transport
   attempts the lock once (recovering one stale lock) and returns busy without
   sleeping. Automatic ReAct polling uses this path; explicit inbox and
@@ -53,7 +59,8 @@ Profiling the ReAct turn preparation path found three avoidable costs:
 - `cargo test --locked -p haven-agent -- --nocapture`
 - `cargo test --locked -p haven-tools -- --nocapture`
 - Regression tests cover same-length token-cache replacement, append reuse,
-  request-media fallback, and immediate return while the inbox lock is held.
+  request-media fallback, immediate return while the inbox lock is held, and
+  retry attempts reusing the same immutable provider snapshot.
 - Revert this ADR's implementation commit to restore digest validation,
   deep-copy request projection, and blocking background claims; no database or
   on-disk reset is required.

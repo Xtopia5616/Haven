@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use futures_util::Stream;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use haven_common::media::CapabilityProfile;
@@ -164,6 +165,28 @@ pub trait LlmClient: Send + Sync {
         Err(LlmError::UnsupportedCapability(
             "streaming tool calling with an output cap is not supported by this adapter".into(),
         ))
+    }
+
+    /// Shared, read-only streaming request boundary used by provider retries.
+    /// The default keeps third-party/test adapters source-compatible; native
+    /// adapters may override it to serialize directly from the shared slices.
+    async fn chat_stream_with_tools_output_cap_shared(
+        &self,
+        messages: Arc<[CanonicalMessage]>,
+        tools: Arc<[ToolDefinition]>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        if tools.is_empty() {
+            self.chat_stream_output_cap(messages.as_ref().to_vec(), max_output_tokens)
+                .await
+        } else {
+            self.chat_stream_with_tools_output_cap(
+                messages.as_ref().to_vec(),
+                tools.as_ref().to_vec(),
+                max_output_tokens,
+            )
+            .await
+        }
     }
 
     /// Embed a batch of texts into vectors via the provider's embeddings API.
