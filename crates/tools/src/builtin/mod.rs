@@ -519,7 +519,9 @@ fn operation_spec(
     policy.capability = name.into();
     policy.idempotency = metadata.idempotency;
     if metadata.read_only {
-        policy.concurrency = ToolConcurrency::ReadOnly;
+        // Preserve the aggregate's resource key for read operations. A
+        // blanket ReadOnly policy would let e.g. files.read run concurrently
+        // with files.write because it bypasses the shared `files` lock.
         if policy.risk_level < RiskLevel::Critical {
             policy.confirmation = ConfirmationRequirement::None;
         }
@@ -577,7 +579,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::ReadOnly,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
@@ -607,7 +609,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::ReadOnly,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
@@ -637,7 +639,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::ReadOnly,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::Public,
@@ -667,7 +669,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 confirmation: ConfirmationRequirement::None,
                 idempotency: OperationIdempotency::Idempotent,
                 scope: ToolOperationScope::Session,
-                concurrency: ToolConcurrency::ReadOnly,
+                concurrency: ToolConcurrency::SharedResource("files".into()),
                 effect: crate::OperationEffect::ReadOnly,
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
@@ -1353,6 +1355,27 @@ mod tests {
                 .find(|case| case.tool_name == contract.name && case.operation == contract.name)
                 .unwrap_or_else(|| panic!("security matrix missing {}", contract.name));
             assert_eq!(matrix.risk_level, contract.policy.risk_level);
+        }
+    }
+
+    #[test]
+    fn file_read_views_share_the_files_resource_with_writers() {
+        let specs = operation_specs(64);
+        for name in [
+            "files.read",
+            "files.outline",
+            "files.summary",
+            "files.search",
+        ] {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.name == name)
+                .expect("file operation spec");
+            assert_eq!(
+                spec.policy.concurrency,
+                ToolConcurrency::SharedResource("files".into()),
+                "{name} must coordinate with files.write/edit/patch"
+            );
         }
     }
 }

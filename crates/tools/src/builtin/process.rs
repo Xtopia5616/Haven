@@ -46,7 +46,11 @@ impl ProcessTool {
                     anyhow::bail!("cancelled");
                 }
                 let processes: Vec<Value> = tokio::task::spawn_blocking(move || {
-                    let system = sysinfo::System::new_all();
+                    // Process listings do not need disks, users, networks,
+                    // or hardware refreshes. Refresh only the process table;
+                    // `new_all` made this hot read path needlessly expensive.
+                    let mut system = sysinfo::System::new();
+                    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
                     let mut processes: Vec<Value> = system
                         .processes()
                         .iter()

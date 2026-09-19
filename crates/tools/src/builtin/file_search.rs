@@ -1,11 +1,14 @@
 use grep_regex::RegexMatcher;
 use grep_searcher::{
-    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
+    BinaryDetection, MmapChoice, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind,
+    SinkMatch,
 };
 use serde_json::Value;
+use std::io::{self, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::ToolResult;
@@ -108,6 +111,9 @@ pub struct FileSearchEngine {
     /// Line-range search window cap in bytes. Ranges wider than this fall
     /// back to a whole-file scan with sink-side line filtering.
     pub(crate) max_window_bytes: u64,
+    /// A full-tree scan is internally parallel. Keep separate sessions from
+    /// multiplying that parallelism and exhausting Tokio's blocking pool.
+    search_slots: Arc<Semaphore>,
 }
 
 impl Default for FileSearchEngine {
@@ -120,6 +126,7 @@ impl Default for FileSearchEngine {
             max_results_cap: 1_000,
             max_file_size: 100 * 1024 * 1024,
             max_window_bytes: 16 * 1024 * 1024,
+            search_slots: Arc::new(Semaphore::new(1)),
         }
     }
 }
@@ -136,6 +143,7 @@ impl FileSearchEngine {
             max_results_cap,
             max_file_size,
             max_window_bytes,
+            search_slots: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -168,11 +176,17 @@ impl FileSearchEngine {
             start_line,
             end_line,
         } = request;
-
         let root_path = std::path::PathBuf::from(&root);
         if !root_path.exists() {
             anyhow::bail!("root path '{}' does not exist", root);
         }
+
+        let search_permit = tokio::select! {
+            permit = self.search_slots.clone().acquire_owned() => {
+                permit.map_err(|_| anyhow::anyhow!("file search engine is unavailable"))?
+            }
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        };
 
         let mode_for_closure = mode.clone();
         let cancel_inner = cancel.clone();
@@ -196,6 +210,10 @@ impl FileSearchEngine {
             })
         })
         .await?;
+        drop(search_permit);
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
         let mut output = serde_json::json!({
             "results": results,
             "count": results.len(),
@@ -316,6 +334,7 @@ fn search_filenames_parallel(
     cancel: CancellationToken,
 ) -> (Vec<Value>, bool) {
     let found_flag = Arc::new(AtomicBool::new(false));
+    let result_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(Mutex::new(Vec::new()));
     let re = regex::Regex::new(&glob_to_regex(pattern)).ok();
     let glob = pattern.to_string();
@@ -325,6 +344,7 @@ fn search_filenames_parallel(
         let re = re.clone();
         let glob = glob.clone();
         let found_flag = found_flag.clone();
+        let result_count = result_count.clone();
         let results = results.clone();
         let cancel = cancel.clone();
         Box::new(move |entry| {
@@ -341,11 +361,11 @@ fn search_filenames_parallel(
                 .map(|r| r.is_match(&name))
                 .unwrap_or_else(|| name.contains(&glob));
             if matched {
-                let mut guard = results.lock().unwrap();
-                if guard.len() >= max_results {
+                if result_count.fetch_add(1, Ordering::Relaxed) >= max_results {
                     found_flag.store(true, Ordering::Relaxed);
                     return ignore::WalkState::Quit;
                 }
+                let mut guard = results.lock().unwrap();
                 guard.push(serde_json::json!({
                     "path": entry.path().to_string_lossy(),
                     "match_reason": "filename",
@@ -389,6 +409,9 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
         .before_context(2)
         .after_context(2)
         .binary_detection(BinaryDetection::quit(b'\x00'))
+        // A cancellable reader below must observe progress in bounded reads;
+        // memory maps would let a no-match scan run without a read boundary.
+        .memory_map(MmapChoice::never())
         .build();
 
     let line_range = if start_line > 1 || end_line > 0 {
@@ -398,6 +421,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
     };
 
     let found_flag = Arc::new(AtomicBool::new(false));
+    let result_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(Mutex::new(Vec::new()));
 
     let builder = walk_builder(root, max_depth, ignore_hidden);
@@ -405,6 +429,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
         let matcher = matcher.clone();
         let mut searcher = searcher.clone();
         let found_flag = found_flag.clone();
+        let result_count = result_count.clone();
         let results = results.clone();
         let cancel = cancel.clone();
         Box::new(move |entry| {
@@ -433,19 +458,26 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
                     el,
                     max_results,
                     &found_flag,
+                    &result_count,
                     &results,
                     snippet_chars,
                     max_window_bytes,
+                    &cancel,
                 );
             } else {
                 let sink = CollectingSink::new(
                     entry.path().to_path_buf(),
                     max_results,
                     found_flag.clone(),
+                    result_count.clone(),
                     results.clone(),
                     snippet_chars,
                 );
-                let _ = searcher.search_path(matcher.clone(), entry.path(), sink);
+                let Ok(file) = std::fs::File::open(entry.path()) else {
+                    return ignore::WalkState::Continue;
+                };
+                let reader = CancellableReader::new(file, cancel.clone());
+                let _ = searcher.search_reader(matcher.clone(), reader, sink);
             }
             ignore::WalkState::Continue
         })
@@ -468,11 +500,13 @@ fn search_content_line_range(
     end_line: u64,
     max_results: usize,
     found_flag: &Arc<AtomicBool>,
+    result_count: &Arc<AtomicUsize>,
     results: &Arc<Mutex<Vec<Value>>>,
     snippet_chars: usize,
     max_window_bytes: u64,
+    cancel: &CancellationToken,
 ) {
-    let Ok(Some((start, end))) = line_range_bytes(path, start_line, end_line) else {
+    let Ok(Some((start, end))) = line_range_bytes(path, start_line, end_line, cancel) else {
         return;
     };
     let window_len = end - start;
@@ -481,11 +515,16 @@ fn search_content_line_range(
             path.to_path_buf(),
             max_results,
             found_flag.clone(),
+            result_count.clone(),
             results.clone(),
             snippet_chars,
         )
         .with_line_filter(start_line, end_line);
-        let _ = searcher.search_path(matcher.clone(), path, sink);
+        let Ok(file) = std::fs::File::open(path) else {
+            return;
+        };
+        let reader = CancellableReader::new(file, cancel.clone());
+        let _ = searcher.search_reader(matcher.clone(), reader, sink);
         return;
     }
     let Ok(mut file) = std::fs::File::open(path) else {
@@ -498,6 +537,9 @@ fn search_content_line_range(
     let mut bytes = vec![0u8; window_len as usize];
     let mut filled = 0usize;
     while filled < bytes.len() {
+        if cancel.is_cancelled() {
+            return;
+        }
         match file.read(&mut bytes[filled..]) {
             Ok(0) => break,
             Ok(n) => filled += n,
@@ -509,6 +551,7 @@ fn search_content_line_range(
         path.to_path_buf(),
         max_results,
         found_flag.clone(),
+        result_count.clone(),
         results.clone(),
         snippet_chars,
     )
@@ -523,16 +566,17 @@ fn line_range_bytes(
     path: &Path,
     start_line: u64,
     end_line: u64,
+    cancel: &CancellationToken,
 ) -> std::io::Result<Option<(u64, u64)>> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     let total = file.metadata()?.len();
+    let mut reader = CancellableReader::new(file, cancel.clone());
     let mut buf = [0u8; 65536];
     let mut pos: u64 = 0;
     let mut line: u64 = 1;
     let mut range_start: Option<u64> = None;
     loop {
-        let n = file.read(&mut buf)?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -558,6 +602,32 @@ fn line_range_bytes(
     }
 }
 
+/// Reader used by content search so cancellation is observed even when a
+/// file has no matches. `grep-searcher` otherwise has no callback between
+/// match/context events and a large no-match file can occupy a blocking worker
+/// until EOF.
+struct CancellableReader<R> {
+    reader: R,
+    cancel: CancellationToken,
+}
+
+impl<R> CancellableReader<R> {
+    fn new(reader: R, cancel: CancellationToken) -> Self {
+        Self { reader, cancel }
+    }
+}
+
+impl<R: Read> Read for CancellableReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.is_cancelled() {
+            return Err(io::Error::other("file search cancelled"));
+        }
+        const MAX_READ_BYTES: usize = 64 * 1024;
+        let len = buffer.len().min(MAX_READ_BYTES);
+        self.reader.read(&mut buffer[..len])
+    }
+}
+
 /// Sink fed by the ripgrep engine: appends one result per matched line.
 /// `line_offset` shifts reported line numbers (windowed slice searches), and
 /// `line_filter` restricts results to an absolute 1-based line range.
@@ -565,6 +635,7 @@ struct CollectingSink {
     path: std::path::PathBuf,
     max: usize,
     found_flag: Arc<AtomicBool>,
+    result_count: Arc<AtomicUsize>,
     results: Arc<Mutex<Vec<Value>>>,
     last_line: Option<u64>,
     line_offset: u64,
@@ -579,6 +650,7 @@ impl CollectingSink {
         path: std::path::PathBuf,
         max: usize,
         found_flag: Arc<AtomicBool>,
+        result_count: Arc<AtomicUsize>,
         results: Arc<Mutex<Vec<Value>>>,
         snippet_chars: usize,
     ) -> Self {
@@ -586,6 +658,7 @@ impl CollectingSink {
             path,
             max,
             found_flag,
+            result_count,
             results,
             last_line: None,
             line_offset: 0,
@@ -641,11 +714,11 @@ impl Sink for CollectingSink {
             .next()
             .map(|l| snippet_of(l, self.snippet_chars))
             .unwrap_or_default();
-        let mut guard = self.results.lock().unwrap();
-        if guard.len() >= self.max {
+        if self.result_count.fetch_add(1, Ordering::Relaxed) >= self.max {
             self.found_flag.store(true, Ordering::Relaxed);
             return Ok(false);
         }
+        let mut guard = self.results.lock().unwrap();
         let mut result = serde_json::json!({
             "path": self.path.to_string_lossy(),
             "line": line_number,
@@ -816,6 +889,41 @@ mod tests {
         let gbk = [0xC4, 0xE3, 0xBA, 0xC3, 0xCA, 0xC0, 0xBD, 0xE7];
         let snippet = snippet_of(&gbk, 200);
         assert_eq!(snippet, "你好世界");
+    }
+
+    #[test]
+    fn cancellable_reader_stops_after_cancel() {
+        let cancel = CancellationToken::new();
+        let mut reader = CancellableReader::new(std::io::Cursor::new(b"content"), cancel.clone());
+        let mut buffer = [0_u8; 16];
+        assert_eq!(reader.read(&mut buffer).unwrap(), 7);
+
+        cancel.cancel();
+        let error = reader
+            .read(&mut buffer)
+            .expect_err("cancel must interrupt reads");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[tokio::test]
+    async fn search_slot_wait_is_cancellation_aware() {
+        let engine = FileSearchEngine::default();
+        let held = engine.search_slots.clone().acquire_owned().await.unwrap();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let engine = engine;
+            let cancel = cancel.clone();
+            async move {
+                engine
+                    .search(json!({"root": ".", "pattern": "never"}), cancel)
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        let error = task.await.unwrap().expect_err("cancelled queue wait");
+        assert_eq!(error.to_string(), "cancelled");
+        drop(held);
     }
 
     #[tokio::test]
