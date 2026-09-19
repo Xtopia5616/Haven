@@ -171,7 +171,7 @@ impl OpenAiResponsesAdapter {
                         "off".into()
                     };
                     tracing::warn!(
-                        endpoint = %self.endpoint.base_url,
+                        endpoint = %crate::client::endpoint_log_location(url),
                         "endpoint rejected prompt_cache_key; disabled cache routing hint for this adapter"
                     );
                 }
@@ -189,7 +189,7 @@ impl OpenAiResponsesAdapter {
                         "off".into()
                     };
                     tracing::warn!(
-                        endpoint = %self.endpoint.base_url,
+                        endpoint = %crate::client::endpoint_log_location(url),
                         "endpoint rejected developer input; disabled Responses memory split for this adapter"
                     );
                 }
@@ -260,8 +260,8 @@ impl OpenAiResponsesAdapter {
             "POST provider endpoint"
         );
         tracing::debug!(
-            "POST {} request body: {} chars",
-            url,
+            endpoint = %crate::client::endpoint_log_location(&url),
+            "POST provider request body: {} chars",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
         let resp = self.send_request(&url, &mut body, stream).await?;

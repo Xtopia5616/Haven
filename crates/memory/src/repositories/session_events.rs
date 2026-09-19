@@ -13,6 +13,10 @@ use std::sync::Arc;
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
 pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
 pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
+/// Two-phase marker for recovery-only partial persistence. It is deliberately
+/// an append-only control event so an interrupted repair remains observable
+/// even when the snapshot cache is stale or unreadable.
+pub const RECOVERY_PERSISTENCE_EVENT_TYPE: &str = "recovery_persistence";
 pub const CURRENT_EVENT_VERSION: i64 = 1;
 
 pub type StoredBranchPoint = (SessionEvent, usize, u32, Option<String>);
@@ -35,6 +39,17 @@ pub struct SessionEventInput {
     pub payload: String,
     pub run_id: Option<u64>,
     pub step_number: Option<u32>,
+}
+
+/// Stage results carried by a recovery-persistence control event. Keeping the
+/// status as a named value prevents the event API from becoming a positional
+/// boolean list as the protocol evolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryPersistenceStatus {
+    pub branch_point: bool,
+    pub partial_messages: bool,
+    pub projection: bool,
+    pub recovery_snapshot: bool,
 }
 
 impl SessionEventInput {
@@ -274,6 +289,47 @@ impl SessionEventStore {
             run_id,
             Some(step_number),
         )
+    }
+
+    /// Record one phase of the recovery-only persistence protocol. The
+    /// marker is not part of transcript replay; it only makes a partially
+    /// completed repair durable and auditable.
+    pub fn append_recovery_persistence(
+        &self,
+        session_id: &str,
+        run_id: u64,
+        step_number: u32,
+        phase: &str,
+        status: RecoveryPersistenceStatus,
+    ) -> anyhow::Result<SessionEvent> {
+        let payload = serde_json::json!({
+            "phase": phase,
+            "branch_point": status.branch_point,
+            "partial_messages": status.partial_messages,
+            "projection": status.projection,
+            "recovery_snapshot": status.recovery_snapshot,
+        });
+        self.append(
+            session_id,
+            RECOVERY_PERSISTENCE_EVENT_TYPE,
+            &payload.to_string(),
+            Some(run_id),
+            Some(step_number),
+        )
+    }
+
+    /// Return the latest recovery protocol marker, including failed markers
+    /// outside the active timeline. Resume diagnostics must not lose this
+    /// state merely because a later rollback moved the active cursor.
+    pub fn latest_recovery_persistence(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<SessionEvent>> {
+        Ok(self
+            .read_all(session_id)?
+            .into_iter()
+            .rev()
+            .find(|event| event.event_type == RECOVERY_PERSISTENCE_EVENT_TYPE))
     }
 
     pub fn latest_sequence(&self, session_id: &str) -> anyhow::Result<i64> {
@@ -619,5 +675,40 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("append-only"));
+    }
+
+    #[test]
+    fn recovery_persistence_markers_are_durable_control_events() {
+        let (_db, store, session_id) = store();
+        store
+            .append_recovery_persistence(
+                &session_id,
+                3,
+                4,
+                "failed",
+                RecoveryPersistenceStatus {
+                    branch_point: true,
+                    partial_messages: false,
+                    projection: false,
+                    recovery_snapshot: false,
+                },
+            )
+            .unwrap();
+        let marker = store
+            .latest_recovery_persistence(&session_id)
+            .unwrap()
+            .expect("marker should be readable after commit");
+        assert_eq!(marker.event_type, RECOVERY_PERSISTENCE_EVENT_TYPE);
+        assert_eq!(marker.step_number, Some(4));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&marker.payload).unwrap()["phase"],
+            "failed"
+        );
+        assert!(
+            store
+                .read_active_transcript(&session_id)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

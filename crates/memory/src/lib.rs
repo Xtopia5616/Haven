@@ -13,7 +13,8 @@ pub use recall::{
     MemoryRetriever,
 };
 pub use repositories::session_events::{
-    BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION, SessionEvent, SessionEventInput,
-    SessionEventStore, SessionEventSubscription, StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE,
+    BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION, RECOVERY_PERSISTENCE_EVENT_TYPE,
+    RecoveryPersistenceStatus, SessionEvent, SessionEventInput, SessionEventStore,
+    SessionEventSubscription, StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE,
     TRANSCRIPT_EVENT_TYPE,
 };

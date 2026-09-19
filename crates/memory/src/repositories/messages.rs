@@ -419,13 +419,26 @@ impl Database {
     /// `None` if the session has no messages. Used by rollback to record the
     /// high-water mark at branch-point creation time.
     pub fn get_last_message_created_at(&self, session_id: &str) -> Option<String> {
+        self.try_get_last_message_created_at(session_id)
+            .ok()
+            .flatten()
+    }
+
+    /// Strict variant for recovery boundaries. Unlike the historical helper,
+    /// this preserves SQLite read errors so callers never turn an unknown
+    /// branch cutoff into a valid-looking `NULL` cutoff.
+    pub fn try_get_last_message_created_at(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
-        conn.query_row(
-            "SELECT created_at FROM messages WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            rusqlite::params![session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
+        Ok(conn
+            .query_row(
+                "SELECT created_at FROM messages WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                rusqlite::params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
     }
 
     /// Return the highest durable ingress cursor for a session.
@@ -955,6 +968,15 @@ mod tests {
             .get_last_message_created_at(&tid)
             .expect("some timestamp");
         assert_eq!(last, m2.created_at);
+    }
+
+    #[test]
+    fn strict_last_message_timestamp_surfaces_database_failure() {
+        let db = test_db();
+        let tid = test_session(&db);
+        db.conn().execute_batch("DROP TABLE messages").unwrap();
+
+        assert!(db.try_get_last_message_created_at(&tid).is_err());
     }
 
     #[test]

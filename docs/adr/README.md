@@ -171,3 +171,4 @@
 - [0172：会话与任务生命周期状态契约统一](0172-session-action-lifecycle-state-contract.md)
 - [0173：ReAct、工具与网络请求的失败恢复边界](0173-react-tool-network-recovery-boundary.md)
 - [0174：Action 刷新一致性与 scheduled delivery claim](0174-action-refresh-and-scheduled-delivery-claims.md)
+- [0175：恢复持久化使用 append-only 两阶段标记](0175-recovery-persistence-two-phase-marker.md)

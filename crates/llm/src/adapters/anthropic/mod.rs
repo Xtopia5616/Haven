@@ -107,8 +107,8 @@ impl AnthropicAdapter {
             "POST provider endpoint"
         );
         tracing::debug!(
-            "POST {} request body: {} chars",
-            url,
+            endpoint = %crate::client::endpoint_log_location(&url),
+            "POST provider request body: {} chars",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
         let mut req = self

@@ -18,6 +18,10 @@ pub(crate) struct CircuitBreaker {
     pub(crate) failure_count: u32,
     pub(crate) total_calls: u32,
     pub(crate) opened_at: Option<Instant>,
+    /// Only one request may pass while the breaker is half-open. This is a
+    /// state bit rather than an async mutex because callers already serialize
+    /// health transitions under the router's health write lock.
+    pub(crate) half_open_probe_in_flight: bool,
 }
 
 impl CircuitBreaker {
@@ -29,6 +33,7 @@ impl CircuitBreaker {
             failure_count: 0,
             total_calls: 0,
             opened_at: None,
+            half_open_probe_in_flight: false,
         }
     }
 
@@ -38,8 +43,12 @@ impl CircuitBreaker {
         // requests could otherwise keep the breaker perpetually closed despite
         // recent failures. Only a HalfOpen probe (or a Closed-state success) may
         // transition the breaker to Closed.
-        if self.state == CircuitState::Open {
-            return;
+        match self.state {
+            CircuitState::Open => return,
+            CircuitState::HalfOpen => {
+                self.half_open_probe_in_flight = false;
+            }
+            CircuitState::Closed => {}
         }
         self.consecutive_failures = 0;
         self.total_calls += 1;
@@ -48,29 +57,43 @@ impl CircuitBreaker {
     }
 
     pub(crate) fn record_failure(&mut self) {
+        // A completion from a request that was admitted before the breaker
+        // opened must not extend the open window or mutate its counters.
+        if self.state == CircuitState::Open {
+            return;
+        }
+        let half_open_probe = self.state == CircuitState::HalfOpen;
         self.consecutive_failures += 1;
         self.failure_count += 1;
         self.total_calls += 1;
         self.last_failure_time = Some(Instant::now());
 
-        // Open if >50% failure rate and >=3 consecutive failures
-        if self.consecutive_failures >= 3
-            && self.total_calls > 0
-            && (self.failure_count as f32 / self.total_calls as f32) > 0.5
-        {
+        // The breaker protects against a current outage. A historical success
+        // rate must not mask a fresh run of consecutive failures.
+        if half_open_probe || self.consecutive_failures >= 3 {
             self.state = CircuitState::Open;
             self.opened_at = Some(Instant::now());
+            self.half_open_probe_in_flight = false;
         }
     }
 
     pub(crate) fn allow_request(&mut self) -> bool {
         match self.state {
-            CircuitState::Closed | CircuitState::HalfOpen => true,
+            CircuitState::Closed => true,
+            CircuitState::HalfOpen => {
+                if self.half_open_probe_in_flight {
+                    false
+                } else {
+                    self.half_open_probe_in_flight = true;
+                    true
+                }
+            }
             CircuitState::Open => {
                 // §2.6: 30s cool-down, then HalfOpen
                 if let Some(opened) = self.opened_at {
                     if opened.elapsed() >= Duration::from_secs(30) {
                         self.state = CircuitState::HalfOpen;
+                        self.half_open_probe_in_flight = true;
                         true
                     } else {
                         false

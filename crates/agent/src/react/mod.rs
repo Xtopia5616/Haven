@@ -576,25 +576,25 @@ impl ReActEngine {
         self.last_msg_at.remove(session_id);
     }
 
-    pub(super) async fn refresh_last_msg_at(&self, session_id: &str) -> Option<String> {
+    pub(super) async fn refresh_last_msg_at(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
         let db = self.db.clone();
         let session_id_owned = session_id.to_string();
-        let fetched = match db
-            .run_blocking(move |db| Ok(db.get_last_message_created_at(&session_id_owned)))
+        let fetched = db
+            .run_blocking(move |db| db.try_get_last_message_created_at(&session_id_owned))
             .await
-        {
-            Ok(value) => value,
-            Err(error) => {
+            .map_err(|error| {
                 tracing::warn!(
-                    "failed to refresh last message timestamp for session {}: {}",
                     session_id,
-                    error
+                    error = %error,
+                    "failed to refresh last message timestamp"
                 );
-                None
-            }
-        };
+                anyhow::anyhow!("failed to refresh last message timestamp: {error}")
+            })?;
         self.note_last_msg_at(session_id, fetched.clone());
-        fetched
+        Ok(fetched)
     }
 
     /// Validate every non-final tool call without altering its arguments.

@@ -8,7 +8,7 @@ use tracing::Instrument;
 
 use super::{PauseReason, StepCtx, *};
 use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
-use haven_memory::SessionEventInput;
+use haven_memory::{RecoveryPersistenceStatus, SessionEventInput};
 
 /// The durable event-derived session state used by resume and rollback.
 ///
@@ -34,11 +34,15 @@ pub(super) enum RecoveryPersistenceResult {
         partial_messages: bool,
         recovery_snapshot: bool,
         projection: bool,
+        /// Whether the terminal `failed` marker itself was committed to the
+        /// durable event stream. If false, the database was unavailable even
+        /// for the protocol marker and the scratch must remain authoritative.
+        failure_marker: bool,
     },
 }
 
 impl RecoveryPersistenceResult {
-    fn should_discard(&self) -> bool {
+    pub(super) fn should_discard(&self) -> bool {
         matches!(self, Self::Persisted)
     }
 }
@@ -825,6 +829,54 @@ impl ReActEngine {
         partial_thought: &std::sync::Arc<std::sync::Mutex<String>>,
         partial_reasoning: &std::sync::Arc<std::sync::Mutex<String>>,
     ) -> RecoveryPersistenceResult {
+        // Start a durable two-phase marker before any of the independent
+        // branch/message/projection/snapshot writes. A later resume can see
+        // that this repair was in flight even if the snapshot cache is stale.
+        let protocol_started = self
+            .append_recovery_marker(
+                &ctx.session_id,
+                ctx.run_id,
+                ctx.step_num,
+                "started",
+                RecoveryPersistenceStatus {
+                    branch_point: false,
+                    partial_messages: false,
+                    projection: false,
+                    recovery_snapshot: false,
+                },
+            )
+            .await;
+        if !protocol_started {
+            let failure_marker = self
+                .append_recovery_marker(
+                    &ctx.session_id,
+                    ctx.run_id,
+                    ctx.step_num,
+                    "failed",
+                    RecoveryPersistenceStatus {
+                        branch_point: false,
+                        partial_messages: false,
+                        projection: false,
+                        recovery_snapshot: false,
+                    },
+                )
+                .await;
+            let result = RecoveryPersistenceResult::Failed {
+                branch_point: false,
+                partial_messages: false,
+                recovery_snapshot: false,
+                projection: false,
+                failure_marker,
+            };
+            tracing::error!(
+                session_id = %ctx.session_id,
+                step = ctx.step_num,
+                ?result,
+                "recovery persistence protocol could not start; retaining scratch partial"
+            );
+            return result;
+        }
+
         // Save a branch point BEFORE persisting the partial output, so
         // last_msg_at captures the timestamp of the last message BEFORE the
         // partial. This lets continue_session / rollback_session precisely delete
@@ -931,7 +983,28 @@ impl ReActEngine {
         // in-flight checkpoint write must not re-create it. Discard goes
         // through the PartialStore, whose generation bump invalidates stale
         // writes.
-        let result = if branch_point && partial_messages && recovery_snapshot && projection {
+        let all_phases_succeeded =
+            branch_point && partial_messages && recovery_snapshot && projection;
+        let marker_phase = if all_phases_succeeded {
+            "committed"
+        } else {
+            "failed"
+        };
+        let terminal_marker = self
+            .append_recovery_marker(
+                &ctx.session_id,
+                ctx.run_id,
+                ctx.step_num,
+                marker_phase,
+                RecoveryPersistenceStatus {
+                    branch_point,
+                    partial_messages,
+                    projection,
+                    recovery_snapshot,
+                },
+            )
+            .await;
+        let result = if all_phases_succeeded && terminal_marker {
             RecoveryPersistenceResult::Persisted
         } else {
             RecoveryPersistenceResult::Failed {
@@ -939,6 +1012,26 @@ impl ReActEngine {
                 partial_messages,
                 recovery_snapshot,
                 projection,
+                failure_marker: if all_phases_succeeded {
+                    // A failed commit marker is itself a failed protocol. Try
+                    // to leave the explicit failure state if the transient
+                    // write failure has cleared.
+                    self.append_recovery_marker(
+                        &ctx.session_id,
+                        ctx.run_id,
+                        ctx.step_num,
+                        "failed",
+                        RecoveryPersistenceStatus {
+                            branch_point,
+                            partial_messages,
+                            projection,
+                            recovery_snapshot,
+                        },
+                    )
+                    .await
+                } else {
+                    terminal_marker
+                },
             }
         };
         if result.should_discard() {
@@ -952,6 +1045,52 @@ impl ReActEngine {
             );
         }
         result
+    }
+
+    async fn append_recovery_marker(
+        &self,
+        session_id: &str,
+        run_id: u64,
+        step_number: u32,
+        phase: &str,
+        status: RecoveryPersistenceStatus,
+    ) -> bool {
+        let store = self.event_store.clone();
+        let sid = session_id.to_string();
+        let phase = phase.to_string();
+        let phase_for_write = phase.clone();
+        match self
+            .db
+            .run_blocking(move |db| {
+                // Synthetic ReAct unit tests do not create a session row. As
+                // with the existing event writer, keep those tests side
+                // effect free while production sessions get the durable mark.
+                if db.get_session(&sid)?.is_none() {
+                    return Ok(true);
+                }
+                store.append_recovery_persistence(
+                    &sid,
+                    run_id,
+                    step_number,
+                    &phase_for_write,
+                    status,
+                )?;
+                Ok(true)
+            })
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::error!(
+                    session_id,
+                    step = step_number,
+                    phase,
+                    error = %error,
+                    "failed to persist recovery protocol marker"
+                );
+                false
+            }
+        }
     }
 
     /// Save a branch point at the current step before tool execution (§2).
@@ -976,12 +1115,24 @@ impl ReActEngine {
         // the DB after concurrent truncations (rollback / continue).
         let last_msg_at = if !force {
             if let Some(cached) = self.last_msg_at.get(session_id) {
-                cached
+                Ok(cached)
             } else {
                 self.refresh_last_msg_at(session_id).await
             }
         } else {
             self.refresh_last_msg_at(session_id).await
+        };
+        let last_msg_at = match last_msg_at {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::error!(
+                    session_id,
+                    step = step_number,
+                    error = %error,
+                    "refusing to write branch point without a durable message cutoff"
+                );
+                return false;
+            }
         };
         let last_msg_at_for_event = last_msg_at.clone();
         // Phase 8 / F4: store only an index into the parent events vec — no
@@ -1057,6 +1208,7 @@ mod tests {
                 partial_messages: true,
                 recovery_snapshot: true,
                 projection: true,
+                failure_marker: false,
             }
             .should_discard()
         );

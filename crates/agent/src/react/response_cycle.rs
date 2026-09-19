@@ -158,7 +158,15 @@ impl ReActEngine {
                                 "empty-response retry failed"
                             );
                             let message = format!("empty-response retry failed: {error}");
-                            stream.persist_partial_on_error(state).await;
+                            let recovery = stream.persist_partial_on_error(state).await;
+                            if !recovery.should_discard() {
+                                tracing::error!(
+                                    session_id = %ctx.session_id,
+                                    step = ctx.step_num,
+                                    ?recovery,
+                                    "empty-response retry also failed recovery persistence"
+                                );
+                            }
                             return ResponseCycleOutcome::RetryableError(message);
                         }
                     }
@@ -199,7 +207,15 @@ impl ReActEngine {
                             } else {
                                 let message =
                                     "cut-off retry returned no usable response".to_string();
-                                stream.persist_partial_on_error(state).await;
+                                let recovery = stream.persist_partial_on_error(state).await;
+                                if !recovery.should_discard() {
+                                    tracing::error!(
+                                        session_id = %ctx.session_id,
+                                        step = ctx.step_num,
+                                        ?recovery,
+                                        "cut-off retry also failed recovery persistence"
+                                    );
+                                }
                                 return ResponseCycleOutcome::RetryableError(message);
                             }
                         }
@@ -217,7 +233,15 @@ impl ReActEngine {
                                 "cut-off retry failed"
                             );
                             let message = format!("cut-off retry failed: {error}");
-                            stream.persist_partial_on_error(state).await;
+                            let recovery = stream.persist_partial_on_error(state).await;
+                            if !recovery.should_discard() {
+                                tracing::error!(
+                                    session_id = %ctx.session_id,
+                                    step = ctx.step_num,
+                                    ?recovery,
+                                    "cut-off retry also failed recovery persistence"
+                                );
+                            }
                             return ResponseCycleOutcome::RetryableError(message);
                         }
                     }

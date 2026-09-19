@@ -4,6 +4,7 @@
 //! [`StreamSession`] so the thin loop only consumes [`StepCallOutcome`]
 //! and never constructs [`StreamForwarder`].
 
+use super::snapshot_io::RecoveryPersistenceResult;
 use super::*;
 use crate::types::media_inputs_from_events;
 use haven_llm::{EndpointRole, LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
@@ -107,7 +108,10 @@ impl<'a> StreamSession<'a> {
     /// Promote the current stream scratch into the explicit recovery-only
     /// partial path. Response-policy retries can fail after the first provider
     /// response but before a durable transcript event exists.
-    pub(super) async fn persist_partial_on_error(&self, state: &mut ReActState) {
+    pub(super) async fn persist_partial_on_error(
+        &self,
+        state: &mut ReActState,
+    ) -> RecoveryPersistenceResult {
         self.engine
             .persist_partial_on_error(
                 self.ctx,
@@ -115,7 +119,7 @@ impl<'a> StreamSession<'a> {
                 self.partial_thought,
                 self.partial_reasoning,
             )
-            .await;
+            .await
     }
 }
 
@@ -646,13 +650,22 @@ impl ReActEngine {
                                 error = %error,
                                 "ReAct step cannot continue after compaction projection failure"
                             );
-                            self.persist_partial_on_error(
-                                ctx,
-                                state,
-                                partial_thought,
-                                partial_reasoning,
-                            )
-                            .await;
+                            let recovery = self
+                                .persist_partial_on_error(
+                                    ctx,
+                                    state,
+                                    partial_thought,
+                                    partial_reasoning,
+                                )
+                                .await;
+                            if !recovery.should_discard() {
+                                tracing::error!(
+                                    session_id = %ctx.session_id,
+                                    step = ctx.step_num,
+                                    ?recovery,
+                                    "compaction projection failure also failed recovery persistence"
+                                );
+                            }
                             EventDispatcher::emit_session_error_from(
                                 &ctx.emitter,
                                 &ctx.session_id,
@@ -715,13 +728,22 @@ impl ReActEngine {
                                     ctx.session_id,
                                     err_msg
                                 );
-                                self.persist_partial_on_error(
-                                    ctx,
-                                    state,
-                                    partial_thought,
-                                    partial_reasoning,
-                                )
-                                .await;
+                                let recovery = self
+                                    .persist_partial_on_error(
+                                        ctx,
+                                        state,
+                                        partial_thought,
+                                        partial_reasoning,
+                                    )
+                                    .await;
+                                if !recovery.should_discard() {
+                                    tracing::error!(
+                                        session_id = %ctx.session_id,
+                                        step = ctx.step_num,
+                                        ?recovery,
+                                        "compaction retry failure also failed recovery persistence"
+                                    );
+                                }
                                 self.emit_error(&ctx.emitter, &ctx.session_id, &err_msg)
                                     .await;
                                 self.mark_session_error(&ctx.session_id).await;
@@ -737,13 +759,22 @@ impl ReActEngine {
                             ctx.session_id,
                             err_msg
                         );
-                        self.persist_partial_on_error(
-                            ctx,
-                            state,
-                            partial_thought,
-                            partial_reasoning,
-                        )
-                        .await;
+                        let recovery = self
+                            .persist_partial_on_error(
+                                ctx,
+                                state,
+                                partial_thought,
+                                partial_reasoning,
+                            )
+                            .await;
+                        if !recovery.should_discard() {
+                            tracing::error!(
+                                session_id = %ctx.session_id,
+                                step = ctx.step_num,
+                                ?recovery,
+                                "compaction failure also failed recovery persistence"
+                            );
+                        }
                         EventDispatcher::emit_session_error_from(
                             &ctx.emitter,
                             &ctx.session_id,
@@ -763,13 +794,22 @@ impl ReActEngine {
                             ctx.session_id,
                             err_msg
                         );
-                        self.persist_partial_on_error(
-                            ctx,
-                            state,
-                            partial_thought,
-                            partial_reasoning,
-                        )
-                        .await;
+                        let recovery = self
+                            .persist_partial_on_error(
+                                ctx,
+                                state,
+                                partial_thought,
+                                partial_reasoning,
+                            )
+                            .await;
+                        if !recovery.should_discard() {
+                            tracing::error!(
+                                session_id = %ctx.session_id,
+                                step = ctx.step_num,
+                                ?recovery,
+                                "compaction failure also failed recovery persistence"
+                            );
+                        }
                         EventDispatcher::emit_session_error_from(
                             &ctx.emitter,
                             &ctx.session_id,
@@ -790,8 +830,17 @@ impl ReActEngine {
                     ctx.session_id,
                     err_msg
                 );
-                self.persist_partial_on_error(ctx, state, partial_thought, partial_reasoning)
+                let recovery = self
+                    .persist_partial_on_error(ctx, state, partial_thought, partial_reasoning)
                     .await;
+                if !recovery.should_discard() {
+                    tracing::error!(
+                        session_id = %ctx.session_id,
+                        step = ctx.step_num,
+                        ?recovery,
+                        "model request failure also failed recovery persistence"
+                    );
+                }
                 EventDispatcher::emit_session_error_from(&ctx.emitter, &ctx.session_id, &err_msg)
                     .await;
                 self.mark_session_error(&ctx.session_id).await;
@@ -819,6 +868,7 @@ mod tests {
     }
     use async_trait::async_trait;
     use futures_util::stream;
+    use haven_common::config::RouterConfig;
     use haven_llm::client::LlmClient;
     use haven_llm::{FinishReason, LlmError, StreamChunk, Usage};
     use haven_memory::Database;
@@ -1040,6 +1090,69 @@ mod tests {
             2,
             "both the compaction retry and the follow-up response retry must use the new role"
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_projection_failure_keeps_scratch_and_writes_failed_marker() {
+        let db_path =
+            std::env::temp_dir().join(format!("haven_recovery_fault_{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let session = db.create_session("input", "input").unwrap();
+        let fault_trigger = format!("recovery_fault_{}", uuid::Uuid::new_v4().simple());
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER {fault_trigger}
+                 BEFORE INSERT ON messages
+                 BEGIN SELECT RAISE(ABORT, 'injected recovery message failure'); END;"
+            ))
+            .unwrap();
+
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let router = Arc::new(LlmRouter::new(RouterConfig::default()));
+        let engine = ReActEngine::new(
+            router,
+            executor,
+            db.clone(),
+            8,
+            ContextLimitsConfig::default(),
+        );
+        let ctx = StepCtx {
+            session_id: session.id.clone(),
+            step_num: 2,
+            run_id: 1,
+            emitter: Arc::new(NoopEmitter),
+        };
+        let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+        let partial_thought = Arc::new(Mutex::new("partial reply".to_string()));
+        let partial_reasoning = Arc::new(Mutex::new(String::new()));
+
+        let result = engine
+            .persist_partial_on_error(&ctx, &mut state, &partial_thought, &partial_reasoning)
+            .await;
+
+        assert!(matches!(
+            result,
+            RecoveryPersistenceResult::Failed {
+                partial_messages: false,
+                failure_marker: true,
+                ..
+            }
+        ));
+        let marker = engine
+            .event_store
+            .latest_recovery_persistence(&session.id)
+            .unwrap()
+            .expect("failed recovery marker must be durable");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&marker.payload).unwrap()["phase"],
+            "failed"
+        );
+        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+        let _ = std::fs::remove_file(db_path);
     }
 }
 

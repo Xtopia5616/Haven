@@ -361,6 +361,12 @@ impl LlmRouter {
         }
     }
 
+    async fn record_rate_limit_result(&self, role: &EndpointRole, error: &LlmError) {
+        if let LlmError::RateLimit { retry_after } = error {
+            self.record_rate_limit(role, *retry_after).await;
+        }
+    }
+
     /// Run `f` under the role's concurrency permit, waiting out any shared
     /// rate-limit cooldown first. The permit is held across the WHOLE call
     /// (including retries and stream consumption), so the concurrency cap is
@@ -829,7 +835,10 @@ impl LlmRouter {
                                     );
                                     last_error = Some(error);
                                 }
-                                Err(error) => return Err(error),
+                                Err(error) => {
+                                    self.record_rate_limit_result(&role, &error).await;
+                                    return Err(error);
+                                }
                             }
                         }
                         Err(last_error.unwrap_or_else(|| {
@@ -991,6 +1000,7 @@ impl LlmRouter {
                 }
                 Err(error) => {
                     self.record_failure(model_id).await;
+                    self.record_rate_limit_result(role, &error).await;
                     return Err(error);
                 }
             }
@@ -1154,7 +1164,10 @@ impl LlmRouter {
                             );
                             last_error = Some(error);
                         }
-                        Err(error) => return Err(error),
+                        Err(error) => {
+                            self.record_rate_limit_result(&role, &error).await;
+                            return Err(error);
+                        }
                     }
                 }
                 Err(last_error.unwrap_or_else(|| {
@@ -1636,6 +1649,7 @@ impl LlmRouter {
                         }
                         Err(error) => {
                             self.record_failure(model_id).await;
+                            self.record_rate_limit_result(&role, &error).await;
                             return Err(error);
                         }
                     }
@@ -2683,7 +2697,21 @@ mod tests {
         cb.record_failure();
         assert!(cb.allow_request());
         cb.record_failure();
-        // 3 consecutive out of 3 total > 50% → opens
+        // Three consecutive failures open the breaker regardless of older
+        // successes.
+        assert!(!cb.allow_request());
+    }
+
+    #[test]
+    fn circuit_breaker_ignores_historical_success_rate() {
+        let mut cb = CircuitBreaker::new();
+        for _ in 0..100 {
+            cb.record_success();
+        }
+        for _ in 0..3 {
+            cb.record_failure();
+        }
+        assert_eq!(cb.state, CircuitState::Open);
         assert!(!cb.allow_request());
     }
 
@@ -2695,6 +2723,21 @@ mod tests {
         cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
         assert!(cb.allow_request());
         assert_eq!(cb.state, CircuitState::HalfOpen);
+    }
+
+    #[test]
+    fn circuit_breaker_allows_only_one_half_open_probe() {
+        let mut cb = CircuitBreaker::new();
+        cb.state = CircuitState::Open;
+        cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
+        assert!(cb.allow_request());
+        assert!(!cb.allow_request());
+        cb.record_failure();
+        assert_eq!(cb.state, CircuitState::Open);
+        cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
+        assert!(cb.allow_request());
+        cb.record_success();
+        assert_eq!(cb.state, CircuitState::Closed);
     }
 
     #[test]
