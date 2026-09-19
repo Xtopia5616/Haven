@@ -246,6 +246,9 @@ impl SessionSupervisor {
         }
         loop {
             let session_id = self.pending_queue.lock().await.pop_front()?;
+            if self.is_session_closing(&session_id).await {
+                continue;
+            }
             let Some(actor) = self.actor_for(&session_id).await else {
                 continue;
             };
@@ -330,7 +333,27 @@ impl SessionSupervisor {
         if actor.is_running().await {
             return None;
         }
-        let permit = self.admission.acquire(&CancellationToken::new()).await?;
+        let waiter_cancel = CancellationToken::new();
+        let waiter_id;
+        {
+            // Register the cancellation before waiting for admission. Delete
+            // linearizes its closing marker under this same gate, so it can
+            // always wake a direct resume that is blocked on capacity.
+            let _lifecycle = self.lifecycle_guard().await;
+            if self.ensure_lifecycle_open().is_err()
+                || self.is_session_closing(session_id).await
+                || self.actor_for(session_id).await.is_none()
+                || actor.is_running().await
+            {
+                return None;
+            }
+            waiter_id = self
+                .register_direct_waiter(session_id, waiter_cancel.clone())
+                .await;
+        }
+        let permit = self.admission.acquire(&waiter_cancel).await;
+        self.unregister_direct_waiter(session_id, waiter_id).await;
+        let permit = permit?;
         // The actor may have been quiesced and removed while waiting for a
         // permit. Re-check the registry under the same lifecycle gate used by
         // deletion/loading before changing the actor's run bit; otherwise a
@@ -338,6 +361,7 @@ impl SessionSupervisor {
         // deleted.
         let _lifecycle = self.lifecycle_guard().await;
         if self.ensure_lifecycle_open().is_err()
+            || self.is_session_closing(session_id).await
             || self.actor_for(session_id).await.is_none()
             || actor.is_running().await
         {

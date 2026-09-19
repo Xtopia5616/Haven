@@ -5,7 +5,7 @@ use haven_memory::Database;
 use haven_memory::repositories::sessions::Session as DbSession;
 use haven_tools::{AuthorizationDecision, ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -28,6 +28,8 @@ pub use haven_common::types::FollowUp;
 /// is expected to update the session status on completion/error.
 pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
+
+type DirectRunWaiters = HashMap<String, Vec<(usize, CancellationToken)>>;
 
 /// Absolute fail-closed ceiling for an unanswered **scheduled** confirmation
 /// (R2). The interactive UI countdown (120s) starts when the dialog is
@@ -195,6 +197,14 @@ pub struct SessionSupervisor {
     /// New session creation/loading and dispatch admission fail closed until
     /// the durable purge has completed.
     lifecycle_blocked: std::sync::atomic::AtomicBool,
+    /// Session-scoped closing markers close the gap between quiescing one
+    /// session and taking the registry gate. Direct resumes and dispatch
+    /// claims must not start after a delete has linearized its close request.
+    closing_sessions: Arc<Mutex<HashSet<String>>>,
+    /// Direct resumes waiting for a run slot can be cancelled by delete/clear
+    /// instead of waiting for an unrelated session to release capacity.
+    direct_run_waiters: Arc<Mutex<DirectRunWaiters>>,
+    direct_waiter_id: AtomicUsize,
     /// The supervisor owns exactly one dispatcher. Duplicate starts would
     /// create competing lifecycle consumers and make recovery nondeterministic.
     dispatcher_started: std::sync::atomic::AtomicBool,
@@ -252,6 +262,9 @@ impl SessionSupervisor {
             admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
             lifecycle_blocked: std::sync::atomic::AtomicBool::new(false),
+            closing_sessions: Arc::new(Mutex::new(HashSet::new())),
+            direct_run_waiters: Arc::new(Mutex::new(HashMap::new())),
+            direct_waiter_id: AtomicUsize::new(0),
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
@@ -275,6 +288,48 @@ impl SessionSupervisor {
     /// to avoid trying to acquire the same mutex recursively.
     pub(crate) async fn lifecycle_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.lifecycle_gate.clone().lock_owned().await
+    }
+
+    pub(crate) async fn is_session_closing(&self, session_id: &str) -> bool {
+        self.closing_sessions.lock().await.contains(session_id)
+    }
+
+    pub(crate) async fn register_direct_waiter(
+        &self,
+        session_id: &str,
+        cancellation: CancellationToken,
+    ) -> usize {
+        let waiter_id = self
+            .direct_waiter_id
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.direct_run_waiters
+            .lock()
+            .await
+            .entry(session_id.to_string())
+            .or_default()
+            .push((waiter_id, cancellation));
+        waiter_id
+    }
+
+    pub(crate) async fn unregister_direct_waiter(&self, session_id: &str, waiter_id: usize) {
+        let mut waiters = self.direct_run_waiters.lock().await;
+        let Some(session_waiters) = waiters.get_mut(session_id) else {
+            return;
+        };
+        session_waiters.retain(|(id, _)| *id != waiter_id);
+        if session_waiters.is_empty() {
+            waiters.remove(session_id);
+        }
+    }
+
+    pub(crate) async fn cancel_direct_waiters(&self, session_id: &str) {
+        let waiters = self.direct_run_waiters.lock().await.remove(session_id);
+        if let Some(waiters) = waiters {
+            for (_, cancellation) in waiters {
+                cancellation.cancel();
+            }
+        }
     }
 
     async fn install_actor(&self, info: SessionInfo) -> actor::SessionActorHandle {
@@ -778,6 +833,47 @@ mod tests {
 
         assert!(exec.actor_for(&session.id).await.is_none());
         assert!(exec.db.get_session(&session.id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_cancels_direct_resume_waiting_for_capacity() {
+        let exec = make_executor(1);
+        let session = exec.create_session("delete waiting resume").await.unwrap();
+        let held = exec
+            .admission
+            .try_acquire()
+            .expect("test run occupies the only slot");
+        let exec_for_resume = exec.clone();
+        let session_id = session.id.clone();
+        let resume =
+            tokio::spawn(async move { exec_for_resume.begin_direct_run(&session_id).await });
+
+        for _ in 0..100 {
+            if exec
+                .direct_run_waiters
+                .lock()
+                .await
+                .contains_key(&session.id)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            exec.direct_run_waiters
+                .lock()
+                .await
+                .contains_key(&session.id),
+            "direct resume should register its cancellable admission wait"
+        );
+
+        exec.delete_session(&session.id).await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), resume)
+            .await
+            .expect("delete must wake a direct resume waiting for capacity")
+            .unwrap();
+        assert!(result.is_none());
+        drop(held);
     }
 
     /// A session terminated by end_session between the old find/mark window must

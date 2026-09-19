@@ -60,6 +60,7 @@ impl SessionSupervisor {
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         match status {
             SessionStatus::Running => {
+                self.cancel_direct_waiters(session_id).await;
                 let cancel = self.cancellation_token(session_id).await;
                 // The UI command must not report success while a cancelled
                 // tool/turn can still publish output or release the run slot.
@@ -89,10 +90,12 @@ impl SessionSupervisor {
         cascade: bool,
     ) -> anyhow::Result<SessionStatus> {
         let Some(actor) = self.actor_for(session_id).await else {
+            self.cancel_direct_waiters(session_id).await;
             Self::persist_status(&self.db, session_id, SessionStatus::Completed.as_str()).await?;
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
+        self.cancel_direct_waiters(session_id).await;
         actor.cancel().cancel();
         self.cancel_session_actions(session_id).await;
         // Keep terminal cleanup behind the run-exit fence. Otherwise the
@@ -195,14 +198,23 @@ impl SessionSupervisor {
     }
 
     pub async fn remove_session(&self, session_id: &str) -> anyhow::Result<()> {
-        self.quiesce_session(session_id).await?;
-        let _lifecycle = self.lifecycle_guard().await;
-        self.remove_session_locked(session_id).await
+        self.begin_session_closing(session_id).await?;
+        let result = async {
+            self.quiesce_session(session_id).await?;
+            let _lifecycle = self.lifecycle_guard().await;
+            self.remove_session_locked(session_id).await
+        }
+        .await;
+        if result.is_ok() {
+            self.end_session_closing(session_id).await;
+        }
+        result
     }
 
     /// Cancel and join a run without holding the registry gate. A live ReAct
     /// handler may need that gate to finish a child-session operation.
     async fn quiesce_session(&self, session_id: &str) -> anyhow::Result<()> {
+        self.cancel_direct_waiters(session_id).await;
         if let Some(actor) = self.actor_for(session_id).await {
             actor.cancel().cancel();
             self.cancel_session_actions(session_id).await;
@@ -281,6 +293,7 @@ impl SessionSupervisor {
             .cloned()
             .collect::<Vec<_>>();
         for actor in &actors {
+            self.cancel_direct_waiters(&actor.id).await;
             actor.cancel().cancel();
             self.cancel_session_actions(&actor.id).await;
             self.dequeue_pending(&actor.id).await;
@@ -306,6 +319,8 @@ impl SessionSupervisor {
         self.actors.lock().await.clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
+        self.closing_sessions.lock().await.clear();
+        self.direct_run_waiters.lock().await.clear();
         Ok(())
     }
 
@@ -314,13 +329,21 @@ impl SessionSupervisor {
     /// app commands; it prevents ensure/load from reinstalling a stale actor
     /// between the in-memory quiesce and the SQL delete.
     pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
-        self.quiesce_session(session_id).await?;
-        let _lifecycle = self.lifecycle_guard().await;
-        self.remove_session_locked(session_id).await?;
-        let db = self.db.clone();
-        let session_id = session_id.to_string();
-        db.run_blocking(move |db| db.delete_session(&session_id))
-            .await
+        self.begin_session_closing(session_id).await?;
+        let result = async {
+            self.quiesce_session(session_id).await?;
+            let _lifecycle = self.lifecycle_guard().await;
+            self.remove_session_locked(session_id).await?;
+            let db = self.db.clone();
+            let session_id = session_id.to_string();
+            db.run_blocking(move |db| db.delete_session(&session_id))
+                .await
+        }
+        .await;
+        if result.is_ok() {
+            self.end_session_closing(session_id).await;
+        }
+        result
     }
 
     /// Quiesce the working set and clear durable history while holding the
@@ -366,6 +389,22 @@ impl SessionSupervisor {
         self.wake_dispatcher();
     }
 
+    async fn begin_session_closing(&self, session_id: &str) -> anyhow::Result<()> {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
+        self.closing_sessions
+            .lock()
+            .await
+            .insert(session_id.to_string());
+        self.cancel_direct_waiters(session_id).await;
+        Ok(())
+    }
+
+    async fn end_session_closing(&self, session_id: &str) {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.closing_sessions.lock().await.remove(session_id);
+    }
+
     pub async fn subscribe_status(&self, session_id: &str) -> watch::Receiver<SessionStatus> {
         self.actor_for(session_id)
             .await
@@ -405,6 +444,7 @@ impl SessionSupervisor {
             self.wake_dispatcher();
         }
         if transition.terminal {
+            self.cancel_direct_waiters(session_id).await;
             self.dequeue_pending(session_id).await;
             self.finish_ended_session(session_id, true).await;
             // Completed sessions are explicitly ended and leave the working
@@ -467,6 +507,9 @@ impl SessionSupervisor {
         session_id: &str,
     ) -> anyhow::Result<()> {
         self.ensure_lifecycle_open()?;
+        if self.is_session_closing(session_id).await {
+            anyhow::bail!("session '{}' is closing; retry after deletion", session_id);
+        }
         if self.actor_for(session_id).await.is_some() {
             return Ok(());
         }
@@ -487,6 +530,9 @@ impl SessionSupervisor {
             .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)?;
         let mut loaded = 0;
         for record in pending {
+            if self.is_session_closing(&record.id).await {
+                continue;
+            }
             if self.actor_for(&record.id).await.is_none() {
                 self.install_actor(SessionInfo::from_db_record(&record))
                     .await;
