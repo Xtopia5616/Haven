@@ -216,4 +216,23 @@ mod tests {
         assert_eq!(planned.action_index, 3);
         assert_eq!(planned.action.tool_call_id.as_deref(), Some("call-write"));
     }
+
+    #[test]
+    fn large_provider_batch_preserves_all_64_action_positions() {
+        let actions = (0..64)
+            .map(|index| action(&format!("tool-{index}"), false))
+            .collect::<Vec<_>>();
+        let plan = ToolBatchPlan::from_actions(&actions);
+
+        assert_eq!(plan.len(), 64);
+        for (index, planned) in plan.iter().enumerate() {
+            assert_eq!(planned.action_index, index as u32);
+            let expected_call_id = format!("call-tool-{index}");
+            assert_eq!(
+                planned.action.tool_call_id.as_deref(),
+                Some(expected_call_id.as_str())
+            );
+        }
+        assert_eq!(plan.action_cards(false).len(), 64);
+    }
 }
