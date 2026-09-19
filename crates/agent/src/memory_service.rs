@@ -142,7 +142,11 @@ impl MemoryService {
         {
             return String::new();
         }
-        let endpoint = router.config().await.embedding_model.clone();
+        let endpoint = router
+            .config()
+            .await
+            .endpoint(EndpointRole::EmbeddingModel)
+            .clone();
         if endpoint.model_name.trim().is_empty() {
             String::new()
         } else {

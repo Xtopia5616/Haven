@@ -2,7 +2,8 @@ use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::commands::rebuild_router;
 use haven_common::config::{
-    AppConfig, LlmConfig, ProviderConfig, RoleConfig, provider_config_wire_style,
+    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, RoleConfig,
+    provider_config_wire_style,
 };
 use haven_llm::EndpointRole;
 use haven_llm::ModelInfo;
@@ -12,13 +13,22 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri::State;
 
-/// Resolve a model role string to its role slot (providers + roles world), or
-/// `None` for unknown roles. Single source of truth for the role names
-/// accepted by the model commands (`switch_model`, `set_reasoning_effort`,
+/// Resolve a model id or request/legacy selector to a named model, or `None`
+/// for an unknown selector. Single source of truth for selectors accepted by
+/// the model commands (`switch_model`, `set_reasoning_effort`,
 /// `set_web_search`).
-fn role_slot<'a>(cfg: &'a mut LlmConfig, role: &str) -> Option<&'a mut RoleConfig> {
-    let role = EndpointRole::from_str(role)?;
-    cfg.role_mut(role)
+fn model_id_for_selector(cfg: &LlmConfig, selector: &str) -> Option<String> {
+    if cfg.model(selector).is_some() {
+        return Some(selector.to_string());
+    }
+    let request = RequestKind::from_str(selector)
+        .or_else(|| EndpointRole::from_str(selector).map(EndpointRole::request_kind))?;
+    cfg.policy(request).map(|policy| policy.primary.clone())
+}
+
+fn role_slot<'a>(cfg: &'a mut LlmConfig, selector: &str) -> Option<&'a mut ModelConfig> {
+    let id = model_id_for_selector(cfg, selector)?;
+    cfg.model_mut(&id)
 }
 
 /// Normalize an endpoint URL for comparison: strip the trailing slash and
@@ -156,18 +166,14 @@ fn stt_key_configured(stt: &haven_common::config::SttConfig, providers: &[Provid
     false
 }
 
-/// Build the `{role: bool, providers: {name: bool}, stt/ocr/...}` payload the
+/// Build the `{models: {id: bool}, providers: {name: bool}, stt/ocr/...}` payload the
 /// settings page uses for StatusDot / Set vs Change. Reads the live config
 /// (same snapshot as model discovery), not a fresh disk reload.
 /// TTS / image-gen reuse `providers` credentials, so they have no separate
 /// key flags here.
 #[derive(Debug, serde::Serialize)]
 pub struct ApiKeyStatus {
-    pub small_model: bool,
-    pub default_model: bool,
-    pub image_model: bool,
-    pub audio_model: bool,
-    pub embedding_model: bool,
+    pub models: BTreeMap<String, bool>,
     pub providers: BTreeMap<String, bool>,
     pub stt: bool,
     pub ocr: bool,
@@ -179,12 +185,17 @@ fn api_key_status(cfg: &AppConfig) -> ApiKeyStatus {
     for p in &cfg.llm.providers {
         providers.insert(p.name.clone(), provider_is_configured(p));
     }
+    let mut models = BTreeMap::new();
+    for model in &cfg.llm.models {
+        let configured = model.is_assigned()
+            && cfg
+                .llm
+                .provider(&model.provider)
+                .is_some_and(haven_common::config::provider_credentials_ready);
+        models.insert(model.id.clone(), configured);
+    }
     ApiKeyStatus {
-        small_model: cfg.llm.is_configured(EndpointRole::SmallModel),
-        default_model: cfg.llm.is_configured(EndpointRole::DefaultModel),
-        image_model: cfg.llm.is_configured(EndpointRole::ImageModel),
-        audio_model: cfg.llm.is_configured(EndpointRole::AudioModel),
-        embedding_model: cfg.llm.is_configured(EndpointRole::EmbeddingModel),
+        models,
         providers,
         stt: stt_key_configured(&cfg.media.stt, &cfg.llm.providers),
         ocr: !cfg.media.ocr.api_key.is_empty(),
@@ -415,10 +426,10 @@ pub async fn discover_all_models(
     Ok(results)
 }
 
-/// §2.7: Switch a model endpoint role to a different model.
+/// §2.7: Switch a named model assignment to a different provider model.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
-/// Apply a mutation to a role slot through the versioned config service and
+/// Apply a mutation to a named model through the versioned config service and
 /// hot-swap the LlmRouter at runtime. The service serializes the mutation and
 /// persists the complete snapshot before the runtime rebuild begins.
 async fn update_role_field(
@@ -438,7 +449,7 @@ async fn update_role_field(
     rebuild_router(state, ctx).await
 }
 
-/// Switch a model endpoint role to another model id. Updates config.toml and
+/// Switch a named model assignment to another provider model id. Updates config.toml and
 /// hot-swaps the LlmRouter at runtime.
 #[tauri::command]
 pub async fn switch_model(
@@ -456,7 +467,7 @@ pub async fn switch_model(
     Ok(())
 }
 
-/// Set the reasoning effort of a model endpoint role (e.g. "low"/"medium"/"high").
+/// Set the reasoning effort of a named model assignment (e.g. "low"/"medium"/"high").
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
 pub async fn set_reasoning_effort(
@@ -481,7 +492,7 @@ pub async fn set_reasoning_effort(
     Ok(())
 }
 
-/// Set the provider built-in web search mode of a model endpoint role
+/// Set the provider built-in web search mode of a named model assignment
 /// ("off" | "auto" | "always"). "auto" lets the model decide when to search;
 /// any other value (including empty) is rejected. Updates config.toml and
 /// hot-swaps the LlmRouter at runtime.
@@ -517,11 +528,11 @@ pub async fn set_web_search(
                 .snapshot()
                 .map_err(|e| log_err("set_web_search", e))?;
             let llm = &loader.config.llm;
+            let model_id = model_id_for_selector(llm, &role)
+                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", role))?;
             let slot = llm
-                .roles
-                .iter()
-                .find(|r| r.role == role)
-                .ok_or_else(|| format!("unknown or unconfigured role: {}", role))?;
+                .model(&model_id)
+                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", role))?;
             llm.providers
                 .iter()
                 .find(|p| p.name == slot.provider)
@@ -580,7 +591,12 @@ mod tests {
         assert!(status.providers["cloud"]);
         assert!(!status.providers["empty"]);
         assert!(status.providers["local"]);
-        assert!(!status.default_model);
+        assert!(
+            status
+                .models
+                .get("default_model")
+                .is_none_or(|configured| !configured)
+        );
     }
 
     #[test]

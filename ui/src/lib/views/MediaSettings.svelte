@@ -3,7 +3,6 @@
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification } from '$lib/stores.ts';
 	import { reportError } from '$lib/errorHandling.ts';
-	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -14,7 +13,6 @@
 	import { inputFormats } from '$lib/inputFormats.ts';
 	import {
 		inputElementValue,
-		withBooleanValue,
 		withEventValue,
 		withNumberValue,
 		withStringValue,
@@ -198,7 +196,8 @@
 
 <SettingsSection ariaLabel="媒体" className="media-section">
 	<p class="model-hint">
-		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 Audio / Image Model；TTS /
+		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 transcription / vision
+		策略；TTS /
 		文生图复用「模型」页已添加的 Provider（Base URL + API Key）。
 	</p>
 	<MaterialCard variant="outlined" className="settings-card media-strategy-card">
@@ -233,16 +232,7 @@
 				{#if format.id === 'voice'}
 					<div class="capability-block first">
 						<h4>输入 · 采集</h4>
-						<div class="form-row switch-row">
-							<span class="switch-label">录音转写使用专用音频模型</span
-							><MaterialSwitch
-								checked={llmConfig.stt_use_audio_model}
-								ariaLabel="切换专用音频模型"
-								onChange={withBooleanValue((v) => {
-									llmConfig.stt_use_audio_model = v;
-								})}
-							/>
-						</div>
+						<p class="model-hint">录音转写由「transcription」请求策略选择模型；请在模型页配置 capability 与 fallback。</p>
 						<div class="form-row">
 							<label for="audio-sample-rate">Sample Rate</label><MaterialNumberField
 								id="audio-sample-rate"
@@ -470,16 +460,7 @@
 								contextLimits.attachment_image_jpeg_quality * 100,
 							)}%。
 						</p>
-						<div class="form-row switch-row">
-							<span class="switch-label">图片理解使用专用视觉模型</span
-							><MaterialSwitch
-								checked={llmConfig.vision_use_image_model}
-								ariaLabel="切换专用视觉模型"
-								onChange={withBooleanValue((v) => {
-									llmConfig.vision_use_image_model = v;
-								})}
-							/>
-						</div>
+						<p class="model-hint">图片理解由「vision」请求策略选择模型；请在模型页配置 capability 与 fallback。</p>
 						<div class="form-row">
 							<label for="max-attachment-images">单条消息最多图片数</label
 							><MaterialNumberField
@@ -765,17 +746,6 @@
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		flex-shrink: 0;
 	}
-	.switch-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--md-sys-space-md);
-	}
-	.switch-label {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-	}
 	.capability-block {
 		margin-top: var(--md-sys-space-md);
 		padding-top: var(--md-sys-space-md);
@@ -902,15 +872,6 @@
 		.form-row label {
 			width: auto;
 			flex-shrink: 1;
-		}
-		.switch-row {
-			flex-direction: row;
-			align-items: center;
-			justify-content: space-between;
-		}
-		.switch-label {
-			flex: 1;
-			min-width: 0;
 		}
 	}
 </style>

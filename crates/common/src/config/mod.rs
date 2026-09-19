@@ -1,7 +1,7 @@
 //! Application configuration: TOML schema types, sub-config structs, and the
 //! [`ConfigLoader`].
 //!
-//! Split into submodules by concern — endpoints/roles/router, media, misc
+//! Split into submodules by concern — endpoints/models/router, media, misc
 //! slices, and the loader (which aggregates everything into `AppConfig` /
 //! `Settings`). The public surface is re-exported below, so downstream crates
 //! keep using `haven_common::config::*` unchanged.

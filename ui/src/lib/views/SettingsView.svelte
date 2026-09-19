@@ -10,7 +10,6 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
-	import { ensureRoleSlots } from '$lib/modelRoles.ts';
 	import {
 		parseApiKeyStatus,
 		parseLogInfo,
@@ -22,21 +21,15 @@
 	import SettingsLimits from './SettingsLimits.svelte';
 	import logger from '$lib/logger.ts';
 
-	/** @type {{ providers: any[], roles: any[], [key: string]: any }} */
+	/** @type {{ providers: any[], models: any[], request_policies: any[], [key: string]: any }} */
 	let llmConfig = $state({
 		providers: [],
-		roles: [],
-		stt_use_audio_model: true,
-		vision_use_image_model: true,
+		models: [],
+		request_policies: [],
 		max_concurrent_requests: 2,
 	});
-	/** @type {{ [key: string]: boolean }} */
+	/** @type {{ [key: string]: any }} */
 	let keyConfigured = $state({
-		small_model: false,
-		default_model: false,
-		image_model: false,
-		audio_model: false,
-		embedding_model: false,
 		stt: false,
 		ocr: false,
 		ocr_secret: false,
@@ -160,7 +153,7 @@
 	let settingsTab = $state('general');
 	const settingsTabs = [
 		{ id: 'general', label: '常规', hint: '快捷键、会话、记忆与外观' },
-		{ id: 'models', label: '模型', hint: 'Provider、角色与 API Key' },
+		{ id: 'models', label: '模型', hint: 'Provider、能力与请求策略' },
 		{ id: 'media', label: '媒体', hint: '语音、图片、朗读与生成' },
 		{ id: 'limits', label: '限制', hint: '上下文、文件与安全边界' },
 	];
@@ -347,17 +340,17 @@
 			return;
 		try {
 			const snapshot = JSON.parse(savedSnapshot);
-			const roles = Array.isArray(snapshot?.llm?.roles) ? snapshot.llm.roles : [];
+			const models = Array.isArray(snapshot?.llm?.models) ? snapshot.llm.models : [];
 			for (const fill of fills) {
-				const role = roles.find((/** @type {any} */ item) => item.role === fill.role);
-				if (!role) continue;
-				if ('context_window' in fill) role.context_window = fill.context_window;
+				const model = models.find((/** @type {any} */ item) => item.id === fill.id);
+				if (!model) continue;
+				if ('context_window' in fill) model.context_window = fill.context_window;
 				if ('cost_per_1k_input_tokens' in fill)
-					role.cost_per_1k_input_tokens = fill.cost_per_1k_input_tokens;
+					model.cost_per_1k_input_tokens = fill.cost_per_1k_input_tokens;
 				if ('cost_per_1k_output_tokens' in fill)
-					role.cost_per_1k_output_tokens = fill.cost_per_1k_output_tokens;
+					model.cost_per_1k_output_tokens = fill.cost_per_1k_output_tokens;
 			}
-			snapshot.llm = { ...(snapshot.llm || {}), roles };
+			snapshot.llm = { ...(snapshot.llm || {}), models };
 			savedSnapshot = JSON.stringify(snapshot);
 		} catch (e) {
 			logger.warn('SettingsView', 're-baseline after discovery failed', e);
@@ -369,20 +362,20 @@
 		if (!savedSnapshot || !remote) return;
 		try {
 			const snapshot = JSON.parse(savedSnapshot);
-			const roles = Array.isArray(snapshot?.llm?.roles) ? snapshot.llm.roles : [];
-			const index = roles.findIndex(
-				(/** @type {any} */ role) => role.role === 'default_model',
+			const models = Array.isArray(snapshot?.llm?.models) ? snapshot.llm.models : [];
+			const index = models.findIndex(
+				(/** @type {any} */ model) => model.id === 'default_model',
 			);
 			const patched = {
-				...(index >= 0 ? roles[index] : { role: 'default_model' }),
+				...(index >= 0 ? models[index] : { id: 'default_model' }),
 				provider: remote.provider,
 				model: remote.model,
 				reasoning_effort: remote.reasoning_effort,
 				web_search: remote.web_search,
 			};
-			if (index >= 0) roles[index] = patched;
-			else roles.push(patched);
-			snapshot.llm = { ...(snapshot.llm || {}), roles };
+			if (index >= 0) models[index] = patched;
+			else models.push(patched);
+			snapshot.llm = { ...(snapshot.llm || {}), models };
 			savedSnapshot = JSON.stringify(snapshot);
 		} catch (e) {
 			logger.warn('SettingsView', 'patch snapshot default_model failed', e);
@@ -393,8 +386,8 @@
 	function applyRemoteDefaultModelFields(remote) {
 		if (!remote) return;
 		const local = /** @type {any[]} */ (
-			Array.isArray(llmConfig.roles) ? llmConfig.roles : []
-		).find((/** @type {any} */ role) => role.role === 'default_model');
+			Array.isArray(llmConfig.models) ? llmConfig.models : []
+		).find((/** @type {any} */ model) => model.id === 'default_model');
 		if (local)
 			Object.assign(local, {
 				provider: remote.provider,
@@ -402,7 +395,7 @@
 				reasoning_effort: remote.reasoning_effort,
 				web_search: remote.web_search,
 			});
-		else if (Array.isArray(llmConfig.roles)) llmConfig.roles.push(remote);
+		else if (Array.isArray(llmConfig.models)) llmConfig.models.push(remote);
 		rememberSyncedDefaultModel(remote);
 		patchSnapshotDefaultModel(remote);
 	}
@@ -413,8 +406,8 @@
 			const settings = await invoke('get_settings');
 			if (!mounted || generation !== defaultModelSyncGen || !settings?.llm) return;
 			const remote = /** @type {any[]} */ (
-				Array.isArray(settings.llm.roles) ? settings.llm.roles : []
-			).find((/** @type {any} */ role) => role.role === 'default_model');
+				Array.isArray(settings.llm.models) ? settings.llm.models : []
+			).find((/** @type {any} */ model) => model.id === 'default_model');
 			if (remote) applyRemoteDefaultModelFields(remote);
 		} catch (e) {
 			logger.warn('SettingsView', 'sync default_model role error', e);
@@ -426,11 +419,11 @@
 			const settings = await invoke('get_settings');
 			if (!mounted || !settings?.llm) return;
 			const remote = /** @type {any[]} */ (
-				Array.isArray(settings.llm.roles) ? settings.llm.roles : []
-			).find((/** @type {any} */ role) => role.role === 'default_model');
+				Array.isArray(settings.llm.models) ? settings.llm.models : []
+			).find((/** @type {any} */ model) => model.id === 'default_model');
 			const local = /** @type {any[]} */ (
-				Array.isArray(llmConfig.roles) ? llmConfig.roles : []
-			).find((/** @type {any} */ role) => role.role === 'default_model');
+				Array.isArray(llmConfig.models) ? llmConfig.models : []
+			).find((/** @type {any} */ model) => model.id === 'default_model');
 			if (!remote || !local) return;
 			if ((local.model || '') === lastSyncedDefaultModel.model) local.model = remote.model;
 			if ((local.reasoning_effort || '') === lastSyncedDefaultModel.reasoning_effort)
@@ -453,10 +446,10 @@
 					...llmConfig,
 					...snapshot.llm,
 					providers: Array.isArray(snapshot.llm.providers) ? snapshot.llm.providers : [],
-					roles: Array.isArray(snapshot.llm.roles) ? snapshot.llm.roles : [],
+					models: Array.isArray(snapshot.llm.models) ? snapshot.llm.models : [],
 				};
 				rememberSyncedDefaultModel(
-					llmConfig.roles.find((role) => role.role === 'default_model'),
+					llmConfig.models.find((model) => model.id === 'default_model'),
 				);
 			}
 			if (snapshot.hotkey) {
@@ -580,11 +573,13 @@
 			if (settings) {
 				llmConfig = settings.llm || llmConfig;
 				llmConfig.providers = Array.isArray(llmConfig.providers) ? llmConfig.providers : [];
-				llmConfig.roles = Array.isArray(llmConfig.roles) ? llmConfig.roles : [];
-				ensureRoleSlots(llmConfig.roles);
+				llmConfig.models = Array.isArray(llmConfig.models) ? llmConfig.models : [];
+				llmConfig.request_policies = Array.isArray(llmConfig.request_policies)
+					? llmConfig.request_policies
+					: [];
 				rememberSyncedDefaultModel(
-					llmConfig.roles.find(
-						(/** @type {any} */ role) => role.role === 'default_model',
+					llmConfig.models.find(
+						(/** @type {any} */ model) => model.id === 'default_model',
 					),
 				);
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
@@ -643,10 +638,6 @@
 		} catch (e) {
 			reportError(e, { context: 'SettingsView', message: '加载设置失败', log: false });
 		}
-		// Keep the model role shape stable even when the initial settings request
-		// fails. Otherwise opening the model tab would create missing role slots
-		// after the baseline snapshot and incorrectly mark settings as dirty.
-		if (mounted) ensureRoleSlots(llmConfig.roles);
 		try {
 			await refreshApiKeyStatus();
 			if (!mounted) return;

@@ -17,6 +17,7 @@ use haven_common::types::{CanonicalMessage, ContentPart};
 
 use crate::LlmRouter;
 use crate::types::{LlmError, LlmResponse};
+use haven_common::config::RequestKind;
 
 const MAX_PROMPT_FIELD_CHARS: usize = 32_000;
 
@@ -38,7 +39,6 @@ pub async fn analyze_image(
         )));
     }
 
-    let role = router.vision_role().await;
     let input = MediaInput {
         asset: MediaAsset::new(
             media_type,
@@ -57,7 +57,7 @@ pub async fn analyze_image(
         )],
         preferred_representation: Some(MediaRepresentationKind::RawImage),
     };
-    let capabilities = router.capability_profile(role);
+    let capabilities = router.capability_profile_for_request(RequestKind::Vision);
     let plan = build_media_plan(
         std::slice::from_ref(&input),
         &capabilities,
@@ -89,7 +89,7 @@ pub async fn analyze_image(
         CanonicalMessage::system(vec![ContentPart::text(system)]),
         CanonicalMessage::user(vec![image_part]),
     ];
-    router.chat(role, messages).await
+    router.chat_request(RequestKind::Vision, messages).await
 }
 
 /// Small test-only capability profile helper kept private to the module.

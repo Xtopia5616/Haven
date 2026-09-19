@@ -166,10 +166,11 @@ exit_code?, preview? }`。它不包含动态 `tool_args`、续接 `prompt`、`to
 
 | 命令 | 请求 | 响应 | 说明 |
 |---|---|---|---|
-| `get_api_key_status` | 无 | `ApiKeyStatus` | 返回各固定模型槽位、媒体能力和已配置 provider 的布尔状态；不返回任何凭据。 |
+| `get_api_key_status` | 无 | `ApiKeyStatus` | 返回各命名模型、媒体能力和已配置 provider 的布尔状态；不返回任何凭据。 |
 
-`ApiKeyStatus.providers` 的 key 是用户配置的 provider 名称这一明确扩展点，其 value 始终为
-布尔值；其它状态字段由 Rust DTO 和前端 parser 固定。
+`ApiKeyStatus.models` 的 key 是用户配置的 model id，`providers` 的 key 是用户配置的
+provider 名称；两者都是明确扩展点，value 始终为布尔值。其它状态字段由 Rust DTO
+和前端 parser 固定。
 
 ## 录音与转写命令、事件（v1）
 

@@ -254,7 +254,12 @@ turn context 依赖；`PromptRenderer` 负责纯 system/MEMORY fence 渲染。�
 
 ### G. P1：模型路由从固定角色改成 capability/request policy
 
-当前 [`crates/common/src/config/endpoint.rs`](../crates/common/src/config/endpoint.rs) 固定 five slots：small/default/image/audio/embedding，再用 `api_style`、provider hint、`stt_use_audio_model` 和 `vision_use_image_model` 叠加语义。它能工作，但新增能力时会继续增加 slot、布尔开关和特判。
+2026-09-19 已完成第一阶段（ADR 0170）：配置改为命名模型、显式
+`Capability` 与有序 `RequestPolicy`。旧 `llm.roles` 在加载时转换为新模型/策略
+形状；`stt_use_audio_model` 与 `vision_use_image_model` 不再进入运行时配置。router
+按 request kind 选择 primary/fallback，并跳过未配置或 capability 不匹配的模型；
+provider adapter 继续保持 wire compatibility。后续可把 agent/tools 的兼容
+`EndpointRole` 调用点逐步迁移到 `RequestKind`，再删除临时 selector facade。
 
 更清晰的模型是：请求声明 `RequestKind` / `Capability`（chat、fast_chat、vision、transcription、embedding、image_generation、speech_synthesis），配置声明 provider capability，router 只执行显式请求策略；provider identity、wire protocol、model capability 也分别建模。
 

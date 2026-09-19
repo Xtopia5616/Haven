@@ -126,14 +126,15 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   - `anthropic` → Messages API（可选 server `web_search_*`）；无 embedding
   - `gemini` → `generateContent`（可选 `google_search` grounding）；embedding 走 `batchEmbedContents`
   - `deepgram` / `assemblyai` → STT only
-- 聊天页「联网搜索」为角色级 `off|auto|always`；仅
+- 聊天页「联网搜索」为命名模型级 `off|auto|always`；仅
   `supports_builtin_web_search(api_style)` 为真时由对应适配器注入内置搜索工具，
   UI 对不支持的线协议灰显。
 - 厂商扩展（DeepSeek `thinking` / Responses `reasoning.effort`、Kimi
   `thinking.type`+`keep` 等）挂在对应 adapter + provider/base_url/model 检测上，
   复用聊天页「思考强度」，不另开线协议。
-- `router.rs`：`LlmRouter`，按 `EndpointRole`（small / default /
-  image / audio / embedding）把请求路由到对应适配器。
+- `router.rs`：`LlmRouter`，按 `RequestKind` 查找显式 request policy，再从
+  命名模型注册表中选择声明了所需 `Capability` 且凭据可用的 primary/fallback；
+  `EndpointRole` 只作为迁移期的边界兼容 selector，不是持久化配置模型。
 - `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
   为普通聊天、工具聊天、embedding 和流式端点尝试提供同一份重试预算快照与
   总超时执行语义。router 仍拥有熔断、限流和流式聚合，adapter 不实现第二套
@@ -390,7 +391,7 @@ sequence/block identity；live event、resume、rollback 同步和 reconnect rep
 和通知副作用，`chat*EventHandlers.ts` 只做 DTO 到 action 的适配；旧
 `sessionMessages.ts`、`sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责
 排队后 dispatch chunk action（ADR 0160）。
-`ModelSettings.svelte` 当前保留模型角色、Provider CRUD 与 discovery 的页面编排，已补
+`ModelSettings.svelte` 当前保留命名模型、Provider CRUD 与 discovery 的页面编排，已补
 组件行为测试，后续再按 discovery / mutation 边界拆分。
 
 **判定标准**：唯一能同时看到所有 crate 的地方；负责把事件桥到前端、把前端命令调到后端，
@@ -465,6 +466,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-19 | §2.2 Common / LLM / App / UI：将固定 five-slot 模型配置和 STT/vision 布尔开关改为命名模型、`Capability` 与 `RequestPolicy` 路由；旧 `llm.roles` 在加载时一次性转换，provider adapter wire 契约保持不变（ADR 0170） |
 | 2026-09-19 | §2.2 LLM：将 OpenAI Chat、Responses、Anthropic 与 Gemini provider adapter 按 wire、request、response、stream、mapping、features 与 provider-local golden fixtures 拆分；保持外部 wire、共享 transport/framing 与 LlmClient 边界不变（ADR 0169） |
 | 2026-09-15 | §2.5 Security / Tools / Agent / App：由 `AuthorizationEngine` 统一承载 typed `AuthorizationRequest`、`AuthorizationDecision` 与 `CapabilityScope`；scheduled、MCP、skill、Tauri/UI confirmation 共用同一请求与 receipt 校验路径（ADR 0163） |
 | 2026-09-15 | §2.6 App：引入 `ApplicationRuntime` 统一服务句柄、后台任务 owner、根取消 token、退出 shutdown/teardown；输入、session、action、MCP 和 bootstrap worker 按依赖顺序停止，pending scheduled action 保留恢复语义（ADR 0161） |

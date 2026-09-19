@@ -82,7 +82,12 @@ impl MemoryEmbeddingIndex {
         {
             return None;
         }
-        let endpoint = self.router.config().await.embedding_model.clone();
+        let endpoint = self
+            .router
+            .config()
+            .await
+            .endpoint(EndpointRole::EmbeddingModel)
+            .clone();
         (!endpoint.model_name.trim().is_empty()).then_some(EmbeddingIdentity {
             storage_model: embedding_index_model(&endpoint),
             provider_model: endpoint.model_name,

@@ -33,14 +33,14 @@ impl Default for AudioConfig {
 
 /// Speech-to-text configuration. Lives under `[media.stt]`. Cloud providers
 /// are materialized into a [`super::ModelEndpoint`] and dispatched through
-/// the same `adapter_for` / `LlmClient::transcribe` path as chat roles;
-/// `llm` uses the router's `audio_model` (or default) slot.
+/// the same `adapter_for` / `LlmClient::transcribe` path as chat requests;
+/// `llm` uses the router's `transcription` request policy.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SttConfig {
     /// Speech-to-text provider. Prefer a name from `llm.providers` (reuses
     /// that provider's base URL + API key). Also accepts:
-    /// - `llm`: transcribe via the configured `audio_model` LLM endpoint
+    /// - `llm`: transcribe via the configured `transcription` request policy
     /// - `mcp`: route through an MCP server exposing `stt.transcribe`
     /// - `none`: no transcription
     pub provider: String,
@@ -76,7 +76,7 @@ impl Default for SttConfig {
 #[serde(default)]
 pub struct OcrConfig {
     /// OCR provider. One of:
-    /// - `llm`: extract via the configured `image_model` / vision role
+    /// - `llm`: extract via the configured `vision` request policy
     /// - `baidu`: Baidu 通用文字识别（标准版）
     /// - `azure`: Azure AI Vision (Computer Vision 3.2 OCR)
     /// - `tencent`: Tencent Cloud 通用印刷体识别

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -21,12 +22,14 @@ use crate::types::{
     ToolDefinition, Usage,
 };
 use futures_util::future::join_all;
-use haven_common::config::{ModelEndpoint, RouterConfig, compute_cost_usd};
+use haven_common::config::{
+    Capability, ModelEndpoint, RequestKind, RoutedModel, RouterConfig, compute_cost_usd,
+};
 use haven_common::media::CapabilityProfile;
 
-/// Model slot roles. The canonical definition lives next to the config it
-/// routes to (`haven_common::config::EndpointRole`); re-exported here so
-/// callers keep a single `haven_llm::EndpointRole` path.
+/// Legacy request selectors. New code should prefer [`RequestKind`]; this
+/// re-export keeps the old agent/tool boundary source-compatible while the
+/// persisted configuration is capability/policy based.
 pub use haven_common::config::EndpointRole;
 
 // ---------------------------------------------------------------------------
@@ -70,11 +73,11 @@ pub struct LlmRouter {
     /// Kept on the router so per-request output caps use the same resolved
     /// window as construction-time max-token clamping.
     default_context_window: u32,
-    pub small_model: Arc<dyn LlmClient>,
-    pub default_model: Arc<dyn LlmClient>,
-    pub image_model: Arc<dyn LlmClient>,
-    pub audio_model: Arc<dyn LlmClient>,
-    pub embedding_model: Arc<dyn LlmClient>,
+    models: HashMap<String, Arc<dyn LlmClient>>,
+    /// Request → model identity resolved from the explicit request policies.
+    /// Rebuilt with the router on config hot-swap; the mutex only supports the
+    /// test-only policy mutation helpers.
+    routes: StdMutex<HashMap<RequestKind, String>>,
     // §5.3: per-endpoint health (index: 0=SmallModel, 1=DefaultModel, 2=ImageModel, 3=AudioModel, 4=EmbeddingModel)
     health: RwLock<[EndpointHealth; 5]>,
     /// Stream rules that are checked against accumulated output (§3.7)
@@ -140,6 +143,42 @@ struct RetryStreamRequest<'a> {
 }
 
 impl LlmRouter {
+    fn health_role_for_request(request: RequestKind) -> EndpointRole {
+        match request {
+            RequestKind::Chat => EndpointRole::DefaultModel,
+            RequestKind::FastChat => EndpointRole::SmallModel,
+            RequestKind::Vision => EndpointRole::ImageModel,
+            RequestKind::AudioChat | RequestKind::Transcription => EndpointRole::AudioModel,
+            RequestKind::Embedding => EndpointRole::EmbeddingModel,
+            RequestKind::ImageGeneration | RequestKind::SpeechSynthesis => {
+                EndpointRole::DefaultModel
+            }
+        }
+    }
+
+    fn build_routes(config: &RouterConfig) -> HashMap<RequestKind, String> {
+        config
+            .request_policies
+            .iter()
+            .filter_map(|policy| {
+                let id = config
+                    .route(policy.request)
+                    .map(|model| model.id.clone())
+                    .or_else(|| {
+                        policy.candidates().find_map(|id| {
+                            config.model(id).and_then(|model| {
+                                model
+                                    .capabilities
+                                    .contains(&policy.request.required_capability())
+                                    .then_some(id.to_string())
+                            })
+                        })
+                    })?;
+                Some((policy.request, id))
+            })
+            .collect()
+    }
+
     pub fn new(config: RouterConfig) -> Self {
         Self::with_default_context_window(config, crate::registry::FALLBACK_CONTEXT_WINDOW)
     }
@@ -164,33 +203,31 @@ impl LlmRouter {
         } else {
             crate::registry::FALLBACK_CONTEXT_WINDOW
         };
-        for ep in [
-            &mut config.small_model,
-            &mut config.default_model,
-            &mut config.image_model,
-            &mut config.audio_model,
-            &mut config.embedding_model,
-        ] {
+        for model in &mut config.models {
+            let ep = &mut model.endpoint;
             let window = crate::registry::context_window_for(ep).unwrap_or(fallback);
             if window > 0 {
                 ep.max_tokens = ep.max_tokens.min(window);
             }
         }
-        let small_model = Arc::from(adapter_for(&config.small_model));
-        let default_model = Arc::from(adapter_for(&config.default_model));
-        let image_model = Arc::from(adapter_for(&config.image_model));
-        let audio_model = Arc::from(adapter_for(&config.audio_model));
-        let embedding_model = Arc::from(adapter_for(&config.embedding_model));
+        let models: HashMap<String, Arc<dyn LlmClient>> = config
+            .models
+            .iter()
+            .map(|model| {
+                (
+                    model.id.clone(),
+                    Arc::from(adapter_for(&model.endpoint)) as Arc<dyn LlmClient>,
+                )
+            })
+            .collect();
+        let routes = Self::build_routes(&config);
         let request_limit = Self::request_limit(&config);
         let (health, _, semaphores, rate_limited) = Self::runtime_state(request_limit);
         Self {
             config: Arc::new(RwLock::new(config)),
             default_context_window: fallback,
-            small_model,
-            default_model,
-            image_model,
-            audio_model,
-            embedding_model,
+            models,
+            routes: StdMutex::new(routes),
             health,
             // Production routers start with the default no-code-block guard.
             // Test constructors keep an empty rule list via `runtime_state`.
@@ -357,15 +394,24 @@ impl LlmRouter {
         audio_model: Arc<dyn LlmClient>,
         embedding_model: Arc<dyn LlmClient>,
     ) -> Self {
+        let config = Self::test_config();
+        let routes = Self::build_routes(&config);
+        let models = [
+            ("small_model", small_model),
+            ("default_model", default_model),
+            ("image_model", image_model),
+            ("audio_model", audio_model),
+            ("embedding_model", embedding_model),
+        ]
+        .into_iter()
+        .map(|(id, client)| (id.to_string(), client))
+        .collect();
         let (health, stream_rules, semaphores, rate_limited) = Self::runtime_state(64);
         Self {
-            config: Arc::new(RwLock::new(RouterConfig::default())),
+            config: Arc::new(RwLock::new(config)),
             default_context_window: crate::registry::FALLBACK_CONTEXT_WINDOW,
-            small_model,
-            default_model,
-            image_model,
-            audio_model,
-            embedding_model,
+            models,
+            routes: StdMutex::new(routes),
             health,
             stream_rules,
             // Test constructors bypass the config, so use a high per-role
@@ -376,14 +422,67 @@ impl LlmRouter {
         }
     }
 
-    pub fn select_endpoint(&self, role: EndpointRole) -> Arc<dyn LlmClient> {
-        match role {
-            EndpointRole::SmallModel => self.small_model.clone(),
-            EndpointRole::DefaultModel => self.default_model.clone(),
-            EndpointRole::ImageModel => self.image_model.clone(),
-            EndpointRole::AudioModel => self.audio_model.clone(),
-            EndpointRole::EmbeddingModel => self.embedding_model.clone(),
+    fn test_config() -> RouterConfig {
+        let models = [
+            ("small_model", vec![Capability::FastChat]),
+            (
+                "default_model",
+                vec![
+                    Capability::Chat,
+                    Capability::Vision,
+                    Capability::AudioInput,
+                    Capability::Transcription,
+                ],
+            ),
+            ("image_model", vec![Capability::Vision]),
+            (
+                "audio_model",
+                vec![Capability::AudioInput, Capability::Transcription],
+            ),
+            ("embedding_model", vec![Capability::Embedding]),
+        ]
+        .into_iter()
+        .map(|(id, capabilities)| RoutedModel {
+            id: id.into(),
+            endpoint: ModelEndpoint {
+                model_name: id.into(),
+                ..Default::default()
+            },
+            capabilities,
+        })
+        .collect();
+        let request_policies = [
+            (RequestKind::FastChat, "small_model", vec!["default_model"]),
+            (RequestKind::Chat, "default_model", vec![]),
+            (RequestKind::Vision, "image_model", vec!["default_model"]),
+            (RequestKind::AudioChat, "audio_model", vec!["default_model"]),
+            (RequestKind::Transcription, "audio_model", vec![]),
+            (RequestKind::Embedding, "embedding_model", vec![]),
+        ]
+        .into_iter()
+        .map(
+            |(request, primary, fallbacks)| haven_common::config::RequestPolicy {
+                request,
+                primary: primary.into(),
+                fallbacks: fallbacks.into_iter().map(str::to_string).collect(),
+            },
+        )
+        .collect();
+        RouterConfig {
+            models,
+            request_policies,
+            ..Default::default()
         }
+    }
+
+    pub fn select_request(&self, request: RequestKind) -> Arc<dyn LlmClient> {
+        let id = self.routes.lock().unwrap().get(&request).cloned();
+        id.and_then(|id| self.models.get(&id).cloned())
+            .unwrap_or_else(|| Arc::from(adapter_for(&ModelEndpoint::default())))
+    }
+
+    pub fn select_endpoint(&self, role: EndpointRole) -> Arc<dyn LlmClient> {
+        self.select_request(role.request_kind())
     }
 
     /// Return the selected adapter's wire-level media profile. This is kept
@@ -391,6 +490,10 @@ impl LlmRouter {
     /// projection without inferring capabilities from a model id.
     pub fn capability_profile(&self, role: EndpointRole) -> CapabilityProfile {
         self.select_endpoint(role).capability_profile()
+    }
+
+    pub fn capability_profile_for_request(&self, request: RequestKind) -> CapabilityProfile {
+        self.select_request(request).capability_profile()
     }
 
     /// Resolve the model context window using the same endpoint metadata and
@@ -433,6 +536,10 @@ impl LlmRouter {
         self.config.read().await.is_configured(role)
     }
 
+    pub async fn is_request_configured(&self, request: RequestKind) -> bool {
+        self.config.read().await.route(request).is_some()
+    }
+
     fn health(&self, role: &EndpointRole) -> usize {
         Self::health_index(role)
     }
@@ -444,15 +551,34 @@ impl LlmRouter {
     #[doc(hidden)]
     pub async fn force_role_configured(&self, role: EndpointRole, configured: bool) {
         let mut cfg = self.config.write().await;
-        if configured {
-            cfg.endpoint_mut(role).api_key = "sk-test".to_string();
-        } else {
-            cfg.endpoint_mut(role).api_key = String::new();
+        let mut ids = vec![
+            cfg.policy(role.request_kind())
+                .map(|policy| policy.primary.clone()),
+        ];
+        if role == EndpointRole::AudioModel {
+            ids.push(
+                cfg.policy(RequestKind::Transcription)
+                    .map(|policy| policy.primary.clone()),
+            );
         }
+        for id in ids
+            .into_iter()
+            .flatten()
+            .collect::<std::collections::HashSet<_>>()
+        {
+            if let Some(endpoint) = cfg.model_mut(&id).map(|model| &mut model.endpoint) {
+                endpoint.api_key = if configured {
+                    "sk-test".to_string()
+                } else {
+                    String::new()
+                };
+            }
+        }
+        *self.routes.lock().unwrap() = Self::build_routes(&cfg);
     }
 
-    /// Test utility: set the routing flags (`stt_use_audio_model`,
-    /// `vision_use_image_model`).
+    /// Test utility retained for old tests. It now edits the corresponding
+    /// request policies instead of mutating boolean routing switches.
     #[doc(hidden)]
     pub async fn force_routing_flags(
         &self,
@@ -460,26 +586,53 @@ impl LlmRouter {
         vision_use_image_model: bool,
     ) {
         let mut cfg = self.config.write().await;
-        cfg.stt_use_audio_model = stt_use_audio_model;
-        cfg.vision_use_image_model = vision_use_image_model;
+        let default_id = cfg.policy(RequestKind::Chat).map(|p| p.primary.clone());
+        if let Some(default_id) = default_id {
+            let audio_id = cfg
+                .policy(RequestKind::AudioChat)
+                .map(|p| p.primary.clone())
+                .unwrap_or_else(|| default_id.clone());
+            if let Some(policy) = cfg.policy_mut(RequestKind::AudioChat) {
+                policy.primary = if stt_use_audio_model {
+                    audio_id.clone()
+                } else {
+                    default_id.clone()
+                };
+            }
+            if let Some(policy) = cfg.policy_mut(RequestKind::Transcription) {
+                policy.primary = if stt_use_audio_model {
+                    audio_id
+                } else {
+                    default_id.clone()
+                };
+            }
+            let image_id = cfg
+                .policy(RequestKind::Vision)
+                .map(|p| p.primary.clone())
+                .unwrap_or_else(|| default_id.clone());
+            if let Some(policy) = cfg.policy_mut(RequestKind::Vision) {
+                policy.primary = if vision_use_image_model {
+                    image_id
+                } else {
+                    default_id
+                };
+            }
+        }
+        *self.routes.lock().unwrap() = Self::build_routes(&cfg);
     }
 
-    /// Resolve the endpoint role used for speech-to-text transcription.
-    /// Returns `Some(AudioModel)` when `stt_use_audio_model` is enabled and
-    /// the audio_model endpoint is configured; `None` when the flag is enabled
-    /// but the endpoint is missing (callers should surface a setup hint); and
-    /// `Some(DefaultModel)` when the flag is disabled.
+    /// Resolve the legacy endpoint view used by speech-to-text callers. The
+    /// actual client is selected with the `transcription` request policy.
+    /// A policy whose primary is the compatibility default remains selectable
+    /// for injected/keyless test clients even when no credential is present.
     pub async fn stt_role(&self) -> Option<EndpointRole> {
         let cfg = self.config.read().await;
-        if cfg.stt_use_audio_model {
-            if cfg.is_configured(EndpointRole::AudioModel) {
-                Some(EndpointRole::AudioModel)
-            } else {
-                None
-            }
-        } else {
-            Some(EndpointRole::DefaultModel)
+        if cfg.route(RequestKind::Transcription).is_some() {
+            return Some(EndpointRole::AudioModel);
         }
+        cfg.policy(RequestKind::Transcription).and_then(|policy| {
+            (policy.primary == "default_model").then_some(EndpointRole::AudioModel)
+        })
     }
 
     /// Resolve the endpoint for a conversational request that contains audio.
@@ -488,14 +641,13 @@ impl LlmRouter {
     /// can still use providers that accept audio on their normal chat slot.
     pub async fn audio_role(&self) -> EndpointRole {
         let cfg = self.config.read().await;
-        if cfg.stt_use_audio_model && cfg.is_configured(EndpointRole::AudioModel) {
-            EndpointRole::AudioModel
-        } else {
-            EndpointRole::DefaultModel
-        }
+        cfg.route(RequestKind::AudioChat)
+            .or_else(|| cfg.route(RequestKind::Transcription))
+            .map(|_| EndpointRole::AudioModel)
+            .unwrap_or(EndpointRole::DefaultModel)
     }
 
-    /// Transcribe WAV audio through the STT role (`audio_model` / default).
+    /// Transcribe WAV audio through the `transcription` request policy.
     /// Tries native [`LlmClient::transcribe`] first; when the adapter reports
     /// [`LlmError::UnsupportedCapability`], falls back to multimodal chat
     /// with an `input_audio` content part (gpt-4o-audio-preview etc.).
@@ -507,12 +659,12 @@ impl LlmRouter {
             Some(role) => role,
             None => {
                 return Err(LlmError::RequestFailed(
-                    "audio_model endpoint is not configured; configure it in Settings -> LLM to use LLM-based transcription"
+                    "transcription request is not configured; configure a transcription policy in Settings -> Models"
                         .into(),
                 ));
             }
         };
-        let client = self.select_endpoint(role);
+        let client = self.select_request(RequestKind::Transcription);
         match client.transcribe(wav_data).await {
             Ok(result) => Ok(result),
             Err(e) if e.is_unsupported() => {
@@ -522,16 +674,14 @@ impl LlmRouter {
         }
     }
 
-    /// Resolve the endpoint role for image understanding in chat: the
-    /// dedicated image_model when `vision_use_image_model` is enabled and the
-    /// endpoint is configured, otherwise the default model.
+    /// Resolve the endpoint role for image understanding in chat from the
+    /// `vision` request policy. The legacy role is only a compatibility view;
+    /// the selected client is still request-policy driven.
     pub async fn vision_role(&self) -> EndpointRole {
         let cfg = self.config.read().await;
-        if cfg.vision_use_image_model && cfg.is_configured(EndpointRole::ImageModel) {
-            EndpointRole::ImageModel
-        } else {
-            EndpointRole::DefaultModel
-        }
+        cfg.route(RequestKind::Vision)
+            .map(|_| EndpointRole::ImageModel)
+            .unwrap_or(EndpointRole::DefaultModel)
     }
 
     /// Provider-wire adapter for one already-read image payload.
@@ -637,7 +787,19 @@ impl LlmRouter {
         role: EndpointRole,
         messages: Vec<CanonicalMessage>,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat_with_output_cap(role, messages, None).await
+        self.chat_request(role.request_kind(), messages).await
+    }
+
+    /// Chat through an explicit request policy. This is the preferred entry
+    /// point for new callers; the role-shaped methods below are compatibility
+    /// wrappers for existing agent/tool code.
+    pub async fn chat_request(
+        &self,
+        request: RequestKind,
+        messages: Vec<CanonicalMessage>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.chat_request_with_output_cap(request, messages, None)
+            .await
     }
 
     /// Chat with an optional per-request output cap. The cap is forwarded to
@@ -649,9 +811,20 @@ impl LlmRouter {
         messages: Vec<CanonicalMessage>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        self.chat_request_with_output_cap(role.request_kind(), messages, max_output_tokens)
+            .await
+    }
+
+    pub async fn chat_request_with_output_cap(
+        &self,
+        request: RequestKind,
+        messages: Vec<CanonicalMessage>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        let role = Self::health_role_for_request(request);
         self.with_endpoint_permit(&role, || async {
             self.check_circuit(&role).await?;
-            let primary = self.select_endpoint(role);
+            let primary = self.select_request(request);
             self.with_total_timeout(|| async {
                 self.call_with_retry(primary, messages, Vec::new(), &role, max_output_tokens)
                     .await
@@ -769,11 +942,13 @@ impl LlmRouter {
         tools: Vec<ToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        let request = role.request_kind();
+        let health_role = Self::health_role_for_request(request);
         self.with_endpoint_permit(&role, || async {
-            self.check_circuit(&role).await?;
-            let primary = self.select_endpoint(role);
+            self.check_circuit(&health_role).await?;
+            let primary = self.select_request(request);
             self.with_total_timeout(|| async {
-                self.call_with_retry(primary, messages, tools, &role, max_output_tokens)
+                self.call_with_retry(primary, messages, tools, &health_role, max_output_tokens)
                     .await
             })
             .await
@@ -1418,12 +1593,12 @@ mod tests {
 
     #[tokio::test]
     async fn is_role_configured_reports_api_key_state() {
-        let mut cfg = RouterConfig::default();
-        cfg.small_model.api_key = "sk-test".into();
-        cfg.default_model.api_key = String::new();
-        cfg.image_model.api_key = "sk-mm".into();
-        cfg.audio_model.api_key = "sk-au".into();
-        cfg.embedding_model.api_key = "sk-emb".into();
+        let mut cfg = LlmRouter::test_config();
+        cfg.model_mut("small_model").unwrap().endpoint.api_key = "sk-test".into();
+        cfg.model_mut("default_model").unwrap().endpoint.api_key = String::new();
+        cfg.model_mut("image_model").unwrap().endpoint.api_key = "sk-mm".into();
+        cfg.model_mut("audio_model").unwrap().endpoint.api_key = "sk-au".into();
+        cfg.model_mut("embedding_model").unwrap().endpoint.api_key = "sk-emb".into();
         let router = LlmRouter::new(cfg);
         assert!(
             router.is_role_configured(EndpointRole::SmallModel).await,
@@ -2352,23 +2527,29 @@ mod tests {
         // A huge response-cap floor (e.g. the 128k default) must not be sent
         // raw to providers with smaller output budgets: Anthropic/OpenAI/Gemini
         // reject max_tokens above the model limit with HTTP 400.
-        let mut cfg = RouterConfig::default();
-        cfg.default_model.model_name = "gpt-4o-mini".into(); // catalog: 128k
-        cfg.default_model.max_tokens = 1_000_000; // absurd cap floor
+        let mut cfg = LlmRouter::test_config();
+        let default_model = cfg.model_mut("default_model").unwrap();
+        default_model.endpoint.model_name = "gpt-4o-mini".into(); // catalog: 128k
+        default_model.endpoint.max_tokens = 1_000_000; // absurd cap floor
         let router = LlmRouter::new(cfg);
         let built = router.config.try_read().expect("router config readable");
+        let default_model = built.model("default_model").unwrap();
         assert!(
-            built.default_model.max_tokens <= 128_000,
+            default_model.endpoint.max_tokens <= 128_000,
             "max_tokens must be clamped to the resolved context window, got {}",
-            built.default_model.max_tokens
+            default_model.endpoint.max_tokens
         );
     }
 
     #[tokio::test]
     async fn effective_output_tokens_leaves_request_safety_margin() {
-        let mut cfg = RouterConfig::default();
-        cfg.default_model.context_window = Some(4_096);
-        cfg.default_model.max_tokens = 8_192;
+        let mut cfg = LlmRouter::test_config();
+        cfg.model_mut("default_model")
+            .unwrap()
+            .endpoint
+            .context_window = Some(4_096);
+        cfg.model_mut("default_model").unwrap().endpoint.max_tokens = 8_192;
+        cfg.model_mut("default_model").unwrap().endpoint.api_key = "sk-test".into();
         let router = LlmRouter::with_default_context_window(cfg, 128_000);
 
         assert_eq!(

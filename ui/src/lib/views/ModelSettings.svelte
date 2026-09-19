@@ -4,12 +4,13 @@
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MediaSettings from './MediaSettings.svelte';
 	import ProviderDialog from './ProviderDialog.svelte';
 	import ProviderList from './ProviderList.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import { createModelDiscovery } from '$lib/modelDiscovery.ts';
-	import { emptyRoleSlot, ensureRoleSlots, modelCards } from '$lib/modelRoles.ts';
+	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
 	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.js';
 	import {
 		API_STYLE_OPTIONS,
@@ -42,22 +43,116 @@
 		onDiscoverySettled = () => {},
 	} = $props();
 
-	const roleCards = modelCards;
-	/** @param {string} key */
-	function roleFor(key) {
+	/** @param {string} id */
+	function modelFor(id) {
 		return (
-			/** @type {any[]} */ (llmConfig.roles || []).find(
-				(/** @type {any} */ role) => role.role === key,
+			/** @type {any[]} */ (llmConfig.models || []).find(
+				(/** @type {any} */ model) => model.id === id,
 			) || null
 		);
 	}
-	/** @param {string} key */
-	function ensureRole(key) {
-		const existing = roleFor(key);
-		if (existing) return existing;
-		const slot = emptyRoleSlot(key);
-		llmConfig.roles.push(slot);
-		return slot;
+	function addModel() {
+		const base = 'model';
+		let index = 1;
+		while (modelFor(`${base}-${index}`)) index += 1;
+		const model = emptyModel(`${base}-${index}`);
+		llmConfig.models.push(model);
+		return model;
+	}
+	/** @param {any} model */
+	function removeModel(model) {
+		llmConfig.models = (llmConfig.models || []).filter((/** @type {any} */ item) => item !== model);
+		for (const policy of llmConfig.request_policies || []) {
+			if (policy.primary === model.id) policy.primary = '';
+			policy.fallbacks = (policy.fallbacks || []).filter((/** @type {string} */ id) => id !== model.id);
+		}
+	}
+	/** @param {any} model @param {string} providerName */
+	function setModelProvider(model, providerName) {
+		model.provider = providerName;
+		model.model = '';
+		model.context_window = null;
+		model.cost_per_1k_input_tokens = null;
+		model.cost_per_1k_output_tokens = null;
+		model.cost_per_1k_cache_read_tokens = null;
+		model.cost_per_1k_cache_write_tokens = null;
+		if (providerName) discovery.refreshProviderModels(providerName);
+	}
+	/** @param {any} model @param {string} modelId */
+	function setModel(model, modelId) {
+		model.model = modelId;
+		discovery.applyDiscoveredModelMeta(model, model.provider, modelId, { overwrite: true });
+	}
+	/** @param {any} model @param {string} capability @param {boolean} checked */
+	function setCapability(model, capability, checked) {
+		const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+		model.capabilities = checked
+			? [...new Set([...capabilities, capability])]
+			: capabilities.filter((/** @type {string} */ item) => item !== capability);
+	}
+	/** @param {any} policy */
+	/** @type {Record<string, string>} */
+	const requestCapability = {
+		chat: 'chat',
+		fast_chat: 'fast_chat',
+		vision: 'vision',
+		audio_chat: 'audio_input',
+		transcription: 'transcription',
+		embedding: 'embedding',
+		image_generation: 'image_generation',
+		speech_synthesis: 'speech_synthesis',
+	};
+	function addPolicy() {
+		const request = requestPolicyOptions.find(
+			(item) => !(llmConfig.request_policies || []).some((/** @type {any} */ policy) => policy.request === item.value),
+		)?.value;
+		if (!request) return;
+		llmConfig.request_policies.push({ request, primary: '', fallbacks: [] });
+	}
+	/** @param {any} policy @param {string} request */
+	function setPolicyRequest(policy, request) {
+		if (
+			(llmConfig.request_policies || []).some(
+				(/** @type {any} */ candidate) => candidate !== policy && candidate.request === request,
+			)
+		) {
+			addNotification('每种 RequestKind 只能有一条策略', 'error', 3000);
+			return;
+		}
+		policy.request = request;
+		policy.primary = '';
+		policy.fallbacks = [];
+	}
+	/** @param {any} policy */
+	function removePolicy(policy) {
+		llmConfig.request_policies = (llmConfig.request_policies || []).filter((/** @type {any} */ item) => item !== policy);
+	}
+	/** @param {any} model */
+	function modelLabel(model) {
+		return `${model.id}${model.model ? ` · ${model.model}` : ''}`;
+	}
+	/** @param {any} model */
+	function modelOptionsForPolicy(model) {
+		const capability = requestCapability[model?.request] || requestCapability[model];
+		return [
+			{ value: '', label: '未配置' },
+			.../** @type {any[]} */ (llmConfig.models || [])
+				.filter(
+					(candidate) =>
+						candidate !== model &&
+						(!capability || (candidate.capabilities || []).includes(capability)),
+				)
+				.map((candidate) => ({ value: candidate.id, label: modelLabel(candidate) })),
+		];
+	}
+	/** @param {any} model */
+	function ensureModelShape(model) {
+		if (!Array.isArray(model.capabilities)) model.capabilities = [];
+		return model;
+	}
+	/** @param {any} model */
+	function isAssigned(model) {
+		return !!model?.provider && !!model?.model;
 	}
 	function providerOptions() {
 		return [
@@ -67,31 +162,48 @@
 			),
 		];
 	}
-	/** @param {string} key @param {string} providerName */
-	function setRoleProvider(key, providerName) {
-		const slot = ensureRole(key);
-		slot.provider = providerName;
-		slot.model = '';
-		slot.context_window = null;
-		slot.cost_per_1k_input_tokens = null;
-		slot.cost_per_1k_output_tokens = null;
-		slot.cost_per_1k_cache_read_tokens = null;
-		slot.cost_per_1k_cache_write_tokens = null;
-		if (providerName) discovery.refreshProviderModels(providerName);
-	}
-	/** @param {string} key @param {string} modelId */
-	function setRoleModel(key, modelId) {
-		const slot = ensureRole(key);
-		slot.model = modelId;
-		discovery.applyDiscoveredModelMeta(slot, slot.provider, modelId, { overwrite: true });
-	}
 	/** @param {string} providerName */
-	function roleModelOptions(providerName) {
+	function modelOptions(providerName) {
 		return providerName ? discovery.modelOptions(providerName) : [];
 	}
 	/** @param {string} providerName */
-	function roleModelLoading(providerName) {
+	function modelLoading(providerName) {
 		return !!providerName && !!modelFetching[providerName];
+	}
+	/** @param {any} model @param {string} nextId */
+	function renameModel(model, nextId) {
+		const id = nextId.trim();
+		if (!id || id === model.id) return;
+		if (
+			(llmConfig.models || []).some(
+				(/** @type {any} */ candidate) => candidate !== model && candidate.id === id,
+			)
+		) {
+			addNotification('Model ID 已存在', 'error', 3000);
+			return;
+		}
+		const previousId = model.id;
+		model.id = id;
+		for (const policy of llmConfig.request_policies || []) {
+			if (policy.primary === previousId) policy.primary = id;
+			policy.fallbacks = (policy.fallbacks || []).map((/** @type {string} */ candidate) =>
+				candidate === previousId ? id : candidate,
+			);
+		}
+	}
+	/** @param {any} policy @param {number} index @param {string} value */
+	function setPolicyFallback(policy, index, value) {
+		const fallbacks = [...(policy.fallbacks || [])];
+		if (value) fallbacks[index] = value;
+		else fallbacks.splice(index, 1);
+		policy.fallbacks = fallbacks;
+	}
+	/** @param {any} policy */
+	function addPolicyFallback(policy) {
+		const options = modelOptionsForPolicy(policy).filter(
+			(option) => option.value && !(policy.fallbacks || []).includes(option.value),
+		);
+		if (options.length > 0) policy.fallbacks = [...(policy.fallbacks || []), ''];
 	}
 	/** @param {any} provider */
 	function isProviderKeyConfigured(provider) {
@@ -115,8 +227,8 @@
 	let refreshingAll = $state(false);
 	const discovery = createModelDiscovery({
 		getProviders: () => llmConfig.providers || [],
-		getRoles: () => llmConfig.roles || [],
-		getModels: () => modelsByProvider,
+		getModels: () => llmConfig.models || [],
+		getDiscoveredModels: () => modelsByProvider,
 		setModels: (models) => (modelsByProvider = models),
 		isProviderFetching: (providerName) => !!modelFetching[providerName],
 		isRefreshingAll: () => refreshingAll,
@@ -131,13 +243,6 @@
 		if (loaded && !autoRefreshed && (llmConfig.providers || []).length > 0) {
 			autoRefreshed = true;
 			discovery.refreshAllModels(true);
-		}
-	});
-	let rolesInitialized = $state(false);
-	$effect(() => {
-		if (loaded && !rolesInitialized) {
-			rolesInitialized = true;
-			ensureRoleSlots(llmConfig.roles || []);
 		}
 	});
 
@@ -216,8 +321,8 @@
 			const oldName = llmConfig.providers[idx].name;
 			llmConfig.providers[idx] = provider;
 			if (oldName !== name) {
-				for (const role of llmConfig.roles)
-					if (role.provider === oldName) role.provider = name;
+				for (const model of llmConfig.models)
+					if (model.provider === oldName) model.provider = name;
 				if (stt?.provider === oldName) stt.provider = name;
 				if (tts?.provider === oldName) tts.provider = name;
 				if (imageGen?.provider === oldName) imageGen.provider = name;
@@ -236,10 +341,10 @@
 	function deleteProvider(idx) {
 		const provider = llmConfig.providers[idx];
 		if (!provider) return;
-		for (const role of llmConfig.roles)
-			if (role.provider === provider.name) {
-				role.provider = '';
-				role.model = '';
+		for (const model of llmConfig.models)
+			if (model.provider === provider.name) {
+				model.provider = '';
+				model.model = '';
 			}
 		if (stt?.provider === provider.name) stt.provider = 'llm';
 		if (tts?.provider === provider.name) tts.provider = 'none';
@@ -299,128 +404,194 @@
 			>（含上下文长度、能力、定价等元数据）；选模型时自动填入 Context / 成本（若 Provider
 			有返回）。媒体能力在「媒体」页配置。
 		</p>
+		<div class="section-actions">
+			<MaterialButton variant="outlined" label="添加模型" onclick={addModel} />
+		</div>
 		<div class="card-list model-list">
-			<div class="model-group">Core Models</div>
-			{#each roleCards.filter((card) => card.group === 'core') as card}{@render rolePicker(
-					card,
-				)}{/each}
-			<div class="model-group">Specialized Models</div>
-			{#each roleCards.filter((card) => card.group === 'specialized') as card}{@render rolePicker(
-					card,
-				)}{/each}
+			{#each llmConfig.models || [] as model, index (model.id)}
+				{@render modelPicker(ensureModelShape(model), index)}
+			{:else}<p class="provider-note">尚未配置模型。先添加一个模型，再为请求策略选择 capability。</p>{/each}
+		</div>
+		<div class="model-group">Request policies</div>
+		<p class="model-hint">请求策略声明能力需求与候选模型顺序；不再通过专用 slot 或布尔开关决定 STT/视觉路由。</p>
+		<div class="card-list policy-list">
+			{#each llmConfig.request_policies || [] as policy (policy.request)}
+				<MaterialCard variant="outlined" className="settings-card policy-card">
+					<div class="model-field">
+						<span class="field-label">请求</span>
+						<MaterialSelect
+							id="policy-{policy.request}"
+							value={policy.request}
+							options={requestPolicyOptions}
+							onChange={withStringValue((value) => setPolicyRequest(policy, value))}
+						/>
+					</div>
+					<div class="model-field">
+						<span class="field-label">Primary</span>
+						<MaterialSelect
+							id="policy-{policy.request}-primary"
+							value={policy.primary || ''}
+							options={modelOptionsForPolicy(policy)}
+							onChange={withStringValue((value) => (policy.primary = value))}
+						/>
+					</div>
+					<div class="fallback-list">
+						<span class="field-label">Fallbacks（按顺序）</span>
+						{#each policy.fallbacks || [] as fallback, fallbackIndex}
+							<div class="fallback-row">
+								<MaterialSelect
+									id="policy-{policy.request}-fallback-{fallbackIndex}"
+									value={fallback}
+									options={modelOptionsForPolicy(policy)}
+									onChange={withStringValue((value) => setPolicyFallback(policy, fallbackIndex, value))}
+								/>
+								<MaterialButton
+									variant="text"
+									label="移除"
+									onclick={() => setPolicyFallback(policy, fallbackIndex, '')}
+								/>
+							</div>
+						{/each}
+						<MaterialButton
+							variant="text"
+							label="添加 fallback"
+							onclick={() => addPolicyFallback(policy)}
+						/>
+					</div>
+					<MaterialButton variant="text" label="移除" onclick={() => removePolicy(policy)} />
+				</MaterialCard>
+			{/each}
+			<div class="section-actions">
+				<MaterialButton variant="outlined" label="添加请求策略" onclick={addPolicy} />
+			</div>
 		</div>
 		<p class="cost-hint">
 			Context / 成本优先用 Provider
 			返回的元数据；均未填写时上下文回退到「限制」页的默认上下文窗口，成本按 0（不显示）。
 		</p>
-	</SettingsSection>
+</SettingsSection>
 {/if}
 
-{#snippet rolePicker(card = /** @type {any} */ (null))}
-	{@const slot = roleFor(card.key)}
-	{#if slot}
+{#snippet modelPicker(model = /** @type {any} */ (null), index = 0)}
 		<MaterialCard variant="outlined" className="settings-card">
 			<div class="picker-card">
 				<div class="model-field model-role">
-					<span class="field-label">{card.label}</span>
-					<div class="role-hint">{card.hint}</div>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Provider</span><MaterialSelect
-						id="{card.prefix}-provider"
-						value={slot.provider}
-						options={providerOptions()}
-						onChange={withStringValue((v) => setRoleProvider(card.key, v))}
+					<span class="field-label">Model {index + 1}</span>
+					<div class="role-hint">{model.id} · {isAssigned(model) ? model.model : '未配置'}</div>
+					<input
+						class="model-id"
+						value={model.id}
+						onchange={(event) => renameModel(model, event.currentTarget.value)}
 					/>
 				</div>
 				<div class="model-field">
-					<span class="field-label">Model</span>{#if slot.provider}<MaterialAutocomplete
-							id="{card.prefix}-model"
-							value={slot.model}
-							options={roleModelOptions(slot.provider)}
-							placeholder={slot.model ? slot.model : '从获取的模型列表中选择或输入'}
-							loading={roleModelLoading(slot.provider)}
-							onChange={withStringValue((v) => setRoleModel(card.key, v))}
+					<span class="field-label">Provider</span><MaterialSelect
+						id="model-{index}-provider"
+						value={model.provider}
+						options={providerOptions()}
+						onChange={withStringValue((v) => setModelProvider(model, v))}
+					/>
+				</div>
+				<div class="model-field">
+					<span class="field-label">Model</span>{#if model.provider}<MaterialAutocomplete
+							id="model-{index}-name"
+							value={model.model}
+							options={modelOptions(model.provider)}
+							placeholder={model.model ? model.model : '从获取的模型列表中选择或输入'}
+							loading={modelLoading(model.provider)}
+							onChange={withStringValue((v) => setModel(model, v))}
 							onFocus={() => {
-								if (!modelsByProvider[slot.provider]?.length)
-									discovery.refreshProviderModels(slot.provider);
+								if (!modelsByProvider[model.provider]?.length)
+									discovery.refreshProviderModels(model.provider);
 							}}
 						/>{:else}<span class="provider-note">先选择 Provider</span>{/if}
 				</div>
 			</div>
+			<div class="capability-list">
+				<span class="field-label">Capabilities</span>
+				{#each capabilityOptions as capability}
+					<label class="capability-option">
+						<input
+							type="checkbox"
+							checked={(model.capabilities || []).includes(capability.value)}
+							onchange={(event) => setCapability(model, capability.value, event.currentTarget.checked)}
+						/>{capability.label}
+					</label>
+				{/each}
+			</div>
 			<div class="model-row overrides-row">
 				<div class="model-field">
 					<span class="field-label">Temp（可选）</span><MaterialNumberField
-						id="{card.prefix}-temp"
-						value={slot.temperature ?? 0.7}
+						id="model-{index}-temp"
+						value={model.temperature ?? 0.7}
 						step={0.1}
 						min={0}
 						max={2}
 						onChange={withNumberValue((v) => {
-							slot.temperature = v;
+							model.temperature = v;
 						})}
 					/>
 				</div>
 				<div class="model-field">
 					<span class="field-label">Context K（可选）</span><MaterialNumberField
-						id="{card.prefix}-context-window"
-						value={slot.context_window != null && slot.context_window > 0
-							? Math.round(slot.context_window / 1000)
+						id="model-{index}-context-window"
+						value={model.context_window != null && model.context_window > 0
+							? Math.round(model.context_window / 1000)
 							: 0}
 						step={1}
 						min={0}
 						onChange={withNumberValue((v) => {
-							slot.context_window = v > 0 ? Math.round(v * 1000) : null;
+							model.context_window = v > 0 ? Math.round(v * 1000) : null;
 						})}
 					/>
 				</div>
 				<div class="model-field">
 					<span class="field-label">Cost $/1K in（可选）</span><MaterialNumberField
-						id="{card.prefix}-cost-in"
-						value={slot.cost_per_1k_input_tokens ?? 0}
+						id="model-{index}-cost-in"
+						value={model.cost_per_1k_input_tokens ?? 0}
 						step={0.01}
 						min={0}
 						onChange={withNumberValue((v) => {
-							slot.cost_per_1k_input_tokens = v;
+							model.cost_per_1k_input_tokens = v;
 						})}
 					/>
 				</div>
 				<div class="model-field">
 					<span class="field-label">Cost $/1K out（可选）</span><MaterialNumberField
-						id="{card.prefix}-cost-out"
-						value={slot.cost_per_1k_output_tokens ?? 0}
+						id="model-{index}-cost-out"
+						value={model.cost_per_1k_output_tokens ?? 0}
 						step={0.01}
 						min={0}
 						onChange={withNumberValue((v) => {
-							slot.cost_per_1k_output_tokens = v;
+							model.cost_per_1k_output_tokens = v;
 						})}
 					/>
 				</div>
 				<div class="model-field">
 					<span class="field-label">Cache read $/1K（可选）</span><MaterialNumberField
-						id="{card.prefix}-cost-cache-read"
-						value={slot.cost_per_1k_cache_read_tokens ?? 0}
+						id="model-{index}-cost-cache-read"
+						value={model.cost_per_1k_cache_read_tokens ?? 0}
 						step={0.01}
 						min={0}
 						onChange={withNumberValue((v) => {
-							slot.cost_per_1k_cache_read_tokens = v;
+							model.cost_per_1k_cache_read_tokens = v;
 						})}
 					/>
 				</div>
 				<div class="model-field">
 					<span class="field-label">Cache write $/1K（可选）</span><MaterialNumberField
-						id="{card.prefix}-cost-cache-write"
-						value={slot.cost_per_1k_cache_write_tokens ?? 0}
+						id="model-{index}-cost-cache-write"
+						value={model.cost_per_1k_cache_write_tokens ?? 0}
 						step={0.01}
 						min={0}
 						onChange={withNumberValue((v) => {
-							slot.cost_per_1k_cache_write_tokens = v;
+							model.cost_per_1k_cache_write_tokens = v;
 						})}
 					/>
 				</div>
 			</div>
 		</MaterialCard>
-	{/if}
+		<MaterialButton variant="text" label="移除模型" onclick={() => removeModel(model)} />
 {/snippet}
 
 <ProviderDialog
@@ -446,6 +617,15 @@
 	}
 	.model-list {
 		margin-top: var(--md-sys-space-lg);
+	}
+	.policy-list {
+		margin-top: var(--md-sys-space-sm);
+	}
+	.section-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--md-sys-space-sm);
+		margin-top: var(--md-sys-space-sm);
 	}
 	.model-group {
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -510,6 +690,43 @@
 	}
 	.provider-note {
 		font-style: italic;
+	}
+	.model-id {
+		width: 100%;
+		box-sizing: border-box;
+		padding: var(--md-sys-space-sm);
+		border: 1px solid var(--md-sys-color-outline);
+		border-radius: var(--md-sys-shape-extra-small);
+		background: var(--md-sys-color-surface-container-lowest);
+		color: var(--md-sys-color-on-surface);
+	}
+	.capability-list,
+	.fallback-list {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		margin-top: var(--md-sys-space-md);
+	}
+	.capability-list .field-label,
+	.fallback-list .field-label {
+		width: 100%;
+	}
+	.capability-option {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+	}
+	.fallback-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		width: min(100%, 360px);
+	}
+	.fallback-row :global(.md-select-container) {
+		flex: 1;
 	}
 	.model-hint {
 		font-size: var(--md-sys-typescale-label-small-size);

@@ -48,6 +48,7 @@ use crate::{
     ConfirmationRequirement, OperationIdempotency, OperationPolicy, ToolBox, ToolConcurrency,
     ToolOperationScope,
 };
+use haven_common::config::RequestKind;
 use haven_common::tools::{ToolCatalogGroup, ToolPresentation, ToolPrompt};
 use haven_common::types::RiskLevel;
 use haven_mcp::McpManager;
@@ -67,16 +68,23 @@ pub(crate) async fn resolve_media_capabilities(
         };
     };
 
-    let vision_role = router.vision_role().await;
-    let vision_available = router.is_role_configured(vision_role).await
-        && router.capability_profile(vision_role).image.is_supported();
+    let vision_available = router.is_request_configured(RequestKind::Vision).await
+        && router
+            .capability_profile_for_request(RequestKind::Vision)
+            .image
+            .is_supported();
 
-    let transcribe_available = if let Some(role) = router.stt_role().await {
-        let configured = router.is_role_configured(role).await;
-        let profile = router.capability_profile(role);
+    let transcribe_available = if router.stt_role().await.is_some() {
+        let configured = router
+            .is_request_configured(RequestKind::Transcription)
+            .await;
+        let profile = router.capability_profile_for_request(RequestKind::Transcription);
         let style = {
             let config = router.config().await;
-            haven_llm::adapters::api_style_for(config.endpoint(role))
+            config
+                .route(RequestKind::Transcription)
+                .map(|model| haven_llm::adapters::api_style_for(&model.endpoint))
+                .unwrap_or("openai-chat")
         };
         let unknown_custom_route = profile.audio == haven_common::media::CapabilitySupport::Unknown
             && !haven_llm::adapters::is_known_api_style(style);

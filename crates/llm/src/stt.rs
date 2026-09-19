@@ -363,8 +363,8 @@ pub(crate) async fn transcribe_via_chat(
             if msg.contains("input_audio") || msg.contains("Only text and image_url are supported")
             {
                 return Err(LlmError::RequestFailed(format!(
-                    "audio_model endpoint does not support audio input ({msg}). \
-                     Configure audio_model to a model that accepts audio \
+                    "transcription model does not support audio input ({msg}). \
+                     Configure the transcription policy with a model that accepts audio \
                      (e.g. openai/gpt-4o-audio-preview), or set STT Provider \
                      to an MCP server that exposes `stt.transcribe`."
                 )));
@@ -514,7 +514,7 @@ mod tests {
     async fn test_transcribe_audio_unconfigured_errors() {
         let router = mock_router("ignored");
         let err = router.transcribe_audio(&[0u8; 44]).await.unwrap_err();
-        assert!(err.to_string().contains("audio_model"));
+        assert!(err.to_string().contains("transcription"));
     }
 
     #[tokio::test]

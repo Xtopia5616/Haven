@@ -79,7 +79,7 @@ pub enum ConfigPatch {
     DefaultShell(ShellChoice),
     Security(SecurityConfig),
     SecurityPermissions(Vec<super::StoredPermission>),
-    Media(super::MediaConfig),
+    Media(Box<super::MediaConfig>),
     Skills {
         config: SkillsConfig,
         exec: SkillsExecConfig,
@@ -90,10 +90,10 @@ pub enum ConfigPatch {
     LogLevel(LogLevel),
 }
 
-/// Field-level patch for a configured model role.
+/// Field-level patch for a configured named model.
 #[derive(Debug, Clone)]
 pub enum LlmRolePatch {
-    Replace(RoleConfig),
+    Replace(Box<RoleConfig>),
     Model(String),
     ReasoningEffort(Option<String>),
     WebSearch(Option<String>),
@@ -105,12 +105,13 @@ impl ConfigPatch {
             Self::Settings(settings) => config.apply_settings(&settings),
             Self::Llm(llm) => config.llm = llm,
             Self::LlmRole { role, patch } => {
-                let slot = config.llm.role_mut(role).ok_or_else(|| {
+                let slot = config.llm.model_mut(role.as_str()).ok_or_else(|| {
                     anyhow::anyhow!("unknown or unconfigured role: {}", role.as_str())
                 })?;
                 match patch {
-                    LlmRolePatch::Replace(mut updated) => {
-                        updated.stamp_role(role.as_str());
+                    LlmRolePatch::Replace(updated) => {
+                        let mut updated = *updated;
+                        updated.stamp_id(role.as_str());
                         *slot = updated;
                     }
                     LlmRolePatch::Model(model) => slot.model = model,
@@ -121,7 +122,7 @@ impl ConfigPatch {
             Self::DefaultShell(shell) => config.default_shell = shell,
             Self::Security(security) => config.security = security,
             Self::SecurityPermissions(permissions) => config.security.permissions = permissions,
-            Self::Media(media) => config.media = media,
+            Self::Media(media) => config.media = *media,
             Self::Skills {
                 config: skills,
                 exec,

@@ -166,3 +166,4 @@
 - [0162：ToolsManager 的 core/runtime/builtins 边界](0162-tool-manager-boundaries.md)
 - [0163：AuthorizationEngine 统一 typed 授权模型](0163-typed-authorization-engine.md)
 - [0164：模型体验 P2 清单收口](0164-model-experience-p2-polish.md)
+- [0170：Capability / RequestPolicy 模型路由](0170-capability-request-policy-routing.md)

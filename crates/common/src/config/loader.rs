@@ -318,6 +318,122 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
     })
 }
 
+/// Convert the pre-capability `llm.roles` shape once at load time. The old
+/// five role names become ordinary model ids and the old STT/vision switches
+/// become explicit request policies. The in-memory config is written in the
+/// new shape on the next settings save.
+fn migrate_legacy_model_routing(value: &mut toml::Value) {
+    let Some(llm) = value.get_mut("llm").and_then(toml::Value::as_table_mut) else {
+        return;
+    };
+    if llm.contains_key("models") || !llm.contains_key("roles") {
+        return;
+    }
+    let Some(roles) = llm
+        .remove("roles")
+        .and_then(|value| value.as_array().cloned())
+    else {
+        return;
+    };
+
+    let stt_dedicated = llm
+        .remove("stt_use_audio_model")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let vision_dedicated = llm
+        .remove("vision_use_image_model")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+
+    let mut models = Vec::new();
+    for role in roles {
+        let Some(mut model) = role.as_table().cloned() else {
+            continue;
+        };
+        let Some(role_name) = model
+            .remove("role")
+            .and_then(|value| value.as_str().map(str::to_string))
+        else {
+            continue;
+        };
+        if !matches!(
+            role_name.as_str(),
+            "small_model" | "default_model" | "image_model" | "audio_model" | "embedding_model"
+        ) {
+            continue;
+        }
+        let capabilities: Vec<toml::Value> = match role_name.as_str() {
+            "small_model" => vec![toml::Value::String("fast_chat".into())],
+            "default_model" => vec![
+                toml::Value::String("chat".into()),
+                toml::Value::String("vision".into()),
+                toml::Value::String("audio_input".into()),
+                toml::Value::String("transcription".into()),
+            ],
+            "image_model" => vec![toml::Value::String("vision".into())],
+            "audio_model" => vec![
+                toml::Value::String("audio_input".into()),
+                toml::Value::String("transcription".into()),
+            ],
+            "embedding_model" => vec![toml::Value::String("embedding".into())],
+            _ => unreachable!(),
+        };
+        model.insert("id".into(), toml::Value::String(role_name.clone()));
+        model.insert("capabilities".into(), toml::Value::Array(capabilities));
+        models.push(toml::Value::Table(model));
+    }
+
+    let mut policies = Vec::new();
+    let mut add_policy = |request: &str, primary: &str, fallbacks: &[&str]| {
+        let mut policy = toml::map::Map::new();
+        policy.insert("request".into(), toml::Value::String(request.into()));
+        policy.insert("primary".into(), toml::Value::String(primary.into()));
+        policy.insert(
+            "fallbacks".into(),
+            toml::Value::Array(
+                fallbacks
+                    .iter()
+                    .map(|id| toml::Value::String((*id).into()))
+                    .collect(),
+            ),
+        );
+        policies.push(toml::Value::Table(policy));
+    };
+    add_policy("chat", "default_model", &[]);
+    add_policy("fast_chat", "small_model", &["default_model"]);
+    add_policy(
+        "vision",
+        if vision_dedicated {
+            "image_model"
+        } else {
+            "default_model"
+        },
+        &["default_model"],
+    );
+    add_policy(
+        "audio_chat",
+        if stt_dedicated {
+            "audio_model"
+        } else {
+            "default_model"
+        },
+        &["default_model"],
+    );
+    add_policy(
+        "transcription",
+        if stt_dedicated {
+            "audio_model"
+        } else {
+            "default_model"
+        },
+        &[],
+    );
+    add_policy("embedding", "embedding_model", &[]);
+
+    llm.insert("models".into(), toml::Value::Array(models));
+    llm.insert("request_policies".into(), toml::Value::Array(policies));
+}
+
 impl ConfigLoader {
     /// Returns the default config path: `%APPDATA%/haven/config.toml` on Windows.
     pub fn default_path() -> PathBuf {
@@ -368,6 +484,8 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path)?;
         let config: AppConfig = match toml::from_str::<toml::Value>(&content) {
             Ok(value) => {
+                let mut value = value;
+                migrate_legacy_model_routing(&mut value);
                 if let Some(entry) = removed_config_entry(&value) {
                     backup_unparsable_config(path, &format!("removed configuration: {entry}"));
                     AppConfig::default()
@@ -473,12 +591,10 @@ impl AppConfig {
                 prov.api_key = prev.api_key.clone();
             }
         }
-        // Drop unassigned role slots (empty provider) and roles removed from
-        // the supported endpoint set so the on-disk config stays lean and
-        // stale role assignments are not written back. `#[serde(default)]`
-        // refills missing supported slots on load.
-        llm.roles
-            .retain(|r| r.is_assigned() && EndpointRole::from_str(&r.role).is_some());
+        // Drop incomplete named models so request policies cannot select a
+        // half-written provider/model assignment.
+        llm.models
+            .retain(|model| model.is_assigned() && !model.id.trim().is_empty());
         self.llm = llm;
 
         self.default_shell = settings.default_shell;
@@ -608,11 +724,10 @@ mod tests {
         assert_eq!(cfg.media.tts.timeout_secs, 60);
         assert_eq!(cfg.media.image_gen.provider, "none");
         assert_eq!(cfg.media.image_gen.timeout_secs, 120);
-        assert!(cfg.llm.stt_use_audio_model);
-        assert!(cfg.llm.vision_use_image_model);
         assert_eq!(cfg.llm.max_concurrent_requests, 2);
         assert!(cfg.llm.providers.is_empty());
-        assert!(cfg.llm.roles.is_empty());
+        assert!(cfg.llm.models.is_empty());
+        assert!(cfg.llm.request_policies.is_empty());
         assert_eq!(cfg.llm.materialize(None, None), RouterConfig::default());
     }
 
@@ -695,8 +810,8 @@ mod tests {
         });
         let settings = Settings::from(&cfg);
         assert!(settings.llm.providers[0].api_key.is_empty());
-        // Roles never carry keys (they live on the provider).
-        assert_eq!(settings.llm.roles.len(), 0);
+        // Models never carry keys (they live on the provider).
+        assert_eq!(settings.llm.models.len(), 0);
     }
 
     #[test]
@@ -728,12 +843,24 @@ mod tests {
         );
         let lifted = llm.materialize(Some(10_000), None);
         // Small role cap is raised to the floor.
-        assert_eq!(lifted.small_model.max_tokens, 10_000);
+        assert_eq!(
+            lifted.model("small_model").unwrap().endpoint.max_tokens,
+            10_000
+        );
         // A role already above the floor keeps its own value.
-        assert_eq!(lifted.default_model.max_tokens, 20_000);
+        assert_eq!(
+            lifted.model("default_model").unwrap().endpoint.max_tokens,
+            20_000
+        );
         // Materialized endpoints carry provider key + role model.
-        assert_eq!(lifted.default_model.api_key, "key");
-        assert_eq!(lifted.default_model.model_name, "gpt-4o");
+        assert_eq!(
+            lifted.model("default_model").unwrap().endpoint.api_key,
+            "key"
+        );
+        assert_eq!(
+            lifted.model("default_model").unwrap().endpoint.model_name,
+            "gpt-4o"
+        );
     }
 
     #[test]
@@ -755,9 +882,23 @@ mod tests {
         );
         let filled = llm.materialize(None, Some(5000));
         // An endpoint without an override inherits the global cap.
-        assert_eq!(filled.small_model.reasoning_echo_max_chars, Some(5000));
+        assert_eq!(
+            filled
+                .model("small_model")
+                .unwrap()
+                .endpoint
+                .reasoning_echo_max_chars,
+            Some(5000)
+        );
         // A per-role override is preserved.
-        assert_eq!(filled.default_model.reasoning_echo_max_chars, Some(1234));
+        assert_eq!(
+            filled
+                .model("default_model")
+                .unwrap()
+                .endpoint
+                .reasoning_echo_max_chars,
+            Some(1234)
+        );
     }
 
     #[test]
@@ -777,13 +918,15 @@ mod tests {
         // Frontend sends empty api keys (masked) but a new base URL / model.
         settings.llm.providers[0].base_url = "https://gateway.example/v1".to_string();
         settings.llm.providers[1].name = "renamed".to_string();
-        settings.llm.roles.push(RoleConfig {
+        settings.llm.models.push(RoleConfig {
+            id: "default_model".into(),
             role: "default_model".into(),
             provider: "openai".into(),
             model: "new-model".into(),
             ..Default::default()
         });
-        settings.llm.roles.push(RoleConfig {
+        settings.llm.models.push(RoleConfig {
+            id: "retired_model".into(),
             role: "retired_model".into(),
             provider: "openai".into(),
             model: "old-model".into(),
@@ -817,9 +960,9 @@ mod tests {
             !loader
                 .config()
                 .llm
-                .roles
+                .models
                 .iter()
-                .any(|role| role.role == "retired_model")
+                .any(|model| model.id == "retired_model")
         );
     }
 
@@ -1043,6 +1186,19 @@ encrypt_sensitive = true
                 .config()
                 .llm
                 .is_configured(EndpointRole::DefaultModel)
+        );
+        assert_eq!(
+            loader
+                .config()
+                .llm
+                .policy(RequestKind::Chat)
+                .map(|policy| policy.primary.as_str()),
+            Some("default_model")
+        );
+        assert!(
+            loader.config().llm.models[0]
+                .capabilities
+                .contains(&Capability::Chat)
         );
         assert_eq!(
             loader.config().security.permission_mode,

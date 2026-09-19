@@ -1,7 +1,9 @@
-//! LLM endpoint / provider / role / router configuration: [`ModelEndpoint`],
-//! [`ProviderConfig`], [`RoleConfig`], [`EndpointRole`], [`LlmConfig`], and [`RouterConfig`].
+//! LLM endpoint / provider / model / request-policy configuration:
+//! [`ModelEndpoint`], [`ProviderConfig`], [`ModelConfig`], [`RequestPolicy`],
+//! [`LlmConfig`], and [`RouterConfig`].
 
 use super::*;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -155,14 +157,13 @@ impl Default for ModelEndpoint {
 
 /// A configured LLM provider: connection-level endpoint definition identified
 /// by `name`. The model library is no longer a manually-maintained list — it
-/// is the union of each provider's `/models` fetch. Roles reference a provider
-/// by name and pick a model id from that provider's fetched list; the router
-/// materializes the five role endpoints from providers + role slots whenever it
-/// is built or hot-swapped (see [`LlmConfig::materialize`]).
+/// is the union of each provider's `/models` fetch. Named model assignments
+/// reference a provider by name and pick a model id from that provider's
+/// fetched list; request policies select among those assignments.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
-    /// Unique id referenced by [`RoleConfig::provider`] and the settings UI.
+    /// Unique id referenced by [`ModelConfig::provider`] and the settings UI.
     pub name: String,
     /// Vendor identity used for provider-specific capabilities and display.
     #[serde(default)]
@@ -184,14 +185,14 @@ pub struct ProviderConfig {
     pub proxy_url: Option<String>,
     #[serde(default)]
     pub no_proxy: Option<String>,
-    // —— optional per-provider defaults adopted by roles without overrides ——
-    /// Default per-response token cap for roles on this provider.
+    // —— optional per-provider defaults adopted by models without overrides ——
+    /// Default per-response token cap for models on this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_max_tokens: Option<u32>,
-    /// Default sampling temperature for roles on this provider.
+    /// Default sampling temperature for models on this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_temperature: Option<f32>,
-    /// Default first-response timeout (secs) for roles on this provider.
+    /// Default first-response timeout (secs) for models on this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_secs: Option<u64>,
     /// Default streaming idle timeout (secs); `None` = no per-provider
@@ -224,24 +225,137 @@ impl Default for ProviderConfig {
     }
 }
 
-/// Role→(provider, model) assignment for one of the five model slots
-/// ([`EndpointRole`]). `role` holds the canonical slot name (stamped by
-/// [`LlmConfig::set_role`]); `provider` names a [`ProviderConfig`]; `model` is
-/// a model id on that provider. All tuning fields are optional overrides:
-/// `None` falls back to the provider default, then
-/// `context_limits.default_context_window` / [`ModelEndpoint`] built-ins.
-/// An empty `provider` means the role is unconfigured.
+/// A capability a configured model advertises to the request router.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    Chat,
+    FastChat,
+    Vision,
+    AudioInput,
+    Transcription,
+    Embedding,
+    ImageGeneration,
+    SpeechSynthesis,
+}
+
+impl Capability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::FastChat => "fast_chat",
+            Self::Vision => "vision",
+            Self::AudioInput => "audio_input",
+            Self::Transcription => "transcription",
+            Self::Embedding => "embedding",
+            Self::ImageGeneration => "image_generation",
+            Self::SpeechSynthesis => "speech_synthesis",
+        }
+    }
+}
+
+/// A logical request made by Haven. Request kinds are separate from provider
+/// wire styles and model identities, so a new request does not need a new
+/// fixed endpoint slot.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    Chat,
+    FastChat,
+    Vision,
+    AudioChat,
+    Transcription,
+    Embedding,
+    ImageGeneration,
+    SpeechSynthesis,
+}
+
+impl RequestKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::FastChat => "fast_chat",
+            Self::Vision => "vision",
+            Self::AudioChat => "audio_chat",
+            Self::Transcription => "transcription",
+            Self::Embedding => "embedding",
+            Self::ImageGeneration => "image_generation",
+            Self::SpeechSynthesis => "speech_synthesis",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        Some(match value.trim().to_ascii_lowercase().as_str() {
+            "chat" => Self::Chat,
+            "fast_chat" => Self::FastChat,
+            "vision" => Self::Vision,
+            "audio_chat" => Self::AudioChat,
+            "transcription" => Self::Transcription,
+            "embedding" => Self::Embedding,
+            "image_generation" => Self::ImageGeneration,
+            "speech_synthesis" => Self::SpeechSynthesis,
+            _ => return None,
+        })
+    }
+
+    pub const fn required_capability(self) -> Capability {
+        match self {
+            Self::Chat => Capability::Chat,
+            Self::FastChat => Capability::FastChat,
+            Self::Vision => Capability::Vision,
+            Self::AudioChat => Capability::AudioInput,
+            Self::Transcription => Capability::Transcription,
+            Self::Embedding => Capability::Embedding,
+            Self::ImageGeneration => Capability::ImageGeneration,
+            Self::SpeechSynthesis => Capability::SpeechSynthesis,
+        }
+    }
+}
+
+/// Explicit routing policy for a logical request. Candidates are tried in
+/// order; only configured models advertising the required capability qualify.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RequestPolicy {
+    pub request: RequestKind,
+    pub primary: String,
+    pub fallbacks: Vec<String>,
+}
+
+impl Default for RequestPolicy {
+    fn default() -> Self {
+        Self {
+            request: RequestKind::Chat,
+            primary: String::new(),
+            fallbacks: Vec::new(),
+        }
+    }
+}
+
+impl RequestPolicy {
+    pub fn candidates(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.primary.as_str()).chain(self.fallbacks.iter().map(String::as_str))
+    }
+}
+
+/// Named model assignment. A model may advertise multiple capabilities and
+/// can therefore serve several request kinds without being copied into slots.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct RoleConfig {
-    /// Canonical slot name (e.g. `default_model`). Stamped by the config
-    /// writer, not the UI.
-    #[serde(default)]
+pub struct ModelConfig {
+    /// Stable user-chosen identity referenced by [`RequestPolicy`].
+    pub id: String,
+    /// In-memory compatibility spelling for old callers. It is never written
+    /// to the new `[[llm.models]]` shape.
+    #[serde(skip)]
     pub role: String,
-    /// Referenced provider name (empty = role unconfigured).
+    /// Referenced provider name (empty = model unconfigured).
     pub provider: String,
     /// Model id on that provider.
     pub model: String,
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,22 +378,32 @@ pub struct RoleConfig {
     pub reasoning_echo_max_chars: Option<usize>,
 }
 
-impl RoleConfig {
-    /// Stamps the canonical role name (used by [`LlmConfig::set_role`]).
-    pub fn stamp_role(&mut self, role: &str) {
-        self.role = role.to_string();
+impl ModelConfig {
+    pub fn stamp_id(&mut self, id: &str) {
+        self.id = id.to_string();
+        self.role = id.to_string();
     }
 
-    /// True when the slot is fully configured (provider + model both set).
     pub fn is_assigned(&self) -> bool {
         !self.provider.is_empty() && !self.model.is_empty()
     }
 }
 
-/// The five model slots (roles) served by the router. Canonical role names
-/// (`as_str`) are used in TOML, the frontend protocol, and the model
-/// commands; [`LlmConfig::role`] / [`RouterConfig::endpoint`] map a role to
-/// its slot, so the role match lives in exactly one place.
+/// Model→(provider, model) assignment. New
+/// configuration uses [`ModelConfig`] plus [`RequestPolicy`].
+/// The transient `role` field only keeps old in-process callers source-compatible;
+/// it is never persisted. `provider` names a [`ProviderConfig`]; `model` is
+/// a model id on that provider. All tuning fields are optional overrides:
+/// `None` falls back to the provider default, then
+/// `context_limits.default_context_window` / [`ModelEndpoint`] built-ins.
+/// An empty `provider` means the role is unconfigured.
+/// Source-compatibility alias for code that only needs the model tuning
+/// fields. It is not used by the persisted configuration shape.
+pub type RoleConfig = ModelConfig;
+
+/// Legacy request selectors accepted at the router and IPC boundaries while
+/// callers migrate to [`RequestKind`]. These values are not persisted and do
+/// not define the model configuration shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointRole {
     SmallModel,
@@ -325,21 +449,42 @@ impl EndpointRole {
         Self::AudioModel,
         Self::EmbeddingModel,
     ];
+
+    pub const fn request_kind(self) -> RequestKind {
+        match self {
+            Self::SmallModel => RequestKind::FastChat,
+            Self::DefaultModel => RequestKind::Chat,
+            Self::ImageModel => RequestKind::Vision,
+            // The legacy audio selector represents audio-input chat. Native
+            // transcription now uses `RequestKind::Transcription` directly;
+            // the adapter still decides whether chat fallback is needed.
+            Self::AudioModel => RequestKind::AudioChat,
+            Self::EmbeddingModel => RequestKind::Embedding,
+        }
+    }
+}
+
+/// A materialized model plus its declared request capabilities.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoutedModel {
+    pub id: String,
+    pub endpoint: ModelEndpoint,
+    pub capabilities: Vec<Capability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LlmConfig {
-    /// Configured providers — the connection-level model library. Roles
-    /// reference these by name; the available model ids on each provider are
-    /// fetched from its `/models` endpoint at settings time (see
-    /// `commands::model::discover_all_models`).
+    /// Configured providers — connection-level endpoint definitions.
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
-    /// Role→(provider, model) assignments. A slot with an empty `provider` is
-    /// unconfigured (the router materializes a no-key endpoint for it).
+    /// Named model assignments. A model may advertise multiple capabilities.
     #[serde(default)]
-    pub roles: Vec<RoleConfig>,
+    pub models: Vec<ModelConfig>,
+    /// Explicit request policies. Candidate order defines fallback order.
+    #[serde(default)]
+    pub request_policies: Vec<RequestPolicy>,
     // §2.12: router-level total timeout
     pub max_total_duration_secs: u64,
     /// Streaming idle timeout: a stream that delivers no chunk for this long
@@ -363,14 +508,6 @@ pub struct LlmConfig {
     pub retry_factor: u32,
     pub retry_max_secs: u64,
     pub retry_jitter: f32,
-    /// Route recording transcription through the dedicated `audio_model`
-    /// endpoint. When false (or the endpoint is unconfigured), the default
-    /// model handles transcription.
-    pub stt_use_audio_model: bool,
-    /// Route image understanding (chat attachments and file-tool vision)
-    /// through the dedicated `image_model` endpoint. When false, the default
-    /// model handles images.
-    pub vision_use_image_model: bool,
     /// Per-endpoint (role) cap on concurrent LLM requests, applied by the
     /// router with a semaphore per role. Prevents N parallel sessions from
     /// hammering the same provider simultaneously (thundering-herd retries on
@@ -384,7 +521,8 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             providers: Vec::new(),
-            roles: Vec::new(),
+            models: Vec::new(),
+            request_policies: Vec::new(),
             max_total_duration_secs: 600,
             stream_idle_timeout_secs: 20,
             retry_max_retries: 2,
@@ -392,39 +530,119 @@ impl Default for LlmConfig {
             retry_factor: 2,
             retry_max_secs: 30,
             retry_jitter: 0.2,
-            stt_use_audio_model: true,
-            vision_use_image_model: true,
             max_concurrent_requests: 2,
         }
     }
 }
 
 impl LlmConfig {
-    /// Look up a configured role slot by its canonical role name.
-    pub fn role(&self, role: EndpointRole) -> Option<&RoleConfig> {
-        self.roles.iter().find(|r| r.role == role.as_str())
+    pub fn model(&self, id: &str) -> Option<&ModelConfig> {
+        self.models
+            .iter()
+            .find(|model| model.id == id || model.role == id)
     }
 
-    /// Mutable counterpart of [`Self::role`].
-    pub fn role_mut(&mut self, role: EndpointRole) -> Option<&mut RoleConfig> {
-        self.roles.iter_mut().find(|r| r.role == role.as_str())
+    pub fn model_mut(&mut self, id: &str) -> Option<&mut ModelConfig> {
+        self.models
+            .iter_mut()
+            .find(|model| model.id == id || model.role == id)
     }
 
-    /// Insert or replace the slot for a role (the `role` field is stamped by
-    /// the canonical name so callers can build a [`RoleConfig`] without it).
-    pub fn set_role(&mut self, role: EndpointRole, mut config: RoleConfig) {
-        let name = role.as_str().to_string();
-        match self.roles.iter_mut().find(|r| r.role == name) {
+    /// Compatibility lookup for callers that still use the legacy selector.
+    /// It resolves through the request policy before falling back to the
+    /// legacy selector spelling as a model id.
+    pub fn role(&self, role: EndpointRole) -> Option<&ModelConfig> {
+        let id = self
+            .policy(role.request_kind())
+            .map(|policy| policy.primary.as_str())
+            .unwrap_or_else(|| role.as_str());
+        self.model(id)
+    }
+
+    pub fn role_mut(&mut self, role: EndpointRole) -> Option<&mut ModelConfig> {
+        let id = self
+            .policy(role.request_kind())
+            .map(|policy| policy.primary.clone())
+            .unwrap_or_else(|| role.as_str().to_string());
+        self.model_mut(&id)
+    }
+
+    /// Compatibility writer. New code should use [`Self::set_model`] and
+    /// [`Self::set_policy`] explicitly.
+    pub fn set_role(&mut self, role: EndpointRole, mut config: ModelConfig) {
+        let id = role.as_str();
+        if config.capabilities.is_empty() {
+            config.capabilities = vec![role.request_kind().required_capability()];
+        }
+        self.set_model(id, config);
+        let fallback = matches!(role, EndpointRole::ImageModel | EndpointRole::AudioModel)
+            .then(|| EndpointRole::DefaultModel.as_str().to_string())
+            .into_iter()
+            .collect();
+        self.set_policy(role.request_kind(), id, fallback);
+    }
+
+    pub fn set_model(&mut self, id: impl Into<String>, mut config: ModelConfig) {
+        let id = id.into();
+        match self.models.iter_mut().find(|model| model.id == id) {
             Some(existing) => {
-                config.stamp_role(&name);
+                config.stamp_id(&id);
                 *existing = config;
             }
             None => {
-                let mut config = config;
-                config.stamp_role(&name);
-                self.roles.push(config);
+                config.stamp_id(&id);
+                self.models.push(config);
             }
         }
+    }
+
+    pub fn policy(&self, request: RequestKind) -> Option<&RequestPolicy> {
+        self.request_policies
+            .iter()
+            .find(|policy| policy.request == request)
+    }
+
+    pub fn policy_mut(&mut self, request: RequestKind) -> Option<&mut RequestPolicy> {
+        self.request_policies
+            .iter_mut()
+            .find(|policy| policy.request == request)
+    }
+
+    pub fn set_policy(
+        &mut self,
+        request: RequestKind,
+        primary: impl Into<String>,
+        fallbacks: Vec<String>,
+    ) {
+        let policy = RequestPolicy {
+            request,
+            primary: primary.into(),
+            fallbacks,
+        };
+        if let Some(existing) = self.policy_mut(request) {
+            *existing = policy;
+        } else {
+            self.request_policies.push(policy);
+        }
+    }
+
+    /// Resolve a request through its explicit policy, skipping incomplete
+    /// candidates and models that do not advertise the required capability.
+    pub fn route_model(&self, request: RequestKind) -> Option<&ModelConfig> {
+        let policy = self.policy(request)?;
+        policy.candidates().find_map(|id| {
+            let model = self.model(id)?;
+            (model.is_assigned()
+                && self
+                    .provider(model.provider.as_str())
+                    .is_some_and(provider_credentials_ready)
+                && model.capabilities.contains(&request.required_capability()))
+            .then_some(model)
+        })
+    }
+
+    pub fn is_request_configured(&self, request: RequestKind) -> bool {
+        self.route_model(request).is_some()
     }
 
     /// Look up a provider by name.
@@ -437,32 +655,36 @@ impl LlmConfig {
     /// model. Used by tools that should no-op gracefully when an endpoint is
     /// not set up.
     pub fn is_configured(&self, role: EndpointRole) -> bool {
-        let Some(slot) = self.role(role) else {
-            return false;
-        };
-        if !slot.is_assigned() {
-            return false;
-        }
-        self.provider(slot.provider.as_str())
-            .is_some_and(provider_credentials_ready)
+        self.is_request_configured(role.request_kind())
     }
 
-    /// Materialize the endpoint backing a role from its provider + role slot.
-    /// Unassigned roles (or roles referencing a missing provider) materialize
-    /// a no-key [`ModelEndpoint::default`], so callers never panic and the
-    /// router treats them as unconfigured.
-    pub fn materialize_endpoint(&self, role: EndpointRole) -> ModelEndpoint {
+    /// Materialize a named model from its provider and per-model overrides.
+    /// Missing or incomplete models become a no-key endpoint so router
+    /// construction remains non-panicking and the route is simply ineligible.
+    pub fn materialize_model(&self, id: &str) -> RoutedModel {
         let mut ep = ModelEndpoint::default();
-        let Some(slot) = self.role(role) else {
-            return ep;
+        let Some(model) = self.model(id) else {
+            return RoutedModel {
+                id: id.to_string(),
+                endpoint: ep,
+                capabilities: Vec::new(),
+            };
         };
-        if !slot.is_assigned() {
-            return ep;
+        if !model.is_assigned() {
+            return RoutedModel {
+                id: model.id.clone(),
+                endpoint: ep,
+                capabilities: model.capabilities.clone(),
+            };
         }
-        let Some(p) = self.provider(slot.provider.as_str()) else {
-            return ep;
+        let Some(p) = self.provider(model.provider.as_str()) else {
+            return RoutedModel {
+                id: model.id.clone(),
+                endpoint: ep,
+                capabilities: model.capabilities.clone(),
+            };
         };
-        ep.model_name = slot.model.clone();
+        ep.model_name = model.model.clone();
         ep.api_key = p.api_key.clone();
         ep.api_style = p.api_style.clone();
         ep.provider = p.provider.clone();
@@ -476,31 +698,31 @@ impl LlmConfig {
         ep.timeout_secs = p.default_timeout_secs.unwrap_or(ep.timeout_secs);
         ep.timeout_streaming_secs = p.default_timeout_streaming_secs;
         ep.web_search = p.default_web_search.clone();
-        // Per-role overrides win over provider defaults.
-        if let Some(t) = slot.temperature {
+        // Per-model overrides win over provider defaults.
+        if let Some(t) = model.temperature {
             ep.temperature = t;
         }
-        if let Some(c) = slot.context_window {
+        if let Some(c) = model.context_window {
             ep.context_window = Some(c);
         }
-        if let Some(c) = slot.cost_per_1k_input_tokens {
+        if let Some(c) = model.cost_per_1k_input_tokens {
             ep.cost_per_1k_input_tokens = c;
         }
-        if let Some(c) = slot.cost_per_1k_output_tokens {
+        if let Some(c) = model.cost_per_1k_output_tokens {
             ep.cost_per_1k_output_tokens = c;
         }
-        ep.cost_per_1k_cache_read_tokens = slot.cost_per_1k_cache_read_tokens;
-        ep.cost_per_1k_cache_write_tokens = slot.cost_per_1k_cache_write_tokens;
-        if let Some(m) = slot.max_tokens {
+        ep.cost_per_1k_cache_read_tokens = model.cost_per_1k_cache_read_tokens;
+        ep.cost_per_1k_cache_write_tokens = model.cost_per_1k_cache_write_tokens;
+        if let Some(m) = model.max_tokens {
             ep.max_tokens = m;
         }
-        if let Some(r) = &slot.reasoning_effort {
+        if let Some(r) = &model.reasoning_effort {
             ep.reasoning_effort = Some(r.clone());
         }
-        if let Some(w) = &slot.web_search {
+        if let Some(w) = &model.web_search {
             ep.web_search = Some(w.clone());
         }
-        if let Some(r) = slot.reasoning_echo_max_chars {
+        if let Some(r) = model.reasoning_echo_max_chars {
             ep.reasoning_echo_max_chars = Some(r);
         }
         // Sticky role/provider `web_search` must not reshape requests for
@@ -514,11 +736,30 @@ impl LlmConfig {
         if !supports_builtin_web_search(style) {
             ep.web_search = None;
         }
-        ep
+        RoutedModel {
+            id: model.id.clone(),
+            endpoint: ep,
+            capabilities: model.capabilities.clone(),
+        }
     }
 
-    /// Build the fully materialized router configuration: one endpoint per
-    /// role plus every router-level tuning knob. Called whenever the router is
+    /// Compatibility helper for callers that still use the legacy selector.
+    /// The request policy, rather than the selector name, chooses the model.
+    pub fn materialize_endpoint(&self, role: EndpointRole) -> ModelEndpoint {
+        self.route_model(role.request_kind())
+            .map(|model| {
+                self.materialize_model(if model.id.is_empty() {
+                    &model.role
+                } else {
+                    &model.id
+                })
+                .endpoint
+            })
+            .unwrap_or_default()
+    }
+
+    /// Build the fully materialized router configuration: a dynamic model
+    /// registry plus request policies and every router-level tuning knob. Called whenever the router is
     /// constructed or hot-swapped. `response_cap` / `reasoning_echo_cap`
     /// mirror the `with_response_cap` / `with_reasoning_echo_cap` transforms
     /// (applied to the materialized endpoints so hand-edited
@@ -529,11 +770,12 @@ impl LlmConfig {
         reasoning_echo_cap: Option<usize>,
     ) -> RouterConfig {
         let mut cap = RouterConfig {
-            small_model: self.materialize_endpoint(EndpointRole::SmallModel),
-            default_model: self.materialize_endpoint(EndpointRole::DefaultModel),
-            image_model: self.materialize_endpoint(EndpointRole::ImageModel),
-            audio_model: self.materialize_endpoint(EndpointRole::AudioModel),
-            embedding_model: self.materialize_endpoint(EndpointRole::EmbeddingModel),
+            models: self
+                .models
+                .iter()
+                .map(|model| self.materialize_model(&model.id))
+                .collect(),
+            request_policies: self.request_policies.clone(),
             max_total_duration_secs: self.max_total_duration_secs,
             stream_idle_timeout_secs: self.stream_idle_timeout_secs,
             retry_max_retries: self.retry_max_retries,
@@ -541,8 +783,6 @@ impl LlmConfig {
             retry_factor: self.retry_factor,
             retry_max_secs: self.retry_max_secs,
             retry_jitter: self.retry_jitter,
-            stt_use_audio_model: self.stt_use_audio_model,
-            vision_use_image_model: self.vision_use_image_model,
             max_concurrent_requests: self.max_concurrent_requests,
         };
         cap.apply_caps(response_cap, reasoning_echo_cap);
@@ -637,7 +877,7 @@ pub fn provider_config_wire_style(p: &ProviderConfig) -> &'static str {
 }
 
 /// True when the wire style can drive a provider built-in web search tool from
-/// the role's `off|auto|always` mode.
+/// the named model's `off|auto|always` mode.
 pub fn supports_builtin_web_search(style: &str) -> bool {
     matches!(
         normalize_api_style(style),
@@ -650,19 +890,13 @@ pub fn is_stt_only_style(style: &str) -> bool {
     matches!(normalize_api_style(style), "deepgram" | "assemblyai")
 }
 
-/// The fully materialized router configuration: five role endpoints plus the
-/// router-level tuning knobs. Built from [`LlmConfig`] (providers + role
-/// slots) via [`LlmConfig::materialize`] whenever the router is constructed
-/// or hot-swapped — this is exactly the shape [`LlmRouter`] stores and reads,
-/// so runtime hot paths keep working on plain endpoint references.
+/// The materialized router configuration. Models and request policies remain
+/// dynamic; only router-wide execution limits are fixed fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RouterConfig {
-    pub small_model: ModelEndpoint,
-    pub default_model: ModelEndpoint,
-    pub image_model: ModelEndpoint,
-    pub audio_model: ModelEndpoint,
-    pub embedding_model: ModelEndpoint,
+    pub models: Vec<RoutedModel>,
+    pub request_policies: Vec<RequestPolicy>,
     pub max_total_duration_secs: u64,
     pub stream_idle_timeout_secs: u64,
     pub retry_max_retries: u32,
@@ -670,19 +904,14 @@ pub struct RouterConfig {
     pub retry_factor: u32,
     pub retry_max_secs: u64,
     pub retry_jitter: f32,
-    pub stt_use_audio_model: bool,
-    pub vision_use_image_model: bool,
     pub max_concurrent_requests: usize,
 }
 
 impl Default for RouterConfig {
     fn default() -> Self {
         Self {
-            small_model: ModelEndpoint::default(),
-            default_model: ModelEndpoint::default(),
-            image_model: ModelEndpoint::default(),
-            audio_model: ModelEndpoint::default(),
-            embedding_model: ModelEndpoint::default(),
+            models: Vec::new(),
+            request_policies: Vec::new(),
             max_total_duration_secs: 600,
             stream_idle_timeout_secs: 20,
             retry_max_retries: 2,
@@ -690,60 +919,73 @@ impl Default for RouterConfig {
             retry_factor: 2,
             retry_max_secs: 30,
             retry_jitter: 0.2,
-            stt_use_audio_model: true,
-            vision_use_image_model: true,
             max_concurrent_requests: 2,
         }
     }
 }
 
 impl RouterConfig {
-    /// The endpoint slot backing a role. Central role→field mapping: the
-    /// router, agent, and model commands all route through this instead of
-    /// repeating the per-role match across the codebase.
-    pub fn endpoint(&self, role: EndpointRole) -> &ModelEndpoint {
-        match role {
-            EndpointRole::SmallModel => &self.small_model,
-            EndpointRole::DefaultModel => &self.default_model,
-            EndpointRole::ImageModel => &self.image_model,
-            EndpointRole::AudioModel => &self.audio_model,
-            EndpointRole::EmbeddingModel => &self.embedding_model,
-        }
+    pub fn model(&self, id: &str) -> Option<&RoutedModel> {
+        self.models.iter().find(|model| model.id == id)
     }
 
-    /// Mutable counterpart of [`Self::endpoint`].
-    pub fn endpoint_mut(&mut self, role: EndpointRole) -> &mut ModelEndpoint {
-        match role {
-            EndpointRole::SmallModel => &mut self.small_model,
-            EndpointRole::DefaultModel => &mut self.default_model,
-            EndpointRole::ImageModel => &mut self.image_model,
-            EndpointRole::AudioModel => &mut self.audio_model,
-            EndpointRole::EmbeddingModel => &mut self.embedding_model,
-        }
+    pub fn model_mut(&mut self, id: &str) -> Option<&mut RoutedModel> {
+        self.models.iter_mut().find(|model| model.id == id)
+    }
+
+    pub fn policy(&self, request: RequestKind) -> Option<&RequestPolicy> {
+        self.request_policies
+            .iter()
+            .find(|policy| policy.request == request)
+    }
+
+    /// Resolve a request policy to its first configured model with the
+    /// required declared capability.
+    pub fn route(&self, request: RequestKind) -> Option<&RoutedModel> {
+        let policy = self.policy(request)?;
+        policy.candidates().find_map(|id| {
+            let model = self.model(id)?;
+            (endpoint_credentials_ready(&model.endpoint)
+                && model.capabilities.contains(&request.required_capability()))
+            .then_some(model)
+        })
+    }
+
+    /// Legacy selector view. The selected endpoint is still policy-driven.
+    pub fn endpoint(&self, role: EndpointRole) -> &ModelEndpoint {
+        static EMPTY: OnceLock<ModelEndpoint> = OnceLock::new();
+        self.route(role.request_kind())
+            .map(|model| &model.endpoint)
+            .unwrap_or_else(|| EMPTY.get_or_init(ModelEndpoint::default))
+    }
+
+    pub fn endpoint_mut(&mut self, role: EndpointRole) -> Option<&mut ModelEndpoint> {
+        let id = self
+            .policy(role.request_kind())
+            .map(|policy| policy.primary.clone())?;
+        self.model_mut(&id).map(|model| &mut model.endpoint)
+    }
+
+    pub fn policy_mut(&mut self, request: RequestKind) -> Option<&mut RequestPolicy> {
+        self.request_policies
+            .iter_mut()
+            .find(|policy| policy.request == request)
     }
 
     /// True when the role has usable credentials (API key or keyless local
     /// server). Used by tools that should no-op gracefully when an endpoint
     /// is not set up.
     pub fn is_configured(&self, role: EndpointRole) -> bool {
-        endpoint_credentials_ready(self.endpoint(role))
+        self.route(role.request_kind()).is_some()
     }
 
-    /// Owned iteration over every role slot in canonical order (a fixed 5
-    /// elements), used by transforms that apply a value to all endpoints.
+    /// Iterate over every configured model, regardless of its capabilities.
     pub fn endpoints_mut(&mut self) -> impl Iterator<Item = &mut ModelEndpoint> {
-        [
-            &mut self.small_model,
-            &mut self.default_model,
-            &mut self.image_model,
-            &mut self.audio_model,
-            &mut self.embedding_model,
-        ]
-        .into_iter()
+        self.models.iter_mut().map(|model| &mut model.endpoint)
     }
 
     /// Apply the global per-response output-cap floor and the global
-    /// reasoning-echo cap to every role endpoint. The response-cap floor
+    /// reasoning-echo cap to every model endpoint. The response-cap floor
     /// raises small `max_tokens` values so long outputs are never
     /// truncated mid-stream (per-endpoint values above the floor are
     /// preserved); the reasoning-echo cap fills `reasoning_echo_max_chars`
@@ -779,11 +1021,17 @@ mod tests {
                 base_url: "https://api.openai.com/v1".into(),
                 ..Default::default()
             }],
-            roles: vec![RoleConfig {
+            models: vec![RoleConfig {
                 role: "default_model".into(),
                 provider: "chat".into(),
                 model: "gpt-4o".into(),
+                capabilities: vec![Capability::Chat],
                 web_search: Some("auto".into()),
+                ..Default::default()
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Chat,
+                primary: "default_model".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -803,11 +1051,17 @@ mod tests {
                 base_url: "https://api.deepseek.com".into(),
                 ..Default::default()
             }],
-            roles: vec![RoleConfig {
+            models: vec![RoleConfig {
                 role: "default_model".into(),
                 provider: "ds".into(),
                 model: "deepseek-reasoner".into(),
+                capabilities: vec![Capability::Chat],
                 web_search: Some("always".into()),
+                ..Default::default()
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Chat,
+                primary: "default_model".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -830,10 +1084,16 @@ mod tests {
         assert!(provider_credentials_ready(&ollama));
         let llm = LlmConfig {
             providers: vec![ollama],
-            roles: vec![RoleConfig {
+            models: vec![RoleConfig {
                 role: "default_model".into(),
                 provider: "local".into(),
                 model: "llama3.2".into(),
+                capabilities: vec![Capability::Chat],
+                ..Default::default()
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Chat,
+                primary: "default_model".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -857,5 +1117,85 @@ mod tests {
     fn default_total_duration_is_ten_minutes() {
         assert_eq!(LlmConfig::default().max_total_duration_secs, 600);
         assert_eq!(RouterConfig::default().max_total_duration_secs, 600);
+    }
+
+    #[test]
+    fn request_policy_skips_unconfigured_primary_and_uses_fallback() {
+        let llm = LlmConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "primary".into(),
+                    api_key: String::new(),
+                    ..Default::default()
+                },
+                ProviderConfig {
+                    name: "fallback".into(),
+                    api_key: "sk-fallback".into(),
+                    ..Default::default()
+                },
+            ],
+            models: vec![
+                ModelConfig {
+                    id: "vision-primary".into(),
+                    provider: "primary".into(),
+                    model: "vision-a".into(),
+                    capabilities: vec![Capability::Vision],
+                    ..Default::default()
+                },
+                ModelConfig {
+                    id: "vision-fallback".into(),
+                    provider: "fallback".into(),
+                    model: "vision-b".into(),
+                    capabilities: vec![Capability::Vision, Capability::Chat],
+                    ..Default::default()
+                },
+            ],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Vision,
+                primary: "vision-primary".into(),
+                fallbacks: vec!["vision-fallback".into()],
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            llm.route_model(RequestKind::Vision).unwrap().id,
+            "vision-fallback"
+        );
+    }
+
+    #[test]
+    fn one_model_can_serve_multiple_request_policies() {
+        let llm = LlmConfig {
+            providers: vec![ProviderConfig {
+                name: "shared".into(),
+                api_key: "sk-shared".into(),
+                ..Default::default()
+            }],
+            models: vec![ModelConfig {
+                id: "shared-model".into(),
+                provider: "shared".into(),
+                model: "gpt-4o".into(),
+                capabilities: vec![Capability::Chat, Capability::Vision],
+                ..Default::default()
+            }],
+            request_policies: vec![
+                RequestPolicy {
+                    request: RequestKind::Chat,
+                    primary: "shared-model".into(),
+                    ..Default::default()
+                },
+                RequestPolicy {
+                    request: RequestKind::Vision,
+                    primary: "shared-model".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert!(llm.is_request_configured(RequestKind::Chat));
+        assert!(llm.is_request_configured(RequestKind::Vision));
+        assert!(!llm.is_request_configured(RequestKind::Embedding));
     }
 }

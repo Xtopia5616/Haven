@@ -24,8 +24,8 @@ type ModelMap = Record<string, Model[]>;
 
 export interface ModelDiscoveryContext {
 	getProviders: () => Provider[];
-	getRoles: () => Array<Record<string, any>>;
-	getModels: () => ModelMap;
+	getModels: () => Array<Record<string, any>>;
+	getDiscoveredModels: () => ModelMap;
 	setModels: (models: ModelMap) => void;
 	isProviderFetching?: (providerName: string) => boolean;
 	isRefreshingAll?: () => boolean;
@@ -88,21 +88,21 @@ export function applyDiscoveredModelMeta(
 	return wrote;
 }
 
-/** Keep provider / role mutation in the settings owner, not in discovery. */
+/** Keep provider / model mutation in the settings owner, not in discovery. */
 export function createModelDiscovery(context: ModelDiscoveryContext) {
 	let lastRefreshNotify = 0;
 
-	function backfillRoleMetaFromDiscovery() {
+	function backfillModelMetaFromDiscovery() {
 		const fills: Array<Record<string, unknown>> = [];
-		for (const slot of context.getRoles()) {
+		for (const slot of context.getModels()) {
 			if (!slot?.provider || !slot?.model) continue;
 			const wrote = applyDiscoveredModelMeta(
 				slot,
-				context.getModels(),
+				context.getDiscoveredModels(),
 				slot.provider,
 				slot.model,
 			);
-			if (Object.keys(wrote).length) fills.push({ role: slot.role, ...wrote });
+			if (Object.keys(wrote).length) fills.push({ id: slot.id, ...wrote });
 		}
 		context.onDiscoverySettled?.(fills);
 	}
@@ -118,8 +118,8 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 				apiKey: provider.api_key || '',
 				provider: providerName,
 			});
-			context.setModels({ ...context.getModels(), [providerName]: list || [] });
-			backfillRoleMetaFromDiscovery();
+			context.setModels({ ...context.getDiscoveredModels(), [providerName]: list || [] });
+			backfillModelMetaFromDiscovery();
 		} catch (error) {
 			logger.warn(
 				'modelDiscovery',
@@ -153,7 +153,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 			} else {
 				context.setModels((await invoke('discover_all_models')) || {});
 			}
-			backfillRoleMetaFromDiscovery();
+			backfillModelMetaFromDiscovery();
 			if (!silent && Date.now() - lastRefreshNotify > 2500) {
 				lastRefreshNotify = Date.now();
 				if (failedProviders.length) {
@@ -181,7 +181,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 	}
 
 	return {
-		backfillRoleMetaFromDiscovery,
+		backfillModelMetaFromDiscovery,
 		refreshAllModels,
 		refreshProviderModels,
 		applyDiscoveredModelMeta: (
@@ -189,9 +189,16 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 			providerName: string,
 			modelId: string,
 			options?: { overwrite?: boolean },
-		) => applyDiscoveredModelMeta(slot, context.getModels(), providerName, modelId, options),
+		) =>
+			applyDiscoveredModelMeta(
+				slot,
+				context.getDiscoveredModels(),
+				providerName,
+				modelId,
+				options,
+			),
 		modelOptions: (providerName: string) =>
-			(context.getModels()[providerName] || []).map((model) => ({
+			(context.getDiscoveredModels()[providerName] || []).map((model) => ({
 				value: model.id,
 				label: model.name || model.id,
 			})),

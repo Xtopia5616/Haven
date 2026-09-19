@@ -97,9 +97,13 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		defaultModelsCache.inflight.catch(() => {});
 	}
 
-	/** Apply the default_model role from a get_settings payload to the toolbar. */
+	/** Apply the chat policy's primary model from a get_settings payload. */
 	function applyDefaultModelFromSettings(s: any) {
-		const dmRole = (/** @type {any[]} */ (s?.llm?.roles || [])).find((r: any) => r.role === 'default_model');
+		const policies = /** @type {any[]} */ (s?.llm?.request_policies || []);
+		const chatPolicy = policies.find((policy: any) => policy.request === 'chat');
+		const dmRole = (/** @type {any[]} */ (s?.llm?.models || [])).find(
+			(model: any) => model.id === chatPolicy?.primary,
+		);
 		const dmProvider = dmRole?.provider
 			? (/** @type {any[]} */ (s?.llm?.providers || [])).find((p: any) => p.name === dmRole.provider)
 			: null;

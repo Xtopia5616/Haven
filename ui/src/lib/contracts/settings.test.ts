@@ -41,17 +41,13 @@ describe('settings command contracts', () => {
 
 	it('validates the explicit API-key status response', () => {
 		const status = parseApiKeyStatus({
-			small_model: false,
-			default_model: true,
-			image_model: false,
-			audio_model: false,
-			embedding_model: false,
+			models: { default: true },
 			providers: { cloud: true },
 			stt: false,
 			ocr: false,
 			ocr_secret: false,
 		});
-		expect(status.default_model).toBe(true);
+		expect(status.models.default).toBe(true);
 		expect(status.providers.cloud).toBe(true);
 		expect(() => parseApiKeyStatus({ providers: {} })).toThrow(
 			'invalid get_api_key_status response',

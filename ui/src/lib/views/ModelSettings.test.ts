@@ -8,11 +8,11 @@ vi.mock('$lib/tauri.ts', () => ({ invoke }));
 
 function props(
 	providers: Array<Record<string, unknown>> = [],
-	roles: Array<Record<string, unknown>> = [],
+	models: Array<Record<string, unknown>> = [],
 ) {
 	return {
 		section: 'models',
-		llmConfig: { providers, roles },
+		llmConfig: { providers, models, request_policies: [] },
 		keyConfiguredProviders: {},
 		loaded: false,
 	};
@@ -55,8 +55,8 @@ describe('ModelSettings provider surface', () => {
 	});
 
 	it('saves a provider through the dialog without exposing its API key', async () => {
-		const config = { providers: [], roles: [] };
-		renderSettings({ ...props(config.providers, config.roles), llmConfig: config });
+		const config = { providers: [], models: [], request_policies: [] };
+		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
 		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
@@ -86,13 +86,14 @@ describe('ModelSettings provider surface', () => {
 		};
 		const config = {
 			providers: [provider],
-			roles: [{ role: 'default_model', provider: 'local', model: 'llama3' }],
+			models: [{ id: 'default', provider: 'local', model: 'llama3', capabilities: ['chat'] }],
+			request_policies: [],
 		};
-		renderSettings({ ...props(config.providers, config.roles), llmConfig: config });
+		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
 		await fireEvent.click(screen.getByRole('button', { name: '删除' }));
 
 		expect(config.providers).toHaveLength(0);
-		expect(config.roles[0]).toMatchObject({ provider: '', model: '' });
+		expect(config.models[0]).toMatchObject({ provider: '', model: '' });
 	});
 });

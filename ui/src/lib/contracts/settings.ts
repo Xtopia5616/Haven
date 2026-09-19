@@ -21,11 +21,7 @@ export interface ShellAvailability {
 }
 
 export interface ApiKeyStatus {
-	small_model: boolean;
-	default_model: boolean;
-	image_model: boolean;
-	audio_model: boolean;
-	embedding_model: boolean;
+	models: Record<string, boolean>;
 	providers: Record<string, boolean>;
 	stt: boolean;
 	ocr: boolean;
@@ -64,11 +60,6 @@ export function parseShellAvailability(value: unknown): ShellAvailability {
 
 export function parseApiKeyStatus(value: unknown): ApiKeyStatus {
 	const requiredFlags = [
-		'small_model',
-		'default_model',
-		'image_model',
-		'audio_model',
-		'embedding_model',
 		'stt',
 		'ocr',
 		'ocr_secret',
@@ -76,17 +67,15 @@ export function parseApiKeyStatus(value: unknown): ApiKeyStatus {
 	if (
 		!isRecord(value) ||
 		!requiredFlags.every((key) => typeof value[key] === 'boolean') ||
+		!isRecord(value.models) ||
+		!Object.values(value.models).every((entry) => typeof entry === 'boolean') ||
 		!isRecord(value.providers) ||
 		!Object.values(value.providers).every((entry) => typeof entry === 'boolean')
 	) {
 		throw new Error('invalid get_api_key_status response');
 	}
 	return {
-		small_model: value.small_model as boolean,
-		default_model: value.default_model as boolean,
-		image_model: value.image_model as boolean,
-		audio_model: value.audio_model as boolean,
-		embedding_model: value.embedding_model as boolean,
+		models: value.models as Record<string, boolean>,
 		providers: value.providers as Record<string, boolean>,
 		stt: value.stt as boolean,
 		ocr: value.ocr as boolean,
