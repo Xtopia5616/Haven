@@ -23,6 +23,9 @@ Accepted — 2026-09-13
    payload 形状推断仅用于兼容历史数据。
 4. 工具可用性显式区分 `enabled`、`available`、缺少依赖原因、连接要求和权限
    要求；禁用不再被解释为不可用。
+5. 每个 ReAct tool-call batch 只解析一次 `ToolCatalogSnapshot`。准入、action
+   step 投影和执行共享这份快照；action card 携带已解析的风险/静默元数据，
+   transcript 投影不得为每个工具重新查询 live registry。
 
 ## 影响与验证
 

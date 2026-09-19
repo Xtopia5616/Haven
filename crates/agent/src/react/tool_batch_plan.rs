@@ -10,6 +10,7 @@ use super::transcript::ActionCard;
 use crate::interaction::{InteractionDetails, InteractionRequest};
 use crate::types::Action;
 use haven_common::types::CanonicalToolCall;
+use haven_tools::{ToolCatalogSnapshot, is_silent_action};
 
 /// One non-final call admitted by the turn coordinator.
 #[derive(Debug, Clone)]
@@ -100,10 +101,34 @@ impl ToolBatchPlan {
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn action_cards(&self, suppress_streamed_thought: bool) -> Vec<ActionCard> {
+        self.build_action_cards(suppress_streamed_thought, None)
+    }
+
+    pub(super) fn action_cards_with_catalog(
+        &self,
+        suppress_streamed_thought: bool,
+        catalog: &ToolCatalogSnapshot,
+    ) -> Vec<ActionCard> {
+        self.build_action_cards(suppress_streamed_thought, Some(catalog))
+    }
+
+    fn build_action_cards(
+        &self,
+        suppress_streamed_thought: bool,
+        catalog: Option<&ToolCatalogSnapshot>,
+    ) -> Vec<ActionCard> {
         self.tools
             .iter()
             .map(|tool| ActionCard {
+                is_high_risk: catalog.is_some_and(|catalog| {
+                    catalog
+                        .operation_policy(&tool.action.tool_name, &tool.action.tool_input)
+                        .risk_level
+                        != haven_common::types::RiskLevel::Safe
+                }),
+                silent: is_silent_action(&tool.action.tool_name, &tool.action.tool_input),
                 tool_name: tool.action.tool_name.clone(),
                 tool_input: tool.action.tool_input.clone(),
                 tool_call_id: tool.action.tool_call_id.clone(),

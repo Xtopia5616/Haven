@@ -462,7 +462,8 @@ impl ReActEngine {
             // search context alongside the function tool results.
             // Phase 6.1 + X12: Action cards + pending rows + canonical via apply.
             // Thought already projected the messages row — no persist_text_id.
-            let action_cards = plan.action_cards(suppress_streamed_thought);
+            let action_cards =
+                plan.action_cards_with_catalog(suppress_streamed_thought, catalog.as_ref());
             let step_ctx = StepCtx {
                 session_id: session_id.to_string(),
                 step_num,

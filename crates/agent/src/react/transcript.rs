@@ -89,6 +89,11 @@ pub(super) struct ActionCard {
     pub step_id: String,
     pub action_index: u32,
     pub suppress_streamed_thought: bool,
+    /// Resolved from the turn's immutable tool catalog snapshot. Keeping the
+    /// result on the card prevents the transcript projection from reopening
+    /// the live registry for every action in the batch.
+    pub is_high_risk: bool,
+    pub silent: bool,
 }
 
 /// Observation card emitted from [`TranscriptEvent::ToolResult`].
@@ -370,10 +375,6 @@ impl ReActEngine {
                     });
                 }
                 for card in action_cards {
-                    let (is_high_risk, silent) = self
-                        .executor
-                        .action_step_metadata(&ctx.session_id, &card.tool_name, &card.tool_input)
-                        .await;
                     batch.action_steps.push(TranscriptActionStepProjection {
                         id: card.step_id.clone(),
                         step_number: ctx.step_num as i32,
@@ -381,8 +382,8 @@ impl ReActEngine {
                         tool_name: card.tool_name.clone(),
                         tool_input: card.tool_input.to_string(),
                         tool_call_id: card.tool_call_id.clone(),
-                        is_high_risk,
-                        silent,
+                        is_high_risk: card.is_high_risk,
+                        silent: card.silent,
                     });
                 }
             }
@@ -1099,6 +1100,8 @@ mod tests {
                         step_id: step_id.clone(),
                         action_index: 0,
                         suppress_streamed_thought: false,
+                        is_high_risk: false,
+                        silent: false,
                     }],
                     persist_text_id: None,
                 },

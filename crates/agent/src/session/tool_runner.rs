@@ -93,25 +93,6 @@ impl ActionStepContext {
 }
 
 impl SessionSupervisor {
-    /// Resolve the durable action-row metadata without touching SQLite.  The
-    /// transcript writer uses this to include all pending action rows in the
-    /// same transaction as the assistant tool-call event.
-    pub async fn action_step_metadata(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        input: &Value,
-    ) -> (bool, bool) {
-        let risk_level = self
-            .tools
-            .get_risk_level(Some(session_id), tool_name, input)
-            .await;
-        (
-            risk_level != RiskLevel::Safe,
-            is_silent_action(tool_name, input),
-        )
-    }
-
     async fn action_step_context(&self, request: ActionStepRequest<'_>) -> ActionStepContext {
         let risk_level = self
             .tools
