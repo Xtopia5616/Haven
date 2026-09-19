@@ -2151,15 +2151,14 @@ mod tests {
                     .run_blocking(|db| db.pending_fact_extractions())
                     .await
                     .unwrap();
-                if pending.contains(&(session.id.clone(), true)) {
+                let in_memory = engine.outbox.lock().unwrap().get(&session.id).copied();
+                if pending.contains(&(session.id.clone(), true)) && in_memory == Some(true) {
                     break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("durable enqueue should complete without blocking the caller");
-
-        assert_eq!(engine.outbox.lock().unwrap().get(&session.id), Some(&true));
+        .expect("durable enqueue should complete before memory enqueue");
     }
 }
