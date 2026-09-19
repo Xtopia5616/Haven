@@ -19,6 +19,9 @@
   一起提交；同一 ToolBatch 的 ToolResult 现在也先按 assistant call 顺序聚合，
   再以一次 transcript 事务提交。ToolResult 的执行完成状态仍由工具执行边界
   负责，保留取消和 `unknown` outcome 语义。
+- Transcript batch 同时受事件数、投影行数和总可变文本字节数限制；事件 JSON、消息
+  内容以及 action 的工具输入都计入同一个 4 MiB 上限，避免少量超大工具结果绕过
+  行数上限并放大 SQLite 事务。
 - Tool-owned LLM usage 先在 Agent 层归一化为写入 DTO，再由
   `persist_llm_call_batch_and_refresh_session_usage` 在一次事务中插入全部明细并
   重建聚合行；UI usage 事件仍在提交后按原顺序逐条发出。这样 64 个工具调用不会
@@ -48,7 +51,8 @@ SQLite lock 等待。把 snapshot 也塞进同一事务会要求在 DB 事务内
 ## 验证与回滚
 
 - Memory 单测覆盖批次 event/live broadcast、message/step 投影以及投影失败时的
-  整体 rollback。
+  整体 rollback，并覆盖事件与 projection payload 超过 4 MiB 时事务尚未开启即
+  被拒绝。
 - Agent/Memory 单测覆盖多个 ToolResult 的顺序投影与多条 tool usage 的批量写入。
 - Agent transcript、resume/rollback 与 PartialStore 测试覆盖 canonical 顺序、
   stable identity、投影恢复和无 partial discard fast path。

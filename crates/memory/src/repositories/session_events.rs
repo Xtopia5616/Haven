@@ -25,6 +25,10 @@ pub const CURRENT_EVENT_VERSION: i64 = 1;
 /// caller constructs a batch without going through those planners.
 pub const MAX_TRANSCRIPT_BATCH_EVENTS: usize = 128;
 pub const MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS: usize = 256;
+/// Hard ceiling for the total variable-width payload persisted by one live
+/// transcript transaction. This includes event JSON and projection text so a
+/// bounded row count cannot be bypassed with one oversized tool input.
+pub const MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 pub type StoredBranchPoint = (SessionEvent, usize, u32, Option<String>);
 
@@ -247,6 +251,13 @@ impl SessionEventStore {
             "transcript batch exceeds {} projection rows",
             MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS
         );
+        let payload_bytes = Self::payload_bytes(batch);
+        anyhow::ensure!(
+            payload_bytes <= MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
+            "transcript batch exceeds {} payload bytes ({} bytes)",
+            MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
+            payload_bytes
+        );
         if batch.events.is_empty() {
             anyhow::ensure!(
                 batch.messages.is_empty()
@@ -302,6 +313,41 @@ impl SessionEventStore {
             );
         }
         Ok(())
+    }
+
+    fn payload_bytes(batch: &TranscriptBatch) -> usize {
+        let mut bytes = 0usize;
+        let add = |bytes: &mut usize, value: &str| {
+            *bytes = bytes.saturating_add(value.len());
+        };
+
+        for event in &batch.events {
+            add(&mut bytes, &event.event_type);
+            add(&mut bytes, &event.payload);
+        }
+        for message in &batch.messages {
+            add(&mut bytes, &message.id);
+            add(&mut bytes, &message.role);
+            add(&mut bytes, &message.content);
+            if let Some(value) = message.message_type.as_deref() {
+                add(&mut bytes, value);
+            }
+            if let Some(value) = message.tool_call_id.as_deref() {
+                add(&mut bytes, value);
+            }
+        }
+        for thought in &batch.thought_steps {
+            add(&mut bytes, &thought.id);
+        }
+        for action in &batch.action_steps {
+            add(&mut bytes, &action.id);
+            add(&mut bytes, &action.tool_name);
+            add(&mut bytes, &action.tool_input);
+            if let Some(value) = action.tool_call_id.as_deref() {
+                add(&mut bytes, value);
+            }
+        }
+        bytes
     }
 
     fn append_batch_in_transaction(
@@ -942,6 +988,50 @@ mod tests {
         assert!(error.to_string().contains("CHECK") || error.to_string().contains("constraint"));
         assert!(store.read_all(&session_id).unwrap().is_empty());
         assert!(db.get_session_messages(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn transcript_batch_rejects_oversized_event_and_projection_payloads() {
+        let (db, store, session_id) = store();
+        let oversized = "x".repeat(MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+        let error = store
+            .append_transcript_batch(
+                &session_id,
+                &TranscriptBatch {
+                    events: vec![SessionEventInput::transcript(
+                        format!(r#"{{"type":"oversized","content":"{oversized}"}}"#),
+                        1,
+                        1,
+                    )],
+                    ..TranscriptBatch::default()
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("payload bytes"));
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+
+        let error = store
+            .append_transcript_batch(
+                &session_id,
+                &TranscriptBatch {
+                    events: vec![SessionEventInput::transcript(r#"{"type":"action"}"#, 1, 1)],
+                    action_steps: vec![TranscriptActionStepProjection {
+                        id: "step-oversized".into(),
+                        step_number: 1,
+                        action_index: 0,
+                        tool_name: "tool".into(),
+                        tool_input: oversized,
+                        tool_call_id: None,
+                        is_high_risk: false,
+                        silent: false,
+                    }],
+                    ..TranscriptBatch::default()
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("payload bytes"));
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+        assert!(db.get_session_steps(&session_id).unwrap().is_empty());
     }
 
     #[test]
