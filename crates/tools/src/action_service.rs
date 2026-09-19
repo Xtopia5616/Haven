@@ -1,6 +1,6 @@
 use haven_common::ActionStatus;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -67,12 +67,21 @@ pub enum ActionCompletion {
 /// Receiver for the unified action completion stream.
 pub struct ActionCompletionReceiver {
     rx: broadcast::Receiver<ActionCompletion>,
+    /// Scheduled fires returned from the recovery map are also potentially
+    /// present in the broadcast buffer. Keep the action ids already delivered
+    /// to this receiver so lag recovery cannot execute one fire twice.
+    seen_scheduled_ids: HashSet<String>,
 }
 
 impl ActionCompletionReceiver {
     pub async fn recv(&mut self) -> Option<ActionCompletion> {
         loop {
             match self.rx.recv().await {
+                Ok(ActionCompletion::Scheduled(fired)) => {
+                    if self.seen_scheduled_ids.insert(fired.action_id.clone()) {
+                        return Some(ActionCompletion::Scheduled(fired));
+                    }
+                }
                 Ok(event) => return Some(event),
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "action completion receiver lagged")
@@ -91,13 +100,25 @@ impl ActionCompletionReceiver {
         service: &ActionService,
     ) -> Option<ActionCompletion> {
         loop {
+            // A fire can have been retained after a send with no consumer. A
+            // receiver created later must drain that recovery source before
+            // waiting on the transient broadcast channel.
+            if let Some(fired) = service
+                .pending_scheduled_fire(&self.seen_scheduled_ids)
+                .await
+            {
+                self.seen_scheduled_ids.insert(fired.action_id.clone());
+                return Some(ActionCompletion::Scheduled(fired));
+            }
             match self.rx.recv().await {
+                Ok(ActionCompletion::Scheduled(fired)) => {
+                    if self.seen_scheduled_ids.insert(fired.action_id.clone()) {
+                        return Some(ActionCompletion::Scheduled(fired));
+                    }
+                }
                 Ok(event) => return Some(event),
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "action completion receiver lagged");
-                    if let Some(fired) = service.pending_scheduled_fire().await {
-                        return Some(ActionCompletion::Scheduled(fired));
-                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
@@ -109,7 +130,9 @@ impl ActionCompletionReceiver {
 /// sink is called with `(event, payload)` where event is one of:
 /// - `action:created`  — an action was admitted
 ///   `{ action_id, status: "running"|"waiting", kind, started_at|due_at }`
-/// - `action:updated`  — the action was bound to a session `{ action_id, session_id }`
+/// - `action:updated`  — a background action was bound to a session
+///   `{ action_id, session_id }`, or a scheduled action changed its live state
+///   (`Waiting ↔ Running`, including no-consumer rollback)
 /// - `action:output`   — live output preview while the action runs
 ///   `{ action_id, status: "running", output }` (bounded tail, emitted periodically)
 /// - `action:finished` — the action reached a terminal state (full status
@@ -269,6 +292,10 @@ pub struct ActionService {
     /// work. This is the recovery source when the transient broadcast receiver
     /// falls behind.
     pending_scheduled_fires: RwLock<HashMap<String, ScheduledActionFired>>,
+    /// At most one retry worker is allowed for each scheduled action whose
+    /// terminal DB write failed. The worker is cancelled with the service and
+    /// stops once the durable transition succeeds.
+    terminal_persistence_retries: RwLock<HashSet<String>>,
     /// Max concurrent *running* actions (from `context_limits.background_max_actions`).
     max_actions: RwLock<usize>,
     /// Live-output tail cap (chars) for `action:output` preview events (from
@@ -311,6 +338,7 @@ impl ActionService {
             spawn_gate: tokio::sync::Mutex::new(()),
             completion_tx: tx,
             pending_scheduled_fires: RwLock::new(HashMap::new()),
+            terminal_persistence_retries: RwLock::new(HashSet::new()),
             max_actions: RwLock::new(64),
             job_tail_max_chars: RwLock::new(2000),
             job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
@@ -328,15 +356,19 @@ impl ActionService {
     pub fn take_action_receiver(&self) -> Option<ActionCompletionReceiver> {
         Some(ActionCompletionReceiver {
             rx: self.completion_tx.subscribe(),
+            seen_scheduled_ids: HashSet::new(),
         })
     }
 
-    async fn pending_scheduled_fire(&self) -> Option<ScheduledActionFired> {
+    async fn pending_scheduled_fire(
+        &self,
+        seen_scheduled_ids: &HashSet<String>,
+    ) -> Option<ScheduledActionFired> {
         self.pending_scheduled_fires
             .read()
             .await
             .values()
-            .next()
+            .find(|fired| !seen_scheduled_ids.contains(&fired.action_id))
             .cloned()
     }
 
@@ -366,6 +398,42 @@ impl ActionService {
     /// headless tests skip it.
     pub async fn set_db(&self, db: Option<Arc<Database>>) {
         *self.db.write().await = db;
+    }
+
+    /// Move a malformed persisted waiting row to terminal history. Restore must
+    /// never leave a row that the pending query returns but the runtime cannot
+    /// parse, because that creates an invisible action that cannot be cancelled.
+    async fn quarantine_invalid_scheduled_row(&self, id: &str, reason: &str) {
+        let Some(db) = self.db.read().await.clone() else {
+            return;
+        };
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        let mut last_error = None;
+        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+            let action_id = id.to_string();
+            let reason = reason.to_string();
+            let finished_at_for_db = finished_at.clone();
+            match db
+                .run_blocking(move |db| {
+                    db.fail_waiting_scheduled_action(&action_id, &reason, &finished_at_for_db)
+                })
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
+                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        if let Some(error) = last_error {
+            tracing::warn!(
+                action_id = %id,
+                "failed to quarantine malformed scheduled action: {error}"
+            );
+        }
     }
 
     async fn rollback_background_registration(&self, action_id: &str) {
@@ -1098,8 +1166,9 @@ impl ActionService {
         }
     }
 
-    /// Cancel a single running action (kept for inspection afterwards).
-    /// Returns false when the action does not exist or is not running.
+    /// Cancel a single live action (kept for inspection afterwards).
+    /// Returns false when the action does not exist, is not live, or its
+    /// durable cancellation could not be committed.
     pub async fn cancel(&self, action_id: &str) -> bool {
         let mut actions = self.actions.write().await;
         let Some(entry) = actions.get_mut(action_id) else {
@@ -1505,6 +1574,10 @@ impl ActionService {
             );
         }
 
+        // `watch_action_id` dependencies are deliberately process-local: they
+        // reference the in-memory producer registry and are not written to the
+        // durable action table. Cross-restart dependency recovery needs a
+        // separate durable producer/idempotency contract (ADR 0172).
         if watch_action_id.is_none()
             && let Some(db) = self.db.read().await.clone()
         {
@@ -1664,6 +1737,10 @@ impl ActionService {
                 }
                 Err(error) => {
                     tracing::warn!(action_id = %id, "failed to persist scheduled action trigger: {error}");
+                    // The one-shot timer has already exited. Keep the in-memory
+                    // action waiting and mount a fresh worker so a transient DB
+                    // outage cannot permanently lose the schedule.
+                    self.arm_scheduled_worker(id.to_string(), &schedule);
                     return;
                 }
             }
@@ -1839,31 +1916,22 @@ impl ActionService {
         });
     }
 
-    pub async fn complete_scheduled(&self, id: &str) -> anyhow::Result<bool> {
+    pub async fn complete_scheduled(self: &Arc<Self>, id: &str) -> anyhow::Result<bool> {
         self.finish_scheduled(id, ActionStatus::Completed, None)
             .await
     }
 
-    pub async fn fail_scheduled(&self, id: &str, reason: &str) -> anyhow::Result<bool> {
+    pub async fn fail_scheduled(self: &Arc<Self>, id: &str, reason: &str) -> anyhow::Result<bool> {
         self.finish_scheduled(id, ActionStatus::Failed, Some(reason))
             .await
     }
 
-    async fn fail_scheduled_in_memory(
+    async fn finish_scheduled_in_memory(
         &self,
         id: &str,
         schedule: &ScheduledActionEntry,
-        started_at: &str,
-        reason: &str,
+        state: ActionState,
     ) -> bool {
-        let state = ActionState::Failed {
-            error: reason.to_string(),
-            error_reason: reason.to_string(),
-            log_path: None,
-            exit_code: None,
-            started_at: started_at.to_string(),
-            finished_at: chrono::Utc::now().to_rfc3339(),
-        };
         let mut actions = self.actions.write().await;
         let Some(action) = actions.get_mut(id) else {
             return false;
@@ -1878,8 +1946,124 @@ impl ActionService {
         true
     }
 
-    async fn finish_scheduled(
+    async fn persist_scheduled_terminal(
         &self,
+        id: &str,
+        status: ActionStatus,
+        error_reason: Option<&str>,
+        finished_at: &str,
+    ) -> anyhow::Result<bool> {
+        let Some(db) = self.db.read().await.clone() else {
+            return Ok(true);
+        };
+        let mut last_error = None;
+        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+            let action_id = id.to_string();
+            let reason = error_reason.map(str::to_owned);
+            let finished_at_for_db = finished_at.to_string();
+            match db
+                .run_blocking(move |db| {
+                    db.finish_scheduled_action(
+                        &action_id,
+                        status,
+                        reason.as_deref(),
+                        &finished_at_for_db,
+                    )
+                })
+                .await
+            {
+                Ok(changed) => return Ok(changed),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
+                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("scheduled terminal persistence failed")))
+    }
+
+    async fn retry_scheduled_terminal_persistence(
+        self: &Arc<Self>,
+        id: String,
+        schedule: ScheduledActionEntry,
+        started_at: String,
+        status: ActionStatus,
+        error_reason: Option<String>,
+        finished_at: String,
+    ) {
+        if !self
+            .terminal_persistence_retries
+            .write()
+            .await
+            .insert(id.clone())
+        {
+            return;
+        }
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                tokio::select! {
+                    _ = service.shutdown_token.cancelled() => break,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                match service
+                    .persist_scheduled_terminal(&id, status, error_reason.as_deref(), &finished_at)
+                    .await
+                {
+                    Ok(true) => {
+                        let state = match status {
+                            ActionStatus::Completed => ActionState::Completed {
+                                output: String::new(),
+                                exit_code: None,
+                                truncated: false,
+                                log_path: None,
+                                started_at: started_at.clone(),
+                                finished_at: finished_at.clone(),
+                            },
+                            ActionStatus::Failed => ActionState::Failed {
+                                error: error_reason.clone().unwrap_or_default(),
+                                error_reason: error_reason.clone().unwrap_or_default(),
+                                log_path: None,
+                                exit_code: None,
+                                started_at: started_at.clone(),
+                                finished_at: finished_at.clone(),
+                            },
+                            _ => break,
+                        };
+                        service
+                            .finish_scheduled_in_memory(&id, &schedule, state)
+                            .await;
+                        break;
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            action_id = %id,
+                            "scheduled terminal retry found no running durable row"
+                        );
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            action_id = %id,
+                            "scheduled terminal persistence retry failed: {error}"
+                        );
+                        delay = (delay * 2).min(Duration::from_secs(30));
+                    }
+                }
+            }
+            service
+                .terminal_persistence_retries
+                .write()
+                .await
+                .remove(&id);
+        });
+    }
+
+    async fn finish_scheduled(
+        self: &Arc<Self>,
         id: &str,
         status: ActionStatus,
         error_reason: Option<&str>,
@@ -1899,52 +2083,27 @@ impl ActionService {
             (schedule.clone(), started_at.clone())
         };
         let finished_at = chrono::Utc::now().to_rfc3339();
-        if schedule.watch_action_id.is_none()
-            && let Some(db) = self.db.read().await.clone()
-        {
-            let mut changed = None;
-            let mut last_error = None;
-            for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
-                let action_id = id.to_string();
-                let reason = error_reason.map(str::to_owned);
-                let finished_at_for_db = finished_at.clone();
-                match db
-                    .run_blocking(move |db| {
-                        db.finish_scheduled_action(
-                            &action_id,
-                            status,
-                            reason.as_deref(),
-                            &finished_at_for_db,
-                        )
-                    })
-                    .await
-                {
-                    Ok(value) => {
-                        changed = Some(value);
-                        break;
-                    }
-                    Err(error) => {
-                        last_error = Some(error);
-                        if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
-                            tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
-                        }
-                    }
+        if schedule.watch_action_id.is_none() {
+            match self
+                .persist_scheduled_terminal(id, status, error_reason, &finished_at)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return Ok(false),
+                Err(error) => {
+                    self.retry_scheduled_terminal_persistence(
+                        id.to_string(),
+                        schedule.clone(),
+                        started_at.clone(),
+                        status,
+                        error_reason.map(str::to_owned),
+                        finished_at.clone(),
+                    )
+                    .await;
+                    return Err(anyhow::anyhow!(
+                        "failed to persist scheduled action terminal state: {error}"
+                    ));
                 }
-            }
-            if let Some(error) = last_error {
-                let recovery_reason =
-                    "定时任务已执行，但终态持久化失败；已标记为失败，重启后不会重复执行";
-                self.fail_scheduled_in_memory(id, &schedule, &started_at, recovery_reason)
-                    .await;
-                return Err(anyhow::anyhow!(
-                    "failed to persist scheduled action terminal state: {error}"
-                ));
-            }
-            if !changed.unwrap_or(false) {
-                let recovery_reason = "定时任务终态未被持久化；已标记为失败，重启后不会重复执行";
-                self.fail_scheduled_in_memory(id, &schedule, &started_at, recovery_reason)
-                    .await;
-                return Ok(false);
             }
         }
         let state = match status {
@@ -1966,18 +2125,7 @@ impl ActionService {
             },
             _ => return Ok(false),
         };
-        let mut actions = self.actions.write().await;
-        let Some(action) = actions.get_mut(id) else {
-            return Ok(false);
-        };
-        if !matches!(action.state, ActionState::Running { .. }) {
-            return Ok(false);
-        }
-        action.state = state.clone();
-        self.pending_scheduled_fires.write().await.remove(id);
-        drop(actions);
-        self.emit_scheduled_finished(id, &schedule, &state);
-        Ok(true)
+        Ok(self.finish_scheduled_in_memory(id, &schedule, state).await)
     }
 
     fn emit_scheduled_finished(&self, id: &str, entry: &ScheduledActionEntry, state: &ActionState) {
@@ -2016,12 +2164,38 @@ impl ActionService {
         {
             let action_id = id.to_string();
             let finished_at_for_db = finished_at.clone();
-            match db
-                .run_blocking(move |db| db.cancel_scheduled_action(&action_id, &finished_at_for_db))
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) | Err(_) => return false,
+            let mut last_error = None;
+            for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+                let action_id = action_id.clone();
+                let finished_at_for_db = finished_at_for_db.clone();
+                match db
+                    .run_blocking(move |db| {
+                        db.cancel_scheduled_action(&action_id, &finished_at_for_db)
+                    })
+                    .await
+                {
+                    Ok(true) => {
+                        last_error = None;
+                        break;
+                    }
+                    Ok(false) => return false,
+                    Err(error) => {
+                        last_error = Some(error);
+                        if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
+                            tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                        }
+                    }
+                }
+            }
+            if let Some(error) = last_error {
+                tracing::warn!(
+                    action_id = %id,
+                    "failed to persist scheduled action cancellation after retries: {error}"
+                );
+                // Keep both the waiting/running memory state and its timer. A
+                // false result is deliberately not a cancellation claim; the
+                // caller must keep showing the live action and may retry.
+                return false;
             }
         }
         let state = ActionState::Cancelled {
@@ -2099,12 +2273,19 @@ impl ActionService {
                 Ok(value) => value.with_timezone(&chrono::Utc),
                 Err(error) => {
                     tracing::warn!(action_id = %row.id, "skipping scheduled action with invalid due_at: {error}");
+                    self.quarantine_invalid_scheduled_row(
+                        &row.id,
+                        "定时任务 due_at 无效，已隔离为失败",
+                    )
+                    .await;
                     continue;
                 }
             };
             let Some(mode) = crate::builtin::scheduled_action::ScheduleMode::parse(&row.mode)
             else {
                 tracing::warn!(action_id = %row.id, "skipping scheduled action with invalid mode");
+                self.quarantine_invalid_scheduled_row(&row.id, "定时任务 mode 无效，已隔离为失败")
+                    .await;
                 continue;
             };
             let tool_args = match row.tool_args.as_deref() {
@@ -2112,6 +2293,11 @@ impl ActionService {
                     Ok(value) => Some(value),
                     Err(error) => {
                         tracing::warn!(action_id = %row.id, "skipping scheduled action with invalid tool_args: {error}");
+                        self.quarantine_invalid_scheduled_row(
+                            &row.id,
+                            "定时任务 tool_args 无效，已隔离为失败",
+                        )
+                        .await;
                         continue;
                     }
                 },
@@ -2138,6 +2324,11 @@ impl ActionService {
                     mode = %row.mode,
                     "skipping scheduled action with missing mode-specific payload"
                 );
+                self.quarantine_invalid_scheduled_row(
+                    &row.id,
+                    "定时任务缺少 mode 所需载荷，已隔离为失败",
+                )
+                .await;
                 continue;
             }
             let entry = ScheduledActionEntry {

@@ -531,14 +531,14 @@
 		try {
 			const ok = await cancelAction(actionId, kind);
 			if (!ok) {
-				// Backend already dropped/finished the action (completed, failed,
-				// or session-end cancel) without a matching live-board update —
-				// clear the ghost row only. Do NOT finalize tool cards as
-				// cancelled: that would overwrite a successful terminal payload
-				// and block a later action:finished repair.
-				removeAction(actionId);
+				// False also covers a durable cancellation failure. Reconcile before
+				// changing the UI so a live waiting/running action is never presented
+				// as cancelled merely because the request returned false.
+				await refreshActions();
 				addNotification(
-					kind === 'scheduled' ? '定时任务已触发或不存在' : '后台任务已结束，无需停止',
+					kind === 'scheduled'
+						? '取消定时任务未生效，已重新同步状态'
+						: '后台任务未停止，已重新同步状态',
 					'warning',
 					2500,
 				);

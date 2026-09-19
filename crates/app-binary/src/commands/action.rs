@@ -70,7 +70,7 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
 
 /// Cancel a running action from the UI (a background action or a pending
 /// scheduled action, selected via `kind`). Returns false when the action does not
-/// exist or is not cancellable.
+/// exist, is not cancellable, or its durable cancellation could not be committed.
 #[tauri::command]
 pub async fn cancel_action(
     state: State<'_, Arc<AppState>>,

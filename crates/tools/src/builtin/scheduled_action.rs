@@ -1292,7 +1292,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_restore_pending_skips_corrupt_rows_without_defaults() {
+    async fn test_restore_pending_quarantines_corrupt_rows_without_defaults() {
         let (db, _dir) = test_db();
         let center = Arc::new(ActionService::new());
         center.set_db(Some(db.clone())).await;
@@ -1336,7 +1336,15 @@ mod tests {
 
         assert_eq!(center.restore_pending().await, 0);
         assert!(center.list().await.is_empty());
-        assert_eq!(db.list_pending_scheduled_actions().unwrap().len(), 3);
+        assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+        for id in ["act-invalid-due", "act-invalid-mode", "act-invalid-args"] {
+            let row = db
+                .get_action(id)
+                .unwrap()
+                .expect("corrupt row is retained as history");
+            assert_eq!(row.status, haven_common::ActionStatus::Failed);
+            assert!(row.error_reason.is_some());
+        }
     }
 
     #[tokio::test]

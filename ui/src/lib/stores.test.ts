@@ -40,6 +40,7 @@ import {
 	actionStore,
 	upsertAction,
 	removeAction,
+	refreshActions,
 	finalizeBackgroundActionMessages,
 } from './stores.ts';
 
@@ -96,6 +97,33 @@ describe('upsertAction', () => {
 		upsertAction({ id: 'act-3', kind: 'background', status: 'running' });
 		removeAction('act-3');
 		expect(get(actionStore)['act-3']).toBeUndefined();
+	});
+
+	it('ignores an older action refresh response', async () => {
+		actionStore.set({});
+		let resolveOlder!: (value: unknown) => void;
+		let resolveNewer!: (value: unknown) => void;
+		const older = new Promise((resolve) => {
+			resolveOlder = resolve;
+		});
+		const newer = new Promise((resolve) => {
+			resolveNewer = resolve;
+		});
+		vi.mocked(invoke)
+			.mockReset()
+			.mockImplementationOnce(() => older)
+			.mockImplementationOnce(() => newer);
+
+		const olderRefresh = refreshActions();
+		const newerRefresh = refreshActions();
+		resolveNewer([{ id: 'act-new', kind: 'scheduled', status: 'waiting' }]);
+		await newerRefresh;
+		resolveOlder([{ id: 'act-old', kind: 'scheduled', status: 'waiting' }]);
+		await olderRefresh;
+
+		expect(get(actionStore)['act-new']?.status).toBe('waiting');
+		expect(get(actionStore)['act-old']).toBeUndefined();
+		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
 	it('finalizeBackgroundActionMessages clears actionId and writes terminal content', () => {

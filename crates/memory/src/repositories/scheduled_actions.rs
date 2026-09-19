@@ -165,6 +165,23 @@ impl Database {
         )?;
         Ok(changed > 0)
     }
+
+    /// Quarantine a malformed waiting scheduled row as terminal history instead
+    /// of leaving it invisible to the pending-action query forever.
+    pub fn fail_waiting_scheduled_action(
+        &self,
+        id: &str,
+        error_reason: &str,
+        finished_at: &str,
+    ) -> anyhow::Result<bool> {
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE actions SET status = 'failed', error_reason = ?2, finished_at = ?3
+             WHERE id = ?1 AND kind = 'scheduled' AND status = 'waiting'",
+            rusqlite::params![id, error_reason, finished_at],
+        )?;
+        Ok(changed > 0)
+    }
 }
 
 /// A persisted action row (unified background actions and scheduled actions).
@@ -448,6 +465,37 @@ mod tests {
         db.cancel_scheduled_action("action-1", "2026-08-04T02:00:01Z")
             .unwrap();
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_waiting_scheduled_actions_can_be_quarantined() {
+        let db = test_db();
+        db.save_scheduled_action(
+            "action-invalid",
+            "not-a-timestamp",
+            "Haven",
+            "bad schedule",
+            "tool",
+            None,
+            Some("notify"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            db.fail_waiting_scheduled_action(
+                "action-invalid",
+                "invalid due_at",
+                "2026-08-04T02:00:01Z",
+            )
+            .unwrap()
+        );
+        assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+        let row = db.get_action("action-invalid").unwrap().unwrap();
+        assert_eq!(row.status, ActionStatus::Failed);
+        assert_eq!(row.error_reason.as_deref(), Some("invalid due_at"));
+        assert_eq!(row.finished_at.as_deref(), Some("2026-08-04T02:00:01Z"));
     }
 
     #[test]

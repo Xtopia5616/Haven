@@ -30,10 +30,16 @@ Haven 的 session 和 action 都是可恢复、可取消、会向 UI 发出生�
    和定时任务的 `Waiting → Running` / 无消费者回退。`list_action_history` 返回所有
    持久化终态，包括取消的定时任务。
 5. 定时任务采用 at-most-once 崩溃恢复策略：重启发现 `scheduled + running` 时标记为
-   `failed`，不自动重放可能已经执行过的工作。终态写库使用有限重试；重试耗尽时当前
-   进程把任务收敛为本地 `failed` 并发出 `action:finished`，避免内存永久停在 `running`。
+   `failed`，不自动重放可能已经执行过的工作。终态必须先持久化成功，再把当前进程切换
+   到 terminal；暂时写库失败时保持 `running`，每个 action 至多挂一个、随 service shutdown
+   取消的持久化重试 worker，避免内存先变成 `failed` 而历史仍显示 `running`。若进程在重试
+   成功前退出，下一次启动仍按 at-most-once 规则把 durable `running` 标记为 `failed`。
    需要可靠重放时，调用方必须先提供幂等业务键和单独的 exactly-once/幂等重试契约。
-6. 数据库 schema 直接升到 v22，不提供运行时迁移。旧数据库按
+6. `watch_action_id` 依赖定时任务是进程内能力，不写入 `actions`，因为 producer registry
+   和 action id 当前没有跨重启的 durable identity contract。重启恢复这类任务前，必须
+   另行定义持久化 producer 引用、幂等键和丢失 producer 的终态策略，并新增 ADR；当前实现
+   不把它伪装成可恢复的 waiting row。
+7. 数据库 schema 直接升到 v22，不提供运行时迁移。旧数据库按
    `docs/release-and-reset.md` 删除并重建；这符合测试阶段的破坏性变更政策。
 
 ## 替代方案
@@ -50,7 +56,9 @@ Haven 的 session 和 action 都是可恢复、可取消、会向 UI 发出生�
 
 - 恢复、取消、历史和 IPC/UI 现在共享同一组状态名与迁移规则；定时任务的 pending/live
   与 terminal/history 边界可以由 `ActionStatus` 判断，不再依赖布尔列。UI 可以明确展示
-  `running`，并通过 `list_actions` 周期性 reconciliation 修复丢失事件。
+  `running`，并通过 `list_actions` 周期性 reconciliation 修复丢失事件；取消请求失败时
+  保留 live 行，不把数据库失败误报成已取消。损坏的 waiting scheduled row 会被隔离为
+  `failed` 历史，而不是永久隐藏。
 - session 的数据库行、actor watch、AgentEvent 和 Tauri `SessionLifecycleEvent` 使用同一
   `SessionStatus`，减少裸字符串比较；UI 仍在边界转换为 camelCase。
 - 旧数据库、旧 action JSON 状态和依赖 `fired` 的脚本不兼容，必须重置；当前没有为旧数据
@@ -60,8 +68,9 @@ Haven 的 session 和 action 都是可恢复、可取消、会向 UI 发出生�
 
 - lifecycle transition table 单元测试覆盖未知值、终态不可复活和 action 取消；
 - Memory action/session repository、ActionService、Tauri event projection、Agent session
-  event 与 UI contract 测试覆盖 canonical statuses、运行中定时任务、无消费者重新挂载
-  和等待中取消不写 `started_at`；
+  event 与 UI contract 测试覆盖 canonical statuses、运行中定时任务、无消费者重新挂载、
+  broadcast recovery 去重、数据库失败重试、损坏 waiting row 隔离和等待中取消不写
+  `started_at`；
 - 运行 `cargo fmt --all -- --check`、workspace check/clippy/test 以及 UI check/test/build；
 - 运行 IPC event/contract 检查脚本。
 

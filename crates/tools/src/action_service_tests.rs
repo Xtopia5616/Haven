@@ -727,6 +727,58 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
 }
 
 #[tokio::test]
+async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "Recovery map".into(),
+            body: "late consumer".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER block_scheduled_requeue
+             BEFORE UPDATE OF status ON actions
+             WHEN OLD.status = 'running' AND NEW.status = 'waiting'
+             BEGIN SELECT RAISE(ABORT, 'injected requeue failure'); END;",
+        )
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(service.status(&id).await["status"], "running");
+    let mut rx = service.take_action_receiver().unwrap();
+    let fired = tokio::time::timeout(
+        Duration::from_millis(100),
+        rx.recv_scheduled_with_recovery(service.as_ref()),
+    )
+    .await
+    .expect("late receiver must get the retained fire")
+    .unwrap();
+    assert!(matches!(fired, ActionCompletion::Scheduled(ref value) if value.action_id == id));
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_scheduled_requeue")
+        .unwrap();
+    service.complete_scheduled(&id).await.unwrap();
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Completed
+    );
+}
+
+#[tokio::test]
 async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
     let service = Arc::new(ActionService::new());
     let mut rx = service.take_action_receiver().expect("receiver available");
@@ -773,6 +825,217 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
     assert_eq!(service.status(&id).await["status"], "running");
     service.complete_scheduled(&id).await.unwrap();
     assert_eq!(service.status(&id).await["status"], "completed");
+}
+
+#[tokio::test]
+async fn test_scheduled_trigger_db_failure_rearms_timer() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let mut rx = service.take_action_receiver().expect("receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "Retry trigger".into(),
+            body: "retry".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER block_scheduled_start
+             BEFORE UPDATE OF status ON actions
+             WHEN NEW.kind = 'scheduled' AND NEW.status = 'running'
+             BEGIN SELECT RAISE(ABORT, 'injected start failure'); END;",
+        )
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(service.status(&id).await["status"], "waiting");
+    db.conn()
+        .execute_batch("DROP TRIGGER block_scheduled_start")
+        .unwrap();
+
+    let event = tokio::time::timeout(Duration::from_secs(4), rx.recv())
+        .await
+        .expect("re-armed timer did not fire")
+        .expect("completion bus open");
+    assert!(matches!(event, ActionCompletion::Scheduled(ref fired) if fired.action_id == id));
+    assert_eq!(service.status(&id).await["status"], "running");
+    service.complete_scheduled(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Retry cancel".into(),
+            body: "still live".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER block_scheduled_cancel
+             BEFORE UPDATE OF status ON actions
+             WHEN NEW.kind = 'scheduled' AND NEW.status = 'cancelled'
+             BEGIN SELECT RAISE(ABORT, 'injected cancel failure'); END;",
+        )
+        .unwrap();
+
+    assert!(!service.cancel(&id).await);
+    assert_eq!(service.status(&id).await["status"], "waiting");
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Waiting
+    );
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_scheduled_cancel")
+        .unwrap();
+    assert!(service.cancel(&id).await);
+    assert_eq!(service.status(&id).await["status"], "cancelled");
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let mut rx = service.take_action_receiver().expect("receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "Retry terminal".into(),
+            body: "persist".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    let fired = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(fired, ActionCompletion::Scheduled(_)));
+
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER block_scheduled_terminal
+             BEFORE UPDATE OF status ON actions
+             WHEN NEW.kind = 'scheduled' AND NEW.status IN ('completed', 'failed', 'cancelled')
+             BEGIN SELECT RAISE(ABORT, 'injected terminal failure'); END;",
+        )
+        .unwrap();
+    assert!(service.complete_scheduled(&id).await.is_err());
+    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Running
+    );
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_scheduled_terminal")
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    while service.status(&id).await["status"] == "running" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "terminal retry did not converge"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(service.status(&id).await["status"], "completed");
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn test_scheduled_recovery_is_available_to_late_receivers_and_deduplicated() {
+    let service = Arc::new(ActionService::new());
+    let fired = ScheduledActionFired {
+        action_id: "act-recovery".into(),
+        title: "Recovery".into(),
+        body: "once".into(),
+        mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+        session_id: None,
+        tool_name: Some("notify".into()),
+        tool_args: None,
+        prompt: None,
+    };
+    service
+        .pending_scheduled_fires
+        .write()
+        .await
+        .insert(fired.action_id.clone(), fired.clone());
+    let mut late_rx = service.take_action_receiver().unwrap();
+    let recovered = tokio::time::timeout(
+        Duration::from_millis(100),
+        late_rx.recv_scheduled_with_recovery(service.as_ref()),
+    )
+    .await
+    .expect("late receiver must drain pending fire")
+    .unwrap();
+    assert!(
+        matches!(recovered, ActionCompletion::Scheduled(ref value) if value.action_id == fired.action_id)
+    );
+
+    let duplicate_service = Arc::new(ActionService::new());
+    let mut rx = duplicate_service.take_action_receiver().unwrap();
+    duplicate_service
+        .pending_scheduled_fires
+        .write()
+        .await
+        .insert(fired.action_id.clone(), fired.clone());
+    duplicate_service
+        .completion_tx
+        .send(ActionCompletion::Scheduled(fired))
+        .unwrap();
+    let first = rx
+        .recv_scheduled_with_recovery(duplicate_service.as_ref())
+        .await
+        .unwrap();
+    assert!(matches!(first, ActionCompletion::Scheduled(_)));
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            rx.recv_scheduled_with_recovery(duplicate_service.as_ref()),
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -856,6 +1119,37 @@ async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
         cancel_event["finished_at"].as_str(),
         cancel_row.finished_at.as_deref()
     );
+}
+
+#[tokio::test]
+async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    db.save_scheduled_action(
+        "act-corrupt",
+        "2026-09-19T00:00:00Z",
+        "Corrupt",
+        "cannot restore",
+        "invalid-mode",
+        None,
+        Some("notify"),
+        None,
+        None,
+    )
+    .unwrap();
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+
+    assert_eq!(service.restore_pending().await, 0);
+    assert_eq!(service.status("act-corrupt").await["status"], "not_found");
+    let row = db.get_action("act-corrupt").unwrap().unwrap();
+    assert_eq!(row.status, haven_common::ActionStatus::Failed);
+    assert!(
+        row.error_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("mode"))
+    );
+    assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
 }
 
 #[tokio::test]
