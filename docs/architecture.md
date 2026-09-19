@@ -189,14 +189,16 @@ sequence replay，是会话恢复、rollback 和实时订阅的唯一事件权�
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
 provider 协议和 UI 展示逻辑不得进入本 crate。
 
-Agent 的 `memory_index.rs` 是 embedding 编排边界：它负责 embedding provider 调用、
-有界 catch-up、模型切换清理和 LSH 重建；向量行的 scope、敏感过滤、规范化与 keyword
-融合由 `haven_memory::recall::MemoryRetriever` 统一负责。`InferenceEngine` 只编排
-事实抽取/维护并使用这两个组件；事实抽取 outbox 以 `kv_store` marker 持久化，
-不把 provider 网络调用下沉到 Memory；Memory 只
-接收已获取的向量并执行同步数据库读取。事实维护的 SQL 清理与矛盾候选读取由
-`fact_maintenance.rs` 负责；维护调度、LLM 仲裁、提案门禁与并发控制仍属于 Agent，
-二者通过既有 `Database` 外观连接（ADR 0022、0063）。
+Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：它集中管理
+有界候选、recall、embedding/index 句柄和 prompt-memory cache；向量行的 scope、敏感
+过滤、规范化与 keyword 融合仍由 `haven_memory::recall::MemoryRetriever` 统一负责。
+`memory_worker.rs`（旧名 `inference.rs`）只编排事实抽取、durable outbox、维护、提案
+提交和索引 catch-up；`inference.rs` 仅保留 `InferenceEngine` 兼容别名。`prompt_context.rs`
+在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system
+message 与 MEMORY fence，不访问 DB、router 或 cache。事实抽取 outbox 以 `kv_store`
+marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护的 SQL 清理与矛盾候选
+读取由 `fact_maintenance.rs` 负责，维护调度、LLM 仲裁、提案门禁与并发控制仍属于
+Agent（ADR 0022、0063、0169）。
 
 ### 2.4 `haven-input` —— 输入采集与语音生命周期
 
@@ -219,9 +221,9 @@ Agent 的 `memory_index.rs` 是 embedding 编排边界：它负责 embedding pro
 - `session/`：`SessionSupervisor` 负责 FIFO、并发 permit 和 actor 生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态，`RunEngine` 承载一次 ReAct run；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
-- `inference.rs` / `memory_index.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_index` 只适配 embedding provider 与索引生命周期，`prompt` 通过 typed memory recall 组装 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
+- `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
 - `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签/谓词规范化、prompt
-  字段清洗和 JSON array 提取；`InferenceEngine` 负责调度与持久化（ADR 0029）。
+  字段清洗和 JSON array 提取；`MemoryWorker` 负责调度与持久化（ADR 0029、0169）。
 - 调用 `LlmRouter`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
 

@@ -346,7 +346,7 @@ pub struct ReActEngine {
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
     /// Optional fact engine for compaction-summary extraction (M3).
-    inference: Option<Arc<crate::InferenceEngine>>,
+    inference: Option<Arc<crate::MemoryWorker>>,
     /// Live per-run budget mirrored into snapshots (R4). Cleared when the
     /// run exits so a later pause/resume cannot leak a stale budget.
     run_budgets: Mutex<HashMap<String, crate::types::RunBudget>>,
@@ -436,8 +436,8 @@ impl ReActEngine {
         self
     }
 
-    /// Attach the shared [`crate::InferenceEngine`] for M3 summary→facts.
-    pub(crate) fn with_inference(mut self, inference: Arc<crate::InferenceEngine>) -> Self {
+    /// Attach the shared [`crate::MemoryWorker`] for M3 summary→facts.
+    pub(crate) fn with_inference(mut self, inference: Arc<crate::MemoryWorker>) -> Self {
         self.inference = Some(inference);
         self
     }

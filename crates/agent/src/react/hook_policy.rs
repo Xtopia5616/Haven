@@ -24,7 +24,7 @@ use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_media_requi
 /// MEMORY fence refresh (M2), response policy, and confirm pre-check.
 pub(crate) struct DefaultHooks {
     /// Optional session-scoped fact inference. `None` in unit tests that
-    /// construct an engine without an [`crate::InferenceEngine`].
+    /// construct an engine without an [`crate::MemoryWorker`].
     infer: Option<InferCallback>,
     /// Optional mid-run MEMORY patch after outbox fact writes (M2).
     memory_patch: Option<MemoryPatchHandle>,

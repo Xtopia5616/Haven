@@ -14,8 +14,9 @@ pub struct AgentLayer {
     context_limits: std::sync::Mutex<ContextLimitsConfig>,
     pub(crate) events: Arc<EventDispatcher>,
     pub(crate) prompt_builder: Arc<SystemPromptBuilder>,
+    pub(crate) memory: Arc<MemoryService>,
     pub(crate) react_engine: Arc<ReActEngine>,
-    pub(crate) inference: Arc<InferenceEngine>,
+    pub(crate) inference: Arc<MemoryWorker>,
     pub(crate) title: Option<TitleGenerator>,
     pub(crate) title_in_flight: Arc<Mutex<HashSet<String>>>,
 }
@@ -30,16 +31,19 @@ impl AgentLayer {
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let events = Arc::new(EventDispatcher::new());
-        let prompt_builder = Arc::new(SystemPromptBuilder::with_router(
-            executor.get_tools(),
+        let memory_service = Arc::new(MemoryService::new(
             db.clone(),
             Some(router.clone()),
+            context_limits.embedding_chunk_size,
         ));
-        let inference = Arc::new(InferenceEngine::new(
-            db.clone(),
+        let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
+            executor.get_tools(),
+            memory_service.clone(),
+        ));
+        let inference = Arc::new(MemoryWorker::new_with_memory(
+            memory_service.clone(),
             router.clone(),
             context_limits.max_transcript_chars,
-            context_limits.embedding_chunk_size,
             context_limits.max_known_facts,
             context_limits.sanitize_field_max_chars,
             context_limits.fact_extraction_min_interval_secs,
@@ -84,6 +88,7 @@ impl AgentLayer {
             context_limits: std::sync::Mutex::new(context_limits),
             events,
             prompt_builder,
+            memory: memory_service,
             react_engine,
             inference,
             title,
@@ -241,7 +246,7 @@ impl AgentLayer {
         &self,
         query: haven_memory::recall::MemoryQuery,
     ) -> anyhow::Result<haven_memory::MemoryRecall> {
-        self.inference.recall_memory_query(query).await
+        self.memory.recall(query).await
     }
 
     pub fn set_max_steps(&self, max_steps: u32) {

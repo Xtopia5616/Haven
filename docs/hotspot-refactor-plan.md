@@ -244,6 +244,12 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 3. `PromptContextProvider`：在 turn 边界取得一次有上限的上下文快照。
 4. `PromptRenderer`：纯函数，把上下文快照渲染成 system message，不直接碰 DB、router 或 cache。
 
+2026-09-19 已完成第一阶段（ADR 0169）：`MemoryService` 统一 prompt/worker 的
+typed memory、embedding/index 与 prompt-memory cache；`MemoryWorker` 从旧
+`InferenceEngine` 实现中独立出来；`PromptContextProvider` 接管工具索引缓存与
+turn context 依赖；`PromptRenderer` 负责纯 system/MEMORY fence 渲染。旧
+`InferenceEngine` 仅保留兼容别名，后续新调用应使用 `MemoryWorker`。
+
 另外，过去 [`crates/agent/src/layer.rs`](../crates/agent/src/layer.rs) 构造 `AgentLayer` 时会执行 `ensure_fact("user", "name", "Xtopia", ...)`。这不是合理的默认配置，而是产品身份数据与运行时初始化混在一起的明显 placeholder/功能错误；该写入已删除。如果产品需要用户名称，应走首次设置/用户 profile，并明确来源、可修改性和是否允许进入 prompt。不能让每次启动隐式写入一条伪造的长期记忆。
 
 ### G. P1：模型路由从固定角色改成 capability/request policy

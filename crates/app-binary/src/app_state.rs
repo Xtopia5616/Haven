@@ -162,7 +162,7 @@ impl AppState {
         // SessionActor mailbox and peer lifecycle operations, so the catalog
         // never needs a mutable spawn/controller callback pair.
         tools.bind_messaging_runtime(agent.clone())?;
-        // `memory` recall shares History/`InferenceEngine::recall_memory`
+        // `memory` recall shares the Agent/`MemoryService::recall` boundary
         // through a typed capability port. The port is immutable after this
         // composition step, so catalog rebuilds cannot retain a stale closure.
         tools.bind_memory_recall(agent.clone())?;

@@ -11,8 +11,12 @@ mod ingress;
 pub mod interaction;
 mod lifecycle;
 mod memory_index;
+mod memory_service;
+mod memory_worker;
 mod partial;
 mod prompt;
+mod prompt_context;
+mod prompt_renderer;
 mod react;
 mod resume;
 mod resume_support;
@@ -28,7 +32,11 @@ pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
 pub use inference::InferenceEngine;
 pub use interaction::{InteractionDetails, InteractionKind, InteractionRequest, InteractionStatus};
-pub use prompt::{MemorySections, SystemPromptBuilder};
+pub use memory_service::MemoryService;
+pub use memory_worker::MemoryWorker;
+pub use prompt::SystemPromptBuilder;
+pub use prompt_context::PromptContextProvider;
+pub use prompt_renderer::{MemorySections, PromptRenderer};
 pub use react::{LoopExit, PauseReason, ReActEngine};
 pub use session::{
     ConfirmResolution, RunEngine, RunHandler, SessionEvent, SessionInfo, SessionStatus,
